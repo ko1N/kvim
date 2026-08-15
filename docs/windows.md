@@ -110,8 +110,8 @@ deterministic order and keeps the focused window visible.
 
 The default minimum window width is 20 cells. It keeps a line number column, a
 sign column, and readable text visible. The default minimum window height is 3
-rows. It keeps a winbar row, one text row, and a statusline row visible. Both
-values belong to `EditorSettings`. See [`settings.md`](settings.md).
+rows. It keeps a winbar row and readable text visible. Both values belong to
+`EditorSettings`. See [`settings.md`](settings.md).
 
 The implemented layout confirms both values. A split node divides its rectangle
 only while that rectangle holds two children at the minimum, so the layout
@@ -131,6 +131,32 @@ file tree is a sidebar. A sidebar is not an ordinary editor window:
 Hiding a sidebar that holds focus moves focus to the previously focused editor
 window. [`files.md`](files.md) owns file-tree behavior.
 
+## Chrome
+
+The terminal holds three bands. The window tree receives the body band only.
+
+- The body band holds the window tree and every overlay.
+- The statusline band holds one statusline for the whole terminal. It shows the
+  active mode and the cursor position.
+- The message line is the last row. It shows the last message, and the command
+  line and the search prompt share it.
+
+One winbar row sits above the text of every window. It shows the buffer name
+and a marker for a modified buffer.
+
+A terminal that cannot hold every band drops the bands in a deterministic
+order: the body first, then the statusline. The message line survives longest,
+because it reports why the terminal is too small.
+
+No region carries a divider glyph. The surface color of the winbar band and of
+the statusline band separates the regions, and the title color separates the
+focused window from the others. Kvim keeps the borderless ReviewGraph
+presentation. See [`reviewgraph-integration.md`](reviewgraph-integration.md).
+
+The which-key overlay covers the bottom of the body band. It lists the commands
+that the pending key sequence can still reach, and it shows a bounded number of
+rows. [`input-actions.md`](input-actions.md) owns the rows and the delay.
+
 ## Theme
 
 The theme maps semantic roles to terminal styles. Call sites request a role,
@@ -143,13 +169,55 @@ surface color `#161a20`. Both values belong to `EditorSettings`. See
 [`settings.md`](settings.md). Every other palette value comes from the
 tokyonight night palette. This document does not restate those values.
 
-Window titles use a color that is distinct from every syntax role, so a title
-never reads as code. The focused window title is emphasized. Other window titles
-use the dimmed text color on the same surface band.
+### Interface Roles
+
+The `tui` theme owns this role set. A new call site selects one of these roles.
+A new role belongs here first, and its color stays in code.
+
+| Role | Meaning |
+|---|---|
+| Text | Buffer text on the editor background |
+| NonText | A glyph that stands for absent text |
+| EndOfBuffer | The rows below the last buffer line |
+| Cursor | The cell that holds the cursor |
+| Selection | A cell inside the Visual selection |
+| SearchMatch | A cell inside one search match |
+| CurrentSearchMatch | A cell inside the match that holds the cursor |
+| LineNumber | A line number that is not the cursor line |
+| CursorLineNumber | The absolute number of the cursor line |
+| SignColumn | The sign column beside the line numbers |
+| Surface | The background band of a floating surface or a popup |
+| Statusline | The statusline text |
+| StatuslineMuted | The statusline text of an unfocused region |
+| Winbar | The winbar band above one window |
+| Title | The title of a focused window or of an overlay |
+| TitleMuted | The title of an unfocused window |
+| PopupSelection | The selected row of a popup list |
+| Error, Warning, Info, Hint | One message severity |
+| Syntax(role) | One syntax role of a language adapter |
+
+The cursor and the selection carry no color of their own. They decorate the
+style below them, so a later syntax color survives both.
+
+A window title uses the title color, which the reference palette shares with
+the function syntax role. The surface band and the bold modifier keep a title
+distinct from code, so a title never reads as a function name. The focused
+window title is emphasized. Other window titles use the dimmed text color on
+the same surface band.
+
+### Syntax Roles
 
 Syntax roles are terminal-independent at the language boundary. The interface
 layer maps them to theme roles. See
 [`language-services.md`](language-services.md).
+
+The role set is: Attribute, Boolean, Bracket, Comment, Constant, Constructor,
+Delimiter, Function, Keyword, Macro, Number, Operator, Parameter, Preprocessor,
+Property, Statement, String, Type, and Variable. The comment role and the
+keyword role also carry the italic modifier of the reference configuration.
+
+The `tui` theme defines these roles now. No call site requests one before the
+Rust adapter produces highlight spans.
 
 ## Buffer Presentation
 

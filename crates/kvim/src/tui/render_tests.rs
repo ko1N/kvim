@@ -1,0 +1,438 @@
+//! Tests for the rendered frame: buffer text, line numbers, the cursor, every
+//! selection kind, search matches, chrome, overlays, and narrow terminals.
+
+use std::time::Duration;
+
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer as CellBuffer;
+use ratatui::layout::Rect;
+use ratatui::style::{Color, Modifier, Style};
+
+use crate::settings::EditorSettings;
+use crate::terminal::{Key, KeyCode, TerminalEvent};
+
+use super::session::Session;
+
+const NOW: Duration = Duration::ZERO;
+
+/// The background of a Visual selection in the reference palette.
+const SELECTION: Color = Color::Rgb(0x28, 0x34, 0x57);
+
+/// The background of one search match in the reference palette.
+const SEARCH: Color = Color::Rgb(0x3d, 0x59, 0xa1);
+
+/// The background of the current search match, and the color of the cursor
+/// line number, in the reference palette.
+const ACCENT_WARM: Color = Color::Rgb(0xff, 0x9e, 0x64);
+
+/// The muted text color of the reference palette.
+const MUTED: Color = Color::Rgb(0x3b, 0x42, 0x61);
+
+/// The title color of the reference palette.
+const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
+
+/// Renders one session and returns the terminal cell buffer.
+fn draw(session: &Session) -> CellBuffer {
+    let area = session.area();
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).expect("the test backend never fails");
+    terminal
+        .draw(|frame| session.render(frame))
+        .expect("the test backend never fails");
+    terminal.backend().buffer().clone()
+}
+
+/// Returns one row of a rendered buffer as text, without trailing blanks.
+fn row_of(buffer: &CellBuffer, y: u16) -> String {
+    let area = *buffer.area();
+    let mut text = String::new();
+    for x in area.x..area.right() {
+        if let Some(cell) = buffer.cell((x, y)) {
+            text.push_str(cell.symbol());
+        }
+    }
+    text.trim_end().to_owned()
+}
+
+/// Renders one session and returns one row as text.
+fn row(session: &Session, y: u16) -> String {
+    row_of(&draw(session), y)
+}
+
+/// Renders one session and returns the style of one cell.
+fn style_at(session: &Session, x: u16, y: u16) -> Style {
+    draw(session)
+        .cell((x, y))
+        .expect("the test reads a cell inside the terminal")
+        .style()
+}
+
+/// Reports whether one rendered cell holds the cursor.
+fn has_cursor(session: &Session, x: u16, y: u16) -> bool {
+    style_at(session, x, y)
+        .add_modifier
+        .contains(Modifier::REVERSED)
+}
+
+/// Creates a session over one terminal size.
+fn session(width: u16, height: u16) -> Session {
+    Session::new(Rect::new(0, 0, width, height), EditorSettings::default())
+}
+
+/// Feeds one plain character key.
+fn press(session: &mut Session, value: char) {
+    session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(value))), NOW);
+}
+
+/// Feeds one plain key without a character.
+fn press_code(session: &mut Session, code: KeyCode) {
+    session.handle_event(TerminalEvent::Key(Key::plain(code)), NOW);
+}
+
+/// Feeds a run of plain character keys.
+fn type_keys(session: &mut Session, keys: &str) {
+    for value in keys.chars() {
+        press(session, value);
+    }
+}
+
+/// Creates a session that holds `lines` numbered lines, with the cursor at the
+/// start of the buffer.
+fn with_lines(width: u16, height: u16, lines: usize) -> Session {
+    let mut session = session(width, height);
+    press(&mut session, 'i');
+    for index in 0..lines {
+        if index > 0 {
+            press_code(&mut session, KeyCode::Enter);
+        }
+        type_keys(&mut session, &format!("line{index}"));
+    }
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "gg");
+    session
+}
+
+#[test]
+fn one_window_shows_the_winbar_the_text_and_the_chrome() {
+    let mut session = session(28, 8);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+
+    // Row 0 is the winbar, rows 1 to 5 hold the text, row 6 is the statusline,
+    // and row 7 is the message line.
+    assert_eq!(row(&session, 0), " [Scratch] [+]");
+    assert_eq!(row(&session, 1), " 1   alpha");
+    assert_eq!(
+        row(&session, 2),
+        "~",
+        "the rows below the buffer are marked"
+    );
+    assert_eq!(row(&session, 6), " Insert                 1:6");
+    assert_eq!(row(&session, 7), "");
+}
+
+#[test]
+fn the_winbar_marks_a_modified_buffer_only_after_a_change() {
+    let mut session = session(28, 6);
+    assert_eq!(row(&session, 0), " [Scratch]");
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    assert_eq!(row(&session, 0), " [Scratch] [+]");
+}
+
+#[test]
+fn every_mode_reaches_the_statusline() {
+    for (keys, expected) in [
+        ("", " Normal"),
+        ("i", " Insert"),
+        ("v", " Visual"),
+        ("V", " Visual Line"),
+    ] {
+        let mut session = session(40, 6);
+        type_keys(&mut session, keys);
+        assert!(
+            row(&session, 4).starts_with(expected),
+            "`{keys}` must show `{expected}`"
+        );
+    }
+    // `Ctrl-V` carries a chord, so it needs its own key value.
+    let mut session = session(40, 6);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('v'))), NOW);
+    assert!(row(&session, 4).starts_with(" Visual Block"));
+}
+
+#[test]
+fn the_number_column_shows_absolute_and_relative_numbers() {
+    let mut session = with_lines(30, 10, 6);
+    type_keys(&mut session, "jj");
+
+    // The cursor line shows its absolute number, left-aligned. Every other line
+    // shows its distance from the cursor line, right-aligned.
+    assert_eq!(row(&session, 1), "   2 line0");
+    assert_eq!(row(&session, 2), "   1 line1");
+    assert_eq!(row(&session, 3), " 3   line2");
+    assert_eq!(row(&session, 4), "   1 line3");
+    assert_eq!(row(&session, 5), "   2 line4");
+}
+
+#[test]
+fn the_cursor_line_number_and_the_cursor_carry_their_own_roles() {
+    let session = with_lines(30, 8, 3);
+    // The sign column holds cell zero, so the number column starts at cell one.
+    let number = style_at(&session, 1, 1);
+    assert_eq!(number.fg, Some(ACCENT_WARM));
+    assert!(number.add_modifier.contains(Modifier::BOLD));
+    assert_eq!(
+        style_at(&session, 1, 2).fg,
+        Some(MUTED),
+        "a line that is not the cursor line uses the muted number color"
+    );
+    // The cursor inverts the cell below it instead of naming a color.
+    assert!(has_cursor(&session, 5, 1));
+    assert!(!has_cursor(&session, 6, 1));
+}
+
+#[test]
+fn every_selection_kind_reaches_its_cells() {
+    // Characterwise: `v` then `l` selects two characters of the cursor line.
+    let mut characterwise = with_lines(30, 8, 3);
+    type_keys(&mut characterwise, "vl");
+    assert_eq!(style_at(&characterwise, 5, 1).bg, Some(SELECTION));
+    assert_eq!(style_at(&characterwise, 6, 1).bg, Some(SELECTION));
+    assert_ne!(style_at(&characterwise, 7, 1).bg, Some(SELECTION));
+
+    // Characterwise across a line break: the second line is selected from its
+    // first column.
+    let mut across = with_lines(30, 8, 3);
+    type_keys(&mut across, "vj");
+    assert_eq!(style_at(&across, 9, 1).bg, Some(SELECTION));
+    assert_eq!(style_at(&across, 5, 2).bg, Some(SELECTION));
+    assert_ne!(style_at(&across, 6, 2).bg, Some(SELECTION));
+
+    // Linewise: `V` selects the complete cursor line and its terminator.
+    let mut linewise = with_lines(30, 8, 3);
+    type_keys(&mut linewise, "V");
+    assert_eq!(style_at(&linewise, 5, 1).bg, Some(SELECTION));
+    assert_eq!(style_at(&linewise, 10, 1).bg, Some(SELECTION));
+    assert_ne!(style_at(&linewise, 11, 1).bg, Some(SELECTION));
+    assert_ne!(style_at(&linewise, 5, 2).bg, Some(SELECTION));
+
+    // Block: `Ctrl-V`, one line down, and one column right select a rectangle
+    // of two columns over two lines.
+    let mut block = with_lines(30, 8, 3);
+    block.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('v'))), NOW);
+    type_keys(&mut block, "jl");
+    assert_eq!(style_at(&block, 5, 1).bg, Some(SELECTION));
+    assert_eq!(style_at(&block, 6, 1).bg, Some(SELECTION));
+    assert_ne!(style_at(&block, 7, 1).bg, Some(SELECTION));
+    assert_eq!(style_at(&block, 6, 2).bg, Some(SELECTION));
+    assert_ne!(style_at(&block, 5, 3).bg, Some(SELECTION));
+}
+
+#[test]
+fn a_search_highlights_every_match_and_marks_the_current_one() {
+    let mut session = with_lines(30, 8, 3);
+    type_keys(&mut session, "/line");
+    press_code(&mut session, KeyCode::Enter);
+
+    // The search moved the cursor to the match on the second line, so that
+    // match becomes the current one and the others stay ordinary matches.
+    assert_eq!(row(&session, 2), " 2   line1");
+    assert_eq!(style_at(&session, 5, 2).bg, Some(ACCENT_WARM));
+    assert_eq!(style_at(&session, 8, 2).bg, Some(ACCENT_WARM));
+    assert_ne!(style_at(&session, 9, 2).bg, Some(ACCENT_WARM));
+    assert_eq!(style_at(&session, 5, 1).bg, Some(SEARCH));
+    assert_eq!(style_at(&session, 5, 3).bg, Some(SEARCH));
+    assert_ne!(style_at(&session, 9, 1).bg, Some(SEARCH));
+}
+
+#[test]
+fn an_edit_moves_the_search_matches_with_the_text() {
+    let mut session = with_lines(30, 8, 3);
+    type_keys(&mut session, "/line");
+    press_code(&mut session, KeyCode::Enter);
+    // Deleting the first line moves every remaining match one row up.
+    type_keys(&mut session, "ggdd");
+    assert_eq!(row(&session, 1), " 1   line1");
+    assert_eq!(style_at(&session, 5, 1).bg, Some(ACCENT_WARM));
+    assert_eq!(style_at(&session, 5, 2).bg, Some(SEARCH));
+}
+
+#[test]
+fn a_long_line_scrolls_horizontally_and_clips_at_the_window_edge() {
+    let mut session = session(20, 6);
+    press(&mut session, 'i');
+    type_keys(&mut session, "abcdefghijklmnopqrstuvwxyz");
+    press_code(&mut session, KeyCode::Esc);
+
+    // Wrapping stays disabled. The window holds fifteen text cells, so the view
+    // follows the cursor and clips the rest of the line.
+    assert_eq!(row(&session, 1), " 1   mnopqrstuvwxyz");
+    type_keys(&mut session, "0");
+    assert_eq!(row(&session, 1), " 1   abcdefghijklmno");
+}
+
+#[test]
+fn a_wide_character_occupies_two_cells() {
+    let mut session = session(30, 6);
+    press(&mut session, 'i');
+    type_keys(&mut session, "漢字x");
+
+    let buffer = draw(&session);
+    // The text starts after the five-cell gutter, and each wide character
+    // advances the row by two cells.
+    assert_eq!(buffer.cell((5, 1)).map(|cell| cell.symbol()), Some("漢"));
+    assert_eq!(buffer.cell((7, 1)).map(|cell| cell.symbol()), Some("字"));
+    assert_eq!(buffer.cell((9, 1)).map(|cell| cell.symbol()), Some("x"));
+}
+
+#[test]
+fn a_tab_expands_to_the_configured_tab_stop() {
+    let mut settings = EditorSettings::default();
+    settings.indent.expand_tab = false;
+    let mut session = Session::new(Rect::new(0, 0, 30, 6), settings);
+    press(&mut session, 'i');
+    type_keys(&mut session, "ab");
+    press_code(&mut session, KeyCode::Tab);
+    type_keys(&mut session, "c");
+
+    // One hard tab after two characters reaches the tab stop at cell four, so
+    // it occupies two cells instead of four.
+    assert_eq!(row(&session, 1), " 1   ab  c");
+}
+
+#[test]
+fn several_splits_each_render_their_own_winbar_and_focus_style() {
+    let mut session = session(60, 10);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+    press_code(&mut session, KeyCode::Esc);
+    // `Ctrl-Enter` splits with the adaptive rule, which always selects a
+    // vertical split while the terminal holds one window.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    assert_eq!(session.windows().window_count(), 2);
+
+    let buffer = draw(&session);
+    assert_eq!(
+        row_of(&buffer, 0),
+        " [Scratch] [+]                 [Scratch] [+]"
+    );
+    assert_eq!(
+        row_of(&buffer, 1),
+        " 1   alpha                     1   alpha"
+    );
+
+    // The focused window carries the title color, and the other window carries
+    // the muted color. No divider glyph separates them.
+    let focused = buffer
+        .cell((31, 0))
+        .expect("the right window shows its winbar")
+        .style();
+    let unfocused = buffer
+        .cell((1, 0))
+        .expect("the left window shows its winbar")
+        .style();
+    assert_eq!(focused.fg, Some(TITLE));
+    assert_eq!(unfocused.fg, Some(MUTED));
+
+    // Only the focused window draws the cursor. `Esc` left it on the last
+    // character of the line, which is the fifth text cell of each window.
+    assert!(has_cursor(&session, 39, 1));
+    assert!(!has_cursor(&session, 9, 1));
+}
+
+#[test]
+fn the_command_line_and_the_search_prompt_share_the_message_line() {
+    let mut session = session(40, 6);
+    press(&mut session, ':');
+    assert_eq!(row(&session, 5), ":");
+    type_keys(&mut session, "wq");
+    assert_eq!(row(&session, 5), ":wq");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(row(&session, 5), "", "Esc cancels the command line");
+
+    press(&mut session, '/');
+    type_keys(&mut session, "abc");
+    assert_eq!(row(&session, 5), "/abc");
+}
+
+#[test]
+fn a_deferred_command_reports_its_release_on_the_message_line() {
+    let mut session = session(60, 6);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert_eq!(row(&session, 5), "saving arrives in a later release");
+    assert_eq!(
+        style_at(&session, 0, 5).fg,
+        Some(Color::Rgb(0xe0, 0xaf, 0x68)),
+        "a deferred command is a warning, not an error"
+    );
+}
+
+#[test]
+fn the_which_key_overlay_lists_the_rows_of_the_active_registry() {
+    let delay = EditorSettings::default().input.which_key_delay;
+    let mut session = session(60, 20);
+    press(&mut session, ' ');
+    assert_eq!(row(&session, 5), "~", "the overlay waits for the delay");
+
+    session.tick(delay);
+    let buffer = draw(&session);
+    assert_eq!(row_of(&buffer, 5), " Which Key");
+    assert_eq!(row_of(&buffer, 6), " /      Toggle the comment");
+    assert_eq!(
+        row_of(&buffer, 17),
+        " Enter  Split the window with the adaptive rule"
+    );
+    assert_eq!(
+        buffer
+            .cell((1, 6))
+            .expect("the overlay shows its first key")
+            .style()
+            .fg,
+        Some(TITLE),
+        "the overlay keys carry the title color"
+    );
+}
+
+#[test]
+fn a_narrow_terminal_keeps_the_message_line_and_writes_no_cell_outside() {
+    for height in 0..=3u16 {
+        let mut session = session(6, height);
+        press(&mut session, ':');
+        let buffer = draw(&session);
+        assert_eq!(buffer.area().height, height);
+        if height >= 1 {
+            assert_eq!(
+                row_of(&buffer, height - 1),
+                ":",
+                "a terminal of {height} rows still shows the command line"
+            );
+        }
+    }
+    // A narrow window keeps one text cell beside the gutter.
+    let session = with_lines(6, 6, 3);
+    assert_eq!(row(&session, 1), " 1   l");
+}
+
+#[test]
+fn a_resize_recomputes_the_layout_and_keeps_the_buffer() {
+    let mut session = with_lines(40, 10, 4);
+    session.handle_event(
+        TerminalEvent::Resize {
+            columns: 24,
+            rows: 6,
+        },
+        NOW,
+    );
+    assert_eq!(session.area(), Rect::new(0, 0, 24, 6));
+    assert_eq!(row(&session, 1), " 1   line0");
+    assert_eq!(row(&session, 3), "   2 line2");
+}
+
+#[test]
+fn rendering_the_same_session_twice_produces_the_same_frame() {
+    let mut session = with_lines(40, 10, 4);
+    type_keys(&mut session, "vjl");
+    assert_eq!(draw(&session), draw(&session));
+}

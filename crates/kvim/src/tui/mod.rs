@@ -9,7 +9,11 @@
 //! rectangle of every visible region. No other code computes a rectangle. See
 //! `docs/windows.md`.
 //!
-//! Rendering, the theme, and the event loop arrive in Slice 8.
+//! [`Session`] owns the visible editor state and applies one pure transition
+//! for each normalized terminal event. [`Theme`] maps a semantic role to one
+//! terminal style, so no call site names a color. [`run`] is the imperative
+//! shell: it owns the terminal, reads events, and renders only after a visible
+//! state change. See `docs/responsiveness.md`.
 //!
 //! # Examples
 //!
@@ -39,13 +43,28 @@
 //! assert_eq!(after.width, before.width + 6);
 //! ```
 
+mod app;
+mod buffer_view;
+mod cells;
+mod chrome;
 mod layout;
+mod overlay;
+mod render;
+mod session;
+mod theme;
 mod window;
 
 #[cfg(test)]
+mod render_tests;
+#[cfg(test)]
+mod session_tests;
+#[cfg(test)]
 mod tests;
 
+pub use app::{EVENT_ERRORS_MAX, EditorError, run};
 pub use layout::{Region, RegionKind, WindowLayout};
+pub use session::{MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session};
+pub use theme::{SyntaxRole, Theme, ThemeRole};
 pub use window::{
     AdaptiveSplit, BufferId, CloseOutcome, Direction, LayoutChange, Orientation,
     SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX, SPLIT_WEIGHT_TOTAL, Sidebar,

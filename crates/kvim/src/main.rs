@@ -3,10 +3,12 @@
 //! The file keeps argument parsing pure and testable. It performs input and
 //! output only after the parser returns one action.
 
+use std::error::Error;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use thiserror::Error;
+use kvim::settings::EditorSettings;
+use thiserror::Error as ErrorDerive;
 
 /// The result of parsing command-line arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,7 +22,7 @@ enum CliAction {
 }
 
 /// One invalid command line.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
+#[derive(Clone, Debug, Eq, ErrorDerive, PartialEq)]
 enum CliError {
     #[error("the file path is empty")]
     EmptyPath,
@@ -51,16 +53,43 @@ fn run() -> Result<(), String> {
             println!("kvim {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        // The editor arrives in a later slice. Report the limit instead of
-        // opening a terminal that cannot edit text.
+        // File loading arrives in a later slice. Report the limit instead of
+        // opening a terminal that cannot show the requested file.
         CliAction::Edit { path: Some(path) } => Err(format!(
-            "cannot open {}; interactive editing arrives in a later release",
+            "cannot open {}; file opening arrives in a later release",
             path.display()
         )),
-        CliAction::Edit { path: None } => {
-            Err("interactive editing arrives in a later release".to_owned())
-        }
+        CliAction::Edit { path: None } => start_editor(),
     }
+}
+
+/// Starts the editor over one empty scratch buffer.
+///
+/// The function builds the asynchronous runtime that the bounded background
+/// services need, because the executable is the composition root.
+fn start_editor() -> Result<(), String> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()
+        .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
+    runtime
+        .block_on(kvim::tui::run(EditorSettings::default()))
+        .map_err(|error| describe(&error))
+}
+
+/// Writes one error and every cause below it.
+///
+/// The command line is the last boundary, so it shows the complete chain
+/// instead of the top-level summary alone.
+fn describe(error: &dyn Error) -> String {
+    let mut text = error.to_string();
+    let mut cause = error.source();
+    while let Some(source) = cause {
+        text.push_str(": ");
+        text.push_str(&source.to_string());
+        cause = source.source();
+    }
+    text
 }
 
 /// Parses command-line arguments without performing input or output.
