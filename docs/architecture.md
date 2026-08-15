@@ -27,6 +27,7 @@ executable is not a second consumer.
 | `editor` | Modal editing state: cursors, motions, operators, registers, search, and dot-repeat. | Slices 5–6 |
 | `input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. | Slice 3 |
 | `language` | The language adapter registry, Rust Tree-sitter analysis, and the rust-analyzer session. | Slices 12–13 |
+| `clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
 | `runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
 | `settings` | The `EditorSettings` structure and its defaults. Depends on no other module. | Slice 1 |
 | `terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, and normalized terminal events. | Slice 2 |
@@ -213,6 +214,8 @@ stays outside the first release.
   persistent undo files, workspace mutations, and picker limits.
 - [`language-services.md`](language-services.md) owns the language adapter
   boundary, Tree-sitter analysis, and the rust-analyzer session.
+- [`clipboard.md`](clipboard.md) owns the system clipboard boundary, the
+  register shape rule, and the platform commands.
 - [`settings.md`](settings.md) owns the `EditorSettings` structure and every
   default value.
 - [`reviewgraph-integration.md`](reviewgraph-integration.md) owns the deferred
