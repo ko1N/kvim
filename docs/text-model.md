@@ -108,6 +108,23 @@ indent level and one tab render at equal width.
 The Visual `<` and `>` commands change the selection by one shift width. The
 comment toggle preserves the existing indent of each affected line.
 
+## Automatic Indent
+
+A new line receives an automatic indent. The `Enter` key in Insert mode and the
+`o` and `O` commands all use the same rule.
+
+The language adapter owns the rule. The Rust adapter derives the indent from the
+syntax tree: a new line inside a block gains one level, and a closing delimiter
+loses one level. See [`language-services.md`](language-services.md).
+
+Kvim uses a fallback rule when no adapter serves the buffer, or when the syntax
+tree for the current buffer version is not yet available. The fallback copies the
+indent of the previous non-empty line. The fallback never blocks the terminal
+event loop while it waits for a parse result.
+
+The automatic indent is part of the same edit transaction as the new line. One
+undo reverses both.
+
 All indent values belong to `EditorSettings`. See [`settings.md`](settings.md).
 No other module holds an indent constant.
 
