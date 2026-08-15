@@ -1,0 +1,96 @@
+# Clipboard
+
+## Ownership
+
+The `clipboard` module owns the system clipboard boundary. It runs the platform
+clipboard command through the bounded process service. It holds no register
+value.
+
+The `editor` module owns the registers. A register value stays inside the editor
+even when the clipboard command fails. See [`responsiveness.md`](responsiveness.md)
+for the process bounds and the deadline rule.
+
+## The Provider Boundary
+
+The clipboard is an input and output boundary. One trait declares the two
+operations, read and write. Each platform supplies its own implementation behind
+that trait.
+
+The editor depends on the trait only. It never names a platform, a command, or a
+selection. This keeps one rule: a new clipboard implementation needs no editor
+change.
+
+Kvim supplies these implementations:
+
+- one macOS implementation,
+- one Linux implementation, which selects the Wayland or X11 commands,
+- one implementation that performs no operation, for a system with no clipboard
+  command,
+- one memory implementation, for tests.
+
+The composition root selects the implementation once, at startup, and injects
+it. The platform branch stays inside the `clipboard` module. The editor and the
+register logic contain no platform condition.
+
+A later implementation, for example an OSC 52 clipboard for a remote terminal,
+joins the same trait and needs no change outside this module.
+
+## The Unnamed Register
+
+The unnamed register mirrors the system clipboard. The reference Neovim
+configuration sets `clipboard=unnamedplus`, so a yank reaches other applications
+and an external copy reaches the editor.
+
+A yank, a delete, and a change write the unnamed register and then write the
+system clipboard. A paste reads the system clipboard.
+
+## Linewise Values Across The Boundary
+
+A register value is characterwise, linewise, or blockwise. A system clipboard
+carries text only. It carries no shape.
+
+Kvim keeps the shape with its own register value. On a paste, Kvim compares the
+clipboard text with the text it wrote last. Equal text means the clipboard still
+holds the Kvim value, so the paste uses the recorded shape. Different text means
+another application wrote the clipboard, so the paste treats the text as
+characterwise, unless the text ends with a line ending, which makes it linewise.
+
+This rule keeps `yy` followed by `p` linewise, and it keeps an external copy
+usable.
+
+## Platform Commands
+
+Kvim selects the command at startup and records the selection. It never guesses
+per operation.
+
+| Platform | Write | Read |
+|---|---|---|
+| macOS | `pbcopy` | `pbpaste` |
+| Linux, Wayland | `wl-copy` | `wl-paste --no-newline` |
+| Linux, X11 | `xclip -selection clipboard` | `xclip -selection clipboard -o` |
+| Linux, X11 fallback | `xsel --clipboard --input` | `xsel --clipboard --output` |
+
+On Linux, Kvim prefers the Wayland commands when the session is a Wayland
+session. It falls back through the X11 commands in the order above. It selects
+the first command that exists on `PATH`.
+
+## Failure Behavior
+
+A missing command, a failed command, a timeout, and a cancelled command are all
+expected runtime states. None of them may lose editor data.
+
+- A failed clipboard write keeps the internal register value. The yank succeeded.
+  Kvim reports the clipboard failure once and continues.
+- A failed clipboard read falls back to the internal register value.
+- Kvim reports a missing clipboard command once for each session, not once for
+  each operation.
+
+The editor stays fully usable without any clipboard command. A remote terminal
+without a clipboard tool is a supported environment.
+
+## Bounds
+
+The clipboard command runs through the bounded process service with the process
+deadline from [`responsiveness.md`](responsiveness.md). Kvim bounds the transfer
+at 1 MiB. A larger register value stays internal, and Kvim reports that the
+value was too large for the system clipboard.
