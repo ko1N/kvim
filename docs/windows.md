@@ -69,19 +69,22 @@ requested direction. The move uses the layout rectangles, not the tree order. If
 no window exists in that direction, focus stays unchanged.
 
 Directional resize moves one shared edge by six cells. The resize step belongs to
-`EditorSettings`. The command names a direction, not a size change, so the same
-key grows or shrinks the focused window according to which side holds a neighbor:
+`EditorSettings`. The command names the direction that the edge moves, not a size
+change. The focused window therefore grows or shrinks according to which side
+holds a neighbor:
 
-- A neighbor on the side that the command names: move that shared edge, which
-  changes the focused window size in the named direction.
-- No neighbor on that side, but a neighbor on the opposite side: move the
-  opposite shared edge instead, so the command still moves the layout in the
-  named direction.
+- A neighbor on the right, for a horizontal command, or below, for a vertical
+  command: move that shared edge in the named direction. `Ctrl-Alt-H` moves the
+  right edge left, so the focused window shrinks. `Ctrl-Alt-L` moves the right
+  edge right, so the focused window grows.
+- No neighbor there, but a neighbor on the left or above: move that shared edge
+  in the named direction instead. `Ctrl-Alt-H` then moves the left edge left, so
+  the focused window grows.
 - No neighbor on either side: leave the layout unchanged.
 
-The reference configuration uses this same rule. It keeps `Ctrl-Alt-H` and
-`Ctrl-Alt-L` predictable for the user, whichever side of a split the focused
-window is on.
+The far edge always wins when both edges exist. The reference configuration uses
+this same rule. One key then always moves the layout in one direction, whichever
+side of a split the focused window is on.
 
 Neighbor detection compares layout rectangles, not tree order. Two windows are
 neighbors when one edge meets the other edge and the perpendicular ranges
@@ -108,8 +111,12 @@ deterministic order and keeps the focused window visible.
 The default minimum window width is 20 cells. It keeps a line number column, a
 sign column, and readable text visible. The default minimum window height is 3
 rows. It keeps a winbar row, one text row, and a statusline row visible. Both
-values belong to `EditorSettings`. See [`settings.md`](settings.md). Slice 7 must
-confirm both values against the implemented layout.
+values belong to `EditorSettings`. See [`settings.md`](settings.md).
+
+The implemented layout confirms both values. A split node divides its rectangle
+only while that rectangle holds two children at the minimum, so the layout
+publishes 20 cells and 3 rows as the smallest window. A rectangle that is too
+small keeps the subtree that holds the focused window instead.
 
 ## Sidebars
 

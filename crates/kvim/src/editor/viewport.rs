@@ -124,6 +124,55 @@ impl Viewport {
         }
     }
 
+    /// Returns the viewport at a new window size and keeps both offsets.
+    ///
+    /// A layout change moves the window edges. It does not move the reader, so
+    /// a split, a close, and a terminal resize keep the same first visible line
+    /// and the same first visible column.
+    ///
+    /// A viewport offset has no upper limit of its own, because the buffer owns
+    /// the last line and the last column. The caller therefore calls
+    /// [`Viewport::reconciled`] after the resize. That call pulls both offsets
+    /// back to the buffer and the cursor.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::num::NonZeroU16;
+    ///
+    /// use kvim::core::TextBuffer;
+    /// use kvim::editor::{ColumnLimit, Cursor, Viewport};
+    /// use kvim::settings::{DisplaySettings, FileSettings};
+    ///
+    /// let text = "line\n".repeat(100);
+    /// let buffer = TextBuffer::from_text(&text, &FileSettings::default())
+    ///     .expect("the text is small");
+    /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
+    /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
+    ///
+    /// let cursor = Cursor::clamped(&buffer, 40, 0, ColumnLimit::LastCharacter);
+    /// let viewport = Viewport::new(rows, cells)
+    ///     .reconciled(&buffer, cursor, &DisplaySettings::default());
+    /// assert_eq!(viewport.first_line(), 33);
+    ///
+    /// // A narrower and shorter window keeps the reader on the same line.
+    /// let rows = NonZeroU16::new(6).expect("the literal 6 is not zero");
+    /// let cells = NonZeroU16::new(40).expect("the literal 40 is not zero");
+    /// let viewport = viewport.resized(rows, cells);
+    /// assert_eq!(viewport.first_line(), 33);
+    /// assert_eq!(viewport.height_rows(), rows);
+    /// assert_eq!(viewport.width_cells(), cells);
+    /// ```
+    #[must_use]
+    pub const fn resized(self, height_rows: NonZeroU16, width_cells: NonZeroU16) -> Self {
+        Self {
+            first_line: self.first_line,
+            left_column: self.left_column,
+            height_rows,
+            width_cells,
+        }
+    }
+
     /// Moves the viewport until the cursor keeps the configured scroll margins.
     ///
     /// The viewport moves as little as possible, so a cursor that already keeps

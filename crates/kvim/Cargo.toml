@@ -22,6 +22,8 @@ ropey.workspace = true
 # Terminal
 crossterm.workspace = true
 futures-util.workspace = true
+ratatui.workspace = true
+unicode-width.workspace = true
 
 # Runtime
 tokio.workspace = true
