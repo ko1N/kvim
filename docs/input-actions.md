@@ -12,16 +12,41 @@ State and view code must never compare raw keys. A raw key exists only inside
 
 ## Editor Modes
 
-Kvim has four modes:
+Kvim has five modes:
 
 - Normal: motions, operators, and commands act on the buffer.
 - Insert: printable keys insert text through edit transactions.
 - Visual: a characterwise selection follows the cursor.
 - Visual Line: a linewise selection follows the cursor.
+- Visual Block: a rectangular selection follows the cursor.
 
-The mode is one typed value. A mode change resets pending input. Visual and
-Visual Line keep their own selection anchor. `Esc` returns to Normal mode from
-every other mode.
+The mode is one typed value. A mode change resets pending input. Each Visual
+mode keeps its own selection anchor. `Esc` returns to Normal mode from every
+other mode.
+
+The command line is an input context, not a mode. See the section below.
+
+## Command Line
+
+`:` opens the command line from Normal mode. The command line reads one line of
+text and runs one command. Kvim does not implement the Ex grammar. It accepts
+this fixed set only:
+
+| Command | Effect |
+|---|---|
+| `:w` | Save the active buffer |
+| `:q` | Close the focused window |
+| `:q!` | Close the focused window and discard unsaved changes |
+| `:wq` | Save the active buffer, then close the focused window |
+| `:e <path>` | Open one file in the focused window |
+| `:<number>` | Move the cursor to that line |
+
+The command line rejects every other input with a concise message. It does not
+guess a command from a prefix.
+
+`Esc` cancels the command line and restores the previous mode. The command line
+holds a bounded query length. `:w` and `:e` use the same save and open path as
+their bound keys. See [`files.md`](files.md).
 
 ## Semantic Commands
 
@@ -119,7 +144,12 @@ it builds the registry.
 | `O` | Open a line above and insert | Normal |
 | `v` | Enter Visual mode | Normal |
 | `V` | Enter Visual Line mode | Normal |
-| `Esc` | Return to Normal mode | Insert, Visual, Visual Line |
+| `Ctrl-V` | Enter Visual Block mode | Normal |
+| `:` | Open the command line | Normal |
+| `Esc` | Return to Normal mode | Insert, Visual, Visual Line, Visual Block |
+
+Every motion row below also applies in Visual Block mode. The tables name the
+three Visual modes separately only where their behavior differs.
 
 ### Motions
 
@@ -154,9 +184,11 @@ A decimal count before a motion repeats it.
 | `d` | Delete over a motion | Normal |
 | `c` | Change over a motion | Normal |
 | `y` | Yank over a motion | Normal |
-| `d` | Delete the selection | Visual, Visual Line |
-| `c` | Change the selection | Visual, Visual Line |
-| `y` | Yank the selection | Visual, Visual Line |
+| `d` | Delete the selection | Visual, Visual Line, Visual Block |
+| `c` | Change the selection | Visual, Visual Line, Visual Block |
+| `y` | Yank the selection | Visual, Visual Line, Visual Block |
+| `I` | Insert before every selected line, at the block left edge | Visual Block |
+| `A` | Insert after every selected line, at the block right edge | Visual Block |
 | `dd` | Delete the current line | Normal |
 | `cc` | Change the current line | Normal |
 | `yy` | Yank the current line | Normal |
@@ -185,10 +217,14 @@ Search uses smart-case matching. See [`settings.md`](settings.md).
 
 | Keys | Command | Modes |
 |---|---|---|
-| `J` | Move the selection down one line and keep it | Visual, Visual Line |
-| `K` | Move the selection up one line and keep it | Visual, Visual Line |
-| `<` | Shift the selection left one shift width and keep it | Visual, Visual Line |
-| `>` | Shift the selection right one shift width and keep it | Visual, Visual Line |
+| `J` | Move the selection down one line and keep it | Visual, Visual Line, Visual Block |
+| `K` | Move the selection up one line and keep it | Visual, Visual Line, Visual Block |
+| `<` | Shift the selection left one shift width and keep it | Visual, Visual Line, Visual Block |
+| `>` | Shift the selection right one shift width and keep it | Visual, Visual Line, Visual Block |
+
+A block operator applies to each selected line inside the block columns. A line
+that is shorter than the block left edge receives no change. Block insert applies
+one edit transaction, so one undo reverses the whole block.
 
 ### Files And Buffers
 

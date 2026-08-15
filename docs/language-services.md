@@ -37,8 +37,9 @@ result never changes visible state and never enters a cache. See
 
 The adapter returns:
 
-- bounded highlight spans, and
-- comment metadata for the comment-toggle command.
+- bounded highlight spans,
+- comment metadata for the comment-toggle command, and
+- the indent level for one line.
 
 A highlight span identifies a line, a byte range inside that line, and a
 terminal-independent highlight role. The adapter never returns a terminal color.
@@ -47,6 +48,17 @@ Comment metadata describes the line comment token and its placement rules for
 Rust. The comment toggle uses that metadata and applies its change as one edit
 transaction, so one undo reverses a complete toggle. The toggle preserves the
 existing indent of each affected line.
+
+The indent level answers one question: how many indent levels does a new line at
+this position take? The Rust adapter reads the syntax tree. A position inside a
+block gains one level over its enclosing node. A closing delimiter loses one
+level. The adapter returns a level count, not a column count, so
+[`settings.md`](settings.md) keeps the tab width and the shift width.
+
+The indent query must answer from the current buffer version without blocking the
+terminal event loop. When the parse result for that version is not yet available,
+the editor uses the fallback rule in [`text-model.md`](text-model.md) instead of
+waiting. A late result never rewrites a line that the user already typed.
 
 Analysis enforces explicit limits on buffer bytes, buffer lines, visited syntax
 nodes, traversal depth, and highlight spans. Kvim rejects a complete result that
