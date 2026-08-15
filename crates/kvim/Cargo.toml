@@ -16,6 +16,9 @@ path = "src/main.rs"
 # Basics
 thiserror.workspace = true
 
+# Text storage
+ropey.workspace = true
+
 # Terminal
 crossterm.workspace = true
 futures-util.workspace = true

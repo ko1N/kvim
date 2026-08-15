@@ -118,6 +118,28 @@ boundary.
   - Cost: platform-specific transitive code and one callback thread. Watch
     roots and callback delivery stay bounded.
 
+### Slice 4
+
+This dependency runs inside `core`, because the text storage is the text model.
+`core` runs no other dependency except `thiserror`.
+
+- `ropey` 1.6
+  - Replaces: a local rope or piece table, a local line index, and local
+    conversions between byte offsets, character positions, and line indexes.
+  - May run: in `core` only. `core` keeps the rope private and exposes validated
+    coordinates, edit transactions, and owned line text. No other module sees a
+    rope type.
+  - Cost: compile time and one chunked tree over the buffer text. Memory stays
+    bounded by the maximum file size and by the undo history bound in
+    [`text-model.md`](text-model.md).
+  - Version reason: the 1.6 line is the stable line, and the Helix editor ships
+    on it. It converts between bytes, characters, and lines natively, which the
+    five coordinate types need. The 2.0 line is still a beta, so it is not a safe
+    base for undo and incremental parsing. The `crop` crate is newer and
+    maintained, but it drops character indexing on purpose.
+  - Future consideration: move to `ropey` 2.0 after that line reaches a stable
+    release. Confirm the character-index API before the move.
+
 ### Slice 12
 
 These dependencies run only on the bounded worker service.
@@ -147,12 +169,6 @@ These dependencies run only in the bounded language-server task.
   - Replaces: a local JSON parser and serializer.
   - May run: in the bounded language-server task, inside the `language` module.
   - Cost: compile time. Allocation stays inside the bounded task.
-
-### Undecided
-
-The text-storage dependency is not yet chosen. Slice 4 evaluates a maintained
-rope or piece-table crate for correctness and resource cost. Slice 4 must record
-the choice in [`text-model.md`](text-model.md) before implementation uses it.
 
 ## Release Profile
 

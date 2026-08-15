@@ -147,8 +147,5 @@ value outside `EditorSettings`.
 
 ## Deferred Decisions
 
-- The undo history bound is not yet decided. Slice 4 must record it here. See
-  [`text-model.md`](text-model.md).
-- Slice 4 must confirm the maximum file size against the selected text storage.
 - Slice 7 must confirm the minimum window dimensions against the implemented
   layout.
