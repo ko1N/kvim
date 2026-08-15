@@ -360,8 +360,8 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
 #[test]
 fn a_deferred_command_reports_its_release_on_the_message_line() {
     let mut session = session(60, 6);
-    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
-    assert_eq!(row(&session, 5), "saving arrives in a later release");
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
+    assert_eq!(row(&session, 5), "the file tree arrives in a later release");
     assert_eq!(
         style_at(&session, 0, 5).fg,
         Some(Color::Rgb(0xe0, 0xaf, 0x68)),

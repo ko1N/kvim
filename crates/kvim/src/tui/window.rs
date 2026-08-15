@@ -16,6 +16,7 @@ use thiserror::Error;
 use crate::editor::Viewport;
 use crate::input::Command;
 use crate::settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSettings};
+use crate::workspace::BufferId;
 
 use super::layout::{RegionKind, WindowLayout, compute_layout};
 
@@ -50,27 +51,6 @@ pub const SIDEBAR_WIDTH_MAX_CELLS: u16 = 200;
 pub struct WindowId(u32);
 
 impl WindowId {
-    /// Returns the identity value.
-    #[must_use]
-    pub const fn get(self) -> u32 {
-        self.0
-    }
-}
-
-/// The reference from one leaf window to the buffer that it shows.
-///
-/// The window tree only stores and compares the value. Slice 9 owns buffer
-/// loading and buffer identity.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct BufferId(u32);
-
-impl BufferId {
-    /// Creates a buffer reference from its identity value.
-    #[must_use]
-    pub const fn new(value: u32) -> Self {
-        Self(value)
-    }
-
     /// Returns the identity value.
     #[must_use]
     pub const fn get(self) -> u32 {
@@ -296,7 +276,7 @@ impl Leaf {
     /// identity value zero is never issued.
     const VOID: Self = Self {
         id: WindowId(0),
-        buffer: BufferId(0),
+        buffer: BufferId::new(0),
         viewport: Viewport::new(NonZeroU16::MIN, NonZeroU16::MIN),
     };
 }
@@ -513,7 +493,8 @@ enum Focus {
 /// use ratatui::layout::Rect;
 ///
 /// use kvim::settings::WindowSettings;
-/// use kvim::tui::{BufferId, Direction, LayoutChange, Orientation, Windows};
+/// use kvim::tui::{Direction, LayoutChange, Orientation, Windows};
+/// use kvim::workspace::BufferId;
 ///
 /// let terminal = Rect::new(0, 0, 120, 40);
 /// let mut windows = Windows::new(BufferId::new(1), terminal, WindowSettings::default());

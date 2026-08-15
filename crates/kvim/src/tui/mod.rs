@@ -21,7 +21,8 @@
 //! use ratatui::layout::Rect;
 //!
 //! use kvim::settings::WindowSettings;
-//! use kvim::tui::{AdaptiveSplit, BufferId, Direction, LayoutChange, Orientation, Windows};
+//! use kvim::tui::{AdaptiveSplit, Direction, LayoutChange, Orientation, Windows};
+//! use kvim::workspace::BufferId;
 //!
 //! let mut windows = Windows::new(
 //!     BufferId::new(1),
@@ -63,10 +64,12 @@ mod tests;
 
 pub use app::{EVENT_ERRORS_MAX, EditorError, run};
 pub use layout::{Region, RegionKind, WindowLayout};
-pub use session::{MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session};
+pub use session::{
+    FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
+};
 pub use theme::{SyntaxRole, Theme, ThemeRole};
 pub use window::{
-    AdaptiveSplit, BufferId, CloseOutcome, Direction, LayoutChange, Orientation,
-    SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX, SPLIT_WEIGHT_TOTAL, Sidebar,
-    SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowOutcome, Windows,
+    AdaptiveSplit, CloseOutcome, Direction, LayoutChange, Orientation, SIDEBAR_WIDTH_MAX_CELLS,
+    SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX, SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitError,
+    WINDOWS_MAX, WindowId, WindowOutcome, Windows,
 };

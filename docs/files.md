@@ -10,6 +10,20 @@ All filesystem work and all external processes run off the terminal event loop
 through bounded runtime services. See
 [`responsiveness.md`](responsiveness.md).
 
+## File Operations
+
+One file operation is one request and one result. The event loop builds the
+complete request, which holds the path, the settings, and the buffer content
+that the operation needs. The bounded worker service runs the blocking steps.
+The event loop then applies the typed result as one state transition.
+
+The editor runs one file operation at a time. A second command reports that one
+operation is already running. This rule keeps a result from reaching a buffer
+state that a newer operation already replaced.
+
+A cancelled, timed out, or refused operation changes no buffer. The editor
+reports the typed failure and keeps every unsaved change.
+
 ## Buffer Identity
 
 A buffer has a stable identity that does not change while the buffer is loaded.
@@ -21,13 +35,24 @@ path of every affected loaded buffer as part of the same transition. The
 identity stays unchanged.
 
 Opening a path that a loaded buffer already owns reuses that buffer. It does not
-create a second buffer for the same file.
+create a second buffer for the same file. A buffer records the absolute path
+with every symlink resolved, so two spellings of one file reach one buffer. A
+path that matches no loaded buffer needs one file read, and the completed load
+compares the resolved path again before it publishes a new buffer.
+
+Opening a path that holds no file starts an empty buffer. The first save writes
+a new file at that path.
 
 A buffer records its dirty state, its loaded line ending, and the file metadata
 that Kvim observed at load time or at the last successful save.
 
 Unloading a buffer removes it from the buffer list. Every window that shows the
-buffer must first move to another buffer.
+buffer must first move to another buffer. Kvim stages that replacement buffer
+before the removal, and it creates one empty buffer when the list holds no other
+buffer. Kvim refuses to unload a buffer that holds unsaved changes.
+
+The buffer list holds at most 128 buffers. The editor always keeps one loaded
+buffer, so a window always shows text.
 
 ## Saving
 
@@ -50,30 +75,113 @@ A save failure at any step leaves the buffer dirty and usable. The user keeps
 every unsaved change and can retry the save. A failed save never discards buffer
 content and never leaves the temporary file in place.
 
+The temporary file stays in the directory of the target, so the rename never
+crosses a filesystem boundary. Its name holds the target name, the process
+identifier, and a counter, so two saves never use one temporary file.
+
+The `atomic save` setting selects this procedure. A disabled setting writes the
+target file directly. See [`settings.md`](settings.md).
+
+`:q` refuses to close the last window while the buffer holds unsaved changes.
+`:q!` discards them. `:wq` saves first and closes the window after the save
+succeeds. A failed save keeps the window open.
+
 ## External Change Detection
 
-Kvim records file metadata when it loads a file and after every successful save.
-Before it overwrites a file, Kvim compares the current metadata with the
-recorded metadata.
+Kvim records the file identity when it loads a file and after every successful
+save. The file identity holds two values:
 
-A difference is a typed conflict, not an error message string. Kvim reports the
+- the file size, in bytes,
+- the modification time that the platform reports.
+
+Kvim compares the recorded identity with the current identity before it
+overwrites a file. Kvim reads no file content for this comparison, so the check
+stays cheap for a large file.
+
+These cases are conflicts:
+
+- the current identity differs from the recorded identity,
+- the path held no file at load time, and a file exists now.
+
+A missing file is not a conflict. The file holds no content to lose, so the save
+writes it again.
+
+A conflict is a typed result, not an error message string. Kvim reports the
 conflict and does not overwrite the file. The buffer stays dirty and usable. The
-user then chooses to reload the file or to force the save.
+user then reloads the file with `:e` and applies the change again.
 
 ## Persistent Undo Files
 
 Kvim writes a persistent undo file for each saved buffer, so undo history
-survives a restart. The persistent undo file format is not yet decided.
+survives a restart.
 
-Slice 9 must define and record here:
+### Location
 
-- the location of the undo files,
-- the version field in the file header,
-- the invalidation rule that rejects an undo file whose buffer content no longer
-  matches.
+Undo files live in one directory of the user state:
+
+```
+${XDG_STATE_HOME:-$HOME/.local/state}/kvim/undo/
+```
+
+The name of one undo file is the 64-bit FNV-1a hash of the absolute target
+path, in lowercase hexadecimal digits, with the `.kvu` extension. A hash keeps
+every name inside the name limit of the filesystem, which a long encoded path
+would pass. A hash collision cannot corrupt a buffer, because the invalidation
+rule below rejects a record of another content.
+
+Kvim writes no undo file when the platform reports neither `XDG_STATE_HOME` nor
+`HOME`.
+
+### Format
+
+The undo file is a binary file with a fixed header:
+
+| Bytes | Field |
+|---|---|
+| 0-7 | the magic value `KVIMUNDO` |
+| 8-11 | the format version, an unsigned 32-bit value |
+| 12-19 | the length of the saved content, in bytes |
+| 20-27 | the FNV-1a 64-bit hash of the saved content |
+
+The body holds one base text and a chain of changes above it. The base text is
+the oldest state that the record keeps. Each change replaces one character
+range with one text and records the cursor position before the change. Loading
+replays the chain, so the restored history uses the same transactions as a live
+editing session.
+
+The current format version is 1. Every value is little-endian.
+
+The record holds no redo history above the saved state. Kvim writes the file at
+save time, and the saved state is then the newest state.
+
+### Invalidation
+
+Kvim ignores an undo file when any of these is true:
+
+- the magic value is not `KVIMUNDO`,
+- the format version is not the current version,
+- the recorded content length differs from the loaded file,
+- the recorded content hash differs from the loaded file,
+- the body is truncated, malformed, or above the bounds below,
+- the replay of the chain does not reproduce the loaded file content exactly.
+
+The last rule is the final check. It protects the buffer against a damaged
+record that passed the header check.
+
+### Bounds
+
+| Bound | Value | Rationale |
+|---|---|---|
+| Steps in one undo file | 64 | Each step costs one text comparison at save time, so the bound also bounds the save cost. |
+| Replacement text in one undo file | 1 MiB | One undo file keeps the recent changes, not a complete edit history. |
+| Undo file size | 8 MiB | The value holds one base text of the maximum file size and the bounded chain above it. |
+
+The remaining undo steps stay in memory for the running session. See
+[`text-model.md`](text-model.md) for the memory bounds of the history.
 
 An unreadable, unsupported, or invalidated undo file is not an error. Kvim
-starts the buffer with empty undo history and continues.
+starts the buffer with empty undo history and continues. A failed undo file
+write is not an error either, because the saved file is already correct.
 
 The `undo file` setting enables this behavior. See
 [`settings.md`](settings.md).
