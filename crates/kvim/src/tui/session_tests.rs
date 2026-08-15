@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use crate::input::Mode;
 use crate::settings::EditorSettings;
 use crate::terminal::{FocusChange, Key, KeyCode, TerminalEvent};
+use crate::workspace::temp::TempDir;
 
 use super::session::{MessageLevel, Redraw, RunState, Session};
 
@@ -224,15 +225,28 @@ fn the_command_line_runs_the_fixed_command_set_and_rejects_the_rest() {
         Some(MessageLevel::Error)
     );
 
-    // Saving and opening arrive in a later release.
+    // A scratch buffer holds no file name, so `:w` needs one first.
     press(&mut session, ':');
     type_keys(&mut session, "w");
     press_code(&mut session, KeyCode::Enter);
-    assert_eq!(message(&session), "saving arrives in a later release");
+    assert_eq!(
+        message(&session),
+        "the buffer holds no file name; use :e <path> to name one"
+    );
 
-    // `:q` closes the last window and ends the editor.
+    // `:q` refuses to discard the unsaved changes.
     press(&mut session, ':');
     type_keys(&mut session, "q");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(session.run_state(), RunState::Running);
+    assert_eq!(
+        message(&session),
+        "the buffer holds unsaved changes; use :q! to discard them"
+    );
+
+    // `:q!` discards them and ends the editor.
+    press(&mut session, ':');
+    type_keys(&mut session, "q!");
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(session.run_state(), RunState::Finished);
 }
@@ -288,8 +302,11 @@ fn a_search_without_a_match_reports_it_and_keeps_the_cursor() {
 #[test]
 fn a_new_command_clears_the_previous_message() {
     let mut session = session(60, 10);
-    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
-    assert_eq!(message(&session), "saving arrives in a later release");
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
+    assert_eq!(
+        message(&session),
+        "the file tree arrives in a later release"
+    );
     press(&mut session, 'j');
     assert_eq!(message(&session), "");
 }
@@ -347,4 +364,231 @@ fn the_viewport_follows_the_text_area_instead_of_the_window_rectangle() {
     );
     // The cursor sits on the last line, so the view keeps it visible.
     assert!(viewport.first_line() + 9 > 39);
+}
+
+/// Creates a session that keeps no persistent undo file.
+///
+/// The tests below save real files. The undo file would reach the editor state
+/// directory of the user, so these sessions keep it off.
+fn file_session() -> Session {
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    Session::new(Rect::new(0, 0, 80, 24), settings)
+}
+
+/// Runs the queued file request, like the event loop and the worker service.
+fn run_file_request(session: &mut Session) {
+    let request = session
+        .take_file_request()
+        .expect("the transition queued one file request");
+    session.apply_file_result(request.run());
+}
+
+#[test]
+fn a_path_opens_one_buffer_and_ctrl_s_writes_it() {
+    let directory = TempDir::new("session-save");
+    let path = directory.write("main.rs", "fn main() {}\n");
+    let mut session = file_session();
+
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    assert_eq!(
+        session.buffers().len(),
+        2,
+        "the file joins the scratch buffer"
+    );
+    assert_eq!(session.buffer().to_string(), "fn main() {}\n");
+    assert_eq!(session.active_buffer().name(), "main.rs");
+    assert!(!session.buffer().is_modified());
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "// note");
+    press_code(&mut session, KeyCode::Enter);
+    assert!(session.buffer().is_modified());
+
+    // `Ctrl-S` saves from every mode and forces no mode transition.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert_eq!(session.mode(), Mode::Insert);
+    run_file_request(&mut session);
+    assert_eq!(session.mode(), Mode::Insert);
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "// note\nfn main() {}\n"
+    );
+    assert!(
+        !session.buffer().is_modified(),
+        "a successful save clears the dirty state"
+    );
+
+    // The saved buffer leaves the editor without a refusal.
+    press(&mut session, ':');
+    type_keys(&mut session, "q");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+#[test]
+fn one_file_reaches_one_buffer_however_the_user_spells_its_path() {
+    let directory = TempDir::new("session-duplicate");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session();
+
+    session.open_path(path);
+    run_file_request(&mut session);
+    let first = session.active();
+    let loaded_path = session
+        .active_buffer()
+        .path()
+        .expect("the buffer holds the file")
+        .to_path_buf();
+
+    // The recorded path needs no file read at all.
+    session.open_path(loaded_path);
+    assert!(session.take_file_request().is_none());
+    assert_eq!(session.active(), first);
+
+    // Another spelling of the same file reaches the same buffer after the load.
+    session.open_path(directory.join(".").join("main.rs"));
+    run_file_request(&mut session);
+    assert_eq!(session.active(), first);
+    assert_eq!(session.buffers().len(), 2);
+}
+
+#[test]
+fn a_conflict_keeps_the_buffer_dirty_and_usable() {
+    let directory = TempDir::new("session-conflict");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session();
+
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "two");
+    press_code(&mut session, KeyCode::Esc);
+
+    std::fs::write(&path, "another program wrote this\n").expect("the file is writable");
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "another program wrote this\n",
+        "a conflict never overwrites the file"
+    );
+    assert!(session.buffer().is_modified());
+
+    // The buffer stays usable after the refused save.
+    press(&mut session, 'o');
+    type_keys(&mut session, "three");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "twoone\nthree\n");
+}
+
+#[test]
+fn a_failed_save_keeps_the_buffer_usable() {
+    let directory = TempDir::new("session-failure");
+    let mut session = file_session();
+
+    // The path holds no file yet, so the open starts a new empty buffer. Its
+    // directory is missing, so no write can succeed.
+    session.open_path(directory.join("missing").join("main.rs"));
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "text");
+    press_code(&mut session, KeyCode::Esc);
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+    assert!(session.buffer().is_modified());
+    assert_eq!(session.buffer().to_string(), "text");
+}
+
+#[test]
+fn write_quit_saves_the_buffer_and_then_ends_the_editor() {
+    let directory = TempDir::new("session-write-quit");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session();
+
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "two ");
+    press_code(&mut session, KeyCode::Esc);
+
+    press(&mut session, ':');
+    type_keys(&mut session, "wq");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(
+        session.run_state(),
+        RunState::Running,
+        "the editor waits for the save result"
+    );
+    run_file_request(&mut session);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "two one\n"
+    );
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+#[test]
+fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
+    let directory = TempDir::new("session-unload");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session();
+
+    session.open_path(path);
+    run_file_request(&mut session);
+    let loaded = session.active();
+
+    // Insert mode records one transaction for each key, so one undo reverses
+    // one character.
+    press(&mut session, 'i');
+    type_keys(&mut session, "z");
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, " x");
+    assert_eq!(session.active(), loaded, "a dirty buffer stays loaded");
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+
+    press(&mut session, 'u');
+    assert!(!session.buffer().is_modified());
+    type_keys(&mut session, " x");
+    assert_ne!(session.active(), loaded);
+    assert_eq!(session.buffers().len(), 1);
+    assert_eq!(
+        session.windows().buffer(session.windows().focused_window()),
+        Some(session.active()),
+        "every window follows the unload"
+    );
+}
+
+#[test]
+fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
+    let directory = TempDir::new("session-reject");
+    let mut session = file_session();
+
+    session.open_path(directory.path.clone());
+    run_file_request(&mut session);
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+    assert_eq!(session.buffers().len(), 1, "no buffer holds a directory");
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "text");
+    assert_eq!(session.buffer().to_string(), "text");
 }

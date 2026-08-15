@@ -7,9 +7,11 @@ use crate::editor::{ColumnLimit, Cursor};
 use crate::input::Command;
 use crate::settings::{DisplaySettings, FileSettings, HorizontalSplitPlacement, WindowSettings};
 
+use crate::workspace::BufferId;
+
 use super::{
-    AdaptiveSplit, BufferId, CloseOutcome, Direction, LayoutChange, Orientation, RegionKind,
-    SPLIT_DEPTH_MAX, SidebarSide, SplitError, WindowId, WindowLayout, WindowOutcome, Windows,
+    AdaptiveSplit, CloseOutcome, Direction, LayoutChange, Orientation, RegionKind, SPLIT_DEPTH_MAX,
+    SidebarSide, SplitError, WindowId, WindowLayout, WindowOutcome, Windows,
 };
 
 const BUFFER: BufferId = BufferId::new(1);

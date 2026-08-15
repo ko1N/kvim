@@ -1,16 +1,22 @@
 //! The visible editor state and the pure transitions of the event loop.
 //!
-//! [`Session`] owns every value that the terminal shows: the buffer, the window
-//! tree, the editing state, the input resolver, the active search, the open
-//! prompt, and the last message. It performs no filesystem work, no process
-//! work, and no language work, so the event loop stays inside the latency
-//! budget of `docs/responsiveness.md`.
+//! [`Session`] owns every value that the terminal shows: the loaded buffers,
+//! the window tree, the editing state, the input resolver, the active search,
+//! the open prompt, and the last message. It performs no filesystem work, no
+//! process work, and no language work, so the event loop stays inside the
+//! latency budget of `docs/responsiveness.md`.
+//!
+//! A file command builds one [`FileRequest`] and puts it in the outbox. The
+//! event loop takes that request, hands it to the bounded worker service, and
+//! returns the typed result to [`Session::apply_file_result`]. See
+//! `docs/files.md`.
 //!
 //! The session reads no clock. The event loop measures the elapsed time and
 //! passes it in, which keeps every transition deterministic and testable.
 
 use std::num::NonZeroU16;
 use std::num::NonZeroU32;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -27,26 +33,22 @@ use crate::input::{
 };
 use crate::settings::EditorSettings;
 use crate::terminal::{Chord, Key, KeyCode, TerminalEvent};
+use crate::workspace::{
+    BUFFERS_MAX, BufferId, Buffers, FileBuffer, FileRequest, FileResult, OpenRequest, OpenedFile,
+    SaveError, SaveRequest, SavedBuffer, render_content,
+};
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
 use super::chrome::shell_areas;
 use super::layout::RegionKind;
 use super::theme::Theme;
-use super::window::{BufferId, WindowId, WindowOutcome, Windows};
+use super::window::{WindowId, WindowOutcome, Windows};
 
 /// The largest message that the message line keeps, in characters.
 ///
 /// Every message comes from a bounded label or from a typed error, so the bound
 /// only protects the line against an unexpectedly long path.
 pub const MESSAGE_CHARS_MAX: usize = 512;
-
-/// The name of the buffer that Kvim opens without a file argument.
-///
-/// Slice 9 adds file loading and replaces this name with the file path.
-const SCRATCH_BUFFER_NAME: &str = "[Scratch]";
-
-/// The identity of the one buffer of this release.
-const SCRATCH_BUFFER_ID: BufferId = BufferId::new(1);
 
 /// Whether the visible state changed and the terminal needs a new frame.
 ///
@@ -78,6 +80,66 @@ pub enum RunState {
     Running,
     /// The editor closed its last window and shuts down.
     Finished,
+}
+
+/// Whether a close command may discard unsaved changes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnsavedChanges {
+    /// Refuse the close while the active buffer holds unsaved changes.
+    Refuse,
+    /// Close the window and discard the unsaved changes.
+    Discard,
+}
+
+/// The step that follows one successful save.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AfterSave {
+    /// Keep the window open.
+    Stay,
+    /// Close the focused window, like `:wq`.
+    CloseWindow,
+}
+
+/// The file operation that the editor waits for.
+///
+/// The editor runs one file operation at a time, so a second request cannot
+/// apply an obsolete result over a newer buffer state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PendingFile {
+    /// One file is loading.
+    Open,
+    /// One buffer is saving.
+    Save {
+        /// The buffer that the save belongs to.
+        buffer: BufferId,
+        /// The step that follows the save.
+        then: AfterSave,
+    },
+}
+
+/// The reason that one file request produced no result.
+///
+/// The event loop maps every runtime failure onto one of these values, so the
+/// session never reads an error message text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileRequestFailure {
+    /// The bounded runtime held no free permit or result slot.
+    Saturated,
+    /// A newer request or the shutdown cancelled this request.
+    Cancelled,
+    /// The operation passed its deadline.
+    Timeout,
+}
+
+impl FileRequestFailure {
+    /// Returns the message that the message line shows.
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Saturated => "the editor is busy; try the file operation again",
+            Self::Cancelled => "the file operation was cancelled",
+            Self::Timeout => "the file operation passed its deadline",
+        }
+    }
 }
 
 /// The severity of one message-line entry.
@@ -200,8 +262,12 @@ pub struct Session {
     area: Rect,
     settings: EditorSettings,
     theme: Theme,
-    buffer: TextBuffer,
-    name: String,
+    buffers: Buffers,
+    active: BufferId,
+    /// The file operation that waits for the bounded worker service.
+    file_outbox: Option<FileRequest>,
+    /// The file operation that the editor waits for.
+    file_pending: Option<PendingFile>,
     windows: Windows,
     editing: EditingState,
     registers: Registers,
@@ -227,16 +293,22 @@ impl Session {
     /// is a cold-path bootstrap check, so an invalid table must fail at start.
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings) -> Self {
-        let buffer = TextBuffer::from_text("", &settings.files)
-            .expect("an empty buffer never passes the file size limit");
-        let editing = EditingState::new(&buffer);
+        let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
+        let editing = EditingState::new(
+            buffers
+                .get(active)
+                .expect("the new buffer list holds its first buffer")
+                .text(),
+        );
         let mut session = Self {
             area,
             settings,
             theme: Theme::new(settings.theme),
-            buffer,
-            name: SCRATCH_BUFFER_NAME.to_owned(),
-            windows: Windows::new(SCRATCH_BUFFER_ID, shell_areas(area).body, settings.windows),
+            buffers,
+            active,
+            file_outbox: None,
+            file_pending: None,
+            windows: Windows::new(active, shell_areas(area).body, settings.windows),
             editing,
             registers: Registers::default(),
             resolver: Resolver::new(Registry::first_release(), settings.input),
@@ -257,10 +329,30 @@ impl Session {
         self.area
     }
 
-    /// Returns the buffer that every window shows.
+    /// Returns the text of the active buffer.
     #[must_use]
-    pub const fn buffer(&self) -> &TextBuffer {
-        &self.buffer
+    pub fn buffer(&self) -> &TextBuffer {
+        self.active_buffer().text()
+    }
+
+    /// Returns the active buffer.
+    #[must_use]
+    pub fn active_buffer(&self) -> &FileBuffer {
+        self.buffers
+            .get(self.active)
+            .expect("the session always keeps the active buffer loaded")
+    }
+
+    /// Returns the loaded buffers.
+    #[must_use]
+    pub const fn buffers(&self) -> &Buffers {
+        &self.buffers
+    }
+
+    /// Returns the identity of the active buffer.
+    #[must_use]
+    pub const fn active(&self) -> BufferId {
+        self.active
     }
 
     /// Returns the active editor mode.
@@ -330,13 +422,14 @@ impl Session {
 
     /// Returns the borrowed state that one frame reads.
     pub(super) fn visible(&self) -> Visible<'_> {
+        let active = self.active_buffer();
         Visible {
             area: self.area,
             theme: self.theme,
             settings: &self.settings,
             windows: &self.windows,
-            buffer: &self.buffer,
-            name: &self.name,
+            buffer: active.text(),
+            name: active.name(),
             editing: &self.editing,
             search: self.search.as_ref(),
             prompt: self.prompt.as_ref(),
@@ -402,6 +495,13 @@ impl Session {
         match command {
             Command::OpenCommandLine => return self.open_prompt(PromptKind::CommandLine),
             Command::OpenSearchPrompt => return self.open_prompt(PromptKind::Search),
+            // The file and buffer commands reach the same paths as `:w`, `:q`,
+            // and the buffer list, so both entry points behave alike.
+            Command::SaveBuffer => return self.save_active(AfterSave::Stay).or(cleared),
+            Command::UnloadBuffer => return self.unload_active().or(cleared),
+            Command::CloseWindow => {
+                return self.close_window(UnsavedChanges::Refuse).or(cleared);
+            }
             _ => {}
         }
         match self.windows.apply(command) {
@@ -437,8 +537,12 @@ impl Session {
             debug_assert!(false, "the focused window is always a leaf of the tree");
             return CommandOutcome::Unhandled;
         };
+        let Some(active) = self.buffers.get_mut(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return CommandOutcome::Unhandled;
+        };
         let mut context = EditContext {
-            buffer: &mut self.buffer,
+            buffer: active.text_mut(),
             settings: &self.settings,
             search: self.search.as_ref().map(|search| &search.query),
             registers: &mut self.registers,
@@ -554,25 +658,287 @@ impl Session {
             }
         };
         match command {
-            // Slice 9 owns file loading and saving. The command line reaches the
-            // same paths as the bound keys, so both report the same limit.
-            CommandLineCommand::Write | CommandLineCommand::WriteQuit => {
-                self.set_message(SAVE_NOTE, MessageLevel::Warning);
-            }
-            CommandLineCommand::Edit(path) => {
-                self.set_message(
-                    format!("cannot open {}; {OPEN_NOTE}", path.display()),
-                    MessageLevel::Warning,
-                );
-            }
-            CommandLineCommand::Quit | CommandLineCommand::QuitDiscard => {
-                return self.apply_command(Command::CloseWindow, None);
+            CommandLineCommand::Write => return self.save_active(AfterSave::Stay),
+            CommandLineCommand::WriteQuit => return self.save_active(AfterSave::CloseWindow),
+            CommandLineCommand::Edit(path) => return self.open_path(path),
+            CommandLineCommand::Quit => return self.close_window(UnsavedChanges::Refuse),
+            CommandLineCommand::QuitDiscard => {
+                return self.close_window(UnsavedChanges::Discard);
             }
             CommandLineCommand::GoToLine(line) => {
                 let target = usize::try_from(line.get()).unwrap_or(usize::MAX);
-                self.editing.move_to(&self.buffer, target - 1, 0);
+                let Some(active) = self.buffers.get(self.active) else {
+                    debug_assert!(false, "the session always keeps the active buffer loaded");
+                    return Redraw::Skipped;
+                };
+                self.editing.move_to(active.text(), target - 1, 0);
             }
         }
+        Redraw::Needed
+    }
+
+    /// Opens one path in the focused window.
+    ///
+    /// A path that a loaded buffer already owns needs no filesystem work, so
+    /// the editor switches to that buffer at once. Every other path becomes one
+    /// bounded request, because the event loop reads no file. See
+    /// `docs/responsiveness.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim::settings::EditorSettings;
+    /// use kvim::tui::Session;
+    ///
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default());
+    /// session.open_path("Cargo.toml".into());
+    ///
+    /// // The event loop hands the request to the bounded worker service.
+    /// let request = session.take_file_request().expect("the open needs one file read");
+    /// session.apply_file_result(request.run());
+    /// assert_eq!(session.buffers().len(), 2);
+    /// ```
+    pub fn open_path(&mut self, path: PathBuf) -> Redraw {
+        if let Some(id) = self.buffers.find_path(&path) {
+            return self.switch_to(id);
+        }
+        if self.buffers.len() >= BUFFERS_MAX {
+            self.set_message(
+                format!("the editor holds the maximum of {BUFFERS_MAX} buffers"),
+                MessageLevel::Error,
+            );
+            return Redraw::Needed;
+        }
+        let files = self.settings.files;
+        self.start_file_request(
+            FileRequest::Open(OpenRequest { path, files }),
+            PendingFile::Open,
+        )
+    }
+
+    /// Takes the file request that the event loop must submit.
+    ///
+    /// The session never runs the request itself, so the event loop stays free
+    /// from filesystem work.
+    pub fn take_file_request(&mut self) -> Option<FileRequest> {
+        self.file_outbox.take()
+    }
+
+    /// Applies one completed file operation as one state transition.
+    pub fn apply_file_result(&mut self, result: FileResult) -> Redraw {
+        let pending = self.file_pending.take();
+        match result {
+            FileResult::Opened { requested, outcome } => match outcome {
+                Ok(file) => self.publish_open(file),
+                Err(error) => {
+                    self.set_message(
+                        format!("cannot open {}: {error}", requested.display()),
+                        MessageLevel::Error,
+                    );
+                    Redraw::Needed
+                }
+            },
+            FileResult::Saved {
+                buffer,
+                requested,
+                outcome,
+            } => {
+                let then = match pending {
+                    Some(PendingFile::Save { then, .. }) => then,
+                    Some(PendingFile::Open) | None => AfterSave::Stay,
+                };
+                self.publish_save(buffer, &requested, outcome, then)
+            }
+        }
+    }
+
+    /// Reports that one file request produced no result.
+    ///
+    /// The buffer keeps every unsaved change, so the user can repeat the
+    /// operation.
+    pub fn abandon_file_request(&mut self, failure: FileRequestFailure) -> Redraw {
+        self.file_pending = None;
+        self.file_outbox = None;
+        self.set_message(failure.message(), MessageLevel::Error);
+        Redraw::Needed
+    }
+
+    /// Queues one file request while no other operation runs.
+    ///
+    /// The editor runs one file operation at a time, so no result can arrive
+    /// for a buffer state that a newer operation already replaced.
+    fn start_file_request(&mut self, request: FileRequest, pending: PendingFile) -> Redraw {
+        if self.file_pending.is_some() {
+            self.set_message(
+                "one file operation is already running",
+                MessageLevel::Warning,
+            );
+            return Redraw::Needed;
+        }
+        debug_assert!(
+            self.file_outbox.is_none(),
+            "the event loop takes the queued request before the next command runs"
+        );
+        self.file_outbox = Some(request);
+        self.file_pending = Some(pending);
+        Redraw::Needed
+    }
+
+    /// Saves the active buffer and runs the step that follows the save.
+    fn save_active(&mut self, then: AfterSave) -> Redraw {
+        let buffer = self.active;
+        // Build the complete request before the operation starts, so a rejected
+        // save never changes the buffer.
+        let staged = self.buffers.get(buffer).and_then(|active| {
+            let path = active.path()?.to_path_buf();
+            Some(SaveRequest {
+                buffer,
+                content: render_content(active.text()),
+                expected: active.identity(),
+                snapshot: active.text().clone(),
+                files: self.settings.files,
+                path,
+            })
+        });
+        let Some(request) = staged else {
+            self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
+            return Redraw::Needed;
+        };
+        self.start_file_request(
+            FileRequest::Save(request),
+            PendingFile::Save { buffer, then },
+        )
+    }
+
+    /// Publishes one loaded buffer.
+    fn publish_open(&mut self, file: OpenedFile) -> Redraw {
+        // Two spellings of one path reach the same file, so the completed load
+        // returns the buffer that already owns it.
+        if let Some(existing) = self.buffers.find_path(&file.path) {
+            return self.switch_to(existing).or(Redraw::Needed);
+        }
+        let name = file.path.display().to_string();
+        let lines = file.text.line_count();
+        let bytes = file.text.len_bytes();
+        let loaded = FileBuffer::loaded(file.text, file.path, file.identity);
+        let Some(id) = self.buffers.insert(loaded) else {
+            self.set_message(
+                format!("the editor holds the maximum of {BUFFERS_MAX} buffers"),
+                MessageLevel::Error,
+            );
+            return Redraw::Needed;
+        };
+        let redraw = self.switch_to(id);
+        self.set_message(format!("\"{name}\" {lines}L, {bytes}B"), MessageLevel::Info);
+        redraw.or(Redraw::Needed)
+    }
+
+    /// Publishes one completed save.
+    fn publish_save(
+        &mut self,
+        buffer: BufferId,
+        requested: &Path,
+        outcome: Result<SavedBuffer, SaveError>,
+        then: AfterSave,
+    ) -> Redraw {
+        let saved = match outcome {
+            Ok(saved) => saved,
+            // A failed save keeps the buffer dirty and usable, so the user can
+            // repeat it.
+            Err(error) => {
+                self.set_message(
+                    format!("cannot save {}: {error}", requested.display()),
+                    MessageLevel::Error,
+                );
+                return Redraw::Needed;
+            }
+        };
+        let Some(target) = self.buffers.get_mut(buffer) else {
+            // The buffer left the list while the save ran.
+            return Redraw::Skipped;
+        };
+        let lines = target.text().line_count();
+        let name = saved.path.display().to_string();
+        let bytes = saved.bytes;
+        target.mark_saved(saved.path, saved.identity);
+        self.set_message(
+            format!("\"{name}\" {lines}L, {bytes}B written"),
+            MessageLevel::Info,
+        );
+        match then {
+            AfterSave::Stay => Redraw::Needed,
+            AfterSave::CloseWindow => self
+                .close_window(UnsavedChanges::Discard)
+                .or(Redraw::Needed),
+        }
+    }
+
+    /// Closes the focused window and ends the editor after the last window.
+    fn close_window(&mut self, unsaved: UnsavedChanges) -> Redraw {
+        let last_window = self.windows.window_count() == 1;
+        if last_window && unsaved == UnsavedChanges::Refuse && self.active_buffer().is_modified() {
+            self.set_message(UNSAVED_QUIT_NOTE, MessageLevel::Error);
+            return Redraw::Needed;
+        }
+        match self.windows.apply(Command::CloseWindow) {
+            WindowOutcome::LastWindow => {
+                self.run = RunState::Finished;
+                Redraw::Needed
+            }
+            WindowOutcome::Changed => Redraw::Needed,
+            WindowOutcome::Ignored | WindowOutcome::Unchanged => Redraw::Skipped,
+        }
+    }
+
+    /// Removes the active buffer from the buffer list.
+    fn unload_active(&mut self) -> Redraw {
+        let id = self.active;
+        if self.active_buffer().is_modified() {
+            self.set_message(UNSAVED_UNLOAD_NOTE, MessageLevel::Error);
+            return Redraw::Needed;
+        }
+        // Stage the replacement before the removal, so no window ever points at
+        // a buffer that the list no longer holds.
+        let next = match self.buffers.ids().into_iter().find(|other| *other != id) {
+            Some(next) => next,
+            None => {
+                let scratch = FileBuffer::scratch(&self.settings.files);
+                let Some(next) = self.buffers.insert(scratch) else {
+                    debug_assert!(false, "one loaded buffer leaves room for a scratch buffer");
+                    return Redraw::Skipped;
+                };
+                next
+            }
+        };
+        self.buffers.remove(id);
+        for window in self.windows.window_ids() {
+            if self.windows.buffer(window) == Some(id) {
+                self.windows.set_buffer(window, next);
+            }
+        }
+        let redraw = self.switch_to(next);
+        self.set_message("the buffer is unloaded", MessageLevel::Info);
+        redraw.or(Redraw::Needed)
+    }
+
+    /// Shows one loaded buffer in the focused window.
+    fn switch_to(&mut self, id: BufferId) -> Redraw {
+        let window = self.windows.focused_window();
+        self.windows.set_buffer(window, id);
+        if self.active == id {
+            return Redraw::Skipped;
+        }
+        let Some(active) = self.buffers.get(id) else {
+            debug_assert!(false, "a caller switches only to a loaded buffer");
+            return Redraw::Skipped;
+        };
+        self.active = id;
+        self.editing = EditingState::new(active.text());
+        // The recorded matches belong to the previous buffer.
+        self.search = None;
+        self.reconcile_viewports();
         Redraw::Needed
     }
 
@@ -585,15 +951,19 @@ impl Session {
                 return Redraw::Needed;
             }
         };
-        let matches = query.matches(&self.buffer, &self.settings.search);
-        let version = self.buffer.version();
+        let Some(active) = self.buffers.get(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return Redraw::Skipped;
+        };
+        let matches = query.matches(active.text(), &self.settings.search);
+        let version = active.text().version();
         let window = self.windows.focused_window();
         let Some(mut viewport) = self.windows.viewport(window) else {
             debug_assert!(false, "the layout always keeps the focused window visible");
             return Redraw::Needed;
         };
         let context = CommandContext {
-            buffer: &self.buffer,
+            buffer: active.text(),
             settings: &self.settings,
             search: Some(&query),
         };
@@ -674,14 +1044,18 @@ impl Session {
     /// The scan is bounded by the search limits of the `editor` module, so it
     /// stays inside the event-loop budget.
     fn refresh_search(&mut self) {
-        let version = self.buffer.version();
+        let Some(active) = self.buffers.get(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return;
+        };
+        let version = active.text().version();
         let Some(search) = self.search.as_mut() else {
             return;
         };
         if search.version == version {
             return;
         }
-        search.matches = search.query.matches(&self.buffer, &self.settings.search);
+        search.matches = search.query.matches(active.text(), &self.settings.search);
         search.version = version;
     }
 
@@ -694,6 +1068,11 @@ impl Session {
     fn reconcile_viewports(&mut self) {
         let display = self.settings.display;
         let cursor = self.editing.cursor();
+        let Some(active) = self.buffers.get(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return;
+        };
+        let text = active.text();
         let sizes: Vec<(WindowId, u16, u16)> = self
             .windows
             .layout()
@@ -701,7 +1080,7 @@ impl Session {
             .iter()
             .filter(|region| region.kind == RegionKind::Editor)
             .map(|region| {
-                let gutter = gutter_cells(&self.buffer, &display, region.area.width);
+                let gutter = gutter_cells(text, &display, region.area.width);
                 (
                     region.id,
                     region.area.width.saturating_sub(gutter),
@@ -717,16 +1096,19 @@ impl Session {
             };
             *slot = slot
                 .resized(height, width)
-                .reconciled(&self.buffer, cursor, &display);
+                .reconciled(text, cursor, &display);
         }
     }
 }
 
-/// The message that every deferred file and buffer command reports.
-const SAVE_NOTE: &str = "saving arrives in a later release";
+/// The message that a refused quit shows.
+const UNSAVED_QUIT_NOTE: &str = "the buffer holds unsaved changes; use :q! to discard them";
 
-/// The message that every deferred open command reports.
-const OPEN_NOTE: &str = "file opening arrives in a later release";
+/// The message that a refused unload shows.
+const UNSAVED_UNLOAD_NOTE: &str = "the buffer holds unsaved changes; save it before the unload";
+
+/// The message that a save without a file name shows.
+const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to name one";
 
 /// Returns the message of a command that a later slice implements.
 ///
@@ -734,8 +1116,6 @@ const OPEN_NOTE: &str = "file opening arrives in a later release";
 /// reaches unfinished behavior must say so instead of doing nothing.
 const fn deferred_note(command: Command) -> Option<&'static str> {
     match command {
-        Command::SaveBuffer => Some(SAVE_NOTE),
-        Command::UnloadBuffer => Some("buffer management arrives in a later release"),
         Command::RevealInFileTree => Some("the file tree arrives in a later release"),
         Command::OpenBufferPicker | Command::OpenFilePicker | Command::OpenRipgrepPicker => {
             Some("the pickers arrive in a later release")

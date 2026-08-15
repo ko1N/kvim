@@ -53,27 +53,22 @@ fn run() -> Result<(), String> {
             println!("kvim {}", env!("CARGO_PKG_VERSION"));
             Ok(())
         }
-        // File loading arrives in a later slice. Report the limit instead of
-        // opening a terminal that cannot show the requested file.
-        CliAction::Edit { path: Some(path) } => Err(format!(
-            "cannot open {}; file opening arrives in a later release",
-            path.display()
-        )),
-        CliAction::Edit { path: None } => start_editor(),
+        CliAction::Edit { path } => start_editor(path),
     }
 }
 
-/// Starts the editor over one empty scratch buffer.
+/// Starts the editor over one file, or over one empty scratch buffer.
 ///
 /// The function builds the asynchronous runtime that the bounded background
-/// services need, because the executable is the composition root.
-fn start_editor() -> Result<(), String> {
+/// services need, because the executable is the composition root. The editor
+/// reads the named file through that runtime, never on the event loop.
+fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
     runtime
-        .block_on(kvim::tui::run(EditorSettings::default()))
+        .block_on(kvim::tui::run(EditorSettings::default(), path))
         .map_err(|error| describe(&error))
 }
 

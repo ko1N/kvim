@@ -48,7 +48,8 @@ pub struct Region {
 /// use ratatui::layout::Rect;
 ///
 /// use kvim::settings::WindowSettings;
-/// use kvim::tui::{BufferId, Direction, Orientation, Windows};
+/// use kvim::tui::{Direction, Orientation, Windows};
+/// use kvim::workspace::BufferId;
 ///
 /// let terminal = Rect::new(0, 0, 100, 30);
 /// let mut windows = Windows::new(BufferId::new(1), terminal, WindowSettings::default());
