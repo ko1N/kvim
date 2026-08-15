@@ -153,9 +153,10 @@ the statusline band separates the regions, and the title color separates the
 focused window from the others. Kvim keeps the borderless ReviewGraph
 presentation. See [`reviewgraph-integration.md`](reviewgraph-integration.md).
 
-The which-key overlay covers the bottom of the body band. It lists the commands
-that the pending key sequence can still reach, and it shows a bounded number of
-rows. [`input-actions.md`](input-actions.md) owns the rows and the delay.
+The which-key overlay covers the bottom of the body band. It lists the next keys
+that may follow the pending key sequence, one key for each row, and it shows a
+bounded number of rows. [`input-actions.md`](input-actions.md) owns the rows and
+the delay.
 
 ## Theme
 
@@ -220,6 +221,20 @@ The `tui` theme defines these roles now. No call site requests one before the
 Rust adapter produces highlight spans.
 
 ## Buffer Presentation
+
+Every window paints the buffer of its own leaf. Two windows therefore show two
+different files after `:e` in a split. The focused window paints the cursor and
+the Visual selection, because the editing state follows one window. An unfocused
+window paints neither, and its line numbers count from the start of its own
+buffer, because no per-window cursor exists yet.
+
+The search highlight belongs to the active buffer, so a window that shows
+another buffer paints no match.
+
+The Visual selection covers exactly the selected characters. It never paints a
+cell behind the last character of a line, in any of the three selection shapes.
+A selected line without a character therefore shows no highlighted cell, and a
+rectangular selection stops at the last character of a shorter line.
 
 Kvim shows absolute and relative line numbers together. The cursor line shows
 its absolute number. Every other line shows its distance from the cursor line.

@@ -68,38 +68,57 @@ impl fmt::Display for KeySequence {
             if index > 0 {
                 formatter.write_str(" ")?;
             }
-            write_key(formatter, *key)?;
+            write!(formatter, "{}", KeyLabel(*key))?;
         }
         Ok(())
     }
 }
 
-/// Writes one key in its help form.
-fn write_key(formatter: &mut fmt::Formatter<'_>, key: Key) -> fmt::Result {
-    match key.chord() {
-        Chord::Plain => {}
-        Chord::Ctrl => formatter.write_str("C-")?,
-        Chord::CtrlAlt => formatter.write_str("C-A-")?,
+/// One key in the help form that the which-key overlay shows.
+///
+/// The form names a chord prefix and a key name, such as `C-d`, `Space`, or
+/// `Enter`. It is help text, never a value that code compares.
+///
+/// ```
+/// use kvim::input::{Mode, Registry};
+/// use kvim::terminal::{Key, KeyCode};
+///
+/// let registry = Registry::first_release();
+/// let rows = registry.rows_for_prefix(Mode::Normal, &[Key::plain(KeyCode::Char(' '))]);
+/// let first = rows.first().expect("the leader reaches several commands");
+/// assert_eq!(first.key_label().to_string(), "/");
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct KeyLabel(Key);
+
+impl fmt::Display for KeyLabel {
+    /// Writes one key in its help form.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.0.chord() {
+            Chord::Plain => {}
+            Chord::Ctrl => formatter.write_str("C-")?,
+            Chord::CtrlAlt => formatter.write_str("C-A-")?,
+        }
+        let name = match self.0.code() {
+            KeyCode::Char(' ') => "Space",
+            KeyCode::Char(value) => return write!(formatter, "{value}"),
+            KeyCode::Up => "Up",
+            KeyCode::Down => "Down",
+            KeyCode::Left => "Left",
+            KeyCode::Right => "Right",
+            KeyCode::Enter => "Enter",
+            KeyCode::Tab => "Tab",
+            KeyCode::BackTab => "S-Tab",
+            KeyCode::Backspace => "BS",
+            KeyCode::Delete => "Del",
+            KeyCode::Home => "Home",
+            KeyCode::End => "End",
+            KeyCode::PageUp => "PgUp",
+            KeyCode::PageDown => "PgDn",
+            KeyCode::Esc => "Esc",
+        };
+        formatter.write_str(name)
     }
-    let name = match key.code() {
-        KeyCode::Char(' ') => "Space",
-        KeyCode::Char(value) => return write!(formatter, "{value}"),
-        KeyCode::Up => "Up",
-        KeyCode::Down => "Down",
-        KeyCode::Left => "Left",
-        KeyCode::Right => "Right",
-        KeyCode::Enter => "Enter",
-        KeyCode::Tab => "Tab",
-        KeyCode::BackTab => "S-Tab",
-        KeyCode::Backspace => "BS",
-        KeyCode::Delete => "Del",
-        KeyCode::Home => "Home",
-        KeyCode::End => "End",
-        KeyCode::PageUp => "PgUp",
-        KeyCode::PageDown => "PgDn",
-        KeyCode::Esc => "Esc",
-    };
-    formatter.write_str(name)
 }
 
 /// The bound that one candidate sequence broke.
@@ -175,23 +194,61 @@ pub enum RegistryError {
     },
 }
 
+/// What one next key of the which-key overlay reaches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WhichKeyTarget {
+    /// The key completes exactly one command, and the row shows its label.
+    Command(Command),
+    /// The key opens a group of commands.
+    ///
+    /// which-key.nvim marks such a key with a `+` prefix. The count names the
+    /// commands that the group holds.
+    Group {
+        /// The number of commands behind the key. The value is at least two.
+        commands: usize,
+    },
+}
+
+impl WhichKeyTarget {
+    /// Returns the target that one more command behind the same key produces.
+    fn grown(self) -> Self {
+        match self {
+            Self::Command(_) => Self::Group { commands: 2 },
+            Self::Group { commands } => Self::Group {
+                commands: commands.saturating_add(1),
+            },
+        }
+    }
+}
+
+impl fmt::Display for WhichKeyTarget {
+    /// Writes the overlay text of one row.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Command(command) => formatter.write_str(command.label()),
+            Self::Group { commands } => write!(formatter, "+{commands} commands"),
+        }
+    }
+}
+
 /// One which-key overlay row.
 ///
-/// The row names the keys that remain after the pending sequence and the command
-/// that they reach. The overlay text comes from the command label only.
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// The overlay shows one level at a time, so a row names the single key that may
+/// follow the pending sequence, never a complete sequence. See
+/// `docs/input-actions.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WhichKeyRow {
-    /// The keys that remain after the pending sequence.
-    pub keys: KeySequence,
-    /// The command that the remaining keys reach.
-    pub command: Command,
+    /// The key that follows the pending sequence.
+    pub key: Key,
+    /// What the key reaches.
+    pub target: WhichKeyTarget,
 }
 
 impl WhichKeyRow {
-    /// Returns the overlay text of the row.
+    /// Returns the key in its help form.
     #[inline]
-    pub const fn label(&self) -> &'static str {
-        self.command.label()
+    pub const fn key_label(&self) -> KeyLabel {
+        KeyLabel(self.key)
     }
 }
 
@@ -301,22 +358,33 @@ impl Registry {
             .is_some_and(|(sequence, _)| sequence.keys().starts_with(prefix))
     }
 
-    /// Returns the which-key rows that the prefix can still reach.
+    /// Returns the distinct next keys that the prefix can still reach.
     ///
-    /// The rows follow the sequence order of the registry, so the overlay is
-    /// deterministic. An empty prefix returns every binding of the mode, which
-    /// suits a complete help list.
+    /// The overlay lists one level at a time, so the rows hold one key each. A
+    /// key that reaches exactly one command carries that command. A key that
+    /// reaches several carries a group marker with the command count.
+    ///
+    /// The map orders sequences lexicographically, so every sequence behind one
+    /// next key is contiguous, and the rows keep the deterministic key order of
+    /// the registry.
     #[must_use]
     pub fn rows_for_prefix(&self, mode: Mode, prefix: &[Key]) -> Vec<WhichKeyRow> {
-        self.by_mode[mode.index()]
+        let mut rows: Vec<WhichKeyRow> = Vec::new();
+        for (sequence, command) in self.by_mode[mode.index()]
             .range::<[Key], _>((Bound::Included(prefix), Bound::Unbounded))
             .take_while(|(sequence, _)| sequence.keys().starts_with(prefix))
             .filter(|(sequence, _)| sequence.keys().len() > prefix.len())
-            .map(|(sequence, command)| WhichKeyRow {
-                keys: KeySequence(sequence.keys()[prefix.len()..].to_vec()),
-                command: *command,
-            })
-            .collect()
+        {
+            let key = sequence.keys()[prefix.len()];
+            match rows.last_mut() {
+                Some(last) if last.key == key => last.target = last.target.grown(),
+                _ => rows.push(WhichKeyRow {
+                    key,
+                    target: WhichKeyTarget::Command(*command),
+                }),
+            }
+        }
+        rows
     }
 
     /// Returns every binding of one mode in sequence order.
@@ -383,6 +451,14 @@ const MOTION_MODES: &[Mode] = &[
 /// The three Visual modes.
 const VISUAL_MODES: &[Mode] = &[Mode::Visual, Mode::VisualLine, Mode::VisualBlock];
 
+/// Every mode that `Esc` and `Ctrl-C` leave for Normal mode.
+const NON_NORMAL_MODES: &[Mode] = &[
+    Mode::Insert,
+    Mode::Visual,
+    Mode::VisualLine,
+    Mode::VisualBlock,
+];
+
 /// Normal mode alone.
 const NORMAL: &[Mode] = &[Mode::Normal];
 
@@ -429,13 +505,52 @@ fn first_release_bindings() -> Vec<Binding> {
     add(table, NORMAL, &[ch(':')], Command::OpenCommandLine);
     add(
         table,
-        &[
-            Mode::Insert,
-            Mode::Visual,
-            Mode::VisualLine,
-            Mode::VisualBlock,
-        ],
+        NON_NORMAL_MODES,
         &[Key::plain(KeyCode::Esc)],
+        Command::ReturnToNormal,
+    );
+    // The reference configuration maps `<C-c>` to `<Esc>` in every one of these
+    // modes, so both keys leave the mode.
+    add(
+        table,
+        NON_NORMAL_MODES,
+        &[ctrl('c')],
+        Command::ReturnToNormal,
+    );
+
+    // Mode switching between the Visual modes. Vim switches with the same key
+    // that enters the target mode, and the key of the active mode returns to
+    // Normal mode. The editing state keeps the selection anchor, so only the
+    // shape of the selection changes.
+    add(
+        table,
+        &[Mode::VisualLine, Mode::VisualBlock],
+        &[ch('v')],
+        Command::EnterVisual,
+    );
+    add(
+        table,
+        &[Mode::Visual, Mode::VisualBlock],
+        &[ch('V')],
+        Command::EnterVisualLine,
+    );
+    add(
+        table,
+        &[Mode::Visual, Mode::VisualLine],
+        &[ctrl('v')],
+        Command::EnterVisualBlock,
+    );
+    add(table, &[Mode::Visual], &[ch('v')], Command::ReturnToNormal);
+    add(
+        table,
+        &[Mode::VisualLine],
+        &[ch('V')],
+        Command::ReturnToNormal,
+    );
+    add(
+        table,
+        &[Mode::VisualBlock],
+        &[ctrl('v')],
         Command::ReturnToNormal,
     );
 
@@ -633,7 +748,10 @@ fn first_release_bindings() -> Vec<Binding> {
 
 #[cfg(test)]
 mod tests {
-    use super::{Binding, Command, Key, KeyCode, Mode, Registry, RegistryError, ch, ctrl, leader};
+    use super::{
+        Binding, Command, Key, KeyCode, Mode, Registry, RegistryError, WhichKeyTarget, ch, ctrl,
+        leader,
+    };
 
     fn binding(mode: Mode, keys: &[Key], command: Command) -> Binding {
         Binding {
@@ -762,21 +880,100 @@ mod tests {
     }
 
     #[test]
-    fn which_key_rows_follow_the_prefix_in_deterministic_order() {
+    fn which_key_rows_list_one_level_of_next_keys() {
         let registry = Registry::first_release();
-        let rows = registry.rows_for_prefix(Mode::Normal, &[leader(), ch('f')]);
-        let listed = rows
-            .iter()
-            .map(|row| (row.keys.to_string(), row.label()))
-            .collect::<Vec<_>>();
+        let listed = |prefix: &[Key]| {
+            registry
+                .rows_for_prefix(Mode::Normal, prefix)
+                .iter()
+                .map(|row| (row.key_label().to_string(), row.target))
+                .collect::<Vec<_>>()
+        };
+
+        // The leader prefix reaches `Space f b`, `Space f f`, and `Space f /`
+        // through one next key, so that key carries a group marker.
+        assert!(
+            listed(&[leader()]).contains(&("f".to_owned(), WhichKeyTarget::Group { commands: 3 }))
+        );
+        // `Space c` reaches exactly one command, so the row names it.
+        assert!(listed(&[leader()]).contains(&(
+            "c".to_owned(),
+            WhichKeyTarget::Command(Command::ToggleFormatOnSave)
+        )));
+        assert!(
+            listed(&[leader()])
+                .iter()
+                .all(|(key, _)| !key.contains(' ')),
+            "a row names one key, never a sequence"
+        );
+
+        // One key further, the group opens into its own single keys.
         assert_eq!(
-            listed,
+            listed(&[leader(), ch('f')]),
             vec![
-                ("/".to_owned(), "Open the ripgrep search picker"),
-                ("b".to_owned(), "Open the buffer picker"),
-                ("f".to_owned(), "Open the file search picker"),
+                (
+                    "/".to_owned(),
+                    WhichKeyTarget::Command(Command::OpenRipgrepPicker)
+                ),
+                (
+                    "b".to_owned(),
+                    WhichKeyTarget::Command(Command::OpenBufferPicker)
+                ),
+                (
+                    "f".to_owned(),
+                    WhichKeyTarget::Command(Command::OpenFilePicker)
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn a_group_row_names_the_number_of_commands_behind_it() {
+        assert_eq!(
+            WhichKeyTarget::Group { commands: 3 }.to_string(),
+            "+3 commands"
+        );
+    }
+
+    #[test]
+    fn the_visual_modes_switch_between_each_other_and_back_to_normal() {
+        let registry = Registry::first_release();
+        let control_v = ctrl('v');
+        let cases = [
+            (Mode::Visual, ch('V'), Command::EnterVisualLine),
+            (Mode::Visual, control_v, Command::EnterVisualBlock),
+            (Mode::Visual, ch('v'), Command::ReturnToNormal),
+            (Mode::VisualLine, ch('v'), Command::EnterVisual),
+            (Mode::VisualLine, control_v, Command::EnterVisualBlock),
+            (Mode::VisualLine, ch('V'), Command::ReturnToNormal),
+            (Mode::VisualBlock, ch('v'), Command::EnterVisual),
+            (Mode::VisualBlock, ch('V'), Command::EnterVisualLine),
+            (Mode::VisualBlock, control_v, Command::ReturnToNormal),
+        ];
+        for (mode, key, expected) in cases {
+            assert_eq!(
+                registry.command(mode, &[key]),
+                Some(expected),
+                "{mode} `{key:?}` must reach `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn ctrl_c_returns_every_non_normal_mode_to_normal_mode() {
+        let registry = Registry::first_release();
+        for mode in [
+            Mode::Insert,
+            Mode::Visual,
+            Mode::VisualLine,
+            Mode::VisualBlock,
+        ] {
+            assert_eq!(
+                registry.command(mode, &[ctrl('c')]),
+                Some(Command::ReturnToNormal),
+                "the reference configuration maps `<C-c>` to `<Esc>` in {mode}"
+            );
+        }
     }
 
     #[test]

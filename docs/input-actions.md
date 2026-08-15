@@ -21,8 +21,23 @@ Kvim has five modes:
 - Visual Block: a rectangular selection follows the cursor.
 
 The mode is one typed value. A mode change resets pending input. Each Visual
-mode keeps its own selection anchor. `Esc` returns to Normal mode from every
-other mode.
+mode keeps its own selection anchor. `Esc` and `Ctrl-C` both return to Normal
+mode from every other mode, because the reference configuration maps `<C-c>` to
+`<Esc>` in each of them.
+
+The three Visual modes switch between each other. The key that enters a Visual
+mode from Normal mode also switches into it from another Visual mode, and the
+key of the active Visual mode returns to Normal mode:
+
+| Key | Visual | Visual Line | Visual Block |
+|---|---|---|---|
+| `v` | Normal | Visual | Visual |
+| `V` | Visual Line | Normal | Visual Line |
+| `Ctrl-V` | Visual Block | Visual Block | Normal |
+
+A switch between two Visual modes keeps the selection anchor. Only the shape of
+the selection changes, so `V` in Visual mode selects the complete lines that the
+existing anchor and cursor cover.
 
 The command line is an input context, not a mode. See the section below.
 
@@ -84,15 +99,26 @@ count, because a digit is buffer text there. The `input` module owns this rule,
 so no other module filters digit keys.
 
 The resolver classifies each pending sequence as a complete match, a valid
-prefix, or no match. A pending sequence holds at most four keys.
+prefix, a cancel, or no match. A pending sequence holds at most four keys.
 
-A pending sequence has a deadline. The deadline is 750 ms by default. The
-resolver is clock-independent: it never reads a clock. The event loop supplies
-the elapsed time with each resolution request and reports deadline expiry. This
-keeps resolution deterministic and testable.
+A pending sequence has no deadline. It waits for the next key for as long as the
+user needs. The registry already rejects a sequence that is both a complete
+match and a strict prefix of a longer sequence in the same mode, so no ambiguity
+remains that a timer could resolve. A deadline would only abandon the sequence
+and hide the which-key overlay while the user still reads it.
 
-The count maximum, the pending-key maximum, and the sequence timeout belong to
-`EditorSettings`. See [`settings.md`](settings.md).
+`Esc` and `Ctrl-C` cancel pending input. The cancel works in every mode and at
+every depth of a pending sequence, and it clears the pending keys, the pending
+count, and the which-key overlay. It changes no buffer text and no mode. With no
+pending input the same key reaches the registry, so it still returns to Normal
+mode.
+
+The resolver is clock-independent: it never reads a clock. The event loop
+supplies the elapsed time with each resolution request. That time serves the
+which-key delay only, which keeps resolution deterministic and testable.
+
+The count maximum and the pending-key maximum belong to `EditorSettings`. See
+[`settings.md`](settings.md).
 
 ## Leader And Which-Key
 
@@ -100,13 +126,24 @@ Space is the leader key in Normal, Visual, and Visual Line modes. Space starts a
 pending sequence. It does not insert a space in these modes. In Insert mode
 Space inserts a space.
 
-The which-key overlay lists the commands that the current pending sequence can
-still reach. It is generated from the command labels in the active registry for
-the active mode. It is never a separate hand-written list.
+The which-key overlay lists one level at a time. It shows the distinct next keys
+that may follow the current pending sequence, never a complete sequence. At the
+prefix `Space` it therefore shows `c`, not `c f`. Pressing `c` then shows only
+the keys that follow `c`.
 
-The overlay appears after the which-key delay of 200 ms. The delay belongs to
-`EditorSettings`. The event loop supplies that elapsed time, using the same rule
-as the sequence deadline. A completed or reset sequence hides the overlay.
+A next key that reaches exactly one command shows the label of that command. A
+next key that reaches several commands shows a group marker with the number of
+commands behind it, in the form `+3 commands`. which-key.nvim marks a group the
+same way, with a `+` prefix. The rows follow the key order of the registry, so
+the overlay is deterministic.
+
+The overlay is generated from the active registry for the active mode. It is
+never a separate hand-written list.
+
+The overlay appears after the which-key delay of 500 ms, so a fast key
+combination never flashes it. The event loop supplies the elapsed time. A
+completed, cancelled, or reset sequence hides the overlay. A pending sequence
+keeps it visible until the user acts, because the sequence has no deadline.
 
 [`windows.md`](windows.md) owns overlay placement and styling.
 
@@ -116,9 +153,12 @@ Pending input resets after:
 
 - a completed command,
 - a sequence mismatch,
-- sequence timeout,
+- a cancel with `Esc` or `Ctrl-C`,
 - a mode change,
 - editor shutdown.
+
+Elapsed time is not in this list. A pending sequence has no deadline, so it
+survives until one of the events above ends it.
 
 A reset clears the pending keys, the pending count, and the which-key overlay.
 A reset never changes buffer text and never cancels a running background
@@ -146,11 +186,18 @@ it builds the registry.
 | `A` | Insert at the end of the line | Normal |
 | `o` | Open a line below and insert | Normal |
 | `O` | Open a line above and insert | Normal |
-| `v` | Enter Visual mode | Normal |
-| `V` | Enter Visual Line mode | Normal |
-| `Ctrl-V` | Enter Visual Block mode | Normal |
+| `v` | Enter Visual mode | Normal, Visual Line, Visual Block |
+| `V` | Enter Visual Line mode | Normal, Visual, Visual Block |
+| `Ctrl-V` | Enter Visual Block mode | Normal, Visual, Visual Line |
+| `v` | Return to Normal mode | Visual |
+| `V` | Return to Normal mode | Visual Line |
+| `Ctrl-V` | Return to Normal mode | Visual Block |
 | `:` | Open the command line | Normal |
 | `Esc` | Return to Normal mode | Insert, Visual, Visual Line, Visual Block |
+| `Ctrl-C` | Return to Normal mode | Insert, Visual, Visual Line, Visual Block |
+
+`Esc` and `Ctrl-C` first cancel pending input. They reach the rows above only
+while no key sequence and no count wait for completion.
 
 Every motion row below also applies in Visual Block mode. The tables name the
 three Visual modes separately only where their behavior differs.

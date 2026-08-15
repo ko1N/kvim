@@ -17,6 +17,7 @@ use ratatui::layout::Rect;
 use thiserror::Error;
 use tokio::time::sleep;
 
+use crate::language::ANALYSIS_DEADLINE;
 use crate::runtime::{
     PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent, SubmitError,
     WORKER_DEADLINE_DEFAULT,
@@ -27,7 +28,7 @@ use crate::terminal::{
 };
 use crate::workspace::FileResult;
 
-use super::session::{FileRequestFailure, Redraw, RunState, Session};
+use super::session::{AnalysisResult, FileRequestFailure, Redraw, RunState, Session};
 
 /// The number of consecutive terminal read failures that ends the editor.
 ///
@@ -41,6 +42,23 @@ pub const EVENT_ERRORS_MAX: usize = 8;
 /// The editor runs one file operation at a time, so one slot holds every open
 /// and every save. A newer request cancels the older request in this slot.
 const FILE_SLOT: RequestSlot = RequestSlot::new(1);
+
+/// The publication slot of every buffer analysis.
+///
+/// One slot holds the analysis of the active buffer, so a newer buffer version
+/// cancels the parse of the version that it replaced.
+const ANALYSIS_SLOT: RequestSlot = RequestSlot::new(2);
+
+/// One completed background operation of the editor.
+///
+/// The runtime is generic over its result, and the editor submits both file work
+/// and language work, so one value names both.
+enum WorkResult {
+    /// One file operation finished.
+    File(FileResult),
+    /// One buffer analysis finished.
+    Analysis(AnalysisResult),
+}
 
 /// A failure that ends the editor.
 #[derive(Debug, Error)]
@@ -89,9 +107,10 @@ async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), Ed
     let size = terminal.size().map_err(EditorError::Draw)?;
     let mut editor = Session::new(Rect::new(0, 0, size.width, size.height), settings);
     let mut events = EventSource::from_terminal();
-    // The file operations run on the bounded worker service, so the loop below
-    // performs no filesystem work. See `docs/responsiveness.md`.
-    let (runtime, mut results) = Runtime::<FileResult>::new();
+    // The file operations and the buffer analysis run on the bounded worker
+    // service, so the loop below performs no filesystem work and no parsing.
+    // See `docs/responsiveness.md`.
+    let (runtime, mut results) = Runtime::<WorkResult>::new();
     let gate = PublicationGate::default();
     let start = Instant::now();
     let mut errors = 0;
@@ -99,7 +118,7 @@ async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), Ed
     if let Some(path) = path {
         editor.open_path(path);
     }
-    submit_file_work(&mut editor, &runtime, &gate);
+    submit_background_work(&mut editor, &runtime, &gate);
     terminal
         .draw(|frame| editor.render(frame))
         .map_err(EditorError::Draw)?;
@@ -123,7 +142,7 @@ async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), Ed
                 }
             }
         };
-        submit_file_work(&mut editor, &runtime, &gate);
+        submit_background_work(&mut editor, &runtime, &gate);
         match step {
             Step::Handled(Redraw::Needed) => {
                 errors = 0;
@@ -146,17 +165,27 @@ async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), Ed
     Ok(())
 }
 
-/// Hands the queued file request to the bounded worker service.
+/// Hands the queued file and analysis jobs to the bounded worker service.
 ///
 /// A refused submission reaches the session as a typed failure, so the editor
 /// keeps its previous visible state.
-fn submit_file_work(editor: &mut Session, runtime: &Runtime<FileResult>, gate: &PublicationGate) {
+fn submit_background_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) {
+    submit_file_work(editor, runtime, gate);
+    submit_analysis_work(editor, runtime, gate);
+}
+
+/// Hands the queued file request to the bounded worker service.
+fn submit_file_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &PublicationGate) {
     let Some(request) = editor.take_file_request() else {
         return;
     };
     let handle = gate.begin(FILE_SLOT, &runtime.cancellation_root());
     let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, |_cancellation| {
-        request.run()
+        WorkResult::File(request.run())
     });
     if let Err(error) = submitted {
         editor.abandon_file_request(match error {
@@ -168,22 +197,51 @@ fn submit_file_work(editor: &mut Session, runtime: &Runtime<FileResult>, gate: &
     }
 }
 
+/// Hands the analysis of the active buffer to the bounded worker service.
+///
+/// Highlighting is decoration, so a refused submission only frees the request
+/// again. The next transition asks for it once more.
+fn submit_analysis_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) {
+    let Some(request) = editor.take_analysis_request() else {
+        return;
+    };
+    let handle = gate.begin(ANALYSIS_SLOT, &runtime.cancellation_root());
+    let submitted = runtime.submit_worker(handle, ANALYSIS_DEADLINE, move |cancellation| {
+        WorkResult::Analysis(request.run(&cancellation))
+    });
+    if submitted.is_err() {
+        editor.abandon_analysis_request();
+    }
+}
+
 /// Applies one result of the bounded worker service.
 fn complete(
     editor: &mut Session,
     gate: &PublicationGate,
-    event: Option<RuntimeEvent<FileResult>>,
+    event: Option<RuntimeEvent<WorkResult>>,
 ) -> Step {
     let Some(event) = event else {
-        // The runtime is gone, so no further file result can arrive.
+        // The runtime is gone, so no further result can arrive.
         return Step::Handled(Redraw::Skipped);
     };
     if !gate.accepts(&event.request) {
         // A newer request owns the slot, so this result is obsolete.
         return Step::Handled(Redraw::Skipped);
     }
+    let analysis = event.request.slot() == ANALYSIS_SLOT;
     Step::Handled(match event.result {
-        Ok(result) => editor.apply_file_result(result),
+        Ok(WorkResult::File(result)) => editor.apply_file_result(result),
+        Ok(WorkResult::Analysis(result)) => editor.apply_analysis_result(result),
+        // An analysis that fails, times out, or is cancelled renders plain text
+        // and reports nothing, because highlighting is decoration.
+        Err(_) if analysis => {
+            editor.abandon_analysis_request();
+            Redraw::Skipped
+        }
         Err(RuntimeError::Timeout) => editor.abandon_file_request(FileRequestFailure::Timeout),
         // A cancelled request and a failed worker both leave the buffer
         // unchanged, so the editor stays usable and the user can try again.

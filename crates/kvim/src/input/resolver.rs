@@ -3,7 +3,8 @@
 //!
 //! The resolver never reads a clock. The terminal event loop measures the
 //! elapsed time and supplies it with every request, so resolution stays
-//! deterministic and testable.
+//! deterministic and testable. The elapsed time serves the which-key overlay
+//! only. A pending sequence holds no deadline and waits for the next key.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
@@ -14,6 +15,13 @@ use crate::terminal::{Chord, Key, KeyCode};
 use super::command::Command;
 use super::mode::InputContext;
 use super::registry::{Registry, WhichKeyRow};
+
+/// The time between the first key of a sequence and the which-key overlay.
+///
+/// The delay keeps a fast key combination from flashing the overlay. The value
+/// belongs to `EditorSettings`, and it stays here until that structure holds
+/// it. See `docs/input-actions.md`.
+pub const WHICH_KEY_DELAY: Duration = Duration::from_millis(500);
 
 /// One edit of an open line prompt.
 ///
@@ -45,6 +53,8 @@ pub enum Resolution {
     Prompt(PromptEdit),
     /// The sequence is a valid prefix of at least one longer sequence.
     Pending,
+    /// `Esc` or `Ctrl-C` cancelled the pending sequence and the pending count.
+    Cancelled,
     /// The key reaches no command. Pending input is reset.
     ///
     /// In Insert mode a printable key produces this outcome, and the editor
@@ -52,19 +62,10 @@ pub enum Resolution {
     NoMatch,
 }
 
-/// The outcome of one deadline check.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum Expiry {
-    /// The pending sequence reached its deadline and was reset.
-    Expired,
-    /// Nothing changed.
-    Unchanged,
-}
-
 /// The pending input of the resolver.
 ///
-/// The active variant ties the pending keys, the pending count, and the two
-/// deadlines together, so a pending sequence without a deadline cannot exist.
+/// The active variant ties the pending keys, the pending count, and the overlay
+/// time together, so a pending sequence without an overlay time cannot exist.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 enum PendingInput {
     /// No key and no count wait for completion.
@@ -74,7 +75,6 @@ enum PendingInput {
     Active {
         keys: Vec<Key>,
         count: Option<u32>,
-        deadline: Duration,
         overlay_at: Duration,
     },
 }
@@ -82,9 +82,14 @@ enum PendingInput {
 /// The modal input resolver.
 ///
 /// The resolver accepts an optional decimal count, then a bounded key sequence.
-/// It classifies every request as a complete match, a valid prefix, or no match.
-/// Only a mode that reports [`crate::input::Mode::accepts_count`] opens a count,
-/// so a digit stays buffer text in Insert mode.
+/// It classifies every request as a complete match, a valid prefix, a cancel, or
+/// no match. Only a mode that reports [`crate::input::Mode::accepts_count`]
+/// opens a count, so a digit stays buffer text in Insert mode.
+///
+/// A pending sequence holds no deadline. It waits for the next key, and only
+/// `Esc`, `Ctrl-C`, a mismatch, a completed command, or a mode change ends it.
+/// The registry rejects a sequence that both completes a command and starts a
+/// longer sequence, so no ambiguity remains for a timer to resolve.
 ///
 /// ```
 /// use std::time::Duration;
@@ -152,14 +157,15 @@ impl Resolver {
         }
     }
 
-    /// Returns the elapsed time at which the pending sequence expires.
+    /// Returns the elapsed time at which the which-key overlay appears.
     ///
-    /// The event loop uses the value to wake before the deadline.
+    /// The event loop uses the value to wake exactly when the overlay becomes
+    /// visible. It is the only time-driven state change of the resolver.
     #[must_use]
-    pub fn deadline(&self) -> Option<Duration> {
+    pub fn overlay_deadline(&self) -> Option<Duration> {
         match self.pending {
             PendingInput::Idle => None,
-            PendingInput::Active { deadline, .. } => Some(deadline),
+            PendingInput::Active { overlay_at, .. } => Some(overlay_at),
         }
     }
 
@@ -183,25 +189,12 @@ impl Resolver {
         self.pending = PendingInput::Idle;
     }
 
-    /// Resets pending input when it reached its deadline.
-    ///
-    /// The event loop calls the function on every tick with the elapsed time.
-    pub fn expire(&mut self, now: Duration) -> Expiry {
-        match self.pending {
-            PendingInput::Active { deadline, .. } if now >= deadline => {
-                self.pending = PendingInput::Idle;
-                Expiry::Expired
-            }
-            _ => Expiry::Unchanged,
-        }
-    }
-
     /// Returns the which-key overlay rows, or `None` while the overlay stays
     /// hidden.
     ///
-    /// The overlay appears after the which-key delay and lists the commands that
-    /// the pending sequence can still reach. The rows come from the registry, so
-    /// their order is deterministic.
+    /// The overlay appears after [`WHICH_KEY_DELAY`] and lists the keys that may
+    /// follow the pending sequence. The rows come from the registry, so their
+    /// order is deterministic.
     #[must_use]
     pub fn which_key(&self, now: Duration) -> Option<Vec<WhichKeyRow>> {
         match &self.pending {
@@ -216,9 +209,9 @@ impl Resolver {
 
     /// Resolves one key at the elapsed time `now`.
     ///
-    /// The function expires an overdue sequence first, then accumulates a
-    /// decimal count in a mode that holds one, then extends the pending
-    /// sequence.
+    /// The function cancels pending input on `Esc` or `Ctrl-C` first, then
+    /// accumulates a decimal count in a mode that holds one, then extends the
+    /// pending sequence. The elapsed time only arms the which-key overlay.
     pub fn resolve(&mut self, key: Key, now: Duration) -> Resolution {
         if self.context.prompt().is_some() {
             debug_assert!(
@@ -227,7 +220,13 @@ impl Resolver {
             );
             return prompt_edit(key).map_or(Resolution::NoMatch, Resolution::Prompt);
         }
-        self.expire(now);
+        // A cancel key ends pending input at every depth and in every mode.
+        // Without pending input the same key reaches the registry, so `Esc` and
+        // `Ctrl-C` still return to Normal mode.
+        if matches!(self.pending, PendingInput::Active { .. }) && is_cancel_key(key) {
+            self.pending = PendingInput::Idle;
+            return Resolution::Cancelled;
+        }
         let mode = self.context.mode();
         // Taking the pending state first makes every later branch a reset by
         // default. Only a still-pending outcome puts it back.
@@ -242,7 +241,7 @@ impl Resolver {
         if keys.is_empty() && mode.accepts_count() {
             match self.accumulate_count(key, count) {
                 CountStep::Grown(value) => {
-                    self.pending = self.arm(Vec::new(), Some(value), now);
+                    self.pending = Self::arm(Vec::new(), Some(value), now);
                     return Resolution::Pending;
                 }
                 CountStep::AboveMaximum => return Resolution::NoMatch,
@@ -272,7 +271,7 @@ impl Resolver {
             };
         }
         if longer {
-            self.pending = self.arm(keys, count, now);
+            self.pending = Self::arm(keys, count, now);
             return Resolution::Pending;
         }
         Resolution::NoMatch
@@ -286,13 +285,12 @@ impl Resolver {
         }
     }
 
-    /// Builds the active pending state and arms both deadlines.
-    fn arm(&self, keys: Vec<Key>, count: Option<u32>, now: Duration) -> PendingInput {
+    /// Builds the active pending state and arms the overlay time.
+    fn arm(keys: Vec<Key>, count: Option<u32>, now: Duration) -> PendingInput {
         PendingInput::Active {
             keys,
             count,
-            deadline: saturating_deadline(now, self.settings.sequence_timeout),
-            overlay_at: saturating_deadline(now, self.settings.which_key_delay),
+            overlay_at: saturating_deadline(now, WHICH_KEY_DELAY),
         }
     }
 
@@ -339,15 +337,26 @@ fn count_digit(key: Key) -> Option<u8> {
     u8::try_from(value.to_digit(10)?).ok()
 }
 
+/// Reports whether one key cancels pending input.
+///
+/// The reference configuration maps `<C-c>` to `<Esc>` in every mode, so both
+/// keys cancel a pending sequence and both close an open prompt.
+fn is_cancel_key(key: Key) -> bool {
+    matches!(
+        (key.chord(), key.code()),
+        (Chord::Plain, KeyCode::Esc) | (Chord::Ctrl, KeyCode::Char('c'))
+    )
+}
+
 /// Translates one key into a prompt line edit.
 fn prompt_edit(key: Key) -> Option<PromptEdit> {
+    if is_cancel_key(key) {
+        return Some(PromptEdit::Cancel);
+    }
     match (key.chord(), key.code()) {
         (Chord::Plain, KeyCode::Char(value)) => Some(PromptEdit::Insert(value)),
         (Chord::Plain, KeyCode::Backspace) => Some(PromptEdit::DeleteBackward),
         (Chord::Plain, KeyCode::Enter) => Some(PromptEdit::Accept),
-        (Chord::Plain, KeyCode::Esc) | (Chord::Ctrl, KeyCode::Char('c')) => {
-            Some(PromptEdit::Cancel)
-        }
         _ => None,
     }
 }
@@ -366,7 +375,7 @@ mod tests {
     use crate::settings::InputSettings;
     use crate::terminal::{Key, KeyCode};
 
-    use super::{Expiry, PromptEdit, Resolution, Resolver};
+    use super::{PromptEdit, Resolution, Resolver, WHICH_KEY_DELAY};
 
     const NOW: Duration = Duration::ZERO;
 
@@ -478,7 +487,7 @@ mod tests {
             assert_eq!(resolver.resolve(key, NOW), Resolution::Pending);
         }
         assert_eq!(resolver.resolve(ch('9'), NOW), Resolution::NoMatch);
-        assert_eq!(resolver.deadline(), None);
+        assert_eq!(resolver.overlay_deadline(), None);
         assert_eq!(resolver.resolve(ch('j'), NOW), command(Command::MoveDown));
     }
 
@@ -500,7 +509,7 @@ mod tests {
                 "{keys:?} is a valid prefix"
             );
             assert_eq!(resolver.pending_keys(), keys.as_slice());
-            assert!(resolver.deadline().is_some());
+            assert!(resolver.overlay_deadline().is_some());
         }
     }
 
@@ -510,36 +519,82 @@ mod tests {
         assert_eq!(resolver.resolve(ch('g'), NOW), Resolution::Pending);
         assert_eq!(resolver.resolve(ch('q'), NOW), Resolution::NoMatch);
         assert!(resolver.pending_keys().is_empty());
-        assert_eq!(resolver.deadline(), None);
+        assert_eq!(resolver.overlay_deadline(), None);
     }
 
     #[test]
-    fn the_sequence_deadline_resets_pending_input() {
-        let settings = InputSettings::default();
+    fn a_pending_sequence_waits_for_the_next_key_without_a_deadline() {
         let mut resolver = resolver();
         assert_eq!(resolver.resolve(ch('g'), NOW), Resolution::Pending);
-        let before = settings.sequence_timeout - Duration::from_millis(1);
-        assert_eq!(resolver.expire(before), Expiry::Unchanged);
+        // The user reads the overlay for an hour and the sequence survives.
+        let late = Duration::from_secs(3_600);
         assert_eq!(resolver.pending_keys(), [ch('g')]);
-        assert_eq!(resolver.expire(settings.sequence_timeout), Expiry::Expired);
-        assert!(resolver.pending_keys().is_empty());
+        assert!(resolver.which_key(late).is_some());
         assert_eq!(
-            resolver.expire(settings.sequence_timeout),
-            Expiry::Unchanged
+            resolver.resolve(ch('g'), late),
+            command(Command::MoveFirstLine),
+            "no deadline abandons the sequence, so the late key completes it"
         );
     }
 
+    /// Returns the two keys that cancel pending input.
+    fn cancel_keys() -> [(&'static str, Key); 2] {
+        [
+            ("Esc", Key::plain(KeyCode::Esc)),
+            ("Ctrl-C", Key::ctrl(KeyCode::Char('c'))),
+        ]
+    }
+
     #[test]
-    fn a_key_after_the_deadline_starts_a_new_sequence() {
-        let settings = InputSettings::default();
-        let mut resolver = resolver();
-        assert_eq!(resolver.resolve(ch('g'), NOW), Resolution::Pending);
-        assert_eq!(
-            resolver.resolve(ch('g'), settings.sequence_timeout),
-            Resolution::Pending,
-            "the expired `g` must not complete `gg`"
-        );
-        assert_eq!(resolver.pending_keys(), [ch('g')]);
+    fn a_cancel_key_ends_pending_input_in_every_mode_and_at_every_depth() {
+        // Insert mode reaches no sequence and holds no count, so it never holds
+        // pending input. Every other mode reaches one of these states.
+        let cases: [(Mode, &[Key]); 5] = [
+            (Mode::Normal, &[ch('3')]),
+            (Mode::Normal, &[ch(' ')]),
+            (Mode::Normal, &[ch(' '), ch('f')]),
+            (Mode::Visual, &[ch(' ')]),
+            (Mode::VisualBlock, &[ch('3')]),
+        ];
+        for (name, cancel) in cancel_keys() {
+            for (mode, keys) in cases {
+                let mut resolver = resolver();
+                resolver.set_context(InputContext::Mode(mode));
+                assert_eq!(
+                    feed(&mut resolver, keys),
+                    Resolution::Pending,
+                    "{mode} `{keys:?}` must stay pending"
+                );
+                assert_eq!(
+                    resolver.resolve(cancel, NOW),
+                    Resolution::Cancelled,
+                    "{name} must cancel `{keys:?}` in {mode}"
+                );
+                assert!(resolver.pending_keys().is_empty());
+                assert!(resolver.which_key(Duration::from_secs(1)).is_none());
+                assert_eq!(resolver.overlay_deadline(), None);
+            }
+        }
+    }
+
+    #[test]
+    fn a_cancel_key_without_pending_input_reaches_the_registry() {
+        for (name, cancel) in cancel_keys() {
+            for mode in [
+                Mode::Insert,
+                Mode::Visual,
+                Mode::VisualLine,
+                Mode::VisualBlock,
+            ] {
+                let mut resolver = resolver();
+                resolver.set_context(InputContext::Mode(mode));
+                assert_eq!(
+                    resolver.resolve(cancel, NOW),
+                    command(Command::ReturnToNormal),
+                    "{name} returns {mode} to Normal mode"
+                );
+            }
+        }
     }
 
     #[test]
@@ -548,7 +603,7 @@ mod tests {
         assert_eq!(resolver.resolve(ch('g'), NOW), Resolution::Pending);
         resolver.set_context(InputContext::Mode(Mode::Visual));
         assert!(resolver.pending_keys().is_empty());
-        assert_eq!(resolver.deadline(), None);
+        assert_eq!(resolver.overlay_deadline(), None);
         assert_eq!(
             resolver.resolve(ch('d'), NOW),
             command(Command::DeleteSelection)
@@ -564,57 +619,62 @@ mod tests {
     }
 
     #[test]
-    fn the_leader_sequence_cancels_without_a_command() {
-        let mut resolver = resolver();
-        assert_eq!(resolver.resolve(ch(' '), NOW), Resolution::Pending);
-        assert_eq!(
-            resolver.resolve(Key::plain(KeyCode::Esc), NOW),
-            Resolution::NoMatch,
-            "Esc carries no Normal-mode binding, so the leader sequence cancels"
-        );
-        assert!(resolver.pending_keys().is_empty());
-        assert!(resolver.which_key(Duration::from_secs(1)).is_none());
-    }
-
-    #[test]
-    fn the_which_key_overlay_appears_after_the_delay() {
-        let settings = InputSettings::default();
+    fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
         let mut resolver = resolver();
         assert!(resolver.which_key(NOW).is_none(), "no sequence is pending");
         assert_eq!(resolver.resolve(ch(' '), NOW), Resolution::Pending);
-        let before = settings.which_key_delay - Duration::from_millis(1);
+        let before = WHICH_KEY_DELAY - Duration::from_millis(1);
         assert!(resolver.which_key(before).is_none());
         let rows = resolver
-            .which_key(settings.which_key_delay)
+            .which_key(WHICH_KEY_DELAY)
             .expect("the overlay appears after the delay");
         let listed = rows
             .iter()
-            .map(|row| (row.keys.to_string(), row.label()))
+            .map(|row| (row.key_label().to_string(), row.target.to_string()))
             .collect::<Vec<_>>();
         assert_eq!(
             listed,
             vec![
-                ("/".to_owned(), "Toggle the comment"),
+                ("/".to_owned(), "Toggle the comment".to_owned()),
                 (
                     "\\".to_owned(),
-                    "Split the window with the inverse adaptive rule"
+                    "Split the window with the inverse adaptive rule".to_owned()
                 ),
                 (
-                    "c f".to_owned(),
-                    "Toggle format-on-save for the active buffer"
+                    "c".to_owned(),
+                    "Toggle format-on-save for the active buffer".to_owned()
                 ),
-                ("e".to_owned(), "Show the diagnostic float"),
-                ("f /".to_owned(), "Open the ripgrep search picker"),
-                ("f b".to_owned(), "Open the buffer picker"),
-                ("f f".to_owned(), "Open the file search picker"),
-                ("k".to_owned(), "Show hover information"),
-                ("o".to_owned(), "Open the buffer picker"),
-                ("q".to_owned(), "Close the focused window"),
-                ("x".to_owned(), "Unload the active buffer"),
+                ("e".to_owned(), "Show the diagnostic float".to_owned()),
+                ("f".to_owned(), "+3 commands".to_owned()),
+                ("k".to_owned(), "Show hover information".to_owned()),
+                ("o".to_owned(), "Open the buffer picker".to_owned()),
+                ("q".to_owned(), "Close the focused window".to_owned()),
+                ("x".to_owned(), "Unload the active buffer".to_owned()),
                 (
                     "Enter".to_owned(),
-                    "Split the window with the adaptive rule"
+                    "Split the window with the adaptive rule".to_owned()
                 ),
+            ]
+        );
+
+        // One more key moves the overlay one level down.
+        assert_eq!(
+            resolver.resolve(ch('f'), WHICH_KEY_DELAY),
+            Resolution::Pending
+        );
+        let rows = resolver
+            .which_key(WHICH_KEY_DELAY * 2)
+            .expect("the overlay stays open while the sequence is pending");
+        let listed = rows
+            .iter()
+            .map(|row| (row.key_label().to_string(), row.target.to_string()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            listed,
+            vec![
+                ("/".to_owned(), "Open the ripgrep search picker".to_owned()),
+                ("b".to_owned(), "Open the buffer picker".to_owned()),
+                ("f".to_owned(), "Open the file search picker".to_owned()),
             ]
         );
     }
