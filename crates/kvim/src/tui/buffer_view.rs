@@ -8,7 +8,7 @@ use std::iter::Peekable;
 use std::str::CharIndices;
 
 use ratatui::buffer::Buffer as CellBuffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use crate::core::{CharPosition, LineIndex, TextBuffer};
@@ -16,7 +16,7 @@ use crate::editor::{Cursor, Selection};
 use crate::language::HighlightSpan;
 use crate::settings::{DisplaySettings, SignColumn};
 
-use super::cells::{RowCell, RowSymbol, layout_row, terminal_column};
+use super::cells::{RowCell, layout_row, terminal_column};
 use super::theme::{SyntaxRole, Theme, ThemeRole};
 
 /// The number of rows that the winbar of one window occupies.
@@ -316,9 +316,10 @@ impl RowPainter<'_> {
 
     /// Returns the style of one rendered cell.
     ///
-    /// Each overlay patches the style below it, so the cursor keeps the colors
-    /// of a selection or of a match and only inverts them. The syntax role sits
-    /// directly above the text style, so every overlay still wins over it.
+    /// Each overlay patches the style below it, so a match keeps the colors of
+    /// a selection. The syntax role sits directly above the text style, so
+    /// every overlay still wins over it. No overlay marks the cursor cell: the
+    /// terminal draws its own cursor there. See `docs/windows.md`.
     fn cell_style(
         &self,
         base: Style,
@@ -355,16 +356,47 @@ impl RowPainter<'_> {
             };
             style = style.patch(self.theme.style(role));
         }
-        let cursor = self.view.cursor;
-        if self.view.focus == WindowFocus::Focused
-            && line == cursor.line().get()
-            && cell.column == cursor.column().get()
-            && cell.symbol != RowSymbol::WideTail
-        {
-            style = style.patch(self.theme.style(ThemeRole::Cursor));
-        }
         style
     }
+}
+
+/// Returns the terminal cell that holds the cursor of one window.
+///
+/// The result accounts for the winbar row, the gutter, and the horizontal
+/// scroll, so the terminal draws its own cursor over the character that the
+/// editor edits. Returns `None` while the cursor sits outside the visible
+/// cells, which keeps the cursor inside its window rectangle at all times.
+pub(super) fn cursor_cell(area: Rect, view: &WindowView<'_>) -> Option<Position> {
+    let text = Rect {
+        y: area.y.saturating_add(WINBAR_ROWS),
+        height: area.height.saturating_sub(WINBAR_ROWS),
+        ..area
+    };
+    if text.is_empty() {
+        return None;
+    }
+    let gutter = gutter_cells(view.buffer, view.display, text.width);
+    let width = text.width.saturating_sub(gutter);
+    if width == 0 {
+        return None;
+    }
+    let line = view.cursor.line().get();
+    let row = u16::try_from(line.checked_sub(view.first_line)?).ok()?;
+    if row >= text.height {
+        return None;
+    }
+    let index = view.buffer.line_index(line).ok()?;
+    let content = view.buffer.line_text(index);
+    let first_cell = terminal_column(&content, view.tab_width, view.left_column).get();
+    let cursor_cell = terminal_column(&content, view.tab_width, view.cursor.column().get()).get();
+    let column = u16::try_from(cursor_cell.checked_sub(first_cell)?).ok()?;
+    if column >= width {
+        return None;
+    }
+    Some(Position {
+        x: text.x.saturating_add(gutter).saturating_add(column),
+        y: text.y.saturating_add(row),
+    })
 }
 
 /// Converts ascending byte offsets of one line into source columns.

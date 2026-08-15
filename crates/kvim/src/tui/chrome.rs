@@ -142,7 +142,8 @@ pub(super) fn render_message(
         };
         let line = format!("{prefix}{}", prompt.text);
         let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
-        // The terminal cursor stays hidden, so the prompt draws its own.
+        // The terminal cursor marks the cell of the focused window, so the
+        // prompt draws its own cursor at the end of the line.
         if let Some(cell) = target.cell_mut((x, area.y)) {
             cell.set_style(base.patch(theme.style(ThemeRole::Cursor)));
         }

@@ -59,4 +59,4 @@ pub use mode::{InputContext, Mode, PromptKind};
 pub use registry::{
     Binding, KeyLabel, KeySequence, Registry, RegistryError, WhichKeyRow, WhichKeyTarget,
 };
-pub use resolver::{PromptEdit, Resolution, Resolver, WHICH_KEY_DELAY};
+pub use resolver::{PromptEdit, Resolution, Resolver};

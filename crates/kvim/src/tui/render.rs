@@ -8,7 +8,7 @@ use ratatui::Frame;
 
 use crate::editor::{ColumnLimit, Cursor};
 
-use super::buffer_view::{WindowFocus, WindowView, render_window};
+use super::buffer_view::{WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
 use super::overlay::render_which_key;
@@ -23,6 +23,10 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     target.set_style(view.area, theme.style(ThemeRole::Text));
 
     let focused = view.windows.focused_window();
+    // The terminal draws its own cursor, so one frame reports at most one
+    // cursor cell: the one of the focused window. An unfocused window reports
+    // none, and the terminal then shows no cursor there. See `docs/windows.md`.
+    let mut cursor_at = None;
     let matches = view.search.map_or(&[][..], |search| &search.matches);
     let match_chars = view
         .search
@@ -79,6 +83,9 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     tab_width: usize::from(view.settings.indent.tab_width.get()),
                 };
                 render_window(target, region.area, theme, &window);
+                if focus == WindowFocus::Focused {
+                    cursor_at = cursor_cell(region.area, &window);
+                }
             }
             // Slice 10 adds the file tree. The band keeps the surface color, so
             // the reserved width already reads as chrome.
@@ -98,5 +105,8 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     render_message(target, bands.message, theme, view.prompt, view.message);
     if let Some(rows) = view.which_key {
         render_which_key(target, bands.body, theme, rows);
+    }
+    if let Some(position) = cursor_at {
+        frame.set_cursor_position(position);
     }
 }

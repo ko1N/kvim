@@ -10,14 +10,16 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use crate::input::WHICH_KEY_DELAY;
-use crate::settings::EditorSettings;
+use crate::settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use crate::terminal::{Key, KeyCode, TerminalEvent};
 use crate::workspace::temp::TempDir;
 
 use super::session::Session;
 
 const NOW: Duration = Duration::ZERO;
+
+/// The which-key delay of the settings that every test session holds.
+const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 
 /// The background of a Visual selection in the reference palette.
 const SELECTION: Color = Color::Rgb(0x28, 0x34, 0x57);
@@ -71,8 +73,25 @@ fn style_at(session: &Session, x: u16, y: u16) -> Style {
         .style()
 }
 
-/// Reports whether one rendered cell holds the cursor.
-fn has_cursor(session: &Session, x: u16, y: u16) -> bool {
+/// Renders one session and returns the cell that holds the terminal cursor.
+///
+/// The editor paints no cursor cell. It reports the cursor position of the
+/// focused window, and the terminal draws its own cursor there.
+fn cursor_position(session: &Session) -> (u16, u16) {
+    let area = session.area();
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).expect("the test backend never fails");
+    terminal
+        .draw(|frame| session.render(frame))
+        .expect("the test backend never fails");
+    let position = terminal
+        .get_cursor_position()
+        .expect("the test backend never fails");
+    (position.x, position.y)
+}
+
+/// Reports whether one rendered cell inverts its colors.
+fn is_reversed(session: &Session, x: u16, y: u16) -> bool {
     style_at(session, x, y)
         .add_modifier
         .contains(Modifier::REVERSED)
@@ -189,7 +208,7 @@ fn the_number_column_shows_absolute_and_relative_numbers() {
 }
 
 #[test]
-fn the_cursor_line_number_and_the_cursor_carry_their_own_roles() {
+fn the_cursor_line_number_carries_its_role_and_the_terminal_cursor_marks_the_cell() {
     let session = with_lines(30, 8, 3);
     // The sign column holds cell zero, so the number column starts at cell one.
     let number = style_at(&session, 1, 1);
@@ -200,9 +219,35 @@ fn the_cursor_line_number_and_the_cursor_carry_their_own_roles() {
         Some(MUTED),
         "a line that is not the cursor line uses the muted number color"
     );
-    // The cursor inverts the cell below it instead of naming a color.
-    assert!(has_cursor(&session, 5, 1));
-    assert!(!has_cursor(&session, 6, 1));
+    // The terminal draws the cursor on the first text cell, and the frame
+    // inverts no cell of its own.
+    assert_eq!(cursor_position(&session), (5, 1));
+    assert!(!is_reversed(&session, 5, 1));
+    assert!(!is_reversed(&session, 6, 1));
+}
+
+#[test]
+fn the_cursor_follows_the_gutter_and_the_horizontal_scroll() {
+    let mut session = with_lines(30, 8, 1);
+    assert_eq!(
+        cursor_position(&session),
+        (5, 1),
+        "the gutter holds 5 cells"
+    );
+
+    // `$` moves the cursor onto the last character of `line0`.
+    type_keys(&mut session, "$");
+    assert_eq!(cursor_position(&session), (9, 1));
+
+    // A long line scrolls horizontally, and the cursor stays inside the window.
+    press(&mut session, 'i');
+    type_keys(&mut session, &"x".repeat(60));
+    let (x, y) = cursor_position(&session);
+    assert_eq!(y, 1);
+    assert!(
+        (5..30).contains(&x),
+        "the cursor stays inside the text cells of the window"
+    );
 }
 
 #[test]
@@ -353,10 +398,13 @@ fn several_splits_each_render_their_own_winbar_and_focus_style() {
     assert_eq!(focused.fg, Some(TITLE));
     assert_eq!(unfocused.fg, Some(MUTED));
 
-    // Only the focused window draws the cursor. `Esc` left it on the last
+    // Only the focused window holds the cursor. `Esc` left it on the last
     // character of the line, which is the fifth text cell of each window.
-    assert!(has_cursor(&session, 39, 1));
-    assert!(!has_cursor(&session, 9, 1));
+    assert_eq!(cursor_position(&session), (39, 1));
+    assert!(
+        !is_reversed(&session, 9, 1),
+        "an unfocused window shows no cursor"
+    );
 }
 
 #[test]
@@ -382,9 +430,12 @@ fn two_splits_paint_two_different_buffers() {
         " 1   fn first() {}             1   fn second() {}",
         "each window paints the buffer of its own leaf"
     );
-    // Only the focused window draws the cursor.
-    assert!(has_cursor(&session, 35, 1));
-    assert!(!has_cursor(&session, 5, 1));
+    // Only the focused window holds the cursor.
+    assert_eq!(cursor_position(&session), (35, 1));
+    assert!(
+        !is_reversed(&session, 5, 1),
+        "an unfocused window shows no cursor"
+    );
 }
 
 #[test]

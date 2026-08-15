@@ -17,6 +17,7 @@ use ratatui::layout::Rect;
 use thiserror::Error;
 use tokio::time::sleep;
 
+use crate::input::Mode;
 use crate::language::ANALYSIS_DEADLINE;
 use crate::runtime::{
     PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent, SubmitError,
@@ -24,7 +25,8 @@ use crate::runtime::{
 };
 use crate::settings::EditorSettings;
 use crate::terminal::{
-    CrosstermControl, EventSource, TerminalError, TerminalEvent, TerminalSession,
+    CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
+    TerminalSession,
 };
 use crate::workspace::FileResult;
 
@@ -94,15 +96,30 @@ enum Step {
 /// Returns [`EditorError`] when a terminal control step fails, when a draw
 /// fails, or when the event stream fails [`EVENT_ERRORS_MAX`] times in a row.
 pub async fn run(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), EditorError> {
-    let terminal =
+    let mut terminal =
         TerminalSession::enter(CrosstermControl::new()).map_err(EditorError::Terminal)?;
-    let outcome = drive(settings, path).await;
+    let outcome = drive(&mut terminal, settings, path).await;
     terminal.restore().map_err(EditorError::Terminal)?;
     outcome
 }
 
+/// Returns the cursor shape that one editor mode shows.
+///
+/// Insert mode shows a vertical bar, and every other mode shows a block. See
+/// `docs/windows.md`.
+const fn cursor_shape(mode: Mode) -> CursorShape {
+    match mode {
+        Mode::Insert => CursorShape::Bar,
+        Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => CursorShape::Block,
+    }
+}
+
 /// Drives one editor session over the process terminal.
-async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), EditorError> {
+async fn drive<C: TerminalControl>(
+    session: &mut TerminalSession<C>,
+    settings: EditorSettings,
+    path: Option<PathBuf>,
+) -> Result<(), EditorError> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(EditorError::Draw)?;
     let size = terminal.size().map_err(EditorError::Draw)?;
     let mut editor = Session::new(Rect::new(0, 0, size.width, size.height), settings);
@@ -119,6 +136,11 @@ async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), Ed
         editor.open_path(path);
     }
     submit_background_work(&mut editor, &runtime, &gate);
+    // The shape follows the mode, so the editor writes it once at the start and
+    // then only after a mode change. The sequence is decoration: a terminal that
+    // ignores it still shows its own cursor.
+    let mut shape = cursor_shape(editor.mode());
+    let _ = session.set_cursor_shape(shape);
     terminal
         .draw(|frame| editor.render(frame))
         .map_err(EditorError::Draw)?;
@@ -143,6 +165,11 @@ async fn drive(settings: EditorSettings, path: Option<PathBuf>) -> Result<(), Ed
             }
         };
         submit_background_work(&mut editor, &runtime, &gate);
+        let next_shape = cursor_shape(editor.mode());
+        if next_shape != shape {
+            shape = next_shape;
+            let _ = session.set_cursor_shape(shape);
+        }
         match step {
             Step::Handled(Redraw::Needed) => {
                 errors = 0;
