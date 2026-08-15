@@ -4,16 +4,20 @@
 //! output, and no change to editor state. Every window rectangle comes from the
 //! one layout calculation. See `docs/windows.md`.
 
+use std::iter::Peekable;
+use std::str::CharIndices;
+
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 
 use crate::core::{CharPosition, LineIndex, TextBuffer};
 use crate::editor::{Cursor, Selection};
+use crate::language::HighlightSpan;
 use crate::settings::{DisplaySettings, SignColumn};
 
 use super::cells::{RowCell, RowSymbol, layout_row, terminal_column};
-use super::theme::{Theme, ThemeRole};
+use super::theme::{SyntaxRole, Theme, ThemeRole};
 
 /// The number of rows that the winbar of one window occupies.
 pub(super) const WINBAR_ROWS: u16 = 1;
@@ -63,12 +67,26 @@ pub(super) struct WindowView<'a> {
     pub(super) matches: &'a [CharPosition],
     /// The number of characters that one match holds.
     pub(super) match_chars: usize,
+    /// The highlight spans of the newest accepted analysis, in ascending order.
+    ///
+    /// The list is empty while no language adapter serves the buffer, and while
+    /// analysis is unavailable, cancelled, or rejected. The window then renders
+    /// plain text.
+    pub(super) highlights: &'a [HighlightSpan],
     /// Whether the window holds the input focus.
     pub(super) focus: WindowFocus,
     /// The visible layout settings of the editor.
     pub(super) display: &'a DisplaySettings,
     /// The number of cells that one tab occupies.
     pub(super) tab_width: usize,
+}
+
+/// One syntax role over inclusive source columns of one visible line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ColumnRole {
+    first_column: usize,
+    last_column: usize,
+    role: SyntaxRole,
 }
 
 /// One search match inside one visible line.
@@ -279,6 +297,7 @@ impl RowPainter<'_> {
         let row = layout_row(&content, tab_width, first_cell, usize::from(width));
         let line_len = self.view.buffer.line_len_chars(index);
         let selected = selected_columns(self.view, index, line_len);
+        let roles = line_roles(self.view.highlights, line, &content);
         let base = self.theme.style(ThemeRole::Text);
 
         for (offset, cell) in row.iter().enumerate() {
@@ -291,23 +310,31 @@ impl RowPainter<'_> {
                 continue;
             };
             target_cell.set_symbol(cell.symbol.as_str(scratch));
-            target_cell.set_style(self.cell_style(base, selected, line, line_len, *cell));
+            target_cell.set_style(self.cell_style(base, selected, &roles, line, line_len, *cell));
         }
     }
 
     /// Returns the style of one rendered cell.
     ///
     /// Each overlay patches the style below it, so the cursor keeps the colors
-    /// of a selection or of a match and only inverts them.
+    /// of a selection or of a match and only inverts them. The syntax role sits
+    /// directly above the text style, so every overlay still wins over it.
     fn cell_style(
         &self,
         base: Style,
         selected: Option<(usize, usize)>,
+        roles: &[ColumnRole],
         line: usize,
         line_len: usize,
         cell: RowCell,
     ) -> Style {
         let mut style = base;
+        if let Some(found) = roles
+            .iter()
+            .find(|found| cell.column >= found.first_column && cell.column <= found.last_column)
+        {
+            style = style.patch(self.theme.style(ThemeRole::Syntax(found.role)));
+        }
         if let Some((first, last)) = selected
             && cell.column >= first
             && cell.column <= last
@@ -338,6 +365,67 @@ impl RowPainter<'_> {
         }
         style
     }
+}
+
+/// Converts ascending byte offsets of one line into source columns.
+///
+/// The walk moves forward only, so one pass over the line converts every
+/// boundary of that line.
+struct ColumnCursor<'a> {
+    characters: Peekable<CharIndices<'a>>,
+    column: usize,
+}
+
+impl ColumnCursor<'_> {
+    /// Returns the source column of the character that holds one byte offset.
+    ///
+    /// An offset behind the last character returns the column after the line,
+    /// so a malformed span cannot place a role inside a character.
+    fn column_at(&mut self, byte: usize) -> usize {
+        while self
+            .characters
+            .peek()
+            .is_some_and(|(offset, _)| *offset < byte)
+        {
+            self.characters.next();
+            self.column += 1;
+        }
+        self.column
+    }
+}
+
+/// Returns the syntax roles of one visible line, in inclusive source columns.
+///
+/// A language adapter reports byte ranges inside a line, but the renderer
+/// styles source columns. A multi-byte character makes the two differ, so the
+/// conversion happens here, at the boundary that owns cells.
+fn line_roles(spans: &[HighlightSpan], line: usize, content: &str) -> Vec<ColumnRole> {
+    let Ok(line) = u32::try_from(line) else {
+        debug_assert!(false, "a buffer holds fewer lines than u32 counts");
+        return Vec::new();
+    };
+    let first = spans.partition_point(|span| span.line < line);
+    let mut cursor = ColumnCursor {
+        characters: content.char_indices().peekable(),
+        column: 0,
+    };
+    let mut roles = Vec::new();
+    for span in spans[first..]
+        .iter()
+        .take_while(|span| span.line == line)
+        .filter(|span| span.start_byte < span.end_byte)
+    {
+        let first_column = cursor.column_at(span.start_byte as usize);
+        let last_column = cursor.column_at(span.end_byte as usize).saturating_sub(1);
+        if last_column >= first_column {
+            roles.push(ColumnRole {
+                first_column,
+                last_column,
+                role: span.role,
+            });
+        }
+    }
+    roles
 }
 
 /// Returns the number that one row shows, or `None` while both settings are off.
@@ -430,4 +518,147 @@ fn match_spans(view: &WindowView<'_>, rows: u16) -> Vec<MatchSpan> {
         });
     }
     spans
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::buffer::Buffer as CellBuffer;
+    use ratatui::layout::Rect;
+    use ratatui::style::Color;
+
+    use crate::core::TextBuffer;
+    use crate::editor::EditingState;
+    use crate::language::HighlightSpan;
+    use crate::settings::{EditorSettings, FileSettings};
+    use crate::tui::SyntaxRole;
+
+    use super::super::theme::{Theme, ThemeRole};
+    use super::{WindowFocus, WindowView, render_window};
+
+    /// The window rectangle of every test, including the winbar row.
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 4,
+    };
+
+    /// Renders one buffer with highlight spans and returns the cell buffer.
+    fn draw(text: &str, highlights: &[HighlightSpan]) -> CellBuffer {
+        let buffer =
+            TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+        let settings = EditorSettings::default();
+        let editing = EditingState::new(&buffer);
+        let view = WindowView {
+            buffer: &buffer,
+            name: "test.rs",
+            first_line: 0,
+            left_column: 0,
+            cursor: editing.cursor(),
+            selection: None,
+            matches: &[],
+            match_chars: 0,
+            highlights,
+            focus: WindowFocus::Unfocused,
+            display: &settings.display,
+            tab_width: usize::from(settings.indent.tab_width.get()),
+        };
+        let mut target = CellBuffer::empty(AREA);
+        render_window(&mut target, AREA, Theme::new(settings.theme), &view);
+        target
+    }
+
+    /// Returns the foreground color of one cell of the first text row.
+    fn foreground(target: &CellBuffer, x: u16) -> Option<Color> {
+        target
+            .cell((x, super::WINBAR_ROWS))
+            .and_then(|cell| cell.fg.into())
+    }
+
+    fn syntax_color(role: SyntaxRole) -> Option<Color> {
+        Theme::new(EditorSettings::default().theme)
+            .style(ThemeRole::Syntax(role))
+            .fg
+    }
+
+    #[test]
+    fn a_highlight_span_styles_the_columns_of_its_role() {
+        let span = HighlightSpan {
+            line: 0,
+            start_byte: 0,
+            end_byte: 3,
+            role: SyntaxRole::Keyword,
+        };
+        let target = draw("let value = 1;\n", &[span]);
+        let gutter = super::gutter_cells(
+            &TextBuffer::from_text("let value = 1;\n", &FileSettings::default()).unwrap(),
+            &EditorSettings::default().display,
+            AREA.width,
+        );
+
+        for offset in 0..3 {
+            assert_eq!(
+                foreground(&target, gutter + offset),
+                syntax_color(SyntaxRole::Keyword),
+                "column {offset} carries the keyword role"
+            );
+        }
+        assert_eq!(
+            foreground(&target, gutter + 3),
+            Theme::new(EditorSettings::default().theme)
+                .style(ThemeRole::Text)
+                .fg,
+            "the span ends at its last column"
+        );
+    }
+
+    #[test]
+    fn a_span_over_multibyte_and_wide_characters_keeps_its_cells() {
+        // The string literal starts at byte 4 and holds three wide characters,
+        // so the span covers two cells for each of them.
+        let text = "let s = \"日本語\";\n";
+        let start = text.find('"').expect("the test text holds a string") as u32;
+        let end = text.rfind('"').expect("the test text holds a string") as u32 + 1;
+        let span = HighlightSpan {
+            line: 0,
+            start_byte: start,
+            end_byte: end,
+            role: SyntaxRole::String,
+        };
+        let target = draw(text, &[span]);
+        let buffer = TextBuffer::from_text(text, &FileSettings::default()).unwrap();
+        let gutter = super::gutter_cells(&buffer, &EditorSettings::default().display, AREA.width);
+
+        // The quote and the three wide characters occupy 1 + 6 + 1 cells.
+        for offset in 8..16 {
+            assert_eq!(
+                foreground(&target, gutter + offset),
+                syntax_color(SyntaxRole::String),
+                "cell {offset} belongs to the string span"
+            );
+        }
+        assert_eq!(
+            foreground(&target, gutter + 16),
+            Theme::new(EditorSettings::default().theme)
+                .style(ThemeRole::Text)
+                .fg,
+            "the semicolon stays plain text"
+        );
+    }
+
+    #[test]
+    fn an_empty_span_list_renders_plain_text() {
+        let target = draw("let value = 1;\n", &[]);
+        let plain = Theme::new(EditorSettings::default().theme)
+            .style(ThemeRole::Text)
+            .fg;
+
+        for x in 0..AREA.width {
+            let color = foreground(&target, x);
+            assert!(
+                color == plain || color.is_none() || x < 5,
+                "column {x} keeps the plain text color"
+            );
+        }
+    }
 }

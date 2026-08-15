@@ -26,7 +26,7 @@ executable is not a second consumer.
 | `core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. Depends on no other module. | Slice 4 |
 | `editor` | Modal editing state: cursors, motions, operators, registers, search, and dot-repeat. | Slices 5–6 |
 | `input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. | Slice 3 |
-| `language` | The language adapter registry, Rust Tree-sitter analysis, and the rust-analyzer session. | Slices 12–13 |
+| `language` | The language adapter registry, language-neutral Tree-sitter analysis, and the language-server session. Rust is the one adapter of the first release. | Slices 12–13 |
 | `clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
 | `runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
 | `settings` | The `EditorSettings` structure and its defaults. Depends on no other module. | Slice 1 |

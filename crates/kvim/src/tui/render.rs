@@ -42,6 +42,10 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     selection: view.editing.selection(view.buffer),
                     matches: if match_chars == 0 { &[] } else { matches },
                     match_chars,
+                    // Slice 14 connects the accepted analysis of the session.
+                    // An empty list renders plain text, which every unsupported,
+                    // cancelled, or rejected analysis must also do.
+                    highlights: &[],
                     focus: if region.id == focused {
                         WindowFocus::Focused
                     } else {

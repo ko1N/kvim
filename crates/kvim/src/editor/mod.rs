@@ -66,6 +66,7 @@ mod edit_tests;
 mod tests;
 
 pub use cursor::{ColumnLimit, Cursor, PreferredColumn};
+pub use edit::AutoIndent;
 pub use motion::CharClass;
 pub use operator::{MotionKind, Operator, motion_kind};
 pub use register::{REGISTER_BYTES_MAX, RegisterShape, RegisterValue, Registers};

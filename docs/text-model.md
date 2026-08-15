@@ -144,9 +144,11 @@ comment toggle preserves the existing indent of each affected line.
 A new line receives an automatic indent. The `Enter` key in Insert mode and the
 `o` and `O` commands all use the same rule.
 
-The language adapter owns the rule. The Rust adapter derives the indent from the
-syntax tree: a new line inside a block gains one level, and a closing delimiter
-loses one level. See [`language-services.md`](language-services.md).
+The language adapter owns the rule. The syntax-tree rule derives the indent from
+the parse result: a new line inside a block gains one level, and a closing
+delimiter loses one level. The adapter names the node kinds and the delimiters
+of its language, so the rule holds for every language. See
+[`language-services.md`](language-services.md).
 
 Kvim uses a fallback rule when no adapter serves the buffer, or when the syntax
 tree for the current buffer version is not yet available. The fallback copies the
