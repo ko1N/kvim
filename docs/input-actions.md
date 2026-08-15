@@ -230,7 +230,7 @@ one edit transaction, so one undo reverses the whole block.
 
 | Keys | Command | Modes |
 |---|---|---|
-| `Ctrl-S` | Save the active buffer | Normal, Insert, Visual, Visual Line |
+| `Ctrl-S` | Save the active buffer | Every mode |
 | `Ctrl-E` | Reveal the active file in the file tree | Normal |
 | `Space o` | Open the buffer picker | Normal |
 | `Space fb` | Open the buffer picker | Normal |
@@ -257,7 +257,7 @@ one edit transaction, so one undo reverses the whole block.
 | `Space \` | Split the window with the inverse adaptive rule | Normal |
 | `Ctrl-\` | Split the window with the inverse adaptive rule | Normal |
 | `Space q` | Close the focused window | Normal |
-| `Ctrl-Q` | Close the focused window | Normal, Insert, Visual, Visual Line |
+| `Ctrl-Q` | Close the focused window | Every mode |
 
 The terminal requests enhanced keyboard reporting so `Ctrl-Alt`, `Ctrl-Enter`,
 and `Ctrl-\` chords stay distinct. A terminal that cannot report one chord leaves
