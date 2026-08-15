@@ -454,6 +454,41 @@ impl EditingState {
         self.commit(context, viewport, plan)
     }
 
+    /// Inserts one line break at the cursor, with the automatic indent.
+    ///
+    /// `Enter` in Insert mode reaches this entry point. The indent follows the
+    /// same rule as `o` and `O`, and the line break and the indent are one
+    /// transaction, so one undo reverses both. See `docs/text-model.md`.
+    pub fn insert_line_break(
+        &mut self,
+        context: &mut EditContext<'_>,
+        viewport: &mut Viewport,
+    ) -> CommandOutcome {
+        // A line break moves the text after the cursor to a new line, so a
+        // pending block rectangle no longer describes the buffer.
+        self.block_insert = None;
+        let plan = edit::plan_line_break(context.buffer, context.indent(), self.cursor);
+        self.commit(context, viewport, plan)
+    }
+
+    /// Deletes the character before the cursor.
+    ///
+    /// `Backspace` in Insert mode reaches this entry point. At column zero the
+    /// delete removes the line ending before the cursor line, so the two lines
+    /// join. At the start of the buffer it changes nothing. The delete is one
+    /// transaction, so one undo reverses it, and it writes no register.
+    pub fn delete_backward(
+        &mut self,
+        context: &mut EditContext<'_>,
+        viewport: &mut Viewport,
+    ) -> CommandOutcome {
+        // The delete moves the text after the cursor, so a pending block
+        // rectangle no longer describes the buffer.
+        self.block_insert = None;
+        let plan = edit::plan_delete_backward(context.buffer, self.cursor);
+        self.commit(context, viewport, plan)
+    }
+
     /// Moves the cursor to the first match of a query.
     ///
     /// The search prompt calls this entry point when the user accepts a query.

@@ -159,6 +159,15 @@ undo reverses both.
 All indent values belong to `EditorSettings`. See [`settings.md`](settings.md).
 No other module holds an indent constant.
 
+## Backward Delete
+
+The `Backspace` key in Insert mode deletes the character before the cursor. At
+column zero it removes the complete line ending before the cursor line, so the
+two lines join. At the start of the buffer it changes nothing.
+
+The delete is one edit transaction, so one undo reverses it. The delete writes
+no register.
+
 ## Deferred Decisions
 
 - The `editor` module owns the automatic indent rule and the shift commands.

@@ -83,6 +83,8 @@ enum PendingInput {
 ///
 /// The resolver accepts an optional decimal count, then a bounded key sequence.
 /// It classifies every request as a complete match, a valid prefix, or no match.
+/// Only a mode that reports [`crate::input::Mode::accepts_count`] opens a count,
+/// so a digit stays buffer text in Insert mode.
 ///
 /// ```
 /// use std::time::Duration;
@@ -215,7 +217,8 @@ impl Resolver {
     /// Resolves one key at the elapsed time `now`.
     ///
     /// The function expires an overdue sequence first, then accumulates a
-    /// decimal count, then extends the pending sequence.
+    /// decimal count in a mode that holds one, then extends the pending
+    /// sequence.
     pub fn resolve(&mut self, key: Key, now: Duration) -> Resolution {
         if self.context.prompt().is_some() {
             debug_assert!(
@@ -229,9 +232,14 @@ impl Resolver {
         // Taking the pending state first makes every later branch a reset by
         // default. Only a still-pending outcome puts it back.
         let (mut keys, count) = self.take_pending();
-        // A digit builds the count only before the sequence starts. A count
-        // inside an operator-pending sequence belongs to the editor.
-        if keys.is_empty() {
+        debug_assert!(
+            count.is_none() || mode.accepts_count(),
+            "only a mode that accepts a count opens one, and a mode change resets pending input"
+        );
+        // A digit builds the count only before the sequence starts, and only in
+        // a mode that holds a count. A count inside an operator-pending sequence
+        // belongs to the editor.
+        if keys.is_empty() && mode.accepts_count() {
             match self.accumulate_count(key, count) {
                 CountStep::Grown(value) => {
                     self.pending = self.arm(Vec::new(), Some(value), now);
@@ -436,6 +444,30 @@ mod tests {
         for (keys, expected) in cases {
             let mut resolver = resolver();
             assert_eq!(feed(&mut resolver, &keys), expected);
+        }
+    }
+
+    #[test]
+    fn a_count_belongs_to_normal_mode_and_the_visual_modes() {
+        for mode in Mode::ALL {
+            let mut resolver = resolver();
+            resolver.set_context(InputContext::Mode(mode));
+            let expected = if mode.accepts_count() {
+                Resolution::Pending
+            } else {
+                // Insert mode holds no count, so the digit reaches no command
+                // and the editor inserts it as buffer text.
+                Resolution::NoMatch
+            };
+            assert_eq!(
+                resolver.resolve(ch('5'), NOW),
+                expected,
+                "a digit in {mode}"
+            );
+            assert!(
+                resolver.pending_keys().is_empty(),
+                "a count key is no sequence key in {mode}"
+            );
         }
     }
 

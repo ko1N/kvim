@@ -78,6 +78,30 @@ fn insert_mode_typing_reaches_the_buffer_including_digits() {
 }
 
 #[test]
+fn insert_mode_wires_enter_and_backspace_to_the_editor_entry_points() {
+    let mut session = session(40, 10);
+    press(&mut session, 'i');
+    type_keys(&mut session, "    alpha");
+
+    // `Enter` copies the indent of the previous non-empty line.
+    press_code(&mut session, KeyCode::Enter);
+    type_keys(&mut session, "beta");
+    assert_eq!(session.buffer().to_string(), "    alpha\n    beta");
+
+    // `Backspace` deletes one character at a time.
+    for _ in 0..4 {
+        press_code(&mut session, KeyCode::Backspace);
+    }
+    assert_eq!(session.buffer().to_string(), "    alpha\n    ");
+
+    // At column zero it joins the cursor line with the line above it.
+    for _ in 0..5 {
+        press_code(&mut session, KeyCode::Backspace);
+    }
+    assert_eq!(session.buffer().to_string(), "    alpha");
+}
+
+#[test]
 fn the_tab_key_follows_the_indent_settings() {
     let mut soft = session(40, 10);
     press(&mut soft, 'i');

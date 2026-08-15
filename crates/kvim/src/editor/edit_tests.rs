@@ -65,6 +65,31 @@ impl Session {
         self.state.insert_text(&mut context, &mut self.view, text)
     }
 
+    fn insert_line_break(&mut self) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            registers: &mut self.registers,
+        };
+        self.state.insert_line_break(&mut context, &mut self.view)
+    }
+
+    fn delete_backward(&mut self) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            registers: &mut self.registers,
+        };
+        self.state.delete_backward(&mut context, &mut self.view)
+    }
+
+    /// Enters Insert mode, which `Enter` and `Backspace` both need.
+    fn enter_insert(&mut self) {
+        self.state.enter_mode(&self.buffer, Mode::Insert);
+    }
+
     fn text(&self) -> String {
         self.buffer.to_string()
     }
@@ -355,6 +380,78 @@ fn open_line_above_copies_the_indent_of_the_previous_non_empty_line() {
 
     session.apply(Command::Undo, None);
     assert_eq!(session.text(), "    alpha\n\n");
+}
+
+#[test]
+fn a_line_break_copies_the_indent_of_the_previous_non_empty_line() {
+    // The cursor line carries the indent.
+    let mut indented = Session::new("    alpha\n");
+    place(&mut indented, 0, 7);
+    indented.enter_insert();
+    assert_eq!(indented.insert_line_break(), CommandOutcome::Changed);
+    assert_eq!(indented.text(), "    alp\n    ha\n");
+    assert_eq!(indented.position(), (1, 4));
+    assert_eq!(indented.state.mode(), Mode::Insert);
+
+    // The line break and its indent are one transaction.
+    indented.apply(Command::Undo, None);
+    assert_eq!(indented.text(), "    alpha\n");
+
+    // An empty cursor line falls back to the line above it.
+    let mut empty = Session::new("    alpha\n\n");
+    place(&mut empty, 1, 0);
+    empty.enter_insert();
+    assert_eq!(empty.insert_line_break(), CommandOutcome::Changed);
+    assert_eq!(empty.text(), "    alpha\n\n    \n");
+    assert_eq!(empty.position(), (2, 4));
+
+    // Inside the leading whitespace the remaining indent moves down behind the
+    // automatic indent.
+    let mut leading = Session::new("    alpha\n");
+    place(&mut leading, 0, 2);
+    leading.enter_insert();
+    assert_eq!(leading.insert_line_break(), CommandOutcome::Changed);
+    assert_eq!(leading.text(), "  \n      alpha\n");
+    assert_eq!(leading.position(), (1, 4));
+}
+
+#[test]
+fn a_backward_delete_removes_one_character_and_joins_lines_at_column_zero() {
+    let mut session = Session::new("alpha\nbeta\n");
+    place(&mut session, 0, 3);
+    session.enter_insert();
+    assert_eq!(session.delete_backward(), CommandOutcome::Changed);
+    assert_eq!(session.text(), "alha\nbeta\n");
+    assert_eq!(session.position(), (0, 2));
+
+    // One undo reverses the delete.
+    session.apply(Command::Undo, None);
+    assert_eq!(session.text(), "alpha\nbeta\n");
+
+    // Column zero joins the cursor line with the line above it.
+    let mut join = Session::new("alpha\nbeta\n");
+    place(&mut join, 1, 0);
+    join.enter_insert();
+    assert_eq!(join.delete_backward(), CommandOutcome::Changed);
+    assert_eq!(join.text(), "alphabeta\n");
+    assert_eq!(join.position(), (0, 5));
+
+    // The start of the buffer holds no character before the cursor.
+    let mut start = Session::new("alpha\n");
+    start.enter_insert();
+    assert_eq!(start.delete_backward(), CommandOutcome::Applied);
+    assert_eq!(start.text(), "alpha\n");
+    assert_eq!(start.position(), (0, 0));
+}
+
+#[test]
+fn a_backward_delete_at_column_zero_removes_a_complete_crlf_ending() {
+    let mut session = Session::new("alpha\r\nbeta\r\n");
+    assert_eq!(session.buffer.line_ending(), LineEnding::Crlf);
+    place(&mut session, 1, 0);
+    session.enter_insert();
+    assert_eq!(session.delete_backward(), CommandOutcome::Changed);
+    assert_eq!(session.text(), "alphabeta\r\n");
 }
 
 /// Selects the rectangle from line 0, column 2, to line 2, column 4.
