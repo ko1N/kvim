@@ -49,6 +49,27 @@ impl Mode {
         self as usize
     }
 
+    /// Reports whether the mode accepts a decimal count before a sequence.
+    ///
+    /// A count prefix belongs to Normal mode and the three Visual modes. Insert
+    /// mode holds no count, because a digit is buffer text there. See
+    /// `docs/input-actions.md`.
+    ///
+    /// ```
+    /// use kvim::input::Mode;
+    ///
+    /// assert!(Mode::Normal.accepts_count());
+    /// assert!(Mode::VisualBlock.accepts_count());
+    /// assert!(!Mode::Insert.accepts_count());
+    /// ```
+    #[inline]
+    pub const fn accepts_count(self) -> bool {
+        match self {
+            Self::Normal | Self::Visual | Self::VisualLine | Self::VisualBlock => true,
+            Self::Insert => false,
+        }
+    }
+
     /// Returns the short name of the mode.
     ///
     /// ```

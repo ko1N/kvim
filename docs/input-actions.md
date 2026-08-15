@@ -79,6 +79,10 @@ The resolver accepts an optional decimal count before a command sequence. The
 count maximum is 9,999. A count above the maximum is a mismatch and resets
 pending input.
 
+A count belongs to Normal mode and the three Visual modes. Insert mode holds no
+count, because a digit is buffer text there. The `input` module owns this rule,
+so no other module filters digit keys.
+
 The resolver classifies each pending sequence as a complete match, a valid
 prefix, or no match. A pending sequence holds at most four keys.
 

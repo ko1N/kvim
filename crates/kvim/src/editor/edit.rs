@@ -286,6 +286,58 @@ pub(super) fn plan_open_line(
     }
 }
 
+/// Plans one line break at the cursor, with the automatic indent.
+///
+/// The plan uses [`fallback_indent_columns`], which `o` and `O` also use, so
+/// `Enter` receives the same automatic indent. The line break and its indent are
+/// one transaction, so one undo reverses both. See `docs/text-model.md`.
+///
+/// The text after the cursor moves to the new line, behind the indent.
+pub(super) fn plan_line_break(
+    buffer: &TextBuffer,
+    indent: IndentPolicy,
+    cursor: Cursor,
+) -> EditPlan {
+    let at = cursor.position(buffer);
+    let rendered = indent.render(fallback_indent_columns(buffer, indent, cursor.line()));
+    let text = format!("{}{rendered}", buffer.line_ending().as_str());
+    let end = at.get() + text.chars().count();
+    EditPlan {
+        transaction: Some(EditTransaction::single(at, TextChange::insert(at, text))),
+        value: None,
+        cursor: CursorTarget::Position(end),
+        next_mode: NextMode::Keep,
+    }
+}
+
+/// Plans one delete of the character before the cursor.
+///
+/// At column zero the plan removes the line ending before the cursor line, so
+/// the two lines join. At the start of the buffer the plan changes nothing. The
+/// plan writes no register value, because a backward delete does not fill a
+/// register in Vim.
+pub(super) fn plan_delete_backward(buffer: &TextBuffer, cursor: Cursor) -> EditPlan {
+    let at = cursor.position(buffer);
+    let line = cursor.line();
+    let range = if cursor.column().get() > 0 {
+        char_range(buffer, at.get() - 1, at.get())
+    } else if line.get() > 0 {
+        // The line ending is two characters in a CRLF buffer, so the range
+        // starts at the content end of the previous line instead of one
+        // character back.
+        let previous = line_at(buffer, line.get() - 1);
+        char_range(buffer, line_content_end(buffer, previous), at.get())
+    } else {
+        return EditPlan::unchanged();
+    };
+    EditPlan {
+        transaction: Some(EditTransaction::single(at, TextChange::delete(range))),
+        value: None,
+        cursor: CursorTarget::Position(range.start().get()),
+        next_mode: NextMode::Keep,
+    }
+}
+
 /// Plans one insertion of typed text at the cursor.
 pub(super) fn plan_insert_text(buffer: &TextBuffer, cursor: Cursor, text: &str) -> EditPlan {
     let at = cursor.position(buffer);

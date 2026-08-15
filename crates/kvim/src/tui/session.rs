@@ -377,14 +377,6 @@ impl Session {
 
     /// Resolves one key and applies the command, the prompt edit, or the text.
     fn handle_key(&mut self, key: Key, now: Duration) -> Redraw {
-        // The resolver accepts a decimal count before every sequence, which is
-        // the rule for Normal mode and the Visual modes. Insert mode has no
-        // count, because a digit is buffer text. Insert-mode keys therefore
-        // reach the registry first, and every key without a binding becomes
-        // text.
-        if self.prompt.is_none() && self.editing.mode() == Mode::Insert && !self.is_bound(key) {
-            return self.insert_key(key);
-        }
         match self.resolver.resolve(key, now) {
             Resolution::Command { command, count } => self.apply_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
@@ -458,32 +450,41 @@ impl Session {
         outcome
     }
 
-    /// Reports whether one key starts an Insert-mode binding.
+    /// Applies one key while Insert mode is active.
     ///
-    /// The registry stays the only owner of the key table, so the session asks
-    /// it instead of comparing key values of its own.
-    fn is_bound(&self, key: Key) -> bool {
-        let registry = self.resolver.registry();
-        let keys = [key];
-        registry.command(Mode::Insert, &keys).is_some()
-            || registry.has_longer_sequence(Mode::Insert, &keys)
-    }
-
-    /// Inserts the text of one key while Insert mode is active.
+    /// The `editor` module owns every text rule, so `Enter` and `Backspace`
+    /// reach its entry points instead of building a text here. Every other plain
+    /// key inserts its own characters.
     fn insert_key(&mut self, key: Key) -> Redraw {
         if self.editing.mode() != Mode::Insert || key.chord() != Chord::Plain {
             return Redraw::Skipped;
         }
-        let indent = &self.settings.indent;
-        let text = match key.code() {
-            KeyCode::Char(value) => value.to_string(),
-            KeyCode::Enter => self.buffer.line_ending().as_str().to_owned(),
-            KeyCode::Tab if indent.expand_tab => " ".repeat(usize::from(indent.tab_width.get())),
-            KeyCode::Tab => "\t".to_owned(),
+        let indent = self.settings.indent;
+        let outcome = match key.code() {
+            KeyCode::Enter => {
+                self.edit(|editing, context, viewport| editing.insert_line_break(context, viewport))
+            }
+            KeyCode::Backspace => {
+                self.edit(|editing, context, viewport| editing.delete_backward(context, viewport))
+            }
+            KeyCode::Char(value) => {
+                let text = value.to_string();
+                self.edit(|editing, context, viewport| {
+                    editing.insert_text(context, viewport, &text)
+                })
+            }
+            KeyCode::Tab => {
+                let text = if indent.expand_tab {
+                    " ".repeat(usize::from(indent.tab_width.get()))
+                } else {
+                    "\t".to_owned()
+                };
+                self.edit(|editing, context, viewport| {
+                    editing.insert_text(context, viewport, &text)
+                })
+            }
             _ => return Redraw::Skipped,
         };
-        let outcome =
-            self.edit(|editing, context, viewport| editing.insert_text(context, viewport, &text));
         self.report(outcome)
     }
 
