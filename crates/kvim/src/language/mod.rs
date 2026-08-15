@@ -20,6 +20,13 @@
 //! result and rejects a result for an obsolete buffer version before it enters
 //! the cache. See `docs/language-services.md` and `docs/responsiveness.md`.
 //!
+//! The module also owns the Language Server Protocol client. [`LanguageServices`]
+//! holds one persistent session for each language that declares a server, and
+//! it delivers every result as a [`LanguageEvent`]. The client speaks the
+//! protocol only. An adapter declares its server through
+//! [`LanguageAdapter::language_server`], so no code above the adapter boundary
+//! names a server product.
+//!
 //! [`LanguageAdapter`] stays object-safe, so the registry holds one adapter for
 //! each language. A later asynchronous method must return a boxed future
 //! instead of using `async fn`, which would break object safety.
@@ -62,12 +69,37 @@ use crate::core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, Text
 use crate::tui::SyntaxRole;
 
 mod analysis;
+mod document;
+mod protocol;
 mod rust;
+mod server;
+mod services;
+mod session;
 
+#[cfg(test)]
+mod session_tests;
 #[cfg(test)]
 mod tests;
 
+pub use document::{
+    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
+    TextEdit,
+};
+pub use protocol::{
+    DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
+    LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError,
+    POSITION_ENCODING, SourceSpan, WorkspaceRoot,
+};
 pub use rust::RustAdapter;
+pub use server::LanguageServerDeclaration;
+pub use services::LanguageServices;
+pub use session::{
+    LSP_CONTENT_CHANGES_MAX, LSP_DIAGNOSTICS_MAX, LSP_EVENT_QUEUE_CAPACITY, LSP_FORMAT_DEADLINE,
+    LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_INITIALIZE_DEADLINE, LSP_LOCATIONS_MAX,
+    LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE,
+    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_SHUTDOWN_DEADLINE, LanguageEvent,
+    LanguageOutcome, LanguageRequestId, LanguageServerHandle,
+};
 
 /// The largest source that one analysis reads, in bytes.
 pub const ANALYSIS_SOURCE_BYTES_MAX: usize = 4 * 1024 * 1024;
@@ -428,6 +460,19 @@ pub trait LanguageAdapter: Send + Sync {
 
     /// Returns the indent rule of the language.
     fn indent_rule(&self) -> IndentRule;
+
+    /// Returns the language server of this language, when it declares one.
+    ///
+    /// The declaration is data: the program, its arguments, the protocol
+    /// language identifier, and the initialization options. The session sends
+    /// what the declaration names, so a new language server needs only this
+    /// method and no change above the adapter boundary.
+    ///
+    /// The default answer is `None`. A language without a server stays a
+    /// normal, fully editable buffer without diagnostics.
+    fn language_server(&self) -> Option<LanguageServerDeclaration> {
+        None
+    }
 
     /// Reports whether this adapter owns one path.
     ///

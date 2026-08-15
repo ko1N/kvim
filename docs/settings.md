@@ -100,11 +100,16 @@ time and compares it with these values.
 
 | Field | Default |
 |---|---|
-| rust-analyzer check command | `clippy` |
+| Check depth | Lints |
 | Diagnostics | Enabled |
 
+The check depth is language neutral. It selects the compile check or the
+extended lint check of a language. Each language adapter maps the mode onto the
+option of its own server, so no setting names one server. The Rust adapter maps
+the lint check onto `clippy` and the compile check onto `check`.
+
 [`language-services.md`](language-services.md) owns the language adapter
-boundary and the `rust-analyzer` session.
+boundary and the language server session.
 
 ## Theme
 
@@ -128,8 +133,8 @@ bare primitive:
 - The shift width is a mode with a variant that follows the tab width and a
   variant that holds an explicit width. This makes an inconsistent pair of
   widths unrepresentable.
-- The sign column, the case sensitivity, the split placements, and the
-  rust-analyzer check command are modes, not boolean flags or strings.
+- The sign column, the case sensitivity, the split placements, and the check
+  depth are modes, not boolean flags or strings.
 
 A constructor validates each value and establishes its invariant. An invalid
 value cannot exist.

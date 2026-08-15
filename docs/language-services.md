@@ -32,6 +32,7 @@ An adapter supplies data, not behavior:
 | Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
+| Language server | The optional server declaration: the program, its arguments, the protocol language identifier, and the initialization options. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
@@ -39,8 +40,8 @@ and one more entry in the registry table, and no change anywhere else.
 
 The first-release registry contains one adapter, for Rust. Only that adapter
 recognizes case-sensitive `.rs` paths. Support for further languages is
-deferred. A later release may add adapters for other languages and for their
-language servers, because the Language Server Protocol is language independent.
+deferred. A later release adds an adapter for another language and for its
+language server, because the Language Server Protocol is language independent.
 
 A file that no adapter serves stays a normal, fully editable buffer. It renders
 plain text, it uses the fallback indent rule of
@@ -123,42 +124,106 @@ capture names only, and Tree-sitter highlight queries share one capture
 vocabulary across grammars, so the mapping serves every language. See
 [`windows.md`](windows.md) for the theme rule.
 
-## The rust-analyzer Session
+## The Language Server Session
 
-Kvim runs one persistent `rust-analyzer` session for the workspace. The session
-speaks the Language Server Protocol (LSP) over JSON-RPC.
+Kvim is a general Language Server Protocol (LSP) client. It runs one persistent
+session for each language of the workspace that declares a server. The session
+speaks the protocol over JSON-RPC and knows no server product. rust-analyzer is
+the first configuration of that client, not a special case inside it.
+
+The adapter declares its server as data: the program, its arguments, the
+protocol language identifier, and the initialization options. The session sends
+what the declaration names. Adding a language server therefore means adding one
+declaration to one adapter. No code above the adapter boundary changes, and no
+name, type, or assumption of one server appears there.
 
 The session owns:
 
-- bounded JSON-RPC framing, with explicit header and message size limits,
+- bounded JSON-RPC framing, with separate header and body limits,
+- cumulative session budgets for input bytes, output bytes, requests, and
+  messages, all enforced by one bounds helper,
 - the child-process lifecycle, including start, `initialize`, `shutdown`,
-  `exit`, and restart,
-- repository containment for every path and every `file` URI,
-- protocol limits for opened files, in-flight requests, received messages, and
-  protocol bytes,
-- explicit deadlines for every request and for the session itself,
-- buffer-version checks for every result.
+  `exit`, and a bounded restart after a failure,
+- workspace containment for every path and every `file` URI,
+- protocol limits for open documents, in-flight requests, and every received
+  list,
+- explicit deadlines for the handshake, for every request, and for shutdown,
+- buffer-version checks for every request and for every published result.
 
-Repository containment rejects a path outside the workspace with a typed result.
-The session decodes a `file` URI and rejects malformed escapes and traversal.
+The session runs as one background task. The terminal event loop sends bounded
+requests through one queue and reads typed results from another queue. It never
+reads, writes, or waits for a server. A full request queue returns a typed
+saturated result at once, and the caller keeps its previous visible state.
+
+The handshake declares the UTF-8 position encoding. Kvim rejects a server that
+does not confirm that encoding, because one protocol column must be one UTF-8
+byte offset inside its line. Kvim also answers every unsolicited server request,
+so an unimplemented request cannot stall the server.
+
+Workspace containment rejects a path outside the workspace root with a typed
+result. The session decodes a `file` URI and rejects another scheme, a malformed
+escape, and a traversal component. A definition target outside the root is
+rejected and never offered. Kvim validates every server-supplied range against
+the exact source bytes before it uses that range.
 
 The session sends `didOpen`, incremental `didChange`, and `didClose` for the
-buffers that it queries. It sends `didChange` only after an edit transaction
-completes.
+buffers that it queries. It derives the changes of one `didChange` from one
+applied edit transaction, and it sends them in descending order, because the
+protocol applies them one after the other. It sends `didChange` only after an
+edit transaction completes.
 
 The session supports diagnostics, definition, hover, and document formatting in
 the first release. It does not support completion, code actions, or symbol
 rename.
 
-Kvim uses `clippy` as the `rust-analyzer` check command. The value belongs to
-`EditorSettings`. See [`settings.md`](settings.md).
+The Rust adapter declares `rust-analyzer` and maps the language-neutral check
+depth of `EditorSettings` onto the `check.command` option of that server. The
+default check depth runs `clippy`. That mapping function is the one place in
+Kvim that names a setting of one concrete server. See
+[`settings.md`](settings.md).
 
-A missing `rust-analyzer` executable is a normal unavailable state, not a
-failure. Kvim reports the state and keeps editing available.
+A language without a server declaration, and a language whose declared
+executable is not installed, leave the editor fully usable with no diagnostics.
+Kvim reports the state once and starts no further server for that language. A
+missing server is never an error path that degrades editing.
 
-The session does not retry a failed request. Cancellation owns child
-termination. Shutdown follows the order in
-[`responsiveness.md`](responsiveness.md).
+A crashed server restarts a bounded number of times. The new server holds no
+document, so Kvim reports the restart and opens its buffers again. The session
+does not retry a failed request. Cancellation owns child termination. Shutdown
+follows the order in [`responsiveness.md`](responsiveness.md).
+
+## Protocol Limits And Deadlines
+
+The `language` module names each bound as one constant. The constant and the row
+below must always agree.
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Frame header | `LSP_HEADER_BYTES_MAX` | 256 B | One `Content-Length` header and one optional `Content-Type` header fit far below this value, so a header that never ends stops early. |
+| Frame body | `LSP_MESSAGE_BYTES_MAX` | 8 MiB | One `didOpen` carries a complete file. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for JSON escaping. |
+| Session input | `LSP_INPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session writes. A day of editing stays far below this value, and an unbounded write loop stops. |
+| Session output | `LSP_OUTPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session reads. The value matches the input budget, so neither direction can grow without limit. |
+| Session requests | `LSP_REQUESTS_MAX` | 1,000,000 requests | One keystroke starts at most one request, so this budget covers a long session and still bounds a request loop. |
+| Session messages | `LSP_MESSAGES_MAX` | 4,000,000 messages | A server sends progress and diagnostics without a request, so the message budget is larger than the request budget. |
+| Open documents | `LSP_OPEN_DOCUMENTS_MAX` | 64 documents | The editor opens one document for each visible or recently used buffer. Sixty-four exceeds normal practice and still bounds the server memory. |
+| Pending requests | `LSP_PENDING_REQUESTS_MAX` | 32 requests | A user produces few simultaneous questions. The bound stops a request storm from an automated caller. |
+| Request queue | `LSP_REQUEST_QUEUE_CAPACITY` | 64 requests | The queue absorbs one burst of editor requests. A full queue returns a saturated result instead of waiting on the event loop. |
+| Result queue | `LSP_EVENT_QUEUE_CAPACITY` | 256 results | The queue matches the runtime result queue of [`responsiveness.md`](responsiveness.md), so one slow frame does not stall a session. |
+| Content changes | `LSP_CONTENT_CHANGES_MAX` | 4,096 changes | The transaction bound of [`text-model.md`](text-model.md). Every transaction that the buffer accepts can therefore synchronize. |
+| Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
+| Definition locations | `LSP_LOCATIONS_MAX` | 128 locations | One definition query answers with one target, or with few candidates. A larger list means a wrong or hostile answer. |
+| Formatting edits | `LSP_FORMAT_EDITS_MAX` | 4,096 edits | The transaction bound of [`text-model.md`](text-model.md), so every accepted formatter answer becomes exactly one undoable transaction. |
+| Hover text | `LSP_HOVER_BYTES_MAX` | 16 KiB | One hover float shows a signature and a short description. A larger text cannot fit on a terminal screen. |
+| Restarts | `LSP_RESTARTS_MAX` | 3 restarts | A server that fails four times in one session is broken. Further restarts would loop instead of reporting the state. |
+| Handshake deadline | `LSP_INITIALIZE_DEADLINE` | 30 s | A cold server indexes a workspace before it answers `initialize`. Thirty seconds reports a stuck server without failing a normal cold start. |
+| Request deadline | `LSP_REQUEST_DEADLINE` | 5 s | A definition or a hover answer is interactive. Five seconds reports a stuck request while the buffer stays editable. |
+| Formatting deadline | `LSP_FORMAT_DEADLINE` | 10 s | A formatter runs a complete pass over the document, so it needs more time than a position query. The value matches the process deadline of [`responsiveness.md`](responsiveness.md). |
+| Shutdown deadline | `LSP_SHUTDOWN_DEADLINE` | 250 ms | Editor exit must stay immediate. A server that does not answer `shutdown` in 250 ms is killed instead. |
+
+A received list that passes its bound produces a typed failure. Kvim publishes
+no partial result. Nested lists of one answer share one element budget, so a
+server cannot allocate without limit by splitting many elements over many short
+lists.
 
 ## Diagnostics
 
@@ -173,8 +238,9 @@ The diagnostic float shows the diagnostics at the cursor position.
 
 ## Formatting
 
-Kvim requests document formatting from `rust-analyzer`. It applies the accepted
-formatter edits as one edit transaction, so one undo reverses a complete format.
+Kvim requests document formatting from the language server of the buffer. It
+applies the accepted formatter edits as one edit transaction, so one undo
+reverses a complete format.
 
 Kvim rejects formatter edits whose buffer version is obsolete. It never applies
 an edit that was computed against different content.
