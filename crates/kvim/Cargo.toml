@@ -1,0 +1,17 @@
+[package]
+name = "kvim"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "kvim"
+path = "src/main.rs"
+
+[dependencies]
+# Basics
+thiserror.workspace = true
