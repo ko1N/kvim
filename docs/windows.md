@@ -51,6 +51,11 @@ rectangle. It selects a vertical split when the width exceeds the height
 multiplied by the adaptive ratio of 2.5. Otherwise it selects a horizontal
 split.
 
+One rule comes before the ratio: when the terminal holds exactly one editor
+window, the adaptive split always selects a vertical split. A full-width terminal
+would otherwise divide into two short windows. The reference configuration uses
+the same exception.
+
 The inverse adaptive split command mirrors that decision. It selects a
 horizontal split when the width exceeds the height multiplied by the same ratio.
 Otherwise it selects a vertical split.
@@ -63,12 +68,30 @@ Directional focus moves from the focused window to the nearest window in the
 requested direction. The move uses the layout rectangles, not the tree order. If
 no window exists in that direction, focus stays unchanged.
 
-Directional resize moves the shared edge between the focused window and its
-neighbor in the requested direction. One resize step is six cells. The resize
-step belongs to `EditorSettings`.
+Directional resize moves one shared edge by six cells. The resize step belongs to
+`EditorSettings`. The command names a direction, not a size change, so the same
+key grows or shrinks the focused window according to which side holds a neighbor:
+
+- A neighbor on the side that the command names: move that shared edge, which
+  changes the focused window size in the named direction.
+- No neighbor on that side, but a neighbor on the opposite side: move the
+  opposite shared edge instead, so the command still moves the layout in the
+  named direction.
+- No neighbor on either side: leave the layout unchanged.
+
+The reference configuration uses this same rule. It keeps `Ctrl-Alt-H` and
+`Ctrl-Alt-L` predictable for the user, whichever side of a split the focused
+window is on.
+
+Neighbor detection compares layout rectangles, not tree order. Two windows are
+neighbors when one edge meets the other edge and the perpendicular ranges
+overlap. When several windows qualify, the window with the largest overlap wins.
 
 A resize that would push any window below its minimum dimensions leaves the
-layout unchanged. A missing shared edge also leaves the layout unchanged.
+layout unchanged.
+
+A sidebar keeps a fixed width, but a directional resize whose neighbor is a
+sidebar changes the sidebar width instead of refusing the command.
 
 [`input-actions.md`](input-actions.md) owns the keys for focus and resize.
 
