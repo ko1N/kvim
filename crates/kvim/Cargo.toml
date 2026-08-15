@@ -15,3 +15,11 @@ path = "src/main.rs"
 [dependencies]
 # Basics
 thiserror.workspace = true
+
+# Terminal
+crossterm.workspace = true
+futures-util.workspace = true
+
+# Runtime
+tokio.workspace = true
+tokio-util.workspace = true

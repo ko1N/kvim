@@ -41,9 +41,32 @@ event loop free from backpressure waits.
 Each service owns its permits until the work and the result delivery finish.
 Creating another client of a service does not create more capacity.
 
-The concrete queue sizes, concurrency limits, output limits, and deadlines are
-not yet decided. Slice 2 must record them here before implementation depends on
-them. [`files.md`](files.md) owns picker and file limits.
+### Runtime Bounds
+
+The `runtime` module names each bound as one constant. The constant and the row
+below must always agree.
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Result queue capacity | `EVENT_QUEUE_CAPACITY` | 256 results | One editor keystroke starts few requests, so 256 results absorb a burst without hiding a stalled event loop. |
+| Process concurrency | `PROCESS_CONCURRENCY_LIMIT` | 8 processes | The editor runs few external commands together: one search, one formatter, and one clipboard command. Eight leaves headroom and still bounds the child count. |
+| Worker concurrency | `WORKER_CONCURRENCY_LIMIT_MAX` | 1 to 8 jobs | The runtime clamps the detected parallelism into this range, so a large host does not start dozens of parser threads for one editor. |
+| Process input | `PROCESS_INPUT_BYTES_MAX` | 8 MiB | A formatter receives one buffer. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for expansion. |
+| Process output default | `PROCESS_OUTPUT_BYTES_DEFAULT` | 1 MiB | A picker or formatter result stays small. The default fails early for an unexpected flood. |
+| Process output maximum | `PROCESS_OUTPUT_BYTES_MAX` | 16 MiB | No caller may raise the limit above this value. The editor never needs more than four times the largest loaded file. |
+| Process deadline default | `PROCESS_DEADLINE_DEFAULT` | 10 s | A cold formatter or a large search needs seconds. Ten seconds reports a stuck command before the user waits longer. |
+| Worker deadline default | `WORKER_DEADLINE_DEFAULT` | 5 s | A parse or a highlight of a bounded file finishes far below this value. Five seconds reports a runaway job. |
+
+Kvim uses a smaller process-output maximum than ReviewGraph, which allows
+129 MiB for large Git output. Kvim edits bounded files and never captures a
+repository-sized result.
+
+A caller may set a smaller output limit and a shorter deadline for one request.
+No caller may exceed the maximum values above. The process output limit counts
+standard output and standard error together, so a noisy standard error cannot
+double the captured bytes.
+
+[`files.md`](files.md) owns picker and file limits.
 [`language-services.md`](language-services.md) owns analysis and protocol
 limits.
 
