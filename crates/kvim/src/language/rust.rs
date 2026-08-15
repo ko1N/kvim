@@ -5,9 +5,14 @@
 //! The analysis itself is language-neutral, so a later adapter adds a language
 //! by supplying the same kinds of data. See `docs/language-services.md`.
 
+use serde_json::{Value, json};
 use tree_sitter::Language;
 
-use super::{BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter};
+use crate::settings::{CheckDepth, LanguageSettings};
+
+use super::{
+    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
+};
 
 /// The file extensions that the Rust adapter owns.
 ///
@@ -41,6 +46,19 @@ const RUST_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 /// Returns the Rust grammar of the bundled parser.
 fn rust_language() -> Language {
     tree_sitter_rust::LANGUAGE.into()
+}
+
+/// Maps the language-neutral settings onto the rust-analyzer options.
+///
+/// This function is the one place in Kvim that names a setting of one concrete
+/// server. Everything above the adapter boundary passes the returned value on
+/// without reading it.
+fn rust_analyzer_options(settings: LanguageSettings) -> Value {
+    let command = match settings.check_depth {
+        CheckDepth::Compile => "check",
+        CheckDepth::Lints => "clippy",
+    };
+    json!({ "check": { "command": command } })
 }
 
 /// The language adapter for case-sensitive Rust source paths.
@@ -100,5 +118,14 @@ impl LanguageAdapter for RustAdapter {
             scopes: &RUST_INDENT_SCOPES,
             closing_delimiters: &RUST_CLOSING_DELIMITERS,
         }
+    }
+
+    fn language_server(&self) -> Option<LanguageServerDeclaration> {
+        Some(LanguageServerDeclaration {
+            program: "rust-analyzer",
+            args: &[],
+            language_id: "rust",
+            initialization_options: rust_analyzer_options,
+        })
     }
 }

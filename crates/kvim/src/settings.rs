@@ -100,14 +100,18 @@ pub enum VerticalSplitPlacement {
     Right,
 }
 
-/// The Cargo command that rust-analyzer runs for diagnostics.
+/// The depth of the diagnostic check that a language server runs.
+///
+/// The value stays language neutral. Each language adapter maps the mode onto
+/// the option of its own server, so no setting names one server. See
+/// `docs/language-services.md`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum RustAnalyzerCheckCommand {
-    /// Run `cargo check`.
-    Check,
-    /// Run `cargo clippy`.
+pub enum CheckDepth {
+    /// Run only the compile or type check of the language.
+    Compile,
+    /// Run the extended lint check of the language, when the server has one.
     #[default]
-    Clippy,
+    Lints,
 }
 
 /// The width-to-height ratio that selects a vertical split.
@@ -301,8 +305,8 @@ impl Default for InputSettings {
 /// The language service policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LanguageSettings {
-    /// The Cargo command that rust-analyzer runs for diagnostics.
-    pub rust_analyzer_check_command: RustAnalyzerCheckCommand,
+    /// The depth of the diagnostic check that a language server runs.
+    pub check_depth: CheckDepth,
     /// Request and render language server diagnostics.
     pub diagnostics_enabled: bool,
 }
@@ -310,7 +314,7 @@ pub struct LanguageSettings {
 impl Default for LanguageSettings {
     fn default() -> Self {
         Self {
-            rust_analyzer_check_command: RustAnalyzerCheckCommand::Clippy,
+            check_depth: CheckDepth::Lints,
             diagnostics_enabled: true,
         }
     }
