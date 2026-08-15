@@ -67,6 +67,7 @@ fn apply(
         settings: &settings,
         search: None,
         registers: &mut registers,
+        applied: Vec::new(),
     };
     state.apply(&mut context, view, command, repeat)
 }
@@ -89,6 +90,7 @@ fn search(
         settings: &settings,
         search: Some(query),
         registers: &mut registers,
+        applied: Vec::new(),
     };
     state.apply(&mut context, view, command, None)
 }

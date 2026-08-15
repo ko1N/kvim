@@ -1,6 +1,7 @@
 //! Tests for the rendered frame: buffer text, line numbers, the cursor, every
 //! selection kind, search matches, chrome, overlays, and narrow terminals.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::Terminal;
@@ -9,8 +10,10 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use crate::input::WHICH_KEY_DELAY;
 use crate::settings::EditorSettings;
 use crate::terminal::{Key, KeyCode, TerminalEvent};
+use crate::workspace::temp::TempDir;
 
 use super::session::Session;
 
@@ -95,6 +98,15 @@ fn type_keys(session: &mut Session, keys: &str) {
     for value in keys.chars() {
         press(session, value);
     }
+}
+
+/// Opens one path and runs the queued file request, like the event loop.
+fn open_file(session: &mut Session, path: PathBuf) {
+    session.open_path(path);
+    let request = session
+        .take_file_request()
+        .expect("the open queued one file request");
+    session.apply_file_result(request.run());
 }
 
 /// Creates a session that holds `lines` numbered lines, with the cursor at the
@@ -210,12 +222,17 @@ fn every_selection_kind_reaches_its_cells() {
     assert_eq!(style_at(&across, 5, 2).bg, Some(SELECTION));
     assert_ne!(style_at(&across, 6, 2).bg, Some(SELECTION));
 
-    // Linewise: `V` selects the complete cursor line and its terminator.
+    // Linewise: `V` selects every character of the cursor line and stops at the
+    // last one. `line0` holds five characters, so cells five to nine.
     let mut linewise = with_lines(30, 8, 3);
     type_keys(&mut linewise, "V");
     assert_eq!(style_at(&linewise, 5, 1).bg, Some(SELECTION));
-    assert_eq!(style_at(&linewise, 10, 1).bg, Some(SELECTION));
-    assert_ne!(style_at(&linewise, 11, 1).bg, Some(SELECTION));
+    assert_eq!(style_at(&linewise, 9, 1).bg, Some(SELECTION));
+    assert_ne!(
+        style_at(&linewise, 10, 1).bg,
+        Some(SELECTION),
+        "the selection paints no cell behind the last character"
+    );
     assert_ne!(style_at(&linewise, 5, 2).bg, Some(SELECTION));
 
     // Block: `Ctrl-V`, one line down, and one column right select a rectangle
@@ -343,6 +360,34 @@ fn several_splits_each_render_their_own_winbar_and_focus_style() {
 }
 
 #[test]
+fn two_splits_paint_two_different_buffers() {
+    let directory = TempDir::new("render-splits");
+    let first = directory.write("first.rs", "fn first() {}\n");
+    let second = directory.write("second.rs", "fn second() {}\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings);
+
+    open_file(&mut session, first);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    open_file(&mut session, second);
+
+    let buffer = draw(&session);
+    assert_eq!(
+        row_of(&buffer, 0),
+        " first.rs                      second.rs"
+    );
+    assert_eq!(
+        row_of(&buffer, 1),
+        " 1   fn first() {}             1   fn second() {}",
+        "each window paints the buffer of its own leaf"
+    );
+    // Only the focused window draws the cursor.
+    assert!(has_cursor(&session, 35, 1));
+    assert!(!has_cursor(&session, 5, 1));
+}
+
+#[test]
 fn the_command_line_and_the_search_prompt_share_the_message_line() {
     let mut session = session(40, 6);
     press(&mut session, ':');
@@ -370,29 +415,46 @@ fn a_deferred_command_reports_its_release_on_the_message_line() {
 }
 
 #[test]
-fn the_which_key_overlay_lists_the_rows_of_the_active_registry() {
-    let delay = EditorSettings::default().input.which_key_delay;
+fn the_which_key_overlay_lists_one_level_of_next_keys() {
     let mut session = session(60, 20);
     press(&mut session, ' ');
     assert_eq!(row(&session, 5), "~", "the overlay waits for the delay");
 
-    session.tick(delay);
+    session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 5), " Which Key");
-    assert_eq!(row_of(&buffer, 6), " /      Toggle the comment");
+    assert_eq!(row_of(&buffer, 7), " Which Key");
+    assert_eq!(row_of(&buffer, 8), " /      Toggle the comment");
+    assert_eq!(
+        row_of(&buffer, 12),
+        " f      +3 commands",
+        "a key that reaches several commands shows a group marker"
+    );
     assert_eq!(
         row_of(&buffer, 17),
         " Enter  Split the window with the adaptive rule"
     );
     assert_eq!(
         buffer
-            .cell((1, 6))
+            .cell((1, 8))
             .expect("the overlay shows its first key")
             .style()
             .fg,
         Some(TITLE),
         "the overlay keys carry the title color"
     );
+
+    // The overlay stays open until the user acts, and `f` opens the next level.
+    press(&mut session, 'f');
+    session.tick(WHICH_KEY_DELAY * 2);
+    let buffer = draw(&session);
+    assert_eq!(row_of(&buffer, 14), " Which Key");
+    assert_eq!(row_of(&buffer, 15), " /  Open the ripgrep search picker");
+    assert_eq!(row_of(&buffer, 16), " b  Open the buffer picker");
+    assert_eq!(row_of(&buffer, 17), " f  Open the file search picker");
+
+    // `Esc` dismisses the overlay from any depth.
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(row(&session, 15), "~");
 }
 
 #[test]

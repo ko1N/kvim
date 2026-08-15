@@ -439,6 +439,10 @@ fn number_label(display: &DisplaySettings, line: usize, cursor_line: usize) -> O
 }
 
 /// Returns the inclusive source columns that the selection covers on one line.
+///
+/// Every result ends at the last character of the line at the latest, so the
+/// selection never paints a cell behind the text. A line without a selected
+/// character returns `None`. See `docs/windows.md`.
 fn selected_columns(
     view: &WindowView<'_>,
     line: LineIndex,
@@ -446,7 +450,9 @@ fn selected_columns(
 ) -> Option<(usize, usize)> {
     let selection = view.selection?;
     let buffer = view.buffer;
-    match selection {
+    // An empty line holds no character, so no shape selects a cell on it.
+    let last_character = line_len.checked_sub(1)?;
+    let (first_column, last_column) = match selection {
         Selection::Characterwise(range) => {
             let first_line = buffer.char_to_line(range.start());
             // The range ends after the last selected character, so the last
@@ -466,17 +472,15 @@ fn selected_columns(
             let last_column = if line == last_line {
                 buffer.char_to_column(last).get()
             } else {
-                line_len
+                last_character
             };
-            Some((first_column, last_column))
+            (first_column, last_column)
         }
         Selection::Linewise { first, last } => {
             if line < first || line > last {
                 return None;
             }
-            // Vim highlights the line terminator of a linewise selection, so the
-            // highlight reaches one cell past the last character.
-            Some((0, line_len))
+            (0, last_character)
         }
         Selection::Block {
             first_line,
@@ -487,9 +491,11 @@ fn selected_columns(
             if line < first_line || line > last_line {
                 return None;
             }
-            Some((left.get(), right.get()))
+            (left.get(), right.get())
         }
-    }
+    };
+    let last_column = last_column.min(last_character);
+    (first_column <= last_column).then_some((first_column, last_column))
 }
 
 /// Collects the search matches that fall inside the visible lines.
@@ -527,7 +533,7 @@ mod tests {
     use ratatui::style::Color;
 
     use crate::core::TextBuffer;
-    use crate::editor::EditingState;
+    use crate::editor::{EditingState, Selection};
     use crate::language::HighlightSpan;
     use crate::settings::{EditorSettings, FileSettings};
     use crate::tui::SyntaxRole;
@@ -644,6 +650,66 @@ mod tests {
                 .fg,
             "the semicolon stays plain text"
         );
+    }
+
+    #[test]
+    fn a_selection_ends_at_the_last_character_of_every_line() {
+        // `alpha` holds five characters, the second line holds none, and `beta`
+        // holds four.
+        let text = "alpha\n\nbeta\n";
+        let buffer =
+            TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+        let settings = EditorSettings::default();
+        let editing = EditingState::new(&buffer);
+        let line = |index: usize| buffer.line_index(index).expect("the test line exists");
+        let column = |index: usize| {
+            buffer
+                .source_column(line(0), index)
+                .expect("the column exists")
+        };
+        let view = |selection| WindowView {
+            buffer: &buffer,
+            name: "test.rs",
+            first_line: 0,
+            left_column: 0,
+            cursor: editing.cursor(),
+            selection: Some(selection),
+            matches: &[],
+            match_chars: 0,
+            highlights: &[],
+            focus: WindowFocus::Unfocused,
+            display: &settings.display,
+            tab_width: usize::from(settings.indent.tab_width.get()),
+        };
+
+        let linewise = Selection::Linewise {
+            first: line(0),
+            last: line(2),
+        };
+        let cases = [(0, 5, Some((0, 4))), (1, 0, None), (2, 4, Some((0, 3)))];
+        for (index, len, expected) in cases {
+            assert_eq!(
+                super::selected_columns(&view(linewise), line(index), len),
+                expected,
+                "the linewise selection of line {index} covers only its characters"
+            );
+        }
+
+        // A block rectangle stops at the last character of a shorter line.
+        let block = Selection::Block {
+            first_line: line(0),
+            last_line: line(2),
+            left: column(1),
+            right: column(4),
+        };
+        let cases = [(0, 5, Some((1, 4))), (1, 0, None), (2, 4, Some((1, 3)))];
+        for (index, len, expected) in cases {
+            assert_eq!(
+                super::selected_columns(&view(block), line(index), len),
+                expected,
+                "the block selection of line {index} stops at its last character"
+            );
+        }
     }
 
     #[test]

@@ -6,8 +6,10 @@
 use std::time::Duration;
 
 use ratatui::layout::Rect;
+use tokio_util::sync::CancellationToken;
 
-use crate::input::Mode;
+use crate::editor::Selection;
+use crate::input::{Mode, WHICH_KEY_DELAY};
 use crate::settings::EditorSettings;
 use crate::terminal::{FocusChange, Key, KeyCode, TerminalEvent};
 use crate::workspace::temp::TempDir;
@@ -43,6 +45,26 @@ fn message(session: &Session) -> String {
     session
         .message()
         .map_or_else(String::new, |message| message.text().to_owned())
+}
+
+/// Creates a session that holds the given lines, with the cursor at the start.
+fn with_text(lines: &[&str]) -> Session {
+    let mut session = session(60, 20);
+    press(&mut session, 'i');
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            press_code(&mut session, KeyCode::Enter);
+        }
+        type_keys(&mut session, line);
+    }
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "gg");
+    session
+}
+
+/// Returns the selection of the active Visual mode.
+fn selection(session: &Session) -> Option<Selection> {
+    session.visible().editing.selection(session.buffer())
 }
 
 #[test]
@@ -171,32 +193,105 @@ fn only_a_visible_change_requests_a_new_frame() {
 }
 
 #[test]
-fn the_which_key_deadline_wakes_the_loop_and_the_sequence_deadline_resets_it() {
-    let settings = EditorSettings::default();
+fn the_which_key_deadline_is_the_only_time_driven_change() {
     let mut session = session(60, 20);
     assert_eq!(session.next_deadline(), None, "no sequence is pending");
 
     press(&mut session, ' ');
     assert_eq!(
         session.next_deadline(),
-        Some(settings.input.which_key_delay),
+        Some(WHICH_KEY_DELAY),
         "the loop wakes when the overlay appears"
     );
-    assert_eq!(session.tick(settings.input.which_key_delay), Redraw::Needed);
+    assert_eq!(session.tick(WHICH_KEY_DELAY), Redraw::Needed);
     assert_eq!(
         session.next_deadline(),
-        Some(settings.input.sequence_timeout),
-        "the overlay is visible, so only the sequence deadline remains"
+        None,
+        "the overlay is visible, and the sequence itself never expires"
     );
+    // The sequence survives every later tick, so the user keeps reading.
+    assert_eq!(session.tick(Duration::from_secs(3_600)), Redraw::Skipped);
+    press(&mut session, 'q');
     assert_eq!(
-        session.tick(settings.input.sequence_timeout),
-        Redraw::Needed,
-        "the expired sequence hides the overlay"
+        session.run_state(),
+        RunState::Finished,
+        "the late key still completes `Space q`"
     );
-    assert_eq!(session.next_deadline(), None);
+}
+
+#[test]
+fn a_cancel_key_hides_the_overlay_and_keeps_the_mode() {
+    for cancel in [
+        TerminalEvent::Key(Key::plain(KeyCode::Esc)),
+        TerminalEvent::Key(Key::ctrl(KeyCode::Char('c'))),
+    ] {
+        let mut session = session(60, 20);
+        press(&mut session, 'v');
+        type_keys(&mut session, " ");
+        assert_eq!(session.tick(WHICH_KEY_DELAY), Redraw::Needed);
+        assert_eq!(session.next_deadline(), None);
+
+        assert_eq!(session.handle_event(cancel, NOW), Redraw::Needed);
+        assert_eq!(
+            session.mode(),
+            Mode::Visual,
+            "a cancel of pending input keeps the mode"
+        );
+        // A second cancel leaves the mode, because no input is pending.
+        session.handle_event(cancel, NOW);
+        assert_eq!(session.mode(), Mode::Normal);
+    }
+}
+
+#[test]
+fn the_visual_modes_switch_between_each_other_and_keep_the_anchor() {
+    let control_v = TerminalEvent::Key(Key::ctrl(KeyCode::Char('v')));
+    let cases: [(&str, Mode); 9] = [
+        ("v", Mode::Visual),
+        ("vV", Mode::VisualLine),
+        ("vv", Mode::Normal),
+        ("vVv", Mode::Visual),
+        ("vVV", Mode::Normal),
+        ("V", Mode::VisualLine),
+        ("Vv", Mode::Visual),
+        ("VV", Mode::Normal),
+        ("vVvV", Mode::VisualLine),
+    ];
+    for (keys, expected) in cases {
+        let mut session = with_text(&["alpha beta", "gamma delta"]);
+        type_keys(&mut session, "jll");
+        type_keys(&mut session, keys);
+        assert_eq!(session.mode(), expected, "`{keys}` must reach {expected}");
+    }
+
+    // `Ctrl-V` completes the matrix and repeats into Normal mode.
+    let mut session = with_text(&["alpha beta", "gamma delta"]);
+    type_keys(&mut session, "v");
+    session.handle_event(control_v, NOW);
+    assert_eq!(session.mode(), Mode::VisualBlock);
+    type_keys(&mut session, "V");
+    assert_eq!(session.mode(), Mode::VisualLine);
+    session.handle_event(control_v, NOW);
+    assert_eq!(session.mode(), Mode::VisualBlock);
+    session.handle_event(control_v, NOW);
+    assert_eq!(session.mode(), Mode::Normal);
+
+    // The anchor survives the switch: the selection still starts where `v` did.
+    let mut session = with_text(&["alpha beta", "gamma delta"]);
+    type_keys(&mut session, "vlll");
+    let before = selection(&session).expect("a Visual mode always holds a selection");
+    type_keys(&mut session, "V");
+    let after = selection(&session).expect("a Visual mode always holds a selection");
+    assert_ne!(
+        std::mem::discriminant(&before),
+        std::mem::discriminant(&after),
+        "only the shape of the selection changes"
+    );
+    type_keys(&mut session, "v");
     assert_eq!(
-        session.tick(settings.input.sequence_timeout),
-        Redraw::Skipped
+        selection(&session),
+        Some(before),
+        "the anchor and the cursor return the original selection"
     );
 }
 
@@ -573,6 +668,181 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
         Some(session.active()),
         "every window follows the unload"
     );
+}
+
+/// Returns the highlight spans that the frame reads for the active buffer.
+fn highlights(session: &Session) -> usize {
+    session.visible().highlights(session.active()).len()
+}
+
+/// Opens one file in a session that keeps no persistent undo file.
+fn opened(name: &str, text: &str) -> (TempDir, Session) {
+    let directory = TempDir::new("session-language");
+    let path = directory.write(name, text);
+    let mut session = file_session();
+    session.open_path(path);
+    run_file_request(&mut session);
+    (directory, session)
+}
+
+/// Runs the queued analysis job, like the event loop and the worker service.
+fn run_analysis(session: &mut Session) -> Redraw {
+    let request = session
+        .take_analysis_request()
+        .expect("the buffer needs one analysis");
+    let result = request.run(&CancellationToken::new());
+    session.apply_analysis_result(result)
+}
+
+#[test]
+fn an_accepted_analysis_reaches_the_view_and_an_obsolete_one_is_rejected() {
+    let (_directory, mut session) = opened("main.rs", "fn main() {}\n");
+    assert_eq!(highlights(&session), 0, "no result is accepted yet");
+
+    let request = session
+        .take_analysis_request()
+        .expect("a Rust buffer needs one analysis");
+    assert_eq!(request.buffer(), session.active());
+    assert!(
+        session.take_analysis_request().is_none(),
+        "one analysis runs at a time"
+    );
+    let obsolete = request.run(&CancellationToken::new());
+
+    // One edit moves the buffer past the version that the job read.
+    press(&mut session, 'o');
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(
+        session.apply_analysis_result(obsolete),
+        Redraw::Skipped,
+        "an obsolete buffer version changes nothing"
+    );
+    assert_eq!(
+        highlights(&session),
+        0,
+        "an obsolete result enters no cache"
+    );
+
+    // The next job reads the current version, so its spans reach the view.
+    assert_eq!(run_analysis(&mut session), Redraw::Needed);
+    assert!(highlights(&session) > 0);
+    assert!(
+        session.take_analysis_request().is_none(),
+        "the accepted result already describes the current version"
+    );
+}
+
+#[test]
+fn a_buffer_without_an_adapter_needs_no_analysis_and_stays_editable() {
+    let (_directory, mut session) = opened("notes.txt", "plain text\n");
+    assert!(session.take_analysis_request().is_none());
+    assert_eq!(highlights(&session), 0);
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "more ");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "more plain text\n");
+}
+
+#[test]
+fn space_slash_toggles_the_line_comment_of_the_language_adapter() {
+    let (_directory, mut session) = opened("main.rs", "fn main() {}\n");
+    type_keys(&mut session, " /");
+    assert_eq!(session.buffer().to_string(), "// fn main() {}\n");
+
+    // The toggle is one transaction, so one undo reverses it.
+    press(&mut session, 'u');
+    assert_eq!(session.buffer().to_string(), "fn main() {}\n");
+
+    // A Visual Line selection toggles every selected line.
+    let (_directory, mut session) = opened("pair.rs", "let a = 1;\nlet b = 2;\n");
+    type_keys(&mut session, "Vj /");
+    assert_eq!(
+        session.buffer().to_string(),
+        "// let a = 1;\n// let b = 2;\n"
+    );
+}
+
+#[test]
+fn a_comment_toggle_without_an_adapter_changes_nothing_and_reports_why() {
+    let (_directory, mut session) = opened("notes.txt", "plain text\n");
+    type_keys(&mut session, " /");
+    assert_eq!(session.buffer().to_string(), "plain text\n");
+    assert_eq!(
+        message(&session),
+        "no language adapter provides a line-comment token for this buffer"
+    );
+}
+
+#[test]
+fn the_syntax_indent_opens_a_line_one_level_deeper_inside_a_block() {
+    let (_directory, mut session) = opened("block.rs", "fn main() {\n}\n");
+
+    // Without a parse result the previous-line rule keeps column zero.
+    press(&mut session, 'o');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "fn main() {\nx\n}\n");
+    press(&mut session, 'u');
+    press(&mut session, 'u');
+    assert_eq!(session.buffer().to_string(), "fn main() {\n}\n");
+
+    // With the accepted analysis the new line follows the syntax tree.
+    run_analysis(&mut session);
+    type_keys(&mut session, "gg");
+    press(&mut session, 'o');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "fn main() {\n    x\n}\n");
+
+    // `Enter` reads the same rule, and a closing delimiter loses one level.
+    run_analysis(&mut session);
+    type_keys(&mut session, "A");
+    press_code(&mut session, KeyCode::Enter);
+    type_keys(&mut session, "y");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(
+        session.buffer().to_string(),
+        "fn main() {\n    x\n    y\n}\n"
+    );
+}
+
+#[test]
+fn every_window_paints_its_own_buffer_and_only_the_focused_one_holds_the_cursor() {
+    let directory = TempDir::new("session-splits");
+    let first = directory.write("first.rs", "fn first() {}\n");
+    let second = directory.write("second.rs", "fn second() {}\n");
+    let mut session = file_session();
+
+    session.open_path(first);
+    run_file_request(&mut session);
+    let left = session.windows().focused_window();
+    let left_buffer = session.active();
+
+    // `Ctrl-Enter` splits with the adaptive rule and focuses the new window.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let right = session.windows().focused_window();
+    assert_ne!(left, right);
+
+    session.open_path(second);
+    run_file_request(&mut session);
+    let right_buffer = session.active();
+    assert_ne!(left_buffer, right_buffer);
+    assert_eq!(session.windows().buffer(left), Some(left_buffer));
+    assert_eq!(session.windows().buffer(right), Some(right_buffer));
+
+    // The focus moves back, and the editing state follows the focused window.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(session.windows().focused_window(), left);
+    assert_eq!(
+        session.active(),
+        left_buffer,
+        "a key must change the buffer that the focused window shows"
+    );
+    press(&mut session, 'i');
+    type_keys(&mut session, "// ");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "// fn first() {}\n");
 }
 
 #[test]

@@ -30,6 +30,7 @@
 //!     settings: &settings,
 //!     search: None,
 //!     registers: &mut registers,
+//!     applied: Vec::new(),
 //! };
 //!
 //! let rows = NonZeroU16::new(24).expect("the literal 24 is not zero");

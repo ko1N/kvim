@@ -12,7 +12,9 @@
 
 use std::num::NonZeroU32;
 
-use crate::core::{IndentPolicy, LineIndex, ShiftDirection, SourceColumn, TextBuffer};
+use crate::core::{
+    EditTransaction, IndentPolicy, LineIndex, ShiftDirection, SourceColumn, TextBuffer,
+};
 use crate::input::{Command, Mode};
 use crate::settings::{COUNT_MAX, EditorSettings};
 
@@ -69,6 +71,13 @@ pub struct EditContext<'a> {
     pub search: Option<&'a SearchQuery>,
     /// The registers of the editor session.
     pub registers: &'a mut Registers,
+    /// The transactions that the command applied, in application order.
+    ///
+    /// The caller starts every command with an empty list. It reads the list
+    /// afterwards to move a syntax tree over the change, so the next analysis
+    /// reparses incrementally instead of reading the complete buffer. An undo
+    /// and a redo record nothing here, because they replay recorded history.
+    pub applied: Vec<EditTransaction>,
 }
 
 impl EditContext<'_> {
@@ -169,6 +178,7 @@ enum MotionResult {
 ///     settings: &settings,
 ///     search: None,
 ///     registers: &mut registers,
+///     applied: Vec::new(),
 /// };
 ///
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
@@ -989,8 +999,12 @@ impl EditingState {
         }
         let mut changed = false;
         if let Some(transaction) = plan.transaction {
+            let recorded = transaction.clone();
             match context.buffer.apply(transaction) {
-                Ok(_) => changed = true,
+                Ok(_) => {
+                    changed = true;
+                    context.applied.push(recorded);
+                }
                 Err(error) => debug_assert!(
                     false,
                     "the editor builds every range from the current buffer: {error}"

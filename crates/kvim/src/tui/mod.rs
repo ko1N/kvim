@@ -65,7 +65,8 @@ mod tests;
 pub use app::{EVENT_ERRORS_MAX, EditorError, run};
 pub use layout::{Region, RegionKind, WindowLayout};
 pub use session::{
-    FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
+    AnalysisRequest, AnalysisResult, FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel,
+    Redraw, RunState, Session,
 };
 pub use theme::{SyntaxRole, Theme, ThemeRole};
 pub use window::{

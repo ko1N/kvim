@@ -6,6 +6,8 @@
 
 use ratatui::Frame;
 
+use crate::editor::{ColumnLimit, Cursor};
+
 use super::buffer_view::{WindowFocus, WindowView, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
@@ -33,24 +35,46 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     debug_assert!(false, "every editor region belongs to one leaf window");
                     continue;
                 };
+                let Some(id) = view.windows.buffer(region.id) else {
+                    debug_assert!(false, "every editor region belongs to one leaf window");
+                    continue;
+                };
+                let Some(file) = view.buffers.get(id) else {
+                    debug_assert!(false, "every window points at one loaded buffer");
+                    continue;
+                };
+                let text = file.text();
+                let focus = if region.id == focused {
+                    WindowFocus::Focused
+                } else {
+                    WindowFocus::Unfocused
+                };
+                // The editing state follows the focused window alone, so an
+                // unfocused window shows no cursor and no selection. Its gutter
+                // counts from the start of its own buffer, because no per-window
+                // cursor exists yet.
+                let cursor = match focus {
+                    WindowFocus::Focused => view.editing.cursor(),
+                    WindowFocus::Unfocused => {
+                        Cursor::at_buffer_start(text, ColumnLimit::LastCharacter)
+                    }
+                };
+                // The active search belongs to the active buffer only.
+                let searched = id == view.active && match_chars > 0;
                 let window = WindowView {
-                    buffer: view.buffer,
-                    name: view.name,
+                    buffer: text,
+                    name: file.name(),
                     first_line: viewport.first_line(),
                     left_column: viewport.left_column(),
-                    cursor: view.editing.cursor(),
-                    selection: view.editing.selection(view.buffer),
-                    matches: if match_chars == 0 { &[] } else { matches },
-                    match_chars,
-                    // Slice 14 connects the accepted analysis of the session.
-                    // An empty list renders plain text, which every unsupported,
-                    // cancelled, or rejected analysis must also do.
-                    highlights: &[],
-                    focus: if region.id == focused {
-                        WindowFocus::Focused
-                    } else {
-                        WindowFocus::Unfocused
+                    cursor,
+                    selection: match focus {
+                        WindowFocus::Focused => view.editing.selection(text),
+                        WindowFocus::Unfocused => None,
                     },
+                    matches: if searched { matches } else { &[] },
+                    match_chars: if searched { match_chars } else { 0 },
+                    highlights: view.highlights(id),
+                    focus,
                     display: &view.settings.display,
                     tab_width: usize::from(view.settings.indent.tab_width.get()),
                 };

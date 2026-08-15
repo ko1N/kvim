@@ -1,9 +1,9 @@
 //! The which-key overlay.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The overlay lists the commands that the pending key sequence can still
-//! reach. Every row comes from the realized binding table of the active
-//! registry, so the overlay is never a hand-written list. See
+//! The overlay lists the keys that may follow the pending key sequence, one
+//! level at a time. Every row comes from the realized binding table of the
+//! active registry, so the overlay is never a hand-written list. See
 //! `docs/input-actions.md`.
 
 use ratatui::buffer::Buffer as CellBuffer;
@@ -65,7 +65,7 @@ pub(super) fn render_which_key(
     let keys: Vec<String> = rows
         .iter()
         .take(shown)
-        .map(|row| row.keys.to_string())
+        .map(|row| row.key_label().to_string())
         .collect();
     let key_width = keys.iter().map(String::len).max().unwrap_or(0);
     for (index, row) in rows.iter().take(shown).enumerate() {
@@ -75,7 +75,7 @@ pub(super) fn render_which_key(
         };
         let y = area.y + TITLE_ROWS + offset;
         let gap = " ".repeat(KEY_GAP_CELLS);
-        let line = format!(" {:<key_width$}{gap}{}", keys[index], row.label());
+        let line = format!(" {:<key_width$}{gap}{}", keys[index], row.target);
         target.set_stringn(area.x, y, &line, usize::from(area.width), surface);
         // The keys carry the title color, so a reader finds the next key first.
         target.set_stringn(

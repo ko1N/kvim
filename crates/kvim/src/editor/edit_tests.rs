@@ -42,6 +42,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state
             .apply(&mut context, &mut self.view, command, count)
@@ -61,6 +62,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state.insert_text(&mut context, &mut self.view, text)
     }
@@ -71,6 +73,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state.insert_line_break(&mut context, &mut self.view)
     }
@@ -81,6 +84,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state.delete_backward(&mut context, &mut self.view)
     }
@@ -97,6 +101,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state
             .apply_indented(&mut context, &mut self.view, command, None, auto)
@@ -109,6 +114,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state
             .insert_line_break_indented(&mut context, &mut self.view, auto)
@@ -121,6 +127,7 @@ impl Session {
             settings: &self.settings,
             search: None,
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         self.state
             .toggle_comment(&mut context, &mut self.view, comment)

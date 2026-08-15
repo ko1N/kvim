@@ -11,25 +11,37 @@
 //! returns the typed result to [`Session::apply_file_result`]. See
 //! `docs/files.md`.
 //!
+//! A buffer that a language adapter serves builds one [`AnalysisRequest`] on
+//! the same path. The result reaches [`Session::apply_analysis_result`], which
+//! rejects a result for an obsolete buffer version. Parsing therefore never
+//! runs on the event loop. See `docs/language-services.md`.
+//!
 //! The session reads no clock. The event loop measures the elapsed time and
 //! passes it in, which keeps every transition deterministic and testable.
 
+use std::collections::BTreeMap;
 use std::num::NonZeroU16;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::Frame;
 use ratatui::layout::Rect;
+use tokio_util::sync::CancellationToken;
 
-use crate::core::{BufferVersion, CharPosition, TextBuffer};
+use crate::core::{BufferVersion, CharPosition, EditTransaction, TextBuffer};
 use crate::editor::{
-    CommandContext, CommandOutcome, EditContext, EditingState, Registers, SEARCH_QUERY_CHARS_MAX,
-    SearchDirection, SearchQuery, Viewport,
+    AutoIndent, CommandContext, CommandOutcome, EditContext, EditingState, Registers,
+    SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Viewport,
 };
 use crate::input::{
-    COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Expiry, InputContext, Mode, PromptEdit,
+    COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, InputContext, Mode, PromptEdit,
     PromptKind, Registry, Resolution, Resolver, WhichKeyRow,
+};
+use crate::language::{
+    Analysis, AnalysisError, AnalysisInput, BufferSyntax, HighlightSpan, LanguageAdapter,
+    LanguageRegistry, Publication, SyntaxTree,
 };
 use crate::settings::EditorSettings;
 use crate::terminal::{Chord, Key, KeyCode, TerminalEvent};
@@ -142,6 +154,64 @@ impl FileRequestFailure {
     }
 }
 
+/// One analysis job that the bounded worker service runs.
+///
+/// The session builds the job and never runs it, so parsing stays off the
+/// terminal event loop. See `docs/language-services.md`.
+pub struct AnalysisRequest {
+    buffer: BufferId,
+    adapter: &'static dyn LanguageAdapter,
+    input: AnalysisInput,
+}
+
+impl AnalysisRequest {
+    /// Returns the buffer that the job analyzes.
+    #[must_use]
+    pub const fn buffer(&self) -> BufferId {
+        self.buffer
+    }
+
+    /// Parses the source and collects the highlight spans.
+    ///
+    /// The call runs on the worker service. It checks the cancellation token,
+    /// so a superseded job stops as early as the parser allows.
+    #[must_use]
+    pub fn run(self, cancellation: &CancellationToken) -> AnalysisResult {
+        AnalysisResult {
+            buffer: self.buffer,
+            outcome: self.adapter.analyze(&self.input, cancellation),
+        }
+    }
+}
+
+/// The result of one analysis job.
+///
+/// Highlighting is decoration, so a typed failure renders plain text and
+/// changes no buffer content.
+pub struct AnalysisResult {
+    buffer: BufferId,
+    outcome: Result<Analysis, AnalysisError>,
+}
+
+/// The analysis state of one buffer.
+///
+/// The holder keeps the newest accepted result and the tree that the next parse
+/// reuses. The reuse entry carries the buffer version that its tree describes,
+/// so a version that the session did not move the tree over cannot serve a
+/// later parse.
+#[derive(Debug, Default)]
+pub(super) struct BufferAnalysis {
+    syntax: BufferSyntax,
+    reuse: Option<(BufferVersion, SyntaxTree)>,
+}
+
+impl BufferAnalysis {
+    /// Returns the highlight spans of the newest accepted result.
+    pub(super) fn highlights(&self) -> &[HighlightSpan] {
+        self.syntax.highlights()
+    }
+}
+
 /// The severity of one message-line entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum MessageLevel {
@@ -224,13 +294,28 @@ pub(super) struct Visible<'a> {
     pub(super) theme: Theme,
     pub(super) settings: &'a EditorSettings,
     pub(super) windows: &'a Windows,
-    pub(super) buffer: &'a TextBuffer,
-    pub(super) name: &'a str,
+    /// Every loaded buffer, because each window shows its own buffer.
+    pub(super) buffers: &'a Buffers,
+    /// The buffer that the editing state and the active search belong to.
+    pub(super) active: BufferId,
+    pub(super) analysis: &'a BTreeMap<BufferId, BufferAnalysis>,
     pub(super) editing: &'a EditingState,
     pub(super) search: Option<&'a ActiveSearch>,
     pub(super) prompt: Option<&'a PromptLine>,
     pub(super) message: Option<&'a Message>,
     pub(super) which_key: Option<&'a [WhichKeyRow]>,
+}
+
+impl Visible<'_> {
+    /// Returns the highlight spans of one buffer.
+    ///
+    /// An empty list renders plain text, which every unsupported, cancelled, or
+    /// rejected analysis must also do.
+    pub(super) fn highlights(&self, buffer: BufferId) -> &[HighlightSpan] {
+        self.analysis
+            .get(&buffer)
+            .map_or(&[][..], BufferAnalysis::highlights)
+    }
 }
 
 /// The visible editor state of one terminal.
@@ -272,15 +357,19 @@ pub struct Session {
     editing: EditingState,
     registers: Registers,
     resolver: Resolver,
+    /// The language adapters of this build. Only an adapter selects a path.
+    languages: LanguageRegistry,
+    /// The analysis state of every buffer that a language adapter serves.
+    analysis: BTreeMap<BufferId, BufferAnalysis>,
+    /// The buffer and version of the analysis job that runs now.
+    ///
+    /// One job runs at a time, so a newer buffer version replaces the job that
+    /// it supersedes instead of adding a second one.
+    analysis_pending: Option<(BufferId, BufferVersion)>,
     search: Option<ActiveSearch>,
     prompt: Option<PromptLine>,
     message: Option<Message>,
     which_key: Option<Vec<WhichKeyRow>>,
-    /// The elapsed time at which the which-key overlay appears.
-    ///
-    /// The resolver arms the same deadline from the same delay, so the event
-    /// loop wakes exactly when the overlay becomes visible.
-    which_key_at: Option<Duration>,
     run: RunState,
 }
 
@@ -312,11 +401,13 @@ impl Session {
             editing,
             registers: Registers::default(),
             resolver: Resolver::new(Registry::first_release(), settings.input),
+            languages: LanguageRegistry::first_release(),
+            analysis: BTreeMap::new(),
+            analysis_pending: None,
             search: None,
             prompt: None,
             message: None,
             which_key: None,
-            which_key_at: None,
             run: RunState::Running,
         };
         session.reconcile_viewports();
@@ -381,15 +472,14 @@ impl Session {
 
     /// Returns the elapsed time of the next state change that no event causes.
     ///
-    /// The event loop waits for a terminal event or for this deadline, never
-    /// for a fixed frame interval.
+    /// The which-key overlay is the only such change: a pending sequence holds
+    /// no deadline and waits for the next key. The event loop therefore waits
+    /// for a terminal event or for this time, never for a frame interval.
     #[must_use]
     pub fn next_deadline(&self) -> Option<Duration> {
-        let overlay = self.which_key_at.filter(|_| self.which_key.is_none());
-        match (self.resolver.deadline(), overlay) {
-            (Some(first), Some(second)) => Some(first.min(second)),
-            (first, second) => first.or(second),
-        }
+        self.resolver
+            .overlay_deadline()
+            .filter(|_| self.which_key.is_none())
     }
 
     /// Applies one normalized terminal event.
@@ -403,13 +493,12 @@ impl Session {
         self.settle(now).or(redraw)
     }
 
-    /// Applies the state changes that an expired deadline causes.
+    /// Applies the state changes that the elapsed time alone causes.
+    ///
+    /// Only the which-key overlay reaches this path, because the pending
+    /// sequence itself never expires.
     pub fn tick(&mut self, now: Duration) -> Redraw {
-        let expiry = match self.resolver.expire(now) {
-            Expiry::Expired => Redraw::Needed,
-            Expiry::Unchanged => Redraw::Skipped,
-        };
-        self.settle(now).or(expiry)
+        self.settle(now)
     }
 
     /// Renders one frame of the visible state.
@@ -422,14 +511,14 @@ impl Session {
 
     /// Returns the borrowed state that one frame reads.
     pub(super) fn visible(&self) -> Visible<'_> {
-        let active = self.active_buffer();
         Visible {
             area: self.area,
             theme: self.theme,
             settings: &self.settings,
             windows: &self.windows,
-            buffer: active.text(),
-            name: active.name(),
+            buffers: &self.buffers,
+            active: self.active,
+            analysis: &self.analysis,
             editing: &self.editing,
             search: self.search.as_ref(),
             prompt: self.prompt.as_ref(),
@@ -445,11 +534,6 @@ impl Session {
     fn settle(&mut self, now: Duration) -> Redraw {
         self.refresh_search();
         self.reconcile_viewports();
-        // The overlay deadline belongs to a pending key sequence. A completed,
-        // mismatched, or expired sequence removes it.
-        if self.resolver.pending_keys().is_empty() {
-            self.which_key_at = None;
-        }
         let rows = self.resolver.which_key(now);
         if rows.as_deref() == self.which_key.as_deref() {
             return Redraw::Skipped;
@@ -473,13 +557,9 @@ impl Session {
         match self.resolver.resolve(key, now) {
             Resolution::Command { command, count } => self.apply_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
-            Resolution::Pending => {
-                self.which_key_at = Some(saturating_deadline(
-                    now,
-                    self.settings.input.which_key_delay,
-                ));
-                Redraw::Skipped
-            }
+            // A pending sequence and a cancelled sequence both change only the
+            // which-key overlay, and `settle` publishes that change.
+            Resolution::Pending | Resolution::Cancelled => Redraw::Skipped,
             // Insert mode reaches no binding for a printable key, so the key
             // becomes buffer text.
             Resolution::NoMatch => self.insert_key(key),
@@ -502,11 +582,15 @@ impl Session {
             Command::CloseWindow => {
                 return self.close_window(UnsavedChanges::Refuse).or(cleared);
             }
+            Command::ToggleComment => return self.toggle_comment().or(cleared),
             _ => {}
         }
         match self.windows.apply(command) {
             WindowOutcome::Ignored => {}
-            WindowOutcome::Changed => return Redraw::Needed,
+            WindowOutcome::Changed => {
+                self.follow_focused_window();
+                return Redraw::Needed;
+            }
             WindowOutcome::Unchanged => return cleared,
             WindowOutcome::LastWindow => {
                 self.run = RunState::Finished;
@@ -517,10 +601,88 @@ impl Session {
             self.set_message(note, MessageLevel::Warning);
             return Redraw::Needed;
         }
-        let outcome = self
-            .edit(|editing, context, viewport| editing.apply(context, viewport, command, count));
+        let auto = self.auto_indent(command);
+        let outcome = self.edit(|editing, context, viewport| {
+            editing.apply_indented(context, viewport, command, count, auto)
+        });
         self.sync_context();
         self.report(outcome).or(cleared)
+    }
+
+    /// Points the editing state at the buffer of the focused window.
+    ///
+    /// A focus change, a split, and a close all move the focus. The editing
+    /// state follows one buffer, so it must follow that move. Otherwise a key
+    /// would change a buffer that the focused window does not show.
+    fn follow_focused_window(&mut self) {
+        let window = self.windows.focused_window();
+        let Some(buffer) = self.windows.buffer(window) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return;
+        };
+        self.switch_to(buffer);
+    }
+
+    /// Returns the automatic indent that one command uses for a new line.
+    ///
+    /// Only `o`, `O`, and a repeat of either read the value. The session asks
+    /// the accepted analysis of the current buffer version, and falls back to
+    /// the previous-line rule when no result answers. The editor never waits
+    /// for a parse result. See `docs/language-services.md`.
+    fn auto_indent(&self, command: Command) -> AutoIndent {
+        let buffer = self.buffer();
+        let line = self.editing.cursor().line();
+        let byte = match command {
+            // The new line opens after the text of the cursor line.
+            Command::OpenLineBelow => {
+                let end = buffer.line_len_chars(line);
+                let Ok(column) = buffer.source_column(line, end) else {
+                    return AutoIndent::PreviousLine;
+                };
+                buffer
+                    .char_to_byte(buffer.column_to_char(line, column))
+                    .get()
+            }
+            // The new line opens before the text of the cursor line.
+            Command::OpenLineAbove => buffer.char_to_byte(buffer.line_start(line)).get(),
+            // Every other command ignores the value, and a repeat re-reads it
+            // through the command that it replays.
+            _ => return AutoIndent::PreviousLine,
+        };
+        self.indent_level(byte)
+    }
+
+    /// Returns the syntax indent for a new line at one byte offset.
+    fn indent_level(&self, byte: usize) -> AutoIndent {
+        let version = self.buffer().version();
+        self.analysis
+            .get(&self.active)
+            .and_then(|entry| entry.syntax.indent_level(version, byte))
+            .map_or(AutoIndent::PreviousLine, |level| {
+                AutoIndent::Levels(level.get())
+            })
+    }
+
+    /// Toggles the line comment of the cursor line or of the selection.
+    ///
+    /// Only a language adapter knows the comment token of a path, so the
+    /// session reads it here and hands it to the editor. A buffer without an
+    /// adapter, or a language without a line token, stays unchanged and the
+    /// message line reports the reason.
+    fn toggle_comment(&mut self) -> Redraw {
+        let comment = self
+            .active_buffer()
+            .path()
+            .and_then(|path| self.languages.adapter(path).ok())
+            .and_then(|adapter| adapter.comment().line_token());
+        let outcome = self
+            .edit(|editing, context, viewport| editing.toggle_comment(context, viewport, comment));
+        self.sync_context();
+        if outcome == CommandOutcome::Unhandled {
+            self.set_message(NO_COMMENT_TOKEN_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        }
+        self.report(outcome)
     }
 
     /// Runs one change against the buffer, the registers, and the focused
@@ -541,17 +703,57 @@ impl Session {
             debug_assert!(false, "the session always keeps the active buffer loaded");
             return CommandOutcome::Unhandled;
         };
+        // The tree move reads the text as it was before the change, so the
+        // snapshot must exist before the command runs. It shares the rope, so
+        // it costs no text memory.
+        let before = active.text().snapshot();
         let mut context = EditContext {
             buffer: active.text_mut(),
             settings: &self.settings,
             search: self.search.as_ref().map(|search| &search.query),
             registers: &mut self.registers,
+            applied: Vec::new(),
         };
         let outcome = change(&mut self.editing, &mut context, &mut viewport);
+        let applied = std::mem::take(&mut context.applied);
+        let after = context.buffer.version();
         if let Some(slot) = self.windows.viewport_mut(window) {
             *slot = viewport;
         }
+        self.advance_syntax(&before, after, &applied);
         outcome
+    }
+
+    /// Moves the reuse tree of the active buffer over one applied transaction.
+    ///
+    /// The move costs one step for each change, so the next analysis reparses
+    /// incrementally. A version that the session cannot move the tree over, such
+    /// as an undo or a redo, drops the tree, and the next analysis parses the
+    /// complete source instead of reusing a tree that describes other text.
+    fn advance_syntax(
+        &mut self,
+        before: &TextBuffer,
+        after: BufferVersion,
+        applied: &[EditTransaction],
+    ) {
+        let Some(entry) = self.analysis.get_mut(&self.active) else {
+            return;
+        };
+        let Some((version, tree)) = entry.reuse.take() else {
+            return;
+        };
+        if version != before.version() {
+            return;
+        }
+        // One command commits at most one transaction. A longer list would need
+        // the buffer between the transactions, which no caller holds.
+        let [transaction] = applied else {
+            if applied.is_empty() {
+                entry.reuse = Some((version, tree));
+            }
+            return;
+        };
+        entry.reuse = Some((after, tree.edited(before, transaction)));
     }
 
     /// Applies one key while Insert mode is active.
@@ -566,7 +768,16 @@ impl Session {
         let indent = self.settings.indent;
         let outcome = match key.code() {
             KeyCode::Enter => {
-                self.edit(|editing, context, viewport| editing.insert_line_break(context, viewport))
+                // The line break opens at the cursor, so the syntax indent
+                // answers for that byte offset.
+                let buffer = self.buffer();
+                let byte = buffer
+                    .char_to_byte(self.editing.cursor().position(buffer))
+                    .get();
+                let auto = self.indent_level(byte);
+                self.edit(|editing, context, viewport| {
+                    editing.insert_line_break_indented(context, viewport, auto)
+                })
             }
             KeyCode::Backspace => {
                 self.edit(|editing, context, viewport| editing.delete_backward(context, viewport))
@@ -724,6 +935,82 @@ impl Session {
     /// from filesystem work.
     pub fn take_file_request(&mut self) -> Option<FileRequest> {
         self.file_outbox.take()
+    }
+
+    /// Returns the analysis job that the active buffer needs, if any.
+    ///
+    /// The session never parses, so the event loop hands the job to the bounded
+    /// worker service. The job carries the buffer version of its source, and
+    /// [`Session::apply_analysis_result`] rejects an obsolete result. A buffer
+    /// without a path, or without an adapter, needs no job and renders plain
+    /// text. See `docs/language-services.md`.
+    pub fn take_analysis_request(&mut self) -> Option<AnalysisRequest> {
+        let buffer = self.active;
+        let file = self.buffers.get(buffer)?;
+        let adapter = self.languages.adapter(file.path()?).ok()?;
+        let version = file.text().version();
+        if self.analysis_pending == Some((buffer, version)) {
+            return None;
+        }
+        let entry = self.analysis.entry(buffer).or_default();
+        if entry
+            .syntax
+            .analysis()
+            .is_some_and(|analysis| analysis.version() == version)
+        {
+            return None;
+        }
+        let mut input = AnalysisInput::new(version, Arc::from(file.text().to_string()));
+        if let Some((reuse_version, tree)) = &entry.reuse
+            && *reuse_version == version
+        {
+            input = input.reusing(tree.clone());
+        }
+        self.analysis_pending = Some((buffer, version));
+        Some(AnalysisRequest {
+            buffer,
+            adapter,
+            input,
+        })
+    }
+
+    /// Publishes one completed analysis behind the buffer-version gate.
+    ///
+    /// A result for an obsolete buffer version changes nothing and enters no
+    /// cache. A typed failure renders plain text and keeps the buffer editable.
+    pub fn apply_analysis_result(&mut self, result: AnalysisResult) -> Redraw {
+        self.analysis_pending = None;
+        let Some(file) = self.buffers.get(result.buffer) else {
+            // The buffer left the list while the job ran.
+            return Redraw::Skipped;
+        };
+        let current = file.text().version();
+        let Some(entry) = self.analysis.get_mut(&result.buffer) else {
+            debug_assert!(
+                false,
+                "the session creates the entry when it builds the job"
+            );
+            return Redraw::Skipped;
+        };
+        let Ok(analysis) = result.outcome else {
+            return Redraw::Skipped;
+        };
+        if entry.syntax.accept(current, analysis) == Publication::Rejected {
+            return Redraw::Skipped;
+        }
+        entry.reuse = entry
+            .syntax
+            .analysis()
+            .map(|accepted| (current, accepted.tree().clone()));
+        Redraw::Needed
+    }
+
+    /// Reports that one analysis job produced no result.
+    ///
+    /// The buffer keeps its previous spans, and the next transition asks for the
+    /// job again.
+    pub fn abandon_analysis_request(&mut self) {
+        self.analysis_pending = None;
     }
 
     /// Applies one completed file operation as one state transition.
@@ -1110,6 +1397,10 @@ const UNSAVED_UNLOAD_NOTE: &str = "the buffer holds unsaved changes; save it bef
 /// The message that a save without a file name shows.
 const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to name one";
 
+/// The message that a comment toggle without a line-comment token shows.
+const NO_COMMENT_TOKEN_NOTE: &str =
+    "no language adapter provides a line-comment token for this buffer";
+
 /// Returns the message of a command that a later slice implements.
 ///
 /// The first release binds every key of `docs/input-actions.md`, so a key that
@@ -1120,7 +1411,6 @@ const fn deferred_note(command: Command) -> Option<&'static str> {
         Command::OpenBufferPicker | Command::OpenFilePicker | Command::OpenRipgrepPicker => {
             Some("the pickers arrive in a later release")
         }
-        Command::ToggleComment => Some("comment toggling arrives in a later release"),
         Command::GoToDefinition
         | Command::ShowHover
         | Command::ShowDiagnosticFloat
@@ -1129,9 +1419,4 @@ const fn deferred_note(command: Command) -> Option<&'static str> {
         | Command::ToggleFormatOnSave => Some("the language services arrive in a later release"),
         _ => None,
     }
-}
-
-/// Adds a delay to the elapsed time without overflow.
-fn saturating_deadline(now: Duration, delay: Duration) -> Duration {
-    now.checked_add(delay).unwrap_or(Duration::MAX)
 }

@@ -233,6 +233,40 @@ impl TextBuffer {
         self.version
     }
 
+    /// Returns a read-only copy of the text of the current version.
+    ///
+    /// The copy shares the rope storage, so it costs no text memory, and it
+    /// holds no undo history. A caller keeps it to convert positions of the
+    /// version that an edit transaction replaced.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim::core::{EditTransaction, TextBuffer, TextChange};
+    /// use kvim::settings::FileSettings;
+    ///
+    /// let mut buffer = TextBuffer::from_text("alpha\n", &FileSettings::default())
+    ///     .expect("the text is small");
+    /// let before = buffer.snapshot();
+    ///
+    /// let cursor = buffer.char_position(0).expect("the position exists");
+    /// buffer
+    ///     .apply(EditTransaction::single(cursor, TextChange::insert(cursor, "// ")))
+    ///     .expect("the position fits the buffer");
+    ///
+    /// assert_eq!(before.to_string(), "alpha\n");
+    /// assert_ne!(before.version(), buffer.version());
+    /// ```
+    #[must_use]
+    pub fn snapshot(&self) -> Self {
+        Self {
+            rope: self.rope.clone(),
+            line_ending: self.line_ending,
+            version: self.version,
+            history: UndoHistory::new(),
+        }
+    }
+
     /// Reports whether the buffer differs from the last saved state.
     #[must_use]
     pub fn is_modified(&self) -> bool {

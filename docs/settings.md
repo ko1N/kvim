@@ -87,14 +87,17 @@ change this default. See [`language-services.md`](language-services.md).
 
 | Field | Default |
 |---|---|
-| Sequence timeout | 750 ms |
-| Which-key delay | 200 ms |
+| Which-key delay | 500 ms |
 | Count maximum | 9,999 |
 | Pending keys maximum | 4 keys |
 
+A pending key sequence has no timeout, so this table holds none. The sequence
+waits for the next key until `Esc`, `Ctrl-C`, a mismatch, a completed command, or
+a mode change ends it.
+
 [`input-actions.md`](input-actions.md) owns modes, commands, and sequence
 resolution. The resolver never reads a clock. The event loop supplies elapsed
-time and compares it with these values.
+time and compares it with the which-key delay.
 
 ## Language
 
