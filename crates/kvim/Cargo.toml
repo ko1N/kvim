@@ -16,8 +16,17 @@ path = "src/main.rs"
 # Basics
 thiserror.workspace = true
 
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
 # Text storage
 ropey.workspace = true
+
+# Language analysis
+tree-sitter.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-rust.workspace = true
 
 # Terminal
 crossterm.workspace = true
