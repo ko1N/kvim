@@ -3,8 +3,8 @@
 use std::num::{NonZeroU16, NonZeroU32};
 
 use super::{
-    CommandOutcome, EditContext, EditingState, Operator, RegisterShape, RegisterValue, Registers,
-    Selection, Viewport,
+    AutoIndent, CommandOutcome, EditContext, EditingState, Operator, RegisterShape, RegisterValue,
+    Registers, Selection, Viewport,
 };
 use crate::core::{LineEnding, TextBuffer};
 use crate::input::{Command, Mode};
@@ -88,6 +88,47 @@ impl Session {
     /// Enters Insert mode, which `Enter` and `Backspace` both need.
     fn enter_insert(&mut self) {
         self.state.enter_mode(&self.buffer, Mode::Insert);
+    }
+
+    /// Applies one command with the automatic indent of a language adapter.
+    fn apply_indented(&mut self, command: Command, auto: AutoIndent) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            registers: &mut self.registers,
+        };
+        self.state
+            .apply_indented(&mut context, &mut self.view, command, None, auto)
+    }
+
+    /// Inserts one line break with the automatic indent of a language adapter.
+    fn insert_line_break_indented(&mut self, auto: AutoIndent) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            registers: &mut self.registers,
+        };
+        self.state
+            .insert_line_break_indented(&mut context, &mut self.view, auto)
+    }
+
+    /// Toggles the line comment with the token of a language adapter.
+    fn toggle_comment_with(&mut self, comment: Option<&str>) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            registers: &mut self.registers,
+        };
+        self.state
+            .toggle_comment(&mut context, &mut self.view, comment)
+    }
+
+    /// Toggles the line comment of a buffer that an adapter serves.
+    fn toggle_comment(&mut self) -> CommandOutcome {
+        self.toggle_comment_with(Some("//"))
     }
 
     fn text(&self) -> String {
@@ -873,4 +914,113 @@ fn dot_repeat_without_a_recorded_change_does_nothing() {
         session.apply(Command::RepeatChange, None),
         CommandOutcome::Unhandled
     );
+}
+
+#[test]
+fn the_comment_toggle_writes_the_token_behind_the_indent() {
+    let mut session = Session::new("fn main() {\n    let value = 1;\n}\n");
+    place(&mut session, 1, 4);
+
+    assert_eq!(session.toggle_comment(), CommandOutcome::Changed);
+    assert_eq!(
+        session.text(),
+        "fn main() {\n    // let value = 1;\n}\n",
+        "the toggle preserves the existing indent"
+    );
+
+    // The second toggle removes the token and its separating space again.
+    assert_eq!(session.toggle_comment(), CommandOutcome::Changed);
+    assert_eq!(session.text(), "fn main() {\n    let value = 1;\n}\n");
+}
+
+#[test]
+fn the_comment_toggle_of_a_mixed_selection_comments_every_line() {
+    let mut session = Session::new("// one\ntwo\n\nthree\n");
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveDown, count(3));
+
+    assert_eq!(session.toggle_comment(), CommandOutcome::Changed);
+    // One line already carries the token, so the mixed selection comments the
+    // rest instead of removing anything. A blank line keeps its shape.
+    assert_eq!(session.text(), "// // one\n// two\n\n// three\n");
+    assert_eq!(session.state.mode(), Mode::Normal);
+
+    // Every non-blank line now carries the token, so one toggle removes it.
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveUp, count(3));
+    session.toggle_comment();
+    assert_eq!(session.text(), "// one\ntwo\n\nthree\n");
+}
+
+#[test]
+fn one_undo_reverses_a_complete_comment_toggle() {
+    let mut session = Session::new("one\ntwo\nthree\n");
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveDown, count(2));
+    session.toggle_comment();
+    assert_eq!(session.text(), "// one\n// two\n// three\n");
+
+    assert_eq!(session.apply(Command::Undo, None), CommandOutcome::Changed);
+    assert_eq!(
+        session.text(),
+        "one\ntwo\nthree\n",
+        "the toggle applies as one transaction"
+    );
+}
+
+#[test]
+fn a_buffer_without_a_comment_token_stays_unchanged() {
+    // A file that no adapter serves stays fully editable. The toggle changes
+    // nothing and reports that it did nothing, so the caller can name the
+    // reason.
+    let mut session = Session::new("value\n");
+
+    assert_eq!(session.toggle_comment_with(None), CommandOutcome::Unhandled);
+    assert_eq!(session.text(), "value\n");
+}
+
+#[test]
+fn a_blank_selection_keeps_the_buffer_unchanged() {
+    let mut session = Session::new("\n\n");
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveDown, None);
+
+    assert_eq!(session.toggle_comment(), CommandOutcome::Applied);
+    assert_eq!(session.text(), "\n\n");
+}
+
+#[test]
+fn the_syntax_indent_replaces_the_previous_line_rule() {
+    // The previous-line rule would copy the indent of `fn main() {`, which is
+    // zero. The language adapter reports one level inside the block instead.
+    let mut session = Session::new("fn main() {\n}\n");
+    place(&mut session, 0, 10);
+
+    session.apply_indented(Command::OpenLineBelow, AutoIndent::Levels(1));
+    assert_eq!(session.text(), "fn main() {\n    \n}\n");
+    assert_eq!(session.position(), (1, 4));
+
+    // A closing delimiter loses the level again.
+    let mut closing = Session::new("fn main() {\n    let value = 1;\n}\n");
+    place(&mut closing, 1, 0);
+    closing.apply_indented(Command::OpenLineBelow, AutoIndent::Levels(0));
+    assert_eq!(closing.text(), "fn main() {\n    let value = 1;\n\n}\n");
+}
+
+#[test]
+fn a_line_break_uses_the_syntax_indent_and_keeps_the_fallback() {
+    let mut syntax = Session::new("fn main() {}\n");
+    syntax.enter_insert();
+    place(&mut syntax, 0, 11);
+    syntax.enter_insert();
+    syntax.insert_line_break_indented(AutoIndent::Levels(2));
+    assert_eq!(syntax.text(), "fn main() {\n        }\n");
+
+    // Without a parse result the editor copies the previous non-empty line.
+    let mut fallback = Session::new("    value\n");
+    place(&mut fallback, 0, 8);
+    fallback.enter_insert();
+    fallback.insert_line_break_indented(AutoIndent::PreviousLine);
+    assert_eq!(fallback.text(), "    valu\n    e\n");
+    assert_eq!(fallback.position(), (1, 4));
 }

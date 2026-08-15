@@ -77,6 +77,33 @@ impl EditPlan {
     }
 }
 
+/// The automatic indent of one new line.
+///
+/// A language adapter answers with a level count, and the editor multiplies
+/// that count by the shift width, so `EditorSettings` keeps the tab width. Kvim
+/// uses [`AutoIndent::PreviousLine`] when no adapter serves the buffer, or when
+/// the parse result for the current buffer version is not yet available. The
+/// editor never waits for a parse result. See `docs/text-model.md`.
+///
+/// # Examples
+///
+/// ```
+/// use kvim::editor::AutoIndent;
+///
+/// // The language adapter reports one level inside a block.
+/// let inside_block = AutoIndent::Levels(1);
+/// assert_eq!(inside_block, AutoIndent::Levels(1));
+/// // A buffer without a parse result keeps the previous-line rule.
+/// assert_ne!(inside_block, AutoIndent::PreviousLine);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AutoIndent {
+    /// Use the syntax-tree level count of the language adapter.
+    Levels(u16),
+    /// Copy the indent of the previous non-empty line.
+    PreviousLine,
+}
+
 /// The side of the cursor line that a new line appears on.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum OpenDirection {
@@ -228,9 +255,8 @@ pub(super) fn selection_lines(buffer: &TextBuffer, selection: Selection) -> (Lin
 /// Returns the indent width that the automatic-indent fallback rule produces.
 ///
 /// The rule copies the indent of the previous non-empty line, counted from the
-/// given line upward. Slice 12 replaces the rule with the syntax-tree rule and
-/// keeps this fallback for an unavailable parse result. See
-/// `docs/text-model.md`.
+/// given line upward. The syntax-tree rule replaces it whenever a parse result
+/// for the current buffer version exists. See `docs/text-model.md`.
 pub(super) fn fallback_indent_columns(
     buffer: &TextBuffer,
     indent: IndentPolicy,
@@ -245,6 +271,24 @@ pub(super) fn fallback_indent_columns(
     0
 }
 
+/// Returns the indent width of one new line.
+///
+/// A level count from the language adapter becomes a column count here, so the
+/// shift width of `EditorSettings` stays the only source of the indent size.
+fn auto_indent_columns(
+    buffer: &TextBuffer,
+    indent: IndentPolicy,
+    from: LineIndex,
+    auto: AutoIndent,
+) -> usize {
+    match auto {
+        AutoIndent::Levels(levels) => {
+            usize::from(levels).saturating_mul(usize::from(indent.shift_width().get()))
+        }
+        AutoIndent::PreviousLine => fallback_indent_columns(buffer, indent, from),
+    }
+}
+
 /// Plans one new line above or below the cursor line.
 ///
 /// The new line and its automatic indent are one transaction, so one undo
@@ -254,10 +298,11 @@ pub(super) fn plan_open_line(
     indent: IndentPolicy,
     cursor: Cursor,
     direction: OpenDirection,
+    auto: AutoIndent,
 ) -> EditPlan {
     let line = cursor.line();
     let ending = buffer.line_ending().as_str();
-    let rendered = indent.render(fallback_indent_columns(buffer, indent, line));
+    let rendered = indent.render(auto_indent_columns(buffer, indent, line, auto));
     let column = rendered.chars().count();
     let (at, new_line, text) = match direction {
         OpenDirection::Below => (
@@ -288,18 +333,19 @@ pub(super) fn plan_open_line(
 
 /// Plans one line break at the cursor, with the automatic indent.
 ///
-/// The plan uses [`fallback_indent_columns`], which `o` and `O` also use, so
-/// `Enter` receives the same automatic indent. The line break and its indent are
-/// one transaction, so one undo reverses both. See `docs/text-model.md`.
+/// The plan uses the same automatic indent as `o` and `O`, so `Enter` receives
+/// the same result. The line break and its indent are one transaction, so one
+/// undo reverses both. See `docs/text-model.md`.
 ///
 /// The text after the cursor moves to the new line, behind the indent.
 pub(super) fn plan_line_break(
     buffer: &TextBuffer,
     indent: IndentPolicy,
     cursor: Cursor,
+    auto: AutoIndent,
 ) -> EditPlan {
     let at = cursor.position(buffer);
-    let rendered = indent.render(fallback_indent_columns(buffer, indent, cursor.line()));
+    let rendered = indent.render(auto_indent_columns(buffer, indent, cursor.line(), auto));
     let text = format!("{}{rendered}", buffer.line_ending().as_str());
     let end = at.get() + text.chars().count();
     EditPlan {
@@ -389,6 +435,64 @@ pub(super) fn plan_block_insert(
             column: cursor_column + text.chars().count(),
         },
         next_mode: NextMode::Keep,
+    }
+}
+
+/// Plans one line-comment toggle over complete lines.
+///
+/// The plan removes the token when every affected non-blank line already starts
+/// with it, and adds the token otherwise. The token goes behind the existing
+/// indent of each line, so the indent survives the toggle. A blank line
+/// receives no change. The complete toggle is one transaction, so one undo
+/// reverses it. See `docs/language-services.md`.
+pub(super) fn plan_toggle_comment(
+    buffer: &TextBuffer,
+    indent: IndentPolicy,
+    cursor: Cursor,
+    first: LineIndex,
+    last: LineIndex,
+    token: &str,
+) -> EditPlan {
+    let lines: Vec<(LineIndex, String)> = (first.get()..=last.get())
+        .map(|index| {
+            let line = line_at(buffer, index);
+            (line, buffer.line_text(line))
+        })
+        .filter(|(_, text)| !text.trim().is_empty())
+        .collect();
+    if lines.is_empty() {
+        return EditPlan::unchanged();
+    }
+    let remove = lines
+        .iter()
+        .all(|(_, text)| text.trim_start().starts_with(token));
+
+    let mut changes = Vec::with_capacity(lines.len());
+    for (line, text) in &lines {
+        let start = buffer.line_start(*line).get() + indent.measure(text).char_len;
+        let change = if remove {
+            // The toggle also removes the one separating space that it wrote.
+            let rest: String = text
+                .trim_start()
+                .chars()
+                .skip(token.chars().count())
+                .collect();
+            let removed = token.chars().count() + usize::from(rest.starts_with(' '));
+            TextChange::delete(char_range(buffer, start, start + removed))
+        } else {
+            TextChange::insert(position(buffer, start), format!("{token} "))
+        };
+        changes.push(change);
+    }
+
+    let Ok(transaction) = EditTransaction::new(cursor.position(buffer), changes) else {
+        return EditPlan::unchanged();
+    };
+    EditPlan {
+        transaction: Some(transaction),
+        value: None,
+        cursor: CursorTarget::Unchanged,
+        next_mode: NextMode::Normal,
     }
 }
 

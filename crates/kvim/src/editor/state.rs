@@ -18,7 +18,7 @@ use crate::settings::{COUNT_MAX, EditorSettings};
 
 use super::cursor::Cursor;
 use super::edit::{
-    self, BlockEdge, CursorTarget, EditPlan, MoveDirection, NextMode, OpenDirection,
+    self, AutoIndent, BlockEdge, CursorTarget, EditPlan, MoveDirection, NextMode, OpenDirection,
     PastePlacement, PendingBlockInsert,
 };
 use super::motion;
@@ -277,17 +277,35 @@ impl EditingState {
         self.cursor = self.cursor.re_clamped(buffer, self.mode.column_limit());
     }
 
-    /// Executes one semantic command.
+    /// Executes one semantic command with the previous-line automatic indent.
     ///
     /// The viewport follows the cursor after every accepted command, except an
     /// explicit alignment command, which overrides the scroll margin. Every text
     /// change applies as one edit transaction.
+    ///
+    /// A caller that holds a parse result for the current buffer version uses
+    /// [`EditingState::apply_indented`] instead, so `o` and `O` follow the
+    /// syntax tree.
     pub fn apply(
         &mut self,
         context: &mut EditContext<'_>,
         viewport: &mut Viewport,
         command: Command,
         count: Option<NonZeroU32>,
+    ) -> CommandOutcome {
+        self.apply_indented(context, viewport, command, count, AutoIndent::PreviousLine)
+    }
+
+    /// Executes one semantic command with an explicit automatic indent.
+    ///
+    /// Only `o` and `O` read the indent. Every other command ignores it.
+    pub fn apply_indented(
+        &mut self,
+        context: &mut EditContext<'_>,
+        viewport: &mut Viewport,
+        command: Command,
+        count: Option<NonZeroU32>,
+        auto: AutoIndent,
     ) -> CommandOutcome {
         if let Some(pending) = self.pending.take() {
             return self.complete_operator(context, viewport, pending, command, count);
@@ -341,10 +359,24 @@ impl EditingState {
                 );
             }
             Command::OpenLineBelow => {
-                return self.open_line(context, viewport, command, count, OpenDirection::Below);
+                return self.open_line(
+                    context,
+                    viewport,
+                    command,
+                    count,
+                    OpenDirection::Below,
+                    auto,
+                );
             }
             Command::OpenLineAbove => {
-                return self.open_line(context, viewport, command, count, OpenDirection::Above);
+                return self.open_line(
+                    context,
+                    viewport,
+                    command,
+                    count,
+                    OpenDirection::Above,
+                    auto,
+                );
             }
 
             // Viewport alignment. An alignment changes no cursor position.
@@ -418,7 +450,7 @@ impl EditingState {
             // History and repeat.
             Command::Undo => return self.step_history(context, viewport, HistoryStep::Undo),
             Command::Redo => return self.step_history(context, viewport, HistoryStep::Redo),
-            Command::RepeatChange => return self.repeat_change(context, viewport),
+            Command::RepeatChange => return self.repeat_change(context, viewport, auto),
 
             _ => return CommandOutcome::Unhandled,
         }
@@ -454,7 +486,7 @@ impl EditingState {
         self.commit(context, viewport, plan)
     }
 
-    /// Inserts one line break at the cursor, with the automatic indent.
+    /// Inserts one line break with the previous-line automatic indent.
     ///
     /// `Enter` in Insert mode reaches this entry point. The indent follows the
     /// same rule as `o` and `O`, and the line break and the indent are one
@@ -464,10 +496,60 @@ impl EditingState {
         context: &mut EditContext<'_>,
         viewport: &mut Viewport,
     ) -> CommandOutcome {
+        self.insert_line_break_indented(context, viewport, AutoIndent::PreviousLine)
+    }
+
+    /// Inserts one line break with an explicit automatic indent.
+    ///
+    /// A caller that holds a parse result for the current buffer version passes
+    /// the syntax-tree level count. A caller without one passes
+    /// [`AutoIndent::PreviousLine`] instead of waiting for a parse result.
+    pub fn insert_line_break_indented(
+        &mut self,
+        context: &mut EditContext<'_>,
+        viewport: &mut Viewport,
+        auto: AutoIndent,
+    ) -> CommandOutcome {
         // A line break moves the text after the cursor to a new line, so a
         // pending block rectangle no longer describes the buffer.
         self.block_insert = None;
-        let plan = edit::plan_line_break(context.buffer, context.indent(), self.cursor);
+        let plan = edit::plan_line_break(context.buffer, context.indent(), self.cursor, auto);
+        self.commit(context, viewport, plan)
+    }
+
+    /// Toggles the line comment of the cursor line or of the selection.
+    ///
+    /// `Space /` reaches this entry point. Normal mode toggles the cursor line.
+    /// Every Visual mode toggles the complete lines of the selection. The
+    /// toggle is one transaction, so one undo reverses it.
+    ///
+    /// The caller reads the token from the adapter that serves the buffer,
+    /// because only an adapter knows the language of a path. A buffer without
+    /// an adapter, or a language without a line-comment token, passes `None`.
+    /// The buffer then stays unchanged and the caller reports the reason.
+    /// Returns [`CommandOutcome::Unhandled`] in that case. See
+    /// `docs/language-services.md`.
+    pub fn toggle_comment(
+        &mut self,
+        context: &mut EditContext<'_>,
+        viewport: &mut Viewport,
+        comment: Option<&str>,
+    ) -> CommandOutcome {
+        let Some(comment) = comment else {
+            return CommandOutcome::Unhandled;
+        };
+        let (first, last) = match self.selection(context.buffer) {
+            Some(selection) => edit::selection_lines(context.buffer, selection),
+            None => (self.cursor.line(), self.cursor.line()),
+        };
+        let plan = edit::plan_toggle_comment(
+            context.buffer,
+            context.indent(),
+            self.cursor,
+            first,
+            last,
+            comment,
+        );
         self.commit(context, viewport, plan)
     }
 
@@ -707,8 +789,15 @@ impl EditingState {
         command: Command,
         count: Option<NonZeroU32>,
         direction: OpenDirection,
+        auto: AutoIndent,
     ) -> CommandOutcome {
-        let plan = edit::plan_open_line(context.buffer, context.indent(), self.cursor, direction);
+        let plan = edit::plan_open_line(
+            context.buffer,
+            context.indent(),
+            self.cursor,
+            direction,
+            auto,
+        );
         let outcome = self.commit(context, viewport, plan);
         self.record(outcome, RepeatableChange::Command { command, count });
         outcome
@@ -868,13 +957,14 @@ impl EditingState {
         &mut self,
         context: &mut EditContext<'_>,
         viewport: &mut Viewport,
+        auto: AutoIndent,
     ) -> CommandOutcome {
         let Some(change) = self.repeat else {
             return CommandOutcome::Unhandled;
         };
         match change {
             RepeatableChange::Command { command, count } => {
-                self.apply(context, viewport, command, count)
+                self.apply_indented(context, viewport, command, count, auto)
             }
             RepeatableChange::OperatorMotion {
                 operator,
@@ -883,7 +973,7 @@ impl EditingState {
                 motion_count,
             } => {
                 self.pending = Some(PendingOperator { operator, count });
-                self.apply(context, viewport, motion, motion_count)
+                self.apply_indented(context, viewport, motion, motion_count, auto)
             }
         }
     }
