@@ -368,6 +368,156 @@ fn a_resize_below_the_minimum_leaves_the_layout_unchanged() {
     assert_eq!(regions(&tree), before);
 }
 
+/// Creates three windows in one row and returns them from left to right.
+///
+/// The row holds 60, 30, and 30 cells, so every window stays above the minimum
+/// window width of 20 cells.
+fn row_of_three(tree: &mut Windows) -> (WindowId, WindowId, WindowId) {
+    let left = tree.focused_window();
+    let middle = tree
+        .split(Orientation::Vertical)
+        .expect("the terminal is wide");
+    let right = tree
+        .split(Orientation::Vertical)
+        .expect("the terminal is wide");
+    assert_eq!(area(tree, left).width, 60);
+    assert_eq!(area(tree, middle).width, 30);
+    assert_eq!(area(tree, right).width, 30);
+    (left, middle, right)
+}
+
+#[test]
+fn a_row_resize_moves_one_border_and_keeps_every_other_pane() {
+    let mut tree = windows(120, 40);
+    let (left, middle, right) = row_of_three(&mut tree);
+
+    // The focused window sits on the left, so the border it shares with the
+    // middle window moves. The right window shares no border with it and keeps
+    // its exact width, although the tree holds it one split level deeper.
+    tree.focus_region(left);
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 66);
+    assert_eq!(area(&tree, middle).width, 24);
+    assert_eq!(
+        area(&tree, right).width,
+        30,
+        "a pane that shares no border with the moved one keeps its cells"
+    );
+    assert_tiles(&tree);
+
+    // The same rule holds from the middle window: the far edge wins, so the
+    // right window gives the cells and the left window keeps its width.
+    tree.focus_region(middle);
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(
+        area(&tree, left).width,
+        66,
+        "the left border stays in place"
+    );
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(area(&tree, right).width, 24);
+    assert_tiles(&tree);
+}
+
+#[test]
+fn a_stacked_resize_moves_one_border_and_keeps_every_other_pane() {
+    // Three stacked windows of 30, 15, and 15 rows.
+    let mut tree = windows(120, 60);
+    let top = tree.focused_window();
+    let middle = tree
+        .split(Orientation::Horizontal)
+        .expect("the terminal is tall");
+    let bottom = tree
+        .split(Orientation::Horizontal)
+        .expect("the terminal is tall");
+    tree.focus_region(top);
+
+    assert_eq!(tree.resize(Direction::Down), LayoutChange::Changed);
+    assert_eq!(area(&tree, top).height, 36);
+    assert_eq!(area(&tree, middle).height, 9);
+    assert_eq!(
+        area(&tree, bottom).height,
+        15,
+        "the bottom window shares no border with the moved one"
+    );
+    assert_tiles(&tree);
+}
+
+#[test]
+fn a_resize_cascades_past_a_pane_that_reaches_its_minimum() {
+    let mut tree = windows(120, 40);
+    let (left, middle, right) = row_of_three(&mut tree);
+    tree.focus_region(left);
+
+    // The first step takes six cells from the middle window.
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, middle).width, 24);
+    assert_eq!(area(&tree, right).width, 30);
+
+    // The middle window reaches the minimum width of 20 cells after four more
+    // cells, so the right window gives the remaining two.
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 72);
+    assert_eq!(area(&tree, middle).width, 20);
+    assert_eq!(area(&tree, right).width, 28);
+
+    // The middle window can give nothing more, so the right window gives every
+    // cell of the next step.
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 78);
+    assert_eq!(area(&tree, middle).width, 20);
+    assert_eq!(area(&tree, right).width, 22);
+    assert_tiles(&tree);
+}
+
+#[test]
+fn a_resize_without_room_for_every_minimum_leaves_the_layout_unchanged() {
+    let mut tree = windows(120, 40);
+    let (left, middle, right) = row_of_three(&mut tree);
+    tree.focus_region(left);
+    for _ in 0..3 {
+        assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    }
+    let before = regions(&tree);
+
+    // The middle window and the right window hold 42 cells and need 40, so no
+    // arrangement of the next six cells keeps both above the minimum.
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Unchanged);
+    assert_eq!(regions(&tree), before);
+    assert_eq!(area(&tree, left).width, 78);
+    assert_eq!(area(&tree, middle).width, 20);
+    assert_eq!(area(&tree, right).width, 22);
+}
+
+#[test]
+fn a_resize_moves_a_border_that_sits_above_the_focused_window() {
+    // One window on the left, and two stacked windows on the right. The border
+    // that the command moves belongs to the root, while the focused window sits
+    // two split levels below it.
+    let mut tree = windows(120, 40);
+    let left = tree.focused_window();
+    let top_right = tree
+        .split(Orientation::Vertical)
+        .expect("the terminal is wide");
+    let bottom_right = tree
+        .split(Orientation::Horizontal)
+        .expect("the terminal is tall");
+    tree.focus_region(top_right);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, top_right).height, 20);
+
+    // The focused window holds no neighbor on its right, so the command moves
+    // the left border. Both windows of the right column follow that border, and
+    // their heights stay as they are.
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 54);
+    assert_eq!(area(&tree, top_right).width, 66);
+    assert_eq!(area(&tree, bottom_right).width, 66);
+    assert_eq!(area(&tree, top_right).height, 20, "the rows stay in place");
+    assert_eq!(area(&tree, bottom_right).height, 20);
+    assert_tiles(&tree);
+}
+
 #[test]
 fn a_vertical_resize_moves_the_shared_row() {
     let mut tree = windows(120, 40);

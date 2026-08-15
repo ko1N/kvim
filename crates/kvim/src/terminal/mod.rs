@@ -21,7 +21,7 @@ use thiserror::Error;
 
 pub use events::{EventSource, FocusChange, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX};
 pub use key::{Chord, Key, KeyCode};
-pub use lifecycle::{CrosstermControl, TerminalControl, TerminalSession};
+pub use lifecycle::{CrosstermControl, CursorShape, TerminalControl, TerminalSession};
 
 /// A failure of a terminal control step or of the terminal event stream.
 #[derive(Debug, Error)]

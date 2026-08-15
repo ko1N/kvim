@@ -90,8 +90,25 @@ Neighbor detection compares layout rectangles, not tree order. Two windows are
 neighbors when one edge meets the other edge and the perpendicular ranges
 overlap. When several windows qualify, the window with the largest overlap wins.
 
-A resize that would push any window below its minimum dimensions leaves the
-layout unchanged.
+A resize moves absolute cells, not a ratio. The editor computes the current
+layout in cells, then moves the one border that the rules above select by the
+resize step:
+
+- The panes on the other side of that border give up the cells. The pane at the
+  border gives first.
+- A pane that would fall below its minimum dimensions keeps its minimum and
+  passes the remaining cells to the next pane along the same direction.
+- The cascade repeats until every cell is placed.
+- Every other pane keeps its exact cell size. A resize therefore never
+  rearranges a pane that shares no border with the moved one.
+
+A split node stores the share of its first child as a weight. The editor derives
+those weights again from the resulting cell sizes, so the layout calculation
+reproduces the same rectangles. The weight stays the storage format, and the
+cell stays the unit of the operation.
+
+A resize that reaches no arrangement that keeps every minimum leaves the layout
+unchanged.
 
 A sidebar keeps a fixed width, but a directional resize whose neighbor is a
 sidebar changes the sidebar width instead of refusing the command.
@@ -180,7 +197,7 @@ A new role belongs here first, and its color stays in code.
 | Text | Buffer text on the editor background |
 | NonText | A glyph that stands for absent text |
 | EndOfBuffer | The rows below the last buffer line |
-| Cursor | The cell that holds the cursor |
+| Cursor | The cell that marks the cursor of the prompt line |
 | Selection | A cell inside the Visual selection |
 | SearchMatch | A cell inside one search match |
 | CurrentSearchMatch | A cell inside the match that holds the cursor |
@@ -197,8 +214,8 @@ A new role belongs here first, and its color stays in code.
 | Error, Warning, Info, Hint | One message severity |
 | Syntax(role) | One syntax role of a language adapter |
 
-The cursor and the selection carry no color of their own. They decorate the
-style below them, so a later syntax color survives both.
+The selection and the prompt cursor carry no color of their own. They decorate
+the style below them, so a later syntax color survives both.
 
 A window title uses the title color, which the reference palette shares with
 the function syntax role. The surface band and the bold modifier keep a title
@@ -223,10 +240,21 @@ Rust adapter produces highlight spans.
 ## Buffer Presentation
 
 Every window paints the buffer of its own leaf. Two windows therefore show two
-different files after `:e` in a split. The focused window paints the cursor and
-the Visual selection, because the editing state follows one window. An unfocused
-window paints neither, and its line numbers count from the start of its own
-buffer, because no per-window cursor exists yet.
+different files after `:e` in a split. The focused window paints the Visual
+selection, because the editing state follows one window. An unfocused window
+paints none, and its line numbers count from the start of its own buffer,
+because no per-window cursor exists yet.
+
+The terminal draws the cursor itself, because a cell grid cannot draw half a
+cell. One frame reports one cursor cell: the cell of the focused window, behind
+the gutter and after the horizontal scroll. An unfocused window reports no cell,
+so it shows no cursor.
+
+The cursor shape follows the mode. Insert mode requests a steady vertical bar,
+and every other mode requests a steady block. The editor writes the shape only
+after a mode change, never for each frame, and it restores the previous cursor
+state when it exits. The shape is decoration: a terminal that ignores the
+sequence still shows its own cursor.
 
 The search highlight belongs to the active buffer, so a window that shows
 another buffer paints no match.

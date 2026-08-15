@@ -9,14 +9,17 @@ use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
 use crate::editor::Selection;
-use crate::input::{Mode, WHICH_KEY_DELAY};
-use crate::settings::EditorSettings;
+use crate::input::Mode;
+use crate::settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use crate::terminal::{FocusChange, Key, KeyCode, TerminalEvent};
 use crate::workspace::temp::TempDir;
 
 use super::session::{MessageLevel, Redraw, RunState, Session};
 
 const NOW: Duration = Duration::ZERO;
+
+/// The which-key delay of the settings that every test session holds.
+const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 
 /// Creates a session over one terminal size.
 fn session(width: u16, height: u16) -> Session {

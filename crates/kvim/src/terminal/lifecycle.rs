@@ -2,7 +2,7 @@
 
 use std::io::{self, stdout};
 
-use crossterm::cursor::{Hide, Show};
+use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -23,6 +23,28 @@ const KEYBOARD_ENHANCEMENT_FLAGS: KeyboardEnhancementFlags =
         .union(KeyboardEnhancementFlags::REPORT_ALL_KEYS_AS_ESCAPE_CODES)
         .union(KeyboardEnhancementFlags::REPORT_EVENT_TYPES);
 
+/// The shape that the terminal draws for its own cursor.
+///
+/// The editor shows the terminal cursor instead of a painted cell, because a
+/// cell grid cannot draw half a cell. See `docs/windows.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CursorShape {
+    /// A steady block that covers one complete cell.
+    Block,
+    /// A steady vertical bar at the left edge of one cell.
+    Bar,
+}
+
+impl CursorShape {
+    /// Returns the crossterm style that draws the shape.
+    const fn style(self) -> SetCursorStyle {
+        match self {
+            Self::Block => SetCursorStyle::SteadyBlock,
+            Self::Bar => SetCursorStyle::SteadyBar,
+        }
+    }
+}
+
 /// The terminal setup and restore steps.
 ///
 /// The trait separates the steps from [`TerminalSession`], so a test drives
@@ -38,6 +60,12 @@ pub trait TerminalControl {
     ///
     /// The operation is repeatable. A second call performs no work.
     fn restore(&mut self) -> io::Result<()>;
+
+    /// Requests one cursor shape from the terminal.
+    ///
+    /// The shape is decoration. A terminal that ignores the sequence still
+    /// shows its own cursor, so the caller keeps running after a failure.
+    fn set_cursor_shape(&mut self, shape: CursorShape) -> io::Result<()>;
 }
 
 /// The crossterm implementation of [`TerminalControl`].
@@ -50,6 +78,7 @@ pub struct CrosstermControl {
     keyboard_enhancement_pushed: bool,
     alternate_screen_entered: bool,
     raw_mode_enabled: bool,
+    cursor_shape_set: bool,
 }
 
 impl CrosstermControl {
@@ -60,12 +89,22 @@ impl CrosstermControl {
             keyboard_enhancement_pushed: false,
             alternate_screen_entered: false,
             raw_mode_enabled: false,
+            cursor_shape_set: false,
         }
     }
 
     /// Undoes the completed steps in reverse order and reports the first
     /// failure. Every step runs, so one failure does not block the others.
     fn cleanup(&mut self) -> io::Result<()> {
+        // The editor changed the cursor shape, so the terminal returns to the
+        // shape that its user configured.
+        let cursor = if self.cursor_shape_set {
+            let result = execute!(stdout(), SetCursorStyle::DefaultUserShape);
+            self.cursor_shape_set = result.is_err();
+            result
+        } else {
+            Ok(())
+        };
         let keyboard = if self.keyboard_enhancement_pushed {
             let result = execute!(stdout(), PopKeyboardEnhancementFlags);
             self.keyboard_enhancement_pushed = result.is_err();
@@ -87,7 +126,7 @@ impl CrosstermControl {
         } else {
             Ok(())
         };
-        keyboard.and(screen).and(raw)
+        cursor.and(keyboard).and(screen).and(raw)
     }
 }
 
@@ -105,10 +144,10 @@ impl TerminalControl for CrosstermControl {
             }
             self.keyboard_enhancement_pushed = true;
         }
-        // Record the step before the call, because the terminal can enter the
-        // alternate screen and then fail to hide the cursor.
+        // The editor shows the terminal cursor itself, so the alternate screen
+        // keeps it visible. See `docs/windows.md`.
         self.alternate_screen_entered = true;
-        if let Err(error) = execute!(stdout(), EnterAlternateScreen, Hide) {
+        if let Err(error) = execute!(stdout(), EnterAlternateScreen) {
             let _ = self.cleanup();
             return Err(error);
         }
@@ -117,6 +156,13 @@ impl TerminalControl for CrosstermControl {
 
     fn restore(&mut self) -> io::Result<()> {
         self.cleanup()
+    }
+
+    fn set_cursor_shape(&mut self, shape: CursorShape) -> io::Result<()> {
+        // Record the step before the call, because a terminal can apply the
+        // sequence and then fail to flush it.
+        self.cursor_shape_set = true;
+        execute!(stdout(), shape.style())
     }
 }
 
@@ -145,12 +191,13 @@ enum SessionState {
 /// ```
 /// use std::io;
 ///
-/// use kvim::terminal::{TerminalControl, TerminalSession};
+/// use kvim::terminal::{CursorShape, TerminalControl, TerminalSession};
 ///
 /// #[derive(Default)]
 /// struct FakeControl {
 ///     setups: usize,
 ///     restores: usize,
+///     shape: Option<CursorShape>,
 /// }
 ///
 /// impl TerminalControl for FakeControl {
@@ -163,9 +210,15 @@ enum SessionState {
 ///         self.restores += 1;
 ///         Ok(())
 ///     }
+///
+///     fn set_cursor_shape(&mut self, shape: CursorShape) -> io::Result<()> {
+///         self.shape = Some(shape);
+///         Ok(())
+///     }
 /// }
 ///
 /// let mut session = TerminalSession::enter(FakeControl::default())?;
+/// session.set_cursor_shape(CursorShape::Bar)?;
 /// session.suspend()?;
 /// session.resume()?;
 /// session.restore()?;
@@ -200,6 +253,21 @@ impl<C: TerminalControl> TerminalSession<C> {
         self.control.restore().map_err(TerminalError::Control)?;
         self.state = SessionState::Suspended;
         Ok(())
+    }
+
+    /// Requests one cursor shape from the terminal.
+    ///
+    /// The caller changes the shape only when the editor mode changes, because
+    /// the shape is terminal state, not frame content.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TerminalError`] when the write fails. The shape is
+    /// decoration, so a caller may ignore that failure and keep running.
+    pub fn set_cursor_shape(&mut self, shape: CursorShape) -> Result<(), TerminalError> {
+        self.control
+            .set_cursor_shape(shape)
+            .map_err(TerminalError::Control)
     }
 
     /// Applies the setup steps again after a suspend.
@@ -249,6 +317,7 @@ mod tests {
     enum ControlStep {
         Setup,
         Restore,
+        Shape(CursorShape),
     }
 
     #[derive(Default)]
@@ -283,6 +352,10 @@ mod tests {
 
         fn restore(&mut self) -> io::Result<()> {
             self.record(ControlStep::Restore, self.restore_fails)
+        }
+
+        fn set_cursor_shape(&mut self, shape: CursorShape) -> io::Result<()> {
+            self.record(ControlStep::Shape(shape), false)
         }
     }
 

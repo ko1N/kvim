@@ -19,6 +19,13 @@ pub const COUNT_MAX: u32 = 9_999;
 /// The largest number of keys that one pending input sequence holds.
 pub const PENDING_KEYS_MAX: u8 = 4;
 
+/// The default time between the first key of a sequence and the which-key
+/// overlay.
+///
+/// The reference which-key configuration uses the same delay. See
+/// `docs/input-actions.md`.
+pub const WHICH_KEY_DELAY_DEFAULT: Duration = Duration::from_millis(500);
+
 /// One 24-bit terminal color.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rgb {
@@ -281,9 +288,11 @@ impl Default for FileSettings {
 /// The bounds of the modal input resolver.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InputSettings {
-    /// The time that an incomplete key sequence stays pending.
-    pub sequence_timeout: Duration,
-    /// The time between the leader key and the which-key overlay.
+    /// The time between the first key of a sequence and the which-key overlay.
+    ///
+    /// The delay keeps a fast key combination from flashing the overlay. A
+    /// pending sequence itself never expires, so the resolver holds no other
+    /// time value. See `docs/input-actions.md`.
     pub which_key_delay: Duration,
     /// The largest count that the resolver accepts before one command.
     pub count_max: u32,
@@ -294,8 +303,7 @@ pub struct InputSettings {
 impl Default for InputSettings {
     fn default() -> Self {
         Self {
-            sequence_timeout: Duration::from_millis(750),
-            which_key_delay: Duration::from_millis(200),
+            which_key_delay: WHICH_KEY_DELAY_DEFAULT,
             count_max: COUNT_MAX,
             pending_keys_max: PENDING_KEYS_MAX,
         }

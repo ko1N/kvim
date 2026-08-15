@@ -18,7 +18,7 @@ use crate::input::Command;
 use crate::settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSettings};
 use crate::workspace::BufferId;
 
-use super::layout::{RegionKind, WindowLayout, compute_layout};
+use super::layout::{RegionKind, WindowLayout, compute_layout, first_extent};
 
 /// The largest number of leaf windows that the tree holds.
 ///
@@ -35,7 +35,12 @@ pub const SPLIT_DEPTH_MAX: usize = 16;
 ///
 /// A split node stores the share of its first child as an integer numerator
 /// over this value, so the layout calculation uses integer arithmetic only.
-pub const SPLIT_WEIGHT_TOTAL: u32 = 1_000;
+///
+/// The value is larger than the largest extent that a terminal rectangle holds,
+/// which is [`u16::MAX`] cells. One weight therefore reproduces one absolute
+/// cell count exactly, and a resize that works in cells loses nothing when it
+/// stores its result. See `docs/windows.md`.
+pub const SPLIT_WEIGHT_TOTAL: u32 = 65_536;
 
 /// The smallest width that a sidebar accepts, in cells.
 pub const SIDEBAR_WIDTH_MIN_CELLS: u16 = 10;
@@ -451,25 +456,181 @@ fn close_leaf(node: &mut Node, target: WindowId) -> Option<WindowId> {
     close_leaf(first, target).or_else(|| close_leaf(second, target))
 }
 
-/// Writes the share of the first child of the named split node.
+/// Returns the smallest extent that one subtree occupies along one axis.
 ///
-/// Returns `false` when the subtree does not hold the split node.
-fn set_split_weight(node: &mut Node, id: SplitId, weight: u32) -> bool {
+/// One leaf window needs the minimum window dimension. A split along the axis
+/// needs both children, and a split across the axis needs the larger child.
+/// [`SPLIT_DEPTH_MAX`] bounds the recursion, and the sum saturates, so a tree
+/// in a small terminal produces no overflow.
+fn min_extent(node: &Node, orientation: Orientation, minimum: u16) -> u16 {
     match node {
-        Node::Leaf(_) => false,
+        Node::Leaf(_) => minimum,
         Node::Split {
-            id: node_id,
-            first_weight,
+            orientation: axis,
             first,
             second,
             ..
         } => {
-            if *node_id == id {
-                *first_weight = weight.min(SPLIT_WEIGHT_TOTAL);
-                return true;
+            let first = min_extent(first, orientation, minimum);
+            let second = min_extent(second, orientation, minimum);
+            if *axis == orientation {
+                first.saturating_add(second)
+            } else {
+                first.max(second)
             }
-            set_split_weight(first, id, weight) || set_split_weight(second, id, weight)
         }
+    }
+}
+
+/// Returns the weight that reproduces one absolute first-child extent.
+///
+/// The layout calculation multiplies the extent by the weight and divides by
+/// [`SPLIT_WEIGHT_TOTAL`]. That denominator is above every terminal extent, so
+/// the smallest weight that reaches `head` reproduces exactly `head` cells.
+fn split_weight(head: u16, extent: u16) -> u32 {
+    debug_assert!(
+        head <= extent,
+        "one child of a split node never passes the extent that the node divides"
+    );
+    if extent == 0 {
+        return SPLIT_WEIGHT_TOTAL / 2;
+    }
+    let extent = u64::from(extent);
+    let numerator = u64::from(head) * u64::from(SPLIT_WEIGHT_TOTAL) + extent - 1;
+    u32::try_from(numerator / extent)
+        .map_or(SPLIT_WEIGHT_TOTAL, |weight| weight.min(SPLIT_WEIGHT_TOTAL))
+}
+
+/// Moves one end of a subtree by `delta` cells and rewrites its weights.
+///
+/// `extent` is the current extent of the subtree along `orientation`, and `end`
+/// names the end that moves. The pane at that end absorbs the cells first. A
+/// pane that would fall below `minimum` keeps the minimum and passes the
+/// remaining cells to the next pane along the same direction. Every other pane
+/// keeps its exact extent.
+///
+/// Returns the new extent of the subtree, or `None` when no arrangement of the
+/// subtree keeps every window at `minimum`. A subtree that returns `None` holds
+/// no usable state, so the caller discards the staged tree.
+fn move_edge(
+    node: &mut Node,
+    orientation: Orientation,
+    extent: u16,
+    end: ChildSide,
+    delta: i32,
+    minimum: u16,
+) -> Option<u16> {
+    let requested = i32::from(extent) + delta;
+    if requested < i32::from(min_extent(node, orientation, minimum)) {
+        return None;
+    }
+    let next = u16::try_from(requested).ok()?;
+    match node {
+        Node::Leaf(_) => {}
+        Node::Split {
+            orientation: axis,
+            first_weight,
+            first,
+            second,
+            ..
+        } if *axis == orientation => {
+            let head = first_extent(extent, *first_weight, minimum);
+            let (near, near_extent, far, far_extent) = match end {
+                ChildSide::First => (first, head, second, extent - head),
+                ChildSide::Second => (second, extent - head, first, head),
+            };
+            // The pane at the moved end gives or takes the cells first. It stops
+            // at its own minimum, and the rest moves the divider between the two
+            // children, so the next pane along absorbs it.
+            let floor = i32::from(min_extent(near, orientation, minimum));
+            let near_delta = (i32::from(near_extent) + delta).max(floor) - i32::from(near_extent);
+            let near_next = move_edge(near, orientation, near_extent, end, near_delta, minimum)?;
+            let far_next = move_edge(
+                far,
+                orientation,
+                far_extent,
+                end,
+                delta - near_delta,
+                minimum,
+            )?;
+            debug_assert_eq!(
+                u32::from(near_next) + u32::from(far_next),
+                u32::from(next),
+                "the two children divide the new extent of the split node"
+            );
+            let head_next = match end {
+                ChildSide::First => near_next,
+                ChildSide::Second => far_next,
+            };
+            *first_weight = split_weight(head_next, next);
+        }
+        Node::Split { first, second, .. } => {
+            // The axis crosses this divider, so both children hold the extent of
+            // the node, and both move the same end by the same cells.
+            move_edge(first, orientation, extent, end, delta, minimum)?;
+            move_edge(second, orientation, extent, end, delta, minimum)?;
+        }
+    }
+    Some(next)
+}
+
+/// Moves the divider of one split node of a staged tree by `delta` cells.
+///
+/// The divider moves toward larger coordinates for a positive `delta`. The
+/// panes across the divider give up the cells, and every pane that shares no
+/// border with the divider keeps its exact extent. See `docs/windows.md`.
+///
+/// Returns `false` when the tree holds no such divider, or when no arrangement
+/// keeps every window at its minimum. The staged tree then holds no usable
+/// state, so the caller discards it.
+fn move_divider(
+    node: &mut Node,
+    id: SplitId,
+    orientation: Orientation,
+    extent: u16,
+    minimum: u16,
+    delta: i32,
+) -> bool {
+    let Some(Node::Split {
+        first_weight,
+        first,
+        second,
+        ..
+    }) = split_node_mut(node, id)
+    else {
+        return false;
+    };
+    let head = first_extent(extent, *first_weight, minimum);
+    let tail = extent - head;
+    let Some(head_next) = u16::try_from(i32::from(head) + delta)
+        .ok()
+        .filter(|head_next| *head_next <= extent)
+    else {
+        return false;
+    };
+    // The first child grows by the cells that the second child gives up, so one
+    // divider moves and the extent of the split node stays as it is.
+    if move_edge(first, orientation, head, ChildSide::Second, delta, minimum).is_none() {
+        return false;
+    }
+    if move_edge(second, orientation, tail, ChildSide::First, -delta, minimum).is_none() {
+        return false;
+    }
+    *first_weight = split_weight(head_next, extent);
+    true
+}
+
+/// Returns the named split node of one subtree.
+fn split_node_mut(node: &mut Node, id: SplitId) -> Option<&mut Node> {
+    if matches!(node, Node::Split { id: node_id, .. } if *node_id == id) {
+        return Some(node);
+    }
+    let Node::Split { first, second, .. } = node else {
+        return None;
+    };
+    match split_node_mut(first, id) {
+        Some(found) => Some(found),
+        None => split_node_mut(second, id),
     }
 }
 
@@ -895,6 +1056,12 @@ impl Windows {
     }
 
     /// Moves the divider that the focused window shares with an editor window.
+    ///
+    /// The move works in absolute cells. The panes across the divider give up
+    /// the cells, a pane that reaches its minimum passes the rest to the next
+    /// pane along the same direction, and every other pane keeps its exact
+    /// size. The weights follow the resulting cell sizes, so the layout
+    /// calculation reproduces them. See `docs/windows.md`.
     fn resize_divider(&mut self, direction: Direction, edge: Direction) -> LayoutChange {
         let orientation = direction.orientation();
         let side = edge.divider_side();
@@ -911,15 +1078,17 @@ impl Windows {
             return LayoutChange::Unchanged;
         };
         let (extent, minimum) = self.axis(orientation, area);
-        let current = super::layout::first_extent(extent, self.current_weight(step.split), minimum);
-        let step_cells = i32::from(self.settings.resize_step_cells);
-        let target = i32::from(current) + direction.divider_step() * step_cells;
-        let target = target.clamp(0, i32::from(extent));
-        let numerator = u32::try_from(target).unwrap_or(0) * SPLIT_WEIGHT_TOTAL;
-        let weight = (numerator + u32::from(extent) / 2) / u32::from(extent);
+        let delta = direction.divider_step() * i32::from(self.settings.resize_step_cells);
 
         let mut candidate = self.root.clone();
-        if !set_split_weight(&mut candidate, step.split, weight) {
+        if !move_divider(
+            &mut candidate,
+            step.split,
+            orientation,
+            extent,
+            minimum,
+            delta,
+        ) {
             return LayoutChange::Unchanged;
         }
         self.commit(candidate)
@@ -1005,27 +1174,6 @@ impl Windows {
                 || (region.area.width >= self.settings.min_window_width_cells
                     && region.area.height >= self.settings.min_window_height_rows)
         })
-    }
-
-    fn current_weight(&self, id: SplitId) -> u32 {
-        fn find(node: &Node, id: SplitId) -> Option<u32> {
-            match node {
-                Node::Leaf(_) => None,
-                Node::Split {
-                    id: node_id,
-                    first_weight,
-                    first,
-                    second,
-                    ..
-                } => {
-                    if *node_id == id {
-                        return Some(*first_weight);
-                    }
-                    find(first, id).or_else(|| find(second, id))
-                }
-            }
-        }
-        find(&self.root, id).unwrap_or(SPLIT_WEIGHT_TOTAL / 2)
     }
 
     fn axis(&self, orientation: Orientation, area: Rect) -> (u16, u16) {

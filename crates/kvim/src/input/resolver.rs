@@ -16,13 +16,6 @@ use super::command::Command;
 use super::mode::InputContext;
 use super::registry::{Registry, WhichKeyRow};
 
-/// The time between the first key of a sequence and the which-key overlay.
-///
-/// The delay keeps a fast key combination from flashing the overlay. The value
-/// belongs to `EditorSettings`, and it stays here until that structure holds
-/// it. See `docs/input-actions.md`.
-pub const WHICH_KEY_DELAY: Duration = Duration::from_millis(500);
-
 /// One edit of an open line prompt.
 ///
 /// The resolver translates the raw key, so the command line and the search
@@ -192,9 +185,9 @@ impl Resolver {
     /// Returns the which-key overlay rows, or `None` while the overlay stays
     /// hidden.
     ///
-    /// The overlay appears after [`WHICH_KEY_DELAY`] and lists the keys that may
-    /// follow the pending sequence. The rows come from the registry, so their
-    /// order is deterministic.
+    /// The overlay appears after the which-key delay of `EditorSettings` and
+    /// lists the keys that may follow the pending sequence. The rows come from
+    /// the registry, so their order is deterministic.
     #[must_use]
     pub fn which_key(&self, now: Duration) -> Option<Vec<WhichKeyRow>> {
         match &self.pending {
@@ -241,7 +234,7 @@ impl Resolver {
         if keys.is_empty() && mode.accepts_count() {
             match self.accumulate_count(key, count) {
                 CountStep::Grown(value) => {
-                    self.pending = Self::arm(Vec::new(), Some(value), now);
+                    self.pending = self.arm(Vec::new(), Some(value), now);
                     return Resolution::Pending;
                 }
                 CountStep::AboveMaximum => return Resolution::NoMatch,
@@ -271,7 +264,7 @@ impl Resolver {
             };
         }
         if longer {
-            self.pending = Self::arm(keys, count, now);
+            self.pending = self.arm(keys, count, now);
             return Resolution::Pending;
         }
         Resolution::NoMatch
@@ -286,11 +279,11 @@ impl Resolver {
     }
 
     /// Builds the active pending state and arms the overlay time.
-    fn arm(keys: Vec<Key>, count: Option<u32>, now: Duration) -> PendingInput {
+    fn arm(&self, keys: Vec<Key>, count: Option<u32>, now: Duration) -> PendingInput {
         PendingInput::Active {
             keys,
             count,
-            overlay_at: saturating_deadline(now, WHICH_KEY_DELAY),
+            overlay_at: saturating_deadline(now, self.settings.which_key_delay),
         }
     }
 
@@ -372,12 +365,15 @@ mod tests {
     use std::time::Duration;
 
     use crate::input::{Command, InputContext, Mode, PromptKind, Registry};
-    use crate::settings::InputSettings;
+    use crate::settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
     use crate::terminal::{Key, KeyCode};
 
-    use super::{PromptEdit, Resolution, Resolver, WHICH_KEY_DELAY};
+    use super::{PromptEdit, Resolution, Resolver};
 
     const NOW: Duration = Duration::ZERO;
+
+    /// The which-key delay of the settings that every test resolver holds.
+    const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 
     fn resolver() -> Resolver {
         Resolver::new(Registry::first_release(), InputSettings::default())
