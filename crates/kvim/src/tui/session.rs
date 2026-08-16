@@ -40,8 +40,9 @@ use crate::input::{
     PromptKind, Registry, Resolution, Resolver, WhichKeyRow,
 };
 use crate::language::{
-    Analysis, AnalysisError, AnalysisInput, BufferSyntax, HighlightSpan, LanguageAdapter,
-    LanguageRegistry, Publication, SyntaxTree,
+    Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
+    DocumentPosition, FormatEdits, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageOutcome,
+    LanguageRegistry, LanguageRequestId, LspError, Publication, SourceLocation, SyntaxTree,
 };
 use crate::settings::EditorSettings;
 use crate::terminal::{Chord, Key, KeyCode, TerminalEvent};
@@ -52,6 +53,10 @@ use crate::workspace::{
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
 use super::chrome::shell_areas;
+use super::language::{
+    AfterSave, DiagnosticJump, Float, FormatOnSave, LanguageNotice, LanguageQuery, LanguageRequest,
+    LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, jump_target,
+};
 use super::layout::RegionKind;
 use super::theme::Theme;
 use super::window::{WindowId, WindowOutcome, Windows};
@@ -101,15 +106,6 @@ enum UnsavedChanges {
     Refuse,
     /// Close the window and discard the unsaved changes.
     Discard,
-}
-
-/// The step that follows one successful save.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum AfterSave {
-    /// Keep the window open.
-    Stay,
-    /// Close the focused window, like `:wq`.
-    CloseWindow,
 }
 
 /// The file operation that the editor waits for.
@@ -299,10 +295,13 @@ pub(super) struct Visible<'a> {
     /// The buffer that the editing state and the active search belong to.
     pub(super) active: BufferId,
     pub(super) analysis: &'a BTreeMap<BufferId, BufferAnalysis>,
+    /// The published diagnostics and the language-service state.
+    pub(super) language: &'a LanguageState,
     pub(super) editing: &'a EditingState,
     pub(super) search: Option<&'a ActiveSearch>,
     pub(super) prompt: Option<&'a PromptLine>,
     pub(super) message: Option<&'a Message>,
+    pub(super) float: Option<&'a Float>,
     pub(super) which_key: Option<&'a [WhichKeyRow]>,
 }
 
@@ -315,6 +314,14 @@ impl Visible<'_> {
         self.analysis
             .get(&buffer)
             .map_or(&[][..], BufferAnalysis::highlights)
+    }
+
+    /// Returns the diagnostics of one buffer, in ascending position order.
+    ///
+    /// An empty list renders no decoration and no sign, which every buffer
+    /// without a language server also does.
+    pub(super) fn diagnostics(&self, buffer: BufferId) -> &[Diagnostic] {
+        self.language.diagnostics(buffer)
     }
 }
 
@@ -366,9 +373,17 @@ pub struct Session {
     /// One job runs at a time, so a newer buffer version replaces the job that
     /// it supersedes instead of adding a second one.
     analysis_pending: Option<(BufferId, BufferVersion)>,
+    /// The language-server requests, diagnostics, and per-buffer settings.
+    ///
+    /// The session never speaks the protocol. It builds bounded requests, and
+    /// the event loop hands them to the language services. See
+    /// `docs/language-services.md`.
+    language: LanguageState,
     search: Option<ActiveSearch>,
     prompt: Option<PromptLine>,
     message: Option<Message>,
+    /// The open floating overlay of the language services.
+    float: Option<Float>,
     which_key: Option<Vec<WhichKeyRow>>,
     run: RunState,
 }
@@ -404,9 +419,11 @@ impl Session {
             languages: LanguageRegistry::first_release(),
             analysis: BTreeMap::new(),
             analysis_pending: None,
+            language: LanguageState::default(),
             search: None,
             prompt: None,
             message: None,
+            float: None,
             which_key: None,
             run: RunState::Running,
         };
@@ -519,10 +536,12 @@ impl Session {
             buffers: &self.buffers,
             active: self.active,
             analysis: &self.analysis,
+            language: &self.language,
             editing: &self.editing,
             search: self.search.as_ref(),
             prompt: self.prompt.as_ref(),
             message: self.message.as_ref(),
+            float: self.float.as_ref(),
             which_key: self.which_key.as_deref(),
         }
     }
@@ -554,6 +573,13 @@ impl Session {
 
     /// Resolves one key and applies the command, the prompt edit, or the text.
     fn handle_key(&mut self, key: Key, now: Duration) -> Redraw {
+        // A float is decoration of one answer, so the next key closes it.
+        let closed = self.close_float();
+        self.resolve_key(key, now).or(closed)
+    }
+
+    /// Resolves one key and applies what it names.
+    fn resolve_key(&mut self, key: Key, now: Duration) -> Redraw {
         match self.resolver.resolve(key, now) {
             Resolution::Command { command, count } => self.apply_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
@@ -583,6 +609,20 @@ impl Session {
                 return self.close_window(UnsavedChanges::Refuse).or(cleared);
             }
             Command::ToggleComment => return self.toggle_comment().or(cleared),
+            // The language commands build one bounded request or read the
+            // published diagnostics. None of them waits for a server.
+            Command::GoToDefinition => {
+                return self.ask_at_cursor(QueryPurpose::Definition).or(cleared);
+            }
+            Command::ShowHover => return self.ask_at_cursor(QueryPurpose::Hover).or(cleared),
+            Command::ShowDiagnosticFloat => return self.show_diagnostic_float().or(cleared),
+            Command::NextDiagnostic => {
+                return self.jump_diagnostic(DiagnosticJump::Next).or(cleared);
+            }
+            Command::PreviousDiagnostic => {
+                return self.jump_diagnostic(DiagnosticJump::Previous).or(cleared);
+            }
+            Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
             _ => {}
         }
         match self.windows.apply(command) {
@@ -721,7 +761,51 @@ impl Session {
             *slot = viewport;
         }
         self.advance_syntax(&before, after, &applied);
+        self.synchronize_language(&before, after, &applied);
         outcome
+    }
+
+    /// Sends the applied transaction of the active buffer to its server.
+    ///
+    /// The changes come from the buffer as it was before the transaction, and
+    /// they carry the version that the transaction produced. A change that the
+    /// protocol cannot describe, such as an undo or a redo, opens the document
+    /// again with its exact text instead.
+    fn synchronize_language(
+        &mut self,
+        before: &TextBuffer,
+        after: BufferVersion,
+        applied: &[EditTransaction],
+    ) {
+        if after == before.version() {
+            return;
+        }
+        let buffer = self.active;
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return;
+        };
+        let Some(path) = file.path().map(Path::to_path_buf) else {
+            return;
+        };
+        if self.language.awaits_open(buffer) {
+            // The queued open already carries the newest text.
+            return;
+        }
+        let [transaction] = applied else {
+            self.language.mark_resync(buffer);
+            return;
+        };
+        let Ok(changes) = ContentChange::from_transaction(before, transaction) else {
+            self.language.mark_resync(buffer);
+            return;
+        };
+        self.queue_language(LanguageRequest::Change {
+            buffer,
+            path,
+            version: after,
+            changes,
+        });
     }
 
     /// Moves the reuse tree of the active buffer over one applied transaction.
@@ -1013,6 +1097,463 @@ impl Session {
         self.analysis_pending = None;
     }
 
+    /// Takes the language request that the event loop must send.
+    ///
+    /// The session never speaks the protocol, so the event loop hands the
+    /// request to the language services. A buffer that needs a fresh open comes
+    /// first, and its request carries the exact text of the current buffer
+    /// version. See `docs/language-services.md`.
+    pub fn take_language_request(&mut self) -> Option<LanguageRequest> {
+        while let Some(buffer) = self.language.take() {
+            if let Some(request) = self.open_request(buffer) {
+                return Some(request);
+            }
+        }
+        self.language.take_queued()
+    }
+
+    /// Reports how the language services answered one dispatched request.
+    ///
+    /// The services assign the identity of a query, and the session records it
+    /// so a later answer reaches the question that asked for it.
+    pub fn apply_language_dispatch(
+        &mut self,
+        kind: LanguageRequestKind,
+        result: Result<Option<LanguageRequestId>, LspError>,
+    ) -> Redraw {
+        match result {
+            Ok(id) => {
+                if kind == LanguageRequestKind::Query
+                    && let Some(pending) = self.language.pending.as_mut()
+                {
+                    debug_assert!(
+                        id.is_some(),
+                        "the language services name the identity of every accepted question"
+                    );
+                    pending.id = id;
+                }
+                Redraw::Skipped
+            }
+            Err(error) => {
+                let redraw = self.report_language_error(&error);
+                match kind {
+                    LanguageRequestKind::Query => self.abandon_query().or(redraw),
+                    LanguageRequestKind::Synchronization => redraw,
+                }
+            }
+        }
+    }
+
+    /// Applies one typed result of the language services.
+    ///
+    /// Every result passes the buffer-version gate before it changes visible
+    /// state, so an obsolete answer never reaches the screen.
+    pub fn apply_language_event(&mut self, event: LanguageEvent) -> Redraw {
+        match event.outcome {
+            LanguageOutcome::Diagnostics(set) => self.publish_diagnostics(set),
+            LanguageOutcome::Definition {
+                request,
+                version,
+                locations,
+            } => self.publish_definition(request, version, &locations),
+            LanguageOutcome::Hover {
+                request,
+                version,
+                text,
+            } => self.publish_hover(request, version, text.as_deref()),
+            LanguageOutcome::Formatting { request, edits } => {
+                self.publish_formatting(request, &edits)
+            }
+            LanguageOutcome::Failed { request, error } => {
+                let redraw = match request {
+                    Some(request) if self.matches_pending(request) => self.abandon_query(),
+                    Some(_) | None => Redraw::Skipped,
+                };
+                self.report_language_error(&error).or(redraw)
+            }
+            LanguageOutcome::Unavailable => {
+                let redraw = self.report_language_notice(LanguageNotice::NotInstalled);
+                self.abandon_query().or(redraw)
+            }
+            LanguageOutcome::Restarted => self.reopen_documents(),
+            LanguageOutcome::Stopped => {
+                let redraw = self.report_language_notice(LanguageNotice::Stopped);
+                self.abandon_query().or(redraw)
+            }
+        }
+    }
+
+    /// Returns the open request of one buffer, with its exact current text.
+    fn open_request(&self, buffer: BufferId) -> Option<LanguageRequest> {
+        let file = self.buffers.get(buffer)?;
+        let path = file.path()?.to_path_buf();
+        let text = file.text();
+        Some(LanguageRequest::Open {
+            buffer,
+            path,
+            version: text.version(),
+            text: Arc::from(text.to_string()),
+        })
+    }
+
+    /// Queues one language request for the event loop.
+    ///
+    /// A full outbox means the event loop stopped draining it. Every server
+    /// copy is then unreliable, so the session opens every document again
+    /// instead of sending a change that describes text the server never
+    /// received.
+    fn queue_language(&mut self, request: LanguageRequest) {
+        if self.language.queue(request) {
+            return;
+        }
+        debug_assert!(
+            false,
+            "the event loop drains the language outbox after every step"
+        );
+        self.language.resync_all(self.buffers.ids());
+    }
+
+    /// Opens every document again after the server restarted.
+    ///
+    /// The new server holds no document, so every published diagnostic belongs
+    /// to a server that no longer runs.
+    fn reopen_documents(&mut self) -> Redraw {
+        self.language.resync_all(self.buffers.ids());
+        self.language.clear_diagnostics();
+        let redraw = self.abandon_query();
+        self.set_message(
+            "the language server restarted; the editor opened its buffers again",
+            MessageLevel::Warning,
+        );
+        redraw.or(Redraw::Needed)
+    }
+
+    /// Reports one normal language-service state exactly once.
+    fn report_language_notice(&mut self, notice: LanguageNotice) -> Redraw {
+        if !self.language.report(notice) {
+            return Redraw::Skipped;
+        }
+        self.set_message(notice.message(), MessageLevel::Info);
+        Redraw::Needed
+    }
+
+    /// Reports one language-service failure on the message line.
+    ///
+    /// A normal state reaches the line once. Every other failure is a transient
+    /// warning, and the buffer stays editable in both cases.
+    fn report_language_error(&mut self, error: &LspError) -> Redraw {
+        match LanguageNotice::of(error) {
+            Some(notice) => self.report_language_notice(notice),
+            None => {
+                self.set_message(error.to_string(), MessageLevel::Warning);
+                Redraw::Needed
+            }
+        }
+    }
+
+    /// Reports whether one answer belongs to the question that the editor asked.
+    fn matches_pending(&self, request: LanguageRequestId) -> bool {
+        self.language
+            .pending
+            .as_ref()
+            .is_some_and(|pending| pending.id == Some(request))
+    }
+
+    /// Releases the waiting question and completes a save that waited for it.
+    ///
+    /// A save must never depend on a language server, so a lost formatter
+    /// answer still writes the buffer content that the user typed.
+    fn abandon_query(&mut self) -> Redraw {
+        let Some(pending) = self.language.pending.take() else {
+            return Redraw::Skipped;
+        };
+        match pending.purpose {
+            QueryPurpose::FormatBeforeSave(then) => self.start_save(then),
+            QueryPurpose::Definition | QueryPurpose::Hover => Redraw::Skipped,
+        }
+    }
+
+    /// Takes the question that one answer completes.
+    fn take_pending(&mut self, request: LanguageRequestId) -> Option<PendingQuery> {
+        if !self.matches_pending(request) {
+            return None;
+        }
+        self.language.pending.take()
+    }
+
+    /// Asks one question about the symbol under the cursor.
+    fn ask_at_cursor(&mut self, purpose: QueryPurpose) -> Redraw {
+        if self.language.pending.is_some() {
+            self.set_message(
+                "one language question is already running",
+                MessageLevel::Warning,
+            );
+            return Redraw::Needed;
+        }
+        let buffer = self.active;
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return Redraw::Skipped;
+        };
+        let Some(path) = file.path().map(Path::to_path_buf) else {
+            return self.report_language_notice(LanguageNotice::NoServer);
+        };
+        let text = file.text();
+        let version = text.version();
+        let position = DocumentPosition::of_buffer(text, self.editing.cursor().position(text));
+        let query = match purpose {
+            QueryPurpose::Definition => LanguageQuery::Definition(position),
+            QueryPurpose::Hover => LanguageQuery::Hover(position),
+            QueryPurpose::FormatBeforeSave(_) => {
+                debug_assert!(false, "a format is not a question about one position");
+                return Redraw::Skipped;
+            }
+        };
+        self.language.pending = Some(PendingQuery {
+            buffer,
+            version,
+            purpose,
+            id: None,
+        });
+        self.queue_language(LanguageRequest::Query {
+            buffer,
+            path,
+            version,
+            query,
+        });
+        Redraw::Skipped
+    }
+
+    /// Publishes one diagnostic set behind the buffer-version gate.
+    ///
+    /// Diagnostics are decoration. They change no buffer text, no line mapping,
+    /// and no cursor position, and an obsolete set changes nothing at all.
+    fn publish_diagnostics(&mut self, set: DiagnosticSet) -> Redraw {
+        let Some(buffer) = self.buffers.find_path(set.path()) else {
+            // The server may describe a file that no buffer holds.
+            return Redraw::Skipped;
+        };
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(false, "the path lookup returns a loaded buffer");
+            return Redraw::Skipped;
+        };
+        if !set.is_current(file.text().version()) {
+            return Redraw::Skipped;
+        }
+        self.language.publish(buffer, set);
+        Redraw::Needed
+    }
+
+    /// Moves the cursor to one definition target, in this buffer or another.
+    fn publish_definition(
+        &mut self,
+        request: LanguageRequestId,
+        version: BufferVersion,
+        locations: &[SourceLocation],
+    ) -> Redraw {
+        let Some(pending) = self.take_pending(request) else {
+            return Redraw::Skipped;
+        };
+        if !self.answers_current_buffer(&pending, version) {
+            return Redraw::Skipped;
+        }
+        let Some(location) = locations.first() else {
+            self.set_message("no definition found", MessageLevel::Warning);
+            return Redraw::Needed;
+        };
+        if self.buffers.get(pending.buffer).and_then(FileBuffer::path) == Some(&location.path) {
+            return self.move_to_position(location.span.start);
+        }
+        // The target lives in another file, so the focused window opens it and
+        // the jump follows the load.
+        self.language.jump = Some(PendingJump {
+            path: location.path.clone(),
+            position: location.span.start,
+        });
+        let redraw = self.open_path(location.path.clone());
+        self.follow_jump().or(redraw)
+    }
+
+    /// Shows one hover answer as a float.
+    fn publish_hover(
+        &mut self,
+        request: LanguageRequestId,
+        version: BufferVersion,
+        text: Option<&str>,
+    ) -> Redraw {
+        let Some(pending) = self.take_pending(request) else {
+            return Redraw::Skipped;
+        };
+        if !self.answers_current_buffer(&pending, version) {
+            return Redraw::Skipped;
+        }
+        let Some(text) = text else {
+            self.set_message("no hover information", MessageLevel::Info);
+            return Redraw::Needed;
+        };
+        self.float = Some(Float::text(HOVER_TITLE, text));
+        Redraw::Needed
+    }
+
+    /// Applies one formatter answer and writes the buffer afterwards.
+    fn publish_formatting(&mut self, request: LanguageRequestId, edits: &FormatEdits) -> Redraw {
+        let Some(pending) = self.take_pending(request) else {
+            return Redraw::Skipped;
+        };
+        let QueryPurpose::FormatBeforeSave(then) = pending.purpose else {
+            debug_assert!(false, "only a save asks for formatting edits");
+            return Redraw::Skipped;
+        };
+        let redraw = self.apply_format_edits(pending.buffer, edits);
+        self.start_save(then).or(redraw)
+    }
+
+    /// Applies the accepted formatter edits as one undoable transaction.
+    ///
+    /// An obsolete answer, a malformed range, and a buffer that already matches
+    /// the formatter all leave the buffer as it is. The save follows either way.
+    fn apply_format_edits(&mut self, buffer: BufferId, edits: &FormatEdits) -> Redraw {
+        if buffer != self.active {
+            return Redraw::Skipped;
+        }
+        let Some(file) = self.buffers.get(buffer) else {
+            return Redraw::Skipped;
+        };
+        let cursor = self.editing.cursor().position(file.text());
+        let transaction = match edits.transaction(file.text(), cursor) {
+            Ok(Some(transaction)) => transaction,
+            // The buffer already matches the formatter.
+            Ok(None) => return Redraw::Skipped,
+            Err(error) => {
+                self.set_message(
+                    format!("the formatting answer was discarded: {error}"),
+                    MessageLevel::Warning,
+                );
+                return Redraw::Needed;
+            }
+        };
+        let outcome = self.edit(|editing, context, viewport| {
+            editing.apply_transaction(context, viewport, transaction)
+        });
+        self.sync_context();
+        self.report(outcome)
+    }
+
+    /// Reports whether one answer still describes the current buffer version.
+    fn answers_current_buffer(&self, pending: &PendingQuery, version: BufferVersion) -> bool {
+        if pending.version != version {
+            return false;
+        }
+        self.buffers
+            .get(pending.buffer)
+            .is_some_and(|file| file.text().version() == version)
+    }
+
+    /// Moves the cursor to the recorded definition target of the active buffer.
+    fn follow_jump(&mut self) -> Redraw {
+        let Some(jump) = self.language.jump.take() else {
+            return Redraw::Skipped;
+        };
+        if self.buffers.get(self.active).and_then(FileBuffer::path) != Some(&jump.path) {
+            // The buffer is still loading, so the jump waits for it.
+            self.language.jump = Some(jump);
+            return Redraw::Skipped;
+        }
+        self.move_to_position(jump.position)
+    }
+
+    /// Places the cursor at one protocol position of the active buffer.
+    fn move_to_position(&mut self, position: DocumentPosition) -> Redraw {
+        let Some(active) = self.buffers.get(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return Redraw::Skipped;
+        };
+        let text = active.text();
+        let Ok(target) = position.char_position(text) else {
+            self.set_message(OUTSIDE_BUFFER_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        };
+        let line = text.char_to_line(target).get();
+        let column = text.char_to_column(target).get();
+        self.editing.move_to(text, line, column);
+        self.reconcile_viewports();
+        Redraw::Needed
+    }
+
+    /// Moves the cursor to the next or the previous diagnostic of the buffer.
+    ///
+    /// The diagnostics ascend by position, so the jump is deterministic. It
+    /// wraps at both ends, and an empty set moves no cursor.
+    fn jump_diagnostic(&mut self, jump: DiagnosticJump) -> Redraw {
+        let Some(cursor) = self.cursor_position() else {
+            return Redraw::Skipped;
+        };
+        let target = jump_target(self.language.diagnostics(self.active), cursor, jump);
+        let Some(target) = target else {
+            self.set_message(NO_DIAGNOSTIC_NOTE, MessageLevel::Info);
+            return Redraw::Needed;
+        };
+        self.move_to_position(target)
+    }
+
+    /// Shows the diagnostics at the cursor position as a float.
+    fn show_diagnostic_float(&mut self) -> Redraw {
+        let Some(cursor) = self.cursor_position() else {
+            return Redraw::Skipped;
+        };
+        let found: Vec<&Diagnostic> = self
+            .language
+            .diagnostics(self.active)
+            .iter()
+            .filter(|diagnostic| diagnostic.span.contains(cursor))
+            .collect();
+        if found.is_empty() {
+            self.set_message(NO_DIAGNOSTIC_AT_CURSOR_NOTE, MessageLevel::Info);
+            return Redraw::Needed;
+        }
+        self.float = Some(Float::diagnostics(DIAGNOSTIC_TITLE, &found));
+        Redraw::Needed
+    }
+
+    /// Returns the protocol position of the cursor in the active buffer.
+    fn cursor_position(&self) -> Option<DocumentPosition> {
+        let text = self.buffers.get(self.active)?.text();
+        Some(DocumentPosition::of_buffer(
+            text,
+            self.editing.cursor().position(text),
+        ))
+    }
+
+    /// Returns the format-on-save state of one buffer.
+    fn format_on_save(&self, buffer: BufferId) -> FormatOnSave {
+        let default = if self.settings.files.format_on_save {
+            FormatOnSave::Enabled
+        } else {
+            FormatOnSave::Disabled
+        };
+        self.language.format_on_save(buffer, default)
+    }
+
+    /// Toggles format-on-save for the active buffer and reports the new state.
+    ///
+    /// The toggle is per buffer, so it changes no other buffer and no default.
+    fn toggle_format_on_save(&mut self) -> Redraw {
+        let buffer = self.active;
+        let next = self.format_on_save(buffer).toggled();
+        self.language.set_format_on_save(buffer, next);
+        self.set_message(next.message(), MessageLevel::Info);
+        Redraw::Needed
+    }
+
+    /// Closes the open float and reports whether one was open.
+    fn close_float(&mut self) -> Redraw {
+        if self.float.take().is_some() {
+            Redraw::Needed
+        } else {
+            Redraw::Skipped
+        }
+    }
+
     /// Applies one completed file operation as one state transition.
     pub fn apply_file_result(&mut self, result: FileResult) -> Redraw {
         let pending = self.file_pending.take();
@@ -1073,8 +1614,80 @@ impl Session {
         Redraw::Needed
     }
 
-    /// Saves the active buffer and runs the step that follows the save.
+    /// Saves the active buffer, and formats it first when the buffer asks.
+    ///
+    /// A formatter failure, a timeout, and an obsolete answer all still save
+    /// the buffer, so the user never loses work to a language server. See
+    /// `docs/language-services.md`.
     fn save_active(&mut self, then: AfterSave) -> Redraw {
+        if self.awaits_format() {
+            self.set_message("one save is already running", MessageLevel::Warning);
+            return Redraw::Needed;
+        }
+        if self.formats_before_save() {
+            return self.request_format(then);
+        }
+        self.start_save(then)
+    }
+
+    /// Reports whether a save already waits for its formatter answer.
+    fn awaits_format(&self) -> bool {
+        matches!(
+            self.language.pending,
+            Some(PendingQuery {
+                purpose: QueryPurpose::FormatBeforeSave(_),
+                ..
+            })
+        )
+    }
+
+    /// Reports whether the active buffer formats before its next save.
+    ///
+    /// A buffer without a file name, and a buffer whose question would replace
+    /// another running question, saves without a format instead.
+    fn formats_before_save(&self) -> bool {
+        if self.language.pending.is_some() {
+            return false;
+        }
+        let named = self
+            .buffers
+            .get(self.active)
+            .is_some_and(|file| file.path().is_some());
+        named && self.format_on_save(self.active) == FormatOnSave::Enabled
+    }
+
+    /// Asks the language server of the active buffer for its formatting edits.
+    fn request_format(&mut self, then: AfterSave) -> Redraw {
+        let buffer = self.active;
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return Redraw::Skipped;
+        };
+        let Some(path) = file.path().map(Path::to_path_buf) else {
+            debug_assert!(
+                false,
+                "the caller checked that the buffer holds a file name"
+            );
+            return self.start_save(then);
+        };
+        let version = file.text().version();
+        self.language.pending = Some(PendingQuery {
+            buffer,
+            version,
+            purpose: QueryPurpose::FormatBeforeSave(then),
+            id: None,
+        });
+        self.queue_language(LanguageRequest::Query {
+            buffer,
+            path,
+            version,
+            query: LanguageQuery::Format,
+        });
+        Redraw::Needed
+    }
+
+    /// Writes the active buffer and runs the step that follows the save.
+    fn start_save(&mut self, then: AfterSave) -> Redraw {
         let buffer = self.active;
         // Build the complete request before the operation starts, so a rejected
         // save never changes the buffer.
@@ -1118,8 +1731,11 @@ impl Session {
             return Redraw::Needed;
         };
         let redraw = self.switch_to(id);
+        // The language services learn about the buffer through one open that
+        // carries its exact text and version.
+        self.language.mark_resync(id);
         self.set_message(format!("\"{name}\" {lines}L, {bytes}B"), MessageLevel::Info);
-        redraw.or(Redraw::Needed)
+        self.follow_jump().or(redraw).or(Redraw::Needed)
     }
 
     /// Publishes one completed save.
@@ -1199,7 +1815,18 @@ impl Session {
                 next
             }
         };
+        let closed = self
+            .active_buffer()
+            .path()
+            .map(|path| LanguageRequest::Close {
+                path: path.to_path_buf(),
+            });
         self.buffers.remove(id);
+        self.language.forget(id);
+        self.analysis.remove(&id);
+        if let Some(request) = closed {
+            self.queue_language(request);
+        }
         for window in self.windows.window_ids() {
             if self.windows.buffer(window) == Some(id) {
                 self.windows.set_buffer(window, next);
@@ -1401,6 +2028,21 @@ const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to
 const NO_COMMENT_TOKEN_NOTE: &str =
     "no language adapter provides a line-comment token for this buffer";
 
+/// The message that a diagnostic jump without any diagnostic shows.
+const NO_DIAGNOSTIC_NOTE: &str = "the buffer holds no diagnostic";
+
+/// The message that the diagnostic float shows while the cursor marks none.
+const NO_DIAGNOSTIC_AT_CURSOR_NOTE: &str = "no diagnostic at the cursor";
+
+/// The message that a server position outside the buffer shows.
+const OUTSIDE_BUFFER_NOTE: &str = "the language server named a position outside the buffer";
+
+/// The title band of the hover float.
+const HOVER_TITLE: &str = " Hover ";
+
+/// The title band of the diagnostic float.
+const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
+
 /// Returns the message of a command that a later slice implements.
 ///
 /// The first release binds every key of `docs/input-actions.md`, so a key that
@@ -1411,12 +2053,6 @@ const fn deferred_note(command: Command) -> Option<&'static str> {
         Command::OpenBufferPicker | Command::OpenFilePicker | Command::OpenRipgrepPicker => {
             Some("the pickers arrive in a later release")
         }
-        Command::GoToDefinition
-        | Command::ShowHover
-        | Command::ShowDiagnosticFloat
-        | Command::NextDiagnostic
-        | Command::PreviousDiagnostic
-        | Command::ToggleFormatOnSave => Some("the language services arrive in a later release"),
         _ => None,
     }
 }

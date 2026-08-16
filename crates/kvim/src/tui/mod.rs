@@ -48,6 +48,7 @@ mod app;
 mod buffer_view;
 mod cells;
 mod chrome;
+mod language;
 mod layout;
 mod overlay;
 mod render;
@@ -56,6 +57,8 @@ mod theme;
 mod window;
 
 #[cfg(test)]
+mod language_tests;
+#[cfg(test)]
 mod render_tests;
 #[cfg(test)]
 mod session_tests;
@@ -63,6 +66,10 @@ mod session_tests;
 mod tests;
 
 pub use app::{EVENT_ERRORS_MAX, EditorError, run};
+pub use language::{
+    DiagnosticJump, FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, FormatOnSave, LANGUAGE_OUTBOX_MAX,
+    LanguageQuery, LanguageRequest, LanguageRequestKind,
+};
 pub use layout::{Region, RegionKind, WindowLayout};
 pub use session::{
     AnalysisRequest, AnalysisResult, FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel,

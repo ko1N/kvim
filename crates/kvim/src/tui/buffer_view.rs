@@ -9,11 +9,11 @@ use std::str::CharIndices;
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 
 use crate::core::{CharPosition, LineIndex, TextBuffer};
 use crate::editor::{Cursor, Selection};
-use crate::language::HighlightSpan;
+use crate::language::{Diagnostic, DiagnosticSeverity, HighlightSpan};
 use crate::settings::{DisplaySettings, SignColumn};
 
 use super::cells::{RowCell, layout_row, terminal_column};
@@ -73,6 +73,12 @@ pub(super) struct WindowView<'a> {
     /// analysis is unavailable, cancelled, or rejected. The window then renders
     /// plain text.
     pub(super) highlights: &'a [HighlightSpan],
+    /// The published diagnostics of the buffer, in ascending position order.
+    ///
+    /// Diagnostics are decoration: they change no buffer text, no line mapping,
+    /// and no cursor position. The list is empty while no language server
+    /// published one. See `docs/language-services.md`.
+    pub(super) diagnostics: &'a [Diagnostic],
     /// Whether the window holds the input focus.
     pub(super) focus: WindowFocus,
     /// The visible layout settings of the editor.
@@ -87,6 +93,28 @@ struct ColumnRole {
     first_column: usize,
     last_column: usize,
     role: SyntaxRole,
+}
+
+/// One diagnostic severity over inclusive source columns of one visible line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ColumnSeverity {
+    first_column: usize,
+    last_column: usize,
+    severity: DiagnosticSeverity,
+}
+
+/// Everything that one visible line contributes to a cell style.
+struct LineOverlays {
+    /// The index of the line inside the buffer.
+    line: usize,
+    /// The number of characters of the line.
+    line_len: usize,
+    /// The inclusive selected columns of the line, when it holds a selection.
+    selected: Option<(usize, usize)>,
+    /// The syntax roles of the line, in ascending column order.
+    roles: Vec<ColumnRole>,
+    /// The diagnostic severities of the line, in ascending column order.
+    marked: Vec<ColumnSeverity>,
 }
 
 /// One search match inside one visible line.
@@ -120,8 +148,10 @@ pub(super) fn gutter_cells(buffer: &TextBuffer, display: &DisplaySettings, width
 
 /// Returns the reserved width of the sign column, in cells.
 ///
-/// The automatic rule reserves nothing while no sign source exists. Slice 13
-/// adds the diagnostics that produce a sign.
+/// The default rule reserves the column at all times, so an arriving or a
+/// leaving diagnostic never moves the buffer text sideways. The automatic rule
+/// reserves nothing, because a stable text position is worth more than one
+/// saved cell.
 const fn sign_cells(display: &DisplaySettings) -> u16 {
     match display.signcolumn {
         SignColumn::Always => SIGN_COLUMN_CELLS,
@@ -239,10 +269,19 @@ impl RowPainter<'_> {
         }
         let signs = self.gutter.min(sign_cells(self.view.display));
         if signs > 0 {
-            target.set_style(
-                Rect::new(text.x, y, signs, 1),
-                self.theme.style(ThemeRole::SignColumn),
-            );
+            let area = Rect::new(text.x, y, signs, 1);
+            target.set_style(area, self.theme.style(ThemeRole::SignColumn));
+            // The strictest severity of one line owns its sign, so a warning
+            // never hides an error on the same line.
+            if let Some(severity) = line_severity(self.view.diagnostics, line) {
+                target.set_stringn(
+                    area.x,
+                    y,
+                    severity_sign(severity),
+                    usize::from(signs),
+                    self.theme.style(severity_role(severity)),
+                );
+            }
         }
         let numbers = self.gutter - signs;
         if numbers == 0 {
@@ -296,8 +335,13 @@ impl RowPainter<'_> {
         let first_cell = terminal_column(&content, tab_width, self.view.left_column);
         let row = layout_row(&content, tab_width, first_cell, usize::from(width));
         let line_len = self.view.buffer.line_len_chars(index);
-        let selected = selected_columns(self.view, index, line_len);
-        let roles = line_roles(self.view.highlights, line, &content);
+        let overlays = LineOverlays {
+            line,
+            line_len,
+            selected: selected_columns(self.view, index, line_len),
+            roles: line_roles(self.view.highlights, line, &content),
+            marked: line_severities(self.view.diagnostics, line, &content),
+        };
         let base = self.theme.style(ThemeRole::Text);
 
         for (offset, cell) in row.iter().enumerate() {
@@ -310,7 +354,7 @@ impl RowPainter<'_> {
                 continue;
             };
             target_cell.set_symbol(cell.symbol.as_str(scratch));
-            target_cell.set_style(self.cell_style(base, selected, &roles, line, line_len, *cell));
+            target_cell.set_style(self.cell_style(base, &overlays, *cell));
         }
     }
 
@@ -318,33 +362,37 @@ impl RowPainter<'_> {
     ///
     /// Each overlay patches the style below it, so a match keeps the colors of
     /// a selection. The syntax role sits directly above the text style, so
-    /// every overlay still wins over it. No overlay marks the cursor cell: the
-    /// terminal draws its own cursor there. See `docs/windows.md`.
-    fn cell_style(
-        &self,
-        base: Style,
-        selected: Option<(usize, usize)>,
-        roles: &[ColumnRole],
-        line: usize,
-        line_len: usize,
-        cell: RowCell,
-    ) -> Style {
+    /// every overlay still wins over it. A diagnostic underlines the syntax
+    /// color instead of replacing it, so decoration never hides the code. No
+    /// overlay marks the cursor cell: the terminal draws its own cursor there.
+    /// See `docs/windows.md`.
+    fn cell_style(&self, base: Style, overlays: &LineOverlays, cell: RowCell) -> Style {
         let mut style = base;
-        if let Some(found) = roles
+        if let Some(found) = overlays
+            .roles
             .iter()
             .find(|found| cell.column >= found.first_column && cell.column <= found.last_column)
         {
             style = style.patch(self.theme.style(ThemeRole::Syntax(found.role)));
         }
-        if let Some((first, last)) = selected
+        if let Some(found) = overlays
+            .marked
+            .iter()
+            .find(|found| cell.column >= found.first_column && cell.column <= found.last_column)
+        {
+            style = style
+                .patch(self.theme.style(severity_role(found.severity)))
+                .add_modifier(Modifier::UNDERLINED);
+        }
+        if let Some((first, last)) = overlays.selected
             && cell.column >= first
             && cell.column <= last
         {
             style = style.patch(self.theme.style(ThemeRole::Selection));
         }
-        if cell.column < line_len
+        if cell.column < overlays.line_len
             && let Some(span) = self.spans.iter().find(|span| {
-                span.line == line
+                span.line == overlays.line
                     && cell.column >= span.first_column
                     && cell.column <= span.last_column
             })
@@ -458,6 +506,96 @@ fn line_roles(spans: &[HighlightSpan], line: usize, content: &str) -> Vec<Column
         }
     }
     roles
+}
+
+/// Returns the theme role of one diagnostic severity.
+const fn severity_role(severity: DiagnosticSeverity) -> ThemeRole {
+    match severity {
+        DiagnosticSeverity::Error => ThemeRole::Error,
+        DiagnosticSeverity::Warning => ThemeRole::Warning,
+        DiagnosticSeverity::Information => ThemeRole::Info,
+        DiagnosticSeverity::Hint => ThemeRole::Hint,
+    }
+}
+
+/// Returns the sign glyph of one diagnostic severity.
+///
+/// The glyphs match the reference Neovim configuration, and each one occupies
+/// exactly one terminal cell, so the sign column never shifts the buffer text.
+const fn severity_sign(severity: DiagnosticSeverity) -> &'static str {
+    match severity {
+        DiagnosticSeverity::Error => "E",
+        DiagnosticSeverity::Warning => "W",
+        DiagnosticSeverity::Information => "I",
+        DiagnosticSeverity::Hint => "H",
+    }
+}
+
+/// Returns the strictest severity that marks one line, if any.
+fn line_severity(diagnostics: &[Diagnostic], line: usize) -> Option<DiagnosticSeverity> {
+    let line = u32::try_from(line).ok()?;
+    diagnostics
+        .iter()
+        .filter(|diagnostic| diagnostic.span.start.line <= line && line <= diagnostic.span.end.line)
+        .map(|diagnostic| diagnostic.severity)
+        .min()
+}
+
+/// Returns the diagnostic severities of one visible line, in source columns.
+///
+/// A language server reports byte columns, and the renderer styles source
+/// columns, so the conversion happens here, at the boundary that owns cells. A
+/// diagnostic that spans several lines marks the complete text of every line
+/// between its ends.
+fn line_severities(diagnostics: &[Diagnostic], line: usize, content: &str) -> Vec<ColumnSeverity> {
+    let Ok(line) = u32::try_from(line) else {
+        debug_assert!(false, "a buffer holds fewer lines than u32 counts");
+        return Vec::new();
+    };
+    let mut marked = Vec::new();
+    for diagnostic in diagnostics {
+        let span = diagnostic.span;
+        if line < span.start.line || line > span.end.line {
+            continue;
+        }
+        let start_byte = if span.start.line == line {
+            usize::try_from(span.start.byte_column).unwrap_or(usize::MAX)
+        } else {
+            0
+        };
+        let end_byte = if span.end.line == line {
+            usize::try_from(span.end.byte_column).unwrap_or(usize::MAX)
+        } else {
+            content.len()
+        };
+        let first_column = source_column(content, start_byte);
+        // An empty range marks the character that it points at, so a marker
+        // without width stays visible.
+        let last_byte = end_byte.max(start_byte.saturating_add(1));
+        let last_column = source_column(content, last_byte).saturating_sub(1);
+        if last_column >= first_column {
+            marked.push(ColumnSeverity {
+                first_column,
+                last_column,
+                severity: diagnostic.severity,
+            });
+        }
+    }
+    // The cell style takes the first entry that covers its column, so the
+    // strictest severity must come first and win over a wider weaker range.
+    marked.sort_by_key(|entry| (entry.severity, entry.first_column));
+    marked
+}
+
+/// Returns the source column of the character that holds one byte offset.
+///
+/// An offset behind the last character returns the column after the line, so a
+/// malformed span cannot place decoration inside a character.
+fn source_column(content: &str, byte: usize) -> usize {
+    content
+        .char_indices()
+        .take_while(|(offset, _)| *offset < byte)
+        .count()
 }
 
 /// Returns the number that one row shows, or `None` while both settings are off.
@@ -597,6 +735,7 @@ mod tests {
             matches: &[],
             match_chars: 0,
             highlights,
+            diagnostics: &[],
             focus: WindowFocus::Unfocused,
             display: &settings.display,
             tab_width: usize::from(settings.indent.tab_width.get()),
@@ -709,6 +848,7 @@ mod tests {
             matches: &[],
             match_chars: 0,
             highlights: &[],
+            diagnostics: &[],
             focus: WindowFocus::Unfocused,
             display: &settings.display,
             tab_width: usize::from(settings.indent.tab_width.get()),

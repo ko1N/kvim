@@ -11,7 +11,7 @@ use crate::editor::{ColumnLimit, Cursor};
 use super::buffer_view::{WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
-use super::overlay::render_which_key;
+use super::overlay::{render_float, render_which_key};
 use super::session::Visible;
 use super::theme::ThemeRole;
 
@@ -78,6 +78,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     matches: if searched { matches } else { &[] },
                     match_chars: if searched { match_chars } else { 0 },
                     highlights: view.highlights(id),
+                    diagnostics: view.diagnostics(id),
                     focus,
                     display: &view.settings.display,
                     tab_width: usize::from(view.settings.indent.tab_width.get()),
@@ -103,6 +104,9 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         view.editing.cursor(),
     );
     render_message(target, bands.message, theme, view.prompt, view.message);
+    if let Some(float) = view.float {
+        render_float(target, bands.body, theme, float);
+    }
     if let Some(rows) = view.which_key {
         render_which_key(target, bands.body, theme, rows);
     }

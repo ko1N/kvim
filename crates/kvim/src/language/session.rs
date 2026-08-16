@@ -380,7 +380,7 @@ pub(super) struct SessionConfig {
 ///
 /// The streams are trait objects, because a session runs over the pipes of a
 /// child process in the editor and over an in-memory pair in a test.
-pub(super) struct Transport {
+pub(crate) struct Transport {
     input: Box<dyn AsyncWrite + Send + Unpin>,
     output: Box<dyn AsyncRead + Send + Unpin>,
     child: Option<Child>,

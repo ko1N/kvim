@@ -581,6 +581,28 @@ impl EditingState {
         self.commit(context, viewport, plan)
     }
 
+    /// Applies one transaction that another module built.
+    ///
+    /// The accepted formatter answer of a language server reaches this entry
+    /// point. The complete answer is one transaction, so one undo reverses a
+    /// complete format. The mode stays, and the cursor keeps its line and its
+    /// column and clamps to the new text, because a format is decoration of the
+    /// text that the user already wrote. The caller validates the transaction
+    /// against the current buffer version before it calls this method. See
+    /// `docs/language-services.md`.
+    pub fn apply_transaction(
+        &mut self,
+        context: &mut EditContext<'_>,
+        viewport: &mut Viewport,
+        transaction: EditTransaction,
+    ) -> CommandOutcome {
+        let plan = EditPlan {
+            transaction: Some(transaction),
+            ..EditPlan::unchanged()
+        };
+        self.commit(context, viewport, plan)
+    }
+
     /// Moves the cursor to the first match of a query.
     ///
     /// The search prompt calls this entry point when the user accepts a query.

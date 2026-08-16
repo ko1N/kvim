@@ -6,191 +6,31 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use std::time::Duration;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
-use tokio::sync::mpsc;
-use tokio::task::JoinHandle;
-use tokio::time;
-use tokio_util::sync::CancellationToken;
+use tokio::io::{AsyncWriteExt, duplex};
 
 use crate::core::{BufferVersion, CharRange, EditTransaction, TextBuffer, TextChange};
-use crate::settings::{EditorSettings, FileSettings, IndentSettings};
+use crate::settings::{EditorSettings, FileSettings};
 
 use super::document::ContentChange;
+use super::mock::{
+    DOCUMENT, DOCUMENT_URI, Harness, MockServer, PIPE_BYTES, ROOT, connected, pipe, session,
+};
 use super::protocol::{
     ArrayBudget, DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
     LSP_OUTPUT_BYTES_MAX, LspBound, LspError, SourceSpan, WorkspaceRoot, deserialize_bounded_array,
     enforce, read_frame,
 };
 use super::session::{
-    LSP_DIAGNOSTICS_MAX, LSP_EVENT_QUEUE_CAPACITY, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
-    LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX,
-    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LanguageEvent, LanguageOutcome,
-    LanguageServerHandle, SessionConfig, Transport, TransportFactory, start,
+    LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX,
+    LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX,
+    LanguageOutcome,
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
     LanguageAdapter, LanguageRegistry, LanguageServices, RustAdapter,
 };
-
-/// The capacity of one test pipe, in bytes.
-const PIPE_BYTES: usize = 1024 * 1024;
-
-/// The guard that stops a broken test instead of hanging the suite.
-const TEST_DEADLINE: Duration = Duration::from_secs(30);
-
-/// The workspace root of every session test.
-const ROOT: &str = "/workspace";
-
-/// The document of every session test.
-const DOCUMENT: &str = "/workspace/src/main.rs";
-
-/// The `file` URI of that document.
-const DOCUMENT_URI: &str = "file:///workspace/src/main.rs";
-
-/// The mock server side of one session.
-struct MockServer {
-    input: DuplexStream,
-    output: DuplexStream,
-    read_bytes: usize,
-}
-
-impl MockServer {
-    /// Reads the next message that the session sent.
-    async fn read_message(&mut self) -> Value {
-        let body = time::timeout(
-            TEST_DEADLINE,
-            read_frame(&mut self.output, &mut self.read_bytes, LSP_OUTPUT_BYTES_MAX),
-        )
-        .await
-        .expect("the session sends a message before the test deadline")
-        .expect("the session writes a valid frame");
-        serde_json::from_slice(&body).expect("the session writes valid JSON")
-    }
-
-    /// Reads the next message and asserts its method.
-    async fn expect(&mut self, method: &str) -> Value {
-        let message = self.read_message().await;
-        assert_eq!(message["method"], method, "unexpected message {message}");
-        message
-    }
-
-    /// Writes one raw frame to the session.
-    async fn send(&mut self, value: &Value) {
-        let body = serde_json::to_vec(value).expect("the test value serializes");
-        let header = format!("Content-Length: {}\r\n\r\n", body.len());
-        self.input
-            .write_all(header.as_bytes())
-            .await
-            .expect("the pipe accepts the header");
-        self.input
-            .write_all(&body)
-            .await
-            .expect("the pipe accepts the body");
-        self.input.flush().await.expect("the pipe flushes");
-    }
-
-    /// Answers one request with a result.
-    async fn respond(&mut self, id: &Value, result: Value) {
-        self.send(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
-            .await;
-    }
-
-    /// Runs the handshake that every session starts with.
-    async fn handshake(&mut self) {
-        let initialize = self.expect("initialize").await;
-        assert_eq!(
-            initialize["params"]["capabilities"]["general"]["positionEncodings"][0],
-            "utf-8"
-        );
-        self.respond(
-            &initialize["id"],
-            json!({ "capabilities": { "positionEncoding": "utf-8" } }),
-        )
-        .await;
-        self.expect("initialized").await;
-    }
-}
-
-/// The editor side of one session under test.
-struct Harness {
-    handle: Option<LanguageServerHandle>,
-    events: mpsc::Receiver<LanguageEvent>,
-    task: JoinHandle<()>,
-}
-
-impl Harness {
-    /// Returns the handle of the running session.
-    fn handle(&self) -> &LanguageServerHandle {
-        self.handle
-            .as_ref()
-            .expect("the test keeps the handle until it drops it")
-    }
-
-    /// Waits for the next result.
-    async fn next(&mut self) -> LanguageOutcome {
-        time::timeout(TEST_DEADLINE, self.events.recv())
-            .await
-            .expect("the session answers before the test deadline")
-            .expect("the session queue stays open")
-            .outcome
-    }
-
-    /// Drops the handle, so the session shuts the server down.
-    fn stop(&mut self) {
-        self.handle = None;
-    }
-}
-
-/// Creates one connected stream pair.
-fn pipe() -> (Transport, MockServer) {
-    let (session_input, server_output) = duplex(PIPE_BYTES);
-    let (server_input, session_output) = duplex(PIPE_BYTES);
-    (
-        Transport::prepared(session_input, session_output),
-        MockServer {
-            input: server_input,
-            output: server_output,
-            read_bytes: 0,
-        },
-    )
-}
-
-/// Creates the stable configuration of one session under test.
-fn config(diagnostics_enabled: bool) -> SessionConfig {
-    SessionConfig {
-        adapter: "mock",
-        language_id: "mock",
-        root: WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute"),
-        options: json!({}),
-        indent: IndentSettings::default(),
-        diagnostics_enabled,
-    }
-}
-
-/// Starts one session over prepared transports.
-fn session(transports: Vec<Transport>, diagnostics_enabled: bool) -> Harness {
-    let (events, receiver) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
-    let (handle, task) = start(
-        TransportFactory::Prepared(transports),
-        config(diagnostics_enabled),
-        events,
-        CancellationToken::new(),
-    );
-    Harness {
-        handle: Some(handle),
-        events: receiver,
-        task,
-    }
-}
-
-/// Starts one session over one transport and returns its mock server.
-fn connected() -> (Harness, MockServer) {
-    let (transport, server) = pipe();
-    (session(vec![transport], true), server)
-}
 
 /// Returns a buffer with the exact test document content.
 fn buffer(text: &str) -> TextBuffer {

@@ -241,6 +241,19 @@ impl SourceSpan {
         Self { start, end }
     }
 
+    /// Reports whether the span covers one position.
+    ///
+    /// The end position lies after the range, so it belongs to the text that
+    /// follows. An empty span covers its own start alone, so a marker without
+    /// width still answers for the position that it marks.
+    #[must_use]
+    pub fn contains(&self, position: DocumentPosition) -> bool {
+        if self.start == self.end {
+            return position == self.start;
+        }
+        self.start <= position && position < self.end
+    }
+
     /// Rejects a span that the exact source bytes do not hold.
     ///
     /// The check runs before Kvim uses a server-supplied range, so a wrong or
