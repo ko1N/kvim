@@ -274,8 +274,9 @@ fn apply_mode(_temporary: &Path, _existing: Option<&Metadata>) -> Result<(), Sav
 ///
 /// The name stays inside the target directory, so the rename never crosses a
 /// filesystem boundary. The process identifier and the counter keep two saves
-/// apart.
-fn temporary_name(target: &Path) -> String {
+/// and two staged workspace mutations apart. The name starts with a full stop,
+/// so the default hidden-entry policy of the file tree keeps it out of view.
+pub(super) fn temporary_name(target: &Path) -> String {
     let name = target.file_name().map_or_else(
         || "buffer".to_owned(),
         |name| name.to_string_lossy().into_owned(),

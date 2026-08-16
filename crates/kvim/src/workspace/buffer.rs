@@ -11,6 +11,7 @@ use crate::core::TextBuffer;
 use crate::settings::FileSettings;
 
 use super::file::FileIdentity;
+use super::mutation::{BufferPathUpdate, OpenBuffer};
 
 /// The largest number of buffers that one editor keeps loaded.
 ///
@@ -128,6 +129,15 @@ impl FileBuffer {
         self.text.is_modified()
     }
 
+    /// Gives the buffer the path that a workspace mutation created.
+    ///
+    /// The identity of the buffer never changes, and the file identity stays
+    /// valid, because a rename or a move keeps the content of the file.
+    pub fn set_path(&mut self, path: PathBuf) {
+        self.name = display_name(&path);
+        self.path = Some(path);
+    }
+
     /// Records one successful save.
     pub fn mark_saved(&mut self, path: PathBuf, identity: FileIdentity) {
         self.name = display_name(&path);
@@ -215,6 +225,36 @@ impl Buffers {
             .iter()
             .find(|(_, buffer)| buffer.path() == Some(path))
             .map(|(id, _)| *id)
+    }
+
+    /// Retargets every buffer that one workspace mutation moved.
+    ///
+    /// The call applies the complete list of one mutation, so the paths of the
+    /// buffers and the workspace change together.
+    pub fn apply_path_updates(&mut self, updates: &[BufferPathUpdate]) {
+        for update in updates {
+            if let Some(buffer) = self.entries.get_mut(&update.buffer) {
+                buffer.set_path(update.path.clone());
+            }
+        }
+    }
+
+    /// Returns the mutation view of every loaded buffer.
+    ///
+    /// The mutation request holds this list, so the worker validates against
+    /// the buffers without reading editor state.
+    #[must_use]
+    pub fn open_buffers(&self) -> Vec<OpenBuffer> {
+        self.entries
+            .iter()
+            .filter_map(|(id, buffer)| {
+                Some(OpenBuffer {
+                    id: *id,
+                    path: buffer.path()?.to_path_buf(),
+                    is_modified: buffer.is_modified(),
+                })
+            })
+            .collect()
     }
 
     /// Returns every identity in ascending order.

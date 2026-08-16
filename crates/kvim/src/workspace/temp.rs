@@ -34,6 +34,25 @@ impl TempDir {
         self.path.join(name)
     }
 
+    /// Creates one directory, and every directory above it, inside the
+    /// temporary directory.
+    pub(crate) fn dir(&self, name: &str) -> PathBuf {
+        let path = self.join(name);
+        fs::create_dir_all(&path).expect("the temporary directory is writable");
+        path
+    }
+
+    /// Writes one file and every directory above it inside the temporary
+    /// directory.
+    pub(crate) fn file(&self, name: &str, content: &str) -> PathBuf {
+        let path = self.join(name);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("the temporary directory is writable");
+        }
+        fs::write(&path, content).expect("the temporary directory is writable");
+        path
+    }
+
     /// Writes one file inside the directory and returns its path.
     pub(crate) fn write(&self, name: &str, content: &str) -> PathBuf {
         let path = self.join(name);

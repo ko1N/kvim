@@ -1,13 +1,14 @@
 //! Files, buffers, atomic save, the file tree, workspace mutations, and pickers.
 //!
 //! The module owns buffer identity, the loaded buffer list, file loading, the
-//! staged atomic save, external-change detection, and the persistent undo file.
-//! The file tree, the workspace mutations, and the pickers arrive in Slices 10
-//! and 11.
+//! staged atomic save, external-change detection, the persistent undo file, the
+//! file tree, the file-operation clipboard, and the workspace mutations. The
+//! pickers arrive in Slice 11.
 //!
-//! Every blocking step lives in [`FileRequest::run`]. The terminal event loop
-//! builds one request, hands it to the bounded worker service, and applies the
-//! returned [`FileResult`] as one state transition. No function of this module
+//! Every blocking step lives in [`FileRequest::run`] and
+//! [`WorkspaceRequest::run`]. The terminal event loop builds one request, hands
+//! it to the bounded worker service, and applies the returned [`FileResult`] or
+//! [`WorkspaceResult`] as one state transition. No function of this module
 //! reads or writes visible editor state. See `docs/files.md` and
 //! `docs/responsiveness.md`.
 //!
@@ -37,20 +38,38 @@
 //! ```
 
 mod buffer;
+mod clipboard;
 mod file;
+mod mutation;
 mod request;
+mod tree;
+mod tree_request;
 mod undo_file;
 
 #[cfg(test)]
 pub(crate) mod temp;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tree_tests;
 
 pub use buffer::{BUFFERS_MAX, BufferId, Buffers, FileBuffer, SCRATCH_BUFFER_NAME};
+pub use clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 pub use file::{
     FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, load, render_content, save,
 };
+pub use mutation::{
+    BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
+    MutationError, MutationOutcome, MutationPlan, OpenBuffer, TransferMode,
+};
 pub use request::{FileRequest, FileResult, OpenRequest, OpenedFile, SaveRequest, SavedBuffer};
+pub use tree::{
+    DirectoryListing, EntryKind, Expansion, FileTree, HIDDEN_NAMES, HiddenPolicy, LinkKind, Notice,
+    ReadError, RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX, TREE_DIRECTORY_SCAN_MAX,
+    TREE_ENTRIES_MAX, TREE_FILTER_CHARS_MAX, TREE_PENDING_READS_MAX, TreeEntry, TreeFilter,
+    TreeRow, Truncation, read_directory,
+};
+pub use tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 pub use undo_file::{
     UNDO_FILE_BYTES_MAX, UNDO_FILE_CHANGE_BYTES_MAX, UNDO_FILE_STEPS_MAX, UNDO_FILE_VERSION,
     UndoRecord, read_record, undo_file_path, write_record,
