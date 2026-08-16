@@ -61,15 +61,30 @@ fn run() -> Result<(), String> {
 ///
 /// The function builds the asynchronous runtime that the bounded background
 /// services need, because the executable is the composition root. The editor
-/// reads the named file through that runtime, never on the event loop.
+/// reads the named file through that runtime, never on the event loop. The
+/// composition root also resolves the workspace root once, because the language
+/// services perform no filesystem lookup.
 fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
+    let root = workspace_root()?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
     runtime
-        .block_on(kvim::tui::run(EditorSettings::default(), path))
+        .block_on(kvim::tui::run(EditorSettings::default(), root, path))
         .map_err(|error| describe(&error))
+}
+
+/// Returns the workspace root that contains every document of a language server.
+///
+/// The root is the working directory of the editor, with every symlink
+/// resolved, so it matches the spelling that a loaded buffer holds. A document
+/// outside the root receives no language service and stays fully editable. See
+/// `docs/language-services.md`.
+fn workspace_root() -> Result<PathBuf, String> {
+    let current = std::env::current_dir()
+        .map_err(|error| format!("cannot read the working directory: {error}"))?;
+    Ok(std::fs::canonicalize(&current).unwrap_or(current))
 }
 
 /// Writes one error and every cause below it.

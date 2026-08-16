@@ -10,10 +10,12 @@ use tokio_util::sync::CancellationToken;
 
 use crate::editor::Selection;
 use crate::input::Mode;
+use crate::language::LspError;
 use crate::settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use crate::terminal::{FocusChange, Key, KeyCode, TerminalEvent};
 use crate::workspace::temp::TempDir;
 
+use super::language::LanguageRequestKind;
 use super::session::{MessageLevel, Redraw, RunState, Session};
 
 const NOW: Duration = Duration::ZERO;
@@ -474,8 +476,31 @@ fn file_session() -> Session {
     Session::new(Rect::new(0, 0, 80, 24), settings)
 }
 
+/// Refuses every queued language request, like an editor without a server.
+///
+/// The event loop performs the same step, so a save that waits for a formatter
+/// continues instead of stalling. See `docs/language-services.md`.
+fn refuse_language_requests(session: &mut Session) {
+    asks_a_question(session);
+}
+
+/// Refuses every queued request and reports whether one asked a question.
+///
+/// A save that formats first asks its language server before it writes, so the
+/// answer distinguishes a formatting save from a plain save.
+fn asks_a_question(session: &mut Session) -> bool {
+    let mut asked = false;
+    while let Some(request) = session.take_language_request() {
+        let kind = request.kind();
+        asked |= kind == LanguageRequestKind::Query;
+        session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+    }
+    asked
+}
+
 /// Runs the queued file request, like the event loop and the worker service.
 fn run_file_request(session: &mut Session) {
+    refuse_language_requests(session);
     let request = session
         .take_file_request()
         .expect("the transition queued one file request");
@@ -864,4 +889,85 @@ fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
     press(&mut session, 'i');
     type_keys(&mut session, "text");
     assert_eq!(session.buffer().to_string(), "text");
+}
+
+#[test]
+fn a_missing_language_server_is_reported_once_and_editing_continues() {
+    let directory = TempDir::new("session-missing-server");
+    let path = directory.write("main.rs", "fn main() {}\n");
+    let mut session = file_session();
+
+    session.open_path(path);
+    run_file_request(&mut session);
+    // The load queues one open, which reaches no server on this system.
+    refuse_language_requests(&mut session);
+    assert_eq!(
+        message(&session),
+        "no language server serves this buffer",
+        "a missing server is a normal state, not a failure"
+    );
+
+    // Every later question finds the state already reported. `Space e` reads
+    // the published diagnostics instead, so it asks no server at all.
+    for keys in [" k", "gd"] {
+        type_keys(&mut session, keys);
+        refuse_language_requests(&mut session);
+        assert_eq!(
+            message(&session),
+            "",
+            "`{keys}` must not repeat the report of a missing server"
+        );
+    }
+
+    // The editor stays fully usable without a language server.
+    press(&mut session, 'i');
+    type_keys(&mut session, "// ");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "// fn main() {}\n");
+}
+
+#[test]
+fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
+    let directory = TempDir::new("session-format-toggle");
+    let first = directory.write("first.rs", "one\n");
+    let second = directory.write("second.rs", "two\n");
+    let mut session = file_session();
+
+    session.open_path(first.clone());
+    run_file_request(&mut session);
+    session.open_path(second);
+    run_file_request(&mut session);
+
+    // Every new buffer follows the settings default, so its save formats first.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert!(
+        asks_a_question(&mut session),
+        "format-on-save asks the language server before the write"
+    );
+    run_file_request(&mut session);
+
+    type_keys(&mut session, " cf");
+    assert_eq!(message(&session), "format-on-save is off for this buffer");
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert!(
+        !asks_a_question(&mut session),
+        "the toggled buffer saves its content as it is"
+    );
+    run_file_request(&mut session);
+
+    // The toggle is per buffer, so no other buffer and no default changed.
+    session.open_path(first);
+    run_file_request(&mut session);
+    assert_eq!(session.active_buffer().name(), "first.rs");
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert!(
+        asks_a_question(&mut session),
+        "the toggle of one buffer never changes another buffer"
+    );
+    run_file_request(&mut session);
+
+    type_keys(&mut session, " cf");
+    assert_eq!(message(&session), "format-on-save is off for this buffer");
+    type_keys(&mut session, " cf");
+    assert_eq!(message(&session), "format-on-save is on for this buffer");
 }
