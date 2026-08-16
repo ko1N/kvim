@@ -192,21 +192,66 @@ The file tree is a fixed-width sidebar on the right side of the terminal. See
 [`windows.md`](windows.md) for the sidebar rule.
 
 The tree expands directories lazily. It reads a directory only when the user
-expands it or when a refresh needs it. Directory reads run off the event loop.
+expands it, when a reveal needs it, or when a refresh needs it. Directory reads
+run off the event loop through the same request pattern as the file operations
+above. The tree model itself performs no filesystem work. It reports the next
+directory that needs a read, and the event loop applies the completed listing as
+one transition.
 
-The tree orders entries deterministically. It supports navigation, filtering,
-refresh, and reveal of the active file. Reveal expands every parent directory of
-the active file and selects the file entry.
+The tree orders entries deterministically. A directory sorts before a file, and
+two entries of one kind sort by name. A symbolic link takes the kind of its
+target, so an expanded link to a directory shows that directory.
+
+### Visibility
+
+The tree hides an entry whose name starts with a full stop, and the names
+`.DS_Store` and `thumbs.db`. One command shows every entry again. A filter query
+narrows the visible rows to the names that hold the query, compared in
+lowercase. A directory stays visible while its own name matches or while it
+holds one matching descendant.
+
+Kvim reads no Git ignore rules for the tree in the first release.
+
+### Reveal And Refresh
+
+Reveal expands every parent directory of one path and selects that entry. It
+loads only the directories on that path.
+
+Refresh reads one expanded directory again. The reconciliation keeps every
+expanded directory and the selection while their entries still exist. It drops
+the state of an entry that disappeared. A selection whose entry disappeared
+moves to the closest visible parent.
+
+Collapsing a directory drops its loaded entries, so the loaded state stays
+inside the bound below and a later expansion reads current entries.
+
+### Tree Bounds
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Entries of one directory | `TREE_DIRECTORY_ENTRIES_MAX` | 512 | One sidebar shows far fewer rows. The bound keeps one large directory from filling the loaded state. |
+| Names of one directory read | `TREE_DIRECTORY_SCAN_MAX` | 4096 | The read stops here, so a very large directory costs bounded time and memory. |
+| Entries of the complete tree | `TREE_ENTRIES_MAX` | 8192 | The value holds 16 full directories, which is more than one navigation session expands. |
+| Depth below the root | `TREE_DEPTH_MAX` | 16 | A Rust repository nests far less. The bound also stops a symbolic link that points at one of its own parents. |
+| Waiting directory reads | `TREE_PENDING_READS_MAX` | 64 | One reveal or refresh queues few reads. The bound keeps the queue from growing while the worker is busy. |
+| Characters of one filter query | `TREE_FILTER_CHARS_MAX` | 64 | A filter query is a short name fragment. |
+
+A directory above the entry bound shows its first entries in the order above and
+reports the truncation as one visible row. The tree never shows a partial
+directory without that report. An unreadable directory reports the same way.
 
 ## Workspace Mutations
 
-A workspace mutation renames, copies, cuts, pastes, or moves files and
+A workspace mutation creates, deletes, renames, copies, or moves files and
 directories. Kvim validates the complete mutation before it changes anything on
 disk. Validation checks:
 
 - that the source exists and is a supported kind,
 - that the destination does not collide with an existing entry,
-- that the destination stays inside the workspace,
+- that two sources of one mutation do not claim one destination name,
+- that the destination stays inside the workspace and holds no parent-directory
+  component,
+- that a directory does not receive one of its own parents,
 - which loaded buffers the mutation affects,
 - whether an affected buffer is dirty.
 
@@ -215,6 +260,36 @@ every affected buffer path. It applies the filesystem operation first. It then
 applies the buffer path updates as one visible state change. A validation
 failure or a filesystem failure leaves both the workspace and the buffers
 unchanged.
+
+A buffer of a moved or renamed entry follows that entry and keeps its identity.
+A buffer of a removed entry stays loaded, so the user keeps the content. Kvim
+refuses to remove an entry whose buffer holds unsaved changes.
+
+### Staged Application
+
+A copy or a move writes every entry under a temporary name beside its
+destination first. The commit then renames the temporary names, which is one
+cheap step inside one directory. A failure at any step undoes every staged step,
+so a paste of several paths never leaves half a result. The temporary name holds
+the target name, the process identifier, and a counter, as the save procedure
+above does.
+
+A removal renames every entry to a temporary name beside itself, which is the
+visible removal, and then removes the temporary names. A failed rename restores
+every renamed entry. A failed removal after the commit leaves one hidden
+temporary entry, which the default visibility rule keeps out of the tree.
+
+Kvim moves an entry with one rename. It performs no copy across a filesystem
+boundary in the first release, and it reports the refusal of the platform
+instead.
+
+### Mutation Bounds
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Paths of one mutation | `MUTATION_PATHS_MAX` | 128 | One paste holds the entries of one directory selection. |
+| Entries of one recursive copy | `COPY_ENTRIES_MAX` | 4096 | The bound stops a copy of a build directory or of a looping link. |
+| Depth of one recursive copy | `COPY_DEPTH_MAX` | 32 | A copied source directory nests far less. |
 
 After completion, Kvim refreshes only the affected workspace state. It does not
 rebuild the complete tree.
@@ -226,8 +301,13 @@ distinct from the text registers that `editor` owns and distinct from the system
 clipboard. A file operation never reads a text register. A text paste never
 reads the file-operation clipboard.
 
-A cut entry stays in place until a paste completes. A cancelled paste leaves the
-source unchanged.
+A cut entry stays in place until a paste completes, because the clipboard
+records the intent only and the paste builds the move. A cancelled paste leaves
+the source unchanged. Kvim clears the clipboard after a move paste completes, so
+one cut never moves the same entry twice.
+
+The clipboard holds at most `FILE_CLIPBOARD_PATHS_MAX` entries, which is the
+value of `MUTATION_PATHS_MAX` above, so every held entry fits into one paste.
 
 ## Pickers
 
