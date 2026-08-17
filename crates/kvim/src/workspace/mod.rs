@@ -2,8 +2,8 @@
 //!
 //! The module owns buffer identity, the loaded buffer list, file loading, the
 //! staged atomic save, external-change detection, the persistent undo file, the
-//! file tree, the file-operation clipboard, and the workspace mutations. The
-//! pickers arrive in Slice 11.
+//! file tree, the file-operation clipboard, the workspace mutations, and the
+//! picker framework.
 //!
 //! Every blocking step lives in [`FileRequest::run`] and
 //! [`WorkspaceRequest::run`]. The terminal event loop builds one request, hands
@@ -40,11 +40,16 @@
 mod buffer;
 mod clipboard;
 mod file;
+mod fuzzy;
 mod mutation;
+mod picker;
+mod picker_request;
 mod request;
+mod ripgrep;
 mod tree;
 mod tree_request;
 mod undo_file;
+mod walk;
 
 #[cfg(test)]
 pub(crate) mod temp;
@@ -58,11 +63,25 @@ pub use clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 pub use file::{
     FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, load, render_content, save,
 };
+pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
     MutationError, MutationOutcome, MutationPlan, OpenBuffer, TransferMode,
 };
+pub use picker::{
+    Acceptance, Candidate, CandidateTarget, PICKER_CANDIDATES_MAX, PICKER_MATCH_CHARS_MAX,
+    PICKER_QUERY_CHARS_MAX, Picker, PickerKind, PreviewTarget,
+};
+pub use picker_request::{
+    PICKER_PREVIEW_DEADLINE, PICKER_WALK_DEADLINE, PREVIEW_BYTES_MAX, PREVIEW_CONTEXT_LINES,
+    PREVIEW_LINE_CHARS_MAX, PREVIEW_LINES_MAX, PickerRequest, PickerResult, PickerSlot, Preview,
+    PreviewError, PreviewKey, read_preview,
+};
 pub use request::{FileRequest, FileResult, OpenRequest, OpenedFile, SaveRequest, SavedBuffer};
+pub use ripgrep::{
+    RIPGREP_COLUMNS_MAX, RIPGREP_DEADLINE, RIPGREP_FILE_MATCHES_MAX, RIPGREP_MATCHES_MAX,
+    RIPGREP_OUTPUT_BYTES_MAX, RIPGREP_PROGRAM, parse_matches, ripgrep_command,
+};
 pub use tree::{
     DirectoryListing, EntryKind, Expansion, FileTree, HIDDEN_NAMES, HiddenPolicy, LinkKind, Notice,
     ReadError, RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX, TREE_DIRECTORY_SCAN_MAX,
@@ -73,4 +92,8 @@ pub use tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 pub use undo_file::{
     UNDO_FILE_BYTES_MAX, UNDO_FILE_CHANGE_BYTES_MAX, UNDO_FILE_STEPS_MAX, UNDO_FILE_VERSION,
     UndoRecord, read_record, undo_file_path, write_record,
+};
+pub use walk::{
+    IGNORE_FILE_BYTES_MAX, IGNORE_PATTERNS_MAX, WALK_DEPTH_MAX, WALK_DIRECTORIES_MAX,
+    WALK_FILES_MAX, WalkOutcome, walk_files,
 };

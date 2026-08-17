@@ -760,7 +760,27 @@ fn first_release_bindings() -> Vec<Binding> {
     );
 
     add_tree_bindings(table);
+    add_picker_bindings(table);
     bindings
+}
+
+/// Adds the binding table of the picker.
+///
+/// The picker reads a query, so every printable key belongs to that query. Only
+/// these chords reach a command. `Esc` and `Ctrl-C` close the picker through
+/// the prompt, and `Enter` accepts the selected row. See
+/// `docs/input-actions.md`.
+fn add_picker_bindings(table: &mut Vec<Binding>) {
+    for (key, command) in [
+        (ctrl('j'), Command::PickerSelectNext),
+        (ctrl('k'), Command::PickerSelectPrevious),
+    ] {
+        table.push(Binding {
+            scope: BindingScope::Picker,
+            keys: vec![key],
+            command,
+        });
+    }
 }
 
 /// Adds the binding table of the file-tree sidebar.

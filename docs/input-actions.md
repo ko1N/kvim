@@ -45,11 +45,16 @@ input context too. See the sections below.
 ## Binding Scopes
 
 The mapping registry holds one table for each binding scope. A scope is one
-editor mode or the file-tree sidebar. Only one scope is active, so one key
-sequence may reach different commands in different scopes.
+editor mode, the file-tree sidebar, or the picker. Only one scope is active, so
+one key sequence may reach different commands in different scopes.
 
 The sidebar scope holds no count and no leader sequence, because its keys act on
 one selected entry. The sidebar owns every key while it holds the focus.
+
+The picker scope holds no count either, because a digit belongs to the query.
+The picker reads that query through one prompt, and its own table answers before
+the query takes the key. The table holds the chords below alone, so every
+printable key still reaches the query.
 
 ## Command Line
 
@@ -353,6 +358,25 @@ when it closes. `Esc` and `Ctrl-C` cancel the prompt.
 `a` and `p` act on the destination directory, which is the selected directory,
 or the directory of the selected file. `Enter` on a file opens it in the editor
 window that held the focus, and the focus follows the file.
+
+### Pickers
+
+These keys act while one picker is open. They follow the reference Telescope
+subset. See [`files.md`](files.md) for the behavior behind them.
+
+| Keys | Command |
+|---|---|
+| `Ctrl-J` | Select the next result |
+| `Ctrl-K` | Select the previous result |
+| `Enter` | Open the selected result |
+| `Esc` | Close the picker |
+| `Ctrl-C` | Close the picker |
+| `Backspace` | Remove the last character of the query |
+
+Every other printable key extends the query. `Backspace` on the empty query
+closes the picker, as it does for every other prompt. A closed picker restores
+the previous view exactly, because the picker changes no editor state until the
+reader accepts one row.
 
 ### Windows
 

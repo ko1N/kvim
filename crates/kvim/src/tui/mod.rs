@@ -51,6 +51,7 @@ mod chrome;
 mod language;
 mod layout;
 mod overlay;
+mod picker;
 mod render;
 mod session;
 mod theme;
@@ -59,6 +60,8 @@ mod window;
 
 #[cfg(test)]
 mod language_tests;
+#[cfg(test)]
+mod picker_tests;
 #[cfg(test)]
 mod render_tests;
 #[cfg(test)]
@@ -74,6 +77,7 @@ pub use language::{
     LanguageQuery, LanguageRequest, LanguageRequestKind,
 };
 pub use layout::{Region, RegionKind, WindowLayout};
+pub use picker::PickerFailure;
 pub use session::{
     AnalysisRequest, AnalysisResult, FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel,
     Redraw, RunState, Session,

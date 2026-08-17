@@ -143,6 +143,10 @@ semantic_commands! {
     TreeToggleHidden => ("tree-toggle-hidden", "Show or hide the hidden entries"),
     TreeFilter => ("tree-filter", "Filter the visible entries"),
 
+    // The pickers.
+    PickerSelectNext => ("picker-select-next", "Select the next result"),
+    PickerSelectPrevious => ("picker-select-previous", "Select the previous result"),
+
     // Windows.
     FocusWindowLeft => ("focus-window-left", "Focus the window to the left"),
     FocusWindowDown => ("focus-window-down", "Focus the window below"),

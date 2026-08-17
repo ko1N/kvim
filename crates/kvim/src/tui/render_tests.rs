@@ -463,18 +463,6 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
 }
 
 #[test]
-fn a_deferred_command_reports_its_release_on_the_message_line() {
-    let mut session = session(60, 6);
-    type_keys(&mut session, " o");
-    assert_eq!(row(&session, 5), "the pickers arrive in a later release");
-    assert_eq!(
-        style_at(&session, 0, 5).fg,
-        Some(Color::Rgb(0xe0, 0xaf, 0x68)),
-        "a deferred command is a warning, not an error"
-    );
-}
-
-#[test]
 fn the_which_key_overlay_lists_one_level_of_next_keys() {
     let mut session = session(60, 20);
     press(&mut session, ' ');

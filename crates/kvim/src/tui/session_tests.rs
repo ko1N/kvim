@@ -415,8 +415,8 @@ fn a_search_without_a_match_reports_it_and_keeps_the_cursor() {
 #[test]
 fn a_new_command_clears_the_previous_message() {
     let mut session = session(60, 10);
-    type_keys(&mut session, " o");
-    assert_eq!(message(&session), "the pickers arrive in a later release");
+    press(&mut session, 'u');
+    assert_eq!(message(&session), "no further change");
     press(&mut session, 'j');
     assert_eq!(message(&session), "");
 }

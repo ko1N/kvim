@@ -97,9 +97,9 @@ impl fmt::Display for Mode {
 
 /// The registry table that owns one key sequence.
 ///
-/// An editor mode owns one table, and the file-tree sidebar owns one more. Only
-/// one scope is active, so one key sequence may appear in several scopes with
-/// different commands.
+/// An editor mode owns one table, the file-tree sidebar owns one more, and the
+/// picker owns the last one. Only one scope is active, so one key sequence may
+/// appear in several scopes with different commands.
 ///
 /// ```
 /// use kvim::input::{BindingScope, Mode};
@@ -107,6 +107,8 @@ impl fmt::Display for Mode {
 /// assert!(BindingScope::Mode(Mode::Normal).accepts_count());
 /// // The sidebar reads no count, because its keys act on one selected entry.
 /// assert!(!BindingScope::Sidebar.accepts_count());
+/// // The picker reads a query, so a digit belongs to that query.
+/// assert!(!BindingScope::Picker.accepts_count());
 /// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum BindingScope {
@@ -114,11 +116,13 @@ pub enum BindingScope {
     Mode(Mode),
     /// The file-tree sidebar owns the keys.
     Sidebar,
+    /// The picker owns the keys that its query does not hold.
+    Picker,
 }
 
 impl BindingScope {
     /// The number of scopes. The mapping registry holds one table for each.
-    pub const COUNT: usize = Mode::COUNT + 1;
+    pub const COUNT: usize = Mode::COUNT + 2;
 
     /// Every scope, in table order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -128,6 +132,7 @@ impl BindingScope {
         Self::Mode(Mode::VisualLine),
         Self::Mode(Mode::VisualBlock),
         Self::Sidebar,
+        Self::Picker,
     ];
 
     /// Returns the registry table index of the scope.
@@ -139,6 +144,7 @@ impl BindingScope {
         match self {
             Self::Mode(mode) => mode.index(),
             Self::Sidebar => Mode::COUNT,
+            Self::Picker => Mode::COUNT + 1,
         }
     }
 
@@ -147,7 +153,7 @@ impl BindingScope {
     pub const fn accepts_count(self) -> bool {
         match self {
             Self::Mode(mode) => mode.accepts_count(),
-            Self::Sidebar => false,
+            Self::Sidebar | Self::Picker => false,
         }
     }
 
@@ -157,6 +163,7 @@ impl BindingScope {
         match self {
             Self::Mode(mode) => mode.label(),
             Self::Sidebar => "File Tree",
+            Self::Picker => "Picker",
         }
     }
 
@@ -166,6 +173,7 @@ impl BindingScope {
         match self {
             Self::Mode(mode) => InputContext::Mode(mode),
             Self::Sidebar => InputContext::Sidebar,
+            Self::Picker => InputContext::Picker,
         }
     }
 }
@@ -224,6 +232,8 @@ pub enum PromptKind {
     Search,
     /// One file-tree operation that needs a name or a query.
     Tree(TreePrompt),
+    /// The query of one open picker.
+    Picker,
 }
 
 impl PromptKind {
@@ -241,6 +251,7 @@ impl PromptKind {
             Self::CommandLine => ":",
             Self::Search => "/",
             Self::Tree(prompt) => prompt.prefix(),
+            Self::Picker => "> ",
         }
     }
 }
@@ -266,6 +277,8 @@ pub enum InputContext {
     Mode(Mode),
     /// The file-tree sidebar owns input.
     Sidebar,
+    /// One open picker owns input.
+    Picker,
     /// One line prompt owns input.
     Prompt {
         /// The prompt that reads the line.
@@ -286,6 +299,7 @@ impl InputContext {
         match self {
             Self::Mode(mode) => BindingScope::Mode(mode),
             Self::Sidebar => BindingScope::Sidebar,
+            Self::Picker => BindingScope::Picker,
             Self::Prompt { return_to, .. } => return_to,
         }
     }
@@ -294,7 +308,7 @@ impl InputContext {
     #[inline]
     pub const fn prompt(self) -> Option<PromptKind> {
         match self {
-            Self::Mode(_) | Self::Sidebar => None,
+            Self::Mode(_) | Self::Sidebar | Self::Picker => None,
             Self::Prompt { kind, .. } => Some(kind),
         }
     }
