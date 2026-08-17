@@ -36,8 +36,8 @@ use crate::editor::{
     SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Viewport,
 };
 use crate::input::{
-    COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, InputContext, Mode, PromptEdit,
-    PromptKind, Registry, Resolution, Resolver, WhichKeyRow,
+    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Mode, PromptEdit,
+    PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use crate::language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
@@ -47,8 +47,10 @@ use crate::language::{
 use crate::settings::EditorSettings;
 use crate::terminal::{Chord, Key, KeyCode, TerminalEvent};
 use crate::workspace::{
-    BUFFERS_MAX, BufferId, Buffers, FileBuffer, FileRequest, FileResult, OpenRequest, OpenedFile,
-    SaveError, SaveRequest, SavedBuffer, render_content,
+    BUFFERS_MAX, BufferId, Buffers, EntryKind, FileBuffer, FileOperation, FileRequest, FileResult,
+    FileTree, MutationError, MutationOutcome, OpenRequest, OpenedFile, SaveError, SaveRequest,
+    SavedBuffer, TREE_FILTER_CHARS_MAX, TransferMode, WorkspaceRequest, WorkspaceResult,
+    render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -59,7 +61,8 @@ use super::language::{
 };
 use super::layout::RegionKind;
 use super::theme::Theme;
-use super::window::{WindowId, WindowOutcome, Windows};
+use super::tree::{TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeRefusal, TreeSidebar};
+use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 
 /// The largest message that the message line keeps, in characters.
 ///
@@ -266,6 +269,10 @@ impl PromptLine {
         match self.kind {
             PromptKind::CommandLine => COMMAND_LINE_CHARS_MAX,
             PromptKind::Search => SEARCH_QUERY_CHARS_MAX,
+            PromptKind::Tree(TreePrompt::Filter) => TREE_FILTER_CHARS_MAX,
+            PromptKind::Tree(
+                TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename,
+            ) => TREE_NAME_CHARS_MAX,
         }
     }
 }
@@ -290,6 +297,8 @@ pub(super) struct Visible<'a> {
     pub(super) theme: Theme,
     pub(super) settings: &'a EditorSettings,
     pub(super) windows: &'a Windows,
+    /// The file-tree sidebar, which paints its own region.
+    pub(super) tree: &'a TreeSidebar,
     /// Every loaded buffer, because each window shows its own buffer.
     pub(super) buffers: &'a Buffers,
     /// The buffer that the editing state and the active search belong to.
@@ -338,7 +347,8 @@ impl Visible<'_> {
 /// use kvim::terminal::{Key, KeyCode, TerminalEvent};
 /// use kvim::tui::{Redraw, Session};
 ///
-/// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default());
+/// let root = std::env::current_dir().expect("the test process holds a working directory");
+/// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
 /// let now = Duration::ZERO;
 ///
 /// // `i` enters Insert mode, and a printable key inserts one character.
@@ -361,6 +371,10 @@ pub struct Session {
     /// The file operation that the editor waits for.
     file_pending: Option<PendingFile>,
     windows: Windows,
+    /// The file-tree sidebar, its clipboard, and its workspace requests.
+    tree: TreeSidebar,
+    /// The sidebar region of the window tree, while the tree ever opened it.
+    tree_region: Option<WindowId>,
     editing: EditingState,
     registers: Registers,
     resolver: Resolver,
@@ -391,12 +405,16 @@ pub struct Session {
 impl Session {
     /// Creates a session that shows one empty scratch buffer.
     ///
+    /// The workspace root is the directory that the file tree shows. The
+    /// caller resolves it once, because the session performs no filesystem
+    /// work. See `docs/files.md`.
+    ///
     /// # Panics
     ///
     /// Panics when the hardcoded first-release binding table is invalid. This
     /// is a cold-path bootstrap check, so an invalid table must fail at start.
     #[must_use]
-    pub fn new(area: Rect, settings: EditorSettings) -> Self {
+    pub fn new(area: Rect, settings: EditorSettings, root: PathBuf) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
         let editing = EditingState::new(
             buffers
@@ -413,6 +431,8 @@ impl Session {
             file_outbox: None,
             file_pending: None,
             windows: Windows::new(active, shell_areas(area).body, settings.windows),
+            tree: TreeSidebar::new(root),
+            tree_region: None,
             editing,
             registers: Registers::default(),
             resolver: Resolver::new(Registry::first_release(), settings.input),
@@ -475,6 +495,12 @@ impl Session {
         &self.windows
     }
 
+    /// Returns the workspace file tree that the sidebar shows.
+    #[must_use]
+    pub const fn file_tree(&self) -> &FileTree {
+        self.tree.tree()
+    }
+
     /// Returns the last message, or `None` while the line is empty.
     #[must_use]
     pub fn message(&self) -> Option<&Message> {
@@ -533,6 +559,7 @@ impl Session {
             theme: self.theme,
             settings: &self.settings,
             windows: &self.windows,
+            tree: &self.tree,
             buffers: &self.buffers,
             active: self.active,
             analysis: &self.analysis,
@@ -553,6 +580,7 @@ impl Session {
     fn settle(&mut self, now: Duration) -> Redraw {
         self.refresh_search();
         self.reconcile_viewports();
+        self.reconcile_tree();
         let rows = self.resolver.which_key(now);
         if rows.as_deref() == self.which_key.as_deref() {
             return Redraw::Skipped;
@@ -598,6 +626,11 @@ impl Session {
     /// focus, resize, and close commands. The editing state sees the rest.
     fn apply_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
         let cleared = self.clear_message();
+        // The sidebar owns every key while it holds the focus, so a tree
+        // command never reaches the buffer of an editor window.
+        if self.sidebar_has_focus() {
+            return self.apply_tree_command(command).or(cleared);
+        }
         match command {
             Command::OpenCommandLine => return self.open_prompt(PromptKind::CommandLine),
             Command::OpenSearchPrompt => return self.open_prompt(PromptKind::Search),
@@ -623,12 +656,15 @@ impl Session {
                 return self.jump_diagnostic(DiagnosticJump::Previous).or(cleared);
             }
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
+            Command::RevealInFileTree => return self.reveal_active_file().or(cleared),
             _ => {}
         }
         match self.windows.apply(command) {
             WindowOutcome::Ignored => {}
             WindowOutcome::Changed => {
                 self.follow_focused_window();
+                // A focus move can reach the sidebar, which owns its own keys.
+                self.sync_context();
                 return Redraw::Needed;
             }
             WindowOutcome::Unchanged => return cleared,
@@ -888,14 +924,26 @@ impl Session {
     }
 
     /// Opens one line prompt and moves input to it.
+    ///
+    /// The prompt returns input to the scope that owned it, so a file-tree
+    /// prompt returns the keys to the sidebar.
     fn open_prompt(&mut self, kind: PromptKind) -> Redraw {
         self.prompt = Some(PromptLine {
             kind,
             text: String::new(),
         });
-        let context = InputContext::Mode(self.editing.mode()).open_prompt(kind);
+        let context = self.input_scope().context().open_prompt(kind);
         self.resolver.set_context(context);
         Redraw::Needed
+    }
+
+    /// Returns the scope that owns the keys while no prompt is open.
+    fn input_scope(&self) -> BindingScope {
+        if self.sidebar_has_focus() {
+            BindingScope::Sidebar
+        } else {
+            BindingScope::Mode(self.editing.mode())
+        }
     }
 
     /// Applies one edit of the open prompt line.
@@ -940,6 +988,7 @@ impl Session {
         match prompt.kind {
             PromptKind::CommandLine => self.run_command_line(&prompt.text),
             PromptKind::Search => self.run_search(&prompt.text),
+            PromptKind::Tree(tree) => self.run_tree_prompt(tree, &prompt.text),
         }
     }
 
@@ -987,7 +1036,8 @@ impl Session {
     /// use kvim::settings::EditorSettings;
     /// use kvim::tui::Session;
     ///
-    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default());
+    /// let root = std::env::current_dir().expect("the test process holds a working directory");
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
     /// session.open_path("Cargo.toml".into());
     ///
     /// // The event loop hands the request to the bounded worker service.
@@ -1554,6 +1604,262 @@ impl Session {
         }
     }
 
+    /// Reports whether the file-tree sidebar owns the keys.
+    fn sidebar_has_focus(&self) -> bool {
+        self.tree_region
+            .is_some_and(|id| self.windows.focused_region() == id)
+    }
+
+    /// Shows the file-tree sidebar and returns its region.
+    ///
+    /// The sidebar keeps one identity for the complete session, so hiding and
+    /// showing it never builds a second region.
+    fn show_sidebar(&mut self) -> WindowId {
+        match self.tree_region {
+            Some(id) => {
+                self.windows.set_sidebar_visible(SidebarSide::Right, true);
+                id
+            }
+            None => {
+                let id = self.windows.open_sidebar(
+                    SidebarSide::Right,
+                    self.settings.windows.file_tree_width_cells,
+                );
+                self.tree_region = Some(id);
+                id
+            }
+        }
+    }
+
+    /// Opens the sidebar, expands the ancestors of the active file, and selects
+    /// it.
+    ///
+    /// The sidebar then owns the keys, so the tree bindings act at once. A
+    /// second `Ctrl-E` reaches the sidebar table, which closes the sidebar and
+    /// returns the focus to the editor. See `docs/input-actions.md`.
+    fn reveal_active_file(&mut self) -> Redraw {
+        let path = self.active_buffer().path().map(Path::to_path_buf);
+        let region = self.show_sidebar();
+        match path {
+            Some(path) => self.tree.reveal(&path),
+            None => self.set_message(NO_REVEAL_PATH_NOTE, MessageLevel::Info),
+        }
+        self.windows.focus_region(region);
+        self.sync_context();
+        Redraw::Needed
+    }
+
+    /// Applies one semantic command while the sidebar holds the keys.
+    fn apply_tree_command(&mut self, command: Command) -> Redraw {
+        match command {
+            Command::MoveDown => self.tree.select_next(),
+            Command::MoveUp => self.tree.select_previous(),
+            Command::TreeSelectParent => self.tree.select_parent(),
+            Command::TreeToggleEntry => self.tree.toggle_selected(),
+            Command::TreeRefresh => self.tree.refresh_all(),
+            Command::TreeToggleHidden => self.tree.toggle_hidden(),
+            Command::TreeOpenEntry => return self.open_selected_entry(),
+            Command::TreeFilter => return self.open_prompt(PromptKind::Tree(TreePrompt::Filter)),
+            Command::TreeAddFile => {
+                return self.open_prompt(PromptKind::Tree(TreePrompt::AddFile));
+            }
+            Command::TreeAddDirectory => {
+                return self.open_prompt(PromptKind::Tree(TreePrompt::AddDirectory));
+            }
+            Command::TreeRename => return self.open_prompt(PromptKind::Tree(TreePrompt::Rename)),
+            Command::TreeCopyEntry => return self.hold_entry(TransferMode::Copy),
+            Command::TreeCutEntry => return self.hold_entry(TransferMode::Move),
+            Command::TreeDelete => {
+                let staged = self.tree.stage_delete();
+                return self.start_tree_mutation(staged);
+            }
+            Command::TreePasteEntries => {
+                let staged = self.tree.stage_paste();
+                return self.start_tree_mutation(staged);
+            }
+            Command::SaveBuffer => return self.save_active(AfterSave::Stay),
+            Command::CloseWindow
+            | Command::FocusWindowLeft
+            | Command::FocusWindowDown
+            | Command::FocusWindowUp
+            | Command::FocusWindowRight => return self.leave_sidebar(command),
+            // The sidebar table holds no other command.
+            _ => return Redraw::Skipped,
+        }
+        Redraw::Needed
+    }
+
+    /// Moves the focus out of the sidebar, or closes the sidebar.
+    fn leave_sidebar(&mut self, command: Command) -> Redraw {
+        match self.windows.apply(command) {
+            WindowOutcome::Changed => {
+                self.follow_focused_window();
+                self.sync_context();
+                Redraw::Needed
+            }
+            WindowOutcome::LastWindow => {
+                debug_assert!(false, "closing a focused sidebar keeps every editor window");
+                Redraw::Skipped
+            }
+            WindowOutcome::Ignored | WindowOutcome::Unchanged => Redraw::Skipped,
+        }
+    }
+
+    /// Opens the selected file, or expands the selected directory.
+    ///
+    /// A file opens in the editor window that held the focus before the
+    /// sidebar, and the focus follows it, so the user types in the new buffer.
+    fn open_selected_entry(&mut self) -> Redraw {
+        let Some(path) = self.tree.open_selected() else {
+            return Redraw::Needed;
+        };
+        let window = self.windows.focused_window();
+        self.windows.focus_region(window);
+        self.sync_context();
+        self.open_path(path).or(Redraw::Needed)
+    }
+
+    /// Holds the selected entry in the file-operation clipboard.
+    fn hold_entry(&mut self, mode: TransferMode) -> Redraw {
+        match self.tree.hold(mode) {
+            Ok(path) => {
+                let verb = match mode {
+                    TransferMode::Copy => "copied",
+                    TransferMode::Move => "cut",
+                };
+                self.set_message(
+                    format!("{} is {verb} for the next paste", path.display()),
+                    MessageLevel::Info,
+                );
+            }
+            Err(refusal) => self.set_message(refusal.message(), MessageLevel::Warning),
+        }
+        Redraw::Needed
+    }
+
+    /// Queues one staged workspace mutation, or reports the refusal.
+    fn start_tree_mutation(&mut self, staged: Result<FileOperation, TreeRefusal>) -> Redraw {
+        let operation = match staged {
+            Ok(operation) => operation,
+            Err(refusal) => {
+                self.set_message(refusal.message(), MessageLevel::Warning);
+                return Redraw::Needed;
+            }
+        };
+        // The worker validates the operation against the loaded buffers, so it
+        // receives the complete list with the request.
+        let buffers = self.buffers.open_buffers();
+        if let Err(refusal) = self.tree.start_mutation(operation, buffers) {
+            self.set_message(refusal.message(), MessageLevel::Warning);
+        }
+        Redraw::Needed
+    }
+
+    /// Runs one accepted file-tree prompt line.
+    fn run_tree_prompt(&mut self, prompt: TreePrompt, text: &str) -> Redraw {
+        match prompt {
+            TreePrompt::Filter => {
+                self.tree.set_query(text);
+                Redraw::Needed
+            }
+            TreePrompt::AddFile => {
+                let staged = self.tree.stage_create(text, EntryKind::File);
+                self.start_tree_mutation(staged)
+            }
+            TreePrompt::AddDirectory => {
+                let staged = self.tree.stage_create(text, EntryKind::Directory);
+                self.start_tree_mutation(staged)
+            }
+            TreePrompt::Rename => {
+                let staged = self.tree.stage_rename(text);
+                self.start_tree_mutation(staged)
+            }
+        }
+    }
+
+    /// Takes the workspace request that the event loop must submit.
+    ///
+    /// The session never reads a directory and never changes a file itself, so
+    /// the event loop hands the request to the bounded worker service. See
+    /// `docs/responsiveness.md`.
+    pub fn take_workspace_request(&mut self) -> Option<WorkspaceRequest> {
+        self.tree.take_request()
+    }
+
+    /// Applies one completed workspace operation as one state transition.
+    pub fn apply_workspace_result(&mut self, result: WorkspaceResult) -> Redraw {
+        let redraw = match result {
+            WorkspaceResult::Directory { path, outcome } => {
+                self.tree.apply_directory(&path, outcome);
+                Redraw::Needed
+            }
+            WorkspaceResult::Mutated { outcome } => self.publish_mutation(outcome),
+        };
+        self.reconcile_tree();
+        redraw
+    }
+
+    /// Reports that one workspace operation produced no result.
+    ///
+    /// The workspace and the buffers keep the state that they held before the
+    /// request, so the user can repeat the operation.
+    pub fn abandon_workspace_request(&mut self, failure: FileRequestFailure) -> Redraw {
+        self.tree.abandon_request();
+        self.set_message(failure.message(), MessageLevel::Error);
+        Redraw::Needed
+    }
+
+    /// Publishes one completed mutation as one visible state change.
+    ///
+    /// The buffer paths, the affected directories, and the new selection change
+    /// together, so no window shows a path that the workspace no longer holds.
+    fn publish_mutation(&mut self, outcome: Result<MutationOutcome, MutationError>) -> Redraw {
+        let outcome = match outcome {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.tree.abandon_request();
+                self.set_message(error.to_string(), MessageLevel::Error);
+                return Redraw::Needed;
+            }
+        };
+        // The language server holds each document by its path, so the previous
+        // path closes before the buffer takes the new one.
+        let closed: Vec<PathBuf> = outcome
+            .updates
+            .iter()
+            .filter_map(|update| {
+                self.buffers
+                    .get(update.buffer)
+                    .and_then(FileBuffer::path)
+                    .map(Path::to_path_buf)
+            })
+            .collect();
+        self.buffers.apply_path_updates(&outcome.updates);
+        for path in closed {
+            self.queue_language(LanguageRequest::Close { path });
+        }
+        for update in &outcome.updates {
+            self.language.mark_resync(update.buffer);
+        }
+        self.tree.clear_moved_clipboard();
+        self.tree.apply_mutation(&outcome);
+        Redraw::Needed
+    }
+
+    /// Moves the visible tree rows so the selected row stays in the sidebar.
+    ///
+    /// The layout owns the rectangle of the sidebar, so the session reads the
+    /// number of visible rows from it. A hidden sidebar shows none.
+    fn reconcile_tree(&mut self) {
+        let rows = self
+            .tree_region
+            .and_then(|id| self.windows.layout().area(id))
+            .map_or(0, |area| {
+                usize::from(area.height.saturating_sub(TREE_TITLE_ROWS))
+            });
+        self.tree.reconcile(rows);
+    }
+
     /// Applies one completed file operation as one state transition.
     pub fn apply_file_result(&mut self, result: FileResult) -> Redraw {
         let pending = self.file_pending.take();
@@ -1902,13 +2208,12 @@ impl Session {
         self.sync_context();
     }
 
-    /// Moves input back to the active editor mode.
+    /// Moves input back to the scope that holds the focus.
     fn sync_context(&mut self) {
         if self.prompt.is_some() {
             return;
         }
-        self.resolver
-            .set_context(InputContext::Mode(self.editing.mode()));
+        self.resolver.set_context(self.input_scope().context());
     }
 
     /// Reports one command outcome on the message line.
@@ -2034,6 +2339,10 @@ const NO_DIAGNOSTIC_NOTE: &str = "the buffer holds no diagnostic";
 /// The message that the diagnostic float shows while the cursor marks none.
 const NO_DIAGNOSTIC_AT_CURSOR_NOTE: &str = "no diagnostic at the cursor";
 
+/// The message that a reveal of a buffer without a file name shows.
+const NO_REVEAL_PATH_NOTE: &str =
+    "the buffer holds no file name; the file tree shows the workspace";
+
 /// The message that a server position outside the buffer shows.
 const OUTSIDE_BUFFER_NOTE: &str = "the language server named a position outside the buffer";
 
@@ -2049,7 +2358,6 @@ const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
 /// reaches unfinished behavior must say so instead of doing nothing.
 const fn deferred_note(command: Command) -> Option<&'static str> {
     match command {
-        Command::RevealInFileTree => Some("the file tree arrives in a later release"),
         Command::OpenBufferPicker | Command::OpenFilePicker | Command::OpenRipgrepPicker => {
             Some("the pickers arrive in a later release")
         }

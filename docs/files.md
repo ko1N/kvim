@@ -212,6 +212,22 @@ holds one matching descendant.
 
 Kvim reads no Git ignore rules for the tree in the first release.
 
+### Sidebar Focus And Operations
+
+The sidebar owns every key while it holds the focus.
+[`input-actions.md`](input-actions.md) owns the key table. An operation that
+needs text, such as a rename, an add, or a filter, reads one line through the
+prompt of the message line. The tree opens no second input mechanism.
+
+The tree runs one workspace operation at a time, as the file operations do. The
+event loop takes the next directory read after every completed operation, so the
+reads of one reveal or one refresh reach the worker in order. A cancelled,
+timed out, or refused operation changes no workspace state and no buffer.
+
+Kvim applies one completed mutation as one transition. The transition updates
+the path of every affected buffer, refreshes only the changed directories, and
+reveals the new entry.
+
 ### Reveal And Refresh
 
 Reveal expands every parent directory of one path and selects that entry. It

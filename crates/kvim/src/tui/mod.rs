@@ -54,6 +54,7 @@ mod overlay;
 mod render;
 mod session;
 mod theme;
+mod tree;
 mod window;
 
 #[cfg(test)]
@@ -64,8 +65,10 @@ mod render_tests;
 mod session_tests;
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tree_tests;
 
-pub use app::{EVENT_ERRORS_MAX, EditorError, run};
+pub use app::{EVENT_ERRORS_MAX, EditorError, PanicProbe, run};
 pub use language::{
     DiagnosticJump, FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, FormatOnSave, LANGUAGE_OUTBOX_MAX,
     LanguageQuery, LanguageRequest, LanguageRequestKind,

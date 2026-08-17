@@ -8,7 +8,16 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use kvim::settings::EditorSettings;
+use kvim::tui::PanicProbe;
 use thiserror::Error as ErrorDerive;
+
+/// The environment variable that asks the editor to panic after its first
+/// frame.
+///
+/// The variable proves that the panic hook of the terminal session restores the
+/// terminal. Any value enables it, and the editor never prints the value. It is
+/// a diagnostic, not an editor feature. See `docs/architecture.md`.
+const PANIC_PROBE_VARIABLE: &str = "KVIM_PANIC_PROBE";
 
 /// The result of parsing command-line arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,8 +80,25 @@ fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
         .build()
         .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
     runtime
-        .block_on(kvim::tui::run(EditorSettings::default(), root, path))
+        .block_on(kvim::tui::run(
+            EditorSettings::default(),
+            root,
+            path,
+            panic_probe(),
+        ))
         .map_err(|error| describe(&error))
+}
+
+/// Returns the panic probe that the environment selects.
+///
+/// The function reads whether the variable exists. It never reads and never
+/// reports the value.
+fn panic_probe() -> PanicProbe {
+    if std::env::var_os(PANIC_PROBE_VARIABLE).is_some() {
+        PanicProbe::AfterFirstFrame
+    } else {
+        PanicProbe::Disabled
+    }
 }
 
 /// Returns the workspace root that contains every document of a language server.

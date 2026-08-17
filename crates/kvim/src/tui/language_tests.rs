@@ -85,7 +85,7 @@ impl Editor {
         let mut settings = EditorSettings::default();
         settings.files.undo_file = false;
         let mut editor = Self {
-            session: Session::new(AREA, settings),
+            session: Session::new(AREA, settings, PathBuf::from("/workspace")),
             harness,
             server,
             spare,

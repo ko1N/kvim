@@ -173,10 +173,38 @@ These dependencies run only in the bounded language-server task.
 
 ## Release Profile
 
-The Cargo release profile keeps `panic = "unwind"`. Terminal cleanup runs while
-the process unwinds, so the terminal returns to its normal mode after a panic.
-An aborting profile would leave the terminal in raw mode with the alternate
-screen active.
+The Cargo release profile keeps `panic = "unwind"`. Terminal restoration must
+not depend on unwinding.
+
+A panic hook is the primary restoration path on every platform. The terminal
+session installs the hook when it enters the terminal and removes it after a
+successful restore, so the hook exists exactly while the terminal holds the
+setup steps. The hook leaves the alternate screen, disables raw mode, shows the
+cursor, restores the cursor shape, and pops the keyboard enhancement flags. It
+then calls the hook that it replaced, so the normal panic message still reaches
+the user. The hook writes the terminal steps only. It allocates nothing and
+locks no editor state, because a panic can leave both unusable, and it ignores
+every write failure, because no report path remains.
+
+`Drop` is the secondary path. It restores the same steps where unwinding works.
+Correctness never depends on it.
+
+The measured reason: on macOS 26.5.1 a panic cannot unwind. The process prints
+the panic message, reports `fatal runtime error: failed to initiate panic, error
+5`, and aborts, so no destructor runs. A standalone measurement confirmed both
+halves: a `Drop` guard did not run, and a hook of `std::panic::set_hook` did run
+before the abort.
+
+The behavior belongs to the operating system, not to one toolchain. The same
+measurement aborts identically on the nixpkgs Rust 1.97.1 toolchain, on the
+nixpkgs Rust 1.95.0 toolchain, and on the official upstream 1.97.1 toolchain
+from fenix. No toolchain pin avoids it.
+
+The `KVIM_PANIC_PROBE` environment variable makes the running executable panic
+after its first frame. It verifies the restoration path in a pseudo-terminal.
+Any value enables it. The composition root reads whether the variable exists,
+and it never reads and never reports the value. The variable is a diagnostic,
+not an editor feature.
 
 The profile uses portable settings only. It does not use target-specific or
 unsafe optimization flags.

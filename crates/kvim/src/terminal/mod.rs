@@ -8,8 +8,11 @@
 //! commands belong to the `input` module.
 //!
 //! [`TerminalSession`] owns the setup steps and restores them on every exit path,
-//! including a panic unwind. [`EventSource`] delivers normalized events. This
-//! module produces events only. The event loop in `tui` consumes them.
+//! including a panic. Restoration never depends on unwinding: the session
+//! installs a panic hook that writes every [`RestoreStep`], because a panic
+//! aborts without running a destructor on some platforms. [`EventSource`]
+//! delivers normalized events. This module produces events only. The event loop
+//! in `tui` consumes them.
 
 mod events;
 mod key;
@@ -21,7 +24,7 @@ use thiserror::Error;
 
 pub use events::{EventSource, FocusChange, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX};
 pub use key::{Chord, Key, KeyCode};
-pub use lifecycle::{CrosstermControl, CursorShape, TerminalControl, TerminalSession};
+pub use lifecycle::{CrosstermControl, CursorShape, RestoreStep, TerminalControl, TerminalSession};
 
 /// A failure of a terminal control step or of the terminal event stream.
 #[derive(Debug, Error)]

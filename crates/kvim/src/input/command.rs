@@ -128,6 +128,21 @@ semantic_commands! {
     OpenFilePicker => ("open-file-picker", "Open the file search picker"),
     OpenRipgrepPicker => ("open-ripgrep-picker", "Open the ripgrep search picker"),
 
+    // The file tree.
+    TreeOpenEntry => ("tree-open-entry", "Open the selected entry"),
+    TreeToggleEntry => ("tree-toggle-entry", "Expand or collapse the selected directory"),
+    TreeSelectParent => ("tree-select-parent", "Select the parent directory"),
+    TreeRefresh => ("tree-refresh", "Read the workspace directories again"),
+    TreeAddFile => ("tree-add-file", "Add one file"),
+    TreeAddDirectory => ("tree-add-directory", "Add one directory"),
+    TreeDelete => ("tree-delete", "Delete the selected entry"),
+    TreeRename => ("tree-rename", "Rename the selected entry"),
+    TreeCopyEntry => ("tree-copy-entry", "Copy the selected entry"),
+    TreeCutEntry => ("tree-cut-entry", "Cut the selected entry"),
+    TreePasteEntries => ("tree-paste-entries", "Paste the held entries"),
+    TreeToggleHidden => ("tree-toggle-hidden", "Show or hide the hidden entries"),
+    TreeFilter => ("tree-filter", "Filter the visible entries"),
+
     // Windows.
     FocusWindowLeft => ("focus-window-left", "Focus the window to the left"),
     FocusWindowDown => ("focus-window-down", "Focus the window below"),

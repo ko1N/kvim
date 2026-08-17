@@ -148,6 +148,19 @@ file tree is a sidebar. A sidebar is not an ordinary editor window:
 Hiding a sidebar that holds focus moves focus to the previously focused editor
 window. [`files.md`](files.md) owns file-tree behavior.
 
+The file tree opens at 40 cells. The width belongs to `EditorSettings`. See
+[`settings.md`](settings.md).
+
+A sidebar owns its own keys while it holds the focus. The mapping registry keeps
+one binding scope for it, so a tree key never reaches an editor window. See
+[`input-actions.md`](input-actions.md).
+
+The sidebar keeps one identity for the complete session. Closing it hides the
+region and keeps that identity, so a later reveal shows the same sidebar. One
+title row above the rows names the workspace root, and it carries the focused or
+the unfocused title color. The terminal draws its own cursor on the selected row
+while the sidebar holds the focus, so one frame still reports one cursor cell.
+
 ## Chrome
 
 The terminal holds three bands. The window tree receives the body band only.

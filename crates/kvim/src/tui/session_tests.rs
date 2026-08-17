@@ -3,6 +3,7 @@
 //! No test opens a terminal. The session receives normalized events and an
 //! elapsed time, so every transition is deterministic.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 use ratatui::layout::Rect;
@@ -20,12 +21,24 @@ use super::session::{MessageLevel, Redraw, RunState, Session};
 
 const NOW: Duration = Duration::ZERO;
 
+/// Returns the workspace root that the file tree of a test session shows.
+///
+/// No test reads the directory, because the session hands every read to the
+/// bounded worker service.
+fn workspace_root() -> PathBuf {
+    PathBuf::from("/workspace")
+}
+
 /// The which-key delay of the settings that every test session holds.
 const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 
 /// Creates a session over one terminal size.
 fn session(width: u16, height: u16) -> Session {
-    Session::new(Rect::new(0, 0, width, height), EditorSettings::default())
+    Session::new(
+        Rect::new(0, 0, width, height),
+        EditorSettings::default(),
+        workspace_root(),
+    )
 }
 
 /// Feeds one plain character key and returns the redraw request.
@@ -138,7 +151,7 @@ fn the_tab_key_follows_the_indent_settings() {
 
     let mut settings = EditorSettings::default();
     settings.indent.expand_tab = false;
-    let mut hard = Session::new(Rect::new(0, 0, 40, 10), settings);
+    let mut hard = Session::new(Rect::new(0, 0, 40, 10), settings, workspace_root());
     press(&mut hard, 'i');
     press_code(&mut hard, KeyCode::Tab);
     assert_eq!(hard.buffer().to_string(), "\t");
@@ -402,11 +415,8 @@ fn a_search_without_a_match_reports_it_and_keeps_the_cursor() {
 #[test]
 fn a_new_command_clears_the_previous_message() {
     let mut session = session(60, 10);
-    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
-    assert_eq!(
-        message(&session),
-        "the file tree arrives in a later release"
-    );
+    type_keys(&mut session, " o");
+    assert_eq!(message(&session), "the pickers arrive in a later release");
     press(&mut session, 'j');
     assert_eq!(message(&session), "");
 }
@@ -473,7 +483,7 @@ fn the_viewport_follows_the_text_area_instead_of_the_window_rectangle() {
 fn file_session() -> Session {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    Session::new(Rect::new(0, 0, 80, 24), settings)
+    Session::new(Rect::new(0, 0, 80, 24), settings, workspace_root())
 }
 
 /// Refuses every queued language request, like an editor without a server.

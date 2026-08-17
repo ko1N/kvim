@@ -18,6 +18,11 @@ use super::session::Session;
 
 const NOW: Duration = Duration::ZERO;
 
+/// Returns the workspace root that the file tree of a test session shows.
+fn workspace_root() -> PathBuf {
+    PathBuf::from("/workspace")
+}
+
 /// The which-key delay of the settings that every test session holds.
 const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 
@@ -99,7 +104,11 @@ fn is_reversed(session: &Session, x: u16, y: u16) -> bool {
 
 /// Creates a session over one terminal size.
 fn session(width: u16, height: u16) -> Session {
-    Session::new(Rect::new(0, 0, width, height), EditorSettings::default())
+    Session::new(
+        Rect::new(0, 0, width, height),
+        EditorSettings::default(),
+        workspace_root(),
+    )
 }
 
 /// Feeds one plain character key.
@@ -353,7 +362,7 @@ fn a_wide_character_occupies_two_cells() {
 fn a_tab_expands_to_the_configured_tab_stop() {
     let mut settings = EditorSettings::default();
     settings.indent.expand_tab = false;
-    let mut session = Session::new(Rect::new(0, 0, 30, 6), settings);
+    let mut session = Session::new(Rect::new(0, 0, 30, 6), settings, workspace_root());
     press(&mut session, 'i');
     type_keys(&mut session, "ab");
     press_code(&mut session, KeyCode::Tab);
@@ -414,7 +423,7 @@ fn two_splits_paint_two_different_buffers() {
     let second = directory.write("second.rs", "fn second() {}\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings);
+    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, workspace_root());
 
     open_file(&mut session, first);
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
@@ -456,8 +465,8 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
 #[test]
 fn a_deferred_command_reports_its_release_on_the_message_line() {
     let mut session = session(60, 6);
-    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
-    assert_eq!(row(&session, 5), "the file tree arrives in a later release");
+    type_keys(&mut session, " o");
+    assert_eq!(row(&session, 5), "the pickers arrive in a later release");
     assert_eq!(
         style_at(&session, 0, 5).fg,
         Some(Color::Rgb(0xe0, 0xaf, 0x68)),

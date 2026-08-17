@@ -16,6 +16,12 @@ pub const FILE_BYTES_MAX: u64 = 4 * 1024 * 1024;
 /// The largest count that the input resolver accepts before one command.
 pub const COUNT_MAX: u32 = 9_999;
 
+/// The default width of the file-tree sidebar, in cells.
+///
+/// The value holds a nested path of a Rust repository beside the editor
+/// windows. See `docs/windows.md`.
+pub const FILE_TREE_WIDTH_CELLS_DEFAULT: u16 = 40;
+
 /// The largest number of keys that one pending input sequence holds.
 pub const PENDING_KEYS_MAX: u8 = 4;
 
@@ -246,6 +252,11 @@ pub struct WindowSettings {
     ///
     /// The value keeps a winbar row, a text row, and a statusline row visible.
     pub min_window_height_rows: u16,
+    /// The width of the file-tree sidebar, in cells.
+    ///
+    /// The sidebar keeps a fixed width. A directional resize toward it changes
+    /// the width of the open sidebar only, not this default.
+    pub file_tree_width_cells: u16,
 }
 
 impl Default for WindowSettings {
@@ -257,6 +268,7 @@ impl Default for WindowSettings {
             resize_step_cells: 6,
             min_window_width_cells: 20,
             min_window_height_rows: 3,
+            file_tree_width_cells: FILE_TREE_WIDTH_CELLS_DEFAULT,
         }
     }
 }
