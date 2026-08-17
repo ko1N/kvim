@@ -328,30 +328,117 @@ value of `MUTATION_PATHS_MAX` above, so every held entry fits into one paste.
 ## Pickers
 
 One bounded picker framework serves file search, ripgrep search, and buffer
-search. A picker owns a prompt, a filtered result list, a stable selection, and
-an asynchronous preview.
+search. A picker owns a prompt, a bounded candidate list, a fuzzy filter, a
+stable selection, keyboard navigation, and an asynchronous preview. The three
+pickers differ only in the source of their candidates and in what one accepted
+row opens:
 
-The prompt sits at the top. The result list ascends from the prompt. A result
-path shows the filename first, then its directory. A wide layout gives the
-preview approximately 75 percent of the picker area.
+| Keys | Source | An accepted row |
+|---|---|---|
+| `Space ff` | The workspace walk | Opens the file |
+| `Space f/` | The ripgrep search | Opens the file at the matched line |
+| `Space o`, `Space fb` | The loaded buffer list | Shows the buffer |
 
-File search and ripgrep search respect Git ignore rules by default. Ripgrep
-search streams results from a bounded process.
+The picker covers the complete terminal and keeps no padding on either axis. The
+prompt sits at the top. The result list ascends from the prompt, so the best
+match sits next to it. A result shows the filename first, then its directory. A
+wide layout gives the preview 75 percent of the width, on the right. No region
+carries a divider glyph: one blank row and one blank column separate them. See
+[`windows.md`](windows.md).
+
+A terminal that cannot hold a readable preview column and a readable result
+column shows the results alone, over the complete width.
+
+[`input-actions.md`](input-actions.md) owns the keys of the picker.
+
+### Ranking
+
+The fuzzy match is a subsequence match without case. Each matched character
+scores by its position: a character that follows the previous match scores most,
+a character at the start of one word scores next, and every other character
+scores least. The characters between the first and the last match cost one point
+each, so a dense match ranks above a spread match.
+
+The match runs against the filename first, and a match there receives the weight
+`FUZZY_NAME_WEIGHT`, because the row shows the filename first. Only a query that
+the filename does not hold reaches the complete path.
+
+The order of the result list is total, so two equal queries always produce one
+order:
+
+1. the higher score first,
+2. then the shorter row,
+3. then the earlier candidate of the source.
+
+The source order is deterministic: the walk returns its directories in the tree
+order, `rg` returns its matches in its own output order, and the buffer list
+ascends by buffer identity. An empty query keeps that source order.
+
+The search picker sends its query to `rg`, so its rows already answer the query.
+It applies no second filter over the filenames.
+
+The selection follows its candidate across one refiltering while the query still
+keeps that candidate. A selection that the query drops returns to the best row.
+
+### Git Ignore Rules
+
+The file picker walks the workspace through the same bounded directory reader as
+the file tree. It drops every file that the Git ignore rules name, and it always
+drops the `.git` directory.
+
+The walk reads the `.gitignore` file of every visited directory. It supports this
+pattern subset: a comment line, an empty line, a negation with `!`, a
+directory-only pattern with a trailing `/`, an anchored pattern with a leading
+`/` or with an inner `/`, and the globs `?`, `*`, and `**`. The innermost ignore
+file decides first, and the last matching pattern of one file wins.
+
+The walk reads no global ignore file, no `.git/info/exclude`, and no Git
+configuration, because it starts no Git process.
+
+### Previews
+
+The file picker and the search picker show the region around the selected line.
+The preview of a loaded buffer needs no file read at all.
 
 A newer query or a newer selection makes the older search and the older preview
-obsolete. The publication gate rejects the obsolete result. See
+obsolete. The publication gate rejects the obsolete result, and the picker
+rejects it a second time from its visible state. See
 [`responsiveness.md`](responsiveness.md).
 
-Pickers enforce explicit limits on:
+A missing `rg` command is a normal state, not an error. Kvim reports it once and
+stays fully usable without the search picker.
 
-- retained results,
-- scanned or received bytes,
-- concurrent processes,
-- preview bytes and preview lines.
+### Picker Bounds
 
-Kvim stops at the first limit and reports a typed truncated state. The concrete
-limit values are not yet decided. Slice 11 must record them here before
-implementation enforces them.
+Kvim stops at the first limit and reports the truncated state above the result
+list.
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Candidates of one picker | `PICKER_CANDIDATES_MAX` | 4096 | One reader never inspects more rows, and the bound keeps one keystroke inside the latency budget. |
+| Characters of one query | `PICKER_QUERY_CHARS_MAX` | 128 | A query is a short name fragment or one search pattern. |
+| Characters of one matched line | `PICKER_MATCH_CHARS_MAX` | 160 | One result row shows the start of the matched line, not the complete line. |
+| Files of one walk | `WALK_FILES_MAX` | 4096 | The value is `PICKER_CANDIDATES_MAX`, so the walk collects no file that the picker drops. |
+| Directories of one walk | `WALK_DIRECTORIES_MAX` | 4096 | One repository holds far fewer directories, and the bound stops a looping symbolic link. |
+| Depth of one walk | `WALK_DEPTH_MAX` | 16 | A Rust repository nests far less, and the bound stops a link that points at one of its own parents. |
+| Bytes of one ignore file | `IGNORE_FILE_BYTES_MAX` | 64 KiB | An ignore file is a short list of names. |
+| Patterns of one ignore file | `IGNORE_PATTERNS_MAX` | 512 | Each pattern costs one comparison for each visited entry. |
+| Matches of one search | `RIPGREP_MATCHES_MAX` | 1024 | A reader refines the query instead of reading more rows. |
+| Matches of one file | `RIPGREP_FILE_MATCHES_MAX` | 32 | One file must not fill the complete result list. |
+| Columns of one matched line | `RIPGREP_COLUMNS_MAX` | 160 | The value is `PICKER_MATCH_CHARS_MAX`, so `rg` sends no line that the row drops. |
+| Output of one search | `RIPGREP_OUTPUT_BYTES_MAX` | 1 MiB | The bounded match list needs far less, and the process service stops a flood early. |
+| Bytes of one preview | `PREVIEW_BYTES_MAX` | 128 KiB | The preview shows one screen of text, so it reads the start of the file only. |
+| Lines of one preview | `PREVIEW_LINES_MAX` | 200 | The value holds more rows than any terminal shows. |
+| Characters of one preview line | `PREVIEW_LINE_CHARS_MAX` | 400 | The value holds more cells than any terminal row shows. |
+| Lines above the matched line | `PREVIEW_CONTEXT_LINES` | 8 | The reader sees the lines that lead to the match. |
+| Deadline of one walk | `PICKER_WALK_DEADLINE` | 5 s | A bounded walk of one repository finishes far below this value. |
+| Deadline of one search | `RIPGREP_DEADLINE` | 5 s | A cold search of a large repository needs seconds, and the value reports a stuck command. |
+| Deadline of one preview | `PICKER_PREVIEW_DEADLINE` | 2 s | One bounded file read finishes far below this value. |
+
+The search runs through the process service of
+[`responsiveness.md`](responsiveness.md), so `PROCESS_CONCURRENCY_LIMIT` bounds
+the running commands. One picker holds one candidate slot and one preview slot,
+so it runs at most one search and one preview at a time.
 
 ## Supported Files
 

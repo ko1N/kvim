@@ -30,9 +30,10 @@ use crate::terminal::{
     CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
     TerminalSession,
 };
-use crate::workspace::{BUFFERS_MAX, FileResult, WorkspaceResult};
+use crate::workspace::{BUFFERS_MAX, FileResult, PickerResult, PickerSlot, WorkspaceResult};
 
 use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
+use super::picker::PickerFailure;
 use super::session::{AnalysisResult, FileRequestFailure, Redraw, RunState, Session};
 
 /// The number of consecutive terminal read failures that ends the editor.
@@ -60,6 +61,23 @@ const ANALYSIS_SLOT: RequestSlot = RequestSlot::new(2);
 /// holds every workspace operation.
 const WORKSPACE_SLOT: RequestSlot = RequestSlot::new(3);
 
+/// The publication slot of the candidates of the open picker.
+///
+/// A newer query cancels the search that it replaces, so the obsolete `rg`
+/// process stops and its result never reaches the screen.
+const PICKER_SLOT: RequestSlot = RequestSlot::new(4);
+
+/// The publication slot of the preview of the open picker.
+///
+/// A newer selection cancels the preview that it replaces.
+const PREVIEW_SLOT: RequestSlot = RequestSlot::new(5);
+
+/// The picker requests that one loop iteration submits.
+///
+/// One transition produces at most one candidate request and one preview
+/// request, so the bound covers every request that it can produce.
+const PICKER_DISPATCH_MAX: usize = 2;
+
 /// The language requests that one loop iteration sends.
 ///
 /// The session holds a bounded outbox and one fresh open for each loaded
@@ -77,6 +95,8 @@ enum WorkResult {
     Analysis(AnalysisResult),
     /// One workspace operation of the file tree finished.
     Workspace(WorkspaceResult),
+    /// One picker operation finished.
+    Picker(PickerResult),
 }
 
 /// A failure that ends the editor.
@@ -324,6 +344,70 @@ fn submit_background_work(
     submit_file_work(editor, runtime, gate);
     submit_analysis_work(editor, runtime, gate);
     submit_workspace_work(editor, runtime, gate);
+    submit_picker_work(editor, runtime, gate);
+}
+
+/// Hands the queued picker work to the bounded worker and process services.
+///
+/// A workspace walk and a preview read are worker jobs. A ripgrep search is an
+/// external command, so it reaches the process service instead. Both slots
+/// cancel the request that a newer one replaces.
+fn submit_picker_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &PublicationGate) {
+    for _ in 0..PICKER_DISPATCH_MAX {
+        let Some(request) = editor.take_picker_request() else {
+            return;
+        };
+        let slot = request.slot();
+        let deadline = request.deadline();
+        let handle = gate.begin(publication_slot(slot), &runtime.cancellation_root());
+        let submitted = match request.command() {
+            Some(command) => runtime.submit_process(handle, command, move |output| {
+                WorkResult::Picker(request.publish(&output))
+            }),
+            None => runtime.submit_worker(handle, deadline, move |cancellation| {
+                WorkResult::Picker(request.run(&cancellation))
+            }),
+        };
+        if let Err(error) = submitted {
+            editor.abandon_picker_request(
+                slot,
+                match error {
+                    SubmitError::Saturated(_) => PickerFailure::Saturated,
+                    SubmitError::InvalidLimits
+                    | SubmitError::ProcessBounds
+                    | SubmitError::ShuttingDown => PickerFailure::Cancelled,
+                },
+            );
+        }
+    }
+    debug_assert!(
+        editor.take_picker_request().is_none(),
+        "one transition produces fewer picker requests than the dispatch bound"
+    );
+}
+
+/// Returns the publication slot of one picker operation.
+const fn publication_slot(slot: PickerSlot) -> RequestSlot {
+    match slot {
+        PickerSlot::Candidates => PICKER_SLOT,
+        PickerSlot::Preview => PREVIEW_SLOT,
+    }
+}
+
+/// Returns the typed picker failure of one runtime failure.
+///
+/// A command that cannot start is a normal state: the editor reports it and
+/// stays usable without the search picker.
+const fn picker_failure(error: &RuntimeError) -> PickerFailure {
+    match error {
+        RuntimeError::Timeout => PickerFailure::Timeout,
+        RuntimeError::ProcessSpawn(_) => PickerFailure::CommandMissing,
+        RuntimeError::Cancelled
+        | RuntimeError::WorkerFailure(_)
+        | RuntimeError::ProcessRead(_)
+        | RuntimeError::ProcessWrite(_)
+        | RuntimeError::OutputLimit { .. } => PickerFailure::Cancelled,
+    }
 }
 
 /// Hands the queued directory read or mutation to the bounded worker service.
@@ -408,6 +492,13 @@ fn complete(
     }
     let analysis = event.request.slot() == ANALYSIS_SLOT;
     let workspace = event.request.slot() == WORKSPACE_SLOT;
+    let picker = if event.request.slot() == PICKER_SLOT {
+        Some(PickerSlot::Candidates)
+    } else if event.request.slot() == PREVIEW_SLOT {
+        Some(PickerSlot::Preview)
+    } else {
+        None
+    };
     let failure = |error: &RuntimeError| match error {
         RuntimeError::Timeout => FileRequestFailure::Timeout,
         // A cancelled request and a failed worker both leave the buffer
@@ -419,18 +510,20 @@ fn complete(
         | RuntimeError::ProcessWrite(_)
         | RuntimeError::OutputLimit { .. } => FileRequestFailure::Cancelled,
     };
-    Step::Handled(match event.result {
-        Ok(WorkResult::File(result)) => editor.apply_file_result(result),
-        Ok(WorkResult::Analysis(result)) => editor.apply_analysis_result(result),
-        Ok(WorkResult::Workspace(result)) => editor.apply_workspace_result(result),
+    Step::Handled(match (picker, event.result) {
+        (_, Ok(WorkResult::File(result))) => editor.apply_file_result(result),
+        (_, Ok(WorkResult::Analysis(result))) => editor.apply_analysis_result(result),
+        (_, Ok(WorkResult::Workspace(result))) => editor.apply_workspace_result(result),
+        (_, Ok(WorkResult::Picker(result))) => editor.apply_picker_result(result),
+        (Some(slot), Err(error)) => editor.abandon_picker_request(slot, picker_failure(&error)),
         // An analysis that fails, times out, or is cancelled renders plain text
         // and reports nothing, because highlighting is decoration.
-        Err(_) if analysis => {
+        (None, Err(_)) if analysis => {
             editor.abandon_analysis_request();
             Redraw::Skipped
         }
-        Err(error) if workspace => editor.abandon_workspace_request(failure(&error)),
-        Err(error) => editor.abandon_file_request(failure(&error)),
+        (None, Err(error)) if workspace => editor.abandon_workspace_request(failure(&error)),
+        (None, Err(error)) => editor.abandon_file_request(failure(&error)),
     })
 }
 

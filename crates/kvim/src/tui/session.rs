@@ -47,10 +47,11 @@ use crate::language::{
 use crate::settings::EditorSettings;
 use crate::terminal::{Chord, Key, KeyCode, TerminalEvent};
 use crate::workspace::{
-    BUFFERS_MAX, BufferId, Buffers, EntryKind, FileBuffer, FileOperation, FileRequest, FileResult,
-    FileTree, MutationError, MutationOutcome, OpenRequest, OpenedFile, SaveError, SaveRequest,
-    SavedBuffer, TREE_FILTER_CHARS_MAX, TransferMode, WorkspaceRequest, WorkspaceResult,
-    render_content,
+    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, FileBuffer, FileOperation,
+    FileRequest, FileResult, FileTree, MutationError, MutationOutcome, OpenRequest, OpenedFile,
+    PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot, SaveError,
+    SaveRequest, SavedBuffer, TREE_FILTER_CHARS_MAX, TransferMode, WorkspaceRequest,
+    WorkspaceResult, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -60,6 +61,7 @@ use super::language::{
     LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, jump_target,
 };
 use super::layout::RegionKind;
+use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::theme::Theme;
 use super::tree::{TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeRefusal, TreeSidebar};
 use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
@@ -273,6 +275,7 @@ impl PromptLine {
             PromptKind::Tree(
                 TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename,
             ) => TREE_NAME_CHARS_MAX,
+            PromptKind::Picker => PICKER_QUERY_CHARS_MAX,
         }
     }
 }
@@ -299,6 +302,8 @@ pub(super) struct Visible<'a> {
     pub(super) windows: &'a Windows,
     /// The file-tree sidebar, which paints its own region.
     pub(super) tree: &'a TreeSidebar,
+    /// The open picker, which covers every other region.
+    pub(super) picker: Option<&'a PickerState>,
     /// Every loaded buffer, because each window shows its own buffer.
     pub(super) buffers: &'a Buffers,
     /// The buffer that the editing state and the active search belong to.
@@ -375,6 +380,16 @@ pub struct Session {
     tree: TreeSidebar,
     /// The sidebar region of the window tree, while the tree ever opened it.
     tree_region: Option<WindowId>,
+    /// The picker that covers the terminal, while one is open.
+    ///
+    /// The picker owns its own prompt, so it lives exactly as long as that
+    /// prompt. See `docs/files.md`.
+    picker: Option<PickerState>,
+    /// Reports whether the editor already named the missing `rg` command.
+    ///
+    /// A missing command is a normal state, so the editor reports it once and
+    /// stays usable.
+    ripgrep_reported: bool,
     editing: EditingState,
     registers: Registers,
     resolver: Resolver,
@@ -433,6 +448,8 @@ impl Session {
             windows: Windows::new(active, shell_areas(area).body, settings.windows),
             tree: TreeSidebar::new(root),
             tree_region: None,
+            picker: None,
+            ripgrep_reported: false,
             editing,
             registers: Registers::default(),
             resolver: Resolver::new(Registry::first_release(), settings.input),
@@ -560,6 +577,7 @@ impl Session {
             settings: &self.settings,
             windows: &self.windows,
             tree: &self.tree,
+            picker: self.picker.as_ref(),
             buffers: &self.buffers,
             active: self.active,
             analysis: &self.analysis,
@@ -581,6 +599,7 @@ impl Session {
         self.refresh_search();
         self.reconcile_viewports();
         self.reconcile_tree();
+        self.reconcile_picker();
         let rows = self.resolver.which_key(now);
         if rows.as_deref() == self.which_key.as_deref() {
             return Redraw::Skipped;
@@ -626,12 +645,20 @@ impl Session {
     /// focus, resize, and close commands. The editing state sees the rest.
     fn apply_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
         let cleared = self.clear_message();
+        // An open picker owns every key, so a picker key never reaches the
+        // buffer of an editor window.
+        if self.picker.is_some() {
+            return self.apply_picker_command(command).or(cleared);
+        }
         // The sidebar owns every key while it holds the focus, so a tree
         // command never reaches the buffer of an editor window.
         if self.sidebar_has_focus() {
             return self.apply_tree_command(command).or(cleared);
         }
         match command {
+            Command::OpenFilePicker => return self.open_picker(PickerKind::Files).or(cleared),
+            Command::OpenRipgrepPicker => return self.open_picker(PickerKind::Search).or(cleared),
+            Command::OpenBufferPicker => return self.open_picker(PickerKind::Buffers).or(cleared),
             Command::OpenCommandLine => return self.open_prompt(PromptKind::CommandLine),
             Command::OpenSearchPrompt => return self.open_prompt(PromptKind::Search),
             // The file and buffer commands reach the same paths as `:w`, `:q`,
@@ -672,10 +699,6 @@ impl Session {
                 self.run = RunState::Finished;
                 return cleared;
             }
-        }
-        if let Some(note) = deferred_note(command) {
-            self.set_message(note, MessageLevel::Warning);
-            return Redraw::Needed;
         }
         let auto = self.auto_indent(command);
         let outcome = self.edit(|editing, context, viewport| {
@@ -939,10 +962,142 @@ impl Session {
 
     /// Returns the scope that owns the keys while no prompt is open.
     fn input_scope(&self) -> BindingScope {
-        if self.sidebar_has_focus() {
+        if self.picker.is_some() {
+            BindingScope::Picker
+        } else if self.sidebar_has_focus() {
             BindingScope::Sidebar
         } else {
             BindingScope::Mode(self.editing.mode())
+        }
+    }
+
+    /// Opens one picker over the complete terminal.
+    ///
+    /// The picker reads its query through the prompt of the message line, which
+    /// its own overlay shows, so the editor opens no second input mechanism.
+    /// The buffer picker receives its candidates at once, and the other two ask
+    /// the bounded services for theirs. See `docs/files.md`.
+    fn open_picker(&mut self, kind: PickerKind) -> Redraw {
+        let root = self.tree.tree().root().to_path_buf();
+        let buffers = match kind {
+            PickerKind::Buffers => self.buffer_candidates(),
+            PickerKind::Files | PickerKind::Search => Vec::new(),
+        };
+        self.picker = Some(PickerState::open(kind, root, buffers));
+        self.open_prompt(PromptKind::Picker)
+    }
+
+    /// Returns one candidate for every loaded buffer.
+    fn buffer_candidates(&self) -> Vec<Candidate> {
+        let root = self.tree.tree().root();
+        self.buffers
+            .ids()
+            .into_iter()
+            .filter_map(|id| {
+                let file = self.buffers.get(id)?;
+                Some(Candidate::buffer(root, id, file.path(), file.name()))
+            })
+            .collect()
+    }
+
+    /// Applies one semantic command while a picker owns the keys.
+    fn apply_picker_command(&mut self, command: Command) -> Redraw {
+        let Some(picker) = self.picker.as_mut() else {
+            debug_assert!(false, "the caller checked that one picker is open");
+            return Redraw::Skipped;
+        };
+        match command {
+            Command::PickerSelectNext => picker.select_next(),
+            Command::PickerSelectPrevious => picker.select_previous(),
+            // The picker table holds no other command.
+            _ => return Redraw::Skipped,
+        }
+        Redraw::Needed
+    }
+
+    /// Opens the accepted row and closes the picker.
+    ///
+    /// A row that names a file opens it at the matched line. A row that names a
+    /// loaded buffer needs no file read at all.
+    fn accept_picker(&mut self, picker: Option<&PickerState>) -> Redraw {
+        let Some(acceptance) = picker.and_then(PickerState::accept) else {
+            // An empty result list accepts nothing, and the closed picker
+            // restores the previous view.
+            return Redraw::Needed;
+        };
+        match acceptance {
+            Acceptance::ShowBuffer { buffer } => self.switch_to(buffer).or(Redraw::Needed),
+            Acceptance::OpenFile {
+                path,
+                line,
+                byte_column,
+            } => {
+                let position = DocumentPosition::new(
+                    u32::try_from(line).unwrap_or(u32::MAX),
+                    u32::try_from(byte_column).unwrap_or(0),
+                );
+                self.open_at(path, position).or(Redraw::Needed)
+            }
+        }
+    }
+
+    /// Moves the query of the open picker to the text of its prompt.
+    fn sync_picker_query(&mut self) {
+        let query = self
+            .prompt
+            .as_ref()
+            .filter(|prompt| prompt.kind == PromptKind::Picker)
+            .map(|prompt| prompt.text.clone());
+        let (Some(query), Some(picker)) = (query, self.picker.as_mut()) else {
+            return;
+        };
+        picker.set_query(&query);
+    }
+
+    /// Takes the picker request that the event loop must submit.
+    ///
+    /// The session never walks the workspace, never runs `rg`, and never reads
+    /// a preview, so the event loop hands the request to the bounded worker or
+    /// process service. See `docs/responsiveness.md`.
+    pub fn take_picker_request(&mut self) -> Option<PickerRequest> {
+        self.picker.as_mut()?.take_request()
+    }
+
+    /// Applies one completed picker operation as one state transition.
+    ///
+    /// A result that reaches no open picker changes nothing, because the reader
+    /// already closed the overlay that asked for it.
+    pub fn apply_picker_result(&mut self, result: PickerResult) -> Redraw {
+        let Some(picker) = self.picker.as_mut() else {
+            return Redraw::Skipped;
+        };
+        let redraw = picker.apply_result(result);
+        self.reconcile_picker();
+        redraw
+    }
+
+    /// Reports that one picker request produced no result.
+    ///
+    /// A missing external command is a normal state. The editor names it once
+    /// and stays fully usable without the search picker.
+    pub fn abandon_picker_request(&mut self, slot: PickerSlot, failure: PickerFailure) -> Redraw {
+        let Some(picker) = self.picker.as_mut() else {
+            return Redraw::Skipped;
+        };
+        let redraw = picker.abandon(slot, failure);
+        if failure == PickerFailure::CommandMissing && !self.ripgrep_reported {
+            self.ripgrep_reported = true;
+            self.set_message(RIPGREP_MISSING_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        }
+        redraw
+    }
+
+    /// Moves the visible result rows so the selected row stays visible.
+    fn reconcile_picker(&mut self) {
+        let rows = usize::from(picker_areas(self.area).results.height);
+        if let Some(picker) = self.picker.as_mut() {
+            picker.reconcile(rows);
         }
     }
 
@@ -961,13 +1116,16 @@ impl Session {
                     return Redraw::Skipped;
                 }
                 prompt.text.push(value);
+                self.sync_picker_query();
                 Redraw::Needed
             }
             PromptEdit::DeleteBackward => {
                 // Backspace on the empty line cancels the prompt, like Vim.
                 if prompt.text.pop().is_none() {
                     self.close_prompt();
+                    return Redraw::Needed;
                 }
+                self.sync_picker_query();
                 Redraw::Needed
             }
             PromptEdit::Cancel => {
@@ -984,11 +1142,15 @@ impl Session {
             debug_assert!(false, "the caller holds an open prompt");
             return Redraw::Skipped;
         };
+        // The picker lives exactly as long as its prompt, so the accepted row
+        // leaves the session with it.
+        let picker = self.picker.take();
         self.close_prompt();
         match prompt.kind {
             PromptKind::CommandLine => self.run_command_line(&prompt.text),
             PromptKind::Search => self.run_search(&prompt.text),
             PromptKind::Tree(tree) => self.run_tree_prompt(tree, &prompt.text),
+            PromptKind::Picker => self.accept_picker(picker.as_ref()),
         }
     }
 
@@ -1414,13 +1576,22 @@ impl Session {
         if self.buffers.get(pending.buffer).and_then(FileBuffer::path) == Some(&location.path) {
             return self.move_to_position(location.span.start);
         }
-        // The target lives in another file, so the focused window opens it and
-        // the jump follows the load.
+        self.open_at(location.path.clone(), location.span.start)
+    }
+
+    /// Opens one path in the focused window and places the cursor at one
+    /// position.
+    ///
+    /// A definition jump and an accepted picker row both need this step, so
+    /// both use one path. A buffer that the editor already holds moves the
+    /// cursor at once. Every other path needs one file read, and the recorded
+    /// jump waits for the completed load.
+    fn open_at(&mut self, path: PathBuf, position: DocumentPosition) -> Redraw {
         self.language.jump = Some(PendingJump {
-            path: location.path.clone(),
-            position: location.span.start,
+            path: path.clone(),
+            position,
         });
-        let redraw = self.open_path(location.path.clone());
+        let redraw = self.open_path(path);
         self.follow_jump().or(redraw)
     }
 
@@ -2203,8 +2374,13 @@ impl Session {
     }
 
     /// Closes the open prompt and restores the editor mode.
+    ///
+    /// A picker owns its own prompt, so the closed prompt also closes the
+    /// picker. The editor state below the overlay never changed, so the
+    /// previous view returns exactly as it was.
     fn close_prompt(&mut self) {
         self.prompt = None;
+        self.picker = None;
         self.sync_context();
     }
 
@@ -2351,16 +2527,3 @@ const HOVER_TITLE: &str = " Hover ";
 
 /// The title band of the diagnostic float.
 const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
-
-/// Returns the message of a command that a later slice implements.
-///
-/// The first release binds every key of `docs/input-actions.md`, so a key that
-/// reaches unfinished behavior must say so instead of doing nothing.
-const fn deferred_note(command: Command) -> Option<&'static str> {
-    match command {
-        Command::OpenBufferPicker | Command::OpenFilePicker | Command::OpenRipgrepPicker => {
-            Some("the pickers arrive in a later release")
-        }
-        _ => None,
-    }
-}

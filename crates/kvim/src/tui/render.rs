@@ -12,6 +12,7 @@ use super::buffer_view::{WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
 use super::overlay::{render_float, render_which_key};
+use super::picker::render_picker;
 use super::session::Visible;
 use super::theme::ThemeRole;
 use super::tree::render_tree;
@@ -124,7 +125,12 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     if let Some(rows) = view.which_key {
         render_which_key(target, bands.body, theme, rows);
     }
-    if let Some(position) = sidebar_cursor.or(cursor_at) {
+    // The picker covers the complete terminal, so it renders last and owns the
+    // one cursor cell that the frame reports. See `docs/files.md`.
+    let picker_cursor = view
+        .picker
+        .and_then(|picker| render_picker(target, view.area, theme, picker));
+    if let Some(position) = picker_cursor.or(sidebar_cursor).or(cursor_at) {
         frame.set_cursor_position(position);
     }
 }

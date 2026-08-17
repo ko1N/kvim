@@ -13,7 +13,7 @@ use crate::settings::InputSettings;
 use crate::terminal::{Chord, Key, KeyCode};
 
 use super::command::Command;
-use super::mode::InputContext;
+use super::mode::{BindingScope, InputContext};
 use super::registry::{Registry, WhichKeyRow};
 
 /// One edit of an open line prompt.
@@ -257,6 +257,17 @@ impl Resolver {
                 matches!(self.pending, PendingInput::Idle),
                 "a context change resets pending input, so a prompt holds none"
             );
+            // The picker reads a query and owns its own chords, so its table
+            // answers before the query takes the key. Every other prompt reads
+            // text alone.
+            if self.context.scope() == BindingScope::Picker
+                && let Some(command) = self.registry.command(BindingScope::Picker, &[key])
+            {
+                return Resolution::Command {
+                    command,
+                    count: None,
+                };
+            }
             return prompt_edit(key).map_or(Resolution::NoMatch, Resolution::Prompt);
         }
         // A cancel key ends pending input at every depth and in every mode.
