@@ -139,6 +139,12 @@ impl CharPosition {
 pub struct LineIndex(usize);
 
 impl LineIndex {
+    /// The first line of a buffer.
+    ///
+    /// Every buffer holds this line, because the rope reports one line for
+    /// empty text. A caller therefore uses the value without a buffer.
+    pub const FIRST: Self = Self(0);
+
     /// Returns the line index.
     #[must_use]
     #[inline]
@@ -172,6 +178,13 @@ impl LineIndex {
 pub struct SourceColumn(usize);
 
 impl SourceColumn {
+    /// The first column of a line.
+    ///
+    /// Every line holds this column, because a line of zero characters still
+    /// holds the position before its first character. A caller therefore uses
+    /// the value without a buffer.
+    pub const FIRST: Self = Self(0);
+
     /// Returns the source column.
     #[must_use]
     #[inline]

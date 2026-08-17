@@ -99,6 +99,33 @@ pub enum SyntaxRole {
     Variable,
 }
 
+/// The meaning of one file-tree icon.
+///
+/// The role names what an entry is, never its color, so the theme keeps every
+/// color value. An icon is presentation data: it selects no parser, no indent
+/// rule, no comment token, and no language server. See `docs/architecture.md`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum IconRole {
+    /// A directory, open or closed.
+    Directory,
+    /// A source file of a programming language.
+    Code,
+    /// A configuration or structured data file.
+    Configuration,
+    /// A prose document.
+    Document,
+    /// An executable script.
+    Script,
+    /// A file of the version-control system.
+    VersionControl,
+    /// A file that a tool generates, such as a lock file.
+    Generated,
+    /// An image or another binary asset.
+    Media,
+    /// Every other file.
+    Unknown,
+}
+
 /// One semantic interface role.
 ///
 /// The role names the meaning of a region, never its color.
@@ -146,6 +173,8 @@ pub enum ThemeRole {
     Info,
     /// A hint message.
     Hint,
+    /// One file-tree icon.
+    Icon(IconRole),
     /// One syntax role of a language adapter.
     Syntax(SyntaxRole),
 }
@@ -216,6 +245,9 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             ThemeRole::TitleMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),
             ThemeRole::PopupSelection => Style::new().bg(POPUP_SELECTION_BACKGROUND),
+            // An icon decorates the row below it, so it carries a foreground
+            // color only and keeps the row background and the selection.
+            ThemeRole::Icon(role) => Style::new().fg(icon_color(role)),
             ThemeRole::Error => Style::new().fg(ERROR),
             ThemeRole::Warning => Style::new().fg(WARNING),
             ThemeRole::Info => Style::new().fg(INFO),
@@ -251,6 +283,24 @@ fn syntax_style(role: SyntaxRole) -> Style {
         SyntaxRole::String => style.fg(Color::Rgb(0x9e, 0xce, 0x6a)),
         SyntaxRole::Type => style.fg(Color::Rgb(0x2a, 0xc3, 0xde)),
         SyntaxRole::Variable => style.fg(TEXT),
+    }
+}
+
+/// Returns the color of one file-tree icon role.
+///
+/// Every value comes from the palette that the interface roles already use, so
+/// the icons add no new color to the theme.
+const fn icon_color(role: IconRole) -> Color {
+    match role {
+        IconRole::Directory => TITLE,
+        IconRole::Code => ACCENT_WARM,
+        IconRole::Configuration => WARNING,
+        IconRole::Document => TEXT,
+        IconRole::Script => HINT,
+        IconRole::VersionControl => ERROR,
+        IconRole::Generated => TEXT_MUTED,
+        IconRole::Media => INFO,
+        IconRole::Unknown => NON_TEXT,
     }
 }
 

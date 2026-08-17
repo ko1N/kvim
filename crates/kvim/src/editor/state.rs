@@ -1,9 +1,14 @@
 //! The editing state and the one command dispatcher of the editor.
 //!
-//! [`EditingState`] owns the cursor, the mode, the operator-pending state, the
-//! pending block insert, and the last repeatable change. It executes every
-//! motion, selection, search, viewport, operator, register, paste, and repeat
-//! command that `input` names.
+//! [`EditingState`] owns the mode, the operator-pending state, the pending
+//! block insert, and the last repeatable change. [`WindowState`] owns the
+//! cursor, the selection anchor, and the viewport, because one window owns its
+//! view into a buffer. Every command therefore receives the window that the keys
+//! act on, and a move in one window never moves another window. The mode stays
+//! global, as it is in Vim. See `docs/windows.md`.
+//!
+//! [`EditingState`] executes every motion, selection, search, viewport,
+//! operator, register, paste, and repeat command that `input` names.
 //!
 //! Every text change leaves this module as one [`EditTransaction`], staged as an
 //! [`EditPlan`] and committed in one step. The module reads no clock, no
@@ -12,13 +17,11 @@
 
 use std::num::NonZeroU32;
 
-use crate::core::{
-    EditTransaction, IndentPolicy, LineIndex, ShiftDirection, SourceColumn, TextBuffer,
-};
+use crate::core::{EditTransaction, IndentPolicy, ShiftDirection, TextBuffer};
 use crate::input::{Command, Mode};
 use crate::settings::{COUNT_MAX, EditorSettings};
 
-use super::cursor::Cursor;
+use super::cursor::{ColumnLimit, Cursor};
 use super::edit::{
     self, AutoIndent, BlockEdge, CursorTarget, EditPlan, MoveDirection, NextMode, OpenDirection,
     PastePlacement, PendingBlockInsert,
@@ -27,8 +30,9 @@ use super::motion;
 use super::operator::{MotionKind, Operator, OperatorRange, motion_kind, plan_operator};
 use super::register::Registers;
 use super::search::{SearchDirection, SearchQuery};
-use super::selection::{BlockAnchor, ModeState, Selection};
-use super::viewport::{Viewport, ViewportAlignment};
+use super::selection::{AnchorPoint, ModeState, Selection};
+use super::viewport::ViewportAlignment;
+use super::window::WindowState;
 
 /// The largest number of repetitions that one motion performs.
 ///
@@ -157,7 +161,11 @@ enum MotionResult {
     NotAMotion,
 }
 
-/// The cursor, the mode, the operator-pending state, and the repeat description.
+/// The mode, the operator-pending state, and the repeat description.
+///
+/// The cursor, the selection anchor, and the viewport belong to one window, so
+/// [`WindowState`] holds them and every command receives the window that the
+/// keys act on. The mode is global, as it is in Vim. See `docs/windows.md`.
 ///
 /// # Examples
 ///
@@ -165,7 +173,9 @@ enum MotionResult {
 /// use std::num::NonZeroU16;
 ///
 /// use kvim::core::TextBuffer;
-/// use kvim::editor::{CommandOutcome, EditContext, EditingState, Registers, Viewport};
+/// use kvim::editor::{
+///     CommandOutcome, EditContext, EditingState, Registers, Viewport, WindowState,
+/// };
 /// use kvim::input::{Command, Mode};
 /// use kvim::settings::{EditorSettings, FileSettings};
 ///
@@ -183,60 +193,52 @@ enum MotionResult {
 ///
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
 /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
-/// let mut viewport = Viewport::new(rows, cells);
-/// let mut state = EditingState::new(context.buffer);
+/// let mut window = WindowState::new(Viewport::new(rows, cells));
+/// let mut state = EditingState::new();
 ///
 /// // `d` waits for a motion, and `w` completes it.
-/// let pending = state.apply(&mut context, &mut viewport, Command::DeleteOverMotion, None);
+/// let pending = state.apply(&mut context, &mut window, Command::DeleteOverMotion, None);
 /// assert_eq!(pending, CommandOutcome::OperatorPending);
-/// let changed = state.apply(&mut context, &mut viewport, Command::MoveNextWordStart, None);
+/// let changed = state.apply(&mut context, &mut window, Command::MoveNextWordStart, None);
 /// assert_eq!(changed, CommandOutcome::Changed);
 /// assert_eq!(context.buffer.to_string(), "beta\ngamma\n");
 ///
 /// // One undo reverses the complete change.
-/// state.apply(&mut context, &mut viewport, Command::Undo, None);
+/// state.apply(&mut context, &mut window, Command::Undo, None);
 /// assert_eq!(context.buffer.to_string(), "alpha beta\ngamma\n");
 /// assert_eq!(state.mode(), Mode::Normal);
 /// ```
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct EditingState {
-    mode: ModeState,
-    cursor: Cursor,
+    mode: Mode,
     pending: Option<PendingOperator>,
     block_insert: Option<PendingBlockInsert>,
     repeat: Option<RepeatableChange>,
 }
 
 impl EditingState {
-    /// Creates the Normal-mode state at the start of a buffer.
+    /// Creates the Normal-mode state without a pending operator.
     #[must_use]
-    pub fn new(buffer: &TextBuffer) -> Self {
-        let mode = ModeState::Normal;
-        Self {
-            mode,
-            cursor: Cursor::at_buffer_start(buffer, mode.column_limit()),
-            pending: None,
-            block_insert: None,
-            repeat: None,
-        }
+    pub fn new() -> Self {
+        Self::default()
     }
 
     /// Returns the active mode.
     #[must_use]
     pub const fn mode(&self) -> Mode {
-        self.mode.mode()
-    }
-
-    /// Returns the active mode together with its selection anchor.
-    #[must_use]
-    pub const fn mode_state(&self) -> ModeState {
         self.mode
     }
 
-    /// Returns the cursor.
+    /// Returns the active mode together with the anchor of one window.
     #[must_use]
-    pub const fn cursor(&self) -> Cursor {
-        self.cursor
+    pub fn mode_state(&self, buffer: &TextBuffer, window: &WindowState) -> ModeState {
+        ModeState::of(self.mode, buffer, window.anchor_point(buffer))
+    }
+
+    /// Returns the last column that the cursor may hold in the active mode.
+    #[must_use]
+    pub const fn column_limit(&self) -> ColumnLimit {
+        ColumnLimit::of(self.mode)
     }
 
     /// Returns the operator that waits for a motion.
@@ -245,46 +247,44 @@ impl EditingState {
         self.pending.map(|pending| pending.operator)
     }
 
-    /// Returns the selection of the active Visual mode.
+    /// Returns the selection that one window shows in the active Visual mode.
     #[must_use]
-    pub fn selection(&self, buffer: &TextBuffer) -> Option<Selection> {
-        self.mode.selection(buffer, self.cursor)
+    pub fn selection(&self, buffer: &TextBuffer, window: &WindowState) -> Option<Selection> {
+        self.mode_state(buffer, window)
+            .selection(buffer, window.cursor)
     }
 
-    /// Places the cursor at a line and a column, clamped to the buffer.
+    /// Places the cursor of one window at a line and a column.
     ///
     /// The command line `:<number>` and a language-service jump both use this
-    /// entry point.
-    pub fn move_to(&mut self, buffer: &TextBuffer, line: usize, column: usize) {
-        self.cursor = Cursor::clamped(buffer, line, column, self.mode.column_limit());
+    /// entry point. The caller reconciles the viewport afterwards.
+    pub fn move_to(
+        &self,
+        buffer: &TextBuffer,
+        window: &mut WindowState,
+        line: usize,
+        column: usize,
+    ) {
+        window.cursor = Cursor::clamped(buffer, line, column, self.column_limit());
     }
 
-    /// Changes the mode and derives the selection anchor from the cursor.
+    /// Changes the mode and derives the selection anchor of one window.
     ///
     /// A change from one Visual mode into another keeps the existing anchor, so
-    /// the selection does not restart. The cursor clamps again, because Insert
-    /// mode allows one more column than the other modes.
-    pub fn enter_mode(&mut self, buffer: &TextBuffer, mode: Mode) {
-        let (line, column) = self
-            .anchor_point(buffer)
-            .unwrap_or((self.cursor.line(), self.cursor.column()));
-        // The anchor of a rectangular selection may name a column that a shorter
-        // line does not hold, so the anchor clamps to its own line.
-        let column = buffer
-            .source_column(line, column.get().min(buffer.line_len_chars(line)))
-            .expect("the clamp keeps the column inside the anchor line");
-        self.mode = match mode {
-            Mode::Normal => ModeState::Normal,
-            Mode::Insert => ModeState::Insert,
-            Mode::Visual => ModeState::Visual {
-                anchor: buffer.column_to_char(line, column),
-            },
-            Mode::VisualLine => ModeState::VisualLine { anchor: line },
-            Mode::VisualBlock => ModeState::VisualBlock {
-                anchor: BlockAnchor { line, column },
-            },
+    /// the selection does not restart. Normal mode and Insert mode drop the
+    /// anchor, because neither mode holds a selection. The cursor clamps again,
+    /// because Insert mode allows one more column than the other modes.
+    pub fn enter_mode(&mut self, buffer: &TextBuffer, window: &mut WindowState, mode: Mode) {
+        // The mode and the anchor change together, so a Visual mode always
+        // holds an anchor and no other mode ever does.
+        window.anchor = match mode {
+            Mode::Normal | Mode::Insert => None,
+            Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
+                Some(window.anchor_point(buffer))
+            }
         };
-        self.cursor = self.cursor.re_clamped(buffer, self.mode.column_limit());
+        self.mode = mode;
+        window.cursor = window.cursor.re_clamped(buffer, self.column_limit());
     }
 
     /// Executes one semantic command with the previous-line automatic indent.
@@ -299,11 +299,11 @@ impl EditingState {
     pub fn apply(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         command: Command,
         count: Option<NonZeroU32>,
     ) -> CommandOutcome {
-        self.apply_indented(context, viewport, command, count, AutoIndent::PreviousLine)
+        self.apply_indented(context, window, command, count, AutoIndent::PreviousLine)
     }
 
     /// Executes one semantic command with an explicit automatic indent.
@@ -312,20 +312,20 @@ impl EditingState {
     pub fn apply_indented(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         command: Command,
         count: Option<NonZeroU32>,
         auto: AutoIndent,
     ) -> CommandOutcome {
         if let Some(pending) = self.pending.take() {
-            return self.complete_operator(context, viewport, pending, command, count);
+            return self.complete_operator(context, window, pending, command, count);
         }
 
-        let motion = self.motion_target(&context.read(), viewport, command, count);
+        let motion = self.motion_target(&context.read(), window, command, count);
         match motion {
             MotionResult::Moved(cursor) => {
-                self.cursor = cursor;
-                self.reconcile(context, viewport);
+                window.cursor = cursor;
+                self.reconcile(context, window);
                 return CommandOutcome::Applied;
             }
             MotionResult::Missed => return CommandOutcome::SearchMissed,
@@ -337,135 +337,127 @@ impl EditingState {
             // Modes.
             Command::ReturnToNormal => {
                 self.block_insert = None;
-                self.enter_mode(context.buffer, Mode::Normal);
+                self.enter_mode(context.buffer, window, Mode::Normal);
             }
-            Command::EnterVisual => self.enter_mode(context.buffer, Mode::Visual),
-            Command::EnterVisualLine => self.enter_mode(context.buffer, Mode::VisualLine),
-            Command::EnterVisualBlock => self.enter_mode(context.buffer, Mode::VisualBlock),
+            Command::EnterVisual => self.enter_mode(context.buffer, window, Mode::Visual),
+            Command::EnterVisualLine => self.enter_mode(context.buffer, window, Mode::VisualLine),
+            Command::EnterVisualBlock => self.enter_mode(context.buffer, window, Mode::VisualBlock),
 
             // Insert entry. Each command also places the cursor for the change
             // that follows it.
-            Command::InsertBeforeCursor => self.enter_mode(context.buffer, Mode::Insert),
+            Command::InsertBeforeCursor => self.enter_mode(context.buffer, window, Mode::Insert),
             Command::InsertAtFirstNonBlank => {
-                self.enter_mode(context.buffer, Mode::Insert);
-                self.cursor = motion::move_first_non_blank(
+                self.enter_mode(context.buffer, window, Mode::Insert);
+                window.cursor = motion::move_first_non_blank(
                     context.buffer,
-                    self.cursor,
-                    self.mode.column_limit(),
+                    window.cursor,
+                    self.column_limit(),
                 );
             }
             Command::InsertAfterCursor => {
-                self.enter_mode(context.buffer, Mode::Insert);
-                self.cursor =
-                    motion::move_right(context.buffer, self.cursor, self.mode.column_limit(), 1);
+                self.enter_mode(context.buffer, window, Mode::Insert);
+                window.cursor =
+                    motion::move_right(context.buffer, window.cursor, self.column_limit(), 1);
             }
             Command::InsertAtLineEnd => {
-                self.enter_mode(context.buffer, Mode::Insert);
-                self.cursor = Cursor::clamped(
+                self.enter_mode(context.buffer, window, Mode::Insert);
+                window.cursor = Cursor::clamped(
                     context.buffer,
-                    self.cursor.line().get(),
+                    window.cursor.line().get(),
                     usize::MAX,
-                    self.mode.column_limit(),
+                    self.column_limit(),
                 );
             }
             Command::OpenLineBelow => {
-                return self.open_line(
-                    context,
-                    viewport,
-                    command,
-                    count,
-                    OpenDirection::Below,
-                    auto,
-                );
+                return self.open_line(context, window, command, count, OpenDirection::Below, auto);
             }
             Command::OpenLineAbove => {
-                return self.open_line(
-                    context,
-                    viewport,
-                    command,
-                    count,
-                    OpenDirection::Above,
-                    auto,
-                );
+                return self.open_line(context, window, command, count, OpenDirection::Above, auto);
             }
 
             // Viewport alignment. An alignment changes no cursor position.
             Command::CenterCursorLine => {
-                *viewport = viewport.aligned(self.cursor, ViewportAlignment::Center);
+                window.viewport = window
+                    .viewport
+                    .aligned(window.cursor, ViewportAlignment::Center);
                 return CommandOutcome::Applied;
             }
             Command::AlignCursorLineTop => {
-                *viewport = viewport.aligned(self.cursor, ViewportAlignment::Top);
+                window.viewport = window
+                    .viewport
+                    .aligned(window.cursor, ViewportAlignment::Top);
                 return CommandOutcome::Applied;
             }
             Command::AlignCursorLineBottom => {
-                *viewport = viewport.aligned(self.cursor, ViewportAlignment::Bottom);
+                window.viewport = window
+                    .viewport
+                    .aligned(window.cursor, ViewportAlignment::Bottom);
                 return CommandOutcome::Applied;
             }
 
             // Operators.
             Command::DeleteOverMotion | Command::DeleteSelection => {
-                return self.start_operator(context, viewport, Operator::Delete, count);
+                return self.start_operator(context, window, Operator::Delete, count);
             }
             Command::ChangeOverMotion | Command::ChangeSelection => {
-                return self.start_operator(context, viewport, Operator::Change, count);
+                return self.start_operator(context, window, Operator::Change, count);
             }
             Command::YankOverMotion | Command::YankSelection => {
-                return self.start_operator(context, viewport, Operator::Yank, count);
+                return self.start_operator(context, window, Operator::Yank, count);
             }
             Command::DeleteLine => {
-                return self.line_operator(context, viewport, Operator::Delete, repeat);
+                return self.line_operator(context, window, Operator::Delete, repeat);
             }
             Command::ChangeLine => {
-                return self.line_operator(context, viewport, Operator::Change, repeat);
+                return self.line_operator(context, window, Operator::Change, repeat);
             }
             Command::YankLine => {
-                return self.line_operator(context, viewport, Operator::Yank, repeat);
+                return self.line_operator(context, window, Operator::Yank, repeat);
             }
             Command::DeleteToLineEnd => {
-                return self.line_end_operator(context, viewport, Operator::Delete, command, count);
+                return self.line_end_operator(context, window, Operator::Delete, command, count);
             }
             Command::ChangeToLineEnd => {
-                return self.line_end_operator(context, viewport, Operator::Change, command, count);
+                return self.line_end_operator(context, window, Operator::Change, command, count);
             }
             Command::BlockInsertBefore => {
-                return self.begin_block_insert(context, viewport, BlockEdge::Left);
+                return self.begin_block_insert(context, window, BlockEdge::Left);
             }
             Command::BlockInsertAfter => {
-                return self.begin_block_insert(context, viewport, BlockEdge::Right);
+                return self.begin_block_insert(context, window, BlockEdge::Right);
             }
 
             // Registers and paste.
             Command::PasteAfter => {
-                return self.paste(context, viewport, count, PastePlacement::After);
+                return self.paste(context, window, count, PastePlacement::After);
             }
             Command::PasteBefore => {
-                return self.paste(context, viewport, count, PastePlacement::Before);
+                return self.paste(context, window, count, PastePlacement::Before);
             }
 
             // Visual selection move and shift.
             Command::MoveSelectionDown => {
-                return self.move_selection(context, viewport, MoveDirection::Down);
+                return self.move_selection(context, window, MoveDirection::Down);
             }
             Command::MoveSelectionUp => {
-                return self.move_selection(context, viewport, MoveDirection::Up);
+                return self.move_selection(context, window, MoveDirection::Up);
             }
             Command::ShiftSelectionLeft => {
-                return self.shift_selection(context, viewport, ShiftDirection::Left);
+                return self.shift_selection(context, window, ShiftDirection::Left);
             }
             Command::ShiftSelectionRight => {
-                return self.shift_selection(context, viewport, ShiftDirection::Right);
+                return self.shift_selection(context, window, ShiftDirection::Right);
             }
 
             // History and repeat.
-            Command::Undo => return self.step_history(context, viewport, HistoryStep::Undo),
-            Command::Redo => return self.step_history(context, viewport, HistoryStep::Redo),
-            Command::RepeatChange => return self.repeat_change(context, viewport, auto),
+            Command::Undo => return self.step_history(context, window, HistoryStep::Undo),
+            Command::Redo => return self.step_history(context, window, HistoryStep::Redo),
+            Command::RepeatChange => return self.repeat_change(context, window, auto),
 
             _ => return CommandOutcome::Unhandled,
         }
 
-        self.reconcile(context, viewport);
+        self.reconcile(context, window);
         CommandOutcome::Applied
     }
 
@@ -480,7 +472,7 @@ impl EditingState {
     pub fn insert_text(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         text: &str,
     ) -> CommandOutcome {
         if text.is_empty() {
@@ -490,10 +482,10 @@ impl EditingState {
             return CommandOutcome::Rejected;
         }
         let plan = match self.block_insert.take() {
-            Some(block) => edit::plan_block_insert(context.buffer, self.cursor, block, text),
-            None => edit::plan_insert_text(context.buffer, self.cursor, text),
+            Some(block) => edit::plan_block_insert(context.buffer, window.cursor, block, text),
+            None => edit::plan_insert_text(context.buffer, window.cursor, text),
         };
-        self.commit(context, viewport, plan)
+        self.commit(context, window, plan)
     }
 
     /// Inserts one line break with the previous-line automatic indent.
@@ -504,9 +496,9 @@ impl EditingState {
     pub fn insert_line_break(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
     ) -> CommandOutcome {
-        self.insert_line_break_indented(context, viewport, AutoIndent::PreviousLine)
+        self.insert_line_break_indented(context, window, AutoIndent::PreviousLine)
     }
 
     /// Inserts one line break with an explicit automatic indent.
@@ -517,14 +509,14 @@ impl EditingState {
     pub fn insert_line_break_indented(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         auto: AutoIndent,
     ) -> CommandOutcome {
         // A line break moves the text after the cursor to a new line, so a
         // pending block rectangle no longer describes the buffer.
         self.block_insert = None;
-        let plan = edit::plan_line_break(context.buffer, context.indent(), self.cursor, auto);
-        self.commit(context, viewport, plan)
+        let plan = edit::plan_line_break(context.buffer, context.indent(), window.cursor, auto);
+        self.commit(context, window, plan)
     }
 
     /// Toggles the line comment of the cursor line or of the selection.
@@ -542,25 +534,25 @@ impl EditingState {
     pub fn toggle_comment(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         comment: Option<&str>,
     ) -> CommandOutcome {
         let Some(comment) = comment else {
             return CommandOutcome::Unhandled;
         };
-        let (first, last) = match self.selection(context.buffer) {
+        let (first, last) = match self.selection(context.buffer, window) {
             Some(selection) => edit::selection_lines(context.buffer, selection),
-            None => (self.cursor.line(), self.cursor.line()),
+            None => (window.cursor.line(), window.cursor.line()),
         };
         let plan = edit::plan_toggle_comment(
             context.buffer,
             context.indent(),
-            self.cursor,
+            window.cursor,
             first,
             last,
             comment,
         );
-        self.commit(context, viewport, plan)
+        self.commit(context, window, plan)
     }
 
     /// Deletes the character before the cursor.
@@ -572,13 +564,13 @@ impl EditingState {
     pub fn delete_backward(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
     ) -> CommandOutcome {
         // The delete moves the text after the cursor, so a pending block
         // rectangle no longer describes the buffer.
         self.block_insert = None;
-        let plan = edit::plan_delete_backward(context.buffer, self.cursor);
-        self.commit(context, viewport, plan)
+        let plan = edit::plan_delete_backward(context.buffer, window.cursor);
+        self.commit(context, window, plan)
     }
 
     /// Applies one transaction that another module built.
@@ -593,14 +585,14 @@ impl EditingState {
     pub fn apply_transaction(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         transaction: EditTransaction,
     ) -> CommandOutcome {
         let plan = EditPlan {
             transaction: Some(transaction),
             ..EditPlan::unchanged()
         };
-        self.commit(context, viewport, plan)
+        self.commit(context, window, plan)
     }
 
     /// Moves the cursor to the first match of a query.
@@ -610,28 +602,28 @@ impl EditingState {
     pub fn search(
         &mut self,
         context: &CommandContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         query: &SearchQuery,
     ) -> CommandOutcome {
-        let Some(found) = self.repeat_search(context, query, query.direction(), 1) else {
+        let Some(found) = self.repeat_search(context, window, query, query.direction(), 1) else {
             return CommandOutcome::SearchMissed;
         };
-        self.cursor = found;
-        *viewport = viewport.reconciled(context.buffer, self.cursor, &context.settings.display);
+        window.cursor = found;
+        *window = window.reconciled(context.buffer, &context.settings.display);
         CommandOutcome::Applied
     }
 
     fn motion_target(
         &self,
         context: &CommandContext<'_>,
-        viewport: &Viewport,
+        window: &WindowState,
         command: Command,
         count: Option<NonZeroU32>,
     ) -> MotionResult {
         let buffer = context.buffer;
-        let limit = self.mode.column_limit();
+        let limit = self.column_limit();
         let repeat = repeat_count(count);
-        let cursor = self.cursor;
+        let cursor = window.cursor;
 
         let moved = match command {
             Command::MoveLeft => motion::move_left(buffer, cursor, limit, repeat),
@@ -655,19 +647,19 @@ impl EditingState {
                 motion::move_to_line(buffer, limit, target_line(count, last))
             }
             Command::MoveHalfPageDown => {
-                let rows = viewport.half_page_rows().saturating_mul(repeat);
+                let rows = window.viewport.half_page_rows().saturating_mul(repeat);
                 motion::move_down(buffer, cursor, limit, rows)
             }
             Command::MoveHalfPageUp => {
-                let rows = viewport.half_page_rows().saturating_mul(repeat);
+                let rows = window.viewport.half_page_rows().saturating_mul(repeat);
                 motion::move_up(buffer, cursor, limit, rows)
             }
             Command::MoveFullPageDown => {
-                let rows = viewport.full_page_rows().saturating_mul(repeat);
+                let rows = window.viewport.full_page_rows().saturating_mul(repeat);
                 motion::move_down(buffer, cursor, limit, rows)
             }
             Command::MoveFullPageUp => {
-                let rows = viewport.full_page_rows().saturating_mul(repeat);
+                let rows = window.viewport.full_page_rows().saturating_mul(repeat);
                 motion::move_up(buffer, cursor, limit, rows)
             }
             Command::SearchNext | Command::SearchPrevious => {
@@ -679,7 +671,8 @@ impl EditingState {
                 } else {
                     query.direction()
                 };
-                let Some(found) = self.repeat_search(context, query, direction, repeat) else {
+                let Some(found) = self.repeat_search(context, window, query, direction, repeat)
+                else {
                     return MotionResult::Missed;
                 };
                 found
@@ -692,7 +685,7 @@ impl EditingState {
     fn complete_operator(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         pending: PendingOperator,
         command: Command,
         count: Option<NonZeroU32>,
@@ -703,7 +696,7 @@ impl EditingState {
             let lines = repeat_count(pending.count)
                 .saturating_mul(repeat_count(count))
                 .min(MOTION_COUNT_MAX);
-            let outcome = self.line_operator(context, viewport, pending.operator, lines);
+            let outcome = self.line_operator(context, window, pending.operator, lines);
             self.record(
                 outcome,
                 RepeatableChange::Command {
@@ -718,8 +711,8 @@ impl EditingState {
             return CommandOutcome::OperatorAborted;
         };
         let effective = operator_motion_count(command, pending.count, count);
-        let before = self.cursor;
-        let motion = self.motion_target(&context.read(), viewport, command, effective);
+        let before = window.cursor;
+        let motion = self.motion_target(&context.read(), window, command, effective);
         let MotionResult::Moved(after) = motion else {
             return CommandOutcome::OperatorAborted;
         };
@@ -732,7 +725,7 @@ impl EditingState {
             pending.operator,
             range,
         );
-        let outcome = self.commit(context, viewport, plan);
+        let outcome = self.commit(context, window, plan);
         self.record(
             outcome,
             RepeatableChange::OperatorMotion {
@@ -748,19 +741,19 @@ impl EditingState {
     fn start_operator(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         operator: Operator,
         count: Option<NonZeroU32>,
     ) -> CommandOutcome {
-        if let Some(selection) = self.selection(context.buffer) {
+        if let Some(selection) = self.selection(context.buffer, window) {
             let plan = plan_operator(
                 context.buffer,
                 context.indent(),
-                self.cursor,
+                window.cursor,
                 operator,
                 OperatorRange::from_selection(selection),
             );
-            return self.commit(context, viewport, plan);
+            return self.commit(context, window, plan);
         }
         self.pending = Some(PendingOperator { operator, count });
         CommandOutcome::OperatorPending
@@ -769,12 +762,12 @@ impl EditingState {
     fn line_operator(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         operator: Operator,
         lines: usize,
     ) -> CommandOutcome {
         debug_assert!(lines > 0, "the resolver rejects a zero count");
-        let first = self.cursor.line();
+        let first = window.cursor.line();
         let last = context
             .buffer
             .line_index((first.get() + lines - 1).min(context.buffer.line_count() - 1))
@@ -782,34 +775,33 @@ impl EditingState {
         let plan = plan_operator(
             context.buffer,
             context.indent(),
-            self.cursor,
+            window.cursor,
             operator,
             OperatorRange::Linewise { first, last },
         );
-        self.commit(context, viewport, plan)
+        self.commit(context, window, plan)
     }
 
     fn line_end_operator(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         operator: Operator,
         command: Command,
         count: Option<NonZeroU32>,
     ) -> CommandOutcome {
         let lines = repeat_count(count);
-        let last =
-            motion::move_line_end(context.buffer, self.cursor, self.mode.column_limit(), lines);
+        let last = motion::move_line_end(context.buffer, window.cursor, self.column_limit(), lines);
         let range =
-            OperatorRange::from_motion(context.buffer, self.cursor, last, MotionKind::Inclusive);
+            OperatorRange::from_motion(context.buffer, window.cursor, last, MotionKind::Inclusive);
         let plan = plan_operator(
             context.buffer,
             context.indent(),
-            self.cursor,
+            window.cursor,
             operator,
             range,
         );
-        let outcome = self.commit(context, viewport, plan);
+        let outcome = self.commit(context, window, plan);
         self.record(outcome, RepeatableChange::Command { command, count });
         outcome
     }
@@ -817,7 +809,7 @@ impl EditingState {
     fn open_line(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         command: Command,
         count: Option<NonZeroU32>,
         direction: OpenDirection,
@@ -826,11 +818,11 @@ impl EditingState {
         let plan = edit::plan_open_line(
             context.buffer,
             context.indent(),
-            self.cursor,
+            window.cursor,
             direction,
             auto,
         );
-        let outcome = self.commit(context, viewport, plan);
+        let outcome = self.commit(context, window, plan);
         self.record(outcome, RepeatableChange::Command { command, count });
         outcome
     }
@@ -838,7 +830,7 @@ impl EditingState {
     fn begin_block_insert(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         edge: BlockEdge,
     ) -> CommandOutcome {
         let Some(Selection::Block {
@@ -846,7 +838,7 @@ impl EditingState {
             last_line,
             left,
             right,
-        }) = self.selection(context.buffer)
+        }) = self.selection(context.buffer, window)
         else {
             return CommandOutcome::Unhandled;
         };
@@ -857,26 +849,29 @@ impl EditingState {
             right: right.get(),
             edge,
         });
-        self.mode = ModeState::Insert;
+        // The mode and the anchor change together: Insert mode holds none.
+        self.mode = Mode::Insert;
+        window.anchor = None;
         let column = match edge {
             BlockEdge::Left => left.get(),
             BlockEdge::Right => right.get() + 1,
         };
         self.place(
             context.buffer,
+            window,
             CursorTarget::At {
                 line: first_line.get(),
                 column,
             },
         );
-        self.reconcile(context, viewport);
+        self.reconcile(context, window);
         CommandOutcome::Applied
     }
 
     fn paste(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         count: Option<NonZeroU32>,
         placement: PastePlacement,
     ) -> CommandOutcome {
@@ -885,15 +880,15 @@ impl EditingState {
             None => return CommandOutcome::RegisterEmpty,
         };
 
-        if let Some(selection) = self.selection(context.buffer) {
+        if let Some(selection) = self.selection(context.buffer, window) {
             // A Visual paste replaces the selection and preserves the source
             // register, so a following paste repeats the same text.
-            let plan = edit::plan_visual_paste(context.buffer, self.cursor, selection, &value);
-            return self.commit(context, viewport, plan);
+            let plan = edit::plan_visual_paste(context.buffer, window.cursor, selection, &value);
+            return self.commit(context, window, plan);
         }
 
-        let plan = edit::plan_paste(context.buffer, self.cursor, &value, placement);
-        let outcome = self.commit(context, viewport, plan);
+        let plan = edit::plan_paste(context.buffer, window.cursor, &value, placement);
+        let outcome = self.commit(context, window, plan);
         self.record(
             outcome,
             RepeatableChange::Command {
@@ -910,31 +905,33 @@ impl EditingState {
     fn move_selection(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         direction: MoveDirection,
     ) -> CommandOutcome {
-        let Some(selection) = self.selection(context.buffer) else {
+        let Some(selection) = self.selection(context.buffer, window) else {
             return CommandOutcome::Unhandled;
         };
         let (first, last) = edit::selection_lines(context.buffer, selection);
-        let anchor = self.anchor_point(context.buffer);
+        let anchor = window.anchor;
         let Some(plan) = edit::plan_move_lines(
             context.buffer,
             context.indent(),
-            self.cursor,
+            window.cursor,
             first,
             last,
             direction,
         ) else {
             return CommandOutcome::Applied;
         };
-        let outcome = self.commit(context, viewport, plan);
-        if let Some((line, column)) = anchor {
+        let outcome = self.commit(context, window, plan);
+        if let Some(anchor) = anchor {
+            // The moved lines carry the anchor with them, so the selection keeps
+            // the same text.
             let line = match direction {
-                MoveDirection::Down => line.get() + 1,
-                MoveDirection::Up => line.get().saturating_sub(1),
+                MoveDirection::Down => anchor.line.get() + 1,
+                MoveDirection::Up => anchor.line.get().saturating_sub(1),
             };
-            self.restore_anchor(context.buffer, line, column.get());
+            self.restore_anchor(context.buffer, window, line, anchor.column.get());
         }
         outcome
     }
@@ -942,25 +939,30 @@ impl EditingState {
     fn shift_selection(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         direction: ShiftDirection,
     ) -> CommandOutcome {
-        let Some(selection) = self.selection(context.buffer) else {
+        let Some(selection) = self.selection(context.buffer, window) else {
             return CommandOutcome::Unhandled;
         };
         let (first, last) = edit::selection_lines(context.buffer, selection);
-        let anchor = self.anchor_point(context.buffer);
+        let anchor = window.anchor;
         let plan = edit::plan_shift_lines(
             context.buffer,
             context.indent(),
-            self.cursor,
+            window.cursor,
             first,
             last,
             direction,
         );
-        let outcome = self.commit(context, viewport, plan);
-        if let Some((line, column)) = anchor {
-            self.restore_anchor(context.buffer, line.get(), column.get());
+        let outcome = self.commit(context, window, plan);
+        if let Some(anchor) = anchor {
+            self.restore_anchor(
+                context.buffer,
+                window,
+                anchor.line.get(),
+                anchor.column.get(),
+            );
         }
         outcome
     }
@@ -968,7 +970,7 @@ impl EditingState {
     fn step_history(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         step: HistoryStep,
     ) -> CommandOutcome {
         let position = match step {
@@ -978,17 +980,23 @@ impl EditingState {
         let Some(position) = position else {
             return CommandOutcome::HistoryExhausted;
         };
-        self.mode = ModeState::Normal;
+        // An undo and a redo return to Normal mode, which holds no anchor.
+        self.mode = Mode::Normal;
+        window.anchor = None;
         self.block_insert = None;
-        self.place(context.buffer, CursorTarget::Position(position.get()));
-        self.reconcile(context, viewport);
+        self.place(
+            context.buffer,
+            window,
+            CursorTarget::Position(position.get()),
+        );
+        self.reconcile(context, window);
         CommandOutcome::Changed
     }
 
     fn repeat_change(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         auto: AutoIndent,
     ) -> CommandOutcome {
         let Some(change) = self.repeat else {
@@ -996,7 +1004,7 @@ impl EditingState {
         };
         match change {
             RepeatableChange::Command { command, count } => {
-                self.apply_indented(context, viewport, command, count, auto)
+                self.apply_indented(context, window, command, count, auto)
             }
             RepeatableChange::OperatorMotion {
                 operator,
@@ -1005,7 +1013,7 @@ impl EditingState {
                 motion_count,
             } => {
                 self.pending = Some(PendingOperator { operator, count });
-                self.apply_indented(context, viewport, motion, motion_count, auto)
+                self.apply_indented(context, window, motion, motion_count, auto)
             }
         }
     }
@@ -1013,7 +1021,7 @@ impl EditingState {
     fn commit(
         &mut self,
         context: &mut EditContext<'_>,
-        viewport: &mut Viewport,
+        window: &mut WindowState,
         plan: EditPlan,
     ) -> CommandOutcome {
         if let Some(value) = plan.value {
@@ -1033,16 +1041,22 @@ impl EditingState {
                 ),
             }
         }
+        // Normal mode and Insert mode hold no anchor, so the plan drops it with
+        // the mode that it names.
         match plan.next_mode {
             NextMode::Keep => {}
             NextMode::Normal => {
                 self.block_insert = None;
-                self.mode = ModeState::Normal;
+                self.mode = Mode::Normal;
+                window.anchor = None;
             }
-            NextMode::Insert => self.mode = ModeState::Insert,
+            NextMode::Insert => {
+                self.mode = Mode::Insert;
+                window.anchor = None;
+            }
         }
-        self.place(context.buffer, plan.cursor);
-        self.reconcile(context, viewport);
+        self.place(context.buffer, window, plan.cursor);
+        self.reconcile(context, window);
         if changed {
             CommandOutcome::Changed
         } else {
@@ -1056,9 +1070,9 @@ impl EditingState {
         }
     }
 
-    fn place(&mut self, buffer: &TextBuffer, target: CursorTarget) {
-        let limit = self.mode.column_limit();
-        self.cursor = match target {
+    fn place(&self, buffer: &TextBuffer, window: &mut WindowState, target: CursorTarget) {
+        let limit = self.column_limit();
+        window.cursor = match target {
             CursorTarget::At { line, column } => Cursor::clamped(buffer, line, column, limit),
             CursorTarget::FirstNonBlank { line } => motion::move_to_line(buffer, limit, line),
             CursorTarget::Position(position) => {
@@ -1067,66 +1081,52 @@ impl EditingState {
                     .expect("the clamp keeps the position inside the buffer");
                 Cursor::at_position(buffer, position, limit)
             }
-            CursorTarget::Unchanged => self.cursor.re_clamped(buffer, limit),
+            CursorTarget::Unchanged => window.cursor.re_clamped(buffer, limit),
         };
     }
 
-    fn reconcile(&self, context: &EditContext<'_>, viewport: &mut Viewport) {
-        *viewport = viewport.reconciled(context.buffer, self.cursor, &context.settings.display);
+    fn reconcile(&self, context: &EditContext<'_>, window: &mut WindowState) {
+        *window = window.reconciled(context.buffer, &context.settings.display);
     }
 
-    fn restore_anchor(&mut self, buffer: &TextBuffer, line: usize, column: usize) {
+    /// Moves the selection anchor of one window to a line and a column.
+    ///
+    /// A selection move and a selection shift both rewrite the lines that they
+    /// changed, so the anchor follows the text. A window without an anchor holds
+    /// no selection and keeps none.
+    fn restore_anchor(
+        &self,
+        buffer: &TextBuffer,
+        window: &mut WindowState,
+        line: usize,
+        column: usize,
+    ) {
+        if window.anchor.is_none() {
+            return;
+        }
         let line = buffer
             .line_index(line.min(buffer.line_count() - 1))
             .expect("the clamp keeps the line index inside the buffer");
         let column = buffer
             .source_column(line, column.min(buffer.line_len_chars(line)))
             .expect("the clamp keeps the column inside the line");
-        self.mode = match self.mode {
-            ModeState::Visual { .. } => ModeState::Visual {
-                anchor: buffer.column_to_char(line, column),
-            },
-            ModeState::VisualLine { .. } => ModeState::VisualLine { anchor: line },
-            ModeState::VisualBlock { .. } => ModeState::VisualBlock {
-                anchor: BlockAnchor { line, column },
-            },
-            other => other,
-        };
+        window.anchor = Some(AnchorPoint { line, column });
     }
 
     fn repeat_search(
         &self,
         context: &CommandContext<'_>,
+        window: &WindowState,
         query: &SearchQuery,
         direction: SearchDirection,
         repeat: usize,
     ) -> Option<Cursor> {
         let buffer = context.buffer;
-        let mut position = self.cursor.position(buffer);
+        let mut position = window.cursor.position(buffer);
         for _ in 0..repeat {
             position = query.find(buffer, position, direction, &context.settings.search)?;
         }
-        Some(Cursor::at_position(
-            buffer,
-            position,
-            self.mode.column_limit(),
-        ))
-    }
-
-    fn anchor_point(&self, buffer: &TextBuffer) -> Option<(LineIndex, SourceColumn)> {
-        match self.mode {
-            ModeState::Normal | ModeState::Insert => None,
-            ModeState::Visual { anchor } => {
-                Some((buffer.char_to_line(anchor), buffer.char_to_column(anchor)))
-            }
-            ModeState::VisualLine { anchor } => Some((
-                anchor,
-                buffer
-                    .source_column(anchor, 0)
-                    .expect("column zero exists in every line"),
-            )),
-            ModeState::VisualBlock { anchor } => Some((anchor.line, anchor.column)),
-        }
+        Some(Cursor::at_position(buffer, position, self.column_limit()))
     }
 }
 

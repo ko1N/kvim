@@ -5,11 +5,12 @@
 //! semantic commands that `input` names. Every text change leaves the module as
 //! one [`EditTransaction`](crate::core::EditTransaction).
 //!
-//! [`EditingState`] owns the cursor, the mode, the operator-pending state, and
-//! the description that `.` replays. [`Viewport`] stays a separate value,
-//! because one window owns one viewport. The system clipboard stays outside the
-//! module: the caller passes the register value in and out. See
-//! `docs/text-model.md`, `docs/input-actions.md`, and `docs/clipboard.md`.
+//! [`EditingState`] owns the mode, the operator-pending state, and the
+//! description that `.` replays. [`WindowState`] owns the cursor, the selection
+//! anchor, and the viewport, because one window owns its view into a buffer. The
+//! system clipboard stays outside the module: the caller passes the register
+//! value in and out. See `docs/text-model.md`, `docs/input-actions.md`,
+//! `docs/windows.md`, and `docs/clipboard.md`.
 //!
 //! # Examples
 //!
@@ -17,7 +18,9 @@
 //! use std::num::NonZeroU16;
 //!
 //! use kvim::core::TextBuffer;
-//! use kvim::editor::{CommandOutcome, EditContext, EditingState, RegisterShape, Registers, Viewport};
+//! use kvim::editor::{
+//!     CommandOutcome, EditContext, EditingState, RegisterShape, Registers, Viewport, WindowState,
+//! };
 //! use kvim::input::Command;
 //! use kvim::settings::{EditorSettings, FileSettings};
 //!
@@ -35,18 +38,18 @@
 //!
 //! let rows = NonZeroU16::new(24).expect("the literal 24 is not zero");
 //! let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
-//! let mut viewport = Viewport::new(rows, cells);
-//! let mut state = EditingState::new(context.buffer);
+//! let mut window = WindowState::new(Viewport::new(rows, cells));
+//! let mut state = EditingState::new();
 //!
 //! // `yy` yanks the current line, and `p` pastes it below.
-//! state.apply(&mut context, &mut viewport, Command::YankOverMotion, None);
-//! state.apply(&mut context, &mut viewport, Command::YankOverMotion, None);
+//! state.apply(&mut context, &mut window, Command::YankOverMotion, None);
+//! state.apply(&mut context, &mut window, Command::YankOverMotion, None);
 //! assert_eq!(
 //!     context.registers.unnamed().map(|value| value.shape()),
 //!     Some(RegisterShape::Linewise),
 //! );
 //!
-//! let outcome = state.apply(&mut context, &mut viewport, Command::PasteAfter, None);
+//! let outcome = state.apply(&mut context, &mut window, Command::PasteAfter, None);
 //! assert_eq!(outcome, CommandOutcome::Changed);
 //! assert_eq!(context.buffer.to_string(), "fn main() {\nfn main() {\n    let value = 1;\n}\n");
 //! ```
@@ -60,6 +63,7 @@ mod search;
 mod selection;
 mod state;
 mod viewport;
+mod window;
 
 #[cfg(test)]
 mod edit_tests;
@@ -75,9 +79,10 @@ pub use search::{
     SEARCH_MATCHES_MAX, SEARCH_QUERY_CHARS_MAX, SEARCH_SCAN_BYTES_MAX, SearchDirection,
     SearchError, SearchQuery,
 };
-pub use selection::{BlockAnchor, ModeState, Selection};
+pub use selection::{AnchorPoint, ModeState, Selection};
 pub use state::{
     CommandContext, CommandOutcome, EditContext, EditingState, INSERT_TEXT_BYTES_MAX,
     MOTION_COUNT_MAX,
 };
 pub use viewport::{Viewport, ViewportAlignment};
+pub use window::WindowState;

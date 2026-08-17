@@ -131,6 +131,8 @@ semantic_commands! {
     // The file tree.
     TreeOpenEntry => ("tree-open-entry", "Open the selected entry"),
     TreeToggleEntry => ("tree-toggle-entry", "Expand or collapse the selected directory"),
+    TreeExpandEntry => ("tree-expand-entry", "Expand the selected directory, or open the selected file"),
+    TreeCollapseEntry => ("tree-collapse-entry", "Collapse the selected directory, or select the parent directory"),
     TreeSelectParent => ("tree-select-parent", "Select the parent directory"),
     TreeRefresh => ("tree-refresh", "Read the workspace directories again"),
     TreeAddFile => ("tree-add-file", "Add one file"),

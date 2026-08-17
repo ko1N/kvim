@@ -15,6 +15,7 @@ use crate::terminal::{Key, KeyCode, TerminalEvent};
 use crate::workspace::temp::TempDir;
 
 use super::session::Session;
+use super::window::WindowId;
 
 const NOW: Duration = Duration::ZERO;
 
@@ -545,4 +546,54 @@ fn rendering_the_same_session_twice_produces_the_same_frame() {
     let mut session = with_lines(40, 10, 4);
     type_keys(&mut session, "vjl");
     assert_eq!(draw(&session), draw(&session));
+}
+
+/// Returns one text row of one window, without trailing blanks.
+///
+/// The offset counts from the winbar row of the window, so offset one is the
+/// first text row.
+fn window_row(session: &Session, window: WindowId, offset: u16) -> String {
+    let area = session
+        .windows()
+        .layout()
+        .area(window)
+        .expect("the window is visible");
+    let buffer = draw(session);
+    let mut text = String::new();
+    for x in area.x..area.right() {
+        if let Some(cell) = buffer.cell((x, area.y + offset)) {
+            text.push_str(cell.symbol());
+        }
+    }
+    text.trim_end().to_owned()
+}
+
+#[test]
+fn each_window_counts_its_relative_numbers_from_its_own_cursor() {
+    let mut session = with_lines(80, 10, 6);
+    let left = session.windows().focused_window();
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let right = session.windows().focused_window();
+    assert_ne!(left, right, "the split opened a second window");
+
+    // Only the focused window moves, so the two windows hold two cursor lines.
+    type_keys(&mut session, "jj");
+
+    // The unfocused window counts from its own cursor line, which is line one.
+    assert_eq!(window_row(&session, left, 1), " 1   line0");
+    assert_eq!(window_row(&session, left, 2), "   1 line1");
+    assert_eq!(window_row(&session, left, 3), "   2 line2");
+
+    // The focused window counts from line three.
+    assert_eq!(window_row(&session, right, 1), "   2 line0");
+    assert_eq!(window_row(&session, right, 2), "   1 line1");
+    assert_eq!(window_row(&session, right, 3), " 3   line2");
+
+    // The terminal cursor marks the focused window alone.
+    let area = session
+        .windows()
+        .layout()
+        .area(right)
+        .expect("the window is visible");
+    assert_eq!(cursor_position(&session), (area.x + 5, area.y + 3));
 }

@@ -9,16 +9,18 @@ use crate::input::Mode;
 
 use super::cursor::{ColumnLimit, Cursor};
 
-/// The corner of a rectangular selection that the cursor left behind.
+/// The point where one Visual selection started.
 ///
-/// A block anchor keeps a line and a column, because the rectangle needs both.
-/// The column belongs to the anchor line. A shorter line inside the rectangle
-/// receives no change. See `docs/input-actions.md`.
+/// The point keeps a line and a column, because a rectangular selection needs
+/// both. The column belongs to the anchor line, and a shorter line inside a
+/// rectangle receives no change. Every Visual mode derives its own anchor from
+/// this point, so one window keeps one anchor across a mode change. See
+/// `docs/input-actions.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct BlockAnchor {
-    /// The line of the anchor corner.
+pub struct AnchorPoint {
+    /// The line of the anchor.
     pub line: LineIndex,
-    /// The source column of the anchor corner.
+    /// The source column of the anchor.
     pub column: SourceColumn,
 }
 
@@ -61,11 +63,35 @@ pub enum ModeState {
     /// A rectangular selection follows the cursor.
     VisualBlock {
         /// The corner where the selection started.
-        anchor: BlockAnchor,
+        anchor: AnchorPoint,
     },
 }
 
 impl ModeState {
+    /// Joins one editor mode with the anchor point of one window.
+    ///
+    /// The mode is global and the anchor belongs to the window, so this
+    /// function builds the pair that a selection needs. Each Visual mode
+    /// derives its own anchor shape from the point. Normal mode and Insert mode
+    /// hold no anchor and ignore it.
+    ///
+    /// The caller passes an anchor that it already clamped to the buffer, so
+    /// the point always names a column of its own line.
+    #[must_use]
+    pub fn of(mode: Mode, buffer: &TextBuffer, anchor: AnchorPoint) -> Self {
+        match mode {
+            Mode::Normal => Self::Normal,
+            Mode::Insert => Self::Insert,
+            Mode::Visual => Self::Visual {
+                anchor: buffer.column_to_char(anchor.line, anchor.column),
+            },
+            Mode::VisualLine => Self::VisualLine {
+                anchor: anchor.line,
+            },
+            Mode::VisualBlock => Self::VisualBlock { anchor },
+        }
+    }
+
     /// Returns the mode that the state holds.
     #[must_use]
     pub const fn mode(self) -> Mode {

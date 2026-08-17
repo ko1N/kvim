@@ -26,6 +26,26 @@ change.
 Do not use an unconditional frame loop. A terminal event, a resize, an expired
 deadline, or an accepted background result requests a render.
 
+### Time-Driven Transitions
+
+The elapsed time alone drives one state change: the which-key overlay. The
+session reports the elapsed time of that change, and the loop wakes for it.
+
+Two rules keep that path safe:
+
+- Report a time only when a transition can consume it. A reported time that no
+  transition clears would keep the loop out of its wait forever, and the editor
+  would stop serving input. The overlay therefore reports no time while the
+  pending sequence holds no key, because the rows list the keys that follow a
+  sequence and a pending count alone shows no overlay.
+- Run at most one catch-up transition for each reported time. The loop records
+  the time that it already served. A transition that leaves the same time behind
+  never runs twice, so the loop always returns to waiting for an event. The rule
+  bounds the failure, whatever produced the unclearable time.
+
+Every submission loop of the event loop is bounded by a named constant, so a
+queue that offers the same work again can never hold the loop.
+
 ## Bounded Work
 
 Run external commands through a bounded and cancellable process service. Run

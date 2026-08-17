@@ -93,6 +93,20 @@ pub enum CaseSensitivity {
     SmartCase,
 }
 
+/// Whether the file tree paints one icon before each name.
+///
+/// An icon needs a patched font. A terminal without one hides the icons, and the
+/// tree still aligns, because a hidden icon reserves no cell in any row. See
+/// `docs/files.md`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FileTreeIcons {
+    /// Paint one icon before each name.
+    #[default]
+    Shown,
+    /// Paint no icon.
+    Hidden,
+}
+
 /// The side that receives a new horizontal split.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum HorizontalSplitPlacement {
@@ -257,6 +271,8 @@ pub struct WindowSettings {
     /// The sidebar keeps a fixed width. A directional resize toward it changes
     /// the width of the open sidebar only, not this default.
     pub file_tree_width_cells: u16,
+    /// Whether the file tree paints one icon before each name.
+    pub file_tree_icons: FileTreeIcons,
 }
 
 impl Default for WindowSettings {
@@ -269,6 +285,7 @@ impl Default for WindowSettings {
             min_window_width_cells: 20,
             min_window_height_rows: 3,
             file_tree_width_cells: FILE_TREE_WIDTH_CELLS_DEFAULT,
+            file_tree_icons: FileTreeIcons::Shown,
         }
     }
 }

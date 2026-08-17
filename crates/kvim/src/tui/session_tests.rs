@@ -18,6 +18,7 @@ use crate::workspace::temp::TempDir;
 
 use super::language::LanguageRequestKind;
 use super::session::{MessageLevel, Redraw, RunState, Session};
+use super::window::WindowId;
 
 const NOW: Duration = Duration::ZERO;
 
@@ -82,7 +83,7 @@ fn with_text(lines: &[&str]) -> Session {
 
 /// Returns the selection of the active Visual mode.
 fn selection(session: &Session) -> Option<Selection> {
-    session.visible().editing.selection(session.buffer())
+    session.selection()
 }
 
 #[test]
@@ -980,4 +981,211 @@ fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
     assert_eq!(message(&session), "format-on-save is off for this buffer");
     type_keys(&mut session, " cf");
     assert_eq!(message(&session), "format-on-save is on for this buffer");
+}
+
+/// Returns the first visible line of one window.
+fn first_line(session: &Session, window: WindowId) -> usize {
+    session
+        .windows()
+        .state(window)
+        .expect("the window exists")
+        .first_line()
+}
+
+/// Returns the cursor line of one window.
+fn cursor_line(session: &Session, window: WindowId) -> usize {
+    session
+        .windows()
+        .state(window)
+        .expect("the window exists")
+        .cursor()
+        .line()
+        .get()
+}
+
+/// Creates a session with one long buffer and one vertical split.
+///
+/// The function returns the left window and the right window, and the right
+/// window holds the focus, as a new split always does.
+fn split_session(lines: usize) -> (Session, WindowId, WindowId) {
+    let mut session = session(80, 24);
+    press(&mut session, 'i');
+    for index in 0..lines {
+        if index > 0 {
+            press_code(&mut session, KeyCode::Enter);
+        }
+        type_keys(&mut session, "line");
+    }
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "gg");
+
+    let left = session.windows().focused_window();
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let right = session.windows().focused_window();
+    assert_ne!(left, right, "the split opened a second window");
+    (session, left, right)
+}
+
+#[test]
+fn two_windows_on_one_buffer_scroll_independently() {
+    let (mut session, left, right) = split_session(200);
+    assert_eq!(first_line(&session, left), 0);
+    assert_eq!(first_line(&session, right), 0);
+
+    // The focused window scrolls to the buffer end.
+    press(&mut session, 'G');
+    let scrolled = first_line(&session, right);
+    assert!(scrolled > 0, "the focused window followed its cursor");
+    assert_eq!(
+        first_line(&session, left),
+        0,
+        "the untouched window keeps its first visible line"
+    );
+    assert_eq!(
+        cursor_line(&session, left),
+        0,
+        "the untouched window keeps its cursor"
+    );
+
+    // The focus returns to the left window, and both windows stay where they
+    // were.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(session.windows().focused_window(), left);
+    assert_eq!(first_line(&session, left), 0);
+    assert_eq!(first_line(&session, right), scrolled);
+    assert_eq!(cursor_line(&session, right), 199);
+
+    // A move in the left window moves no other window.
+    type_keys(&mut session, "10j");
+    assert_eq!(cursor_line(&session, left), 10);
+    assert_eq!(cursor_line(&session, right), 199);
+    assert_eq!(first_line(&session, right), scrolled);
+}
+
+#[test]
+fn two_windows_on_two_buffers_scroll_independently() {
+    let directory = TempDir::new("session-window-cursors");
+    let first = directory.write("first.rs", &"first\n".repeat(200));
+    let second = directory.write("second.rs", &"second\n".repeat(200));
+    let mut session = file_session();
+
+    session.open_path(first);
+    run_file_request(&mut session);
+    let left = session.windows().focused_window();
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let right = session.windows().focused_window();
+    session.open_path(second);
+    run_file_request(&mut session);
+    assert_ne!(
+        session.windows().buffer(left),
+        session.windows().buffer(right),
+        "the two windows show two buffers"
+    );
+
+    press(&mut session, 'G');
+    let scrolled = first_line(&session, right);
+    assert!(scrolled > 0);
+    assert_eq!(
+        first_line(&session, left),
+        0,
+        "the window of the other buffer did not scroll"
+    );
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(
+        session.active_buffer().name(),
+        "first.rs",
+        "the focus move follows the buffer of its window"
+    );
+    assert_eq!(cursor_line(&session, left), 0);
+    assert_eq!(first_line(&session, right), scrolled);
+}
+
+#[test]
+fn a_new_split_copies_the_cursor_and_the_viewport_of_its_source() {
+    let (mut session, _, right) = split_session(200);
+    press(&mut session, 'G');
+    let line = cursor_line(&session, right);
+    assert!(first_line(&session, right) > 0);
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let created = session.windows().focused_window();
+    assert_ne!(created, right);
+    assert_eq!(
+        cursor_line(&session, created),
+        line,
+        "the new window opens at the cursor of its source"
+    );
+    // The split halves the height of the source window, so both windows
+    // reconcile to the same smaller view.
+    assert_eq!(
+        first_line(&session, created),
+        first_line(&session, right),
+        "the new window opens at the view of its source"
+    );
+    assert!(
+        first_line(&session, created) > 0,
+        "the new window did not return to the buffer start"
+    );
+}
+
+#[test]
+fn closing_a_window_discards_its_cursor() {
+    let (mut session, left, right) = split_session(200);
+    press(&mut session, 'G');
+    assert!(first_line(&session, right) > 0);
+
+    type_keys(&mut session, " q");
+    assert_eq!(session.windows().window_count(), 1);
+    assert_eq!(session.windows().focused_window(), left);
+    assert_eq!(
+        first_line(&session, left),
+        0,
+        "the surviving window keeps its own view"
+    );
+    assert!(
+        session.windows().state(right).is_none(),
+        "the closed window discarded its view"
+    );
+}
+
+#[test]
+fn a_reported_deadline_always_reaches_a_transition_that_clears_it() {
+    // The event loop runs one catch-up transition for a deadline that already
+    // passed. A deadline that no transition can clear would keep the loop out of
+    // its wait, and the editor would stop serving input. Every reported deadline
+    // must therefore disappear after one tick.
+    for keys in ["5", "12", " ", "5 ", "g", "5g", "z"] {
+        let mut session = session(60, 20);
+        type_keys(&mut session, keys);
+        let Some(deadline) = session.next_deadline() else {
+            continue;
+        };
+        session.tick(deadline);
+        assert_eq!(
+            session.next_deadline(),
+            None,
+            "the tick after the deadline of `{keys}` must clear it"
+        );
+    }
+}
+
+#[test]
+fn a_pending_count_reports_no_deadline_at_all() {
+    let mut session = session(60, 20);
+    press(&mut session, '5');
+    assert_eq!(
+        session.next_deadline(),
+        None,
+        "a pending count shows no overlay, so the loop waits for the next key"
+    );
+    // The count still reaches the command that follows it.
+    press(&mut session, 'j');
+    assert_eq!(
+        session.cursor().line().get(),
+        0,
+        "the buffer holds one line"
+    );
+    assert_eq!(session.mode(), Mode::Normal);
 }

@@ -794,6 +794,8 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('k'), Command::MoveUp);
     add_tree(table, Key::plain(KeyCode::Enter), Command::TreeOpenEntry);
     add_tree(table, ch(' '), Command::TreeToggleEntry);
+    add_tree(table, ch('l'), Command::TreeExpandEntry);
+    add_tree(table, ch('h'), Command::TreeCollapseEntry);
     add_tree(table, ch('R'), Command::TreeRefresh);
     add_tree(table, ch('a'), Command::TreeAddFile);
     add_tree(table, ch('A'), Command::TreeAddDirectory);

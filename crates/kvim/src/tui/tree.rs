@@ -14,7 +14,9 @@ use std::path::{Path, PathBuf};
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
+use ratatui::style::Style;
 
+use crate::settings::FileTreeIcons;
 use crate::workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, LinkKind,
     MutateRequest, MutationOutcome, Notice, OpenBuffer, ReadError, RowContent, TransferMode,
@@ -22,6 +24,7 @@ use crate::workspace::{
 };
 
 use super::buffer_view::WindowFocus;
+use super::icons::{ICON_CELLS, row_icon};
 use super::theme::{Theme, ThemeRole};
 
 /// The number of cells that one tree level indents.
@@ -44,6 +47,9 @@ const COLLAPSED_MARKER: &str = "▸ ";
 
 /// The marker of one row that holds no directory.
 const FILE_MARKER: &str = "  ";
+
+/// The number of cells that one expansion marker occupies.
+const MARKER_CELLS: usize = 2;
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";
@@ -196,6 +202,53 @@ impl TreeSidebar {
     /// Moves the selection to the directory that holds the selected entry.
     pub(super) fn select_parent(&mut self) {
         self.tree.select_parent();
+    }
+
+    /// Expands the selected directory, or returns the selected file.
+    ///
+    /// `l` reaches this entry point. An expanded directory stays open, so the
+    /// key only ever moves the reader deeper into the tree. The caller opens the
+    /// returned path in the focused editor window, which is the nvim-tree and
+    /// neo-tree rule for a file. See `docs/input-actions.md`.
+    pub(super) fn expand_selected(&mut self) -> Option<PathBuf> {
+        let row = self.tree.selected_row()?;
+        match row.kind()? {
+            EntryKind::File => Some(row.path.clone()),
+            EntryKind::Directory => {
+                let path = row.path.clone();
+                self.tree.expand(&path);
+                self.pump();
+                None
+            }
+        }
+    }
+
+    /// Collapses the selected directory, or selects the parent directory.
+    ///
+    /// `h` reaches this entry point. An expanded directory closes, and every
+    /// other row leaves for the directory that holds it. Two presses therefore
+    /// take a file to its folder and then close that folder, which is the
+    /// nvim-tree and neo-tree rule. See `docs/input-actions.md`.
+    pub(super) fn collapse_selected(&mut self) {
+        let expanded = self.tree.selected_row().is_some_and(|row| {
+            matches!(
+                row.content,
+                RowContent::Directory {
+                    expansion: Expansion::Expanded | Expansion::Pending,
+                    ..
+                }
+            )
+        });
+        if !expanded {
+            self.tree.select_parent();
+            return;
+        }
+        let Some(path) = self.tree.selected().map(Path::to_path_buf) else {
+            debug_assert!(false, "an expanded row is always the selected row");
+            return;
+        };
+        self.tree.collapse(&path);
+        self.pump();
     }
 
     /// Opens the selected directory, or closes it again.
@@ -414,10 +467,19 @@ fn check_name(name: &str) -> Result<&str, TreeRefusal> {
 /// Returns the text of one tree row, without the selection style.
 ///
 /// The row holds the indent of its depth, the expansion marker of a directory,
-/// and the name. A notice row reports a bounded or a failed directory read
-/// instead of an entry.
-pub(super) fn row_text(row: &TreeRow) -> String {
+/// the icon, and the name. A notice row reports a bounded or a failed directory
+/// read instead of an entry, so it carries no icon and keeps the reserved cells
+/// blank. Every row of one depth therefore starts its name at one column, with
+/// icons and without them.
+pub(super) fn row_text(row: &TreeRow, icons: FileTreeIcons) -> String {
     let indent = " ".repeat(row.depth * TREE_INDENT_CELLS);
+    let icon = match icons {
+        FileTreeIcons::Hidden => String::new(),
+        FileTreeIcons::Shown => match row_icon(row, icons) {
+            Some(icon) => format!("{} ", icon.glyph),
+            None => " ".repeat(ICON_CELLS),
+        },
+    };
     match &row.content {
         RowContent::File { name, link } => {
             let suffix = if *link == LinkKind::Symlink {
@@ -425,7 +487,7 @@ pub(super) fn row_text(row: &TreeRow) -> String {
             } else {
                 ""
             };
-            format!("{indent}{FILE_MARKER}{name}{suffix}")
+            format!("{indent}{FILE_MARKER}{icon}{name}{suffix}")
         }
         RowContent::Directory {
             name,
@@ -441,13 +503,13 @@ pub(super) fn row_text(row: &TreeRow) -> String {
             } else {
                 ""
             };
-            format!("{indent}{marker}{name}{suffix}")
+            format!("{indent}{marker}{icon}{name}{suffix}")
         }
         RowContent::Notice(Notice::Truncated { shown, total }) => {
-            format!("{indent}{FILE_MARKER}… {shown} of {total} entries")
+            format!("{indent}{FILE_MARKER}{icon}… {shown} of {total} entries")
         }
         RowContent::Notice(Notice::Unreadable) => {
-            format!("{indent}{FILE_MARKER}… unreadable")
+            format!("{indent}{FILE_MARKER}{icon}… unreadable")
         }
     }
 }
@@ -466,6 +528,7 @@ pub(super) fn render_tree(
     theme: Theme,
     sidebar: &TreeSidebar,
     focus: WindowFocus,
+    icons: FileTreeIcons,
 ) -> Option<Position> {
     if area.is_empty() {
         return None;
@@ -517,9 +580,45 @@ pub(super) fn render_tree(
         // The selection covers the complete row, so the reader finds it at any
         // indent depth.
         target.set_style(Rect::new(body.x, y, body.width, 1), style);
-        target.set_stringn(body.x, y, row_text(row), width, style);
+        target.set_stringn(body.x, y, row_text(row, icons), width, style);
+        // The icon carries its own color over the row style, so a selected row
+        // keeps its background behind the glyph.
+        render_row_icon(target, body, y, row, icons, theme, style);
     }
     cursor
+}
+
+/// Paints the icon cell of one row with the color of its role.
+///
+/// The icon sits behind the indent and the expansion marker, so its column
+/// follows the depth of the row. A row whose icon falls outside the sidebar
+/// keeps the clipped text that the row already wrote.
+fn render_row_icon(
+    target: &mut CellBuffer,
+    body: Rect,
+    y: u16,
+    row: &TreeRow,
+    icons: FileTreeIcons,
+    theme: Theme,
+    style: Style,
+) {
+    let Some(icon) = row_icon(row, icons) else {
+        return;
+    };
+    let Ok(offset) = u16::try_from(row.depth * TREE_INDENT_CELLS + MARKER_CELLS) else {
+        debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
+        return;
+    };
+    if offset >= body.width {
+        return;
+    }
+    target.set_stringn(
+        body.x.saturating_add(offset),
+        y,
+        icon.glyph,
+        ICON_CELLS,
+        style.patch(theme.style(ThemeRole::Icon(icon.role))),
+    );
 }
 
 /// Renders the title row of the sidebar.

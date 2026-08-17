@@ -13,18 +13,38 @@ window identities, split structure, and validated dimensions.
 
 The window tree is a binary tree with two node kinds:
 
-- A leaf window shows one buffer. It has a stable window identity, a viewport
-  offset, and a cursor position.
+- A leaf window shows one buffer. It has a stable window identity and one view
+  into that buffer.
 - A split node has an orientation and two children. A horizontal split node
   stacks its children top and bottom. A vertical split node places its children
   left and right.
 
 A window identity stays stable while the window exists. Splitting, resizing,
 closing a sibling, and resizing the terminal never change an existing identity.
-Focus, buffer association, and viewport state follow the identity.
+Focus, buffer association, and the view of the window follow the identity.
 
 Closing a window replaces its parent split node with the remaining sibling. The
-tree always has at least one leaf window.
+tree always has at least one leaf window. The closed window discards its view
+with it.
+
+## Window View
+
+A window owns the cursor, the selection anchor, and the viewport. Only the
+buffer text is shared. Two windows that show one buffer therefore move and
+scroll independently: a scroll in one window moves no other window, and a move
+in one window moves no other cursor.
+
+The mode is global. Vim holds one mode, not one mode for each window, so the
+editor keeps the mode, the operator-pending state, and the repeat description
+outside the window.
+
+Moving the focus changes no cursor. Each window resumes exactly where it was.
+Showing another buffer in a window restarts the cursor and the anchor of that
+window at the first line, because both describe the previous text.
+
+The viewport of every window reconciles against the cursor of that window and
+the buffer of that window. See the scroll margin in
+[Buffer Presentation](#buffer-presentation).
 
 ## Layout
 
@@ -41,8 +61,10 @@ A new horizontal split opens the new window below the current window. A new
 vertical split opens the new window to the right of the current window. Both
 defaults belong to `EditorSettings`. See [`settings.md`](settings.md).
 
-The new window shows the same buffer as the source window. The new window
-receives focus.
+The new window shows the same buffer as the source window, and it copies the
+cursor, the selection anchor, and the viewport of that window, so it opens at
+the same place. Both windows then move independently. The new window receives
+focus.
 
 ## Adaptive Split
 
@@ -224,11 +246,22 @@ A new role belongs here first, and its color stays in code.
 | Title | The title of a focused window or of an overlay |
 | TitleMuted | The title of an unfocused window |
 | PopupSelection | The selected row of a popup list |
+| Icon(role) | One file-tree icon |
 | Error, Warning, Info, Hint | One message severity |
 | Syntax(role) | One syntax role of a language adapter |
 
 The selection and the prompt cursor carry no color of their own. They decorate
-the style below them, so a later syntax color survives both.
+the style below them, so a later syntax color survives both. A file-tree icon
+carries a foreground color only, so a selected row keeps its background behind
+the glyph.
+
+### Icon Roles
+
+An icon role names what a file-tree entry is, never its color. The role set is:
+Directory, Code, Configuration, Document, Script, VersionControl, Generated,
+Media, and Unknown. Every role maps to a color of the palette above, so the
+icons add no new color. [`files.md`](files.md) owns the icon table and the
+setting that hides the icons.
 
 A window title uses the title color, which the reference palette shares with
 the function syntax role. The surface band and the bold modifier keep a title
@@ -254,14 +287,14 @@ Rust adapter produces highlight spans.
 
 Every window paints the buffer of its own leaf. Two windows therefore show two
 different files after `:e` in a split. The focused window paints the Visual
-selection, because the editing state follows one window. An unfocused window
-paints none, and its line numbers count from the start of its own buffer,
-because no per-window cursor exists yet.
+selection, because the mode is global and belongs to the focused window. An
+unfocused window paints none.
 
 The terminal draws the cursor itself, because a cell grid cannot draw half a
 cell. One frame reports one cursor cell: the cell of the focused window, behind
 the gutter and after the horizontal scroll. An unfocused window reports no cell,
-so it shows no cursor.
+so it shows no cursor. It still holds its own cursor position, so its relative
+line numbers count from that line.
 
 The cursor shape follows the mode. Insert mode requests a steady vertical bar,
 and every other mode requests a steady block. The editor writes the shape only
