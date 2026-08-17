@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This document owns the workspace shape, the module boundaries, the dependency
+This document owns the workspace shape, the crate boundaries, the dependency
 direction, state ownership, and the dependency ledger for Kvim.
 
 Kvim is a standalone terminal modal editor for Rust. It builds one executable
@@ -12,51 +12,86 @@ boundaries.
 
 ## Workspace
 
-The repository uses one Cargo workspace. The workspace has one member crate at
-`crates/kvim`. That crate produces the `kvim` executable.
+The repository uses one Cargo workspace. Every charter below is one library
+crate under `crates/`, plus the `kvim` binary crate that produces the
+executable.
 
-Keep the modules below inside the one member crate. Extract a crate only when
-two concrete consumers justify the extraction. A second consumer inside the same
-executable is not a second consumer.
+One crate for each charter makes the dependency direction a compile error
+instead of a review rule. A reverse dependency no longer builds, so the layering
+below cannot drift.
 
-## Modules
+Build time is the second reason. One 41,000-line crate is the smallest unit that
+`cargo` can recompile, so an edit anywhere recompiled all of it. After the split,
+an edit recompiles its own crate and the crates above it only. The measured gain
+on a warm incremental cache is small, because this codebase already compiles in
+seconds: a one-item edit cost about 0.7 s to check and about 1.3 s to build
+before the split. The enforced boundary, not the clock, is the reason to keep
+the split.
 
-| Module | Charter | Arrives |
+Keep the crate set below stable. Add a crate only when a new charter appears.
+
+## Crates
+
+| Crate | Charter | Arrives |
 |---|---|---|
-| `core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. Depends on no other module. | Slice 4 |
-| `editor` | Modal editing state: cursors, motions, operators, registers, search, and dot-repeat. | Slices 5–6 |
-| `input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. | Slice 3 |
-| `language` | The language adapter registry, language-neutral Tree-sitter analysis, and the language-server session. Rust is the one adapter of the first release. | Slices 12–13 |
-| `clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
-| `runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
-| `settings` | The `EditorSettings` structure and its defaults. Depends on no other module. | Slice 1 |
-| `terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, and normalized terminal events. | Slice 2 |
-| `tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. | Slices 7–8 |
-| `workspace` | Files, buffers, atomic save, the file tree, workspace mutations, and pickers. | Slices 9–11 |
+| `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. | Slice 4 |
+| `kvim-editor` | Modal editing state: cursors, motions, operators, registers, search, and dot-repeat. | Slices 5–6 |
+| `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. | Slice 3 |
+| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, and the language-server session. Rust is the one adapter of the first release. | Slices 12–13 |
+| `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
+| `kvim-runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
+| `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. | Slice 1 |
+| `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, and normalized terminal events. | Slice 2 |
+| `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. | Slices 7–8 |
+| `kvim-workspace` | Files, buffers, atomic save, the file tree, workspace mutations, and pickers. | Slices 9–11 |
+| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, and starts the editor. | Slice 1 |
 
-Modules communicate through narrow contracts. Generic terminal, runtime,
-window, and file code must not contain language-specific path rules. Only a
-language adapter selects a path by language or file extension.
+Crates communicate through narrow contracts. Generic terminal, runtime, window,
+and file code must not contain language-specific path rules. Only a language
+adapter selects a path by language or file extension.
 
 One narrow exception exists: the file tree selects an icon by file extension and
-by well-known file name. An icon is presentation data, so its table lives in the
-`tui` module beside the theme. An icon must never select a parser, an indent
-rule, a comment token, or a language server, and no icon value may reach the
-language adapters. [`files.md`](files.md) owns the icon table.
+by well-known file name. An icon is presentation data, so its table lives in
+`kvim-tui` beside the theme. An icon must never select a parser, an indent rule,
+a comment token, or a language server, and no icon value may reach the language
+adapters. [`files.md`](files.md) owns the icon table.
+
+`kvim-language` and `kvim-workspace` each publish one test seam behind a
+`test-support` feature: the mock language server and the temporary-directory
+helper. The editor tests of `kvim-tui` drive both, so one mock server and one
+directory helper serve every layer. A normal build enables neither feature.
 
 ## Dependency Direction
 
-The dependency direction is one-way:
+The dependency direction is one-way, and Cargo enforces it:
 
-- Every module may depend on `settings`.
-- `core` depends on no other module.
-- `editor` depends on `core`.
-- `tui` depends on `editor`.
-- The binary is the composition root. It constructs dependencies and starts the
-  editor.
+| Layer | Crate | Depends on |
+|---|---|---|
+| 0 | `kvim-settings` | — |
+| 1 | `kvim-core` | `kvim-settings` |
+| 1 | `kvim-runtime` | — |
+| 1 | `kvim-terminal` | — |
+| 2 | `kvim-input` | `kvim-settings`, `kvim-terminal` |
+| 2 | `kvim-clipboard` | `kvim-runtime` |
+| 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
+| 3 | `kvim-language` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
+| 4 | `kvim-tui` | every crate above except `kvim-clipboard` |
+| 5 | `kvim` | `kvim-settings`, `kvim-tui` |
 
-Do not add a reverse dependency. Move a shared type down to `core` or
-`settings` instead.
+`kvim-runtime` and `kvim-terminal` need no setting today. Add
+`kvim-settings` to either one when a setting reaches it.
+
+`kvim-clipboard` has no consumer yet. The editor gains one when the register
+commands reach the system clipboard. The crate builds and tests with the
+workspace in the meantime.
+
+The binary is the composition root. It constructs dependencies and starts the
+editor.
+
+Do not add a reverse dependency. Move a shared type down to `kvim-core` or
+`kvim-settings` instead. A reverse dependency is a Cargo cycle, so it fails the
+build rather than a review.
 
 ## State Ownership
 
@@ -82,60 +117,66 @@ more specific owning document, before implementation uses it.
 - `thiserror`
   - Replaces: hand-written error types, `Display` implementations, and manual
     source chains.
-  - May run: in every module, including `core`.
+  - May run: in every crate that reports a typed failure, including
+    `kvim-core`. Only `kvim-settings` needs no error type.
   - Cost: one derive macro at compile time. No runtime cost.
 
 ### Slices 2 And Later
 
-These dependencies must not run inside `core`. They stay at the imperative
-boundary.
+These dependencies must not run inside `kvim-core`. They stay at the
+imperative boundary.
 
 - `crossterm`
   - Replaces: local raw mode, alternate screen, resize handling, enhanced
     keyboard reporting, and key decoding.
-  - May run: in `terminal` only.
+  - May run: in `kvim-terminal` only.
   - Cost: compile time and platform-specific transitive code.
 - `ratatui`
   - Replaces: a local widget set, cell buffer, and layout implementation.
-  - May run: in `tui` only.
+  - May run: in `kvim-tui` only.
   - Cost: compile time. Rendering cost stays bounded by the terminal buffer and
     the visible window content.
 - `unicode-width`
   - Replaces: local terminal-cell width tables.
-  - May run: in `terminal` and `tui` only. `core` defines the terminal-column
-    coordinate type, but it does not measure cell width.
+  - May run: in `kvim-tui` only. `kvim-core` defines the terminal-column
+    coordinate type, but it does not measure cell width, and `kvim-terminal`
+    normalizes events rather than laying out cells.
   - Cost: small. Work stays bounded to visible or otherwise bounded text.
 - `futures-util`
   - Replaces: a local polling loop over terminal events.
-  - May run: in `terminal`, `tui`, and `runtime`.
+  - May run: in `kvim-terminal` only, which owns the event stream.
   - Cost: one small stream extension API.
 - `tokio`
   - Replaces: local thread pools, channels, deadlines, and child-process
     handling.
-  - May run: in `runtime` and the composition root. Other modules receive
-    runtime services as injected values.
+  - May run: in `kvim-runtime`, the composition root, and the crates that own
+    one bounded task of their own: `kvim-language`, `kvim-terminal`, and
+    `kvim-tui`. Every other crate receives runtime services as injected values.
   - Cost: compile time, supply-chain size, and a worker thread pool.
 - `tokio-util`
   - Replaces: local cancellation flags and shared shutdown state.
-  - May run: in `runtime` only.
+  - May run: in `kvim-runtime`, and in every crate that owns a cancellable
+    request: `kvim-language`, `kvim-tui`, and `kvim-workspace`. A cancellation
+    token crosses the service boundary with the request it belongs to.
   - Cost: small. It adds owned cancellation tokens.
 - `notify`
   - Replaces: local inotify and FSEvents code for external change hints.
-  - May run: behind a portable `runtime` service boundary only.
+  - May run: behind a portable `kvim-runtime` service boundary only. No crate
+    depends on it yet.
   - Cost: platform-specific transitive code and one callback thread. Watch
     roots and callback delivery stay bounded.
 
 ### Slice 4
 
-This dependency runs inside `core`, because the text storage is the text model.
-`core` runs no other dependency except `thiserror`.
+This dependency runs inside `kvim-core`, because the text storage is the text
+model. `kvim-core` runs no other dependency except `thiserror`.
 
 - `ropey` 1.6
   - Replaces: a local rope or piece table, a local line index, and local
     conversions between byte offsets, character positions, and line indexes.
-  - May run: in `core` only. `core` keeps the rope private and exposes validated
-    coordinates, edit transactions, and owned line text. No other module sees a
-    rope type.
+  - May run: in `kvim-core` only. `kvim-core` keeps the rope private and exposes
+    validated coordinates, edit transactions, and owned line text. No other
+    crate sees a rope type.
   - Cost: compile time and one chunked tree over the buffer text. Memory stays
     bounded by the maximum file size and by the undo history bound in
     [`text-model.md`](text-model.md).
@@ -153,15 +194,15 @@ These dependencies run only on the bounded worker service.
 
 - `tree-sitter`
   - Replaces: a local Rust parser and incremental reparse logic.
-  - May run: on the bounded worker service, inside the `language` module.
+  - May run: on the bounded worker service, inside `kvim-language`.
   - Cost: compile time, native code, and bounded parse memory for each buffer.
 - `tree-sitter-highlight`
   - Replaces: local highlight-query execution and capture mapping.
-  - May run: on the bounded worker service, inside the `language` module.
+  - May run: on the bounded worker service, inside `kvim-language`.
   - Cost: small addition over `tree-sitter`.
 - `tree-sitter-rust`
   - Replaces: a local Rust grammar and local highlight queries.
-  - May run: on the bounded worker service, inside the `language` module.
+  - May run: on the bounded worker service, inside `kvim-language`.
   - Cost: generated C code and compile time.
 
 ### Slice 13
@@ -170,11 +211,11 @@ These dependencies run only in the bounded language-server task.
 
 - `serde`
   - Replaces: hand-written JSON-RPC envelope parsing.
-  - May run: in the bounded language-server task, inside the `language` module.
+  - May run: in the bounded language-server task, inside `kvim-language`.
   - Cost: derive macros and compile time.
 - `serde_json`
   - Replaces: a local JSON parser and serializer.
-  - May run: in the bounded language-server task, inside the `language` module.
+  - May run: in the bounded language-server task, inside `kvim-language`.
   - Cost: compile time. Allocation stays inside the bounded task.
 
 ## Release Profile

@@ -1,0 +1,38 @@
+[package]
+name = "kvim-tui"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+# Kvim crates
+kvim-core.workspace = true
+kvim-editor.workspace = true
+kvim-input.workspace = true
+kvim-language.workspace = true
+kvim-runtime.workspace = true
+kvim-settings.workspace = true
+kvim-terminal.workspace = true
+kvim-workspace.workspace = true
+
+# Basics
+thiserror.workspace = true
+
+# Terminal
+ratatui.workspace = true
+unicode-width.workspace = true
+
+# Runtime
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+# Kvim crates
+# The editor wiring tests drive the mock language server and the temporary
+# directory helper that these two crates publish behind `test-support`.
+kvim-language = { workspace = true, features = ["test-support"] }
+kvim-workspace = { workspace = true, features = ["test-support"] }
+
+# Serialization
+serde_json.workspace = true

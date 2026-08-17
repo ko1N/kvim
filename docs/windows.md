@@ -224,8 +224,8 @@ tokyonight night palette. This document does not restate those values.
 
 ### Interface Roles
 
-The `tui` theme owns this role set. A new call site selects one of these roles.
-A new role belongs here first, and its color stays in code.
+The `kvim-tui` theme owns this role set. A new call site selects one of these
+roles. A new role belongs here first, and its color stays in code.
 
 | Role | Meaning |
 |---|---|
@@ -271,8 +271,8 @@ the same surface band.
 
 ### Syntax Roles
 
-Syntax roles are terminal-independent at the language boundary. The interface
-layer maps them to theme roles. See
+Syntax roles are terminal-independent at the language boundary, so
+`kvim-language` owns the role set. The theme maps each role to one style. See
 [`language-services.md`](language-services.md).
 
 The role set is: Attribute, Boolean, Bracket, Comment, Constant, Constructor,
@@ -280,8 +280,8 @@ Delimiter, Function, Keyword, Macro, Number, Operator, Parameter, Preprocessor,
 Property, Statement, String, Type, and Variable. The comment role and the
 keyword role also carry the italic modifier of the reference configuration.
 
-The `tui` theme defines these roles now. No call site requests one before the
-Rust adapter produces highlight spans.
+Add a new syntax role in `kvim-language`, then add its style here. The theme
+holds the color; it never defines the role.
 
 ## Buffer Presentation
 

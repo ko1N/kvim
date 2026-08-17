@@ -1,21 +1,13 @@
 [package]
-name = "kvim"
+name = "kvim-clipboard"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
-[[bin]]
-name = "kvim"
-path = "src/main.rs"
-
 [dependencies]
 # Kvim crates
-kvim-settings.workspace = true
-kvim-tui.workspace = true
+kvim-runtime.workspace = true
 
 # Basics
 thiserror.workspace = true
-
-# Runtime
-tokio.workspace = true

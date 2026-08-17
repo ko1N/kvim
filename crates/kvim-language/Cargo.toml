@@ -1,0 +1,36 @@
+[package]
+name = "kvim-language"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+# Publishes the deterministic mock language server of the `mock` module.
+#
+# The editor wiring tests of `kvim-tui` drive the same mock as the protocol
+# tests here, so one mock server covers every layer. The module is a test seam,
+# never editor behavior, so a normal build leaves it out.
+test-support = []
+
+[dependencies]
+# Kvim crates
+kvim-core.workspace = true
+kvim-runtime.workspace = true
+kvim-settings.workspace = true
+
+# Basics
+thiserror.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Language analysis
+tree-sitter.workspace = true
+tree-sitter-highlight.workspace = true
+tree-sitter-rust.workspace = true
+
+# Runtime
+tokio.workspace = true
+tokio-util.workspace = true
