@@ -11,7 +11,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
 use crate::editor::Cursor;
-use crate::input::{Mode, PromptKind};
+use crate::input::Mode;
 
 use super::session::{Message, MessageLevel, PromptLine};
 use super::theme::{Theme, ThemeRole};
@@ -24,12 +24,6 @@ const MESSAGE_ROWS: u16 = 1;
 
 /// The number of rows that both chrome bands occupy together.
 const CHROME_ROWS: u16 = STATUSLINE_ROWS + MESSAGE_ROWS;
-
-/// The prompt character of the command line.
-const COMMAND_LINE_PREFIX: char = ':';
-
-/// The prompt character of the search prompt.
-const SEARCH_PREFIX: char = '/';
 
 /// The three bands of the terminal.
 ///
@@ -136,11 +130,7 @@ pub(super) fn render_message(
     let base = theme.style(ThemeRole::Text);
     target.set_style(area, base);
     if let Some(prompt) = prompt {
-        let prefix = match prompt.kind {
-            PromptKind::CommandLine => COMMAND_LINE_PREFIX,
-            PromptKind::Search => SEARCH_PREFIX,
-        };
-        let line = format!("{prefix}{}", prompt.text);
+        let line = format!("{}{}", prompt.kind.prefix(), prompt.text);
         let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
         // The terminal cursor marks the cell of the focused window, so the
         // prompt draws its own cursor at the end of the line.

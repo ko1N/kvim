@@ -67,8 +67,11 @@ flags, because that pair can express a state that has no meaning.
 | Resize step | 6 cells |
 | Minimum window width | 20 cells |
 | Minimum window height | 3 rows |
+| File tree width | 40 cells |
 
-[`windows.md`](windows.md) owns the split, focus, and resize behavior.
+[`windows.md`](windows.md) owns the split, focus, and resize behavior. The file
+tree width is the width of the right sidebar when it opens. A directional resize
+toward the sidebar changes the width of the open sidebar, not this default.
 
 ## Files
 

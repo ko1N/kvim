@@ -95,6 +95,124 @@ impl fmt::Display for Mode {
     }
 }
 
+/// The registry table that owns one key sequence.
+///
+/// An editor mode owns one table, and the file-tree sidebar owns one more. Only
+/// one scope is active, so one key sequence may appear in several scopes with
+/// different commands.
+///
+/// ```
+/// use kvim::input::{BindingScope, Mode};
+///
+/// assert!(BindingScope::Mode(Mode::Normal).accepts_count());
+/// // The sidebar reads no count, because its keys act on one selected entry.
+/// assert!(!BindingScope::Sidebar.accepts_count());
+/// ```
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum BindingScope {
+    /// One editor mode owns the keys.
+    Mode(Mode),
+    /// The file-tree sidebar owns the keys.
+    Sidebar,
+}
+
+impl BindingScope {
+    /// The number of scopes. The mapping registry holds one table for each.
+    pub const COUNT: usize = Mode::COUNT + 1;
+
+    /// Every scope, in table order.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Mode(Mode::Normal),
+        Self::Mode(Mode::Insert),
+        Self::Mode(Mode::Visual),
+        Self::Mode(Mode::VisualLine),
+        Self::Mode(Mode::VisualBlock),
+        Self::Sidebar,
+    ];
+
+    /// Returns the registry table index of the scope.
+    ///
+    /// The mode indexes fill the first [`Mode::COUNT`] tables, so the value
+    /// stays inside [`BindingScope::COUNT`] by construction.
+    #[inline]
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Mode(mode) => mode.index(),
+            Self::Sidebar => Mode::COUNT,
+        }
+    }
+
+    /// Reports whether the scope accepts a decimal count before a sequence.
+    #[inline]
+    pub const fn accepts_count(self) -> bool {
+        match self {
+            Self::Mode(mode) => mode.accepts_count(),
+            Self::Sidebar => false,
+        }
+    }
+
+    /// Returns the short name of the scope.
+    #[inline]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Mode(mode) => mode.label(),
+            Self::Sidebar => "File Tree",
+        }
+    }
+
+    /// Returns the input context in which this scope owns input.
+    #[inline]
+    pub const fn context(self) -> InputContext {
+        match self {
+            Self::Mode(mode) => InputContext::Mode(mode),
+            Self::Sidebar => InputContext::Sidebar,
+        }
+    }
+}
+
+impl From<Mode> for BindingScope {
+    /// Returns the scope of one editor mode.
+    #[inline]
+    fn from(mode: Mode) -> Self {
+        Self::Mode(mode)
+    }
+}
+
+impl fmt::Display for BindingScope {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.label())
+    }
+}
+
+/// The file-tree operation that one prompt line names.
+///
+/// Each operation reads one line of text. The tree uses the prompt of the
+/// message line, so it opens no second input mechanism. See `docs/files.md`.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TreePrompt {
+    /// Create one file inside the destination directory.
+    AddFile,
+    /// Create one directory inside the destination directory.
+    AddDirectory,
+    /// Give the selected entry another name.
+    Rename,
+    /// Narrow the visible rows to the names that hold the query.
+    Filter,
+}
+
+impl TreePrompt {
+    /// Returns the text that the prompt line shows before the input.
+    #[inline]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::AddFile => "new file: ",
+            Self::AddDirectory => "new directory: ",
+            Self::Rename => "rename: ",
+            Self::Filter => "filter: ",
+        }
+    }
+}
+
 /// One line prompt that reads a query instead of a key sequence.
 ///
 /// A prompt is not a mode. See `docs/input-actions.md`.
@@ -104,33 +222,56 @@ pub enum PromptKind {
     CommandLine,
     /// The search prompt that `/` opens.
     Search,
+    /// One file-tree operation that needs a name or a query.
+    Tree(TreePrompt),
+}
+
+impl PromptKind {
+    /// Returns the text that the prompt line shows before the input.
+    ///
+    /// ```
+    /// use kvim::input::{PromptKind, TreePrompt};
+    ///
+    /// assert_eq!(PromptKind::CommandLine.prefix(), ":");
+    /// assert_eq!(PromptKind::Tree(TreePrompt::Rename).prefix(), "rename: ");
+    /// ```
+    #[inline]
+    pub const fn prefix(self) -> &'static str {
+        match self {
+            Self::CommandLine => ":",
+            Self::Search => "/",
+            Self::Tree(prompt) => prompt.prefix(),
+        }
+    }
 }
 
 /// The owner of keyboard input.
 ///
-/// One editor mode or one line prompt owns input, never both. The variant holds
-/// the mode that regains input when the prompt closes, so the editor cannot lose
-/// the mode while a prompt is open.
+/// One editor mode, the file-tree sidebar, or one line prompt owns input, never
+/// two of them. The prompt variant holds the scope that regains input when the
+/// prompt closes, so the editor cannot lose that scope while a prompt is open.
 ///
 /// ```
-/// use kvim::input::{InputContext, Mode, PromptKind};
+/// use kvim::input::{BindingScope, InputContext, Mode, PromptKind};
 ///
 /// let normal = InputContext::NORMAL;
 /// let prompt = normal.open_prompt(PromptKind::CommandLine);
 /// assert_eq!(prompt.prompt(), Some(PromptKind::CommandLine));
-/// assert_eq!(prompt.mode(), Mode::Normal);
+/// assert_eq!(prompt.scope(), BindingScope::Mode(Mode::Normal));
 /// assert_eq!(prompt.close_prompt(), normal);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum InputContext {
     /// One editor mode owns input.
     Mode(Mode),
+    /// The file-tree sidebar owns input.
+    Sidebar,
     /// One line prompt owns input.
     Prompt {
         /// The prompt that reads the line.
         kind: PromptKind,
-        /// The mode that regains input when the prompt closes.
-        return_mode: Mode,
+        /// The scope that regains input when the prompt closes.
+        return_to: BindingScope,
     },
 }
 
@@ -138,13 +279,14 @@ impl InputContext {
     /// Normal mode owns input.
     pub const NORMAL: Self = Self::Mode(Mode::Normal);
 
-    /// Returns the mode that owns input, or that regains it when the prompt
+    /// Returns the scope that owns input, or that regains it when the prompt
     /// closes.
     #[inline]
-    pub const fn mode(self) -> Mode {
+    pub const fn scope(self) -> BindingScope {
         match self {
-            Self::Mode(mode) => mode,
-            Self::Prompt { return_mode, .. } => return_mode,
+            Self::Mode(mode) => BindingScope::Mode(mode),
+            Self::Sidebar => BindingScope::Sidebar,
+            Self::Prompt { return_to, .. } => return_to,
         }
     }
 
@@ -152,29 +294,29 @@ impl InputContext {
     #[inline]
     pub const fn prompt(self) -> Option<PromptKind> {
         match self {
-            Self::Mode(_) => None,
+            Self::Mode(_) | Self::Sidebar => None,
             Self::Prompt { kind, .. } => Some(kind),
         }
     }
 
     /// Opens a prompt over the current context.
     ///
-    /// The return mode stays the mode that owned input before the first prompt,
-    /// so one prompt that replaces another still restores the editor mode.
+    /// The return scope stays the scope that owned input before the first
+    /// prompt, so one prompt that replaces another still restores it.
     #[inline]
     pub const fn open_prompt(self, kind: PromptKind) -> Self {
         Self::Prompt {
             kind,
-            return_mode: self.mode(),
+            return_to: self.scope(),
         }
     }
 
-    /// Closes an open prompt and restores the mode.
+    /// Closes an open prompt and restores the scope below it.
     ///
-    /// The function returns a mode context unchanged.
+    /// The function returns a context without a prompt unchanged.
     #[inline]
     pub const fn close_prompt(self) -> Self {
-        Self::Mode(self.mode())
+        self.scope().context()
     }
 }
 
@@ -186,25 +328,36 @@ impl Default for InputContext {
 
 #[cfg(test)]
 mod tests {
-    use super::{InputContext, Mode, PromptKind};
+    use super::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 
     #[test]
-    fn mode_indexes_are_unique_and_bounded() {
-        let mut seen = [false; Mode::COUNT];
-        for mode in Mode::ALL {
-            let index = mode.index();
-            assert!(index < Mode::COUNT, "{mode} indexes outside the table");
-            assert!(!seen[index], "{mode} repeats a table index");
+    fn scope_indexes_are_unique_and_bounded() {
+        let mut seen = [false; BindingScope::COUNT];
+        for scope in BindingScope::ALL {
+            let index = scope.index();
+            assert!(
+                index < BindingScope::COUNT,
+                "{scope} indexes outside the table"
+            );
+            assert!(!seen[index], "{scope} repeats a table index");
             seen[index] = true;
         }
     }
 
     #[test]
-    fn a_second_prompt_keeps_the_original_return_mode() {
+    fn a_second_prompt_keeps_the_original_return_scope() {
         let visual = InputContext::Mode(Mode::Visual);
         let search = visual.open_prompt(PromptKind::Search);
         let command = search.open_prompt(PromptKind::CommandLine);
-        assert_eq!(command.mode(), Mode::Visual);
+        assert_eq!(command.scope(), BindingScope::Mode(Mode::Visual));
         assert_eq!(command.close_prompt(), visual);
+    }
+
+    #[test]
+    fn a_tree_prompt_returns_input_to_the_sidebar() {
+        let sidebar = InputContext::Sidebar;
+        let prompt = sidebar.open_prompt(PromptKind::Tree(TreePrompt::Rename));
+        assert_eq!(prompt.scope(), BindingScope::Sidebar);
+        assert_eq!(prompt.close_prompt(), sidebar);
     }
 }

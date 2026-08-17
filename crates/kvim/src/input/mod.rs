@@ -55,7 +55,7 @@ mod resolver;
 
 pub use command::Command;
 pub use command_line::{COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError};
-pub use mode::{InputContext, Mode, PromptKind};
+pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 pub use registry::{
     Binding, KeyLabel, KeySequence, Registry, RegistryError, WhichKeyRow, WhichKeyTarget,
 };

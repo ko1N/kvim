@@ -30,7 +30,7 @@ use crate::terminal::{
     CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
     TerminalSession,
 };
-use crate::workspace::{BUFFERS_MAX, FileResult};
+use crate::workspace::{BUFFERS_MAX, FileResult, WorkspaceResult};
 
 use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
 use super::session::{AnalysisResult, FileRequestFailure, Redraw, RunState, Session};
@@ -54,6 +54,12 @@ const FILE_SLOT: RequestSlot = RequestSlot::new(1);
 /// cancels the parse of the version that it replaced.
 const ANALYSIS_SLOT: RequestSlot = RequestSlot::new(2);
 
+/// The publication slot of every workspace operation.
+///
+/// The file tree runs one directory read or one mutation at a time, so one slot
+/// holds every workspace operation.
+const WORKSPACE_SLOT: RequestSlot = RequestSlot::new(3);
+
 /// The language requests that one loop iteration sends.
 ///
 /// The session holds a bounded outbox and one fresh open for each loaded
@@ -69,6 +75,8 @@ enum WorkResult {
     File(FileResult),
     /// One buffer analysis finished.
     Analysis(AnalysisResult),
+    /// One workspace operation of the file tree finished.
+    Workspace(WorkspaceResult),
 }
 
 /// A failure that ends the editor.
@@ -85,6 +93,21 @@ pub enum EditorError {
     EventStream(#[source] TerminalError),
 }
 
+/// Whether the editor panics on purpose after its first frame.
+///
+/// The probe proves that the panic hook of the terminal session restores the
+/// terminal, because a panic aborts without running a destructor on some
+/// platforms. It is a diagnostic, not an editor feature. See
+/// `docs/architecture.md`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum PanicProbe {
+    /// Run the editor normally.
+    #[default]
+    Disabled,
+    /// Panic after the first frame reaches the terminal.
+    AfterFirstFrame,
+}
+
 /// The outcome of one loop iteration.
 enum Step {
     /// The iteration applied a transition.
@@ -98,7 +121,8 @@ enum Step {
 /// Runs the editor until it closes its last window.
 ///
 /// The terminal returns to its original state on every exit path, including a
-/// panic unwind.
+/// panic. The panic hook of the terminal session owns that path, because a
+/// panic aborts without running a destructor on some platforms.
 ///
 /// The caller resolves the workspace root, because the language services
 /// perform no filesystem lookup. The root is the containment boundary of every
@@ -114,10 +138,11 @@ pub async fn run(
     settings: EditorSettings,
     root: PathBuf,
     path: Option<PathBuf>,
+    probe: PanicProbe,
 ) -> Result<(), EditorError> {
     let mut terminal =
         TerminalSession::enter(CrosstermControl::new()).map_err(EditorError::Terminal)?;
-    let outcome = drive(&mut terminal, settings, root, path).await;
+    let outcome = drive(&mut terminal, settings, root, path, probe).await;
     terminal.restore().map_err(EditorError::Terminal)?;
     outcome
 }
@@ -139,10 +164,15 @@ async fn drive<C: TerminalControl>(
     settings: EditorSettings,
     root: PathBuf,
     path: Option<PathBuf>,
+    probe: PanicProbe,
 ) -> Result<(), EditorError> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(EditorError::Draw)?;
     let size = terminal.size().map_err(EditorError::Draw)?;
-    let mut editor = Session::new(Rect::new(0, 0, size.width, size.height), settings);
+    let mut editor = Session::new(
+        Rect::new(0, 0, size.width, size.height),
+        settings,
+        root.clone(),
+    );
     let mut events = EventSource::from_terminal();
     // The file operations and the buffer analysis run on the bounded worker
     // service, so the loop below performs no filesystem work and no parsing.
@@ -170,6 +200,10 @@ async fn drive<C: TerminalControl>(
     terminal
         .draw(|frame| editor.render(frame))
         .map_err(EditorError::Draw)?;
+    assert!(
+        probe == PanicProbe::Disabled,
+        "the panic probe of the environment asks for this panic"
+    );
     while editor.run_state() == RunState::Running {
         let now = start.elapsed();
         let step = match editor.next_deadline() {
@@ -289,6 +323,33 @@ fn submit_background_work(
 ) {
     submit_file_work(editor, runtime, gate);
     submit_analysis_work(editor, runtime, gate);
+    submit_workspace_work(editor, runtime, gate);
+}
+
+/// Hands the queued directory read or mutation to the bounded worker service.
+///
+/// A refused submission reaches the session as a typed failure, so the file
+/// tree keeps the state that it held before the request.
+fn submit_workspace_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) {
+    let Some(request) = editor.take_workspace_request() else {
+        return;
+    };
+    let handle = gate.begin(WORKSPACE_SLOT, &runtime.cancellation_root());
+    let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, |_cancellation| {
+        WorkResult::Workspace(request.run())
+    });
+    if let Err(error) = submitted {
+        editor.abandon_workspace_request(match error {
+            SubmitError::Saturated(_) => FileRequestFailure::Saturated,
+            SubmitError::InvalidLimits | SubmitError::ProcessBounds | SubmitError::ShuttingDown => {
+                FileRequestFailure::Cancelled
+            }
+        });
+    }
 }
 
 /// Hands the queued file request to the bounded worker service.
@@ -346,26 +407,30 @@ fn complete(
         return Step::Handled(Redraw::Skipped);
     }
     let analysis = event.request.slot() == ANALYSIS_SLOT;
+    let workspace = event.request.slot() == WORKSPACE_SLOT;
+    let failure = |error: &RuntimeError| match error {
+        RuntimeError::Timeout => FileRequestFailure::Timeout,
+        // A cancelled request and a failed worker both leave the buffer
+        // unchanged, so the editor stays usable and the user can try again.
+        RuntimeError::Cancelled
+        | RuntimeError::WorkerFailure(_)
+        | RuntimeError::ProcessSpawn(_)
+        | RuntimeError::ProcessRead(_)
+        | RuntimeError::ProcessWrite(_)
+        | RuntimeError::OutputLimit { .. } => FileRequestFailure::Cancelled,
+    };
     Step::Handled(match event.result {
         Ok(WorkResult::File(result)) => editor.apply_file_result(result),
         Ok(WorkResult::Analysis(result)) => editor.apply_analysis_result(result),
+        Ok(WorkResult::Workspace(result)) => editor.apply_workspace_result(result),
         // An analysis that fails, times out, or is cancelled renders plain text
         // and reports nothing, because highlighting is decoration.
         Err(_) if analysis => {
             editor.abandon_analysis_request();
             Redraw::Skipped
         }
-        Err(RuntimeError::Timeout) => editor.abandon_file_request(FileRequestFailure::Timeout),
-        // A cancelled request and a failed worker both leave the buffer
-        // unchanged, so the editor stays usable and the user can try again.
-        Err(
-            RuntimeError::Cancelled
-            | RuntimeError::WorkerFailure(_)
-            | RuntimeError::ProcessSpawn(_)
-            | RuntimeError::ProcessRead(_)
-            | RuntimeError::ProcessWrite(_)
-            | RuntimeError::OutputLimit { .. },
-        ) => editor.abandon_file_request(FileRequestFailure::Cancelled),
+        Err(error) if workspace => editor.abandon_workspace_request(failure(&error)),
+        Err(error) => editor.abandon_file_request(failure(&error)),
     })
 }
 

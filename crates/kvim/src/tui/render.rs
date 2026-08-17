@@ -14,6 +14,7 @@ use super::layout::RegionKind;
 use super::overlay::{render_float, render_which_key};
 use super::session::Visible;
 use super::theme::ThemeRole;
+use super::tree::render_tree;
 
 /// Renders one complete frame.
 pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
@@ -27,6 +28,9 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     // cursor cell: the one of the focused window. An unfocused window reports
     // none, and the terminal then shows no cursor there. See `docs/windows.md`.
     let mut cursor_at = None;
+    // A focused sidebar owns the keys, so its selected row wins the one cursor
+    // cell that a frame reports.
+    let mut sidebar_cursor = None;
     let matches = view.search.map_or(&[][..], |search| &search.matches);
     let match_chars = view
         .search
@@ -88,10 +92,20 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     cursor_at = cursor_cell(region.area, &window);
                 }
             }
-            // Slice 10 adds the file tree. The band keeps the surface color, so
-            // the reserved width already reads as chrome.
+            // The file tree is the one sidebar of the first release. It paints
+            // its own rows, so no editor window covers its rectangle.
             RegionKind::Sidebar(_) => {
-                target.set_style(region.area, theme.style(ThemeRole::Surface));
+                let focus = if region.id == view.windows.focused_region() {
+                    WindowFocus::Focused
+                } else {
+                    WindowFocus::Unfocused
+                };
+                let selected = render_tree(target, region.area, theme, view.tree, focus);
+                // The keys reach the sidebar, so the terminal cursor sits on
+                // the selected row instead of in an editor window.
+                if focus == WindowFocus::Focused {
+                    sidebar_cursor = selected;
+                }
             }
         }
     }
@@ -110,7 +124,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     if let Some(rows) = view.which_key {
         render_which_key(target, bands.body, theme, rows);
     }
-    if let Some(position) = cursor_at {
+    if let Some(position) = sidebar_cursor.or(cursor_at) {
         frame.set_cursor_position(position);
     }
 }

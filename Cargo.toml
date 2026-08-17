@@ -38,6 +38,7 @@ tokio-util = { version = "0.7", features = ["rt"] }
 [profile.release]
 codegen-units = 1
 lto = "thin"
-# Keep unwinding so that terminal restoration runs while the process unwinds.
+# Keep unwinding, but never depend on it: a panic hook restores the terminal,
+# because some platforms abort a panic without running any destructor.
 panic = "unwind"
 strip = "symbols"

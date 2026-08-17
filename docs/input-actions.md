@@ -39,7 +39,17 @@ A switch between two Visual modes keeps the selection anchor. Only the shape of
 the selection changes, so `V` in Visual mode selects the complete lines that the
 existing anchor and cursor cover.
 
-The command line is an input context, not a mode. See the section below.
+The command line is an input context, not a mode. The file-tree sidebar is an
+input context too. See the sections below.
+
+## Binding Scopes
+
+The mapping registry holds one table for each binding scope. A scope is one
+editor mode or the file-tree sidebar. Only one scope is active, so one key
+sequence may reach different commands in different scopes.
+
+The sidebar scope holds no count and no leader sequence, because its keys act on
+one selected entry. The sidebar owns every key while it holds the focus.
 
 ## Command Line
 
@@ -141,9 +151,17 @@ The overlay is generated from the active registry for the active mode. It is
 never a separate hand-written list.
 
 The overlay appears after the which-key delay of 500 ms, so a fast key
-combination never flashes it. The event loop supplies the elapsed time. A
-completed, cancelled, or reset sequence hides the overlay. A pending sequence
-keeps it visible until the user acts, because the sequence has no deadline.
+combination never flashes it. The event loop supplies the elapsed time.
+
+The delay governs the first appearance only. A visible overlay stays visible for
+the rest of the pending sequence: each further key replaces its rows at once,
+with no hiding and no second delay. The overlay hides only when a command
+completes, when `Esc` or `Ctrl-C` cancels, or when pending input resets for
+another reason, such as a mode change or a mismatch. A pending sequence keeps
+the overlay visible until the user acts, because the sequence has no deadline.
+
+The `input` module owns this rule. The pending state records that the overlay
+became visible and keeps that record while the sequence continues.
 
 [`windows.md`](windows.md) owns overlay placement and styling.
 
@@ -283,6 +301,7 @@ one edit transaction, so one undo reverses the whole block.
 |---|---|---|
 | `Ctrl-S` | Save the active buffer | Every mode |
 | `Ctrl-E` | Reveal the active file in the file tree | Normal |
+| `Ctrl-E` | Close the file tree | File Tree |
 | `Space o` | Open the buffer picker | Normal |
 | `Space fb` | Open the buffer picker | Normal |
 | `Space x` | Unload the active buffer | Normal |
@@ -290,6 +309,50 @@ one edit transaction, so one undo reverses the whole block.
 | `Space f/` | Open the ripgrep search picker | Normal |
 
 `Ctrl-S` saves without forcing an unrelated mode transition.
+
+`Ctrl-E` opens the sidebar, expands every parent of the active file, selects
+that file, and moves the focus into the sidebar, so the tree keys act at once.
+The sidebar then owns `Ctrl-E`, which closes the sidebar and returns the focus
+to the editor window. One key therefore opens and closes the tree, as the
+reference configuration does. A buffer without a file name opens the sidebar on
+the workspace root and reports that it has no path to reveal.
+
+### File Tree
+
+These keys act while the file-tree sidebar holds the focus. They follow the
+reference Neo-tree subset. See [`files.md`](files.md) for the behavior behind
+them.
+
+| Keys | Command |
+|---|---|
+| `j` | Select the next entry |
+| `k` | Select the previous entry |
+| `Backspace` | Select the parent directory |
+| `Enter` | Open the selected file, or expand the selected directory |
+| `Space` | Expand or collapse the selected directory |
+| `R` | Read the workspace directories again |
+| `a` | Add one file |
+| `A` | Add one directory |
+| `d` | Delete the selected entry |
+| `r` | Rename the selected entry |
+| `y` | Copy the selected entry |
+| `x` | Cut the selected entry |
+| `p` | Paste the held entries |
+| `H` | Show or hide the hidden entries |
+| `/` | Filter the visible entries |
+| `q` | Close the file tree |
+| `Ctrl-E` | Close the file tree |
+| `Ctrl-Q` | Close the file tree |
+| `Ctrl-H/J/K/L` | Focus the window in that direction |
+| `Ctrl-S` | Save the active buffer |
+
+`a`, `A`, `r`, and `/` read one line through the prompt of the message line, not
+through a second input mechanism. The prompt returns the keys to the sidebar
+when it closes. `Esc` and `Ctrl-C` cancel the prompt.
+
+`a` and `p` act on the destination directory, which is the selected directory,
+or the directory of the selected file. `Enter` on a file opens it in the editor
+window that held the focus, and the focus follows the file.
 
 ### Windows
 

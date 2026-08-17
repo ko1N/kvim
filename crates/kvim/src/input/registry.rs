@@ -16,7 +16,7 @@ use crate::settings::PENDING_KEYS_MAX;
 use crate::terminal::{Chord, Key, KeyCode};
 
 use super::command::Command;
-use super::mode::Mode;
+use super::mode::{BindingScope, Mode};
 
 /// A non-empty key sequence that fits the pending-key maximum.
 ///
@@ -131,8 +131,8 @@ enum SequenceBound {
 /// One mapping from a key sequence to a semantic command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Binding {
-    /// The mode that owns the mapping.
-    pub mode: Mode,
+    /// The scope that owns the mapping.
+    pub scope: BindingScope,
     /// The key sequence that reaches the command.
     pub keys: Vec<Key>,
     /// The command that the sequence reaches.
@@ -143,20 +143,20 @@ pub struct Binding {
 #[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum RegistryError {
     /// A binding held no key.
-    #[error("the {mode} binding for `{command}` holds no key")]
+    #[error("the {scope} binding for `{command}` holds no key")]
     EmptySequence {
-        /// The mode of the rejected binding.
-        mode: Mode,
+        /// The scope of the rejected binding.
+        scope: BindingScope,
         /// The command of the rejected binding.
         command: Command,
     },
     /// A binding held more keys than one pending sequence can hold.
     #[error(
-        "the {mode} binding for `{command}` holds {keys} keys, but the pending-key maximum is {keys_max}"
+        "the {scope} binding for `{command}` holds {keys} keys, but the pending-key maximum is {keys_max}"
     )]
     SequenceTooLong {
-        /// The mode of the rejected binding.
-        mode: Mode,
+        /// The scope of the rejected binding.
+        scope: BindingScope,
         /// The command of the rejected binding.
         command: Command,
         /// The number of keys in the rejected binding.
@@ -164,11 +164,11 @@ pub enum RegistryError {
         /// The pending-key maximum.
         keys_max: u8,
     },
-    /// Two bindings of one mode held the same sequence.
-    #[error("the {mode} sequence `{keys}` reaches both `{first}` and `{second}`")]
+    /// Two bindings of one scope held the same sequence.
+    #[error("the {scope} sequence `{keys}` reaches both `{first}` and `{second}`")]
     DuplicateSequence {
-        /// The mode that holds both bindings.
-        mode: Mode,
+        /// The scope that holds both bindings.
+        scope: BindingScope,
         /// The repeated sequence.
         keys: KeySequence,
         /// The command of the first binding.
@@ -176,13 +176,13 @@ pub enum RegistryError {
         /// The command of the second binding.
         second: Command,
     },
-    /// One sequence was a strict prefix of another sequence in the same mode.
+    /// One sequence was a strict prefix of another sequence in the same scope.
     #[error(
-        "the {mode} sequence `{prefix}` for `{prefix_command}` is a strict prefix of `{longer}` for `{longer_command}`"
+        "the {scope} sequence `{prefix}` for `{prefix_command}` is a strict prefix of `{longer}` for `{longer_command}`"
     )]
     AmbiguousPrefix {
-        /// The mode that holds both bindings.
-        mode: Mode,
+        /// The scope that holds both bindings.
+        scope: BindingScope,
         /// The shorter sequence.
         prefix: KeySequence,
         /// The command of the shorter sequence.
@@ -252,10 +252,10 @@ impl WhichKeyRow {
     }
 }
 
-/// The validated mapping registry, keyed by mode.
+/// The validated mapping registry, keyed by binding scope.
 ///
-/// One key sequence may appear in several modes with different commands, because
-/// only one mode is active.
+/// One key sequence may appear in several scopes with different commands,
+/// because only one scope is active.
 ///
 /// ```
 /// use kvim::input::{Command, Mode, Registry};
@@ -274,7 +274,7 @@ impl WhichKeyRow {
 /// ```
 #[derive(Clone, Debug)]
 pub struct Registry {
-    by_mode: [BTreeMap<KeySequence, Command>; Mode::COUNT],
+    by_scope: [BTreeMap<KeySequence, Command>; BindingScope::COUNT],
 }
 
 impl Registry {
@@ -283,31 +283,31 @@ impl Registry {
     /// # Errors
     ///
     /// Returns [`RegistryError`] for an empty sequence, a sequence longer than
-    /// `keys_max`, a duplicate sequence inside one mode, or a strict prefix pair
-    /// inside one mode.
+    /// `keys_max`, a duplicate sequence inside one scope, or a strict prefix
+    /// pair inside one scope.
     pub fn from_bindings(bindings: &[Binding], keys_max: u8) -> Result<Self, RegistryError> {
-        let mut by_mode: [BTreeMap<KeySequence, Command>; Mode::COUNT] =
+        let mut by_scope: [BTreeMap<KeySequence, Command>; BindingScope::COUNT] =
             std::array::from_fn(|_| BTreeMap::new());
         for binding in bindings {
             let keys = KeySequence::new(&binding.keys, keys_max).map_err(|bound| match bound {
                 SequenceBound::Empty => RegistryError::EmptySequence {
-                    mode: binding.mode,
+                    scope: binding.scope,
                     command: binding.command,
                 },
                 SequenceBound::TooLong { keys, keys_max } => RegistryError::SequenceTooLong {
-                    mode: binding.mode,
+                    scope: binding.scope,
                     command: binding.command,
                     keys,
                     keys_max,
                 },
             })?;
-            match by_mode[binding.mode.index()].entry(keys) {
+            match by_scope[binding.scope.index()].entry(keys) {
                 Entry::Vacant(slot) => {
                     slot.insert(binding.command);
                 }
                 Entry::Occupied(slot) => {
                     return Err(RegistryError::DuplicateSequence {
-                        mode: binding.mode,
+                        scope: binding.scope,
                         keys: slot.key().clone(),
                         first: *slot.get(),
                         second: binding.command,
@@ -315,10 +315,10 @@ impl Registry {
                 }
             }
         }
-        for mode in Mode::ALL {
-            check_prefix_pairs(mode, &by_mode[mode.index()])?;
+        for scope in BindingScope::ALL {
+            check_prefix_pairs(scope, &by_scope[scope.index()])?;
         }
-        Ok(Self { by_mode })
+        Ok(Self { by_scope })
     }
 
     /// Builds the hardcoded first-release registry.
@@ -339,20 +339,20 @@ impl Registry {
         }
     }
 
-    /// Returns the command that the exact sequence reaches in the mode.
+    /// Returns the command that the exact sequence reaches in the scope.
     #[must_use]
-    pub fn command(&self, mode: Mode, keys: &[Key]) -> Option<Command> {
-        self.by_mode[mode.index()].get(keys).copied()
+    pub fn command(&self, scope: impl Into<BindingScope>, keys: &[Key]) -> Option<Command> {
+        self.by_scope[scope.into().index()].get(keys).copied()
     }
 
-    /// Reports whether the mode holds a sequence that extends the prefix.
+    /// Reports whether the scope holds a sequence that extends the prefix.
     ///
     /// The map orders sequences lexicographically, so every extension of the
     /// prefix sorts directly after it. The smallest sequence above the prefix is
     /// therefore an extension whenever one exists.
     #[must_use]
-    pub fn has_longer_sequence(&self, mode: Mode, prefix: &[Key]) -> bool {
-        self.by_mode[mode.index()]
+    pub fn has_longer_sequence(&self, scope: impl Into<BindingScope>, prefix: &[Key]) -> bool {
+        self.by_scope[scope.into().index()]
             .range::<[Key], _>((Bound::Excluded(prefix), Bound::Unbounded))
             .next()
             .is_some_and(|(sequence, _)| sequence.keys().starts_with(prefix))
@@ -368,9 +368,13 @@ impl Registry {
     /// next key is contiguous, and the rows keep the deterministic key order of
     /// the registry.
     #[must_use]
-    pub fn rows_for_prefix(&self, mode: Mode, prefix: &[Key]) -> Vec<WhichKeyRow> {
+    pub fn rows_for_prefix(
+        &self,
+        scope: impl Into<BindingScope>,
+        prefix: &[Key],
+    ) -> Vec<WhichKeyRow> {
         let mut rows: Vec<WhichKeyRow> = Vec::new();
-        for (sequence, command) in self.by_mode[mode.index()]
+        for (sequence, command) in self.by_scope[scope.into().index()]
             .range::<[Key], _>((Bound::Included(prefix), Bound::Unbounded))
             .take_while(|(sequence, _)| sequence.keys().starts_with(prefix))
             .filter(|(sequence, _)| sequence.keys().len() > prefix.len())
@@ -387,20 +391,23 @@ impl Registry {
         rows
     }
 
-    /// Returns every binding of one mode in sequence order.
-    pub fn bindings(&self, mode: Mode) -> impl Iterator<Item = (&KeySequence, Command)> {
-        self.by_mode[mode.index()]
+    /// Returns every binding of one scope in sequence order.
+    pub fn bindings(
+        &self,
+        scope: impl Into<BindingScope>,
+    ) -> impl Iterator<Item = (&KeySequence, Command)> {
+        self.by_scope[scope.into().index()]
             .iter()
             .map(|(keys, command)| (keys, *command))
     }
 }
 
-/// Rejects a strict prefix pair inside one mode table.
+/// Rejects a strict prefix pair inside one scope table.
 ///
 /// Adjacent entries are enough: every extension of one sequence sorts directly
 /// after it, so a prefix pair always appears as neighbours.
 fn check_prefix_pairs(
-    mode: Mode,
+    scope: BindingScope,
     table: &BTreeMap<KeySequence, Command>,
 ) -> Result<(), RegistryError> {
     let mut previous: Option<(&KeySequence, Command)> = None;
@@ -409,7 +416,7 @@ fn check_prefix_pairs(
             && keys.keys().starts_with(earlier.keys())
         {
             return Err(RegistryError::AmbiguousPrefix {
-                mode,
+                scope,
                 prefix: earlier.clone(),
                 prefix_command: earlier_command,
                 longer: keys.clone(),
@@ -474,11 +481,20 @@ const ALL_MODES: &[Mode] = &[
 fn add(bindings: &mut Vec<Binding>, modes: &[Mode], keys: &[Key], command: Command) {
     for &mode in modes {
         bindings.push(Binding {
-            mode,
+            scope: BindingScope::Mode(mode),
             keys: keys.to_vec(),
             command,
         });
     }
+}
+
+/// Adds one binding of the file-tree sidebar.
+fn add_tree(bindings: &mut Vec<Binding>, key: Key, command: Command) {
+    bindings.push(Binding {
+        scope: BindingScope::Sidebar,
+        keys: vec![key],
+        command,
+    });
 }
 
 /// Builds the complete first-release binding table.
@@ -743,19 +759,59 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::ToggleFormatOnSave,
     );
 
+    add_tree_bindings(table);
     bindings
+}
+
+/// Adds the binding table of the file-tree sidebar.
+///
+/// The keys follow the reference Neo-tree subset. The sidebar holds no count
+/// and no leader sequence, so every binding is one key. `Ctrl-E` and `q` both
+/// close the sidebar, and the directional focus keys leave it. See
+/// `docs/input-actions.md`.
+fn add_tree_bindings(table: &mut Vec<Binding>) {
+    add_tree(table, ch('j'), Command::MoveDown);
+    add_tree(table, ch('k'), Command::MoveUp);
+    add_tree(table, Key::plain(KeyCode::Enter), Command::TreeOpenEntry);
+    add_tree(table, ch(' '), Command::TreeToggleEntry);
+    add_tree(table, ch('R'), Command::TreeRefresh);
+    add_tree(table, ch('a'), Command::TreeAddFile);
+    add_tree(table, ch('A'), Command::TreeAddDirectory);
+    add_tree(table, ch('d'), Command::TreeDelete);
+    add_tree(table, ch('r'), Command::TreeRename);
+    add_tree(table, ch('y'), Command::TreeCopyEntry);
+    add_tree(table, ch('x'), Command::TreeCutEntry);
+    add_tree(table, ch('p'), Command::TreePasteEntries);
+    add_tree(table, ch('H'), Command::TreeToggleHidden);
+    add_tree(table, ch('/'), Command::TreeFilter);
+    add_tree(
+        table,
+        Key::plain(KeyCode::Backspace),
+        Command::TreeSelectParent,
+    );
+    add_tree(table, ch('q'), Command::CloseWindow);
+    add_tree(table, ctrl('e'), Command::CloseWindow);
+    add_tree(table, ctrl('h'), Command::FocusWindowLeft);
+    add_tree(table, ctrl('j'), Command::FocusWindowDown);
+    add_tree(table, ctrl('k'), Command::FocusWindowUp);
+    add_tree(table, ctrl('l'), Command::FocusWindowRight);
+    add_tree(table, ctrl('s'), Command::SaveBuffer);
+    add_tree(table, ctrl('q'), Command::CloseWindow);
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        Binding, Command, Key, KeyCode, Mode, Registry, RegistryError, WhichKeyTarget, ch, ctrl,
-        leader,
+        Binding, BindingScope, Command, Key, KeyCode, Mode, Registry, RegistryError,
+        WhichKeyTarget, ch, ctrl, leader,
     };
+
+    /// The scope of Normal mode, which most rejection cases use.
+    const NORMAL_SCOPE: BindingScope = BindingScope::Mode(Mode::Normal);
 
     fn binding(mode: Mode, keys: &[Key], command: Command) -> Binding {
         Binding {
-            mode,
+            scope: BindingScope::Mode(mode),
             keys: keys.to_vec(),
             command,
         }
@@ -777,7 +833,7 @@ mod tests {
                 "an empty sequence",
                 vec![binding(Mode::Normal, &[], Command::Undo)],
                 RegistryError::EmptySequence {
-                    mode: Mode::Normal,
+                    scope: NORMAL_SCOPE,
                     command: Command::Undo,
                 },
             ),
@@ -789,7 +845,7 @@ mod tests {
                     Command::Undo,
                 )],
                 RegistryError::SequenceTooLong {
-                    mode: Mode::Normal,
+                    scope: NORMAL_SCOPE,
                     command: Command::Undo,
                     keys: 5,
                     keys_max: 4,
@@ -802,7 +858,7 @@ mod tests {
                     binding(Mode::Normal, &[ch('u')], Command::Redo),
                 ],
                 RegistryError::DuplicateSequence {
-                    mode: Mode::Normal,
+                    scope: NORMAL_SCOPE,
                     keys: super::KeySequence(vec![ch('u')]),
                     first: Command::Undo,
                     second: Command::Redo,
@@ -815,7 +871,7 @@ mod tests {
                     binding(Mode::Normal, &[ch('g'), ch('g')], Command::MoveFirstLine),
                 ],
                 RegistryError::AmbiguousPrefix {
-                    mode: Mode::Normal,
+                    scope: NORMAL_SCOPE,
                     prefix: super::KeySequence(vec![ch('g')]),
                     prefix_command: Command::Undo,
                     longer: super::KeySequence(vec![ch('g'), ch('g')]),

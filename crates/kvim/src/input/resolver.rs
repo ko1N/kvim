@@ -55,10 +55,23 @@ pub enum Resolution {
     NoMatch,
 }
 
+/// The which-key overlay state of one pending sequence.
+///
+/// The delay governs the first appearance only. The overlay then stays visible
+/// for the rest of the sequence, so a deeper level updates its rows without
+/// hiding them again. See `docs/input-actions.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Overlay {
+    /// The overlay appears at this elapsed time.
+    Delayed { at: Duration },
+    /// The overlay is visible and stays visible while the sequence continues.
+    Visible,
+}
+
 /// The pending input of the resolver.
 ///
 /// The active variant ties the pending keys, the pending count, and the overlay
-/// time together, so a pending sequence without an overlay time cannot exist.
+/// state together, so a pending sequence without an overlay state cannot exist.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 enum PendingInput {
     /// No key and no count wait for completion.
@@ -68,7 +81,7 @@ enum PendingInput {
     Active {
         keys: Vec<Key>,
         count: Option<u32>,
-        overlay_at: Duration,
+        overlay: Overlay,
     },
 }
 
@@ -76,8 +89,9 @@ enum PendingInput {
 ///
 /// The resolver accepts an optional decimal count, then a bounded key sequence.
 /// It classifies every request as a complete match, a valid prefix, a cancel, or
-/// no match. Only a mode that reports [`crate::input::Mode::accepts_count`]
-/// opens a count, so a digit stays buffer text in Insert mode.
+/// no match. Only a scope that reports
+/// [`crate::input::BindingScope::accepts_count`] opens a count, so a digit stays
+/// buffer text in Insert mode.
 ///
 /// A pending sequence holds no deadline. It waits for the next key, and only
 /// `Esc`, `Ctrl-C`, a mismatch, a completed command, or a mode change ends it.
@@ -153,12 +167,20 @@ impl Resolver {
     /// Returns the elapsed time at which the which-key overlay appears.
     ///
     /// The event loop uses the value to wake exactly when the overlay becomes
-    /// visible. It is the only time-driven state change of the resolver.
+    /// visible. It is the only time-driven state change of the resolver. A
+    /// visible overlay needs no further wake, so it reports no time.
     #[must_use]
     pub fn overlay_deadline(&self) -> Option<Duration> {
         match self.pending {
-            PendingInput::Idle => None,
-            PendingInput::Active { overlay_at, .. } => Some(overlay_at),
+            PendingInput::Idle
+            | PendingInput::Active {
+                overlay: Overlay::Visible,
+                ..
+            } => None,
+            PendingInput::Active {
+                overlay: Overlay::Delayed { at },
+                ..
+            } => Some(at),
         }
     }
 
@@ -188,15 +210,39 @@ impl Resolver {
     /// The overlay appears after the which-key delay of `EditorSettings` and
     /// lists the keys that may follow the pending sequence. The rows come from
     /// the registry, so their order is deterministic.
-    #[must_use]
-    pub fn which_key(&self, now: Duration) -> Option<Vec<WhichKeyRow>> {
-        match &self.pending {
-            PendingInput::Active {
-                keys, overlay_at, ..
-            } if !keys.is_empty() && now >= *overlay_at => {
-                Some(self.registry.rows_for_prefix(self.context.mode(), keys))
+    ///
+    /// The delay governs the first appearance only. The call records that
+    /// appearance, so every further key of the same sequence updates the rows
+    /// at once, without a second wait.
+    pub fn which_key(&mut self, now: Duration) -> Option<Vec<WhichKeyRow>> {
+        if !self.reveal_overlay(now) {
+            return None;
+        }
+        let PendingInput::Active { keys, .. } = &self.pending else {
+            debug_assert!(false, "a hidden overlay leaves the resolver above");
+            return None;
+        };
+        Some(self.registry.rows_for_prefix(self.context.scope(), keys))
+    }
+
+    /// Reports whether the overlay is visible and records its first appearance.
+    ///
+    /// A pending count alone shows no overlay, because the rows list the keys
+    /// that follow a sequence.
+    fn reveal_overlay(&mut self, now: Duration) -> bool {
+        let PendingInput::Active { keys, overlay, .. } = &mut self.pending else {
+            return false;
+        };
+        if keys.is_empty() {
+            return false;
+        }
+        match *overlay {
+            Overlay::Visible => true,
+            Overlay::Delayed { at } if now >= at => {
+                *overlay = Overlay::Visible;
+                true
             }
-            _ => None,
+            Overlay::Delayed { .. } => false,
         }
     }
 
@@ -220,21 +266,21 @@ impl Resolver {
             self.pending = PendingInput::Idle;
             return Resolution::Cancelled;
         }
-        let mode = self.context.mode();
+        let scope = self.context.scope();
         // Taking the pending state first makes every later branch a reset by
         // default. Only a still-pending outcome puts it back.
-        let (mut keys, count) = self.take_pending();
+        let (mut keys, count, overlay) = self.take_pending();
         debug_assert!(
-            count.is_none() || mode.accepts_count(),
-            "only a mode that accepts a count opens one, and a mode change resets pending input"
+            count.is_none() || scope.accepts_count(),
+            "only a scope that accepts a count opens one, and a context change resets pending input"
         );
         // A digit builds the count only before the sequence starts, and only in
-        // a mode that holds a count. A count inside an operator-pending sequence
-        // belongs to the editor.
-        if keys.is_empty() && mode.accepts_count() {
+        // a scope that holds a count. A count inside an operator-pending
+        // sequence belongs to the editor.
+        if keys.is_empty() && scope.accepts_count() {
             match self.accumulate_count(key, count) {
                 CountStep::Grown(value) => {
-                    self.pending = self.arm(Vec::new(), Some(value), now);
+                    self.pending = self.arm(Vec::new(), Some(value), overlay, now);
                     return Resolution::Pending;
                 }
                 CountStep::AboveMaximum => return Resolution::NoMatch,
@@ -247,8 +293,8 @@ impl Resolver {
             "the registry rejects a sequence above the pending-key maximum, so a pending sequence keeps room for one key"
         );
         keys.push(key);
-        let complete = self.registry.command(mode, &keys);
-        let longer = self.registry.has_longer_sequence(mode, &keys);
+        let complete = self.registry.command(scope, &keys);
+        let longer = self.registry.has_longer_sequence(scope, &keys);
         debug_assert!(
             !(complete.is_some() && longer),
             "the registry rejects a strict prefix pair, so a sequence never matches and extends at once"
@@ -264,26 +310,43 @@ impl Resolver {
             };
         }
         if longer {
-            self.pending = self.arm(keys, count, now);
+            self.pending = self.arm(keys, count, overlay, now);
             return Resolution::Pending;
         }
         Resolution::NoMatch
     }
 
-    /// Takes the pending keys and count and leaves the resolver idle.
-    fn take_pending(&mut self) -> (Vec<Key>, Option<u32>) {
+    /// Takes the pending keys, the pending count, and the overlay state, and
+    /// leaves the resolver idle.
+    fn take_pending(&mut self) -> (Vec<Key>, Option<u32>, Option<Overlay>) {
         match std::mem::take(&mut self.pending) {
-            PendingInput::Idle => (Vec::new(), None),
-            PendingInput::Active { keys, count, .. } => (keys, count),
+            PendingInput::Idle => (Vec::new(), None, None),
+            PendingInput::Active {
+                keys,
+                count,
+                overlay,
+            } => (keys, count, Some(overlay)),
         }
     }
 
-    /// Builds the active pending state and arms the overlay time.
-    fn arm(&self, keys: Vec<Key>, count: Option<u32>, now: Duration) -> PendingInput {
+    /// Builds the active pending state and keeps the overlay state.
+    ///
+    /// A visible overlay stays visible, and a delayed overlay keeps its
+    /// original time, so the delay counts from the first key of the sequence
+    /// only.
+    fn arm(
+        &self,
+        keys: Vec<Key>,
+        count: Option<u32>,
+        overlay: Option<Overlay>,
+        now: Duration,
+    ) -> PendingInput {
         PendingInput::Active {
             keys,
             count,
-            overlay_at: saturating_deadline(now, self.settings.which_key_delay),
+            overlay: overlay.unwrap_or(Overlay::Delayed {
+                at: saturating_deadline(now, self.settings.which_key_delay),
+            }),
         }
     }
 
@@ -364,7 +427,7 @@ mod tests {
     use std::num::NonZeroU32;
     use std::time::Duration;
 
-    use crate::input::{Command, InputContext, Mode, PromptKind, Registry};
+    use crate::input::{BindingScope, Command, InputContext, Mode, PromptKind, Registry};
     use crate::settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
     use crate::terminal::{Key, KeyCode};
 
@@ -412,7 +475,7 @@ mod tests {
             for (keys, expected) in registry.bindings(mode) {
                 let mut resolver = resolver();
                 resolver.set_context(InputContext::Mode(mode));
-                assert_eq!(resolver.context().mode(), mode);
+                assert_eq!(resolver.context().scope(), BindingScope::Mode(mode));
                 assert_eq!(
                     feed(&mut resolver, keys.keys()),
                     command(expected),
@@ -672,6 +735,112 @@ mod tests {
                 ("b".to_owned(), "Open the buffer picker".to_owned()),
                 ("f".to_owned(), "Open the file search picker".to_owned()),
             ]
+        );
+    }
+
+    #[test]
+    fn the_overlay_stays_visible_for_the_rest_of_the_sequence() {
+        let mut resolver = resolver();
+        assert_eq!(resolver.resolve(ch(' '), NOW), Resolution::Pending);
+        assert!(
+            resolver.which_key(NOW).is_none(),
+            "the first appearance waits the complete delay"
+        );
+        assert!(resolver.which_key(WHICH_KEY_DELAY).is_some());
+
+        // The next key of the same sequence updates the rows at the same
+        // instant, with no second wait.
+        assert_eq!(
+            resolver.resolve(ch('f'), WHICH_KEY_DELAY),
+            Resolution::Pending
+        );
+        let rows = resolver
+            .which_key(WHICH_KEY_DELAY)
+            .expect("a visible overlay stays visible while the sequence continues");
+        assert_eq!(
+            rows.iter()
+                .map(|row| row.key_label().to_string())
+                .collect::<Vec<_>>(),
+            vec!["/".to_owned(), "b".to_owned(), "f".to_owned()],
+            "the deeper level replaces the rows"
+        );
+        assert_eq!(
+            resolver.overlay_deadline(),
+            None,
+            "a visible overlay needs no further wake"
+        );
+    }
+
+    #[test]
+    fn the_overlay_hides_after_a_command_a_cancel_and_a_reset() {
+        // Every case opens the overlay first, so each assertion measures the
+        // hide alone.
+        let mut completed = resolver();
+        assert_eq!(completed.resolve(ch(' '), NOW), Resolution::Pending);
+        assert!(completed.which_key(WHICH_KEY_DELAY).is_some());
+        assert_eq!(
+            completed.resolve(ch('q'), WHICH_KEY_DELAY),
+            command(Command::CloseWindow)
+        );
+        assert!(
+            completed.which_key(WHICH_KEY_DELAY).is_none(),
+            "a completed command hides the overlay"
+        );
+
+        let mut cancelled = resolver();
+        assert_eq!(cancelled.resolve(ch(' '), NOW), Resolution::Pending);
+        assert!(cancelled.which_key(WHICH_KEY_DELAY).is_some());
+        assert_eq!(
+            cancelled.resolve(Key::plain(KeyCode::Esc), WHICH_KEY_DELAY),
+            Resolution::Cancelled
+        );
+        assert!(
+            cancelled.which_key(WHICH_KEY_DELAY).is_none(),
+            "a cancel hides the overlay"
+        );
+
+        let mut changed = resolver();
+        assert_eq!(changed.resolve(ch(' '), NOW), Resolution::Pending);
+        assert!(changed.which_key(WHICH_KEY_DELAY).is_some());
+        changed.set_context(InputContext::Mode(Mode::Visual));
+        assert!(
+            changed.which_key(WHICH_KEY_DELAY).is_none(),
+            "a mode change resets the pending sequence and hides the overlay"
+        );
+    }
+
+    #[test]
+    fn a_pending_count_alone_shows_no_overlay() {
+        let mut resolver = resolver();
+        assert_eq!(resolver.resolve(ch('3'), NOW), Resolution::Pending);
+
+        assert!(
+            resolver.which_key(WHICH_KEY_DELAY).is_none(),
+            "the rows list the keys that follow a sequence, and none is pending"
+        );
+        // The count already armed the overlay time, so the first sequence key
+        // after the delay shows the rows at once.
+        assert_eq!(
+            resolver.resolve(ch(' '), WHICH_KEY_DELAY),
+            Resolution::Pending
+        );
+        assert!(resolver.which_key(WHICH_KEY_DELAY).is_some());
+    }
+
+    #[test]
+    fn the_sidebar_scope_resolves_its_own_keys() {
+        let mut resolver = resolver();
+        resolver.set_context(InputContext::Sidebar);
+
+        assert_eq!(
+            resolver.resolve(ch(' '), NOW),
+            command(Command::TreeToggleEntry),
+            "the sidebar holds no leader sequence, so Space acts at once"
+        );
+        assert_eq!(
+            resolver.resolve(ch('3'), NOW),
+            Resolution::NoMatch,
+            "the sidebar reads no count"
         );
     }
 
