@@ -4,7 +4,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 
 use super::{
     AutoIndent, CommandOutcome, EditContext, EditingState, Operator, RegisterShape, RegisterValue,
-    Registers, Selection, Viewport,
+    Registers, Selection, Viewport, WindowState,
 };
 use crate::core::{LineEnding, TextBuffer};
 use crate::input::{Command, Mode};
@@ -16,23 +16,22 @@ struct Session {
     settings: EditorSettings,
     registers: Registers,
     state: EditingState,
-    view: Viewport,
+    view: WindowState,
 }
 
 impl Session {
     fn new(text: &str) -> Self {
         let buffer =
             TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
-        let state = EditingState::new(&buffer);
         Self {
             buffer,
             settings: EditorSettings::default(),
             registers: Registers::default(),
-            state,
-            view: Viewport::new(
+            state: EditingState::new(),
+            view: WindowState::new(Viewport::new(
                 NonZeroU16::new(20).expect("the literal 20 is not zero"),
                 NonZeroU16::new(80).expect("the literal 80 is not zero"),
-            ),
+            )),
         }
     }
 
@@ -91,7 +90,8 @@ impl Session {
 
     /// Enters Insert mode, which `Enter` and `Backspace` both need.
     fn enter_insert(&mut self) {
-        self.state.enter_mode(&self.buffer, Mode::Insert);
+        self.state
+            .enter_mode(&self.buffer, &mut self.view, Mode::Insert);
     }
 
     /// Applies one command with the automatic indent of a language adapter.
@@ -144,8 +144,8 @@ impl Session {
 
     fn position(&self) -> (usize, usize) {
         (
-            self.state.cursor().line().get(),
-            self.state.cursor().column().get(),
+            self.view.cursor().line().get(),
+            self.view.cursor().column().get(),
         )
     }
 
@@ -156,7 +156,7 @@ impl Session {
     }
 
     fn selection(&self) -> Option<Selection> {
-        self.state.selection(&self.buffer)
+        self.state.selection(&self.buffer, &self.view)
     }
 }
 

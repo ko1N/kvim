@@ -202,6 +202,31 @@ The tree orders entries deterministically. A directory sorts before a file, and
 two entries of one kind sort by name. A symbolic link takes the kind of its
 target, so an expanded link to a directory shows that directory.
 
+### Icons
+
+The tree paints one icon before each name. The icon set follows the
+`nvim-web-devicons` set of the reference configuration.
+
+The icon table lives in the interface layer as presentation data. It keys on the
+file extension and on a well-known file name, such as `Cargo.lock` or
+`.gitignore`. A well-known name wins over the extension, and every other file
+receives one default icon. A directory carries an open icon or a closed icon,
+which follows its expansion state. [`architecture.md`](architecture.md) records
+this one narrow exception to the language-adapter rule: an icon never selects a
+parser, an indent rule, a comment token, or a language server.
+
+The table covers Rust, Lua, TOML, YAML, JSON, Nix, lock files, Markdown, shell
+scripts, Git files, and images. Every glyph occupies one terminal cell.
+
+The theme colors each icon through an icon role, such as code, configuration,
+document, script, version control, generated, media, or unknown. A call site
+names the role, never a color. See [`windows.md`](windows.md).
+
+An icon needs a patched font. The `file tree icons` setting turns the icons off
+for a terminal without one. See [`settings.md`](settings.md). Every entry row
+reserves the same width for its icon, and a hidden icon reserves none, so the
+names stay aligned in both states.
+
 ### Visibility
 
 The tree hides an entry whose name starts with a full stop, and the names
@@ -215,7 +240,12 @@ Kvim reads no Git ignore rules for the tree in the first release.
 ### Sidebar Focus And Operations
 
 The sidebar owns every key while it holds the focus.
-[`input-actions.md`](input-actions.md) owns the key table. An operation that
+[`input-actions.md`](input-actions.md) owns the key table.
+
+`l` expands the selected directory, and `h` collapses an expanded directory. On
+a file, and on a closed directory, `h` selects the directory that holds the
+entry. `l` on a file opens that file in the editor window, as `Enter` does, so
+one key always moves the reader deeper into the tree. An operation that
 needs text, such as a rename, an add, or a filter, reads one line through the
 prompt of the message line. The tree opens no second input mechanism.
 

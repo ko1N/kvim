@@ -5,23 +5,27 @@
 //! stays a valid position instead of an error.
 
 use crate::core::{CharPosition, LineIndex, SourceColumn, TextBuffer};
+use crate::input::Mode;
 
 /// The last column that the cursor may hold on one line.
 ///
 /// Normal mode and the three Visual modes keep the cursor on a character. Insert
 /// mode lets the cursor stand after the last character, because the next typed
-/// character goes there. [`ModeState`](super::ModeState) selects the limit, so
+/// character goes there. [`ColumnLimit::of`] derives the limit from the mode, so
 /// the mode and the limit cannot disagree.
 ///
 /// # Examples
 ///
 /// ```
 /// use kvim::editor::ColumnLimit;
+/// use kvim::input::Mode;
 ///
 /// assert_eq!(ColumnLimit::LastCharacter.last_column(5), 4);
 /// assert_eq!(ColumnLimit::AfterLastCharacter.last_column(5), 5);
 /// // An empty line holds column zero only.
 /// assert_eq!(ColumnLimit::LastCharacter.last_column(0), 0);
+/// assert_eq!(ColumnLimit::of(Mode::Insert), ColumnLimit::AfterLastCharacter);
+/// assert_eq!(ColumnLimit::of(Mode::Visual), ColumnLimit::LastCharacter);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ColumnLimit {
@@ -32,6 +36,17 @@ pub enum ColumnLimit {
 }
 
 impl ColumnLimit {
+    /// Returns the column limit of one editor mode.
+    #[must_use]
+    pub const fn of(mode: Mode) -> Self {
+        match mode {
+            Mode::Insert => Self::AfterLastCharacter,
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => {
+                Self::LastCharacter
+            }
+        }
+    }
+
     /// Returns the largest column that a line of `line_len_chars` characters allows.
     #[must_use]
     pub const fn last_column(self, line_len_chars: usize) -> usize {
@@ -105,6 +120,17 @@ pub struct Cursor {
 }
 
 impl Cursor {
+    /// The cursor on the first character of any buffer.
+    ///
+    /// Line zero exists in every buffer, and column zero exists in every line,
+    /// so the value needs no buffer to be valid. A window that shows a new
+    /// buffer starts here.
+    pub const ORIGIN: Self = Self {
+        line: LineIndex::FIRST,
+        column: SourceColumn::FIRST,
+        preferred: PreferredColumn::Column(0),
+    };
+
     /// Places the cursor on the first character of the buffer.
     #[must_use]
     pub fn at_buffer_start(buffer: &TextBuffer, limit: ColumnLimit) -> Self {

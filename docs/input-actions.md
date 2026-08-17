@@ -332,6 +332,8 @@ them.
 |---|---|
 | `j` | Select the next entry |
 | `k` | Select the previous entry |
+| `l` | Expand the selected directory, or open the selected file |
+| `h` | Collapse the selected directory, or select the parent directory |
 | `Backspace` | Select the parent directory |
 | `Enter` | Open the selected file, or expand the selected directory |
 | `Space` | Expand or collapse the selected directory |
@@ -358,6 +360,14 @@ when it closes. `Esc` and `Ctrl-C` cancel the prompt.
 `a` and `p` act on the destination directory, which is the selected directory,
 or the directory of the selected file. `Enter` on a file opens it in the editor
 window that held the focus, and the focus follows the file.
+
+`l` and `h` follow the nvim-tree and neo-tree rule. `l` only ever moves deeper:
+it opens a closed directory, it keeps an open directory open, and it opens a
+file in the editor window, as `Enter` does. `h` closes an open directory. On a
+file, and on a closed directory, it selects the directory that holds the entry
+instead. Two presses therefore take a file to its folder and then close that
+folder. The workspace root holds no row, so `h` at the top level changes
+nothing.
 
 ### Pickers
 

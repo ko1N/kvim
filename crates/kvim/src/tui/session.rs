@@ -32,8 +32,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::{BufferVersion, CharPosition, EditTransaction, TextBuffer};
 use crate::editor::{
-    AutoIndent, CommandContext, CommandOutcome, EditContext, EditingState, Registers,
-    SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Viewport,
+    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, Registers,
+    SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Selection, WindowState,
 };
 use crate::input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Mode, PromptEdit,
@@ -431,12 +431,6 @@ impl Session {
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings, root: PathBuf) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
-        let editing = EditingState::new(
-            buffers
-                .get(active)
-                .expect("the new buffer list holds its first buffer")
-                .text(),
-        );
         let mut session = Self {
             area,
             settings,
@@ -450,7 +444,7 @@ impl Session {
             tree_region: None,
             picker: None,
             ripgrep_reported: false,
-            editing,
+            editing: EditingState::new(),
             registers: Registers::default(),
             resolver: Resolver::new(Registry::first_release(), settings.input),
             languages: LanguageRegistry::first_release(),
@@ -701,25 +695,74 @@ impl Session {
             }
         }
         let auto = self.auto_indent(command);
-        let outcome = self.edit(|editing, context, viewport| {
-            editing.apply_indented(context, viewport, command, count, auto)
+        let outcome = self.edit(|editing, context, window| {
+            editing.apply_indented(context, window, command, count, auto)
         });
         self.sync_context();
         self.report(outcome).or(cleared)
     }
 
-    /// Points the editing state at the buffer of the focused window.
+    /// Points the session at the buffer of the focused window.
     ///
-    /// A focus change, a split, and a close all move the focus. The editing
-    /// state follows one buffer, so it must follow that move. Otherwise a key
+    /// A focus change, a split, and a close all move the focus. The session
+    /// follows one active buffer, so it must follow that move. Otherwise a key
     /// would change a buffer that the focused window does not show.
+    ///
+    /// The move changes no cursor. Every window owns its cursor, its selection
+    /// anchor, and its viewport, so a return to a window resumes exactly where
+    /// it was. See `docs/windows.md`.
     fn follow_focused_window(&mut self) {
         let window = self.windows.focused_window();
         let Some(buffer) = self.windows.buffer(window) else {
             debug_assert!(false, "the focused window is always a leaf of the tree");
             return;
         };
-        self.switch_to(buffer);
+        if self.active == buffer {
+            return;
+        }
+        self.active = buffer;
+        // The mode, the pending operator, and the repeat description describe
+        // the buffer that the keys changed.
+        self.editing = EditingState::new();
+        // The recorded matches belong to the previous buffer.
+        self.search = None;
+    }
+
+    /// Returns the selection that the focused window shows.
+    ///
+    /// The mode is global and belongs to the focused window, so no other window
+    /// holds a selection.
+    #[must_use]
+    pub fn selection(&self) -> Option<Selection> {
+        let state = self.windows.state(self.windows.focused_window())?;
+        self.editing.selection(self.buffer(), &state)
+    }
+
+    /// Returns the cursor of the focused window.
+    #[must_use]
+    pub fn cursor(&self) -> Cursor {
+        let Some(state) = self.windows.state(self.windows.focused_window()) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return Cursor::ORIGIN;
+        };
+        state.cursor()
+    }
+
+    /// Places the cursor of the focused window at a line and a column.
+    ///
+    /// The command line `:<number>` and a language-service jump both reach this
+    /// entry point. The caller reconciles the viewports afterwards.
+    fn place_cursor(&mut self, line: usize, column: usize) {
+        let Some(active) = self.buffers.get(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return;
+        };
+        let window = self.windows.focused_window();
+        let Some(state) = self.windows.state_mut(window) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return;
+        };
+        self.editing.move_to(active.text(), state, line, column);
     }
 
     /// Returns the automatic indent that one command uses for a new line.
@@ -730,7 +773,7 @@ impl Session {
     /// for a parse result. See `docs/language-services.md`.
     fn auto_indent(&self, command: Command) -> AutoIndent {
         let buffer = self.buffer();
-        let line = self.editing.cursor().line();
+        let line = self.cursor().line();
         let byte = match command {
             // The new line opens after the text of the cursor line.
             Command::OpenLineBelow => {
@@ -774,8 +817,8 @@ impl Session {
             .path()
             .and_then(|path| self.languages.adapter(path).ok())
             .and_then(|adapter| adapter.comment().line_token());
-        let outcome = self
-            .edit(|editing, context, viewport| editing.toggle_comment(context, viewport, comment));
+        let outcome =
+            self.edit(|editing, context, window| editing.toggle_comment(context, window, comment));
         self.sync_context();
         if outcome == CommandOutcome::Unhandled {
             self.set_message(NO_COMMENT_TOKEN_NOTE, MessageLevel::Warning);
@@ -791,10 +834,10 @@ impl Session {
     /// caller can lose a scroll position.
     fn edit<F>(&mut self, change: F) -> CommandOutcome
     where
-        F: FnOnce(&mut EditingState, &mut EditContext<'_>, &mut Viewport) -> CommandOutcome,
+        F: FnOnce(&mut EditingState, &mut EditContext<'_>, &mut WindowState) -> CommandOutcome,
     {
         let window = self.windows.focused_window();
-        let Some(mut viewport) = self.windows.viewport(window) else {
+        let Some(mut state) = self.windows.state(window) else {
             debug_assert!(false, "the focused window is always a leaf of the tree");
             return CommandOutcome::Unhandled;
         };
@@ -813,11 +856,11 @@ impl Session {
             registers: &mut self.registers,
             applied: Vec::new(),
         };
-        let outcome = change(&mut self.editing, &mut context, &mut viewport);
+        let outcome = change(&mut self.editing, &mut context, &mut state);
         let applied = std::mem::take(&mut context.applied);
         let after = context.buffer.version();
-        if let Some(slot) = self.windows.viewport_mut(window) {
-            *slot = viewport;
+        if let Some(slot) = self.windows.state_mut(window) {
+            *slot = state;
         }
         self.advance_syntax(&before, after, &applied);
         self.synchronize_language(&before, after, &applied);
@@ -914,22 +957,18 @@ impl Session {
                 // The line break opens at the cursor, so the syntax indent
                 // answers for that byte offset.
                 let buffer = self.buffer();
-                let byte = buffer
-                    .char_to_byte(self.editing.cursor().position(buffer))
-                    .get();
+                let byte = buffer.char_to_byte(self.cursor().position(buffer)).get();
                 let auto = self.indent_level(byte);
-                self.edit(|editing, context, viewport| {
-                    editing.insert_line_break_indented(context, viewport, auto)
+                self.edit(|editing, context, window| {
+                    editing.insert_line_break_indented(context, window, auto)
                 })
             }
             KeyCode::Backspace => {
-                self.edit(|editing, context, viewport| editing.delete_backward(context, viewport))
+                self.edit(|editing, context, window| editing.delete_backward(context, window))
             }
             KeyCode::Char(value) => {
                 let text = value.to_string();
-                self.edit(|editing, context, viewport| {
-                    editing.insert_text(context, viewport, &text)
-                })
+                self.edit(|editing, context, window| editing.insert_text(context, window, &text))
             }
             KeyCode::Tab => {
                 let text = if indent.expand_tab {
@@ -937,9 +976,7 @@ impl Session {
                 } else {
                     "\t".to_owned()
                 };
-                self.edit(|editing, context, viewport| {
-                    editing.insert_text(context, viewport, &text)
-                })
+                self.edit(|editing, context, window| editing.insert_text(context, window, &text))
             }
             _ => return Redraw::Skipped,
         };
@@ -1173,11 +1210,7 @@ impl Session {
             }
             CommandLineCommand::GoToLine(line) => {
                 let target = usize::try_from(line.get()).unwrap_or(usize::MAX);
-                let Some(active) = self.buffers.get(self.active) else {
-                    debug_assert!(false, "the session always keeps the active buffer loaded");
-                    return Redraw::Skipped;
-                };
-                self.editing.move_to(active.text(), target - 1, 0);
+                self.place_cursor(target - 1, 0);
             }
         }
         Redraw::Needed
@@ -1512,7 +1545,7 @@ impl Session {
         };
         let text = file.text();
         let version = text.version();
-        let position = DocumentPosition::of_buffer(text, self.editing.cursor().position(text));
+        let position = DocumentPosition::of_buffer(text, self.cursor().position(text));
         let query = match purpose {
             QueryPurpose::Definition => LanguageQuery::Definition(position),
             QueryPurpose::Hover => LanguageQuery::Hover(position),
@@ -1640,7 +1673,7 @@ impl Session {
         let Some(file) = self.buffers.get(buffer) else {
             return Redraw::Skipped;
         };
-        let cursor = self.editing.cursor().position(file.text());
+        let cursor = self.cursor().position(file.text());
         let transaction = match edits.transaction(file.text(), cursor) {
             Ok(Some(transaction)) => transaction,
             // The buffer already matches the formatter.
@@ -1653,8 +1686,8 @@ impl Session {
                 return Redraw::Needed;
             }
         };
-        let outcome = self.edit(|editing, context, viewport| {
-            editing.apply_transaction(context, viewport, transaction)
+        let outcome = self.edit(|editing, context, window| {
+            editing.apply_transaction(context, window, transaction)
         });
         self.sync_context();
         self.report(outcome)
@@ -1696,7 +1729,7 @@ impl Session {
         };
         let line = text.char_to_line(target).get();
         let column = text.char_to_column(target).get();
-        self.editing.move_to(text, line, column);
+        self.place_cursor(line, column);
         self.reconcile_viewports();
         Redraw::Needed
     }
@@ -1741,7 +1774,7 @@ impl Session {
         let text = self.buffers.get(self.active)?.text();
         Some(DocumentPosition::of_buffer(
             text,
-            self.editing.cursor().position(text),
+            self.cursor().position(text),
         ))
     }
 
@@ -1827,6 +1860,8 @@ impl Session {
             Command::MoveUp => self.tree.select_previous(),
             Command::TreeSelectParent => self.tree.select_parent(),
             Command::TreeToggleEntry => self.tree.toggle_selected(),
+            Command::TreeCollapseEntry => self.tree.collapse_selected(),
+            Command::TreeExpandEntry => return self.expand_selected_entry(),
             Command::TreeRefresh => self.tree.refresh_all(),
             Command::TreeToggleHidden => self.tree.toggle_hidden(),
             Command::TreeOpenEntry => return self.open_selected_entry(),
@@ -1881,7 +1916,22 @@ impl Session {
     /// A file opens in the editor window that held the focus before the
     /// sidebar, and the focus follows it, so the user types in the new buffer.
     fn open_selected_entry(&mut self) -> Redraw {
-        let Some(path) = self.tree.open_selected() else {
+        let selected = self.tree.open_selected();
+        self.open_tree_selection(selected)
+    }
+
+    /// Expands the selected directory, or opens the selected file.
+    ///
+    /// `l` reaches this entry point. An already expanded directory stays open.
+    /// See `docs/input-actions.md`.
+    fn expand_selected_entry(&mut self) -> Redraw {
+        let selected = self.tree.expand_selected();
+        self.open_tree_selection(selected)
+    }
+
+    /// Opens one file that the sidebar selected, and moves the focus to it.
+    fn open_tree_selection(&mut self, selected: Option<PathBuf>) -> Redraw {
+        let Some(path) = selected else {
             return Redraw::Needed;
         };
         let window = self.windows.focused_window();
@@ -2307,6 +2357,8 @@ impl Session {
         for window in self.windows.window_ids() {
             if self.windows.buffer(window) == Some(id) {
                 self.windows.set_buffer(window, next);
+                // The window shows other text now, so its view restarts.
+                self.restart_window_view(window);
             }
         }
         let redraw = self.switch_to(next);
@@ -2315,22 +2367,41 @@ impl Session {
     }
 
     /// Shows one loaded buffer in the focused window.
+    ///
+    /// A window that starts to show other text restarts its cursor and its
+    /// selection anchor, because both describe the previous buffer. Every other
+    /// window keeps its own view.
     fn switch_to(&mut self, id: BufferId) -> Redraw {
         let window = self.windows.focused_window();
+        let previous = self.windows.buffer(window);
         self.windows.set_buffer(window, id);
-        if self.active == id {
-            return Redraw::Skipped;
+        let shows_new_text = previous != Some(id);
+        if shows_new_text {
+            self.restart_window_view(window);
         }
-        let Some(active) = self.buffers.get(id) else {
-            debug_assert!(false, "a caller switches only to a loaded buffer");
-            return Redraw::Skipped;
-        };
-        self.active = id;
-        self.editing = EditingState::new(active.text());
-        // The recorded matches belong to the previous buffer.
-        self.search = None;
+        if self.active == id {
+            return if shows_new_text {
+                Redraw::Needed
+            } else {
+                Redraw::Skipped
+            };
+        }
+        debug_assert!(
+            self.buffers.get(id).is_some(),
+            "a caller switches only to a loaded buffer"
+        );
+        self.follow_focused_window();
         self.reconcile_viewports();
         Redraw::Needed
+    }
+
+    /// Restarts the view of one window at the top of the buffer that it shows.
+    fn restart_window_view(&mut self, window: WindowId) {
+        let Some(state) = self.windows.state_mut(window) else {
+            debug_assert!(false, "the caller names a leaf of the window tree");
+            return;
+        };
+        *state = state.showing_new_buffer();
     }
 
     /// Runs one accepted search query.
@@ -2349,7 +2420,7 @@ impl Session {
         let matches = query.matches(active.text(), &self.settings.search);
         let version = active.text().version();
         let window = self.windows.focused_window();
-        let Some(mut viewport) = self.windows.viewport(window) else {
+        let Some(mut state) = self.windows.state(window) else {
             debug_assert!(false, "the layout always keeps the focused window visible");
             return Redraw::Needed;
         };
@@ -2358,9 +2429,9 @@ impl Session {
             settings: &self.settings,
             search: Some(&query),
         };
-        let outcome = self.editing.search(&context, &mut viewport, &query);
-        if let Some(slot) = self.windows.viewport_mut(window) {
-            *slot = viewport;
+        let outcome = self.editing.search(&context, &mut state, &query);
+        if let Some(slot) = self.windows.state_mut(window) {
+            *slot = state;
         }
         self.search = Some(ActiveSearch {
             query,
@@ -2454,44 +2525,43 @@ impl Session {
         search.version = version;
     }
 
-    /// Resizes every visible viewport to its text area and follows the cursor.
+    /// Resizes every visible viewport to its text area and follows its cursor.
     ///
     /// The window tree sizes a viewport to the complete window rectangle,
     /// because it holds no buffer and no settings. The session knows the winbar
     /// row and the gutter width, so it publishes the real text area here. The
     /// scroll margin then applies to the cells that the reader actually sees.
+    ///
+    /// Every window reconciles against its own buffer and its own cursor, so a
+    /// move in one window scrolls that window alone. See `docs/windows.md`.
     fn reconcile_viewports(&mut self) {
         let display = self.settings.display;
-        let cursor = self.editing.cursor();
-        let Some(active) = self.buffers.get(self.active) else {
-            debug_assert!(false, "the session always keeps the active buffer loaded");
-            return;
-        };
-        let text = active.text();
-        let sizes: Vec<(WindowId, u16, u16)> = self
+        let regions: Vec<(WindowId, u16, u16)> = self
             .windows
             .layout()
             .regions()
             .iter()
             .filter(|region| region.kind == RegionKind::Editor)
-            .map(|region| {
-                let gutter = gutter_cells(text, &display, region.area.width);
-                (
-                    region.id,
-                    region.area.width.saturating_sub(gutter),
-                    region.area.height.saturating_sub(WINBAR_ROWS),
-                )
-            })
+            .map(|region| (region.id, region.area.width, region.area.height))
             .collect();
-        for (id, width, height) in sizes {
-            let width = NonZeroU16::new(width).unwrap_or(NonZeroU16::MIN);
-            let height = NonZeroU16::new(height).unwrap_or(NonZeroU16::MIN);
-            let Some(slot) = self.windows.viewport_mut(id) else {
+        for (id, area_width, area_height) in regions {
+            let Some(buffer) = self.windows.buffer(id) else {
                 continue;
             };
-            *slot = slot
-                .resized(height, width)
-                .reconciled(text, cursor, &display);
+            let Some(file) = self.buffers.get(buffer) else {
+                debug_assert!(false, "every window points at one loaded buffer");
+                continue;
+            };
+            let text = file.text();
+            let gutter = gutter_cells(text, &display, area_width);
+            let width =
+                NonZeroU16::new(area_width.saturating_sub(gutter)).unwrap_or(NonZeroU16::MIN);
+            let height =
+                NonZeroU16::new(area_height.saturating_sub(WINBAR_ROWS)).unwrap_or(NonZeroU16::MIN);
+            let Some(slot) = self.windows.state_mut(id) else {
+                continue;
+            };
+            *slot = slot.resized(height, width).reconciled(text, &display);
         }
     }
 }

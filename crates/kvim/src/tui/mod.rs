@@ -48,6 +48,7 @@ mod app;
 mod buffer_view;
 mod cells;
 mod chrome;
+mod icons;
 mod language;
 mod layout;
 mod overlay;
@@ -82,7 +83,7 @@ pub use session::{
     AnalysisRequest, AnalysisResult, FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel,
     Redraw, RunState, Session,
 };
-pub use theme::{SyntaxRole, Theme, ThemeRole};
+pub use theme::{IconRole, SyntaxRole, Theme, ThemeRole};
 pub use window::{
     AdaptiveSplit, CloseOutcome, Direction, LayoutChange, Orientation, SIDEBAR_WIDTH_MAX_CELLS,
     SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX, SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitError,

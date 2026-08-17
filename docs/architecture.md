@@ -38,6 +38,12 @@ Modules communicate through narrow contracts. Generic terminal, runtime,
 window, and file code must not contain language-specific path rules. Only a
 language adapter selects a path by language or file extension.
 
+One narrow exception exists: the file tree selects an icon by file extension and
+by well-known file name. An icon is presentation data, so its table lives in the
+`tui` module beside the theme. An icon must never select a parser, an indent
+rule, a comment token, or a language server, and no icon value may reach the
+language adapters. [`files.md`](files.md) owns the icon table.
+
 ## Dependency Direction
 
 The dependency direction is one-way:

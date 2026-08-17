@@ -68,10 +68,16 @@ flags, because that pair can express a state that has no meaning.
 | Minimum window width | 20 cells |
 | Minimum window height | 3 rows |
 | File tree width | 40 cells |
+| File tree icons | Shown |
 
 [`windows.md`](windows.md) owns the split, focus, and resize behavior. The file
 tree width is the width of the right sidebar when it opens. A directional resize
 toward the sidebar changes the width of the open sidebar, not this default.
+
+The file tree icons setting is a mode with two values: shown and hidden. An icon
+needs a patched font, and the reference configuration installs one, so the
+default shows the icons. A terminal without a patched font hides them, and the
+tree still aligns. [`files.md`](files.md) owns the icon table.
 
 ## Files
 
@@ -139,8 +145,8 @@ bare primitive:
 - The shift width is a mode with a variant that follows the tab width and a
   variant that holds an explicit width. This makes an inconsistent pair of
   widths unrepresentable.
-- The sign column, the case sensitivity, the split placements, and the check
-  depth are modes, not boolean flags or strings.
+- The sign column, the case sensitivity, the split placements, the file tree
+  icons, and the check depth are modes, not boolean flags or strings.
 
 A constructor validates each value and establishes its invariant. An invalid
 value cannot exist.

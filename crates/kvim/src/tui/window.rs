@@ -13,7 +13,7 @@ use std::num::NonZeroU16;
 use ratatui::layout::Rect;
 use thiserror::Error;
 
-use crate::editor::Viewport;
+use crate::editor::{Viewport, WindowState};
 use crate::input::Command;
 use crate::settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSettings};
 use crate::workspace::BufferId;
@@ -266,11 +266,15 @@ enum ChildSide {
 }
 
 /// One window that shows one buffer.
+///
+/// The leaf owns the view of the window: its cursor, its selection anchor, and
+/// its viewport. Two leaves that show one buffer therefore move and scroll
+/// independently. See `docs/windows.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct Leaf {
     pub(super) id: WindowId,
     buffer: BufferId,
-    viewport: Viewport,
+    state: WindowState,
 }
 
 impl Leaf {
@@ -282,7 +286,7 @@ impl Leaf {
     const VOID: Self = Self {
         id: WindowId(0),
         buffer: BufferId::new(0),
-        viewport: Viewport::new(NonZeroU16::MIN, NonZeroU16::MIN),
+        state: WindowState::new(Viewport::new(NonZeroU16::MIN, NonZeroU16::MIN)),
     };
 }
 
@@ -694,7 +698,7 @@ impl Windows {
             root: Node::Leaf(Leaf {
                 id,
                 buffer,
-                viewport: Viewport::new(NonZeroU16::MIN, NonZeroU16::MIN),
+                state: WindowState::new(Viewport::new(NonZeroU16::MIN, NonZeroU16::MIN)),
             }),
             focused: id,
             focus: Focus::Editor,
@@ -781,19 +785,25 @@ impl Windows {
         }
     }
 
+    /// Returns the cursor, the selection anchor, and the viewport of one window.
+    #[must_use]
+    pub fn state(&self, id: WindowId) -> Option<WindowState> {
+        self.root.leaf(id).map(|leaf| leaf.state)
+    }
+
+    /// Returns the state of the named window for one change.
+    ///
+    /// A layout change keeps both scroll offsets and only replaces the window
+    /// size. The caller holds the buffer, so the caller reconciles the viewport
+    /// with the scroll margin after that change.
+    pub fn state_mut(&mut self, id: WindowId) -> Option<&mut WindowState> {
+        self.root.leaf_mut(id).map(|leaf| &mut leaf.state)
+    }
+
     /// Returns the viewport of the named window.
     #[must_use]
     pub fn viewport(&self, id: WindowId) -> Option<Viewport> {
-        self.root.leaf(id).map(|leaf| leaf.viewport)
-    }
-
-    /// Returns the viewport of the named window for reconciliation.
-    ///
-    /// A layout change keeps both scroll offsets and only replaces the window
-    /// size. The caller holds the buffer and the cursor, so the caller
-    /// reconciles the viewport with the scroll margin after that change.
-    pub fn viewport_mut(&mut self, id: WindowId) -> Option<&mut Viewport> {
-        self.root.leaf_mut(id).map(|leaf| &mut leaf.viewport)
+        self.state(id).map(WindowState::viewport)
     }
 
     /// Recomputes the layout for a new terminal size.
@@ -883,8 +893,9 @@ impl Windows {
 
     /// Splits the focused window and focuses the new window.
     ///
-    /// The new window shows the same buffer. The settings decide which side
-    /// receives it.
+    /// The new window shows the same buffer, and it copies the cursor, the
+    /// selection anchor, and the viewport of the source window, so it opens at
+    /// the same place. The settings decide which side receives it.
     ///
     /// # Errors
     ///
@@ -1243,8 +1254,9 @@ impl Windows {
             let Some(leaf) = self.root.leaf_mut(id) else {
                 continue;
             };
-            if leaf.viewport.height_rows() != height || leaf.viewport.width_cells() != width {
-                leaf.viewport = leaf.viewport.resized(height, width);
+            let viewport = leaf.state.viewport();
+            if viewport.height_rows() != height || viewport.width_cells() != width {
+                leaf.state = leaf.state.resized(height, width);
             }
         }
     }

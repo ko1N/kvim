@@ -59,7 +59,7 @@ pub(super) struct WindowView<'a> {
     pub(super) first_line: usize,
     /// The first visible source column of the window.
     pub(super) left_column: usize,
-    /// The cursor of the editing state.
+    /// The cursor of the window.
     pub(super) cursor: Cursor,
     /// The selection of the active Visual mode.
     pub(super) selection: Option<Selection>,
@@ -703,7 +703,7 @@ mod tests {
     use ratatui::style::Color;
 
     use crate::core::TextBuffer;
-    use crate::editor::{EditingState, Selection};
+    use crate::editor::{Cursor, Selection};
     use crate::language::HighlightSpan;
     use crate::settings::{EditorSettings, FileSettings};
     use crate::tui::SyntaxRole;
@@ -724,13 +724,12 @@ mod tests {
         let buffer =
             TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
         let settings = EditorSettings::default();
-        let editing = EditingState::new(&buffer);
         let view = WindowView {
             buffer: &buffer,
             name: "test.rs",
             first_line: 0,
             left_column: 0,
-            cursor: editing.cursor(),
+            cursor: Cursor::ORIGIN,
             selection: None,
             matches: &[],
             match_chars: 0,
@@ -831,7 +830,6 @@ mod tests {
         let buffer =
             TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
         let settings = EditorSettings::default();
-        let editing = EditingState::new(&buffer);
         let line = |index: usize| buffer.line_index(index).expect("the test line exists");
         let column = |index: usize| {
             buffer
@@ -843,7 +841,7 @@ mod tests {
             name: "test.rs",
             first_line: 0,
             left_column: 0,
-            cursor: editing.cursor(),
+            cursor: Cursor::ORIGIN,
             selection: Some(selection),
             matches: &[],
             match_chars: 0,

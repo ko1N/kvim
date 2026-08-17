@@ -5,6 +5,7 @@ use std::num::{NonZeroU16, NonZeroU32};
 use super::{
     ColumnLimit, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, ModeState,
     Registers, SearchDirection, SearchError, SearchQuery, Selection, Viewport, ViewportAlignment,
+    WindowState,
 };
 use crate::core::TextBuffer;
 use crate::input::{Command, Mode};
@@ -49,6 +50,10 @@ fn viewport(rows: u16, cells: u16) -> Viewport {
     )
 }
 
+fn window(rows: u16, cells: u16) -> WindowState {
+    WindowState::new(viewport(rows, cells))
+}
+
 fn count(value: u32) -> Option<NonZeroU32> {
     Some(NonZeroU32::new(value).expect("the test count is not zero"))
 }
@@ -56,7 +61,7 @@ fn count(value: u32) -> Option<NonZeroU32> {
 fn apply(
     text: &mut TextBuffer,
     state: &mut EditingState,
-    view: &mut Viewport,
+    view: &mut WindowState,
     command: Command,
     repeat: Option<NonZeroU32>,
 ) -> CommandOutcome {
@@ -77,7 +82,7 @@ fn search(
     query: &SearchQuery,
     settings: &SearchSettings,
     state: &mut EditingState,
-    view: &mut Viewport,
+    view: &mut WindowState,
     command: Command,
 ) -> CommandOutcome {
     let settings = EditorSettings {
@@ -95,19 +100,19 @@ fn search(
     state.apply(&mut context, view, command, None)
 }
 
-fn position(state: &EditingState) -> (usize, usize) {
-    (state.cursor().line().get(), state.cursor().column().get())
+fn position(view: &WindowState) -> (usize, usize) {
+    (view.cursor().line().get(), view.cursor().column().get())
 }
 
 #[test]
 fn every_motion_stays_inside_an_empty_buffer() {
     let mut text = buffer("");
     for command in MOTION_COMMANDS {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         let outcome = apply(&mut text, &mut state, &mut view, *command, count(7));
         assert_eq!(outcome, CommandOutcome::Applied, "{command}");
-        assert_eq!(position(&state), (0, 0), "{command}");
+        assert_eq!(position(&view), (0, 0), "{command}");
         assert_eq!(view.first_line(), 0, "{command}");
     }
 }
@@ -138,10 +143,10 @@ fn every_motion_from_the_buffer_start_reaches_its_position() {
 
     let mut text = buffer(SAMPLE);
     for (command, place) in expected {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         apply(&mut text, &mut state, &mut view, *command, None);
-        assert_eq!(position(&state), *place, "{command}");
+        assert_eq!(position(&view), *place, "{command}");
     }
 }
 
@@ -171,8 +176,8 @@ fn every_motion_from_the_buffer_end_stays_inside_the_buffer() {
 
     let mut text = buffer(SAMPLE);
     for (command, place) in expected {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         apply(
             &mut text,
             &mut state,
@@ -188,13 +193,13 @@ fn every_motion_from_the_buffer_end_stays_inside_the_buffer() {
             count(3),
         );
         assert_eq!(
-            position(&state),
+            position(&view),
             (4, 3),
             "the fixture starts at the last character"
         );
 
         apply(&mut text, &mut state, &mut view, *command, None);
-        assert_eq!(position(&state), *place, "{command}");
+        assert_eq!(position(&view), *place, "{command}");
     }
 }
 
@@ -212,15 +217,15 @@ fn a_count_past_a_buffer_limit_stops_at_the_limit() {
         (Command::MoveLineEnd, (4, 3)),
     ];
     for (command, place) in expected {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         apply(&mut text, &mut state, &mut view, *command, count(9_999));
-        assert_eq!(position(&state), *place, "{command}");
+        assert_eq!(position(&view), *place, "{command}");
     }
 
     // The same rule holds at the low limit.
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     apply(
         &mut text,
         &mut state,
@@ -235,7 +240,7 @@ fn a_count_past_a_buffer_limit_stops_at_the_limit() {
         Command::MoveUp,
         count(9_999),
     );
-    assert_eq!(position(&state), (0, 0));
+    assert_eq!(position(&view), (0, 0));
     apply(
         &mut text,
         &mut state,
@@ -243,14 +248,14 @@ fn a_count_past_a_buffer_limit_stops_at_the_limit() {
         Command::MoveLeft,
         count(9_999),
     );
-    assert_eq!(position(&state), (0, 0));
+    assert_eq!(position(&view), (0, 0));
 }
 
 #[test]
 fn a_count_before_a_line_motion_names_a_line_number() {
     let mut text = buffer(SAMPLE);
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(
         &mut text,
@@ -260,7 +265,7 @@ fn a_count_before_a_line_motion_names_a_line_number() {
         count(2),
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (1, 4),
         "the second line indents by four spaces"
     );
@@ -273,7 +278,7 @@ fn a_count_before_a_line_motion_names_a_line_number() {
         count(4),
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (3, 2),
         "a line of blanks holds its last character"
     );
@@ -286,7 +291,7 @@ fn a_count_before_a_line_motion_names_a_line_number() {
         count(999),
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (4, 0),
         "a line past the buffer stops at the last line"
     );
@@ -295,8 +300,8 @@ fn a_count_before_a_line_motion_names_a_line_number() {
 #[test]
 fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
     let mut text = buffer(SAMPLE);
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     // The empty line holds column zero only.
     apply(&mut text, &mut state, &mut view, Command::MoveLineEnd, None);
@@ -307,11 +312,11 @@ fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
         Command::MoveDown,
         count(2),
     );
-    assert_eq!(position(&state), (2, 0));
+    assert_eq!(position(&view), (2, 0));
 
     // The line of blanks keeps the end-of-line preference.
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
-    assert_eq!(position(&state), (3, 2));
+    assert_eq!(position(&view), (3, 2));
 
     // The first non-blank motion stays inside a line without a non-blank character.
     apply(
@@ -321,10 +326,12 @@ fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
         Command::MoveFirstNonBlank,
         None,
     );
-    assert_eq!(position(&state), (3, 2));
+    assert_eq!(position(&view), (3, 2));
 
-    // A word motion crosses the blank line and stops on the empty line.
-    let mut state = EditingState::new(&text);
+    // A word motion crosses the blank line and stops on the empty line. The
+    // window owns the cursor, so the run starts from a fresh window.
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     apply(
         &mut text,
         &mut state,
@@ -332,7 +339,7 @@ fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
         Command::MoveNextWordStart,
         count(3),
     );
-    assert_eq!(position(&state), (2, 0), "an empty line is one word");
+    assert_eq!(position(&view), (2, 0), "an empty line is one word");
     apply(
         &mut text,
         &mut state,
@@ -340,7 +347,7 @@ fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
         Command::MoveNextWordStart,
         None,
     );
-    assert_eq!(position(&state), (4, 0), "the blank line holds no word");
+    assert_eq!(position(&view), (4, 0), "the blank line holds no word");
     apply(
         &mut text,
         &mut state,
@@ -348,7 +355,7 @@ fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
         Command::MovePreviousWordStart,
         None,
     );
-    assert_eq!(position(&state), (2, 0));
+    assert_eq!(position(&view), (2, 0));
 }
 
 #[test]
@@ -356,8 +363,8 @@ fn word_motions_separate_words_from_punctuation() {
     let mut text = buffer("foo.bar  baz");
     let starts: &[(u32, usize)] = &[(1, 3), (2, 4), (3, 9), (4, 11)];
     for (repeat, column) in starts {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         apply(
             &mut text,
             &mut state,
@@ -365,13 +372,13 @@ fn word_motions_separate_words_from_punctuation() {
             Command::MoveNextWordStart,
             count(*repeat),
         );
-        assert_eq!(position(&state), (0, *column), "next word start {repeat}");
+        assert_eq!(position(&view), (0, *column), "next word start {repeat}");
     }
 
     let ends: &[(u32, usize)] = &[(1, 2), (2, 3), (3, 6), (4, 11)];
     for (repeat, column) in ends {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         apply(
             &mut text,
             &mut state,
@@ -379,13 +386,13 @@ fn word_motions_separate_words_from_punctuation() {
             Command::MoveNextWordEnd,
             count(*repeat),
         );
-        assert_eq!(position(&state), (0, *column), "next word end {repeat}");
+        assert_eq!(position(&view), (0, *column), "next word end {repeat}");
     }
 
     let backward: &[(u32, usize)] = &[(1, 9), (2, 4), (3, 3), (4, 0)];
     for (repeat, column) in backward {
-        let mut state = EditingState::new(&text);
-        let mut view = viewport(10, 80);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
         apply(&mut text, &mut state, &mut view, Command::MoveLineEnd, None);
         apply(
             &mut text,
@@ -395,7 +402,7 @@ fn word_motions_separate_words_from_punctuation() {
             count(*repeat),
         );
         assert_eq!(
-            position(&state),
+            position(&view),
             (0, *column),
             "previous word start {repeat}"
         );
@@ -405,8 +412,8 @@ fn word_motions_separate_words_from_punctuation() {
 #[test]
 fn word_motions_count_characters_and_not_bytes() {
     let mut text = buffer("héllo wörld\nλ+β");
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(
         &mut text,
@@ -416,7 +423,7 @@ fn word_motions_count_characters_and_not_bytes() {
         None,
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (0, 4),
         "the multi-byte word ends at column four"
     );
@@ -428,7 +435,7 @@ fn word_motions_count_characters_and_not_bytes() {
         Command::MoveNextWordStart,
         None,
     );
-    assert_eq!(position(&state), (0, 6));
+    assert_eq!(position(&view), (0, 6));
 
     // A Greek letter is a word character, and the plus sign is punctuation.
     apply(
@@ -438,7 +445,7 @@ fn word_motions_count_characters_and_not_bytes() {
         Command::MoveNextWordStart,
         None,
     );
-    assert_eq!(position(&state), (1, 0));
+    assert_eq!(position(&view), (1, 0));
     apply(
         &mut text,
         &mut state,
@@ -446,7 +453,7 @@ fn word_motions_count_characters_and_not_bytes() {
         Command::MoveNextWordStart,
         None,
     );
-    assert_eq!(position(&state), (1, 1));
+    assert_eq!(position(&view), (1, 1));
     apply(
         &mut text,
         &mut state,
@@ -454,14 +461,14 @@ fn word_motions_count_characters_and_not_bytes() {
         Command::MoveNextWordStart,
         None,
     );
-    assert_eq!(position(&state), (1, 2));
+    assert_eq!(position(&view), (1, 2));
 }
 
 #[test]
 fn vertical_movement_keeps_one_preferred_column() {
     let mut text = buffer("abcdefgh\nx\nabcdefgh");
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(
         &mut text,
@@ -470,21 +477,21 @@ fn vertical_movement_keeps_one_preferred_column() {
         Command::MoveRight,
         count(4),
     );
-    assert_eq!(position(&state), (0, 4));
+    assert_eq!(position(&view), (0, 4));
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
     assert_eq!(
-        position(&state),
+        position(&view),
         (1, 0),
         "the short line shortens the cursor column"
     );
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
     assert_eq!(
-        position(&state),
+        position(&view),
         (2, 4),
         "the long line restores the preferred column"
     );
     apply(&mut text, &mut state, &mut view, Command::MoveUp, count(2));
-    assert_eq!(position(&state), (0, 4));
+    assert_eq!(position(&view), (0, 4));
 
     // A horizontal motion replaces the preferred column.
     apply(&mut text, &mut state, &mut view, Command::MoveLeft, None);
@@ -495,22 +502,22 @@ fn vertical_movement_keeps_one_preferred_column() {
         Command::MoveDown,
         count(2),
     );
-    assert_eq!(position(&state), (2, 3));
+    assert_eq!(position(&view), (2, 3));
 }
 
 #[test]
 fn the_end_of_line_motion_keeps_the_cursor_at_every_line_end() {
     let mut text = buffer("abcdefgh\nx\nabcd");
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(&mut text, &mut state, &mut view, Command::MoveLineEnd, None);
-    assert_eq!(position(&state), (0, 7));
+    assert_eq!(position(&view), (0, 7));
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
-    assert_eq!(position(&state), (1, 0));
+    assert_eq!(position(&view), (1, 0));
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
     assert_eq!(
-        position(&state),
+        position(&view),
         (2, 3),
         "the end-of-line preference survives a short line"
     );
@@ -520,10 +527,10 @@ fn the_end_of_line_motion_keeps_the_cursor_at_every_line_end() {
 fn each_visual_mode_produces_its_own_selection_shape() {
     let mut text = buffer("alpha\nbeta\ngamma\n");
 
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     assert!(
-        state.selection(&text).is_none(),
+        state.selection(&text, &view).is_none(),
         "Normal mode holds no selection"
     );
 
@@ -537,7 +544,7 @@ fn each_visual_mode_produces_its_own_selection_shape() {
     );
     assert_eq!(state.mode(), Mode::Visual);
     match state
-        .selection(&text)
+        .selection(&text, &view)
         .expect("Visual mode holds a selection")
     {
         Selection::Characterwise(range) => {
@@ -547,7 +554,9 @@ fn each_visual_mode_produces_its_own_selection_shape() {
         other => panic!("Visual mode produced {other:?}"),
     }
 
-    let mut state = EditingState::new(&text);
+    // Each mode starts from a fresh window, because the window owns the cursor.
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     apply(
         &mut text,
         &mut state,
@@ -557,7 +566,7 @@ fn each_visual_mode_produces_its_own_selection_shape() {
     );
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
     match state
-        .selection(&text)
+        .selection(&text, &view)
         .expect("Visual Line mode holds a selection")
     {
         Selection::Linewise { first, last } => {
@@ -566,7 +575,8 @@ fn each_visual_mode_produces_its_own_selection_shape() {
         other => panic!("Visual Line mode produced {other:?}"),
     }
 
-    let mut state = EditingState::new(&text);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     apply(&mut text, &mut state, &mut view, Command::MoveRight, None);
     apply(
         &mut text,
@@ -578,7 +588,7 @@ fn each_visual_mode_produces_its_own_selection_shape() {
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
     apply(&mut text, &mut state, &mut view, Command::MoveRight, None);
     match state
-        .selection(&text)
+        .selection(&text, &view)
         .expect("Visual Block mode holds a selection")
     {
         Selection::Block {
@@ -597,8 +607,8 @@ fn each_visual_mode_produces_its_own_selection_shape() {
 #[test]
 fn a_selection_grows_in_both_directions_from_its_anchor() {
     let mut text = buffer("alpha beta\n");
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(
         &mut text,
@@ -616,7 +626,7 @@ fn a_selection_grows_in_both_directions_from_its_anchor() {
         count(2),
     );
     match state
-        .selection(&text)
+        .selection(&text, &view)
         .expect("Visual mode holds a selection")
     {
         Selection::Characterwise(range) => {
@@ -629,8 +639,8 @@ fn a_selection_grows_in_both_directions_from_its_anchor() {
 #[test]
 fn a_change_between_visual_modes_keeps_the_anchor() {
     let mut text = buffer("alpha\nbeta\ngamma\n");
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(&mut text, &mut state, &mut view, Command::MoveDown, None);
     apply(&mut text, &mut state, &mut view, Command::EnterVisual, None);
@@ -642,7 +652,7 @@ fn a_change_between_visual_modes_keeps_the_anchor() {
         Command::EnterVisualLine,
         None,
     );
-    match state.mode_state() {
+    match state.mode_state(&text, &view) {
         ModeState::VisualLine { anchor } => assert_eq!(anchor.get(), 1),
         other => panic!("the mode state is {other:?}"),
     }
@@ -655,33 +665,33 @@ fn a_change_between_visual_modes_keeps_the_anchor() {
         None,
     );
     assert_eq!(state.mode(), Mode::Normal);
-    assert!(state.selection(&text).is_none());
+    assert!(state.selection(&text, &view).is_none());
 }
 
 #[test]
 fn insert_mode_allows_one_more_column_than_the_other_modes() {
     let mut text = buffer("ab\n");
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(&mut text, &mut state, &mut view, Command::MoveLineEnd, None);
     assert_eq!(
-        position(&state),
+        position(&view),
         (0, 1),
         "Normal mode stays on the last character"
     );
 
-    state.enter_mode(&text, Mode::Insert);
-    state.move_to(&text, 0, 2);
+    state.enter_mode(&text, &mut view, Mode::Insert);
+    state.move_to(&text, &mut view, 0, 2);
     assert_eq!(
-        position(&state),
+        position(&view),
         (0, 2),
         "Insert mode stands after the last character"
     );
 
-    state.enter_mode(&text, Mode::Normal);
+    state.enter_mode(&text, &mut view, Mode::Normal);
     assert_eq!(
-        position(&state),
+        position(&view),
         (0, 1),
         "the mode change clamps the cursor again"
     );
@@ -744,8 +754,8 @@ fn search_moves_forward_and_backward_and_wraps() {
     let query = SearchQuery::new("foo", SearchDirection::Forward)
         .expect("the test query holds one short line");
 
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     let outcome = search(
         &mut text,
@@ -756,7 +766,7 @@ fn search_moves_forward_and_backward_and_wraps() {
         Command::SearchNext,
     );
     assert_eq!(outcome, CommandOutcome::Applied);
-    assert_eq!(position(&state), (1, 0));
+    assert_eq!(position(&view), (1, 0));
 
     search(
         &mut text,
@@ -766,7 +776,7 @@ fn search_moves_forward_and_backward_and_wraps() {
         &mut view,
         Command::SearchNext,
     );
-    assert_eq!(position(&state), (2, 0));
+    assert_eq!(position(&view), (2, 0));
 
     search(
         &mut text,
@@ -777,7 +787,7 @@ fn search_moves_forward_and_backward_and_wraps() {
         Command::SearchNext,
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (0, 0),
         "the forward search wraps at the buffer end"
     );
@@ -791,7 +801,7 @@ fn search_moves_forward_and_backward_and_wraps() {
         Command::SearchPrevious,
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (2, 0),
         "the backward search wraps at the buffer start"
     );
@@ -804,7 +814,7 @@ fn search_moves_forward_and_backward_and_wraps() {
         &mut view,
         Command::SearchPrevious,
     );
-    assert_eq!(position(&state), (1, 0));
+    assert_eq!(position(&view), (1, 0));
 }
 
 #[test]
@@ -814,8 +824,8 @@ fn a_backward_query_reverses_both_search_commands() {
     let query = SearchQuery::new("foo", SearchDirection::Backward)
         .expect("the test query holds one short line");
 
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     search(
         &mut text,
@@ -826,7 +836,7 @@ fn a_backward_query_reverses_both_search_commands() {
         Command::SearchNext,
     );
     assert_eq!(
-        position(&state),
+        position(&view),
         (2, 0),
         "the backward query wraps to the last match"
     );
@@ -839,7 +849,7 @@ fn a_backward_query_reverses_both_search_commands() {
         &mut view,
         Command::SearchPrevious,
     );
-    assert_eq!(position(&state), (0, 0));
+    assert_eq!(position(&view), (0, 0));
 }
 
 #[test]
@@ -849,8 +859,8 @@ fn a_search_without_a_match_or_without_a_query_moves_nothing() {
     let missing = SearchQuery::new("zzz", SearchDirection::Forward)
         .expect("the test query holds one short line");
 
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     let outcome = search(
         &mut text,
         &missing,
@@ -860,11 +870,11 @@ fn a_search_without_a_match_or_without_a_query_moves_nothing() {
         Command::SearchNext,
     );
     assert_eq!(outcome, CommandOutcome::SearchMissed);
-    assert_eq!(position(&state), (0, 0));
+    assert_eq!(position(&view), (0, 0));
 
     let outcome = apply(&mut text, &mut state, &mut view, Command::SearchNext, None);
     assert_eq!(outcome, CommandOutcome::SearchMissed);
-    assert_eq!(position(&state), (0, 0));
+    assert_eq!(position(&view), (0, 0));
 }
 
 #[test]
@@ -879,13 +889,13 @@ fn an_accepted_query_moves_the_cursor_and_the_viewport() {
         search: Some(&query),
     };
 
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(2, 80);
+    let mut state = EditingState::new();
+    let mut view = window(2, 80);
     assert_eq!(
         state.search(&context, &mut view, &query),
         CommandOutcome::Applied
     );
-    assert_eq!(position(&state), (2, 0));
+    assert_eq!(position(&view), (2, 0));
     assert_eq!(view.first_line(), 1, "the viewport follows the match");
 }
 
@@ -968,8 +978,8 @@ fn the_horizontal_offset_follows_the_cursor_column() {
 #[test]
 fn an_alignment_command_overrides_the_scroll_margin() {
     let mut text = buffer(&"line\n".repeat(100));
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
 
     apply(
         &mut text,
@@ -978,7 +988,7 @@ fn an_alignment_command_overrides_the_scroll_margin() {
         Command::MoveLastLine,
         count(51),
     );
-    assert_eq!(state.cursor().line().get(), 50);
+    assert_eq!(view.cursor().line().get(), 50);
     assert_eq!(
         view.first_line(),
         43,
@@ -1033,8 +1043,8 @@ fn an_alignment_near_the_buffer_start_stops_at_the_first_line() {
 #[test]
 fn no_command_of_this_slice_changes_the_buffer() {
     let mut text = buffer(SAMPLE);
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(6, 20);
+    let mut state = EditingState::new();
+    let mut view = window(6, 20);
     for command in MOTION_COMMANDS {
         apply(&mut text, &mut state, &mut view, *command, count(3));
     }
@@ -1046,8 +1056,8 @@ fn no_command_of_this_slice_changes_the_buffer() {
 #[test]
 fn a_command_of_a_later_slice_stays_unhandled() {
     let mut text = buffer(SAMPLE);
-    let mut state = EditingState::new(&text);
-    let mut view = viewport(10, 80);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
     for command in [
         Command::SaveBuffer,
         Command::SplitAdaptive,
@@ -1060,7 +1070,7 @@ fn a_command_of_a_later_slice_stays_unhandled() {
             "{command}"
         );
     }
-    assert_eq!(position(&state), (0, 0));
+    assert_eq!(position(&view), (0, 0));
 }
 
 #[test]

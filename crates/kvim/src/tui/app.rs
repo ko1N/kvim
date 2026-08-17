@@ -78,6 +78,15 @@ const PREVIEW_SLOT: RequestSlot = RequestSlot::new(5);
 /// request, so the bound covers every request that it can produce.
 const PICKER_DISPATCH_MAX: usize = 2;
 
+/// The workspace requests that one loop iteration submits.
+///
+/// The file tree runs one workspace operation at a time, so one transition
+/// produces at most one directory read or one mutation. The bound keeps the
+/// submission loop finite even if a later change let the tree offer the same
+/// read again, so a defect of that shape can never hang the event loop. See
+/// `docs/responsiveness.md`.
+const WORKSPACE_DISPATCH_MAX: usize = 1;
+
 /// The language requests that one loop iteration sends.
 ///
 /// The session holds a bounded outbox and one fresh open for each loaded
@@ -224,6 +233,12 @@ async fn drive<C: TerminalControl>(
         probe == PanicProbe::Disabled,
         "the panic probe of the environment asks for this panic"
     );
+    // The elapsed time alone drives one state change, so the loop runs one
+    // catch-up transition for each deadline that already passed. It records that
+    // deadline: a transition that leaves the same deadline behind must not run
+    // again, or the loop would never await a terminal event and the editor would
+    // stop serving input. See `docs/responsiveness.md`.
+    let mut caught_up: Option<Duration> = None;
     while editor.run_state() == RunState::Running {
         let now = start.elapsed();
         let step = match editor.next_deadline() {
@@ -237,8 +252,13 @@ async fn drive<C: TerminalControl>(
             }
             // The deadline already passed, so the transition runs before the
             // loop waits for another event.
-            Some(_) => Step::Handled(editor.tick(now)),
-            None => {
+            Some(deadline) if caught_up != Some(deadline) => {
+                caught_up = Some(deadline);
+                Step::Handled(editor.tick(now))
+            }
+            // The deadline stayed, so no further transition follows from the
+            // elapsed time alone. The loop waits for an event instead.
+            Some(_) | None => {
                 tokio::select! {
                     event = events.next_event() => apply(&mut editor, event, start.elapsed()),
                     result = results.recv() => complete(&mut editor, &gate, result),
@@ -419,20 +439,25 @@ fn submit_workspace_work(
     runtime: &Runtime<WorkResult>,
     gate: &PublicationGate,
 ) {
-    let Some(request) = editor.take_workspace_request() else {
-        return;
-    };
-    let handle = gate.begin(WORKSPACE_SLOT, &runtime.cancellation_root());
-    let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, |_cancellation| {
-        WorkResult::Workspace(request.run())
-    });
-    if let Err(error) = submitted {
-        editor.abandon_workspace_request(match error {
-            SubmitError::Saturated(_) => FileRequestFailure::Saturated,
-            SubmitError::InvalidLimits | SubmitError::ProcessBounds | SubmitError::ShuttingDown => {
-                FileRequestFailure::Cancelled
-            }
+    for _ in 0..WORKSPACE_DISPATCH_MAX {
+        let Some(request) = editor.take_workspace_request() else {
+            return;
+        };
+        let handle = gate.begin(WORKSPACE_SLOT, &runtime.cancellation_root());
+        let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, |_cancellation| {
+            WorkResult::Workspace(request.run())
         });
+        // A refused submission clears the pending state of the tree, so the
+        // next transition offers the read again instead of waiting for a result
+        // that never arrives.
+        if let Err(error) = submitted {
+            editor.abandon_workspace_request(match error {
+                SubmitError::Saturated(_) => FileRequestFailure::Saturated,
+                SubmitError::InvalidLimits
+                | SubmitError::ProcessBounds
+                | SubmitError::ShuttingDown => FileRequestFailure::Cancelled,
+            });
+        }
     }
 }
 

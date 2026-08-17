@@ -13,11 +13,11 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
 use crate::input::Mode;
-use crate::settings::EditorSettings;
+use crate::settings::{EditorSettings, FileTreeIcons};
 use crate::terminal::{Key, KeyCode, TerminalEvent};
 use crate::workspace::{TREE_PENDING_READS_MAX, temp::TempDir};
 
-use super::session::Session;
+use super::session::{FileRequestFailure, Session};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -39,18 +39,23 @@ const WORKSPACE_STEPS_MAX: usize = TREE_PENDING_READS_MAX;
 /// Creates one workspace and one session over it.
 ///
 /// The root is canonical, so it matches the path that a loaded buffer holds.
+/// The session hides the icons, so a row assertion reads the structure of the
+/// tree alone. One test turns them on again.
 fn workspace() -> (TempDir, Session) {
+    workspace_with_icons(FileTreeIcons::Hidden)
+}
+
+/// Creates one workspace and one session with the named icon setting.
+fn workspace_with_icons(icons: FileTreeIcons) -> (TempDir, Session) {
     let dir = TempDir::new("tree");
     dir.file("src/main.rs", "fn main() {}\n");
     dir.file("README.md", "kvim\n");
     dir.file(".hidden", "secret\n");
     dir.dir("docs");
     let root = fs::canonicalize(&dir.path).expect("the temporary directory exists");
-    let mut session = Session::new(
-        Rect::new(0, 0, WIDTH, HEIGHT),
-        EditorSettings::default(),
-        root,
-    );
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = icons;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
     drain(&mut session);
     (dir, session)
 }
@@ -495,11 +500,9 @@ fn the_sidebar_scrolls_so_the_selected_row_stays_visible() {
         dir.file(&format!("file{index:02}.rs"), "\n");
     }
     let root = fs::canonicalize(&dir.path).expect("the temporary directory exists");
-    let mut session = Session::new(
-        Rect::new(0, 0, WIDTH, HEIGHT),
-        EditorSettings::default(),
-        root,
-    );
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
     drain(&mut session);
     reveal(&mut session);
 
@@ -552,5 +555,243 @@ fn the_tree_reads_no_directory_on_the_event_loop() {
             Some(crate::workspace::WorkspaceRequest::ReadDirectory { .. })
         ),
         "the refresh hands the read to the bounded worker service"
+    );
+}
+
+/// Returns the name of the selected entry, or an empty text while none is
+/// selected.
+fn selected_name(session: &Session) -> String {
+    session
+        .file_tree()
+        .selected()
+        .map_or_else(String::new, |path| {
+            path.file_name()
+                .map_or_else(String::new, |name| name.to_string_lossy().into_owned())
+        })
+}
+
+#[test]
+fn l_expands_a_directory_and_h_collapses_it_or_selects_the_parent() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The first read selects the first row, which is the `docs` directory.
+    assert_eq!(selected_name(&session), "docs");
+
+    // `l` opens the selected directory, and it never closes one.
+    press(&mut session, 'l');
+    drain(&mut session);
+    assert_eq!(sidebar_row(&session, 1), "▾ docs");
+    press(&mut session, 'l');
+    drain(&mut session);
+    assert_eq!(
+        sidebar_row(&session, 1),
+        "▾ docs",
+        "`l` on an open directory keeps it open"
+    );
+
+    // `h` closes an open directory.
+    press(&mut session, 'h');
+    drain(&mut session);
+    assert_eq!(sidebar_row(&session, 1), "▸ docs");
+    assert_eq!(selected_name(&session), "docs");
+
+    // `h` on a closed directory leaves for the parent. The workspace root holds
+    // no row, so the selection stays.
+    press(&mut session, 'h');
+    assert_eq!(selected_name(&session), "docs");
+
+    // `h` from a file selects the directory that holds it, and the next `h`
+    // closes that directory.
+    press(&mut session, 'j');
+    assert_eq!(selected_name(&session), "src");
+    press(&mut session, 'l');
+    drain(&mut session);
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▸ docs".to_owned(),
+            "▾ src".to_owned(),
+            "    main.rs".to_owned(),
+            "  README.md".to_owned(),
+        ]
+    );
+    press(&mut session, 'j');
+    assert_eq!(selected_name(&session), "main.rs");
+    press(&mut session, 'h');
+    assert_eq!(selected_name(&session), "src");
+    press(&mut session, 'h');
+    drain(&mut session);
+    assert_eq!(sidebar_row(&session, 2), "▸ src");
+}
+
+#[test]
+fn l_on_a_file_opens_it_in_the_editor_window() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The third row holds `README.md`, and the first read selected the first.
+    type_keys(&mut session, "jj");
+    assert_eq!(selected_name(&session), "README.md");
+    press(&mut session, 'l');
+    drain_file(&mut session);
+
+    assert_eq!(session.active_buffer().name(), "README.md");
+    assert_eq!(
+        session.mode(),
+        Mode::Normal,
+        "the focus leaves the sidebar for the editor window"
+    );
+}
+
+#[test]
+fn the_tree_paints_one_icon_for_each_entry_and_hides_them_on_request() {
+    assert_eq!(
+        EditorSettings::default().windows.file_tree_icons,
+        FileTreeIcons::Shown,
+        "the reference configuration installs a patched font"
+    );
+
+    let (_dir, mut session) = workspace_with_icons(FileTreeIcons::Shown);
+    reveal(&mut session);
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▸ \u{f07b} docs".to_owned(),
+            "▸ \u{f07b} src".to_owned(),
+            "  \u{f48a} README.md".to_owned(),
+        ],
+        "a closed directory and a known extension each carry their icon"
+    );
+
+    // An open directory carries its own icon, and every name of one depth still
+    // starts at one column.
+    press(&mut session, 'j');
+    press(&mut session, 'l');
+    drain(&mut session);
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▸ \u{f07b} docs".to_owned(),
+            "▾ \u{f07c} src".to_owned(),
+            "    \u{e7a8} main.rs".to_owned(),
+            "  \u{f48a} README.md".to_owned(),
+        ]
+    );
+
+    // The same tree without icons keeps the names aligned.
+    let (_other_dir, mut plain) = workspace_with_icons(FileTreeIcons::Hidden);
+    reveal(&mut plain);
+    assert_eq!(
+        sidebar_rows(&plain),
+        vec![
+            "▸ docs".to_owned(),
+            "▸ src".to_owned(),
+            "  README.md".to_owned(),
+        ]
+    );
+}
+
+/// Runs the queued workspace operations and returns the number of steps.
+///
+/// The loop is bounded, as the event loop is. It reports the steps, so a test
+/// can assert that the queue makes progress instead of offering one read
+/// forever.
+fn drain_counted(session: &mut Session) -> usize {
+    for step in 0..WORKSPACE_STEPS_MAX {
+        let Some(request) = session.take_workspace_request() else {
+            return step;
+        };
+        session.apply_workspace_result(request.run());
+    }
+    panic!("the workspace queue offered a read at every one of the bounded steps");
+}
+
+#[test]
+fn the_workspace_queue_terminates_after_a_failed_read() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The directory disappears between the expansion and the read, so the read
+    // fails. The queue must still empty.
+    press(&mut session, 'l');
+    let request = session
+        .take_workspace_request()
+        .expect("the expansion queued one directory read");
+    fs::remove_dir_all(dir.join("docs")).expect("the test workspace holds the directory");
+    session.apply_workspace_result(request.run());
+    assert_eq!(
+        drain_counted(&mut session),
+        0,
+        "a failed read queues no further read"
+    );
+    press(&mut session, 'R');
+    assert!(
+        drain_counted(&mut session) > 0,
+        "a refresh still reads the remaining directories"
+    );
+}
+
+#[test]
+fn a_refused_submission_leaves_the_tree_usable() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    press(&mut session, 'R');
+    let refused = session
+        .take_workspace_request()
+        .expect("the refresh queued one read");
+    drop(refused);
+    // The bounded worker service refused the request, so the tree clears its
+    // pending state instead of waiting for a result that never arrives.
+    session.abandon_workspace_request(FileRequestFailure::Saturated);
+    assert_eq!(
+        drain_counted(&mut session),
+        0,
+        "the refused read left no operation behind"
+    );
+
+    // The tree accepts the next operation, so one refusal never blocks it.
+    press(&mut session, 'R');
+    assert!(
+        drain_counted(&mut session) > 0,
+        "a later refresh still reads the workspace"
+    );
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▸ docs".to_owned(),
+            "▸ src".to_owned(),
+            "  README.md".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn an_obsolete_result_leaves_the_queue_usable() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // A result that reaches no pending read is obsolete. The publication gate
+    // drops it in the event loop, and the tree must stay usable either way.
+    press(&mut session, 'R');
+    let request = session
+        .take_workspace_request()
+        .expect("the refresh queued one read");
+    let result = request.run();
+    session.abandon_workspace_request(FileRequestFailure::Cancelled);
+    session.apply_workspace_result(result);
+    assert!(
+        drain_counted(&mut session) < WORKSPACE_STEPS_MAX,
+        "the queue still empties after an obsolete result"
+    );
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▸ docs".to_owned(),
+            "▸ src".to_owned(),
+            "  README.md".to_owned(),
+        ],
+        "the tree keeps its rows"
     );
 }

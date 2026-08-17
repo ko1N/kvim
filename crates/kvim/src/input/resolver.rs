@@ -169,18 +169,23 @@ impl Resolver {
     /// The event loop uses the value to wake exactly when the overlay becomes
     /// visible. It is the only time-driven state change of the resolver. A
     /// visible overlay needs no further wake, so it reports no time.
+    ///
+    /// A pending count alone reports no time either. The rows list the keys that
+    /// follow a sequence, so [`Resolver::which_key`] shows no overlay while the
+    /// pending sequence holds no key. A time that no transition can consume
+    /// would wake the event loop forever. Both functions therefore apply the
+    /// same condition.
     #[must_use]
     pub fn overlay_deadline(&self) -> Option<Duration> {
-        match self.pending {
-            PendingInput::Idle
-            | PendingInput::Active {
-                overlay: Overlay::Visible,
-                ..
-            } => None,
-            PendingInput::Active {
-                overlay: Overlay::Delayed { at },
-                ..
-            } => Some(at),
+        let PendingInput::Active { keys, overlay, .. } = &self.pending else {
+            return None;
+        };
+        if keys.is_empty() {
+            return None;
+        }
+        match overlay {
+            Overlay::Visible => None,
+            Overlay::Delayed { at } => Some(*at),
         }
     }
 
@@ -873,6 +878,60 @@ mod tests {
             resolver.set_context(InputContext::NORMAL.open_prompt(PromptKind::CommandLine));
             let expected = expected.map_or(Resolution::NoMatch, Resolution::Prompt);
             assert_eq!(resolver.resolve(key, NOW), expected, "{key:?} in a prompt");
+        }
+    }
+
+    #[test]
+    fn a_pending_count_reports_no_overlay_deadline() {
+        // A time that no transition can consume would wake the event loop
+        // forever, so the resolver reports none while the sequence holds no key.
+        let mut resolver = resolver();
+        assert_eq!(resolver.resolve(ch('5'), NOW), Resolution::Pending);
+        assert_eq!(
+            resolver.overlay_deadline(),
+            None,
+            "a pending count alone shows no overlay"
+        );
+        assert_eq!(
+            resolver.which_key(WHICH_KEY_DELAY),
+            None,
+            "the overlay stays hidden, so the deadline must stay absent"
+        );
+        assert_eq!(
+            resolver.overlay_deadline(),
+            None,
+            "the passed delay changes nothing while the sequence holds no key"
+        );
+
+        // The first key of the sequence arms the overlay, and the overlay then
+        // consumes the deadline.
+        assert_eq!(resolver.resolve(ch('g'), NOW), Resolution::Pending);
+        assert_eq!(resolver.overlay_deadline(), Some(WHICH_KEY_DELAY));
+        assert!(resolver.which_key(WHICH_KEY_DELAY).is_some());
+        assert_eq!(resolver.overlay_deadline(), None);
+    }
+
+    #[test]
+    fn every_reported_overlay_deadline_reveals_the_overlay() {
+        // The two functions must agree: a reported deadline always produces the
+        // rows that clear it.
+        for keys in [
+            vec![ch('5')],
+            vec![ch('1'), ch('2')],
+            vec![ch(' ')],
+            vec![ch('5'), ch(' ')],
+            vec![ch('g')],
+            vec![ch('5'), ch('g')],
+        ] {
+            let mut resolver = resolver();
+            feed(&mut resolver, &keys);
+            let deadline = resolver.overlay_deadline();
+            let rows = resolver.which_key(WHICH_KEY_DELAY);
+            assert_eq!(
+                deadline.is_some(),
+                rows.is_some(),
+                "a reported deadline for {keys:?} must reveal the overlay"
+            );
         }
     }
 

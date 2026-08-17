@@ -3,7 +3,7 @@
 use ratatui::layout::Rect;
 
 use crate::core::TextBuffer;
-use crate::editor::{ColumnLimit, Cursor};
+use crate::editor::EditingState;
 use crate::input::Command;
 use crate::settings::{DisplaySettings, FileSettings, HorizontalSplitPlacement, WindowSettings};
 
@@ -808,9 +808,10 @@ fn a_split_and_a_terminal_resize_keep_the_scroll_offset() {
     let line = "x".repeat(400);
     let text = format!("{line}\n").repeat(200);
     let buffer = TextBuffer::from_text(&text, &FileSettings::default()).expect("the text is small");
-    let cursor = Cursor::clamped(&buffer, 120, 300, ColumnLimit::LastCharacter);
-    let viewport = tree.viewport_mut(scrolled).expect("the window exists");
-    *viewport = viewport.reconciled(&buffer, cursor, &DisplaySettings::default());
+    let mut state = tree.state(scrolled).expect("the window exists");
+    EditingState::new().move_to(&buffer, &mut state, 120, 300);
+    *tree.state_mut(scrolled).expect("the window exists") =
+        state.reconciled(&buffer, &DisplaySettings::default());
 
     let scroll = tree.viewport(scrolled).expect("the window exists");
     assert!(scroll.first_line() > 0, "the test needs a scrolled window");

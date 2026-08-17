@@ -6,7 +6,7 @@
 
 use ratatui::Frame;
 
-use crate::editor::{ColumnLimit, Cursor};
+use crate::editor::{Cursor, WindowState};
 
 use super::buffer_view::{WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
@@ -40,7 +40,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     for region in view.windows.layout().regions() {
         match region.kind {
             RegionKind::Editor => {
-                let Some(viewport) = view.windows.viewport(region.id) else {
+                let Some(state) = view.windows.state(region.id) else {
                     debug_assert!(false, "every editor region belongs to one leaf window");
                     continue;
                 };
@@ -58,26 +58,20 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                 } else {
                     WindowFocus::Unfocused
                 };
-                // The editing state follows the focused window alone, so an
-                // unfocused window shows no cursor and no selection. Its gutter
-                // counts from the start of its own buffer, because no per-window
-                // cursor exists yet.
-                let cursor = match focus {
-                    WindowFocus::Focused => view.editing.cursor(),
-                    WindowFocus::Unfocused => {
-                        Cursor::at_buffer_start(text, ColumnLimit::LastCharacter)
-                    }
-                };
+                // Every window owns its cursor, so its relative line numbers
+                // count from its own cursor line. The mode is global and belongs
+                // to the focused window, so only that window paints a selection.
+                // See `docs/windows.md`.
                 // The active search belongs to the active buffer only.
                 let searched = id == view.active && match_chars > 0;
                 let window = WindowView {
                     buffer: text,
                     name: file.name(),
-                    first_line: viewport.first_line(),
-                    left_column: viewport.left_column(),
-                    cursor,
+                    first_line: state.first_line(),
+                    left_column: state.left_column(),
+                    cursor: state.cursor(),
                     selection: match focus {
-                        WindowFocus::Focused => view.editing.selection(text),
+                        WindowFocus::Focused => view.editing.selection(text, &state),
                         WindowFocus::Unfocused => None,
                     },
                     matches: if searched { matches } else { &[] },
@@ -101,7 +95,14 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                 } else {
                     WindowFocus::Unfocused
                 };
-                let selected = render_tree(target, region.area, theme, view.tree, focus);
+                let selected = render_tree(
+                    target,
+                    region.area,
+                    theme,
+                    view.tree,
+                    focus,
+                    view.settings.windows.file_tree_icons,
+                );
                 // The keys reach the sidebar, so the terminal cursor sits on
                 // the selected row instead of in an editor window.
                 if focus == WindowFocus::Focused {
@@ -111,12 +112,18 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         }
     }
 
+    // The statusline reports the mode of the editor and the cursor of the
+    // focused window, because the keys act there.
+    let focused_cursor = view
+        .windows
+        .state(focused)
+        .map_or(Cursor::ORIGIN, WindowState::cursor);
     render_statusline(
         target,
         bands.statusline,
         theme,
         view.editing.mode(),
-        view.editing.cursor(),
+        focused_cursor,
     );
     render_message(target, bands.message, theme, view.prompt, view.message);
     if let Some(float) = view.float {

@@ -190,7 +190,7 @@ impl Editor {
 
     /// Returns the cursor line and source column of the focused window.
     fn cursor(&self) -> (usize, usize) {
-        let cursor = self.session.visible().editing.cursor();
+        let cursor = self.session.cursor();
         (cursor.line().get(), cursor.column().get())
     }
 
