@@ -1,0 +1,3 @@
+- folder watching to update currently active buffers (only if there was no edits in the meantime)
+- temporary files during editing so we can recover things after crashes
+- watchfolders for the tree view so it stays always up2date

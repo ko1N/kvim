@@ -117,12 +117,15 @@ line mappings, or the cursor position.
 
 ## Highlight Roles
 
-Highlight roles are terminal-independent. The `tui` theme owns the role set, and
-it maps each role to one style. The language boundary does not know the palette,
-and the theme does not know Tree-sitter capture names. The role mapping reads
-capture names only, and Tree-sitter highlight queries share one capture
-vocabulary across grammars, so the mapping serves every language. See
-[`windows.md`](windows.md) for the theme rule.
+Highlight roles are terminal-independent, so `kvim-language` owns the role set.
+A role names what a range of source is, never how it looks. `kvim-tui` maps each
+role to one style and keeps every color.
+
+The language boundary therefore does not know the palette, and the theme does
+not know Tree-sitter capture names. The role mapping reads capture names only,
+and Tree-sitter highlight queries share one capture vocabulary across grammars,
+so the mapping serves every language. See [`windows.md`](windows.md) for the
+theme rule.
 
 ## The Language Server Session
 

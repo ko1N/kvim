@@ -7,8 +7,8 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use kvim::settings::EditorSettings;
-use kvim::tui::PanicProbe;
+use kvim_settings::EditorSettings;
+use kvim_tui::PanicProbe;
 use thiserror::Error as ErrorDerive;
 
 /// The environment variable that asks the editor to panic after its first
@@ -80,7 +80,7 @@ fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
         .build()
         .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
     runtime
-        .block_on(kvim::tui::run(
+        .block_on(kvim_tui::run(
             EditorSettings::default(),
             root,
             path,

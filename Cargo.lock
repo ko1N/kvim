@@ -297,10 +297,55 @@ checksum = "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682"
 name = "kvim"
 version = "0.1.0"
 dependencies = [
- "crossterm",
- "futures-util",
- "ratatui",
+ "kvim-settings",
+ "kvim-tui",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kvim-clipboard"
+version = "0.1.0"
+dependencies = [
+ "kvim-runtime",
+ "thiserror",
+]
+
+[[package]]
+name = "kvim-core"
+version = "0.1.0"
+dependencies = [
+ "kvim-settings",
  "ropey",
+ "thiserror",
+]
+
+[[package]]
+name = "kvim-editor"
+version = "0.1.0"
+dependencies = [
+ "kvim-core",
+ "kvim-input",
+ "kvim-settings",
+ "thiserror",
+]
+
+[[package]]
+name = "kvim-input"
+version = "0.1.0"
+dependencies = [
+ "kvim-settings",
+ "kvim-terminal",
+ "thiserror",
+]
+
+[[package]]
+name = "kvim-language"
+version = "0.1.0"
+dependencies = [
+ "kvim-core",
+ "kvim-runtime",
+ "kvim-settings",
  "serde",
  "serde_json",
  "thiserror",
@@ -309,7 +354,60 @@ dependencies = [
  "tree-sitter",
  "tree-sitter-highlight",
  "tree-sitter-rust",
+]
+
+[[package]]
+name = "kvim-runtime"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "kvim-settings"
+version = "0.1.0"
+
+[[package]]
+name = "kvim-terminal"
+version = "0.1.0"
+dependencies = [
+ "crossterm",
+ "futures-util",
+ "thiserror",
+ "tokio",
+]
+
+[[package]]
+name = "kvim-tui"
+version = "0.1.0"
+dependencies = [
+ "kvim-core",
+ "kvim-editor",
+ "kvim-input",
+ "kvim-language",
+ "kvim-runtime",
+ "kvim-settings",
+ "kvim-terminal",
+ "kvim-workspace",
+ "ratatui",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tokio-util",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "kvim-workspace"
+version = "0.1.0"
+dependencies = [
+ "kvim-core",
+ "kvim-runtime",
+ "kvim-settings",
+ "thiserror",
+ "tokio-util",
 ]
 
 [[package]]
