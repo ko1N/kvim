@@ -31,6 +31,7 @@ use super::operator::{MotionKind, Operator, OperatorRange, motion_kind, plan_ope
 use super::register::Registers;
 use super::search::{SearchDirection, SearchQuery};
 use super::selection::{AnchorPoint, ModeState, Selection};
+use super::text_object::TextObject;
 use super::viewport::ViewportAlignment;
 use super::window::WindowState;
 
@@ -107,9 +108,11 @@ pub enum CommandOutcome {
     Changed,
     /// The command changed the cursor, the mode, the register, or the viewport.
     Applied,
-    /// The operator waits for a motion or for a repeated operator key.
+    /// The operator waits for a motion, a text object, or a repeated operator
+    /// key.
     OperatorPending,
-    /// The pending operator received no motion, so it changed nothing.
+    /// The operator or the Visual selection received no target, so it changed
+    /// nothing.
     OperatorAborted,
     /// The command pastes, but the unnamed register holds no value.
     RegisterEmpty,
@@ -330,6 +333,11 @@ impl EditingState {
             }
             MotionResult::Missed => return CommandOutcome::SearchMissed,
             MotionResult::NotAMotion => {}
+        }
+
+        // Without a waiting operator a text object names the Visual selection.
+        if let Some(object) = TextObject::of_command(command) {
+            return self.select_text_object(context, window, object, count);
         }
 
         let repeat = repeat_count(count);
@@ -707,6 +715,10 @@ impl EditingState {
             return outcome;
         }
 
+        if let Some(object) = TextObject::of_command(command) {
+            return self.operator_text_object(context, window, pending, object, command, count);
+        }
+
         let Some(kind) = motion_kind(command) else {
             return CommandOutcome::OperatorAborted;
         };
@@ -736,6 +748,82 @@ impl EditingState {
             },
         );
         outcome
+    }
+
+    /// Applies one operator over the range that a text object names.
+    ///
+    /// The range reaches [`plan_operator`] as a characterwise range, so the
+    /// object shares the plan, the transaction, and the repeat description of
+    /// every operator over a motion.
+    fn operator_text_object(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        pending: PendingOperator,
+        object: TextObject,
+        command: Command,
+        count: Option<NonZeroU32>,
+    ) -> CommandOutcome {
+        let repeat = repeat_count(pending.count)
+            .saturating_mul(repeat_count(count))
+            .min(MOTION_COUNT_MAX);
+        let Some(range) = object.range(context.buffer, window.cursor, repeat) else {
+            return CommandOutcome::OperatorAborted;
+        };
+        let plan = plan_operator(
+            context.buffer,
+            context.indent(),
+            window.cursor,
+            pending.operator,
+            OperatorRange::Characterwise(range),
+        );
+        let outcome = self.commit(context, window, plan);
+        self.record(
+            outcome,
+            RepeatableChange::OperatorMotion {
+                operator: pending.operator,
+                count: pending.count,
+                motion: command,
+                motion_count: count,
+            },
+        );
+        outcome
+    }
+
+    /// Moves the selection of one window onto the range of one text object.
+    ///
+    /// The anchor moves to the first character of the range and the cursor to
+    /// the last, so the selection shape still follows the active Visual mode.
+    /// A mode without an anchor holds no selection and takes no object.
+    fn select_text_object(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        object: TextObject,
+        count: Option<NonZeroU32>,
+    ) -> CommandOutcome {
+        if window.anchor.is_none() {
+            return CommandOutcome::Unhandled;
+        }
+        let Some(range) = object.range(context.buffer, window.cursor, repeat_count(count)) else {
+            return CommandOutcome::OperatorAborted;
+        };
+        let start = range.start();
+        // A Visual selection is inclusive, so the cursor sits on the last
+        // character of the range. An empty range keeps both ends together.
+        let last = context
+            .buffer
+            .char_position(range.end().get().saturating_sub(1).max(start.get()))
+            .expect("the range comes from this buffer, so both ends stay inside it");
+        self.restore_anchor(
+            context.buffer,
+            window,
+            context.buffer.char_to_line(start).get(),
+            context.buffer.char_to_column(start).get(),
+        );
+        window.cursor = Cursor::at_position(context.buffer, last, self.column_limit());
+        self.reconcile(context, window);
+        CommandOutcome::Applied
     }
 
     fn start_operator(

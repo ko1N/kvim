@@ -109,6 +109,27 @@ semantic_commands! {
     Redo => ("redo", "Redo one transaction"),
     RepeatChange => ("repeat-change", "Repeat the last repeatable change"),
 
+    // Text objects. The open and the close delimiter name the same object, so
+    // `i(` and `i)` reach one command.
+    SelectInnerWord => ("select-inner-word", "Select the word"),
+    SelectAroundWord => ("select-around-word", "Select the word and its blanks"),
+    SelectInnerLongWord => ("select-inner-long-word", "Select the non-blank run"),
+    SelectAroundLongWord => ("select-around-long-word", "Select the non-blank run and its blanks"),
+    SelectInnerParen => ("select-inner-paren", "Select inside the round brackets"),
+    SelectAroundParen => ("select-around-paren", "Select the round brackets"),
+    SelectInnerBracket => ("select-inner-bracket", "Select inside the square brackets"),
+    SelectAroundBracket => ("select-around-bracket", "Select the square brackets"),
+    SelectInnerBrace => ("select-inner-brace", "Select inside the curly brackets"),
+    SelectAroundBrace => ("select-around-brace", "Select the curly brackets"),
+    SelectInnerAngle => ("select-inner-angle", "Select inside the angle brackets"),
+    SelectAroundAngle => ("select-around-angle", "Select the angle brackets"),
+    SelectInnerDoubleQuote => ("select-inner-double-quote", "Select inside the double quotes"),
+    SelectAroundDoubleQuote => ("select-around-double-quote", "Select the double quotes"),
+    SelectInnerSingleQuote => ("select-inner-single-quote", "Select inside the single quotes"),
+    SelectAroundSingleQuote => ("select-around-single-quote", "Select the single quotes"),
+    SelectInnerBacktick => ("select-inner-backtick", "Select inside the backticks"),
+    SelectAroundBacktick => ("select-around-backtick", "Select the backticks"),
+
     // Search.
     OpenSearchPrompt => ("open-search-prompt", "Open the search prompt"),
     SearchNext => ("search-next", "Move to the next match"),
@@ -170,6 +191,33 @@ semantic_commands! {
     NextDiagnostic => ("next-diagnostic", "Move to the next diagnostic"),
     PreviousDiagnostic => ("previous-diagnostic", "Move to the previous diagnostic"),
     ToggleFormatOnSave => ("toggle-format-on-save", "Toggle format-on-save for the active buffer"),
+}
+
+impl Command {
+    /// Reports whether the command starts an operator that waits for a target.
+    ///
+    /// The resolver reads its own answer here: while an operator waits, the
+    /// keys belong to [`BindingScope::OperatorPending`], where `i` and `a`
+    /// start a text object instead of Insert mode.
+    ///
+    /// ```
+    /// use kvim_input::Command;
+    ///
+    /// assert!(Command::DeleteOverMotion.starts_operator_pending());
+    /// // A Visual operator acts on the selection at once, so it waits for
+    /// // nothing.
+    /// assert!(!Command::DeleteSelection.starts_operator_pending());
+    /// ```
+    ///
+    /// [`BindingScope::OperatorPending`]: crate::BindingScope::OperatorPending
+    #[inline]
+    #[must_use]
+    pub const fn starts_operator_pending(self) -> bool {
+        matches!(
+            self,
+            Self::DeleteOverMotion | Self::ChangeOverMotion | Self::YankOverMotion
+        )
+    }
 }
 
 impl fmt::Display for Command {

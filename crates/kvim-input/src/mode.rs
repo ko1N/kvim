@@ -97,14 +97,17 @@ impl fmt::Display for Mode {
 
 /// The registry table that owns one key sequence.
 ///
-/// An editor mode owns one table, the file-tree sidebar owns one more, and the
-/// picker owns the last one. Only one scope is active, so one key sequence may
-/// appear in several scopes with different commands.
+/// An editor mode owns one table, the file-tree sidebar owns one more, the
+/// picker owns another, and a waiting operator owns the last one. Only one scope
+/// is active, so one key sequence may appear in several scopes with different
+/// commands.
 ///
 /// ```
 /// use kvim_input::{BindingScope, Mode};
 ///
 /// assert!(BindingScope::Mode(Mode::Normal).accepts_count());
+/// // `d2w` deletes two words, so an operator still reads a count.
+/// assert!(BindingScope::OperatorPending.accepts_count());
 /// // The sidebar reads no count, because its keys act on one selected entry.
 /// assert!(!BindingScope::Sidebar.accepts_count());
 /// // The picker reads a query, so a digit belongs to that query.
@@ -118,11 +121,18 @@ pub enum BindingScope {
     Sidebar,
     /// The picker owns the keys that its query does not hold.
     Picker,
+    /// An operator waits for its target and owns the keys.
+    ///
+    /// Vim reads the keys after `d`, `c`, and `y` in its own mode. `i` and `a`
+    /// start a text object there instead of Insert mode, so this table repeats
+    /// the motions and adds the text objects. The resolver selects the scope
+    /// from the operator command that it emitted itself.
+    OperatorPending,
 }
 
 impl BindingScope {
     /// The number of scopes. The mapping registry holds one table for each.
-    pub const COUNT: usize = Mode::COUNT + 2;
+    pub const COUNT: usize = Mode::COUNT + 3;
 
     /// Every scope, in table order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -133,6 +143,7 @@ impl BindingScope {
         Self::Mode(Mode::VisualBlock),
         Self::Sidebar,
         Self::Picker,
+        Self::OperatorPending,
     ];
 
     /// Returns the registry table index of the scope.
@@ -145,6 +156,7 @@ impl BindingScope {
             Self::Mode(mode) => mode.index(),
             Self::Sidebar => Mode::COUNT,
             Self::Picker => Mode::COUNT + 1,
+            Self::OperatorPending => Mode::COUNT + 2,
         }
     }
 
@@ -153,6 +165,9 @@ impl BindingScope {
     pub const fn accepts_count(self) -> bool {
         match self {
             Self::Mode(mode) => mode.accepts_count(),
+            // `d2w` deletes two words, so the count between the operator and
+            // its target belongs to this scope.
+            Self::OperatorPending => true,
             Self::Sidebar | Self::Picker => false,
         }
     }
@@ -164,16 +179,22 @@ impl BindingScope {
             Self::Mode(mode) => mode.label(),
             Self::Sidebar => "File Tree",
             Self::Picker => "Picker",
+            Self::OperatorPending => "Operator Pending",
         }
     }
 
     /// Returns the input context in which this scope owns input.
+    ///
+    /// An operator waits inside Normal mode, and the resolver selects the
+    /// operator-pending table from its own state, never from the context. The
+    /// operator-pending scope therefore answers with Normal mode.
     #[inline]
     pub const fn context(self) -> InputContext {
         match self {
             Self::Mode(mode) => InputContext::Mode(mode),
             Self::Sidebar => InputContext::Sidebar,
             Self::Picker => InputContext::Picker,
+            Self::OperatorPending => InputContext::NORMAL,
         }
     }
 }

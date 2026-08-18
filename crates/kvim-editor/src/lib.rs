@@ -62,6 +62,7 @@ mod register;
 mod search;
 mod selection;
 mod state;
+mod text_object;
 mod viewport;
 mod window;
 
@@ -83,6 +84,10 @@ pub use selection::{AnchorPoint, ModeState, Selection};
 pub use state::{
     CommandContext, CommandOutcome, EditContext, EditingState, INSERT_TEXT_BYTES_MAX,
     MOTION_COUNT_MAX,
+};
+pub use text_object::{
+    Delimiter, DelimiterShape, TEXT_OBJECT_SCAN_CHARS_MAX, TextObject, TextObjectKind,
+    TextObjectScope, WordKind,
 };
 pub use viewport::{Viewport, ViewportAlignment};
 pub use window::WindowState;

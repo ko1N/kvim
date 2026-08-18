@@ -45,8 +45,17 @@ input context too. See the sections below.
 ## Binding Scopes
 
 The mapping registry holds one table for each binding scope. A scope is one
-editor mode, the file-tree sidebar, or the picker. Only one scope is active, so
-one key sequence may reach different commands in different scopes.
+editor mode, the file-tree sidebar, the picker, or a waiting operator. Only one
+scope is active, so one key sequence may reach different commands in different
+scopes.
+
+The operator-pending scope answers while `d`, `c`, or `y` waits for its target.
+The resolver selects it from the operator command that it emitted itself, and the
+next completed command closes it again. The scope repeats the motions, keeps the
+operator keys for the linewise `dd`, `cc`, and `yy`, and adds the text objects.
+`i` and `a` therefore start a text object there instead of Insert mode. It also
+binds `Esc` and `Ctrl-C`, which end the operator and change nothing. Every other
+key reaches no command, so the operator changes nothing.
 
 The sidebar scope holds no count and no leader sequence, because its keys act on
 one selected entry. The sidebar owns every key while it holds the focus.
@@ -276,6 +285,47 @@ A decimal count before a motion repeats it.
 | `.` | Repeat the last repeatable change | Normal |
 
 Visual paste replaces the selection and preserves the source register.
+
+### Text Objects
+
+A text object names a range around the cursor without moving it first. An
+operator takes it as its target, and a Visual mode takes it as its selection.
+
+| Keys | Command | Scopes |
+|---|---|---|
+| `iw` | Select the word | Operator Pending, Visual, Visual Line, Visual Block |
+| `aw` | Select the word and its blanks | Operator Pending, Visual, Visual Line, Visual Block |
+| `iW` | Select the non-blank run | Operator Pending, Visual, Visual Line, Visual Block |
+| `aW` | Select the non-blank run and its blanks | Operator Pending, Visual, Visual Line, Visual Block |
+| `i(`, `i)` | Select inside the round brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `a(`, `a)` | Select the round brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `i[`, `i]` | Select inside the square brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `a[`, `a]` | Select the square brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `i{`, `i}` | Select inside the curly brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `a{`, `a}` | Select the curly brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `i<`, `i>` | Select inside the angle brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `a<`, `a>` | Select the angle brackets | Operator Pending, Visual, Visual Line, Visual Block |
+| `i"` | Select inside the double quotes | Operator Pending, Visual, Visual Line, Visual Block |
+| `a"` | Select the double quotes | Operator Pending, Visual, Visual Line, Visual Block |
+| `i'` | Select inside the single quotes | Operator Pending, Visual, Visual Line, Visual Block |
+| `a'` | Select the single quotes | Operator Pending, Visual, Visual Line, Visual Block |
+| ``i` `` | Select inside the backticks | Operator Pending, Visual, Visual Line, Visual Block |
+| ``a` `` | Select the backticks | Operator Pending, Visual, Visual Line, Visual Block |
+
+The open and the close delimiter name one object, so `vi(` and `vi)` select the
+same text. `i` takes the text between the delimiters, and `a` takes the
+delimiters too.
+
+A bracket pair nests, so a count names the pair that holds the previous pair, and
+the scan crosses lines inside the buffer. A quote pair never nests: the quotes of
+the cursor line pair from its first column, and a count above one names nothing.
+A word object stays inside the cursor line, because a line break separates two
+runs. `aw` takes the blanks behind the word, or the blanks before it when none
+follow.
+
+A pair that does not close, a count without an outer pair, and a line without a
+quote pair all leave the buffer unchanged. Every accepted object applies one edit
+transaction, so one undo reverses it and `.` replays it.
 
 ### Search
 
