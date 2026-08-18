@@ -458,6 +458,61 @@ const MOTION_MODES: &[Mode] = &[
 /// The three Visual modes.
 const VISUAL_MODES: &[Mode] = &[Mode::Visual, Mode::VisualLine, Mode::VisualBlock];
 
+/// Every scope in which a text object names a range.
+///
+/// A waiting operator takes the object as its target, and a Visual mode takes it
+/// as its selection.
+const TEXT_OBJECT_SCOPES: &[BindingScope] = &[
+    BindingScope::OperatorPending,
+    BindingScope::Mode(Mode::Visual),
+    BindingScope::Mode(Mode::VisualLine),
+    BindingScope::Mode(Mode::VisualBlock),
+];
+
+/// The key of each text object, with its inner command and its around command.
+///
+/// The open and the close delimiter name the same object, so `i(` and `i)` both
+/// reach [`Command::SelectInnerParen`].
+const TEXT_OBJECTS: &[(char, Command, Command)] = &[
+    ('w', Command::SelectInnerWord, Command::SelectAroundWord),
+    (
+        'W',
+        Command::SelectInnerLongWord,
+        Command::SelectAroundLongWord,
+    ),
+    ('(', Command::SelectInnerParen, Command::SelectAroundParen),
+    (')', Command::SelectInnerParen, Command::SelectAroundParen),
+    (
+        '[',
+        Command::SelectInnerBracket,
+        Command::SelectAroundBracket,
+    ),
+    (
+        ']',
+        Command::SelectInnerBracket,
+        Command::SelectAroundBracket,
+    ),
+    ('{', Command::SelectInnerBrace, Command::SelectAroundBrace),
+    ('}', Command::SelectInnerBrace, Command::SelectAroundBrace),
+    ('<', Command::SelectInnerAngle, Command::SelectAroundAngle),
+    ('>', Command::SelectInnerAngle, Command::SelectAroundAngle),
+    (
+        '"',
+        Command::SelectInnerDoubleQuote,
+        Command::SelectAroundDoubleQuote,
+    ),
+    (
+        '\'',
+        Command::SelectInnerSingleQuote,
+        Command::SelectAroundSingleQuote,
+    ),
+    (
+        '`',
+        Command::SelectInnerBacktick,
+        Command::SelectAroundBacktick,
+    ),
+];
+
 /// Every mode that `Esc` and `Ctrl-C` leave for Normal mode.
 const NON_NORMAL_MODES: &[Mode] = &[
     Mode::Insert,
@@ -482,6 +537,25 @@ fn add(bindings: &mut Vec<Binding>, modes: &[Mode], keys: &[Key], command: Comma
     for &mode in modes {
         bindings.push(Binding {
             scope: BindingScope::Mode(mode),
+            keys: keys.to_vec(),
+            command,
+        });
+    }
+}
+
+/// Adds one binding to every named scope.
+///
+/// A scope list is wider than a mode list: the operator-pending scope is no
+/// editor mode, but it owns a table like one.
+fn add_scoped(
+    bindings: &mut Vec<Binding>,
+    scopes: &[BindingScope],
+    keys: &[Key],
+    command: Command,
+) {
+    for &scope in scopes {
+        bindings.push(Binding {
+            scope,
             keys: keys.to_vec(),
             command,
         });
@@ -759,9 +833,59 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::ToggleFormatOnSave,
     );
 
+    add_text_object_bindings(table);
+    add_operator_pending_bindings(table);
     add_tree_bindings(table);
     add_picker_bindings(table);
     bindings
+}
+
+/// Adds the `i` and `a` text objects to every scope that takes one.
+fn add_text_object_bindings(table: &mut Vec<Binding>) {
+    for &(key, inner, around) in TEXT_OBJECTS {
+        add_scoped(table, TEXT_OBJECT_SCOPES, &[ch('i'), ch(key)], inner);
+        add_scoped(table, TEXT_OBJECT_SCOPES, &[ch('a'), ch(key)], around);
+    }
+}
+
+/// Adds the binding table that answers while an operator waits for its target.
+///
+/// The table repeats the motions of Normal mode, because an operator takes a
+/// motion. It adds `Esc` and `Ctrl-C`, which reach no Normal-mode command and
+/// would otherwise leave the operator waiting. It keeps `d`, `c`, and `y`,
+/// because a repeated operator key means linewise. Every other Normal-mode key
+/// stays out, so `d` followed by an unrelated key changes nothing. See
+/// `docs/input-actions.md`.
+fn add_operator_pending_bindings(table: &mut Vec<Binding>) {
+    const SCOPE: &[BindingScope] = &[BindingScope::OperatorPending];
+    let single = [
+        (ch('h'), Command::MoveLeft),
+        (ch('j'), Command::MoveDown),
+        (ch('k'), Command::MoveUp),
+        (ch('l'), Command::MoveRight),
+        (ch('w'), Command::MoveNextWordStart),
+        (ch('b'), Command::MovePreviousWordStart),
+        (ch('e'), Command::MoveNextWordEnd),
+        (ch('0'), Command::MoveFirstColumn),
+        (ch('^'), Command::MoveFirstNonBlank),
+        (ch('$'), Command::MoveLineEnd),
+        (ch('G'), Command::MoveLastLine),
+        (ctrl('d'), Command::MoveHalfPageDown),
+        (ctrl('u'), Command::MoveHalfPageUp),
+        (ctrl('f'), Command::MoveFullPageDown),
+        (ctrl('b'), Command::MoveFullPageUp),
+        (ch('n'), Command::SearchNext),
+        (ch('N'), Command::SearchPrevious),
+        (ch('d'), Command::DeleteOverMotion),
+        (ch('c'), Command::ChangeOverMotion),
+        (ch('y'), Command::YankOverMotion),
+        (Key::plain(KeyCode::Esc), Command::ReturnToNormal),
+        (ctrl('c'), Command::ReturnToNormal),
+    ];
+    for (key, command) in single {
+        add_scoped(table, SCOPE, &[key], command);
+    }
+    add_scoped(table, SCOPE, &[ch('g'), ch('g')], Command::MoveFirstLine);
 }
 
 /// Adds the binding table of the picker.
@@ -955,6 +1079,55 @@ mod tests {
                 "the editor operator-pending state consumes the motion after `{operator}`"
             );
         }
+    }
+
+    #[test]
+    fn the_open_and_the_close_delimiter_name_one_text_object() {
+        let registry = Registry::first_release();
+        let pairs = [('(', ')'), ('[', ']'), ('{', '}'), ('<', '>')];
+        for scope in [
+            BindingScope::OperatorPending,
+            BindingScope::Mode(Mode::Visual),
+        ] {
+            for (open, close) in pairs {
+                for prefix in ['i', 'a'] {
+                    let opened = registry.command(scope, &[ch(prefix), ch(open)]);
+                    assert!(
+                        opened.is_some(),
+                        "{scope} `{prefix}{open}` must reach a text object"
+                    );
+                    assert_eq!(
+                        opened,
+                        registry.command(scope, &[ch(prefix), ch(close)]),
+                        "{scope} `{prefix}{open}` and `{prefix}{close}` name one object"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn an_insert_key_starts_a_text_object_while_an_operator_waits() {
+        let registry = Registry::first_release();
+        assert_eq!(
+            registry.command(Mode::Normal, &[ch('i')]),
+            Some(Command::InsertBeforeCursor)
+        );
+        assert_eq!(
+            registry.command(BindingScope::OperatorPending, &[ch('i')]),
+            None,
+            "`i` alone names no command while an operator waits"
+        );
+        assert!(registry.has_longer_sequence(BindingScope::OperatorPending, &[ch('i')]));
+        assert_eq!(
+            registry.command(BindingScope::OperatorPending, &[ch('i'), ch('w')]),
+            Some(Command::SelectInnerWord)
+        );
+        // A repeated operator key still means linewise.
+        assert_eq!(
+            registry.command(BindingScope::OperatorPending, &[ch('d')]),
+            Some(Command::DeleteOverMotion)
+        );
     }
 
     #[test]

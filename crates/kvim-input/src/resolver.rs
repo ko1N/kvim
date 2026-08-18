@@ -85,6 +85,21 @@ enum PendingInput {
     },
 }
 
+/// Whether an operator waits for the target that the next keys name.
+///
+/// The resolver derives the state from the commands that it emitted itself, so
+/// it needs no report from the editor. An operator command opens the state, and
+/// the next completed command closes it, exactly as the operator-pending state
+/// of the editor consumes the next command.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum OperatorInput {
+    /// No operator waits, so the active editor mode owns the keys.
+    #[default]
+    Idle,
+    /// One operator waits, so [`BindingScope::OperatorPending`] owns the keys.
+    Pending,
+}
+
 /// The modal input resolver.
 ///
 /// The resolver accepts an optional decimal count, then a bounded key sequence.
@@ -92,6 +107,10 @@ enum PendingInput {
 /// no match. Only a scope that reports
 /// [`crate::BindingScope::accepts_count`] opens a count, so a digit stays
 /// buffer text in Insert mode.
+///
+/// An operator command moves the keys into
+/// [`BindingScope::OperatorPending`] until the next command completes, so `i`
+/// and `a` start a text object after `d`, `c`, and `y` instead of Insert mode.
 ///
 /// A pending sequence holds no deadline. It waits for the next key, and only
 /// `Esc`, `Ctrl-C`, a mismatch, a completed command, or a mode change ends it.
@@ -125,6 +144,7 @@ pub struct Resolver {
     settings: InputSettings,
     context: InputContext,
     pending: PendingInput,
+    operator: OperatorInput,
 }
 
 impl Resolver {
@@ -140,6 +160,7 @@ impl Resolver {
             settings,
             context: InputContext::NORMAL,
             pending: PendingInput::Idle,
+            operator: OperatorInput::Idle,
         }
     }
 
@@ -207,6 +228,18 @@ impl Resolver {
     /// A reset never changes buffer text and never cancels background work.
     pub fn reset(&mut self) {
         self.pending = PendingInput::Idle;
+        self.operator = OperatorInput::Idle;
+    }
+
+    /// Returns the scope that owns the keys of the next request.
+    ///
+    /// A waiting operator owns them before the active mode does, because `i`
+    /// and `a` start a text object there instead of Insert mode.
+    fn active_scope(&self) -> BindingScope {
+        match self.operator {
+            OperatorInput::Idle => self.context.scope(),
+            OperatorInput::Pending => BindingScope::OperatorPending,
+        }
     }
 
     /// Returns the which-key overlay rows, or `None` while the overlay stays
@@ -223,11 +256,12 @@ impl Resolver {
         if !self.reveal_overlay(now) {
             return None;
         }
+        let scope = self.active_scope();
         let PendingInput::Active { keys, .. } = &self.pending else {
             debug_assert!(false, "a hidden overlay leaves the resolver above");
             return None;
         };
-        Some(self.registry.rows_for_prefix(self.context.scope(), keys))
+        Some(self.registry.rows_for_prefix(scope, keys))
     }
 
     /// Reports whether the overlay is visible and records its first appearance.
@@ -280,9 +314,19 @@ impl Resolver {
         // `Ctrl-C` still return to Normal mode.
         if matches!(self.pending, PendingInput::Active { .. }) && is_cancel_key(key) {
             self.pending = PendingInput::Idle;
+            // A waiting operator lives in the editor too, so the cancel must
+            // reach it. `ReturnToNormal` is no motion and no text object, which
+            // aborts the operator and changes nothing.
+            if self.operator == OperatorInput::Pending {
+                self.operator = OperatorInput::Idle;
+                return Resolution::Command {
+                    command: Command::ReturnToNormal,
+                    count: None,
+                };
+            }
             return Resolution::Cancelled;
         }
-        let scope = self.context.scope();
+        let scope = self.active_scope();
         // Taking the pending state first makes every later branch a reset by
         // default. Only a still-pending outcome puts it back.
         let (mut keys, count, overlay) = self.take_pending();
@@ -320,6 +364,13 @@ impl Resolver {
                 count != Some(0),
                 "a count starts with a digit between 1 and 9, so it is never zero"
             );
+            // The editor consumes exactly one command after an operator, so one
+            // completed command always closes the operator-pending scope, even
+            // when it names another operator: `dd` is one linewise delete.
+            self.operator = match self.operator {
+                OperatorInput::Idle if command.starts_operator_pending() => OperatorInput::Pending,
+                OperatorInput::Idle | OperatorInput::Pending => OperatorInput::Idle,
+            };
             return Resolution::Command {
                 command,
                 count: count.and_then(NonZeroU32::new),
@@ -670,6 +721,103 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn an_operator_moves_the_keys_into_the_operator_pending_scope() {
+        let mut resolver = resolver();
+        assert_eq!(
+            resolver.resolve(ch('d'), NOW),
+            Resolution::Command {
+                command: Command::DeleteOverMotion,
+                count: None,
+            }
+        );
+        // `i` reaches Insert mode in Normal mode, and a text object here.
+        assert_eq!(resolver.resolve(ch('i'), NOW), Resolution::Pending);
+        assert_eq!(
+            resolver.resolve(ch(')'), NOW),
+            Resolution::Command {
+                command: Command::SelectInnerParen,
+                count: None,
+            }
+        );
+        // The completed command closes the scope, so `i` inserts again.
+        assert_eq!(
+            resolver.resolve(ch('i'), NOW),
+            Resolution::Command {
+                command: Command::InsertBeforeCursor,
+                count: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_repeated_operator_key_closes_the_operator_pending_scope() {
+        let mut resolver = resolver();
+        resolver.resolve(ch('d'), NOW);
+        assert_eq!(
+            resolver.resolve(ch('d'), NOW),
+            Resolution::Command {
+                command: Command::DeleteOverMotion,
+                count: None,
+            }
+        );
+        assert_eq!(
+            resolver.resolve(ch('i'), NOW),
+            Resolution::Command {
+                command: Command::InsertBeforeCursor,
+                count: None,
+            }
+        );
+    }
+
+    #[test]
+    fn a_count_still_reaches_a_waiting_operator() {
+        let mut resolver = resolver();
+        resolver.resolve(ch('d'), NOW);
+        assert_eq!(resolver.resolve(ch('2'), NOW), Resolution::Pending);
+        assert_eq!(
+            resolver.resolve(ch('w'), NOW),
+            Resolution::Command {
+                command: Command::MoveNextWordStart,
+                count: NonZeroU32::new(2),
+            }
+        );
+    }
+
+    #[test]
+    fn a_cancel_key_ends_a_waiting_operator() {
+        let escape = Key::plain(KeyCode::Esc);
+        let mut alone = resolver();
+        alone.resolve(ch('d'), NOW);
+        assert_eq!(
+            alone.resolve(escape, NOW),
+            Resolution::Command {
+                command: Command::ReturnToNormal,
+                count: None,
+            },
+            "the editor aborts its operator over a command that names no target"
+        );
+
+        // A half-typed object cancels the pending keys and the operator at once.
+        let mut half = resolver();
+        half.resolve(ch('d'), NOW);
+        half.resolve(ch('i'), NOW);
+        assert_eq!(
+            half.resolve(escape, NOW),
+            Resolution::Command {
+                command: Command::ReturnToNormal,
+                count: None,
+            }
+        );
+        assert_eq!(
+            half.resolve(ch('i'), NOW),
+            Resolution::Command {
+                command: Command::InsertBeforeCursor,
+                count: None,
+            }
+        );
     }
 
     #[test]

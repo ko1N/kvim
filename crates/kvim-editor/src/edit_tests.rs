@@ -1031,3 +1031,320 @@ fn a_line_break_uses_the_syntax_indent_and_keeps_the_fallback() {
     assert_eq!(fallback.text(), "    valu\n    e\n");
     assert_eq!(fallback.position(), (1, 4));
 }
+
+/// Puts the cursor inside the body of a delimiter pair and starts a delete.
+///
+/// Every delimiter case below shares one text layout, so the column is the same
+/// for each pair.
+fn delete_object(text: &str, column: usize, object: Command) -> Session {
+    let mut session = Session::new(text);
+    place(&mut session, 0, column);
+    session.apply(Command::DeleteOverMotion, None);
+    session.apply(object, None);
+    session
+}
+
+#[test]
+fn every_delimiter_object_takes_its_inner_and_its_around_text() {
+    // The text, the inner command, the around command, and the two results.
+    let cases: &[(&str, Command, Command, &str, &str)] = &[
+        (
+            "call(alpha)\n",
+            Command::SelectInnerParen,
+            Command::SelectAroundParen,
+            "call()\n",
+            "call\n",
+        ),
+        (
+            "call[alpha]\n",
+            Command::SelectInnerBracket,
+            Command::SelectAroundBracket,
+            "call[]\n",
+            "call\n",
+        ),
+        (
+            "call{alpha}\n",
+            Command::SelectInnerBrace,
+            Command::SelectAroundBrace,
+            "call{}\n",
+            "call\n",
+        ),
+        (
+            "call<alpha>\n",
+            Command::SelectInnerAngle,
+            Command::SelectAroundAngle,
+            "call<>\n",
+            "call\n",
+        ),
+        (
+            "call\"alpha\"\n",
+            Command::SelectInnerDoubleQuote,
+            Command::SelectAroundDoubleQuote,
+            "call\"\"\n",
+            "call\n",
+        ),
+        (
+            "call'alpha'\n",
+            Command::SelectInnerSingleQuote,
+            Command::SelectAroundSingleQuote,
+            "call''\n",
+            "call\n",
+        ),
+        (
+            "call`alpha`\n",
+            Command::SelectInnerBacktick,
+            Command::SelectAroundBacktick,
+            "call``\n",
+            "call\n",
+        ),
+    ];
+    for (text, inner, around, after_inner, after_around) in cases {
+        let session = delete_object(text, 6, *inner);
+        assert_eq!(session.text(), *after_inner, "{inner}");
+        assert_eq!(
+            session.register(),
+            Some(("alpha", RegisterShape::Characterwise)),
+            "{inner}"
+        );
+
+        let session = delete_object(text, 6, *around);
+        assert_eq!(session.text(), *after_around, "{around}");
+    }
+}
+
+#[test]
+fn every_operator_takes_one_text_object() {
+    // The operator, the outcome, the text after it, and the mode after it.
+    let cases: &[(Command, CommandOutcome, &str, Mode)] = &[
+        (
+            Command::DeleteOverMotion,
+            CommandOutcome::Changed,
+            "call()\n",
+            Mode::Normal,
+        ),
+        (
+            Command::ChangeOverMotion,
+            CommandOutcome::Changed,
+            "call()\n",
+            Mode::Insert,
+        ),
+        // A yank writes the register and keeps the text.
+        (
+            Command::YankOverMotion,
+            CommandOutcome::Applied,
+            "call(alpha)\n",
+            Mode::Normal,
+        ),
+    ];
+    for (operator, outcome, expected, mode) in cases {
+        let mut session = Session::new("call(alpha)\n");
+        place(&mut session, 0, 6);
+        session.apply(*operator, None);
+        assert_eq!(
+            session.apply(Command::SelectInnerParen, None),
+            *outcome,
+            "{operator}"
+        );
+        assert_eq!(session.text(), *expected, "{operator}");
+        assert_eq!(session.state.mode(), *mode, "{operator}");
+        assert_eq!(
+            session.register(),
+            Some(("alpha", RegisterShape::Characterwise)),
+            "{operator}"
+        );
+    }
+}
+
+#[test]
+fn a_cursor_on_either_delimiter_names_the_same_pair() {
+    for column in [4, 10] {
+        let session = delete_object("call(alpha)\n", column, Command::SelectInnerParen);
+        assert_eq!(session.text(), "call()\n", "column {column}");
+    }
+}
+
+#[test]
+fn an_unmatched_delimiter_leaves_the_buffer_unchanged() {
+    let mut session = Session::new("call(alpha\n");
+    place(&mut session, 0, 6);
+    session.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        session.apply(Command::SelectInnerParen, None),
+        CommandOutcome::OperatorAborted
+    );
+    assert_eq!(session.text(), "call(alpha\n");
+    assert_eq!(session.state.pending_operator(), None);
+    assert_eq!(session.register(), None);
+}
+
+#[test]
+fn a_count_names_the_pair_that_holds_the_inner_pair() {
+    let mut nested = Session::new("((alpha))\n");
+    place(&mut nested, 0, 3);
+    nested.apply(Command::DeleteOverMotion, None);
+    nested.apply(Command::SelectInnerParen, count(2));
+    assert_eq!(nested.text(), "()\n");
+
+    // A pair without an outer pair changes nothing.
+    let mut single = Session::new("(alpha)\n");
+    place(&mut single, 0, 3);
+    single.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        single.apply(Command::SelectInnerParen, count(2)),
+        CommandOutcome::OperatorAborted
+    );
+    assert_eq!(single.text(), "(alpha)\n");
+
+    // A quote pair never nests, so a count above one names nothing.
+    let mut quoted = Session::new("\"alpha\"\n");
+    place(&mut quoted, 0, 3);
+    quoted.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        quoted.apply(Command::SelectInnerDoubleQuote, count(2)),
+        CommandOutcome::OperatorAborted
+    );
+    assert_eq!(quoted.text(), "\"alpha\"\n");
+}
+
+#[test]
+fn a_pair_matches_across_lines_as_one_transaction() {
+    let mut session = Session::new("fn main() {\n    let value = 1;\n}\n");
+    place(&mut session, 1, 4);
+    session.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        session.apply(Command::SelectInnerBrace, None),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "fn main() {}\n");
+
+    // One undo reverses the whole multi-line change.
+    session.apply(Command::Undo, None);
+    assert_eq!(session.text(), "fn main() {\n    let value = 1;\n}\n");
+}
+
+#[test]
+fn an_empty_pair_holds_no_inner_text() {
+    let mut inner = Session::new("call()\n");
+    place(&mut inner, 0, 4);
+    inner.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        inner.apply(Command::SelectInnerParen, None),
+        CommandOutcome::Applied
+    );
+    assert_eq!(inner.text(), "call()\n");
+
+    let around = delete_object("call()\n", 4, Command::SelectAroundParen);
+    assert_eq!(around.text(), "call\n");
+}
+
+#[test]
+fn the_word_objects_take_one_run_and_its_blanks() {
+    // The text, the cursor column, the command, and the text after a delete.
+    let cases: &[(&str, usize, Command, &str)] = &[
+        ("alpha beta\n", 0, Command::SelectInnerWord, " beta\n"),
+        ("alpha beta\n", 0, Command::SelectAroundWord, "beta\n"),
+        // `w` stops at a class change, so the punctuation stays.
+        ("alpha.beta\n", 0, Command::SelectInnerWord, ".beta\n"),
+        ("alpha.beta\n", 0, Command::SelectAroundWord, ".beta\n"),
+        // `W` joins the punctuation into one non-blank run.
+        (
+            "alpha.beta gamma\n",
+            0,
+            Command::SelectInnerLongWord,
+            " gamma\n",
+        ),
+        (
+            "alpha.beta gamma\n",
+            0,
+            Command::SelectAroundLongWord,
+            "gamma\n",
+        ),
+    ];
+    for (text, column, object, expected) in cases {
+        let session = delete_object(text, *column, *object);
+        assert_eq!(session.text(), *expected, "{object} in `{text}`");
+    }
+
+    // A count takes one further run for each repetition.
+    let mut inner = Session::new("alpha beta gamma\n");
+    place(&mut inner, 0, 0);
+    inner.apply(Command::DeleteOverMotion, None);
+    inner.apply(Command::SelectInnerWord, count(2));
+    assert_eq!(inner.text(), "beta gamma\n");
+
+    // A count takes one further word and its blanks for each repetition.
+    let mut around = Session::new("alpha beta gamma\n");
+    place(&mut around, 0, 0);
+    around.apply(Command::DeleteOverMotion, None);
+    around.apply(Command::SelectAroundWord, count(2));
+    assert_eq!(around.text(), "gamma\n");
+}
+
+#[test]
+fn a_word_object_stays_inside_its_line() {
+    // The last word of a line takes its leading blank, because none follows it.
+    let mut last = Session::new("alpha beta\ngamma\n");
+    place(&mut last, 0, 8);
+    last.apply(Command::DeleteOverMotion, None);
+    last.apply(Command::SelectAroundWord, None);
+    assert_eq!(last.text(), "alpha\ngamma\n");
+
+    // An empty line holds no run, so the object changes nothing.
+    let mut empty = Session::new("alpha\n\nbeta\n");
+    place(&mut empty, 1, 0);
+    empty.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        empty.apply(Command::SelectInnerWord, None),
+        CommandOutcome::Applied
+    );
+    assert_eq!(empty.text(), "alpha\n\nbeta\n");
+}
+
+#[test]
+fn a_text_object_counts_characters_in_a_unicode_body() {
+    let session = delete_object("wert(äöü…)\n", 6, Command::SelectInnerParen);
+    assert_eq!(session.text(), "wert()\n");
+    assert_eq!(
+        session.register(),
+        Some(("äöü…", RegisterShape::Characterwise))
+    );
+
+    let word = delete_object("straße größe\n", 2, Command::SelectAroundWord);
+    assert_eq!(word.text(), "größe\n");
+}
+
+#[test]
+fn a_text_object_selects_the_range_in_visual_mode() {
+    let mut session = Session::new("call(alpha)\n");
+    place(&mut session, 0, 6);
+    session.apply(Command::EnterVisual, None);
+    assert_eq!(
+        session.apply(Command::SelectInnerParen, None),
+        CommandOutcome::Applied
+    );
+    let Some(Selection::Characterwise(range)) = session.selection() else {
+        panic!("Visual mode selects a run of characters");
+    };
+    assert_eq!((range.start().get(), range.end().get()), (5, 10));
+    assert_eq!(
+        session.apply(Command::DeleteSelection, None),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "call()\n");
+}
+
+#[test]
+fn dot_repeat_replays_a_text_object_change() {
+    let mut session = Session::new("one(alpha)\ntwo(beta)\n");
+    place(&mut session, 0, 5);
+    session.apply(Command::DeleteOverMotion, None);
+    session.apply(Command::SelectInnerParen, None);
+    assert_eq!(session.text(), "one()\ntwo(beta)\n");
+
+    place(&mut session, 1, 5);
+    assert_eq!(
+        session.apply(Command::RepeatChange, None),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "one()\ntwo()\n");
+}
