@@ -187,11 +187,10 @@ impl Viewport {
         display: &DisplaySettings,
     ) -> Self {
         let last_line = buffer.line_count() - 1;
-        let first_line = reconcile_axis(
+        let first_line = self.reconciled_first_row(
             self.first_line,
             cursor.line().get(),
             last_line,
-            self.rows(),
             usize::from(display.scrolloff_rows),
         );
         let last_column = buffer.line_len_chars(cursor.line());
@@ -207,6 +206,50 @@ impl Viewport {
             left_column,
             ..self
         }
+    }
+
+    /// Returns the first visible row that keeps one row inside the margin.
+    ///
+    /// The viewport owns the vertical scroll-margin rule, so every region that
+    /// shows a list of rows reads it here. [`Viewport::reconciled`] follows the
+    /// cursor line of a buffer through this entry point, and the file-tree
+    /// sidebar follows its selected row through it, so the two cannot diverge.
+    ///
+    /// `first_row` is the offset that the caller holds, `row` is the row that
+    /// must stay visible, and `last_row` is the largest row that the list
+    /// holds. The offset moves as little as possible, so a row that already
+    /// keeps the margin returns the offset unchanged. A viewport that is
+    /// shorter than twice the margin reduces the margin, and the margin stops
+    /// at `last_row`, so the offset never passes the end of the list to satisfy
+    /// a margin that no content can fill.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::num::NonZeroU16;
+    ///
+    /// use kvim_editor::Viewport;
+    ///
+    /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
+    /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
+    /// let viewport = Viewport::new(rows, cells);
+    ///
+    /// // Row 5 keeps the two-row margin inside the first ten rows already.
+    /// assert_eq!(viewport.reconciled_first_row(0, 5, 99, 2), 0);
+    /// // Row 8 needs two rows below it, so the offset moves by one.
+    /// assert_eq!(viewport.reconciled_first_row(0, 8, 99, 2), 1);
+    /// // The margin stops at the last row, so the end of the list stays put.
+    /// assert_eq!(viewport.reconciled_first_row(0, 9, 9, 2), 0);
+    /// ```
+    #[must_use]
+    pub fn reconciled_first_row(
+        self,
+        first_row: usize,
+        row: usize,
+        last_row: usize,
+        margin_rows: usize,
+    ) -> usize {
+        reconcile_axis(first_row, row, last_row, self.rows(), margin_rows)
     }
 
     /// Aligns the cursor line in the window and ignores the scroll margin.

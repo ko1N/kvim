@@ -16,6 +16,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
+use kvim_editor::Viewport;
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, LinkKind,
@@ -53,6 +54,25 @@ const MARKER_CELLS: usize = 2;
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";
+
+/// One move of the file-tree selection, measured in rows.
+///
+/// The sidebar is a flat row list, so the buffer navigation keys mean the same
+/// here as in a window: `Ctrl-D` and `Ctrl-U` move half a page, `Ctrl-F` and
+/// `Ctrl-B` move a full page, and `gg` and `G` reach a named row. The caller
+/// converts the command and its count into one of these values, and the sidebar
+/// bounds the move by its own rows. See `docs/input-actions.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TreeMotion {
+    /// Move down the given number of rows.
+    Down(usize),
+    /// Move up the given number of rows.
+    Up(usize),
+    /// Move to the row of the given index.
+    ToRow(usize),
+    /// Move to the last row.
+    LastRow,
+}
 
 /// The workspace operation that the sidebar waits for.
 ///
@@ -189,14 +209,38 @@ impl TreeSidebar {
         self.pump();
     }
 
-    /// Moves the selection to the next selectable row.
-    pub(super) fn select_next(&mut self) {
-        self.tree.select_next();
-    }
-
-    /// Moves the selection to the previous selectable row.
-    pub(super) fn select_previous(&mut self) {
-        self.tree.select_previous();
+    /// Moves the selection by one bounded row move.
+    ///
+    /// The move stops at the first and the last row, so it never wraps. A row
+    /// that reports a bounded or a failed directory read carries no selection,
+    /// so the sidebar takes the nearest selectable row in the direction of
+    /// travel, and the nearest one behind it when the direction holds none. An
+    /// empty tree keeps its empty selection.
+    pub(super) fn move_selection(&mut self, motion: TreeMotion) {
+        let rows = self.tree.rows();
+        let Some(last) = rows.len().checked_sub(1) else {
+            return;
+        };
+        let current = self.selected_index().unwrap_or(0);
+        let (target, forward) = match motion {
+            TreeMotion::Down(step) => (current.saturating_add(step).min(last), true),
+            TreeMotion::Up(step) => (current.saturating_sub(step), false),
+            TreeMotion::ToRow(row) => (row.min(last), true),
+            TreeMotion::LastRow => (last, false),
+        };
+        let ahead = rows[target..].iter().find(|row| row.is_selectable());
+        let behind = rows[..=target].iter().rev().find(|row| row.is_selectable());
+        let found = if forward {
+            ahead.or(behind)
+        } else {
+            behind.or(ahead)
+        };
+        let Some(path) = found.map(|row| row.path.clone()) else {
+            // Every row reports a read instead of an entry, so nothing accepts
+            // the selection.
+            return;
+        };
+        self.tree.select(&path);
     }
 
     /// Moves the selection to the directory that holds the selected entry.
@@ -397,27 +441,48 @@ impl TreeSidebar {
         Ok(())
     }
 
-    /// Moves the visible rows so the selected row stays inside the sidebar.
+    /// Moves the visible rows so the selected row keeps the scroll margin.
     ///
-    /// The caller knows the rectangle of the sidebar, so it supplies the number
-    /// of rows that the sidebar shows.
-    pub(super) fn reconcile(&mut self, rows_visible: usize) {
-        let rows = self.tree.rows().len();
-        if rows_visible == 0 || rows == 0 {
+    /// The caller owns the rectangle of the sidebar and the display settings,
+    /// so it supplies the viewport of the entry rows and the margin. The
+    /// margin rule itself belongs to [`Viewport::reconciled_first_row`], which
+    /// the buffer windows read as well, so a window and the sidebar keep the
+    /// same number of rows around the reader.
+    ///
+    /// A closed sidebar and an empty tree both show their rows from the first
+    /// one.
+    pub(super) fn reconcile(&mut self, viewport: Option<Viewport>, margin_rows: usize) {
+        let (Some(viewport), Some(last_row)) = (viewport, self.tree.rows().len().checked_sub(1))
+        else {
             self.first_row = 0;
             return;
-        }
-        let selected = self
-            .tree
-            .selected()
-            .and_then(|path| self.tree.rows().iter().position(|row| row.path == path))
-            .unwrap_or(0);
-        let last_start = rows.saturating_sub(rows_visible);
-        self.first_row = self
-            .first_row
-            .min(selected)
-            .max(selected.saturating_sub(rows_visible.saturating_sub(1)))
+        };
+        let rows_visible = usize::from(viewport.height_rows().get());
+        let selected = self.selected_index().unwrap_or(0);
+        // The sidebar marks no row after its last entry, so it also fills its
+        // region instead of showing blank rows below the last one. A buffer
+        // window keeps those rows and marks them.
+        let last_start = (last_row + 1).saturating_sub(rows_visible);
+        self.first_row = viewport
+            .reconciled_first_row(self.first_row, selected, last_row, margin_rows)
             .min(last_start);
+        debug_assert!(
+            self.first_row <= selected && selected < self.first_row + rows_visible,
+            "the reconciled offset always keeps the selected row visible"
+        );
+    }
+
+    /// Returns the row index of the selection, or `None` while no row holds it.
+    ///
+    /// A notice row carries the path of its own directory, so the search keeps
+    /// the selectable rows only. Without that filter one unreadable directory
+    /// would hold two rows of one path.
+    fn selected_index(&self) -> Option<usize> {
+        let selected = self.tree.selected()?;
+        self.tree
+            .rows()
+            .iter()
+            .position(|row| row.is_selectable() && row.path == selected)
     }
 
     /// Returns the selected entry.

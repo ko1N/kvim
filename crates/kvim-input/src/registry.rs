@@ -562,11 +562,16 @@ fn add_scoped(
     }
 }
 
-/// Adds one binding of the file-tree sidebar.
+/// Adds one single-key binding of the file-tree sidebar.
 fn add_tree(bindings: &mut Vec<Binding>, key: Key, command: Command) {
+    add_tree_keys(bindings, &[key], command);
+}
+
+/// Adds one binding of the file-tree sidebar over a key sequence.
+fn add_tree_keys(bindings: &mut Vec<Binding>, keys: &[Key], command: Command) {
     bindings.push(Binding {
         scope: BindingScope::Sidebar,
-        keys: vec![key],
+        keys: keys.to_vec(),
         command,
     });
 }
@@ -909,13 +914,19 @@ fn add_picker_bindings(table: &mut Vec<Binding>) {
 
 /// Adds the binding table of the file-tree sidebar.
 ///
-/// The keys follow the reference Neo-tree subset. The sidebar holds no count
-/// and no leader sequence, so every binding is one key. `Ctrl-E` and `q` both
-/// close the sidebar, and the directional focus keys leave it. See
-/// `docs/input-actions.md`.
+/// The keys follow the reference Neo-tree subset, and the navigation keys
+/// follow the buffer instead, so one row list moves like another. The sidebar
+/// holds no leader sequence. `Ctrl-E` and `q` both close the sidebar, and the
+/// directional focus keys leave it. See `docs/input-actions.md`.
 fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('j'), Command::MoveDown);
     add_tree(table, ch('k'), Command::MoveUp);
+    add_tree(table, ctrl('d'), Command::MoveHalfPageDown);
+    add_tree(table, ctrl('u'), Command::MoveHalfPageUp);
+    add_tree(table, ctrl('f'), Command::MoveFullPageDown);
+    add_tree(table, ctrl('b'), Command::MoveFullPageUp);
+    add_tree_keys(table, &[ch('g'), ch('g')], Command::MoveFirstLine);
+    add_tree(table, ch('G'), Command::MoveLastLine);
     add_tree(table, Key::plain(KeyCode::Enter), Command::TreeOpenEntry);
     add_tree(table, ch(' '), Command::TreeToggleEntry);
     add_tree(table, ch('l'), Command::TreeExpandEntry);

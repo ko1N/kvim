@@ -108,8 +108,8 @@ impl fmt::Display for Mode {
 /// assert!(BindingScope::Mode(Mode::Normal).accepts_count());
 /// // `d2w` deletes two words, so an operator still reads a count.
 /// assert!(BindingScope::OperatorPending.accepts_count());
-/// // The sidebar reads no count, because its keys act on one selected entry.
-/// assert!(!BindingScope::Sidebar.accepts_count());
+/// // `5j` moves five rows in the file tree, so the sidebar reads a count too.
+/// assert!(BindingScope::Sidebar.accepts_count());
 /// // The picker reads a query, so a digit belongs to that query.
 /// assert!(!BindingScope::Picker.accepts_count());
 /// ```
@@ -168,7 +168,10 @@ impl BindingScope {
             // `d2w` deletes two words, so the count between the operator and
             // its target belongs to this scope.
             Self::OperatorPending => true,
-            Self::Sidebar | Self::Picker => false,
+            // The sidebar moves with the buffer navigation keys, so `5j` and
+            // `12G` name a row count and a row there as well.
+            Self::Sidebar => true,
+            Self::Picker => false,
         }
     }
 

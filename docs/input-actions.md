@@ -57,8 +57,9 @@ operator keys for the linewise `dd`, `cc`, and `yy`, and adds the text objects.
 binds `Esc` and `Ctrl-C`, which end the operator and change nothing. Every other
 key reaches no command, so the operator changes nothing.
 
-The sidebar scope holds no count and no leader sequence, because its keys act on
-one selected entry. The sidebar owns every key while it holds the focus.
+The sidebar scope holds no leader sequence. It does hold a count, because its
+rows move with the buffer navigation keys: `5j` moves five rows and `12G`
+reaches row twelve. The sidebar owns every key while it holds the focus.
 
 The picker scope holds no count either, because a digit belongs to the query.
 The picker reads that query through one prompt, and its own table answers before
@@ -375,13 +376,20 @@ the workspace root and reports that it has no path to reveal.
 ### File Tree
 
 These keys act while the file-tree sidebar holds the focus. They follow the
-reference Neo-tree subset. See [`files.md`](files.md) for the behavior behind
-them.
+reference Neo-tree subset, and the navigation keys follow the buffer instead, so
+one row list moves like another. See [`files.md`](files.md) for the behavior
+behind them.
 
 | Keys | Command |
 |---|---|
 | `j` | Select the next entry |
 | `k` | Select the previous entry |
+| `Ctrl-D` | Select half a page down |
+| `Ctrl-U` | Select half a page up |
+| `Ctrl-F` | Select one page down |
+| `Ctrl-B` | Select one page up |
+| `gg` | Select the first entry, or the entry of the count |
+| `G` | Select the last entry, or the entry of the count |
 | `l` | Expand the selected directory, or open the selected file |
 | `h` | Collapse the selected directory, or select the parent directory |
 | `Backspace` | Select the parent directory |
@@ -402,6 +410,12 @@ them.
 | `Ctrl-Q` | Close the file tree |
 | `Ctrl-H/J/K/L` | Focus the window in that direction |
 | `Ctrl-S` | Save the active buffer |
+
+Every navigation key accepts a count, and every move stops at the first and the
+last row, so no move wraps. A count before `gg` or `G` names one row instead of
+a number of steps, as it names one line in a buffer. The half-page and the
+full-page moves read their size from the visible rows of the sidebar, and the
+selected row keeps the same scroll margin that a buffer window keeps.
 
 `a`, `A`, `r`, and `/` read one line through the prompt of the message line, not
 through a second input mechanism. The prompt returns the keys to the sidebar
