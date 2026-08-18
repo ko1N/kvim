@@ -53,6 +53,10 @@ const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
 /// The editor background of the reference palette.
 const BASE: Color = Color::Rgb(0x11, 0x13, 0x17);
 
+/// The first text cell of a window whose gutter holds one sign cell and a
+/// three-digit number column with its gap.
+const GUTTER: u16 = 5;
+
 /// Renders one session and returns the terminal cell buffer.
 fn draw(session: &Session) -> CellBuffer {
     let area = session.area();
@@ -148,20 +152,49 @@ fn open_file(session: &mut Session, path: PathBuf) {
     let _ = session.apply_file_result(request.run());
 }
 
-/// Creates a session that holds `lines` numbered lines, with the cursor at the
-/// start of the buffer.
-fn with_lines(width: u16, height: u16, lines: usize) -> Session {
+/// Creates a session that holds one typed text, with the cursor at the start of
+/// the buffer.
+fn with_text(width: u16, height: u16, text: &str) -> Session {
     let mut session = session(width, height);
     press(&mut session, 'i');
-    for index in 0..lines {
+    for (index, line) in text.lines().enumerate() {
         if index > 0 {
             press_code(&mut session, KeyCode::Enter);
         }
-        type_keys(&mut session, &format!("line{index}"));
+        type_keys(&mut session, line);
     }
     press_code(&mut session, KeyCode::Esc);
     type_keys(&mut session, "gg");
     session
+}
+
+/// Creates a session that holds `lines` numbered lines, with the cursor at the
+/// start of the buffer.
+fn with_lines(width: u16, height: u16, lines: usize) -> Session {
+    let text: String = (0..lines).map(|index| format!("line{index}\n")).collect();
+    with_text(width, height, &text)
+}
+
+/// Returns every text cell of one rendered session that marks a bracket pair.
+///
+/// The scan starts after the gutter, because the cursor line number carries the
+/// same accent color and the same bold modifier as the pair highlight.
+fn highlighted_brackets(session: &Session) -> Vec<(u16, u16)> {
+    let buffer = draw(session);
+    let area = *buffer.area();
+    let mut found = Vec::new();
+    for y in area.y..area.bottom() {
+        for x in GUTTER..area.right() {
+            let marked = buffer.cell((x, y)).is_some_and(|cell| {
+                let style = cell.style();
+                style.fg == Some(ACCENT_WARM) && style.add_modifier.contains(Modifier::BOLD)
+            });
+            if marked {
+                found.push((x, y));
+            }
+        }
+    }
+    found
 }
 
 #[test]
@@ -391,6 +424,110 @@ fn an_edit_moves_the_search_matches_with_the_text() {
     assert_eq!(row(&session, 1), " 1   line1");
     assert_eq!(style_at(&session, 5, 1).bg, Some(ACCENT_WARM));
     assert_eq!(style_at(&session, 5, 2).bg, Some(SEARCH));
+}
+
+#[test]
+fn the_bracket_under_the_cursor_and_its_partner_carry_the_pair_highlight() {
+    // The cursor stands on the open bracket, so both ends of the pair mark it.
+    let session = with_text(30, 8, "(alpha)\n");
+    assert_eq!(row(&session, 1), " 1   (alpha)");
+    assert_eq!(
+        highlighted_brackets(&session),
+        vec![(GUTTER, 1), (GUTTER + 6, 1)]
+    );
+
+    // `%` moves the cursor to the close bracket, and the pair stays marked.
+    let mut jumped = with_text(30, 8, "(alpha)\n");
+    press(&mut jumped, '%');
+    assert_eq!(
+        highlighted_brackets(&jumped),
+        vec![(GUTTER, 1), (GUTTER + 6, 1)]
+    );
+}
+
+#[test]
+fn a_bracket_beside_the_cursor_or_without_a_partner_marks_no_pair() {
+    // `%` also jumps to a pair that follows the cursor on the same line. The
+    // highlight marks the bracket under the cursor alone, so this line stays
+    // plain.
+    let beside = with_text(30, 8, "x(alpha)\n");
+    assert!(highlighted_brackets(&beside).is_empty());
+
+    // An open bracket without a partner marks nothing.
+    let unmatched = with_text(30, 8, "(alpha\n");
+    assert!(highlighted_brackets(&unmatched).is_empty());
+
+    // A close bracket without a partner marks nothing either.
+    let mut closing = with_text(30, 8, "alpha)\n");
+    press(&mut closing, '$');
+    assert!(highlighted_brackets(&closing).is_empty());
+}
+
+#[test]
+fn a_partner_outside_the_viewport_paints_no_cell() {
+    // The pair spans more lines than the window shows, so only the end that the
+    // viewport holds carries the highlight.
+    let mut text = String::from("(\n");
+    for _ in 0..7 {
+        text.push_str("x\n");
+    }
+    text.push_str(")\n");
+    let mut session = with_text(30, 8, &text);
+    assert_eq!(highlighted_brackets(&session), vec![(GUTTER, 1)]);
+
+    // `G` scrolls to the close bracket and leaves the open one above the view.
+    press(&mut session, 'G');
+    let marked = highlighted_brackets(&session);
+    assert_eq!(marked.len(), 1, "the open bracket left the viewport");
+    assert_eq!(marked[0].0, GUTTER);
+    assert_eq!(row(&session, marked[0].1), " 9   )");
+}
+
+#[test]
+fn a_selected_bracket_reads_as_selected_and_paints_no_pair() {
+    let mut session = with_text(30, 8, "(alpha)\n");
+    press(&mut session, 'v');
+
+    // Visual mode owns the keys, so the pair steps aside and the selection band
+    // is what the reader sees on the bracket.
+    assert!(highlighted_brackets(&session).is_empty());
+    assert_eq!(style_at(&session, GUTTER, 1).bg, Some(SELECTION));
+}
+
+#[test]
+fn a_bracket_that_is_also_a_search_match_reads_as_the_match() {
+    let mut session = with_text(30, 8, "(alpha)\n");
+    type_keys(&mut session, "/)");
+    press_code(&mut session, KeyCode::Enter);
+
+    // The pair sits below the search match, so the searched bracket keeps the
+    // colors of the current match while its partner still marks the pair.
+    assert_eq!(style_at(&session, GUTTER + 6, 1).bg, Some(ACCENT_WARM));
+    assert_eq!(highlighted_brackets(&session), vec![(GUTTER, 1)]);
+}
+
+#[test]
+fn a_mode_other_than_normal_paints_no_bracket_pair() {
+    let mut session = with_text(30, 8, "(alpha)\n");
+    assert!(!highlighted_brackets(&session).is_empty());
+
+    press(&mut session, 'i');
+    assert!(highlighted_brackets(&session).is_empty());
+}
+
+#[test]
+fn a_wide_character_before_a_bracket_keeps_the_pair_on_its_own_cells() {
+    let mut session = with_text(30, 8, "漢(x)\n");
+    // The wide character is no bracket, so the line stays plain.
+    assert!(highlighted_brackets(&session).is_empty());
+
+    // One step right reaches the open bracket, which starts after the two cells
+    // of the wide character.
+    press(&mut session, 'l');
+    assert_eq!(
+        highlighted_brackets(&session),
+        vec![(GUTTER + 2, 1), (GUTTER + 4, 1)]
+    );
 }
 
 #[test]

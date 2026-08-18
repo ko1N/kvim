@@ -12,7 +12,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use kvim_core::{CharPosition, LineIndex, TextBuffer};
-use kvim_editor::{Cursor, Selection};
+use kvim_editor::{Cursor, Delimiter, DelimiterShape, Selection, matching_bracket};
 use kvim_language::{Diagnostic, DiagnosticSeverity, HighlightSpan, SyntaxRole};
 use kvim_settings::{DisplaySettings, SignColumn};
 
@@ -39,6 +39,18 @@ const END_OF_BUFFER_GLYPH: &str = "~";
 
 /// The marker that follows the name of a modified buffer.
 const MODIFIED_MARKER: &str = " [+]";
+
+/// Whether one window paints the bracket pair that its cursor stands on.
+///
+/// The pair answers a Normal-mode `%`, and the mode belongs to the focused
+/// window, so every other window and every other mode paints none.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BracketHighlight {
+    /// The window paints the pair under its cursor.
+    Shown,
+    /// The window paints no pair.
+    Hidden,
+}
 
 /// Whether one window holds the input focus.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -81,6 +93,8 @@ pub(super) struct WindowView<'a> {
     pub(super) diagnostics: &'a [Diagnostic],
     /// Whether the window holds the input focus.
     pub(super) focus: WindowFocus,
+    /// Whether the window paints the bracket pair under its cursor.
+    pub(super) brackets: BracketHighlight,
     /// The visible layout settings of the editor.
     pub(super) display: &'a DisplaySettings,
     /// The number of cells that one tab occupies.
@@ -154,6 +168,13 @@ struct LineOverlays {
     roles: Vec<ColumnRole>,
     /// The diagnostic severities of the line, in ascending column order.
     marked: Vec<ColumnSeverity>,
+}
+
+/// One bracket of the highlighted pair, inside one visible line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BracketCell {
+    line: usize,
+    column: usize,
 }
 
 /// One search match inside one visible line.
@@ -233,6 +254,7 @@ pub(super) fn render_window(
         theme,
         gutter: gutter_cells(view.buffer, view.display, text.width),
         spans: match_spans(view, text.height),
+        brackets: bracket_cells(view, text.height),
     };
     let mut scratch = String::new();
     for row in 0..text.height {
@@ -279,6 +301,7 @@ struct RowPainter<'a> {
     /// The width of the sign column and the number column together, in cells.
     gutter: u16,
     spans: Vec<MatchSpan>,
+    brackets: Vec<BracketCell>,
 }
 
 impl RowPainter<'_> {
@@ -408,9 +431,11 @@ impl RowPainter<'_> {
     /// Each overlay patches the style below it, so a match keeps the colors of
     /// a selection. The syntax role sits directly above the text style, so
     /// every overlay still wins over it. A diagnostic underlines the syntax
-    /// color instead of replacing it, so decoration never hides the code. No
-    /// overlay marks the cursor cell: the terminal draws its own cursor there.
-    /// See `docs/windows.md`.
+    /// color instead of replacing it, so decoration never hides the code. The
+    /// bracket pair sits below the selection and below the search match, so a
+    /// selected bracket still reads as selected and a matched bracket still
+    /// reads as a match. No overlay marks the cursor cell: the terminal draws
+    /// its own cursor there. See `docs/windows.md`.
     fn cell_style(&self, base: Style, overlays: &LineOverlays, cell: RowCell) -> Style {
         let mut style = base;
         if let Some(found) = overlays
@@ -428,6 +453,13 @@ impl RowPainter<'_> {
             style = style
                 .patch(self.theme.style(severity_role(found.severity)))
                 .add_modifier(Modifier::UNDERLINED);
+        }
+        if self
+            .brackets
+            .iter()
+            .any(|bracket| bracket.line == overlays.line && bracket.column == cell.column)
+        {
+            style = style.patch(self.theme.style(ThemeRole::MatchingBracket));
         }
         if let Some((first, last)) = overlays.selected
             && cell.column >= first
@@ -728,6 +760,62 @@ fn match_spans(view: &WindowView<'_>, rows: u16) -> Vec<MatchSpan> {
     spans
 }
 
+/// Returns whether one character opens or closes a bracket pair.
+///
+/// `Delimiter::MATCH_PAIRS` decides, which is the same table that the `%`
+/// motion reads, so the highlight covers exactly the characters that a jump
+/// pairs. See `docs/input-actions.md`.
+fn is_match_pair(character: char) -> bool {
+    Delimiter::MATCH_PAIRS.iter().any(|delimiter| {
+        matches!(
+            delimiter.shape(),
+            DelimiterShape::Balanced { open, close } if character == open || character == close
+        )
+    })
+}
+
+/// Collects the visible cells of the bracket pair under the cursor.
+///
+/// The partner comes from [`matching_bracket`], the one search that the `%`
+/// motion uses, so the highlight always marks the bracket that a jump reaches.
+/// That search also answers for a bracket after the cursor, because `%` reads
+/// its line forward. The highlight marks the bracket under the cursor alone, so
+/// the character at the cursor decides whether a pair exists at all.
+///
+/// A bracket outside the visible lines contributes no cell, so a partner far
+/// from the viewport costs no paint work.
+fn bracket_cells(view: &WindowView<'_>, rows: u16) -> Vec<BracketCell> {
+    if view.brackets == BracketHighlight::Hidden {
+        return Vec::new();
+    }
+    let buffer = view.buffer;
+    let cursor = view.cursor.position(buffer);
+    let line = buffer.char_to_line(cursor);
+    let column = buffer.char_to_column(cursor).get();
+    if !buffer
+        .line_text(line)
+        .chars()
+        .nth(column)
+        .is_some_and(is_match_pair)
+    {
+        return Vec::new();
+    }
+    let Some(matched) = matching_bracket(buffer, cursor) else {
+        return Vec::new();
+    };
+    let last_line = view.first_line.saturating_add(usize::from(rows));
+    [cursor, matched]
+        .into_iter()
+        .filter_map(|position| {
+            let line = buffer.char_to_line(position).get();
+            (line >= view.first_line && line < last_line).then(|| BracketCell {
+                line,
+                column: buffer.char_to_column(position).get(),
+            })
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::buffer::Buffer as CellBuffer;
@@ -742,7 +830,7 @@ mod tests {
     use kvim_settings::{EditorSettings, FileSettings};
 
     use super::super::theme::{Theme, ThemeRole};
-    use super::{END_OF_BUFFER_GLYPH, WindowFocus, WindowView, render_window};
+    use super::{BracketHighlight, END_OF_BUFFER_GLYPH, WindowFocus, WindowView, render_window};
 
     /// The window rectangle of every test, including the winbar row.
     const AREA: Rect = Rect {
@@ -769,6 +857,7 @@ mod tests {
             highlights,
             diagnostics: &[],
             focus: WindowFocus::Unfocused,
+            brackets: BracketHighlight::Hidden,
             display: &settings.display,
             tab_width: usize::from(settings.indent.tab_width.get()),
         };
@@ -807,6 +896,7 @@ mod tests {
             highlights: &[],
             diagnostics,
             focus: WindowFocus::Unfocused,
+            brackets: BracketHighlight::Hidden,
             display: &settings.display,
             tab_width: usize::from(settings.indent.tab_width.get()),
         };
@@ -1016,6 +1106,7 @@ mod tests {
             highlights: &[],
             diagnostics: &[],
             focus: WindowFocus::Unfocused,
+            brackets: BracketHighlight::Hidden,
             display: &settings.display,
             tab_width: usize::from(settings.indent.tab_width.get()),
         };

@@ -99,6 +99,8 @@ pub enum ThemeRole {
     SearchMatch,
     /// A cell inside the search match that holds the cursor.
     CurrentSearchMatch,
+    /// A cell of the bracket pair that the cursor stands on.
+    MatchingBracket,
     /// A line number that is not the cursor line.
     LineNumber,
     /// The absolute number of the cursor line.
@@ -211,6 +213,11 @@ impl Theme {
             ThemeRole::CurrentSearchMatch => {
                 Style::new().fg(CURRENT_SEARCH_FOREGROUND).bg(ACCENT_WARM)
             }
+            // The reference configuration marks a matching bracket with the
+            // warm accent and the bold modifier. The role carries no background
+            // of its own, so the selection band and the search band stay
+            // visible under it and keep their own meaning.
+            ThemeRole::MatchingBracket => Style::new().fg(ACCENT_WARM).add_modifier(Modifier::BOLD),
             ThemeRole::LineNumber => Style::new().fg(TEXT_MUTED).bg(self.base),
             ThemeRole::CursorLineNumber => Style::new()
                 .fg(ACCENT_WARM)

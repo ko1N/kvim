@@ -243,6 +243,7 @@ roles. A new role belongs here first, and its color stays in code.
 | Selection | A cell inside the Visual selection |
 | SearchMatch | A cell inside one search match |
 | CurrentSearchMatch | A cell inside the match that holds the cursor |
+| MatchingBracket | A cell of the bracket pair that the cursor stands on |
 | LineNumber | A line number that is not the cursor line |
 | CursorLineNumber | The absolute number of the cursor line |
 | SignColumn | The sign column beside the line numbers |
@@ -260,7 +261,8 @@ roles. A new role belongs here first, and its color stays in code.
 The selection and the prompt cursor carry no color of their own. They decorate
 the style below them, so a later syntax color survives both. A file-tree icon
 carries a foreground color only, so a selected row keeps its background behind
-the glyph.
+the glyph. The matching bracket carries a foreground color and the bold
+modifier, so the selection band and the search band stay visible under it.
 
 ### Icon Roles
 
@@ -311,6 +313,20 @@ sequence still shows its own cursor.
 
 The search highlight belongs to the active buffer, so a window that shows
 another buffer paints no match.
+
+One buffer cell collects its style in a fixed order. The text style sits at the
+bottom, the syntax role sits over it, then the diagnostic underline, then the
+bracket pair, then the Visual selection, and the search match sits on top. A
+selected bracket therefore still reads as selected, and a searched bracket still
+reads as a match.
+
+The focused window marks the bracket pair that its cursor stands on. The pair
+comes from the search that the `%` motion uses, so the highlight always marks
+the bracket that a jump reaches. See [`input-actions.md`](input-actions.md). The
+character under the cursor decides whether a pair exists, so a bracket that only
+follows the cursor on the same line marks nothing. Normal mode paints the pair;
+every other mode paints none. A bracket outside the visible lines paints no
+cell.
 
 The Visual selection covers exactly the selected characters. It never paints a
 cell behind the last character of a line, in any of the three selection shapes.
