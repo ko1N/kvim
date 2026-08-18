@@ -438,6 +438,19 @@ impl Visible<'_> {
     pub(super) fn diagnostics(&self, buffer: BufferId) -> &[Diagnostic] {
         self.language.diagnostics(buffer)
     }
+
+    /// Returns the format-on-save state that the focused window shows.
+    ///
+    /// The state belongs to one buffer, so a focus change to a window over
+    /// another buffer reports the state of that other buffer.
+    pub(super) fn focused_format_on_save(&self) -> FormatOnSave {
+        let default = FormatOnSave::from_setting(self.settings.files.format_on_save);
+        let Some(buffer) = self.windows.buffer(self.windows.focused_window()) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return default;
+        };
+        self.language.format_on_save(buffer, default)
+    }
 }
 
 /// The visible editor state of one terminal.
@@ -1993,11 +2006,7 @@ impl Session {
 
     /// Returns the format-on-save state of one buffer.
     fn format_on_save(&self, buffer: BufferId) -> FormatOnSave {
-        let default = if self.settings.files.format_on_save {
-            FormatOnSave::Enabled
-        } else {
-            FormatOnSave::Disabled
-        };
+        let default = FormatOnSave::from_setting(self.settings.files.format_on_save);
         self.language.format_on_save(buffer, default)
     }
 

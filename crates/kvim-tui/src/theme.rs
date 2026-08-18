@@ -111,7 +111,7 @@ pub enum ThemeRole {
     Surface,
     /// The statusline text.
     Statusline,
-    /// The statusline text of an unfocused region.
+    /// The quiet part of the statusline, such as the format-on-save state.
     StatuslineMuted,
     /// The winbar band above one window.
     Winbar,

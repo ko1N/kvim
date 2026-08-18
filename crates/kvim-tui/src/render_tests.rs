@@ -47,6 +47,15 @@ const ACCENT_WARM: Color = Color::Rgb(0xff, 0x9e, 0x64);
 /// The muted text color of the reference palette.
 const MUTED: Color = Color::Rgb(0x3b, 0x42, 0x61);
 
+/// The normal text color of the reference palette.
+const TEXT: Color = Color::Rgb(0xc0, 0xca, 0xf5);
+
+/// The warning color of the reference palette.
+const WARNING: Color = Color::Rgb(0xe0, 0xaf, 0x68);
+
+/// The failure color of the reference palette.
+const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
+
 /// The title color of the reference palette.
 const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
 
@@ -124,6 +133,17 @@ fn is_reversed(session: &Session, x: u16, y: u16) -> bool {
 fn winbar(width: u16, left: &str, label: &str) -> String {
     let blanks = usize::from(width) - 1 - left.chars().count() - label.chars().count();
     format!("{left}{}{label} ", " ".repeat(blanks))
+}
+
+/// Returns the complete statusline row of one terminal, without its trailing
+/// blank.
+///
+/// The mode starts at the first cell, the cursor position ends one cell before
+/// the right edge, and the format-on-save state sits left of that position.
+fn statusline(width: u16, mode: &str, state: &str, position: &str) -> String {
+    let used = mode.chars().count() + state.chars().count() + position.chars().count() + 4;
+    let blanks = usize::from(width) - used;
+    format!(" {mode} {}{state} {position}", " ".repeat(blanks))
 }
 
 /// Creates a session over one terminal size.
@@ -256,7 +276,7 @@ fn one_window_shows_the_winbar_the_text_and_the_chrome() {
         "~",
         "the rows below the buffer are marked"
     );
-    assert_eq!(row(&session, 6), " Insert                 1:6");
+    assert_eq!(row(&session, 6), " Insert          fmt:on 1:6");
     assert_eq!(row(&session, 7), "");
 }
 
@@ -326,6 +346,78 @@ fn every_mode_reaches_the_statusline() {
     let mut session = session(40, 6);
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('v'))), NOW);
     assert!(row(&session, 4).starts_with(" Visual Block"));
+}
+
+#[test]
+fn the_statusline_shows_the_format_on_save_state_of_the_focused_buffer() {
+    let directory = TempDir::new("render-format-state");
+    let first = directory.write("first.rs", "fn first() {}\n");
+    let second = directory.write("second.rs", "fn second() {}\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+    open_file(&mut session, first);
+
+    // Every new buffer follows the settings default, which enables the format.
+    assert_eq!(row(&session, 6), statusline(60, "Normal", "fmt:on", "1:1"));
+    // The state stays quiet beside the mode, so it carries the muted color.
+    // It ends before the cursor position, which occupies the last four cells.
+    assert_eq!(style_at(&session, 60 - 11, 6).fg, Some(MUTED));
+
+    // The second window shows the second buffer, and the toggle changes that
+    // buffer alone.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    open_file(&mut session, second);
+    type_keys(&mut session, " cf");
+    assert_eq!(row(&session, 6), statusline(60, "Normal", "fmt:off", "1:1"));
+
+    // The state follows the focus, not the buffer list, so the left window
+    // reports the state of the buffer that it shows.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(row(&session, 6), statusline(60, "Normal", "fmt:on", "1:1"));
+}
+
+#[test]
+fn a_narrow_statusline_drops_the_format_on_save_state_before_the_cursor_position() {
+    // The mode label, the state, the cursor position, and one blank between
+    // the mode and the state need twenty cells together.
+    assert_eq!(row(&session(20, 6), 4), " Normal  fmt:on 1:1");
+    assert_eq!(
+        row(&session(19, 6), 4),
+        " Normal        1:1",
+        "the state drops first, because the position moves with every key"
+    );
+    assert_eq!(row(&session(12, 6), 4), " Normal 1:1");
+    assert_eq!(
+        row(&session(11, 6), 4),
+        " Normal",
+        "the mode survives longest, because it decides what the next key does"
+    );
+}
+
+#[test]
+fn the_message_line_marks_only_a_warning_and_a_failure() {
+    let mut session = session(60, 6);
+
+    // An ordinary report reads like buffer text.
+    type_keys(&mut session, " cf");
+    assert_eq!(row(&session, 5), "format-on-save is off for this buffer");
+    assert_eq!(style_at(&session, 0, 5).fg, Some(TEXT));
+
+    // The empty scratch buffer holds no match, so the search warns.
+    press(&mut session, '/');
+    press(&mut session, 'x');
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(row(&session, 5), "no match");
+    assert_eq!(style_at(&session, 0, 5).fg, Some(WARNING));
+
+    // The scratch buffer holds no file name, so the save fails.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert_eq!(
+        row(&session, 5),
+        "the buffer holds no file name; use :e <path> to name one"
+    );
+    assert_eq!(style_at(&session, 0, 5).fg, Some(ERROR));
 }
 
 #[test]

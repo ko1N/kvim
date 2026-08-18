@@ -13,6 +13,8 @@ use ratatui::layout::Rect;
 use kvim_editor::Cursor;
 use kvim_input::Mode;
 
+use super::cells::text_cells;
+use super::language::FormatOnSave;
 use super::session::{Message, MessageLevel, PromptLine};
 use super::theme::{Theme, ThemeRole};
 
@@ -24,6 +26,13 @@ const MESSAGE_ROWS: u16 = 1;
 
 /// The number of rows that both chrome bands occupy together.
 const CHROME_ROWS: u16 = STATUSLINE_ROWS + MESSAGE_ROWS;
+
+/// The number of blank cells that separate the mode from the format-on-save
+/// state.
+///
+/// The mode label and the state label each end with one blank, so this gap
+/// keeps a wide mode name apart from the state on a narrow band.
+const STATUSLINE_GAP_CELLS: usize = 1;
 
 /// The three bands of the terminal.
 ///
@@ -69,16 +78,19 @@ pub(super) fn shell_areas(area: Rect) -> ShellAreas {
     }
 }
 
-/// Renders the mode and the cursor position into the statusline band.
+/// Renders the mode, the format-on-save state, and the cursor position into
+/// the statusline band.
 ///
-/// A band that cannot hold both parts keeps the mode, because the mode decides
-/// what the next key does.
+/// A band that cannot hold every part drops them in a fixed order: the
+/// format-on-save state first, then the cursor position. The mode always
+/// survives, because the mode decides what the next key does.
 pub(super) fn render_statusline(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
     mode: Mode,
     cursor: Cursor,
+    format: FormatOnSave,
 ) {
     if area.is_empty() {
         return;
@@ -95,24 +107,43 @@ pub(super) fn render_statusline(
         usize::from(area.width),
         theme.style(ThemeRole::Title),
     );
+
     let position = format!("{}:{} ", cursor.line().get() + 1, cursor.column().get() + 1);
-    let Ok(width) = u16::try_from(position.len()) else {
+    let state = format!("{} ", format.label());
+    let width = usize::from(area.width);
+    let mode_cells = text_cells(&mode_text);
+    let position_cells = text_cells(&position);
+    let state_cells = text_cells(&state);
+    if width < mode_cells + position_cells {
+        return;
+    }
+    let Ok(position_offset) = u16::try_from(position_cells) else {
         debug_assert!(false, "one cursor position never fills a terminal row");
         return;
     };
-    let Ok(used) = u16::try_from(mode_text.len()) else {
-        debug_assert!(false, "one mode label never fills a terminal row");
-        return;
-    };
-    if area.width < used.saturating_add(width) {
-        return;
-    }
     target.set_stringn(
-        area.right() - width,
+        area.right() - position_offset,
         area.y,
         &position,
-        usize::from(width),
+        position_cells,
         style,
+    );
+
+    if width < mode_cells + state_cells + position_cells + STATUSLINE_GAP_CELLS {
+        return;
+    }
+    let Ok(state_offset) = u16::try_from(state_cells + position_cells) else {
+        debug_assert!(false, "the checked width bounds both labels by the band");
+        return;
+    };
+    // The state answers a question the reader asks once, so it stays quiet
+    // beside the mode. See `docs/windows.md`.
+    target.set_stringn(
+        area.right() - state_offset,
+        area.y,
+        &state,
+        state_cells,
+        theme.style(ThemeRole::StatuslineMuted),
     );
 }
 
@@ -142,17 +173,19 @@ pub(super) fn render_message(
     let Some(message) = message else {
         return;
     };
-    let role = match message.level {
-        MessageLevel::Error => ThemeRole::Error,
-        MessageLevel::Warning => ThemeRole::Warning,
-        MessageLevel::Info => ThemeRole::Info,
+    // An ordinary report reads like buffer text, so only a warning and a
+    // failure stand out on the message line.
+    let style = match message.level {
+        MessageLevel::Error => base.patch(theme.style(ThemeRole::Error)),
+        MessageLevel::Warning => base.patch(theme.style(ThemeRole::Warning)),
+        MessageLevel::Info => base,
     };
     target.set_stringn(
         area.x,
         area.y,
         &message.text,
         usize::from(area.width),
-        base.patch(theme.style(role)),
+        style,
     );
 }
 

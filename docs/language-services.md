@@ -329,8 +329,10 @@ does not block terminal input.
 
 Format-on-save is enabled for each new buffer. The default belongs to
 `EditorSettings`. The toggle is per buffer, so a change affects only the active
-buffer and does not change the default for other buffers. Kvim shows the current
-format-on-save state for the active buffer.
+buffer and does not change the default for other buffers. Kvim reports the
+current state on the message line after each toggle. The statusline also shows
+the state of the focused buffer, so a window focus change reports the state of
+the buffer that the new window shows. See [`windows.md`](windows.md).
 
 A format-on-save failure or timeout does not cancel the save. Kvim saves the
 unformatted buffer content and reports the typed formatting state.

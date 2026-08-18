@@ -196,9 +196,13 @@ The terminal holds three bands. The window tree receives the body band only.
 
 - The body band holds the window tree and every overlay.
 - The statusline band holds one statusline for the whole terminal. It shows the
-  active mode and the cursor position.
+  active mode at the left. At the right it shows the format-on-save state of the
+  focused buffer, and then the cursor position. A band that cannot hold every
+  part drops the format-on-save state first, then the cursor position. The mode
+  always survives, because the mode decides what the next key does.
 - The message line is the last row. It shows the last message, and the command
-  line and the search prompt share it.
+  line and the search prompt share it. An ordinary message takes the normal text
+  color, so only a warning and a failure stand out.
 
 One winbar row sits above the text of every window. It shows, from the left, one
 blank, the path of the buffer, and a marker for a modified buffer. It shows the
@@ -267,7 +271,7 @@ roles. A new role belongs here first, and its color stays in code.
 | SignColumn | The sign column beside the line numbers |
 | Surface | The background band of a floating surface or a popup |
 | Statusline | The statusline text |
-| StatuslineMuted | The statusline text of an unfocused region |
+| StatuslineMuted | The quiet part of the statusline, such as the format-on-save state |
 | Winbar | The winbar band above one window |
 | Title | The title of a focused window or of an overlay |
 | TitleMuted | The title of an unfocused window |
