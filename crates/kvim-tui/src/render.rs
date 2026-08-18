@@ -161,7 +161,15 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         );
     }
     if let Some(rows) = view.which_key {
-        render_which_key(target, bands.body, theme, rows);
+        // The overlay reads the one icon setting of the file tree, so a
+        // terminal without a patched font turns every glyph off together.
+        render_which_key(
+            target,
+            bands.body,
+            theme,
+            rows,
+            view.settings.windows.file_tree_icons,
+        );
     }
     // The picker covers the complete terminal, so it renders last and owns the
     // one cursor cell that the frame reports. See `docs/files.md`.
