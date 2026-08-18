@@ -125,8 +125,8 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         }
     }
 
-    // The statusline reports the mode of the editor and the cursor of the
-    // focused window, because the keys act there.
+    // The statusline reports the mode of the editor, and the cursor and the
+    // format-on-save state of the focused window, because the keys act there.
     let focused_cursor = view
         .windows
         .state(focused)
@@ -137,6 +137,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         theme,
         view.editing.mode(),
         focused_cursor,
+        view.focused_format_on_save(),
     );
     render_message(target, bands.message, theme, view.prompt, view.message);
     // The notification overlay reports the background work of the editor, so

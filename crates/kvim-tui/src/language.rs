@@ -274,12 +274,37 @@ pub enum FormatOnSave {
 }
 
 impl FormatOnSave {
+    /// Returns the state that a buffer holds before a toggle changes it.
+    ///
+    /// `EditorSettings` records the default as one flag, so this is the one
+    /// boundary that turns that flag into the typed state.
+    #[must_use]
+    pub const fn from_setting(enabled: bool) -> Self {
+        if enabled {
+            Self::Enabled
+        } else {
+            Self::Disabled
+        }
+    }
+
     /// Returns the state that a toggle reaches.
     #[must_use]
     pub const fn toggled(self) -> Self {
         match self {
             Self::Enabled => Self::Disabled,
             Self::Disabled => Self::Enabled,
+        }
+    }
+
+    /// Returns the short label that the statusline shows.
+    ///
+    /// The label names the state of the focused buffer, so it stays short
+    /// enough for one narrow statusline. See `docs/windows.md`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Enabled => "fmt:on",
+            Self::Disabled => "fmt:off",
         }
     }
 
