@@ -18,6 +18,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use kvim_editor::{SearchDirection, Viewport};
+use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
@@ -73,9 +74,13 @@ const LINK_SUFFIX: &str = "@";
 /// work of the user. The list is presentation data beside the icon table, and
 /// it names a small fixed set, so one lookup costs a bounded number of
 /// comparisons. The Git ignore rules dim the same way, and the list stays the
-/// answer for a workspace that is no repository. See `docs/files.md` and
-/// `docs/git.md`.
-const GENERATED_NAMES: [&str; 5] = [".direnv", ".git", "__pycache__", "node_modules", "target"];
+/// answer for a workspace that is no repository.
+///
+/// The workspace watcher ignores exactly these names, so one build writes no
+/// event at all and the two rules can never disagree about one entry. See
+/// `docs/files.md` and `docs/git.md`.
+pub(super) const GENERATED_NAMES: [&str; 5] =
+    [".direnv", ".git", "__pycache__", "node_modules", "target"];
 
 /// The number of cells that the Git mark reserves at the right edge.
 ///
@@ -529,6 +534,33 @@ impl TreeSidebar {
                 None
             }
         }
+    }
+
+    /// Applies one coalesced burst of workspace filesystem changes.
+    ///
+    /// The sidebar reads only the directories that the burst named, so a change
+    /// deep inside the workspace never rebuilds the tree. The expansion, the
+    /// selection, and the first visible row all survive, because each named
+    /// directory takes the ordinary refresh path.
+    ///
+    /// A burst that lost events names an incomplete set of directories, so the
+    /// sidebar reads every expanded directory again instead of trusting it.
+    ///
+    /// The rows change when the reads return, so the burst itself paints
+    /// nothing. See `docs/files.md`.
+    pub(super) fn apply_watch(&mut self, batch: &WatchBatch) {
+        match batch.fidelity() {
+            WatchFidelity::Complete => {
+                for directory in batch.directories() {
+                    self.tree.refresh(&directory);
+                }
+            }
+            WatchFidelity::Dropped => self.tree.refresh_all(),
+        }
+        self.pump();
+        // Every change of the workspace can change the recorded state of the
+        // repository, as a save and a mutation already do.
+        self.request_git_status();
     }
 
     /// Asks for a new read of every expanded directory and of the repository.

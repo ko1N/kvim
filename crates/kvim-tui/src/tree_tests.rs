@@ -16,6 +16,7 @@ use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
 use kvim_language::LspError;
+use kvim_runtime::{FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
@@ -25,7 +26,7 @@ use kvim_workspace::{
 
 use super::session::{FileRequestFailure, Redraw, Session};
 use super::theme::{Theme, ThemeRole};
-use super::tree::{TREE_TITLE_ROWS, root_label};
+use super::tree::{GENERATED_NAMES, TREE_TITLE_ROWS, root_label};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -1923,5 +1924,189 @@ fn a_missing_git_command_reaches_the_message_line_once() {
         sidebar_rows(&session).len(),
         6,
         "the tree stays fully usable without the repository state"
+    );
+}
+
+/// Builds one coalesced burst that names the change of a single path.
+fn watch_batch(path: &Path, kind: WatchKind) -> WatchBatch {
+    let mut batch = WatchBatch::default();
+    batch.push(&WatchEvent {
+        path: path.to_path_buf(),
+        kind,
+    });
+    batch
+}
+
+#[test]
+fn a_watched_change_reads_only_the_directory_that_it_named() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, ' ');
+    drain(&mut session);
+    press(&mut session, 'j');
+
+    let selected = session
+        .file_tree()
+        .selected()
+        .expect("the sidebar selects one row")
+        .to_path_buf();
+    assert_eq!(selected, dir.join("src/main.rs"));
+
+    // Another program adds one file inside the expanded directory.
+    let created = dir.file("src/added.rs", "fn added() {}\n");
+    // The `docs` directory stays closed, so its listing must not appear.
+    dir.file("docs/guide.md", "guide\n");
+
+    let redraw = session.apply_watch_batch(&watch_batch(&created, WatchKind::Created));
+    assert_eq!(
+        redraw,
+        Redraw::Skipped,
+        "the burst names a read; the rows change when the read returns"
+    );
+    drain(&mut session);
+
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "   ▸ docs".to_owned(),
+            "   ▾ src".to_owned(),
+            "   │   added.rs".to_owned(),
+            "▌  └   main.rs".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
+        ],
+        "the refresh keeps the expansion and the selection, and reads no closed directory"
+    );
+    assert_eq!(
+        session.file_tree().selected(),
+        Some(selected.as_path()),
+        "the selection stays on the same entry"
+    );
+}
+
+#[test]
+fn a_watched_removal_drops_the_entry_and_keeps_the_expansion() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, ' ');
+    drain(&mut session);
+
+    let removed = dir.join("src/main.rs");
+    fs::remove_file(&removed).expect("the temporary directory is writable");
+
+    let _ = session.apply_watch_batch(&watch_batch(&removed, WatchKind::Removed));
+    drain(&mut session);
+
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "   ▸ docs".to_owned(),
+            "▌  ▾ src".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
+        ],
+        "the removed entry leaves the rows and the directory stays open"
+    );
+}
+
+#[test]
+fn a_watched_burst_that_lost_events_reads_every_expanded_directory() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The burst names one directory that holds no change, and it reports that a
+    // bound dropped events, so the sidebar must not trust the named set.
+    let elsewhere = dir.file("src/added.rs", "fn added() {}\n");
+    dir.file("late.txt", "late\n");
+    let mut batch = watch_batch(&elsewhere, WatchKind::Created);
+    batch.drop_events();
+
+    let _ = session.apply_watch_batch(&batch);
+    drain(&mut session);
+
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▌  ▸ docs".to_owned(),
+            "   ▸ src".to_owned(),
+            "     README.md".to_owned(),
+            "     late.txt".to_owned(),
+            "     (1 hidden item)".to_owned(),
+        ],
+        "a dropped burst reads every expanded directory again"
+    );
+}
+
+#[test]
+fn a_watched_content_change_reads_no_directory() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // Another program rewrites one file. Its directory keeps the same entries,
+    // so the burst asks for no read at all.
+    let modified = dir.file("README.md", "changed\n");
+    let _ = session.apply_watch_batch(&watch_batch(&modified, WatchKind::Modified));
+
+    assert!(
+        session.take_workspace_request().is_none(),
+        "a content change asks for no directory read"
+    );
+    assert!(
+        session.take_git_request().is_some(),
+        "a content change asks for the repository state again"
+    );
+}
+
+#[test]
+fn a_refused_workspace_watch_reports_once() {
+    let (_dir, mut session) = workspace();
+
+    assert_eq!(session.report_watch_unavailable(), Redraw::Needed);
+    assert_eq!(
+        message(&session),
+        "the workspace watcher could not start; the file tree updates on a refresh"
+    );
+
+    assert_eq!(
+        session.report_watch_unavailable(),
+        Redraw::Skipped,
+        "the editor names the refused watch once for each session"
+    );
+}
+
+#[test]
+fn a_created_file_reaches_the_editor_through_the_workspace_watcher() {
+    let dir = TempDir::new("watch");
+    dir.file("src/main.rs", "fn main() {}\n");
+    let root = dir.path.clone();
+    let created = dir.join("src/added.rs");
+
+    let tokio = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("the test host provides a Tokio runtime");
+    let batch = tokio.block_on(async {
+        let mut watcher =
+            FileWatcher::start(root, &GENERATED_NAMES).expect("the root is a readable directory");
+        fs::write(&created, "fn added() {}\n").expect("the temporary directory is writable");
+        // The window of one burst plus a generous margin, so a slow host still
+        // reports before the bound ends the wait.
+        let batch = tokio::time::timeout(WATCH_COALESCE_WINDOW * 20, watcher.recv()).await;
+        let batch = batch.expect("the watcher reports inside the bound");
+        watcher.shutdown().await;
+        batch
+    });
+
+    let batch = batch.expect("the coalescing task publishes the burst");
+    assert!(
+        batch.directories().contains(
+            &created
+                .parent()
+                .expect("the file lies in a directory")
+                .to_path_buf()
+        ),
+        "the burst names the directory that changed"
     );
 }

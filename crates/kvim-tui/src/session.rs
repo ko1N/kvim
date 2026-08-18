@@ -52,7 +52,7 @@ use kvim_language::{
     DocumentPosition, FormatEdits, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageOutcome,
     LanguageRegistry, LanguageRequestId, LspError, Publication, SourceLocation, SyntaxTree,
 };
-use kvim_runtime::{ProcessOutput, ProcessRequest};
+use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
@@ -510,6 +510,11 @@ pub struct Session {
     /// A missing command is a normal state, so the editor reports it once and
     /// stays usable without the repository state. See `docs/git.md`.
     git_reported: bool,
+    /// Reports whether the editor already named the missing workspace watcher.
+    ///
+    /// A host that refuses the watch is a normal state, so the editor reports
+    /// it once and stays usable with the manual refresh. See `docs/files.md`.
+    watch_reported: bool,
     editing: EditingState,
     registers: Registers,
     /// The system clipboard boundary that the composition root selected.
@@ -583,6 +588,7 @@ impl Session {
             picker: None,
             ripgrep_reported: false,
             git_reported: false,
+            watch_reported: false,
             editing: EditingState::new(),
             registers: Registers::default(),
             clipboard: SessionClipboard::default(),
@@ -2310,6 +2316,33 @@ impl Session {
         Redraw::Skipped
     }
 
+    /// Applies one coalesced burst of workspace filesystem changes.
+    ///
+    /// The burst names the directories that changed, so the file tree reads
+    /// only those and keeps its expansion, its selection, and its first visible
+    /// row. The rows change when those reads return, so the burst itself paints
+    /// nothing. See `docs/files.md`.
+    #[must_use]
+    pub fn apply_watch_batch(&mut self, batch: &WatchBatch) -> Redraw {
+        self.tree.apply_watch(batch);
+        self.reconcile_tree();
+        Redraw::Skipped
+    }
+
+    /// Reports that no watcher observes the workspace, once for each session.
+    ///
+    /// The editor stays fully usable: the refresh command reads the workspace
+    /// again by hand. See `docs/files.md`.
+    #[must_use]
+    pub fn report_watch_unavailable(&mut self) -> Redraw {
+        if self.watch_reported {
+            return Redraw::Skipped;
+        }
+        self.watch_reported = true;
+        self.set_message(WATCH_MISSING_NOTE, MessageLevel::Warning);
+        Redraw::Needed
+    }
+
     /// Applies one completed workspace operation as one state transition.
     #[must_use]
     pub fn apply_workspace_result(&mut self, result: WorkspaceResult) -> Redraw {
@@ -3082,6 +3115,10 @@ const OUTSIDE_BUFFER_NOTE: &str = "the language server named a position outside 
 /// The message that a missing `git` command shows once for each session.
 const GIT_MISSING_NOTE: &str =
     "the `git` command is not available; the file tree shows no repository state";
+
+/// The message that a refused workspace watch shows once for each session.
+const WATCH_MISSING_NOTE: &str =
+    "the workspace watcher could not start; the file tree updates on a refresh";
 
 /// The title band of the hover float.
 const HOVER_TITLE: &str = " Hover ";

@@ -110,9 +110,16 @@ No caller may exceed the maximum values above. The process output limit counts
 standard output and standard error together, so a noisy standard error cannot
 double the captured bytes.
 
-[`files.md`](files.md) owns picker and file limits.
+[`files.md`](files.md) owns picker, file, tree, and workspace-watch limits.
 [`language-services.md`](language-services.md) owns analysis and protocol
 limits.
+
+The workspace watcher is the one background service that produces a stream
+instead of a result for one request. It needs no publication gate, because no
+burst replaces another one: every burst names its own change. It owns the same
+duties as every other service. Its platform callback and its coalescing task run
+beside the event loop, its queues are bounded, and a full queue drops events and
+reports the drop instead of growing.
 
 ## Request Identity And Publication
 
@@ -152,9 +159,15 @@ result. The previous visible state stays usable.
 
 Shutdown runs in this order:
 
-1. Reject new work.
-2. Cancel all owned work.
-3. Wait for accepted tasks to finish cleanup.
+1. Stop the workspace watcher, so it queues no further directory read.
+2. Reject new work.
+3. Cancel all owned work.
+4. Wait for accepted tasks to finish cleanup.
+
+The watcher, the language services, and the runtime each end through one
+consuming operation, so no caller can submit after it. The watcher drops its
+platform watcher first, which ends the platform callback thread, and then waits
+for its coalescing task.
 
 Dropping a process future kills its child process. Dropping the runtime remains
 a best-effort safety net. Normal editor shutdown must use the explicit consuming

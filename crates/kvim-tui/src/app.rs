@@ -22,8 +22,8 @@ use kvim_language::{
     ANALYSIS_DEADLINE, LanguageEvent, LanguageRegistry, LanguageServices, LspError,
 };
 use kvim_runtime::{
-    ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent, SubmitError,
-    WORKER_DEADLINE_DEFAULT,
+    FileWatcher, ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent,
+    SubmitError, WORKER_DEADLINE_DEFAULT, WatchBatch,
 };
 use kvim_settings::EditorSettings;
 use kvim_terminal::{
@@ -39,6 +39,7 @@ use super::clipboard::{SessionClipboard, command_failure, refused_submission};
 use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
 use super::picker::PickerFailure;
 use super::session::{AnalysisResult, FileRequestFailure, Redraw, RunState, Session};
+use super::tree::GENERATED_NAMES;
 
 /// The number of consecutive terminal read failures that ends the editor.
 ///
@@ -262,7 +263,16 @@ async fn drive<C: TerminalControl>(
     // the loop below never reads, writes, or waits for a server. A root that
     // this constructor refuses leaves the editor fully usable without them.
     let mut language =
-        LanguageServices::new(LanguageRegistry::first_release(), root, settings).ok();
+        LanguageServices::new(LanguageRegistry::first_release(), root.clone(), settings).ok();
+    // The watcher runs its platform callback and its coalescing task beside this
+    // loop, so no filesystem event ever reaches it directly. It ignores the
+    // generated directory names of the file tree, so one build writes no event.
+    // A host that refuses the watch leaves the editor fully usable with the
+    // refresh command. See `docs/files.md`.
+    let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
+    if watcher.is_none() {
+        let _ = editor.report_watch_unavailable();
+    }
     let gate = PublicationGate::default();
     let start = Instant::now();
     let mut errors = 0;
@@ -301,6 +311,9 @@ async fn drive<C: TerminalControl>(
                     outcome = next_language_event(&mut language) => {
                         publish(&mut editor, outcome, start.elapsed())
                     }
+                    batch = next_watch_batch(&mut watcher) => {
+                        publish_watch(&mut editor, &batch, start.elapsed())
+                    }
                     _ = terminations.recv() => Step::Stop,
                     () = sleep(deadline - now) => Step::Handled(editor.tick(start.elapsed())),
                 }
@@ -319,6 +332,9 @@ async fn drive<C: TerminalControl>(
                     result = results.recv() => complete(&mut editor, &gate, result, start.elapsed()),
                     outcome = next_language_event(&mut language) => {
                         publish(&mut editor, outcome, start.elapsed())
+                    }
+                    batch = next_watch_batch(&mut watcher) => {
+                        publish_watch(&mut editor, &batch, start.elapsed())
                     }
                     _ = terminations.recv() => Step::Stop,
                 }
@@ -346,21 +362,29 @@ async fn drive<C: TerminalControl>(
             Step::Failed(error) => {
                 errors += 1;
                 if errors >= EVENT_ERRORS_MAX {
-                    shutdown(runtime, language).await;
+                    shutdown(runtime, language, watcher).await;
                     return Err(EditorError::EventStream(error));
                 }
             }
         }
     }
-    shutdown(runtime, language).await;
+    shutdown(runtime, language, watcher).await;
     Ok(())
 }
 
 /// Cancels every background service and waits for its cleanup.
 ///
-/// Both operations consume their owner, so no caller can submit after them. See
-/// `docs/responsiveness.md`.
-async fn shutdown(runtime: Runtime<WorkResult>, language: Option<LanguageServices>) {
+/// Every operation consumes its owner, so no caller can submit after them. The
+/// watcher stops first, because a stopped watch queues no further directory
+/// read for the services below it. See `docs/responsiveness.md`.
+async fn shutdown(
+    runtime: Runtime<WorkResult>,
+    language: Option<LanguageServices>,
+    watcher: Option<FileWatcher>,
+) {
+    if let Some(watcher) = watcher {
+        watcher.shutdown().await;
+    }
     if let Some(language) = language {
         language.shutdown().await;
     }
@@ -380,6 +404,27 @@ async fn next_language_event(language: &mut Option<LanguageServices>) -> Languag
         },
         None => std::future::pending().await,
     }
+}
+
+/// Waits for the next coalesced burst of the workspace watcher.
+///
+/// The future never completes while the editor runs without a watcher, so the
+/// loop then waits for its other events alone.
+async fn next_watch_batch(watcher: &mut Option<FileWatcher>) -> WatchBatch {
+    match watcher {
+        Some(watcher) => match watcher.recv().await {
+            Some(batch) => batch,
+            // The coalescing task ended, so no further burst can arrive.
+            None => std::future::pending().await,
+        },
+        None => std::future::pending().await,
+    }
+}
+
+/// Applies one coalesced burst of workspace filesystem changes.
+fn publish_watch(editor: &mut Session, batch: &WatchBatch, now: Duration) -> Step {
+    editor.advance_clock(now);
+    Step::Handled(editor.apply_watch_batch(batch))
 }
 
 /// Applies one typed result of the language services.
