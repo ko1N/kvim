@@ -4,13 +4,14 @@
 //! The adapter boundary is the multi-language extension point of Kvim. An
 //! adapter supplies data: the paths of its language, the Tree-sitter grammar
 //! with its highlight query, the comment tokens, and the indent rule. Nothing
-//! above the trait names a language, so a later release adds a language by
-//! registering one more adapter. Rust is the only adapter of the first release.
+//! above the trait names a language, so a release adds a language by
+//! registering one more adapter. This build registers JSON, Markdown, Nix,
+//! Rust, and TOML.
 //!
-//! Only an adapter can select a path by language or by file extension. Generic
-//! `kvim-core`, `kvim-editor`, `kvim-runtime`, `kvim-terminal`, `kvim-tui`, and
-//! `kvim-workspace` code passes a path and exact buffer content, and never
-//! inspects the extension.
+//! Only an adapter can select a path by language, by file extension, or by file
+//! name. Generic `kvim-core`, `kvim-editor`, `kvim-runtime`, `kvim-terminal`,
+//! `kvim-tui`, and `kvim-workspace` code passes a path and exact buffer
+//! content, and never inspects either key.
 //!
 //! One analysis reads the exact text of one buffer version. It returns bounded
 //! highlight spans, the syntax tree of that version, and the indent level for a
@@ -70,11 +71,15 @@ use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextCh
 
 mod analysis;
 mod document;
+mod json;
+mod markdown;
+mod nix;
 mod protocol;
 mod rust;
 mod server;
 mod services;
 mod session;
+mod toml;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
@@ -87,6 +92,9 @@ pub use document::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
     TextEdit,
 };
+pub use json::JsonAdapter;
+pub use markdown::MarkdownAdapter;
+pub use nix::NixAdapter;
 pub use protocol::{
     DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
     LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError,
@@ -102,6 +110,7 @@ pub use session::{
     LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_SHUTDOWN_DEADLINE, LanguageEvent,
     LanguageOutcome, LanguageRequestId, LanguageServerHandle,
 };
+pub use toml::TomlAdapter;
 
 /// The largest source that one analysis reads, in bytes.
 pub const ANALYSIS_SOURCE_BYTES_MAX: usize = 4 * 1024 * 1024;
@@ -192,8 +201,10 @@ impl BlockComment {
 /// The comment tokens of one language.
 ///
 /// The tokens are adapter data, so the one comment-toggle path serves every
-/// language. A language without a line token has `None`, and the first-release
-/// toggle then changes nothing. See `docs/language-services.md`.
+/// language. A language that defines no comment uses [`CommentStyle::none`],
+/// and the comment toggle then stays disabled and reports the reason, which is
+/// the same path that a file without an adapter takes. See
+/// `docs/language-services.md`.
 ///
 /// # Examples
 ///
@@ -203,6 +214,10 @@ impl BlockComment {
 /// let rust = CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")));
 /// assert_eq!(rust.line_token(), Some("//"));
 /// assert_eq!(rust.block().map(|block| block.close), Some("*/"));
+///
+/// let json = CommentStyle::none();
+/// assert_eq!(json.line_token(), None);
+/// assert_eq!(json.block(), None);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct CommentStyle {
@@ -212,9 +227,30 @@ pub struct CommentStyle {
 
 impl CommentStyle {
     /// Creates the comment metadata of one language.
+    ///
+    /// Pass the line token that the language defines. A language that defines
+    /// no comment uses [`CommentStyle::none`], because an empty token would
+    /// comment a line out with nothing and would still enable the toggle.
     #[must_use]
     pub const fn new(line: Option<&'static str>, block: Option<BlockComment>) -> Self {
+        debug_assert!(
+            !matches!(line, Some(token) if token.is_empty()),
+            "an empty line token cannot comment a line out, so a language without a comment uses CommentStyle::none"
+        );
         Self { line, block }
+    }
+
+    /// Creates the comment metadata of a language that defines no comment.
+    ///
+    /// The comment toggle then stays disabled and reports the reason. JSON and
+    /// Markdown define no comment of their own, so neither one can carry a
+    /// token.
+    #[must_use]
+    pub const fn none() -> Self {
+        Self {
+            line: None,
+            block: None,
+        }
     }
 
     /// Returns the token that starts a line comment.
@@ -479,6 +515,11 @@ impl fmt::Debug for Analysis {
     }
 }
 
+/// Reports whether one case-sensitive lookup key stands in a selection table.
+fn owns(keys: &[&'static str], value: &OsStr) -> bool {
+    keys.iter().any(|key| value == OsStr::new(key))
+}
+
 /// One language and everything that Kvim needs to serve it.
 ///
 /// An adapter supplies data: the paths that it owns, the Tree-sitter grammar
@@ -497,10 +538,18 @@ pub trait LanguageAdapter: Send + Sync {
 
     /// Returns the file extensions that this adapter owns.
     ///
-    /// The extensions are case-sensitive. An adapter for a language that names
-    /// files without an extension overrides
-    /// [`LanguageAdapter::supports_path`] instead.
+    /// The extensions are case-sensitive.
     fn extensions(&self) -> &'static [&'static str];
+
+    /// Returns the complete file names that this adapter owns.
+    ///
+    /// A file name is the second lookup key of the same selection, for a file
+    /// whose extension does not name its format. `flake.lock` holds JSON, so
+    /// the JSON adapter names that file here. The names are case-sensitive,
+    /// and they carry no directory. The default answer is the empty table.
+    fn file_names(&self) -> &'static [&'static str] {
+        &[]
+    }
 
     /// Returns the comment tokens of the language.
     fn comment(&self) -> CommentStyle;
@@ -526,13 +575,15 @@ pub trait LanguageAdapter: Send + Sync {
 
     /// Reports whether this adapter owns one path.
     ///
-    /// The default rule matches the extensions of the adapter.
+    /// The rule reads the two lookup keys of one selection: the extension of
+    /// the path and its complete file name. One selection path therefore
+    /// serves both keys, and no caller above the boundary learns either one.
     fn supports_path(&self, path: &Path) -> bool {
-        path.extension().is_some_and(|extension| {
-            self.extensions()
-                .iter()
-                .any(|supported| extension == OsStr::new(supported))
-        })
+        path.extension()
+            .is_some_and(|extension| owns(self.extensions(), extension))
+            || path
+                .file_name()
+                .is_some_and(|name| owns(self.file_names(), name))
     }
 
     /// Parses the source and collects bounded highlight spans.
@@ -565,7 +616,9 @@ pub trait LanguageAdapter: Send + Sync {
 ///
 /// let registry = LanguageRegistry::first_release();
 /// assert_eq!(registry.adapter(Path::new("lib.rs")).unwrap().id(), "rust");
-/// // The first release supports no other language, and the match is
+/// // A file name selects an adapter as an extension does.
+/// assert_eq!(registry.adapter(Path::new("flake.lock")).unwrap().id(), "json");
+/// // A registered language is the only match, and the match is
 /// // case-sensitive.
 /// assert_eq!(
 ///     registry.adapter(Path::new("notes.txt")).err(),
@@ -581,22 +634,35 @@ pub struct LanguageRegistry {
     adapters: &'static [&'static dyn LanguageAdapter],
 }
 
-/// The one adapter of the first release.
+/// The JSON adapter of this build.
+static JSON: JsonAdapter = JsonAdapter::new();
+
+/// The Markdown adapter of this build.
+static MARKDOWN: MarkdownAdapter = MarkdownAdapter::new();
+
+/// The Nix adapter of this build.
+static NIX: NixAdapter = NixAdapter::new();
+
+/// The Rust adapter of this build.
 static RUST: RustAdapter = RustAdapter::new();
+
+/// The TOML adapter of this build.
+static TOML: TomlAdapter = TomlAdapter::new();
 
 /// The registered languages of this editor build.
 ///
-/// This table and the adapter file beside it are the only places that name a
+/// This table and the adapter files beside it are the only places that name a
 /// language. A later release adds a language by adding one adapter file and one
 /// entry here.
-static ADAPTERS: [&dyn LanguageAdapter; 1] = [&RUST];
+static ADAPTERS: [&dyn LanguageAdapter; 5] = [&JSON, &MARKDOWN, &NIX, &RUST, &TOML];
 
 impl LanguageRegistry {
-    /// Returns the registry of the first release, which holds one adapter.
+    /// Returns the registry of this build.
     ///
-    /// Multi-language support is deferred. A later release adds a language by
-    /// registering one more adapter in the table that this constructor names,
-    /// or by building a registry with [`LanguageRegistry::new`].
+    /// The table holds one adapter for JSON, Markdown, Nix, Rust, and TOML. A
+    /// later release adds a language by registering one more adapter in the
+    /// table that this constructor names, or by building a registry with
+    /// [`LanguageRegistry::new`].
     #[must_use]
     pub const fn first_release() -> Self {
         Self::new(&ADAPTERS)

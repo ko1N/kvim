@@ -29,7 +29,11 @@ serde_json.workspace = true
 # Language analysis
 tree-sitter.workspace = true
 tree-sitter-highlight.workspace = true
+tree-sitter-json.workspace = true
+tree-sitter-md.workspace = true
+tree-sitter-nix.workspace = true
 tree-sitter-rust.workspace = true
+tree-sitter-toml-ng.workspace = true
 
 # Runtime
 tokio.workspace = true

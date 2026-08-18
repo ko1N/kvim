@@ -37,7 +37,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. | Slice 4 |
 | `kvim-editor` | Modal editing state: cursors, motions, operators, registers, search, and dot-repeat. | Slices 5–6 |
 | `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. | Slice 3 |
-| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, and the language-server session. Rust is the one adapter of the first release. | Slices 12–13 |
+| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, and the language-server session. Rust, TOML, Markdown, Nix, and JSON are the adapters of the first release, and Rust is the only one with a language server. | Slices 12–13 |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
 | `kvim-runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. | Slice 1 |
@@ -48,7 +48,9 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
 and file code must not contain language-specific path rules. Only a language
-adapter selects a path by language or file extension.
+adapter selects a path, by file extension or by file name. A lock file that
+carries the format of another language, for example `flake.lock`, reaches its
+adapter through the file-name key.
 
 One narrow exception exists: the file tree selects an icon by file extension and
 by well-known file name. An icon is presentation data, so its table lives in
@@ -241,6 +243,19 @@ These dependencies run only on the bounded worker service.
   - Replaces: a local Rust grammar and local highlight queries.
   - May run: on the bounded worker service, inside `kvim-language`.
   - Cost: generated C code and compile time.
+- `tree-sitter-json`, `tree-sitter-md`, `tree-sitter-nix`, `tree-sitter-toml-ng`
+  - Replaces: a local grammar and local highlight queries for each of JSON,
+    Markdown, Nix, and TOML, which are the other file kinds of this repository.
+  - May run: on the bounded worker service, inside `kvim-language`. Each crate
+    is adapter data. No crate name reaches code above the adapter boundary.
+  - Cost: generated C code and compile time for each grammar.
+  - Version reason: every one of these crates carries its parser through
+    `tree-sitter-language`, not through the `tree-sitter` runtime, so all four
+    link against the single pinned `tree-sitter` version. `tree-sitter-md`
+    keeps its `tree-sitter` dependency behind an optional feature that Kvim
+    leaves off, which is what keeps a second runtime version out of the build.
+    `tree-sitter-toml-ng` replaces the unmaintained `tree-sitter-toml` crate,
+    which still requires the 0.20 runtime line.
 
 ### Slice 13
 

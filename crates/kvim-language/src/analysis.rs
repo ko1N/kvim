@@ -208,6 +208,15 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
             Some("delimiter") => Some(SyntaxRole::Delimiter),
             _ => Some(SyntaxRole::Operator),
         },
+        // The `text` family belongs to the prose grammars of the same shared
+        // vocabulary. Each name maps onto the role that carries the same
+        // meaning, because the role set names source meaning and stays fixed.
+        "text" => match parts.next() {
+            Some("literal" | "uri") => Some(SyntaxRole::String),
+            Some("reference") => Some(SyntaxRole::Constant),
+            Some("title") => Some(SyntaxRole::Type),
+            _ => None,
+        },
         "type" => Some(SyntaxRole::Type),
         "variable" => match parts.next() {
             Some("parameter") => Some(SyntaxRole::Parameter),

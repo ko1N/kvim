@@ -14,21 +14,28 @@ language agnostic above that boundary. Rust is the primary target, because it
 is the language that the editor is built for, but no code above the boundary
 knows that.
 
-Only a language adapter selects a path by language or file extension. Generic
-`core`, `editor`, `runtime`, `terminal`, `tui`, and `workspace` code passes a
-path and exact buffer content without inspecting the extension. No name, type,
-or assumption of one language appears above the boundary.
+Only a language adapter selects a path by language, by file extension, or by
+file name. Generic `core`, `editor`, `runtime`, `terminal`, `tui`, and
+`workspace` code passes a path and exact buffer content without inspecting
+either key. No name, type, or assumption of one language appears above the
+boundary.
 
 An adapter has a stable identifier and a version. It decides whether it supports
 a path. Registry selection is deterministic. No match means unsupported.
 Multiple matches are an ambiguous typed failure.
+
+Selection reads two lookup keys of the same path: the file extension and the
+complete file name. Both keys are adapter data, so one selection path serves
+both. The file name key serves a file whose extension names its tool instead of
+its format, for example the JSON lock file `flake.lock`.
 
 An adapter supplies data, not behavior:
 
 | Item | Meaning |
 |---|---|
 | Identifier and version | The stable name of the adapter and of its analysis implementation. |
-| File extensions | The case-sensitive extensions that the adapter owns. An adapter that selects files by name overrides the path rule instead. |
+| File extensions | The case-sensitive extensions that the adapter owns. |
+| File names | The case-sensitive complete file names that the adapter owns, for a file whose extension does not name its format. |
 | Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
@@ -38,10 +45,18 @@ The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
-The first-release registry contains one adapter, for Rust. Only that adapter
-recognizes case-sensitive `.rs` paths. Support for further languages is
-deferred. A later release adds an adapter for another language and for its
-language server, because the Language Server Protocol is language independent.
+The registry contains one adapter for each of JSON, Markdown, Nix, Rust, and
+TOML. Every match is case-sensitive. Rust is the only language that declares a
+language server. JSON, Markdown, Nix, and TOML supply a grammar, highlight
+roles, comment metadata, and an indent rule, and they declare no server, so each
+one stays a fully editable buffer without diagnostics. A later release adds an
+adapter for another language and for its language server, because the Language
+Server Protocol is language independent.
+
+TOML and Nix carry `#` as their line comment. JSON and Markdown define no
+comment of their own, so their comment metadata carries no token, and the
+comment toggle stays disabled and reports the reason. That is the same path
+that a file without an adapter takes.
 
 A file that no adapter serves stays a normal, fully editable buffer. It renders
 plain text, it uses the fallback indent rule of
@@ -126,6 +141,13 @@ not know Tree-sitter capture names. The role mapping reads capture names only,
 and Tree-sitter highlight queries share one capture vocabulary across grammars,
 so the mapping serves every language. See [`windows.md`](windows.md) for the
 theme rule.
+
+The role set is fixed, because `kvim-tui` maps every role to one style. A
+grammar whose query uses a name of the shared vocabulary that the mapping does
+not yet cover therefore extends the mapping, never the role set. The `text`
+family of the prose grammars is mapped that way: a title takes the type role, a
+literal and a uniform resource identifier take the string role, and a reference
+takes the constant role.
 
 ## The Language Server Session
 
