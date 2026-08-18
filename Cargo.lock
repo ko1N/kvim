@@ -415,6 +415,7 @@ dependencies = [
  "kvim-runtime",
  "kvim-settings",
  "thiserror",
+ "tokio",
  "tokio-util",
 ]
 
