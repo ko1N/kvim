@@ -18,6 +18,7 @@ use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{TREE_PENDING_READS_MAX, temp::TempDir};
 
 use super::session::{FileRequestFailure, Session};
+use super::tree::TREE_TITLE_ROWS;
 
 const NOW: Duration = Duration::ZERO;
 
@@ -160,6 +161,44 @@ fn message_line(session: &Session) -> String {
 fn reveal(session: &mut Session) {
     press_ctrl(session, 'e');
     drain(session);
+}
+
+/// The glyph that marks one row after the last line of a buffer window.
+const END_OF_BUFFER_GLYPH: &str = "~";
+
+#[test]
+fn the_sidebar_marks_no_row_after_its_last_entry() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+    let buffer = draw(&session);
+
+    // The buffer window beside the sidebar marks its own empty rows, so the
+    // frame proves that the sidebar leaves those rows alone by choice.
+    let marked = (1..HEIGHT - 2).any(|row| {
+        buffer
+            .cell((0, row))
+            .is_some_and(|cell| cell.symbol() == END_OF_BUFFER_GLYPH)
+    });
+    assert!(
+        marked,
+        "the buffer window marks its rows after the last line"
+    );
+
+    // The title row names the workspace root, which may itself hold the glyph
+    // as the abbreviation of the home directory, so the scan starts below it.
+    for row in TREE_TITLE_ROWS..HEIGHT {
+        for column in SIDEBAR_X..WIDTH {
+            let symbol = buffer
+                .cell((column, row))
+                .expect("the test reads a cell inside the terminal")
+                .symbol()
+                .to_owned();
+            assert_ne!(
+                symbol, END_OF_BUFFER_GLYPH,
+                "the sidebar row {row} shows no end-of-buffer marker"
+            );
+        }
+    }
 }
 
 #[test]

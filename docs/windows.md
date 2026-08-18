@@ -46,6 +46,13 @@ The viewport of every window reconciles against the cursor of that window and
 the buffer of that window. See the scroll margin in
 [Buffer Presentation](#buffer-presentation).
 
+The viewport covers the text rows of the window rectangle, never the complete
+rectangle. The winbar row belongs to the rectangle and shows no buffer line, so
+the window tree removes it. The gutter width depends on the buffer, which the
+window tree never holds, so the session narrows the viewport width after every
+layout change. The viewport therefore always reports the cells that the renderer
+paints with buffer text.
+
 ## Layout
 
 One layout calculation converts the window tree and the terminal size into the
@@ -231,7 +238,7 @@ roles. A new role belongs here first, and its color stays in code.
 |---|---|
 | Text | Buffer text on the editor background |
 | NonText | A glyph that stands for absent text |
-| EndOfBuffer | The rows below the last buffer line |
+| EndOfBuffer | The marker on the rows below the last buffer line |
 | Cursor | The cell that marks the cursor of the prompt line |
 | Selection | A cell inside the Visual selection |
 | SearchMatch | A cell inside one search match |
@@ -330,3 +337,30 @@ Rendering uses terminal-cell widths, not byte counts or character counts. See
 
 Kvim renders only after a visible state change. See
 [`responsiveness.md`](responsiveness.md).
+
+## Sign Column
+
+The gutter of a buffer window holds the sign column and then the number column.
+The sign column is one cell wide and sits left of the numbers. The sign rule
+belongs to `EditorSettings`. The default rule reserves the column at all times,
+so an arriving or a leaving diagnostic never moves the buffer text sideways. See
+[`settings.md`](settings.md).
+
+One row shows one sign at most:
+
+- A row after the last buffer line shows `~`. The marker takes the color of a
+  glyph that stands for absent text, so the reader sees which rows hold no text.
+  A window without a reserved sign column still marks that cell, because no
+  number and no character claims it.
+- A row with a buffer line shows the sign of the strictest diagnostic severity
+  that marks the line: `E` for an error, `H` for a warning, `I` for information,
+  and `H` for a hint. Each sign takes the color of its severity.
+- Every other row leaves the cell empty.
+
+A diagnostic names a buffer line, and a row after the last buffer line holds no
+buffer line, so the two can never compete for the cell. The row decides which
+value applies, and a diagnostic that reaches past the last line marks no row
+after it.
+
+The sidebar is not a buffer window. It shows no end-of-buffer marker and no
+diagnostic sign. See [`files.md`](files.md).
