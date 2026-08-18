@@ -7,10 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{
-    CLIPBOARD_BYTES_MAX, Clipboard, ClipboardFailure, ClipboardNotice, ClipboardPlatform,
-    ClipboardRead, ClipboardSelection, ClipboardShape, ClipboardValue, DisplaySession,
-    LinuxClipboard, LinuxTool, MacOsClipboard, MemoryClipboard, NoClipboard, OwnedClipboardValue,
-    ProcessExecutor, SystemClipboard, select_linux_tool,
+    CLIPBOARD_BYTES_MAX, Clipboard, ClipboardEvidence, ClipboardFailure, ClipboardNotice,
+    ClipboardPlatform, ClipboardRead, ClipboardSelection, ClipboardShape, ClipboardValue,
+    DisplaySession, LinuxClipboard, LinuxTool, MacOsClipboard, MemoryClipboard, NoClipboard,
+    OwnedClipboardValue, ProcessExecutor, SystemClipboard, select_linux_tool,
 };
 use kvim_runtime::{ProcessOutput, ProcessRequest};
 
@@ -38,17 +38,17 @@ impl SystemClipboard for SharedClipboard {
     }
 }
 
-/// A clipboard whose commands always fail after they started.
+/// A clipboard whose commands always end with one chosen failure.
 #[derive(Debug)]
-struct FailingClipboard;
+struct FailingClipboard(ClipboardFailure);
 
 impl SystemClipboard for FailingClipboard {
     fn write(&mut self, _text: &str) -> Result<(), ClipboardFailure> {
-        Err(ClipboardFailure::Failed)
+        Err(self.0)
     }
 
     fn read(&mut self) -> Result<String, ClipboardFailure> {
-        Err(ClipboardFailure::Failed)
+        Err(self.0)
     }
 }
 
@@ -88,6 +88,15 @@ impl RecordingExecutor {
             requests: Rc::new(RefCell::new(Vec::new())),
             stdout: Vec::new(),
             status_code: Some(1),
+        }
+    }
+
+    /// Returns an executor whose command a signal ended before it exited.
+    fn signalled() -> Self {
+        Self {
+            requests: Rc::new(RefCell::new(Vec::new())),
+            stdout: Vec::new(),
+            status_code: None,
         }
     }
 
@@ -157,7 +166,7 @@ fn a_missing_command_reported_by_a_read_stays_reported_for_a_write() {
 
 #[test]
 fn a_failed_command_is_reported_for_each_operation() {
-    let mut clipboard = Clipboard::new(Box::new(FailingClipboard));
+    let mut clipboard = Clipboard::new(Box::new(FailingClipboard(ClipboardFailure::Failed)));
     for _ in 0..3 {
         assert_eq!(
             clipboard.copy(characterwise("alpha")),
@@ -420,6 +429,54 @@ fn a_non_zero_exit_status_is_a_command_failure() {
     let mut clipboard = MacOsClipboard::new(RecordingExecutor::failing());
     assert_eq!(clipboard.write("alpha"), Err(ClipboardFailure::Failed));
     assert_eq!(clipboard.read(), Err(ClipboardFailure::Failed));
+}
+
+#[test]
+fn a_signal_that_ended_the_command_is_a_command_failure() {
+    // A signal leaves no exit status, so the command reported no success and
+    // the failure is proven.
+    let mut clipboard = MacOsClipboard::new(RecordingExecutor::signalled());
+    assert_eq!(clipboard.write("alpha"), Err(ClipboardFailure::Failed));
+    assert_eq!(clipboard.read(), Err(ClipboardFailure::Failed));
+    assert_eq!(
+        ClipboardFailure::Failed.evidence(),
+        ClipboardEvidence::Failure
+    );
+
+    let mut boundary = Clipboard::new(Box::new(
+        MacOsClipboard::new(RecordingExecutor::signalled()),
+    ));
+    assert_eq!(
+        boundary.copy(characterwise("alpha")),
+        Some(ClipboardNotice::CommandFailed),
+        "a command that a signal ended still reaches the message line"
+    );
+}
+
+#[test]
+fn a_command_that_reported_no_outcome_reports_nothing() {
+    // `wl-copy` and `xclip` own the selection through a background process that
+    // holds the captured output streams open, so a write that succeeded reaches
+    // its deadline. Kvim never learned that a transfer failed, so it must show
+    // no failure. See `docs/clipboard.md`.
+    for failure in [ClipboardFailure::Timeout, ClipboardFailure::Cancelled] {
+        assert_eq!(
+            failure.evidence(),
+            ClipboardEvidence::Unknown,
+            "{failure} proves nothing about the transfer"
+        );
+        let mut clipboard = Clipboard::new(Box::new(FailingClipboard(failure)));
+        assert_eq!(
+            clipboard.copy(linewise("one\n")),
+            None,
+            "{failure} must not report a clipboard failure"
+        );
+        assert_eq!(
+            clipboard.paste(),
+            ClipboardRead::Fallback(None),
+            "{failure} falls back to the editor register without a report"
+        );
+    }
 }
 
 #[test]

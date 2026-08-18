@@ -88,6 +88,25 @@ pub struct OwnedClipboardValue {
     pub shape: ClipboardShape,
 }
 
+/// What one [`ClipboardFailure`] proves about the transfer.
+///
+/// A clipboard command that ran to its end reports whether the transfer
+/// happened. A command that Kvim stopped waiting for reports nothing, and Kvim
+/// must not turn that silence into a failure report.
+///
+/// The Linux write commands make this distinction load-bearing. `wl-copy` and
+/// `xclip` keep the selection in a background process that inherits the captured
+/// output streams, so those streams stay open while the selection lives. A write
+/// that succeeded therefore reaches its deadline whenever nothing replaces the
+/// selection first. See `docs/clipboard.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardEvidence {
+    /// The transfer did not happen.
+    Failure,
+    /// Kvim never learned whether the transfer happened.
+    Unknown,
+}
+
 /// The reason that one clipboard operation produced no value.
 ///
 /// Every reason is an expected runtime state. None of them loses editor data.
@@ -114,6 +133,43 @@ pub enum ClipboardFailure {
     /// The clipboard holds bytes that are not UTF-8 text.
     #[error("the system clipboard does not hold UTF-8 text")]
     NotText,
+}
+
+impl ClipboardFailure {
+    /// Returns what this failure proves about the transfer.
+    ///
+    /// This is the one place that sorts the failures, so a new variant must
+    /// choose its side here and nowhere else.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_clipboard::{ClipboardEvidence, ClipboardFailure};
+    ///
+    /// // A command that ran and reported a failure proves that the clipboard
+    /// // never received the value.
+    /// assert_eq!(
+    ///     ClipboardFailure::Failed.evidence(),
+    ///     ClipboardEvidence::Failure
+    /// );
+    ///
+    /// // A deadline proves nothing: `wl-copy` holds the captured output streams
+    /// // open for as long as it owns the selection, so a write that succeeded
+    /// // reaches the deadline as well.
+    /// assert_eq!(
+    ///     ClipboardFailure::Timeout.evidence(),
+    ///     ClipboardEvidence::Unknown
+    /// );
+    /// ```
+    #[must_use]
+    pub const fn evidence(self) -> ClipboardEvidence {
+        match self {
+            Self::Unavailable | Self::NotStarted | Self::Refused | Self::Failed | Self::NotText => {
+                ClipboardEvidence::Failure
+            }
+            Self::Timeout | Self::Cancelled => ClipboardEvidence::Unknown,
+        }
+    }
 }
 
 /// The message that the editor shows for one clipboard operation.
@@ -253,8 +309,10 @@ impl Clipboard {
 
     /// Converts one failure into the notice that the editor shows.
     ///
-    /// A missing command is reported once for each session. Every other failure
-    /// is reported for each operation, because it can pass.
+    /// A missing command is reported once for each session. Bytes that are not
+    /// text name themselves. Every other report follows
+    /// [`ClipboardFailure::evidence`], so a failure that Kvim never observed
+    /// stays silent and only a proven failure reaches the user.
     fn notice_for(&mut self, failure: ClipboardFailure) -> Option<ClipboardNotice> {
         match failure {
             ClipboardFailure::Unavailable => match self.missing {
@@ -265,11 +323,12 @@ impl Clipboard {
                 MissingReport::Delivered => None,
             },
             ClipboardFailure::NotText => Some(ClipboardNotice::NotText),
-            ClipboardFailure::NotStarted
-            | ClipboardFailure::Timeout
-            | ClipboardFailure::Cancelled
-            | ClipboardFailure::Refused
-            | ClipboardFailure::Failed => Some(ClipboardNotice::CommandFailed),
+            // `evidence` sorts every remaining variant, so a new variant is a
+            // compile error there and needs no arm here.
+            other => match other.evidence() {
+                ClipboardEvidence::Failure => Some(ClipboardNotice::CommandFailed),
+                ClipboardEvidence::Unknown => None,
+            },
         }
     }
 }
