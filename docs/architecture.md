@@ -341,6 +341,8 @@ stays outside the first release.
   persistent undo files, workspace mutations, and picker limits.
 - [`language-services.md`](language-services.md) owns the language adapter
   boundary, Tree-sitter analysis, and the rust-analyzer session.
+- [`git.md`](git.md) owns the read-only Git status boundary, the recorded entry
+  states, the directory roll-up, and the ignored-entry strategy.
 - [`clipboard.md`](clipboard.md) owns the system clipboard boundary, the
   register shape rule, and the platform commands.
 - [`settings.md`](settings.md) owns the `EditorSettings` structure and every

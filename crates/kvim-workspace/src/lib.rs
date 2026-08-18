@@ -41,6 +41,7 @@ mod buffer;
 mod clipboard;
 mod file;
 mod fuzzy;
+mod git;
 mod mutation;
 mod picker;
 mod picker_request;
@@ -64,6 +65,10 @@ pub use file::{
     FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, load, render_content, save,
 };
 pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
+pub use git::{
+    GIT_PATH_DEPTH_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE, GIT_STATUS_ENTRIES_MAX,
+    GIT_STATUS_OUTPUT_BYTES_MAX, GitStatus, GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
+};
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
     MutationError, MutationOutcome, MutationPlan, OpenBuffer, TransferMode,
