@@ -61,6 +61,41 @@ adapters. [`files.md`](files.md) owns the icon table.
 helper. The editor tests of `kvim-tui` drive both, so one mock server and one
 directory helper serve every layer. A normal build enables neither feature.
 
+## Tests And The Ambient Environment
+
+A test states every path and every value that it needs. It never passes or
+fails by a property of the host that runs it. Three rules hold:
+
+- The temporary-directory helper returns a canonical path. A host that reaches
+  its temporary directory through a symbolic link, as macOS does with `/tmp`,
+  must not make two spellings of one path look different. A test that needs two
+  spellings of one file builds the second spelling itself, for example with a
+  parent step, so the two paths differ on every host.
+- A test asserts a message that holds a path against the message of the
+  session, never against the painted message line. The message line paints one
+  terminal row and drops every character behind it, so the length of the
+  ambient temporary directory would decide the result.
+- A test that needs the editor state directory receives the directory as a
+  value. It never reads `HOME` or `XDG_STATE_HOME`, and it never returns early
+  when the host reports no state directory.
+
+The build sandbox of `nix flake check` holds the same test suite, but it holds
+another environment. Do not use it to find the cause of a test that fails there
+and passes on a developer machine, because each run rebuilds every crate.
+Reproduce the environment locally instead, and run the compiled test binary
+under `./target` with the changed value:
+
+| Difference | Local reproduction |
+|---|---|
+| The temporary directory is canonical. | `TMPDIR=/private/tmp/<name>` |
+| The temporary directory path is long. | `TMPDIR=/private/tmp/<40 characters or more>` |
+| The home directory is absent or unwritable. | `HOME=/homeless-shelter` |
+| The state directory is absent. | Run without `XDG_STATE_HOME`. |
+| The working directory is another directory. | Run the binary from another directory. |
+
+Every test must pass under each value. Run `nix flake check` to confirm the
+result, not to find the cause.
+
 ## Dependency Direction
 
 The dependency direction is one-way, and Cargo enforces it:

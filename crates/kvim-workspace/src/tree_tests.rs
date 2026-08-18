@@ -26,7 +26,7 @@ use crate::BufferId;
 /// The path is canonical, so it matches the paths that the tree builds from the
 /// directory reads.
 fn root_of(directory: &TempDir) -> PathBuf {
-    fs::canonicalize(&directory.path).expect("the temporary directory exists")
+    directory.path.clone()
 }
 
 /// Performs every pending directory read of the tree.
@@ -636,7 +636,6 @@ fn a_mutation_refuses_a_path_outside_the_workspace() {
     let directory = TempDir::new("mutate-outside");
     let outside = directory.file("outside.rs", "");
     let root = directory.dir("workspace");
-    let root = fs::canonicalize(root).expect("the directory exists");
 
     let error = MutationPlan::stage(
         &FileOperation::Transfer {

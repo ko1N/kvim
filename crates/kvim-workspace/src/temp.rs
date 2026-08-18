@@ -17,12 +17,19 @@ static DIRECTORY_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// A temporary directory that disappears with the test.
 pub struct TempDir {
-    /// The directory that holds every file of one test.
+    /// The canonical directory that holds every file of one test.
     pub path: PathBuf,
 }
 
 impl TempDir {
     /// Creates one empty directory under the temporary directory of the system.
+    ///
+    /// [`TempDir::path`] is always canonical, because the call resolves every
+    /// symbolic link of the ambient temporary directory once. A host that
+    /// reaches its temporary directory through a link, as macOS does with
+    /// `/tmp`, would otherwise hand each test a path that no loaded buffer and
+    /// no file-tree row ever holds, and a test would pass or fail by the shape
+    /// of the host. See `docs/architecture.md`.
     pub fn new(label: &str) -> Self {
         let counter = DIRECTORY_COUNTER.fetch_add(1, Ordering::Relaxed);
         let path = std::env::temp_dir().join(format!(
@@ -30,6 +37,7 @@ impl TempDir {
             std::process::id()
         ));
         fs::create_dir_all(&path).expect("the temporary directory is writable");
+        let path = fs::canonicalize(&path).expect("the new directory exists");
         Self { path }
     }
 

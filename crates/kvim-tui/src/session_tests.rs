@@ -566,6 +566,7 @@ fn a_path_opens_one_buffer_and_ctrl_s_writes_it() {
 fn one_file_reaches_one_buffer_however_the_user_spells_its_path() {
     let directory = TempDir::new("session-duplicate");
     let path = directory.write("main.rs", "one\n");
+    let nested = directory.dir("nested");
     let mut session = file_session();
 
     session.open_path(path);
@@ -583,7 +584,9 @@ fn one_file_reaches_one_buffer_however_the_user_spells_its_path() {
     assert_eq!(session.active(), first);
 
     // Another spelling of the same file reaches the same buffer after the load.
-    session.open_path(directory.join(".").join("main.rs"));
+    // The parent step keeps the two paths distinct on every host, because the
+    // comparison of two paths drops a `.` component but keeps a `..` component.
+    session.open_path(nested.join("..").join("main.rs"));
     run_file_request(&mut session);
     assert_eq!(session.active(), first);
     assert_eq!(session.buffers().len(), 2);
@@ -966,9 +969,11 @@ fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
     );
     run_file_request(&mut session);
 
-    // The toggle is per buffer, so no other buffer and no default changed.
+    // The toggle is per buffer, so no other buffer and no default changed. The
+    // first file is loaded already, so its path reaches its buffer without a
+    // new read.
     session.open_path(first);
-    run_file_request(&mut session);
+    assert!(session.take_file_request().is_none());
     assert_eq!(session.active_buffer().name(), "first.rs");
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
     assert!(
