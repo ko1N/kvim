@@ -2049,7 +2049,12 @@ impl Session {
             }
             Command::SearchNext => return self.select_tree_match(SearchDirection::Forward),
             Command::SearchPrevious => return self.select_tree_match(SearchDirection::Backward),
-            Command::EndSearch => self.tree.end_search(),
+            // `Esc` and `Ctrl-C` cancel the sidebar work of the user, so
+            // they end the search and release the held entry together.
+            Command::EndSearch => {
+                self.tree.end_search();
+                self.tree.release_hold();
+            }
             Command::TreeSelectParent => self.tree.select_parent(),
             Command::TreeToggleEntry => self.tree.toggle_selected(),
             Command::TreeCollapseEntry => self.tree.collapse_selected(),
@@ -2254,7 +2259,7 @@ impl Session {
         for update in &outcome.updates {
             self.language.mark_resync(update.buffer);
         }
-        self.tree.clear_moved_clipboard();
+        self.tree.release_hold();
         self.tree.apply_mutation(&outcome);
         Redraw::Needed
     }

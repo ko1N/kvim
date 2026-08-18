@@ -5,12 +5,14 @@
 //! the event loop does.
 
 use std::fs;
+use std::path::Path;
 use std::time::Duration;
 
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
+use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
 use kvim_settings::{EditorSettings, FileTreeIcons};
@@ -19,7 +21,7 @@ use kvim_workspace::{TREE_PENDING_READS_MAX, temp::TempDir};
 
 use super::session::{FileRequestFailure, Session};
 use super::theme::{Theme, ThemeRole};
-use super::tree::TREE_TITLE_ROWS;
+use super::tree::{TREE_TITLE_ROWS, root_label};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -31,6 +33,9 @@ const HEIGHT: u16 = 12;
 
 /// The first column of the sidebar in a terminal of [`WIDTH`] cells.
 const SIDEBAR_X: u16 = WIDTH - 40;
+
+/// The mark that the sidebar paints at the left edge of the selected row.
+const ROW_MARK: &str = "▌";
 
 /// The largest number of workspace operations that one test drains.
 ///
@@ -217,9 +222,10 @@ fn ctrl_e_opens_the_sidebar_and_shows_the_ordered_rows() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ docs".to_owned(),
-            "▸ src".to_owned(),
-            "  README.md".to_owned(),
+            "▌  ▸ docs".to_owned(),
+            "   ▸ src".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
 }
@@ -236,10 +242,11 @@ fn a_reveal_expands_the_ancestors_and_selects_the_active_file() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ docs".to_owned(),
-            "▾ src".to_owned(),
-            "    main.rs".to_owned(),
-            "  README.md".to_owned(),
+            "   ▸ docs".to_owned(),
+            "   ▾ src".to_owned(),
+            "▌  └   main.rs".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ],
         "the reveal expands every parent and indents the child"
     );
@@ -271,10 +278,11 @@ fn an_unreadable_directory_reports_a_notice_row() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▾ docs".to_owned(),
-            "    … unreadable".to_owned(),
-            "▸ src".to_owned(),
-            "  README.md".to_owned(),
+            "▌  ▾ docs".to_owned(),
+            "   └   … unreadable".to_owned(),
+            "   ▸ src".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
 }
@@ -320,10 +328,11 @@ fn space_expands_a_directory_and_enter_opens_a_file() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ docs".to_owned(),
-            "▾ src".to_owned(),
-            "    main.rs".to_owned(),
-            "  README.md".to_owned(),
+            "   ▸ docs".to_owned(),
+            "▌  ▾ src".to_owned(),
+            "   └   main.rs".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
 
@@ -343,11 +352,11 @@ fn the_hidden_key_shows_and_hides_the_dotfiles() {
 
     press(&mut session, 'H');
     assert!(
-        sidebar_rows(&session).contains(&"  .hidden".to_owned()),
+        sidebar_rows(&session).contains(&"     .hidden".to_owned()),
         "the hidden entry appears once"
     );
     press(&mut session, 'H');
-    assert!(!sidebar_rows(&session).contains(&"  .hidden".to_owned()));
+    assert!(!sidebar_rows(&session).contains(&"     .hidden".to_owned()));
 }
 
 #[test]
@@ -359,7 +368,7 @@ fn the_refresh_key_reads_the_workspace_again() {
     press(&mut session, 'R');
     drain(&mut session);
 
-    assert!(sidebar_rows(&session).contains(&"  later.rs".to_owned()));
+    assert!(sidebar_rows(&session).contains(&"     later.rs".to_owned()));
 }
 
 #[test]
@@ -398,7 +407,7 @@ fn a_new_file_reaches_the_workspace_and_the_tree_selects_it() {
     press_code(&mut session, KeyCode::Enter);
     drain(&mut session);
 
-    assert!(sidebar_rows(&session).contains(&"  added.rs".to_owned()));
+    assert!(sidebar_rows(&session).contains(&"▌    added.rs".to_owned()));
     assert!(selected(&session).ends_with("added.rs"));
 }
 
@@ -420,7 +429,7 @@ fn a_rename_applies_the_buffer_path_and_the_tree_as_one_transition() {
         "GUIDE.md",
         "the buffer follows the entry and keeps its identity"
     );
-    assert!(sidebar_rows(&session).contains(&"  GUIDE.md".to_owned()));
+    assert!(sidebar_rows(&session).contains(&"▌    GUIDE.md".to_owned()));
     assert!(selected(&session).ends_with("GUIDE.md"));
     assert!(
         dir.join("GUIDE.md").exists() && !dir.join("README.md").exists(),
@@ -467,7 +476,7 @@ fn a_delete_removes_the_selected_entry() {
     drain(&mut session);
 
     assert!(!dir.join("README.md").exists());
-    assert!(!sidebar_rows(&session).contains(&"  README.md".to_owned()));
+    assert!(!sidebar_rows(&session).contains(&"     README.md".to_owned()));
 }
 
 #[test]
@@ -592,27 +601,29 @@ fn match_columns(session: &Session, row: u16) -> Vec<u16> {
 
 /// Returns the entry name of one rendered sidebar row.
 fn entry_name(row: &str) -> &str {
-    row.trim_start_matches([' ', '\u{25be}', '\u{25b8}'])
+    row.trim_start_matches([
+        ' ', '\u{258c}', '\u{2502}', '\u{2514}', '\u{25be}', '\u{25b8}',
+    ])
 }
 
 /// The rows of the search workspace before one search runs.
 fn rows_before_the_search() -> Vec<String> {
     vec![
-        "▸ closed".to_owned(),
-        "▾ open".to_owned(),
-        "    target_one.rs".to_owned(),
-        "  plain.txt".to_owned(),
+        "   ▸ closed".to_owned(),
+        "▌  ▾ open".to_owned(),
+        "   └   target_one.rs".to_owned(),
+        "     plain.txt".to_owned(),
     ]
 }
 
 /// The rows of the search workspace while the search shows both matches.
 fn rows_during_the_search() -> Vec<String> {
     vec![
-        "▾ closed".to_owned(),
-        "    target_two.rs".to_owned(),
-        "▾ open".to_owned(),
-        "    target_one.rs".to_owned(),
-        "  plain.txt".to_owned(),
+        "   ▾ closed".to_owned(),
+        "   └   target_two.rs".to_owned(),
+        "▌  ▾ open".to_owned(),
+        "   └   target_one.rs".to_owned(),
+        "     plain.txt".to_owned(),
     ]
 }
 
@@ -633,9 +644,9 @@ fn a_search_keeps_every_row_and_marks_every_match() {
     }
     assert_eq!(rows, rows_during_the_search());
 
-    // The name of a match starts behind the indent and the expansion marker,
-    // so the mark covers the six characters of `target` alone.
-    let marked: Vec<u16> = (4..10).collect();
+    // The name of a match starts behind the mark cell, the indent guides, and
+    // the glyph cells, so the mark covers the six characters of `target` alone.
+    let marked: Vec<u16> = (7..13).collect();
     assert_eq!(match_columns(&session, 2), marked, "the revealed match");
     assert_eq!(match_columns(&session, 4), marked, "the open match");
     assert!(
@@ -726,7 +737,7 @@ fn the_sidebar_scrolls_so_the_selected_row_stays_visible() {
 
     let rows = sidebar_rows(&session);
     assert!(
-        rows.contains(&entry_row(TALL_ENTRIES - 1)),
+        rows.contains(&selected_entry_row(TALL_ENTRIES - 1)),
         "the selected row stays inside the sidebar"
     );
     assert!(
@@ -795,19 +806,19 @@ fn l_expands_a_directory_and_h_collapses_it_or_selects_the_parent() {
     // `l` opens the selected directory, and it never closes one.
     press(&mut session, 'l');
     drain(&mut session);
-    assert_eq!(sidebar_row(&session, 1), "▾ docs");
+    assert_eq!(sidebar_row(&session, 1), "▌  ▾ docs");
     press(&mut session, 'l');
     drain(&mut session);
     assert_eq!(
         sidebar_row(&session, 1),
-        "▾ docs",
+        "▌  ▾ docs",
         "`l` on an open directory keeps it open"
     );
 
     // `h` closes an open directory.
     press(&mut session, 'h');
     drain(&mut session);
-    assert_eq!(sidebar_row(&session, 1), "▸ docs");
+    assert_eq!(sidebar_row(&session, 1), "▌  ▸ docs");
     assert_eq!(selected_name(&session), "docs");
 
     // `h` on a closed directory leaves for the parent. The workspace root holds
@@ -824,10 +835,11 @@ fn l_expands_a_directory_and_h_collapses_it_or_selects_the_parent() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ docs".to_owned(),
-            "▾ src".to_owned(),
-            "    main.rs".to_owned(),
-            "  README.md".to_owned(),
+            "   ▸ docs".to_owned(),
+            "▌  ▾ src".to_owned(),
+            "   └   main.rs".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
     press(&mut session, 'j');
@@ -836,7 +848,7 @@ fn l_expands_a_directory_and_h_collapses_it_or_selects_the_parent() {
     assert_eq!(selected_name(&session), "src");
     press(&mut session, 'h');
     drain(&mut session);
-    assert_eq!(sidebar_row(&session, 2), "▸ src");
+    assert_eq!(sidebar_row(&session, 2), "▌  ▸ src");
 }
 
 #[test]
@@ -871,9 +883,10 @@ fn the_tree_paints_one_icon_for_each_entry_and_hides_them_on_request() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ \u{f07b} docs".to_owned(),
-            "▸ \u{f07b} src".to_owned(),
-            "  \u{f48a} README.md".to_owned(),
+            "▌  \u{f07b} docs".to_owned(),
+            "   \u{f07b} src".to_owned(),
+            "   \u{f48a} README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ],
         "a closed directory and a known extension each carry their icon"
     );
@@ -886,10 +899,11 @@ fn the_tree_paints_one_icon_for_each_entry_and_hides_them_on_request() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ \u{f07b} docs".to_owned(),
-            "▾ \u{f07c} src".to_owned(),
-            "    \u{e7a8} main.rs".to_owned(),
-            "  \u{f48a} README.md".to_owned(),
+            "   \u{f07b} docs".to_owned(),
+            "▌  \u{f07c} src".to_owned(),
+            "   └ \u{e7a8} main.rs".to_owned(),
+            "   \u{f48a} README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
 
@@ -899,9 +913,10 @@ fn the_tree_paints_one_icon_for_each_entry_and_hides_them_on_request() {
     assert_eq!(
         sidebar_rows(&plain),
         vec![
-            "▸ docs".to_owned(),
-            "▸ src".to_owned(),
-            "  README.md".to_owned(),
+            "▌  ▸ docs".to_owned(),
+            "   ▸ src".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
 }
@@ -974,9 +989,10 @@ fn a_refused_submission_leaves_the_tree_usable() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ docs".to_owned(),
-            "▸ src".to_owned(),
-            "  README.md".to_owned(),
+            "▌  ▸ docs".to_owned(),
+            "   ▸ src".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ]
     );
 }
@@ -1002,9 +1018,10 @@ fn an_obsolete_result_leaves_the_queue_usable() {
     assert_eq!(
         sidebar_rows(&session),
         vec![
-            "▸ docs".to_owned(),
-            "▸ src".to_owned(),
-            "  README.md".to_owned(),
+            "▌  ▸ docs".to_owned(),
+            "   ▸ src".to_owned(),
+            "     README.md".to_owned(),
+            "     (1 hidden item)".to_owned(),
         ],
         "the tree keeps its rows"
     );
@@ -1091,13 +1108,18 @@ fn selected_row_index(session: &Session) -> usize {
 fn visible_entries(session: &Session) -> Vec<String> {
     let rows = u16::try_from(SIDEBAR_ROWS).expect("the test terminal is small");
     (TREE_TITLE_ROWS..TREE_TITLE_ROWS + rows)
-        .map(|row| sidebar_row(session, row))
+        .map(|row| sidebar_row(session, row).replacen(ROW_MARK, " ", 1))
         .collect()
 }
 
-/// Returns the row text of one entry of the flat workspace.
+/// Returns the row text of one unselected entry of the flat workspace.
 fn entry_row(index: usize) -> String {
-    format!("  entry-{index:02}")
+    format!("     entry-{index:02}")
+}
+
+/// Returns the row text of one selected entry of the flat workspace.
+fn selected_entry_row(index: usize) -> String {
+    entry_row(index).replacen(' ', ROW_MARK, 1)
 }
 
 #[test]
@@ -1286,5 +1308,322 @@ fn the_sidebar_keeps_the_scroll_margin_around_the_selected_row() {
         rows.first(),
         Some(&entry_row(TALL_ENTRIES - SIDEBAR_ROWS)),
         "the sidebar shows a full region of rows at its end"
+    );
+}
+
+/// Creates one workspace whose entries cover the appearance of the tree.
+///
+/// The root holds one nested directory, one generated directory, and one file
+/// of each icon kind, so a rendered row proves the guides, the icons, and the
+/// dimmed style together.
+fn appearance_workspace(icons: FileTreeIcons) -> (TempDir, Session) {
+    let dir = TempDir::new("tree-look");
+    dir.file("alpha/inner/deep.rs", "");
+    dir.file("alpha/beta.rs", "");
+    dir.dir("target");
+    dir.file("LICENSE", "");
+    dir.file("README.md", "");
+    dir.file("flake.nix", "");
+    dir.file("root.rs", "");
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = icons;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    drain(&mut session);
+    reveal(&mut session);
+    (dir, session)
+}
+
+/// Returns the style of one sidebar cell.
+fn sidebar_style(session: &Session, column: u16, row: u16) -> Style {
+    draw(session)
+        .cell((SIDEBAR_X + column, row))
+        .expect("the test reads a cell inside the sidebar")
+        .style()
+}
+
+/// Returns the theme of every test session.
+fn theme() -> Theme {
+    Theme::new(EditorSettings::default().theme)
+}
+
+#[test]
+fn the_header_row_shortens_the_home_directory_to_one_character() {
+    let home = Path::new("/home/reader");
+    assert_eq!(root_label(Path::new("/home/reader"), Some(home)), "~");
+    assert_eq!(
+        root_label(Path::new("/home/reader/work/kvim"), Some(home)),
+        "~/work/kvim"
+    );
+    assert_eq!(
+        root_label(Path::new("/srv/kvim"), Some(home)),
+        "/srv/kvim",
+        "a root outside the home directory keeps its complete path"
+    );
+    assert_eq!(
+        root_label(Path::new("/srv/kvim"), None),
+        "/srv/kvim",
+        "a session without a home directory keeps the complete path"
+    );
+}
+
+#[test]
+fn the_header_row_names_the_root_behind_an_open_directory_icon() {
+    let (dir, session) = appearance_workspace(FileTreeIcons::Shown);
+    let header = sidebar_row(&session, 0);
+    assert!(
+        header.starts_with(" \u{f07c} "),
+        "the header holds the open-directory icon: `{header}`"
+    );
+    // The sidebar is narrower than a temporary path, so the header holds the
+    // first cells of the root path.
+    let root = dir.path.display().to_string();
+    assert!(
+        root.starts_with(header.trim_start_matches([' ', '\u{f07c}'])),
+        "the header names the workspace root: `{header}`"
+    );
+
+    // Without a patched font the header keeps the same cells and marks the
+    // root as one open directory.
+    let (_plain_dir, plain) = appearance_workspace(FileTreeIcons::Hidden);
+    assert!(sidebar_row(&plain, 0).starts_with(" ▾ "));
+}
+
+#[test]
+fn the_indent_guides_draw_a_trunk_and_close_the_last_child_with_an_elbow() {
+    let (_dir, mut session) = appearance_workspace(FileTreeIcons::Hidden);
+
+    // Open `alpha` and then `alpha/inner`, so the rows cover three levels.
+    press(&mut session, 'l');
+    drain(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, 'l');
+    drain(&mut session);
+
+    // The rows fill the sidebar, so the assertion reads the entry rows alone.
+    let rows = sidebar_rows(&session);
+    assert_eq!(
+        rows[..9],
+        [
+            "   ▾ alpha".to_owned(),
+            "▌  │ ▾ inner".to_owned(),
+            "   │ └   deep.rs".to_owned(),
+            "   └   beta.rs".to_owned(),
+            "   ▸ target".to_owned(),
+            "     LICENSE".to_owned(),
+            "     README.md".to_owned(),
+            "     flake.nix".to_owned(),
+            "     root.rs".to_owned(),
+        ],
+        "a level that holds a further entry draws a trunk, and its last child \
+         closes it with an elbow"
+    );
+
+    // The guides carry their own color, so they never read as one name.
+    let guide = theme().style(ThemeRole::TreeIndentGuide);
+    assert_eq!(sidebar_style(&session, 3, 3).fg, guide.fg);
+}
+
+#[test]
+fn every_row_selects_its_icon_by_extension_and_by_well_known_name() {
+    let (_dir, mut session) = appearance_workspace(FileTreeIcons::Shown);
+    press(&mut session, 'l');
+    drain(&mut session);
+
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▌  \u{f07c} alpha".to_owned(),
+            "   │ \u{f07b} inner".to_owned(),
+            "   └ \u{e7a8} beta.rs".to_owned(),
+            "   \u{f07b} target".to_owned(),
+            "   \u{f0e3} LICENSE".to_owned(),
+            "   \u{f48a} README.md".to_owned(),
+            "   \u{f313} flake.nix".to_owned(),
+            "   \u{e7a8} root.rs".to_owned(),
+        ],
+        "the well-known name wins over the extension, and every other file \
+         reads its extension"
+    );
+}
+
+#[test]
+fn a_generated_entry_reads_as_dimmed_beside_an_ordinary_one() {
+    let (_dir, session) = appearance_workspace(FileTreeIcons::Hidden);
+
+    // `target` is the second row, and `LICENSE` the third one.
+    let generated = sidebar_style(&session, 5, 2);
+    let ordinary = sidebar_style(&session, 5, 3);
+    assert_eq!(generated.fg, theme().style(ThemeRole::TreeMuted).fg);
+    assert_ne!(
+        generated.fg, ordinary.fg,
+        "a generated entry separates from an ordinary one"
+    );
+}
+
+#[test]
+fn the_hidden_count_row_names_its_number_and_reads_as_one_quiet_report() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The workspace hides one entry, so the count closes the rows of the root.
+    assert_eq!(sidebar_row(&session, 4), "     (1 hidden item)");
+    let counted = sidebar_style(&session, 6, 4);
+    assert_eq!(counted.fg, theme().style(ThemeRole::TreeNotice).fg);
+    assert!(
+        counted.add_modifier.contains(Modifier::ITALIC),
+        "a report row separates from an entry by its italic style"
+    );
+
+    dir.file(".second", "");
+    press(&mut session, 'R');
+    drain(&mut session);
+    assert_eq!(sidebar_row(&session, 4), "     (2 hidden items)");
+}
+
+#[test]
+fn a_failed_read_warns_while_a_hidden_count_stays_quiet() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    let counted = sidebar_style(&session, 6, 4);
+
+    press(&mut session, ' ');
+    fs::remove_dir_all(dir.join("docs")).expect("the temporary directory is writable");
+    drain(&mut session);
+
+    // The report of the failed read sits on the second row.
+    let report = sidebar_style(&session, 8, 2);
+    assert_eq!(report.fg, theme().style(ThemeRole::TreeIncomplete).fg);
+    assert!(report.add_modifier.contains(Modifier::ITALIC));
+    assert_ne!(
+        report.fg, counted.fg,
+        "an incomplete read must not read like a count of hidden entries"
+    );
+}
+
+#[test]
+fn the_selected_row_carries_one_band_and_one_mark_at_its_left_edge() {
+    let (_dir, session) = appearance_workspace(FileTreeIcons::Hidden);
+    let buffer = draw(&session);
+    let band = theme().style(ThemeRole::PopupSelection).bg;
+
+    for column in SIDEBAR_X..WIDTH {
+        let cell = buffer
+            .cell((column, 1))
+            .expect("the test reads a cell inside the sidebar");
+        assert_eq!(cell.style().bg, band, "the band covers the column {column}");
+    }
+    assert_eq!(
+        buffer
+            .cell((SIDEBAR_X, 1))
+            .expect("the sidebar holds its first column")
+            .symbol(),
+        ROW_MARK
+    );
+    assert_eq!(
+        sidebar_style(&session, 0, 1).fg,
+        theme().style(ThemeRole::TreeSelectionMark).fg
+    );
+
+    // Every other row keeps the column blank, so one mark never moves a name.
+    assert_eq!(
+        buffer
+            .cell((SIDEBAR_X, 2))
+            .expect("the sidebar holds its first column")
+            .symbol(),
+        " "
+    );
+}
+
+#[test]
+fn every_row_below_the_last_entry_stays_empty() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The workspace holds three entries and one hidden count, so the rows below
+    // the fifth one hold no text at all. The statusline and the message line
+    // take the last two terminal rows.
+    for row in 5..HEIGHT - 2 {
+        assert_eq!(
+            sidebar_row(&session, row),
+            "",
+            "the sidebar row {row} stays empty"
+        );
+    }
+}
+
+#[test]
+fn the_file_clipboard_marks_a_held_entry_until_the_operation_ends() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+    type_keys(&mut session, "jj");
+    assert_eq!(selected_name(&session), "README.md");
+
+    press(&mut session, 'x');
+    assert_eq!(sidebar_row(&session, 3), "▌    README.md (cut)");
+    assert_eq!(
+        sidebar_style(&session, 5, 3).fg,
+        theme().style(ThemeRole::TreeMuted).fg,
+        "the name of a held entry dims with its suffix"
+    );
+
+    press(&mut session, 'y');
+    assert_eq!(sidebar_row(&session, 3), "▌    README.md (copied)");
+
+    // `Esc` cancels the pending operation and clears the marker.
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(sidebar_row(&session, 3), "▌    README.md");
+
+    // One completed paste clears the marker as well.
+    press(&mut session, 'y');
+    assert_eq!(sidebar_row(&session, 3), "▌    README.md (copied)");
+    type_keys(&mut session, "kk");
+    press(&mut session, 'p');
+    drain(&mut session);
+    assert!(
+        sidebar_rows(&session)
+            .iter()
+            .all(|row| !row.contains("(copied)") && !row.contains("(cut)")),
+        "the completed paste released the held entry"
+    );
+}
+
+#[test]
+fn a_narrow_sidebar_clips_every_row_at_its_own_edge() {
+    let dir = TempDir::new("tree-narrow");
+    dir.file("alpha/inner/a-very-long-file-name.rs", "");
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    settings.windows.file_tree_width_cells = 10;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    drain(&mut session);
+    reveal(&mut session);
+    press(&mut session, 'l');
+    drain(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, 'l');
+    drain(&mut session);
+
+    let narrow = WIDTH - 10;
+    let buffer = draw(&session);
+    let rows: Vec<String> = (0..4)
+        .map(|row| {
+            let mut text = String::new();
+            for column in narrow..WIDTH {
+                text.push_str(
+                    buffer
+                        .cell((column, row))
+                        .expect("the test reads a cell inside the sidebar")
+                        .symbol(),
+                );
+            }
+            text.trim_end().to_owned()
+        })
+        .collect();
+    assert_eq!(
+        rows[2..],
+        ["▌  └ ▾ inn".to_owned(), "     └   a".to_owned()],
+        "every row stops at the right edge of the sidebar"
     );
 }

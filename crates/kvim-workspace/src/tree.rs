@@ -256,7 +256,7 @@ pub enum Expansion {
     Pending,
 }
 
-/// One row that reports a bounded or failed directory read.
+/// One row that reports about a directory instead of naming one entry.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Notice {
     /// The listing holds `shown` of `total` inspected entries.
@@ -268,6 +268,14 @@ pub enum Notice {
     },
     /// The directory could not be read.
     Unreadable,
+    /// The hidden-entry policy keeps `count` entries out of the rows.
+    ///
+    /// The row counts an existing decision. It never changes which entries
+    /// [`HiddenPolicy`] hides.
+    Hidden {
+        /// The number of entries that the policy hides.
+        count: usize,
+    },
 }
 
 /// What one visible row shows.
@@ -995,6 +1003,11 @@ impl FileTree {
     /// Every entry that the hidden policy keeps becomes one row. A search marks
     /// the matching rows instead of removing the others, so the visible tree
     /// stays the tree that the reader navigated.
+    ///
+    /// Two notice rows may follow the entries of one directory: the report of a
+    /// bounded or failed read, and the count of the entries that the hidden
+    /// policy keeps out. The count comes last, because it reports a choice of
+    /// the reader instead of a limit of the read.
     fn collect_rows(&self, directory: &Path, depth: usize, rows: &mut Vec<TreeRow>) {
         debug_assert!(
             depth <= TREE_DEPTH_MAX,
@@ -1006,8 +1019,10 @@ impl FileTree {
             Some(DirectoryState::Unreadable) | None => &[],
         };
 
+        let mut hidden = 0_usize;
         for entry in entries {
             if !keeps(self.hidden, &entry.name) {
+                hidden = hidden.saturating_add(1);
                 continue;
             }
             let path = directory.join(&entry.name);
@@ -1058,6 +1073,18 @@ impl FileTree {
                 path: directory.to_path_buf(),
                 depth,
                 content: RowContent::Notice(notice),
+                matched: None,
+            });
+        }
+        if hidden > 0 {
+            debug_assert!(
+                self.hidden == HiddenPolicy::Hide,
+                "the policy that shows every entry hides none of them"
+            );
+            rows.push(TreeRow {
+                path: directory.to_path_buf(),
+                depth,
+                content: RowContent::Notice(Notice::Hidden { count: hidden }),
                 matched: None,
             });
         }

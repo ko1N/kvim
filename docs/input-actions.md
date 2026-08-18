@@ -430,8 +430,8 @@ behind them.
 | `/` | Search the visible entries |
 | `n` | Select the next match |
 | `N` | Select the previous match |
-| `Esc` | End the active search |
-| `Ctrl-C` | End the active search |
+| `Esc` | End the active search and release the held entries |
+| `Ctrl-C` | End the active search and release the held entries |
 | `q` | Close the file tree |
 | `Ctrl-E` | Close the file tree |
 | `Ctrl-Q` | Close the file tree |
@@ -452,6 +452,11 @@ The tree search keeps every row. It marks each matching name, and `n` and `N`
 move the selection between the marks. The search opens a closed directory that
 holds a match, and the end of the search closes exactly those directories
 again. See [`files.md`](files.md).
+
+`Esc` and `Ctrl-C` cancel the sidebar work of the user. They end the active
+search, and they release the entries that `y` or `x` holds, so one key drops a
+paste that the user no longer wants. [`files.md`](files.md) owns the rule of the
+file-operation clipboard.
 
 `a` and `p` act on the destination directory, which is the selected directory,
 or the directory of the selected file. `Enter` on a file opens it in the editor

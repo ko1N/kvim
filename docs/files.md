@@ -202,6 +202,63 @@ The tree orders entries deterministically. A directory sorts before a file, and
 two entries of one kind sort by name. A symbolic link takes the kind of its
 target, so an expanded link to a directory shows that directory.
 
+### Row Layout
+
+Every row of the sidebar holds the same four parts, from the left edge:
+
+1. One mark cell. The selected row paints its mark there, and every other row
+   keeps the cell blank, so one mark never moves a name.
+2. The indent guides. One level costs two cells. The first level draws no guide,
+   because the header row above it is no sibling of the first entries.
+3. Two glyph cells. They hold the icon of the entry, or the expansion marker of
+   a directory while the tree hides its icons.
+4. The name of the entry, and the suffix of the row state behind it.
+
+An indent guide is one box-drawing character of one terminal cell. A level that
+holds a further entry below the row draws a trunk, and the last child of a level
+closes it with an elbow. The theme colors the guides through their own role, so
+they never read as one name.
+
+The header row names the workspace root. It shortens the home directory of the
+user to `~`, as the reference shell does, and it carries an open-directory
+glyph in the same cells that an entry row uses. The sidebar reads the home
+directory once, when it opens, so the render path performs no ambient read.
+
+The selected row paints one band over the complete width of the sidebar, so the
+reader finds it at any indent depth, and it marks the left edge of that band.
+The sidebar leaves every row below the last entry empty. It shows no
+end-of-buffer marker, because that marker belongs to a buffer window.
+[`windows.md`](windows.md) owns the marker rule.
+
+### Row States
+
+One row takes exactly one state, which decides its color and its suffix:
+
+| State | Appearance |
+| --- | --- |
+| Directory | The name takes the title color. |
+| File | The name takes the normal text color. |
+| Generated | The name dims, because the entry holds machine output. |
+| Held | The name dims and gains the suffix of the pending file operation. |
+| Omitted | The row dims and turns italic. It counts entries, it names none. |
+| Incomplete | The row warns and turns italic, because a read kept entries out. |
+
+The generated names are a small fixed list beside the icon table: `.direnv`,
+`.git`, `__pycache__`, `node_modules`, and `target`. The list is presentation
+data, like the icon table, and it selects no parser and no language server.
+
+A held entry carries the mode of the file-operation clipboard, never two
+separate flags, so the row can never report a cut and a copy at one time. The
+suffix is ` (cut)` for a move and ` (copied)` for a copy. The tree reads the one
+file-operation clipboard for this state and keeps no second copy of it.
+
+An omitted row and an incomplete row must not read alike. A count of hidden
+entries reports a choice of the reader, so it stays quiet. A truncated or a
+failed read keeps entries out that the reader expects, so it warns.
+
+The tree search marks every matched name over the state of its row, so a match
+inside a dimmed or held entry still reads as one match.
+
 ### Icons
 
 The tree paints one icon before each name. The icon set follows the
@@ -216,21 +273,31 @@ this one narrow exception to the language-adapter rule: an icon never selects a
 parser, an indent rule, a comment token, or a language server.
 
 The table covers Rust, Lua, TOML, YAML, JSON, Nix, lock files, Markdown, shell
-scripts, Git files, and images. Every glyph occupies one terminal cell.
+scripts, Git files, images, and the license file of a repository. Every glyph
+occupies one terminal cell.
 
 The theme colors each icon through an icon role, such as code, configuration,
 document, script, version control, generated, media, or unknown. A call site
 names the role, never a color. See [`windows.md`](windows.md).
 
 An icon needs a patched font. The `file tree icons` setting turns the icons off
-for a terminal without one. See [`settings.md`](settings.md). Every entry row
-reserves the same width for its icon, and a hidden icon reserves none, so the
-names stay aligned in both states.
+for a terminal without one. See [`settings.md`](settings.md). One setting turns
+every glyph of the tree off together. The glyph cells keep their width in both
+states, so the names stay aligned. Without the icons a directory shows the
+expansion marker in those cells, so the state of a directory stays visible
+without a patched font.
 
 ### Visibility
 
 The tree hides an entry whose name starts with a full stop, and the names
 `.DS_Store` and `thumbs.db`. One command shows every entry again.
+
+Every directory counts the entries that this policy keeps out of its own rows,
+and closes its entries with one row that names the count, for example
+`(5 hidden items)`. The count reports the existing decision. It never changes
+which entries the policy hides, and a directory that hides none carries no such
+row. The row names no entry, so the selection never rests on it. The policy that
+shows every entry needs no count, so the rows lose it again.
 
 ### Tree Search
 
@@ -251,7 +318,8 @@ A directory that the user opens while the search runs therefore survives the
 end of that search. `Esc` and `Ctrl-C` both end the search, and an empty query
 ends it as well.
 
-Kvim reads no Git ignore rules for the tree in the first release.
+Kvim reads no Git ignore rules for the tree in the first release. The dimmed
+generated names above are a fixed presentation list, not a Git ignore rule.
 
 ### Sidebar Focus And Operations
 
@@ -367,8 +435,13 @@ reads the file-operation clipboard.
 
 A cut entry stays in place until a paste completes, because the clipboard
 records the intent only and the paste builds the move. A cancelled paste leaves
-the source unchanged. Kvim clears the clipboard after a move paste completes, so
-one cut never moves the same entry twice.
+the source unchanged. The tree marks the row of every held entry, so the reader
+sees the pending operation.
+
+Kvim releases the held entries after one completed workspace mutation, so one
+cut never moves the same entry twice and no row reports an operation that
+already finished. `Esc` and `Ctrl-C` in the sidebar cancel the pending operation
+together with the tree search, which releases the held entries as well.
 
 The clipboard holds at most `FILE_CLIPBOARD_PATHS_MAX` entries, which is the
 value of `MUTATION_PATHS_MAX` above, so every held entry fits into one paste.

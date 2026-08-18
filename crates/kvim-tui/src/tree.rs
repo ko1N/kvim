@@ -10,6 +10,7 @@
 //! do, so a result can never reach a tree state that a newer operation already
 //! replaced.
 
+use std::env;
 use std::path::{Path, PathBuf};
 
 use ratatui::buffer::Buffer as CellBuffer;
@@ -20,12 +21,12 @@ use kvim_editor::{SearchDirection, Viewport};
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, LinkKind,
-    MutateRequest, MutationOutcome, NameMatch, Notice, OpenBuffer, ReadError, RowContent,
-    TransferMode, TreeRow, WorkspaceRequest,
+    MutateRequest, MutationOutcome, Notice, OpenBuffer, ReadError, RowContent, TransferMode,
+    TreeRow, WorkspaceRequest,
 };
 
 use super::buffer_view::WindowFocus;
-use super::icons::{ICON_CELLS, row_icon};
+use super::icons::{ICON_CELLS, directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
 
 /// The number of cells that one tree level indents.
@@ -40,20 +41,106 @@ pub(super) const TREE_TITLE_ROWS: u16 = 1;
 /// accepts. Every common filesystem stops at 255 bytes for one name.
 pub(super) const TREE_NAME_CHARS_MAX: usize = 128;
 
-/// The marker of one expanded directory row.
+/// The marker of one expanded directory row, while the tree hides its icons.
 const EXPANDED_MARKER: &str = "▾ ";
 
-/// The marker of one collapsed directory row.
+/// The marker of one collapsed directory row, while the tree hides its icons.
 const COLLAPSED_MARKER: &str = "▸ ";
 
-/// The marker of one row that holds no directory.
-const FILE_MARKER: &str = "  ";
+/// The number of cells that the selection mark reserves at the left edge.
+///
+/// The column stays blank on every other row, so one mark never moves a name.
+const MARK_CELLS: usize = 1;
 
-/// The number of cells that one expansion marker occupies.
-const MARKER_CELLS: usize = 2;
+/// The mark of the selected row, at the left edge of the sidebar.
+const SELECTION_MARK: &str = "▌";
+
+/// The indent guide of one level that holds a further entry below the row.
+const GUIDE_TRUNK: &str = "│ ";
+
+/// The indent guide that closes the last child of one level.
+const GUIDE_ELBOW: &str = "└ ";
+
+/// The indent guide of one level that holds no further entry.
+const GUIDE_BLANK: &str = "  ";
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";
+
+/// The entry names whose content one tool generates.
+///
+/// The tree dims these entries, because they hold machine output instead of
+/// work of the user. The list is presentation data beside the icon table, and
+/// it names a small fixed set, so one lookup costs a bounded number of
+/// comparisons. See `docs/files.md`.
+const GENERATED_NAMES: [&str; 5] = [".direnv", ".git", "__pycache__", "node_modules", "target"];
+
+/// What one sidebar row shows, beyond the name that it holds.
+///
+/// The value decides the style of the row and the suffix behind the name. A
+/// row takes exactly one state, so no two of them can disagree, and a held
+/// entry carries the mode of the file operation instead of two flags.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowState {
+    /// One ordinary directory entry.
+    Directory,
+    /// One ordinary file entry.
+    File,
+    /// One entry whose content a tool generates.
+    Generated,
+    /// One entry that the file-operation clipboard holds for the next paste.
+    Held(TransferMode),
+    /// One row that counts the entries that the tree keeps out of its rows.
+    Omitted,
+    /// One row that reports a bounded or a failed directory read.
+    Incomplete,
+}
+
+impl RowState {
+    /// Returns the state of one visible row.
+    ///
+    /// A held entry wins over every other state, because the pending file
+    /// operation is the report that the reader waits for.
+    fn of(row: &TreeRow, held: Option<TransferMode>) -> Self {
+        if let Some(mode) = held {
+            return Self::Held(mode);
+        }
+        match &row.content {
+            // A count of hidden entries reports a choice of the reader, and a
+            // bounded or failed read reports a limit. The two must not read
+            // alike, so each one takes its own state.
+            RowContent::Notice(Notice::Hidden { .. }) => Self::Omitted,
+            RowContent::Notice(Notice::Truncated { .. } | Notice::Unreadable) => Self::Incomplete,
+            RowContent::Directory { name, .. } | RowContent::File { name, .. }
+                if GENERATED_NAMES.contains(&name.as_str()) =>
+            {
+                Self::Generated
+            }
+            RowContent::Directory { .. } => Self::Directory,
+            RowContent::File { .. } => Self::File,
+        }
+    }
+
+    /// Returns the text that follows the name of the row.
+    const fn suffix(self) -> &'static str {
+        match self {
+            Self::Held(TransferMode::Move) => " (cut)",
+            Self::Held(TransferMode::Copy) => " (copied)",
+            Self::Directory | Self::File | Self::Generated | Self::Omitted | Self::Incomplete => "",
+        }
+    }
+
+    /// Returns the role that colors the row.
+    const fn role(self) -> ThemeRole {
+        match self {
+            Self::Directory => ThemeRole::TreeDirectory,
+            Self::File => ThemeRole::Text,
+            Self::Generated | Self::Held(_) => ThemeRole::TreeMuted,
+            Self::Omitted => ThemeRole::TreeNotice,
+            Self::Incomplete => ThemeRole::TreeIncomplete,
+        }
+    }
+}
 
 /// The result of one move between the matches of the file-tree search.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -142,6 +229,12 @@ pub(super) struct TreeSidebar {
     outbox: Option<WorkspaceRequest>,
     /// The operation that the sidebar waits for.
     pending: Option<PendingWorkspace>,
+    /// The home directory of the user, while the environment names one.
+    ///
+    /// The header shortens the root path against this value. The sidebar reads
+    /// the environment once, at construction, so the render path stays free of
+    /// every ambient read.
+    home: Option<PathBuf>,
 }
 
 impl TreeSidebar {
@@ -153,6 +246,9 @@ impl TreeSidebar {
             first_row: 0,
             outbox: None,
             pending: None,
+            home: env::var_os("HOME")
+                .map(PathBuf::from)
+                .filter(|path| path.is_absolute()),
         };
         sidebar.pump();
         sidebar
@@ -161,6 +257,24 @@ impl TreeSidebar {
     /// Returns the tree model.
     pub(super) const fn tree(&self) -> &FileTree {
         &self.tree
+    }
+
+    /// Returns the workspace root as the header row shows it.
+    pub(super) fn root_label(&self) -> String {
+        root_label(self.tree.root(), self.home.as_deref())
+    }
+
+    /// Returns how the file-operation clipboard holds one entry.
+    ///
+    /// The sidebar keeps no second copy of that state, so one hold, one paste,
+    /// and one cancel each change exactly one place.
+    pub(super) fn held_mode(&self, path: &Path) -> Option<TransferMode> {
+        let mode = self.clipboard.mode()?;
+        self.clipboard
+            .paths()
+            .iter()
+            .any(|held| held == path)
+            .then_some(mode)
     }
 
     /// Returns the first visible row.
@@ -411,14 +525,14 @@ impl TreeSidebar {
             .ok_or(TreeRefusal::ClipboardEmpty)
     }
 
-    /// Reports whether one completed paste consumed the held entries.
+    /// Releases the entries that the file-operation clipboard holds.
     ///
-    /// A move paste clears the clipboard, so one cut never moves the same entry
-    /// twice. See `docs/files.md`.
-    pub(super) fn clear_moved_clipboard(&mut self) {
-        if self.clipboard.mode() == Some(TransferMode::Move) {
-            self.clipboard.clear();
-        }
+    /// One completed workspace mutation and one cancel both reach this entry
+    /// point, so the row of a held entry loses its marker as soon as the
+    /// operation finishes or the user drops it. A completed paste therefore
+    /// never moves the same entry twice. See `docs/files.md`.
+    pub(super) fn release_hold(&mut self) {
+        self.clipboard.clear();
     }
 
     /// Returns the removal of the selected entry.
@@ -579,61 +693,123 @@ fn check_name(name: &str) -> Result<&str, TreeRefusal> {
     Ok(name)
 }
 
+/// Returns the workspace root as the header row shows it.
+///
+/// The header shortens the home directory to `~`, as the reference shell and
+/// the reference editor configuration do. A root outside the home directory,
+/// and a session without one, keep the complete path.
+pub(super) fn root_label(root: &Path, home: Option<&Path>) -> String {
+    let Some(home) = home else {
+        return root.display().to_string();
+    };
+    match root.strip_prefix(home) {
+        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+        Ok(rest) => format!("~/{}", rest.display()),
+        Err(_) => root.display().to_string(),
+    }
+}
+
+/// Reports whether one further row of `depth` follows the row at `index`.
+///
+/// The scan stops at the first shallower row, which closes the level, so the
+/// answer covers the siblings of one directory alone.
+fn level_continues(rows: &[TreeRow], index: usize, depth: usize) -> bool {
+    rows.get(index.saturating_add(1)..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|row| row.depth >= depth)
+        .any(|row| row.depth == depth)
+}
+
+/// Returns the indent guides of one visible row.
+///
+/// One level that holds a further entry below the row draws a trunk, and the
+/// last child of a level closes it with an elbow. Every guide is one
+/// box-drawing character of one terminal cell, so a level always costs
+/// [`TREE_INDENT_CELLS`] cells.
+fn row_guides(rows: &[TreeRow], index: usize) -> String {
+    let Some(depth) = rows.get(index).map(|row| row.depth) else {
+        debug_assert!(
+            false,
+            "the renderer only reads the rows that the tree holds"
+        );
+        return String::new();
+    };
+    let mut guides = String::with_capacity(depth.saturating_add(1) * TREE_INDENT_CELLS);
+    for level in 0..=depth {
+        // The entries of the workspace root need no guide. The header row above
+        // them is no sibling, so no guide would ever close.
+        let segment = if level == 0 {
+            GUIDE_BLANK
+        } else if level_continues(rows, index, level) {
+            GUIDE_TRUNK
+        } else if level == depth {
+            GUIDE_ELBOW
+        } else {
+            GUIDE_BLANK
+        };
+        guides.push_str(segment);
+    }
+    guides
+}
+
+/// Returns the two cells that sit between the guides and the name.
+///
+/// The cells hold the icon of the entry. Without a patched font the expansion
+/// marker of a directory takes the same cells, so the state of a directory
+/// stays visible and the names keep one column in both icon settings.
+fn row_glyph(row: &TreeRow, icons: FileTreeIcons) -> String {
+    if let Some(icon) = row_icon(row, icons) {
+        return format!("{} ", icon.glyph);
+    }
+    match (&row.content, icons) {
+        (RowContent::Directory { expansion, .. }, FileTreeIcons::Hidden) => match expansion {
+            Expansion::Collapsed => COLLAPSED_MARKER,
+            Expansion::Expanded | Expansion::Pending => EXPANDED_MARKER,
+        }
+        .to_owned(),
+        _ => " ".repeat(ICON_CELLS),
+    }
+}
+
 /// Returns the text of one tree row, without the selection style.
 ///
-/// The row holds the indent of its depth, the expansion marker of a directory,
-/// the icon, and the name. A notice row reports a bounded or a failed directory
-/// read instead of an entry, so it carries no icon and keeps the reserved cells
-/// blank. Every row of one depth therefore starts its name at one column, with
-/// icons and without them.
-pub(super) fn row_text(row: &TreeRow, icons: FileTreeIcons) -> String {
-    let indent = " ".repeat(row.depth * TREE_INDENT_CELLS);
-    let icon = match icons {
-        FileTreeIcons::Hidden => String::new(),
-        FileTreeIcons::Shown => match row_icon(row, icons) {
-            Some(icon) => format!("{} ", icon.glyph),
-            None => " ".repeat(ICON_CELLS),
-        },
-    };
+/// The row holds the blank mark cell, the indent guides of its levels, the
+/// glyph cells, the name, and the suffix of the row state. A notice row reports
+/// about the directory instead of naming an entry, so it carries no icon and
+/// keeps the glyph cells blank.
+fn row_text(row: &TreeRow, guides: &str, state: RowState, icons: FileTreeIcons) -> String {
+    let mark = " ".repeat(MARK_CELLS);
+    let glyph = row_glyph(row, icons);
+    let held = state.suffix();
     match &row.content {
-        RowContent::File { name, link } => {
-            let suffix = if *link == LinkKind::Symlink {
+        RowContent::File { name, link } | RowContent::Directory { name, link, .. } => {
+            let link = if *link == LinkKind::Symlink {
                 LINK_SUFFIX
             } else {
                 ""
             };
-            format!("{indent}{FILE_MARKER}{icon}{name}{suffix}")
-        }
-        RowContent::Directory {
-            name,
-            link,
-            expansion,
-        } => {
-            let marker = match expansion {
-                Expansion::Collapsed => COLLAPSED_MARKER,
-                Expansion::Expanded | Expansion::Pending => EXPANDED_MARKER,
-            };
-            let suffix = if *link == LinkKind::Symlink {
-                LINK_SUFFIX
-            } else {
-                ""
-            };
-            format!("{indent}{marker}{icon}{name}{suffix}")
+            format!("{mark}{guides}{glyph}{name}{link}{held}")
         }
         RowContent::Notice(Notice::Truncated { shown, total }) => {
-            format!("{indent}{FILE_MARKER}{icon}… {shown} of {total} entries")
+            format!("{mark}{guides}{glyph}… {shown} of {total} entries")
         }
         RowContent::Notice(Notice::Unreadable) => {
-            format!("{indent}{FILE_MARKER}{icon}… unreadable")
+            format!("{mark}{guides}{glyph}… unreadable")
+        }
+        RowContent::Notice(Notice::Hidden { count }) => {
+            let items = if *count == 1 { "item" } else { "items" };
+            format!("{mark}{guides}{glyph}({count} hidden {items})")
         }
     }
 }
 
 /// Renders the file-tree sidebar into its layout rectangle.
 ///
-/// The title row names the workspace root, and it carries the focus color, so
+/// The header row names the workspace root, and it carries the focus color, so
 /// the reader sees which region owns the keys. Every further row shows one
-/// entry or one notice of the tree.
+/// entry or one notice of the tree. The sidebar leaves every row below the last
+/// entry blank, because the end-of-buffer marker belongs to a buffer window.
 ///
 /// The function returns the cell of the selected row, so the terminal draws its
 /// own cursor there while the sidebar holds the focus.
@@ -649,7 +825,7 @@ pub(super) fn render_tree(
         return None;
     }
     target.set_style(area, theme.style(ThemeRole::Text));
-    render_title(target, area, theme, sidebar.tree().root(), focus);
+    render_header(target, area, theme, sidebar, focus, icons);
     let body = area.height.checked_sub(TREE_TITLE_ROWS).map(|height| {
         Rect::new(
             area.x,
@@ -660,13 +836,10 @@ pub(super) fn render_tree(
     })?;
 
     let mut cursor = None;
+    let rows = sidebar.tree().rows();
     let selected = sidebar.tree().selected();
     let width = usize::from(body.width);
-    for (offset, row) in sidebar
-        .tree()
-        .rows()
-        .iter()
-        .skip(sidebar.first_row())
+    for (offset, index) in (sidebar.first_row()..rows.len())
         .take(usize::from(body.height))
         .enumerate()
     {
@@ -674,18 +847,12 @@ pub(super) fn render_tree(
             debug_assert!(false, "the visible rows never pass the terminal height");
             return cursor;
         };
+        let row = &rows[index];
         let y = body.y + offset;
-        let style = match &row.content {
-            // A notice reports a bounded or a failed read, so it reads as a
-            // warning instead of an entry.
-            RowContent::Notice(_) => theme
-                .style(ThemeRole::Text)
-                .patch(theme.style(ThemeRole::Warning)),
-            RowContent::Directory { .. } => theme
-                .style(ThemeRole::Text)
-                .patch(theme.style(ThemeRole::Title)),
-            RowContent::File { .. } => theme.style(ThemeRole::Text),
-        };
+        let state = RowState::of(row, sidebar.held_mode(&row.path));
+        let style = theme
+            .style(ThemeRole::Text)
+            .patch(theme.style(state.role()));
         let current = row.is_selectable() && selected == Some(row.path.as_path());
         let style = if current {
             cursor = Some(Position::new(body.x, y));
@@ -696,26 +863,53 @@ pub(super) fn render_tree(
         // The selection covers the complete row, so the reader finds it at any
         // indent depth.
         target.set_style(Rect::new(body.x, y, body.width, 1), style);
-        target.set_stringn(body.x, y, row_text(row, icons), width, style);
+        let guides = row_guides(rows, index);
+        target.set_stringn(
+            body.x,
+            y,
+            row_text(row, &guides, state, icons),
+            width,
+            style,
+        );
+        // The guides carry their own color, so they separate from the names
+        // without the state of the row changing their meaning.
+        paint_span(
+            target,
+            body,
+            y,
+            MARK_CELLS,
+            guides.chars().count(),
+            style.patch(theme.style(ThemeRole::TreeIndentGuide)),
+        );
+        if current {
+            target.set_stringn(
+                body.x,
+                y,
+                SELECTION_MARK,
+                MARK_CELLS,
+                style.patch(theme.style(ThemeRole::TreeSelectionMark)),
+            );
+        }
         // The icon carries its own color over the row style, so a selected row
         // keeps its background behind the glyph.
         render_row_icon(target, body, y, row, icons, theme, style);
         // The search marks every match. The selected row carries the match that
         // `n` and `N` moved to, so it reads as the current one, exactly as the
-        // match under the cursor does in a buffer window.
+        // match under the cursor does in a buffer window. The mark wins over
+        // every dimmed style, so a match inside a held or generated entry stays
+        // readable as one match.
         if let Some(matched) = row.matched {
             let role = if current {
                 ThemeRole::CurrentSearchMatch
             } else {
                 ThemeRole::SearchMatch
             };
-            render_row_match(
+            paint_span(
                 target,
                 body,
                 y,
-                row,
-                icons,
-                matched,
+                name_offset_cells(row.depth).saturating_add(matched.start),
+                matched.len,
                 style.patch(theme.style(role)),
             );
         }
@@ -723,50 +917,53 @@ pub(super) fn render_tree(
     cursor
 }
 
-/// Returns the cell column of the entry name inside one sidebar row.
+/// Returns the cell column of the glyph cells inside one sidebar row.
 ///
-/// The name follows the indent of the depth, the expansion marker, and the
-/// reserved icon cells. A hidden icon reserves none, so both icon settings
-/// place the name at the column that [`row_text`] wrote it to.
-fn name_offset_cells(row: &TreeRow, icons: FileTreeIcons) -> usize {
-    let icon = match icons {
-        FileTreeIcons::Hidden => 0,
-        FileTreeIcons::Shown => ICON_CELLS,
-    };
-    row.depth * TREE_INDENT_CELLS + MARKER_CELLS + icon
+/// The glyph follows the mark cell and the indent guides of every level, which
+/// each cost [`TREE_INDENT_CELLS`] cells. The workspace root is one level above
+/// the first entry, so a row of depth zero already carries one guide.
+const fn glyph_offset_cells(depth: usize) -> usize {
+    MARK_CELLS + TREE_INDENT_CELLS * (depth + 1)
 }
 
-/// Paints the matched characters of one row.
+/// Returns the cell column of the entry name inside one sidebar row.
 ///
-/// A match that starts outside the sidebar keeps the clipped text that the row
-/// already wrote, and a match that reaches the right edge stops there.
-fn render_row_match(
+/// Both icon settings reserve the same glyph cells, so the name of one depth
+/// always starts at one column.
+const fn name_offset_cells(depth: usize) -> usize {
+    glyph_offset_cells(depth) + ICON_CELLS
+}
+
+/// Paints one span of a sidebar row and clips it at the right edge.
+///
+/// A span that starts outside the sidebar paints nothing, and a span that
+/// reaches the edge stops there, so a narrow sidebar writes no cell outside its
+/// own rectangle.
+fn paint_span(
     target: &mut CellBuffer,
     body: Rect,
     y: u16,
-    row: &TreeRow,
-    icons: FileTreeIcons,
-    matched: NameMatch,
+    start: usize,
+    cells: usize,
     style: Style,
 ) {
-    let Ok(offset) = u16::try_from(name_offset_cells(row, icons) + matched.start) else {
-        debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
+    let (Ok(start), Ok(cells)) = (u16::try_from(start), u16::try_from(cells)) else {
+        debug_assert!(
+            false,
+            "the tree depth and the query both stay inside their bounds"
+        );
         return;
     };
-    let Ok(cells) = u16::try_from(matched.len) else {
-        debug_assert!(false, "the query stays inside TREE_SEARCH_CHARS_MAX");
-        return;
-    };
-    if offset >= body.width {
+    if start >= body.width {
         return;
     }
-    let width = cells.min(body.width - offset);
-    target.set_style(Rect::new(body.x + offset, y, width, 1), style);
+    let width = cells.min(body.width - start);
+    target.set_style(Rect::new(body.x + start, y, width, 1), style);
 }
 
 /// Paints the icon cell of one row with the color of its role.
 ///
-/// The icon sits behind the indent and the expansion marker, so its column
+/// The icon sits behind the mark cell and the indent guides, so its column
 /// follows the depth of the row. A row whose icon falls outside the sidebar
 /// keeps the clipped text that the row already wrote.
 fn render_row_icon(
@@ -781,7 +978,7 @@ fn render_row_icon(
     let Some(icon) = row_icon(row, icons) else {
         return;
     };
-    let Ok(offset) = u16::try_from(row.depth * TREE_INDENT_CELLS + MARKER_CELLS) else {
+    let Ok(offset) = u16::try_from(glyph_offset_cells(row.depth)) else {
         debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
         return;
     };
@@ -797,30 +994,80 @@ fn render_row_icon(
     );
 }
 
-/// Renders the title row of the sidebar.
-fn render_title(
+/// Renders the header row of the sidebar.
+///
+/// The header holds the workspace root path with the home directory shortened
+/// to `~`, behind an open-directory glyph. It takes the same mark cell and the
+/// same glyph cells as an entry row, so the root reads as the level above the
+/// first entry. An unfocused sidebar mutes the header, so the reader sees which
+/// region owns the keys.
+fn render_header(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
-    root: &Path,
+    sidebar: &TreeSidebar,
     focus: WindowFocus,
+    icons: FileTreeIcons,
 ) {
     let role = match focus {
-        WindowFocus::Focused => ThemeRole::Title,
+        WindowFocus::Focused => ThemeRole::TreeRoot,
         WindowFocus::Unfocused => ThemeRole::TitleMuted,
     };
-    let name = root.file_name().map_or_else(
-        || root.display().to_string(),
-        |name| name.to_string_lossy().into_owned(),
-    );
-    let title = format!(" {name} ");
+    let glyph = match icons {
+        FileTreeIcons::Hidden => EXPANDED_MARKER.to_owned(),
+        FileTreeIcons::Shown => format!("{} ", directory_icon(Expansion::Expanded).glyph),
+    };
+    let mark = " ".repeat(MARK_CELLS);
+    let header = format!("{mark}{glyph}{}", sidebar.root_label());
     let band = Rect::new(area.x, area.y, area.width, TREE_TITLE_ROWS);
     target.set_style(band, theme.style(ThemeRole::Winbar));
     target.set_stringn(
         area.x,
         area.y,
-        &title,
+        &header,
         usize::from(area.width),
         theme.style(role),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::PathBuf;
+
+    use kvim_workspace::{Notice, RowContent, TreeRow};
+
+    use super::{RowState, ThemeRole};
+
+    /// Returns one notice row of the workspace root.
+    fn notice_row(notice: Notice) -> TreeRow {
+        TreeRow {
+            path: PathBuf::from("/workspace"),
+            depth: 0,
+            content: RowContent::Notice(notice),
+            matched: None,
+        }
+    }
+
+    #[test]
+    fn a_truncated_listing_never_reads_like_a_count_of_hidden_entries() {
+        // A truncated listing keeps entries out that the reader expects, so it
+        // warns. A hidden count reports a choice of the reader instead. The
+        // entry bound of the tree is far above a practical test workspace, so
+        // the row builder answers this question directly.
+        let truncated = RowState::of(
+            &notice_row(Notice::Truncated {
+                shown: 8192,
+                total: 9000,
+            }),
+            None,
+        );
+        let counted = RowState::of(&notice_row(Notice::Hidden { count: 5 }), None);
+        assert_eq!(truncated.role(), ThemeRole::TreeIncomplete);
+        assert_eq!(counted.role(), ThemeRole::TreeNotice);
+        assert_eq!(
+            RowState::of(&notice_row(Notice::Unreadable), None).role(),
+            ThemeRole::TreeIncomplete,
+            "a failed read warns like a truncated one"
+        );
+    }
 }
