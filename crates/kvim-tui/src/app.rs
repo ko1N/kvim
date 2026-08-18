@@ -111,6 +111,19 @@ const WORKSPACE_DISPATCH_MAX: usize = 1;
 /// buffer, so this bound covers every request that one transition can produce.
 const LANGUAGE_DISPATCH_MAX: usize = LANGUAGE_OUTBOX_MAX + BUFFERS_MAX;
 
+/// The submission passes that one loop iteration runs.
+///
+/// One pass can queue the work of another owner: a formatting request that no
+/// language server accepts completes the save that waited for it, and that save
+/// must reach the worker service inside the same iteration. A single pass would
+/// leave the save in its outbox until the next terminal event, so the write and
+/// its report would follow the next key instead of the command. Two passes
+/// cover that chain, because the second pass only reports a refusal on the
+/// message line and queues no further work. The bound keeps the pass finite, so
+/// a request that its service offers again can never hold the loop. See
+/// `docs/responsiveness.md`.
+const DISPATCH_PASSES_MAX: usize = 2;
+
 /// One completed background operation of the editor.
 ///
 /// The runtime is generic over its result, and the editor submits both file work
@@ -257,8 +270,9 @@ async fn drive<C: TerminalControl>(
     if let Some(path) = path {
         editor.open_path(path);
     }
-    submit_background_work(&mut editor, &runtime, &gate);
-    submit_language_work(&mut editor, language.as_mut());
+    // The first frame follows this dispatch unconditionally, so its report needs
+    // no redraw request of its own.
+    let _ = dispatch(&mut editor, &runtime, &gate, &mut language);
     // The shape follows the mode, so the editor writes it once at the start and
     // then only after a mode change. The sequence is decoration: a terminal that
     // ignores it still shows its own cursor.
@@ -310,21 +324,24 @@ async fn drive<C: TerminalControl>(
                 }
             }
         };
-        submit_background_work(&mut editor, &runtime, &gate);
-        submit_language_work(&mut editor, language.as_mut());
+        // A refused submission reports its state on the message line, so the
+        // dispatch owns a visible change of its own and the frame must follow
+        // it as well as the transition above.
+        let dispatched = dispatch(&mut editor, &runtime, &gate, &mut language);
         let next_shape = cursor_shape(editor.mode());
         if next_shape != shape {
             shape = next_shape;
             let _ = session.set_cursor_shape(shape);
         }
         match step {
-            Step::Handled(Redraw::Needed) => {
+            Step::Handled(handled) => {
                 errors = 0;
-                terminal
-                    .draw(|frame| editor.render(frame))
-                    .map_err(EditorError::Draw)?;
+                if handled.or(dispatched) == Redraw::Needed {
+                    terminal
+                        .draw(|frame| editor.render(frame))
+                        .map_err(EditorError::Draw)?;
+                }
             }
-            Step::Handled(Redraw::Skipped) => errors = 0,
             Step::Stop => break,
             Step::Failed(error) => {
                 errors += 1;
@@ -378,10 +395,19 @@ fn publish(editor: &mut Session, event: LanguageEvent, now: Duration) -> Step {
 ///
 /// Every call returns at once. The services own the process, the deadlines, and
 /// the protocol bounds, so the loop never reads, writes, or waits for a server.
-fn submit_language_work(editor: &mut Session, mut language: Option<&mut LanguageServices>) {
+///
+/// A refused request reaches the session as a typed failure, which reports the
+/// state on the message line and completes a save that waited for a formatter.
+/// The returned value carries that visible change to the caller, so the frame
+/// follows the dispatch and not the next key.
+fn submit_language_work(
+    editor: &mut Session,
+    mut language: Option<&mut LanguageServices>,
+) -> Redraw {
+    let mut redraw = Redraw::Skipped;
     for _ in 0..LANGUAGE_DISPATCH_MAX {
         let Some(request) = editor.take_language_request() else {
-            return;
+            return redraw;
         };
         let kind = request.kind();
         let result = match language.as_deref_mut() {
@@ -392,29 +418,50 @@ fn submit_language_work(editor: &mut Session, mut language: Option<&mut Language
             // usable with no language service at all.
             None => Err(LspError::NoServerDeclared),
         };
-        editor.apply_language_dispatch(kind, result);
+        redraw = redraw.or(editor.apply_language_dispatch(kind, result));
     }
     debug_assert!(
         editor.take_language_request().is_none(),
         "one transition produces fewer requests than the dispatch bound"
     );
+    redraw
+}
+
+/// Hands every queued request of one iteration to the service that runs it.
+///
+/// A pass can queue the work of another owner, so the dispatch repeats inside
+/// [`DISPATCH_PASSES_MAX`]. The returned value reports every visible change that
+/// a refused submission produced, because a refusal names its state on the
+/// message line and the frame must follow that report.
+fn dispatch(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+    language: &mut Option<LanguageServices>,
+) -> Redraw {
+    let mut redraw = Redraw::Skipped;
+    for _ in 0..DISPATCH_PASSES_MAX {
+        redraw = redraw.or(submit_background_work(editor, runtime, gate));
+        redraw = redraw.or(submit_language_work(editor, language.as_mut()));
+    }
+    redraw
 }
 
 /// Hands the queued file and analysis jobs to the bounded worker service.
 ///
 /// A refused submission reaches the session as a typed failure, so the editor
-/// keeps its previous visible state.
+/// keeps its previous visible state and reports the refusal.
 fn submit_background_work(
     editor: &mut Session,
     runtime: &Runtime<WorkResult>,
     gate: &PublicationGate,
-) {
-    submit_file_work(editor, runtime, gate);
-    submit_analysis_work(editor, runtime, gate);
-    submit_workspace_work(editor, runtime, gate);
-    submit_picker_work(editor, runtime, gate);
-    submit_clipboard_work(editor, runtime, gate);
-    submit_git_work(editor, runtime, gate);
+) -> Redraw {
+    submit_file_work(editor, runtime, gate)
+        .or(submit_analysis_work(editor, runtime, gate))
+        .or(submit_workspace_work(editor, runtime, gate))
+        .or(submit_picker_work(editor, runtime, gate))
+        .or(submit_clipboard_work(editor, runtime, gate))
+        .or(submit_git_work(editor, runtime, gate))
 }
 
 /// Hands the queued Git status read to the bounded process service.
@@ -422,9 +469,13 @@ fn submit_background_work(
 /// The command reads the repository, so it never runs on this loop. A refused
 /// submission returns to the session as a typed failure, which keeps the marks
 /// of the last successful read. See `docs/git.md`.
-fn submit_git_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &PublicationGate) {
+fn submit_git_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) -> Redraw {
     let Some(request) = editor.take_git_request() else {
-        return;
+        return Redraw::Skipped;
     };
     let handle = gate.begin(GIT_SLOT, &runtime.cancellation_root());
     let command = request.command();
@@ -432,8 +483,9 @@ fn submit_git_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &P
         WorkResult::Git(request.publish(&output))
     });
     if submitted.is_err() {
-        editor.apply_git_result(Err(GitStatusFailure::Unavailable));
+        return editor.apply_git_result(Err(GitStatusFailure::Unavailable));
     }
+    Redraw::Skipped
 }
 
 /// Returns the typed Git failure of one runtime failure.
@@ -462,15 +514,16 @@ fn submit_clipboard_work(
     editor: &mut Session,
     runtime: &Runtime<WorkResult>,
     gate: &PublicationGate,
-) {
+) -> Redraw {
     let Some(command) = editor.take_clipboard_request() else {
-        return;
+        return Redraw::Skipped;
     };
     let handle = gate.begin(CLIPBOARD_SLOT, &runtime.cancellation_root());
     let submitted = runtime.submit_process(handle, command, WorkResult::Clipboard);
     if let Err(error) = submitted {
-        editor.apply_clipboard_result(Err(refused_submission(error)));
+        return editor.apply_clipboard_result(Err(refused_submission(error)));
     }
+    Redraw::Skipped
 }
 
 /// Hands the queued picker work to the bounded worker and process services.
@@ -478,10 +531,15 @@ fn submit_clipboard_work(
 /// A workspace walk and a preview read are worker jobs. A ripgrep search is an
 /// external command, so it reaches the process service instead. Both slots
 /// cancel the request that a newer one replaces.
-fn submit_picker_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &PublicationGate) {
+fn submit_picker_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) -> Redraw {
+    let mut redraw = Redraw::Skipped;
     for _ in 0..PICKER_DISPATCH_MAX {
         let Some(request) = editor.take_picker_request() else {
-            return;
+            return redraw;
         };
         let slot = request.slot();
         let deadline = request.deadline();
@@ -495,7 +553,7 @@ fn submit_picker_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate:
             }),
         };
         if let Err(error) = submitted {
-            editor.abandon_picker_request(
+            redraw = redraw.or(editor.abandon_picker_request(
                 slot,
                 match error {
                     SubmitError::Saturated(_) => PickerFailure::Saturated,
@@ -503,13 +561,14 @@ fn submit_picker_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate:
                     | SubmitError::ProcessBounds
                     | SubmitError::ShuttingDown => PickerFailure::Cancelled,
                 },
-            );
+            ));
         }
     }
     debug_assert!(
         editor.take_picker_request().is_none(),
         "one transition produces fewer picker requests than the dispatch bound"
     );
+    redraw
 }
 
 /// Returns the publication slot of one picker operation.
@@ -544,10 +603,11 @@ fn submit_workspace_work(
     editor: &mut Session,
     runtime: &Runtime<WorkResult>,
     gate: &PublicationGate,
-) {
+) -> Redraw {
+    let mut redraw = Redraw::Skipped;
     for _ in 0..WORKSPACE_DISPATCH_MAX {
         let Some(request) = editor.take_workspace_request() else {
-            return;
+            return redraw;
         };
         let handle = gate.begin(WORKSPACE_SLOT, &runtime.cancellation_root());
         let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, |_cancellation| {
@@ -557,46 +617,52 @@ fn submit_workspace_work(
         // next transition offers the read again instead of waiting for a result
         // that never arrives.
         if let Err(error) = submitted {
-            editor.abandon_workspace_request(match error {
+            redraw = redraw.or(editor.abandon_workspace_request(match error {
                 SubmitError::Saturated(_) => FileRequestFailure::Saturated,
                 SubmitError::InvalidLimits
                 | SubmitError::ProcessBounds
                 | SubmitError::ShuttingDown => FileRequestFailure::Cancelled,
-            });
+            }));
         }
     }
+    redraw
 }
 
 /// Hands the queued file request to the bounded worker service.
-fn submit_file_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &PublicationGate) {
+fn submit_file_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) -> Redraw {
     let Some(request) = editor.take_file_request() else {
-        return;
+        return Redraw::Skipped;
     };
     let handle = gate.begin(FILE_SLOT, &runtime.cancellation_root());
     let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, |_cancellation| {
         WorkResult::File(request.run())
     });
     if let Err(error) = submitted {
-        editor.abandon_file_request(match error {
+        return editor.abandon_file_request(match error {
             SubmitError::Saturated(_) => FileRequestFailure::Saturated,
             SubmitError::InvalidLimits | SubmitError::ProcessBounds | SubmitError::ShuttingDown => {
                 FileRequestFailure::Cancelled
             }
         });
     }
+    Redraw::Skipped
 }
 
 /// Hands the analysis of the active buffer to the bounded worker service.
 ///
 /// Highlighting is decoration, so a refused submission only frees the request
-/// again. The next transition asks for it once more.
+/// again and paints nothing. The next transition asks for it once more.
 fn submit_analysis_work(
     editor: &mut Session,
     runtime: &Runtime<WorkResult>,
     gate: &PublicationGate,
-) {
+) -> Redraw {
     let Some(request) = editor.take_analysis_request() else {
-        return;
+        return Redraw::Skipped;
     };
     let handle = gate.begin(ANALYSIS_SLOT, &runtime.cancellation_root());
     let submitted = runtime.submit_worker(handle, ANALYSIS_DEADLINE, move |cancellation| {
@@ -605,6 +671,7 @@ fn submit_analysis_work(
     if submitted.is_err() {
         editor.abandon_analysis_request();
     }
+    Redraw::Skipped
 }
 
 /// Applies one result of the bounded worker service.
@@ -682,5 +749,59 @@ fn apply(
         Some(Ok(event)) => Step::Handled(editor.handle_event(event, now)),
         Some(Err(error)) => Step::Failed(error),
         None => Step::Stop,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use kvim_terminal::{Key, KeyCode, TerminalEvent};
+    use kvim_workspace::temp::TempDir;
+
+    use super::*;
+
+    /// The elapsed time that every transition of these tests reports.
+    const NOW: Duration = Duration::ZERO;
+
+    #[tokio::test]
+    async fn one_dispatch_hands_a_refused_format_and_the_save_behind_it_to_their_services() {
+        let directory = TempDir::new("app-dispatch-save");
+        let path = directory.write("main.rs", "one\n");
+        let mut settings = EditorSettings::default();
+        settings.files.undo_file = false;
+        let root = path
+            .parent()
+            .expect("the temporary file holds a parent directory")
+            .to_path_buf();
+        let mut editor = Session::new(Rect::new(0, 0, 80, 24), settings, root);
+        let _ = editor.open_path(path);
+        let request = editor
+            .take_file_request()
+            .expect("the open queued one file request");
+        let _ = editor.apply_file_result(request.run());
+        // One typed character leaves the buffer with an unsaved change.
+        let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char('i'))), NOW);
+        let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char('a'))), NOW);
+        let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Esc)), NOW);
+        assert!(editor.buffer().is_modified());
+
+        let (runtime, _results) = Runtime::<WorkResult>::new();
+        let gate = PublicationGate::default();
+        // The editor runs without language services, so the formatter request of
+        // the save reaches no server.
+        let mut language = None;
+        let _ = editor.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+        let redraw = dispatch(&mut editor, &runtime, &gate, &mut language);
+
+        assert_eq!(
+            redraw,
+            Redraw::Needed,
+            "the refused formatter request names its state on the message line"
+        );
+        assert!(
+            editor.take_file_request().is_none(),
+            "the dispatch hands the save to the worker service inside one iteration, \
+             so the write never waits for the next terminal event"
+        );
+        runtime.shutdown().await;
     }
 }

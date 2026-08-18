@@ -78,7 +78,7 @@ fn drain(session: &mut Session) {
         let Some(request) = session.take_workspace_request() else {
             return;
         };
-        session.apply_workspace_result(request.run());
+        let _ = session.apply_workspace_result(request.run());
     }
     panic!("one transition queues fewer reads than the queue bound of the tree");
 }
@@ -86,7 +86,7 @@ fn drain(session: &mut Session) {
 /// Runs the queued file operation, as the event loop does.
 fn drain_file(session: &mut Session) {
     if let Some(request) = session.take_file_request() {
-        session.apply_file_result(request.run());
+        let _ = session.apply_file_result(request.run());
     }
 }
 
@@ -760,7 +760,7 @@ fn a_workspace_failure_keeps_the_tree_usable() {
     let _request = session
         .take_workspace_request()
         .expect("the refresh queues one read");
-    session.abandon_workspace_request(super::session::FileRequestFailure::Timeout);
+    let _ = session.abandon_workspace_request(super::session::FileRequestFailure::Timeout);
 
     assert_eq!(sidebar_rows(&session), before);
     assert_eq!(
@@ -935,7 +935,7 @@ fn drain_counted(session: &mut Session) -> usize {
         let Some(request) = session.take_workspace_request() else {
             return step;
         };
-        session.apply_workspace_result(request.run());
+        let _ = session.apply_workspace_result(request.run());
     }
     panic!("the workspace queue offered a read at every one of the bounded steps");
 }
@@ -952,7 +952,7 @@ fn the_workspace_queue_terminates_after_a_failed_read() {
         .take_workspace_request()
         .expect("the expansion queued one directory read");
     fs::remove_dir_all(dir.join("docs")).expect("the test workspace holds the directory");
-    session.apply_workspace_result(request.run());
+    let _ = session.apply_workspace_result(request.run());
     assert_eq!(
         drain_counted(&mut session),
         0,
@@ -977,7 +977,7 @@ fn a_refused_submission_leaves_the_tree_usable() {
     drop(refused);
     // The bounded worker service refused the request, so the tree clears its
     // pending state instead of waiting for a result that never arrives.
-    session.abandon_workspace_request(FileRequestFailure::Saturated);
+    let _ = session.abandon_workspace_request(FileRequestFailure::Saturated);
     assert_eq!(
         drain_counted(&mut session),
         0,
@@ -1013,8 +1013,8 @@ fn an_obsolete_result_leaves_the_queue_usable() {
         .take_workspace_request()
         .expect("the refresh queued one read");
     let result = request.run();
-    session.abandon_workspace_request(FileRequestFailure::Cancelled);
-    session.apply_workspace_result(result);
+    let _ = session.abandon_workspace_request(FileRequestFailure::Cancelled);
+    let _ = session.apply_workspace_result(result);
     assert!(
         drain_counted(&mut session) < WORKSPACE_STEPS_MAX,
         "the queue still empties after an obsolete result"
@@ -1684,7 +1684,7 @@ fn publish_git(session: &mut Session, root: &Path, output: &str) {
         GIT_PROGRAM,
         "the read leaves the session as one external command"
     );
-    session.apply_git_result(Ok(GitStatusSnapshot::parse(root, root, output.as_bytes())));
+    let _ = session.apply_git_result(Ok(GitStatusSnapshot::parse(root, root, output.as_bytes())));
 }
 
 /// Returns the Git mark at the right edge of one sidebar row.
@@ -1790,7 +1790,7 @@ fn the_refresh_command_asks_for_the_repository_state_again() {
 fn refuse_language_requests(session: &mut Session) {
     while let Some(request) = session.take_language_request() {
         let kind = request.kind();
-        session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+        let _ = session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
     }
 }
 
@@ -1854,7 +1854,7 @@ fn a_workspace_mutation_asks_for_the_repository_state_again() {
 fn a_snapshot_of_another_workspace_never_reaches_the_rows() {
     let (dir, mut session) = git_workspace();
     let elsewhere = Path::new("/elsewhere");
-    session.apply_git_result(Ok(GitStatusSnapshot::parse(
+    let _ = session.apply_git_result(Ok(GitStatusSnapshot::parse(
         elsewhere,
         elsewhere,
         b"? new.rs\0",
