@@ -637,6 +637,129 @@ fn moving_the_selection_reindents_the_moved_lines_and_keeps_the_selection() {
     assert_eq!(up.state.mode(), Mode::VisualLine);
 }
 
+/// The buffer of the reported selection-move bug.
+const SCOPE_TEXT: &str = "struct Foo {\n    text: String,\n    shape: Shape,\n}\n";
+
+/// Selects the two field lines of [`SCOPE_TEXT`] in Visual Line mode.
+fn select_fields(session: &mut Session) {
+    place(session, 1, 0);
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveDown, None);
+}
+
+#[test]
+fn a_selection_move_out_of_a_scope_and_back_follows_the_syntax_indent() {
+    let mut session = Session::new(SCOPE_TEXT);
+    select_fields(&mut session);
+
+    // The block leaves the struct body, where the adapter reports no level.
+    assert_eq!(
+        session.apply_indented(Command::MoveSelectionDown, AutoIndent::Levels(0)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(
+        session.text(),
+        "struct Foo {\n}\ntext: String,\nshape: Shape,\n",
+        "a block that leaves a scope loses one level"
+    );
+    assert_eq!(session.state.mode(), Mode::VisualLine);
+
+    // The block returns into the struct body, where the adapter reports one
+    // level. This direction kept the block at column zero before the fix.
+    assert_eq!(
+        session.apply_indented(Command::MoveSelectionUp, AutoIndent::Levels(1)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(
+        session.text(),
+        SCOPE_TEXT,
+        "a block that enters a scope gains one level"
+    );
+    assert_eq!(session.state.mode(), Mode::VisualLine);
+    assert_eq!(
+        session.selection(),
+        Some(Selection::Linewise {
+            first: session.buffer.line_index(1).expect("the line exists"),
+            last: session.buffer.line_index(2).expect("the line exists"),
+        }),
+        "the selection follows the moved lines"
+    );
+}
+
+#[test]
+fn a_selection_move_without_a_parse_result_copies_the_previous_line() {
+    let mut session = Session::new("struct Foo {\n}\ntext: String,\nshape: Shape,\n");
+    place(&mut session, 2, 0);
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveDown, None);
+
+    // Without a parse result the block copies the indent of the line above its
+    // new position, which is `struct Foo {` at column zero.
+    assert_eq!(
+        session.apply_indented(Command::MoveSelectionUp, AutoIndent::PreviousLine),
+        CommandOutcome::Changed
+    );
+    assert_eq!(
+        session.text(),
+        "struct Foo {\ntext: String,\nshape: Shape,\n}\n"
+    );
+}
+
+#[test]
+fn a_selection_move_keeps_an_empty_line_inside_the_block() {
+    let mut session = Session::new("struct Foo {\n    text: String,\n\n    shape: Shape,\n}\n");
+    place(&mut session, 1, 0);
+    session.apply(Command::EnterVisualLine, None);
+    session.apply(Command::MoveDown, count(2));
+
+    assert_eq!(
+        session.apply_indented(Command::MoveSelectionDown, AutoIndent::Levels(0)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(
+        session.text(),
+        "struct Foo {\n}\ntext: String,\n\nshape: Shape,\n",
+        "an empty line inside the block keeps its shape"
+    );
+
+    assert_eq!(
+        session.apply_indented(Command::MoveSelectionUp, AutoIndent::Levels(1)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(
+        session.text(),
+        "struct Foo {\n    text: String,\n\n    shape: Shape,\n}\n"
+    );
+}
+
+#[test]
+fn a_selection_move_at_column_zero_keeps_the_column() {
+    let mut session = Session::new("fn one() {}\nfn two() {}\nfn three() {}\n");
+    session.apply(Command::EnterVisualLine, None);
+
+    // The block stays at the top level, so the level count stays zero.
+    assert_eq!(
+        session.apply_indented(Command::MoveSelectionDown, AutoIndent::Levels(0)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "fn two() {}\nfn one() {}\nfn three() {}\n");
+}
+
+#[test]
+fn one_undo_reverses_a_selection_move_and_its_reindent() {
+    let mut session = Session::new(SCOPE_TEXT);
+    select_fields(&mut session);
+    session.apply_indented(Command::MoveSelectionDown, AutoIndent::Levels(0));
+    session.apply(Command::ReturnToNormal, None);
+
+    assert_eq!(session.apply(Command::Undo, None), CommandOutcome::Changed);
+    assert_eq!(
+        session.text(),
+        SCOPE_TEXT,
+        "the move and the reindent are one transaction"
+    );
+}
+
 #[test]
 fn a_selection_at_a_buffer_limit_moves_nowhere() {
     let mut session = Session::new("one\ntwo\n");

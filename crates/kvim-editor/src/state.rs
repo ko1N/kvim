@@ -297,8 +297,8 @@ impl EditingState {
     /// change applies as one edit transaction.
     ///
     /// A caller that holds a parse result for the current buffer version uses
-    /// [`EditingState::apply_indented`] instead, so `o` and `O` follow the
-    /// syntax tree.
+    /// [`EditingState::apply_indented`] instead, so `o`, `O`, and a Visual
+    /// selection move follow the syntax tree.
     pub fn apply(
         &mut self,
         context: &mut EditContext<'_>,
@@ -311,7 +311,10 @@ impl EditingState {
 
     /// Executes one semantic command with an explicit automatic indent.
     ///
-    /// Only `o` and `O` read the indent. Every other command ignores it.
+    /// Only `o`, `O`, and a Visual selection move read the indent. Every other
+    /// command ignores it. A selection move needs the level of the line that it
+    /// lands behind, which
+    /// [`selection_move_indent_line`](crate::selection_move_indent_line) names.
     pub fn apply_indented(
         &mut self,
         context: &mut EditContext<'_>,
@@ -445,10 +448,10 @@ impl EditingState {
 
             // Visual selection move and shift.
             Command::MoveSelectionDown => {
-                return self.move_selection(context, window, MoveDirection::Down);
+                return self.move_selection(context, window, MoveDirection::Down, auto);
             }
             Command::MoveSelectionUp => {
-                return self.move_selection(context, window, MoveDirection::Up);
+                return self.move_selection(context, window, MoveDirection::Up, auto);
             }
             Command::ShiftSelectionLeft => {
                 return self.shift_selection(context, window, ShiftDirection::Left);
@@ -995,6 +998,7 @@ impl EditingState {
         context: &mut EditContext<'_>,
         window: &mut WindowState,
         direction: MoveDirection,
+        auto: AutoIndent,
     ) -> CommandOutcome {
         let Some(selection) = self.selection(context.buffer, window) else {
             return CommandOutcome::Unhandled;
@@ -1008,6 +1012,7 @@ impl EditingState {
             first,
             last,
             direction,
+            auto,
         ) else {
             return CommandOutcome::Applied;
         };

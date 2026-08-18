@@ -155,8 +155,14 @@ tree for the current buffer version is not yet available. The fallback copies th
 indent of the previous non-empty line. The fallback never blocks the terminal
 event loop while it waits for a parse result.
 
-The automatic indent is part of the same edit transaction as the new line. One
-undo reverses both.
+A Visual selection move uses the same rule. The moved block takes the automatic
+indent of a new line at the end of the line that it lands behind. A block that
+moves into a scope gains one level, and a block that leaves a scope loses one
+level. The block keeps its internal relative indent, and an empty line inside
+the block stays empty.
+
+The automatic indent is part of the same edit transaction as the new line, or as
+the moved block. One undo reverses both.
 
 All indent values belong to `EditorSettings`. See [`settings.md`](settings.md).
 No other module holds an indent constant.
