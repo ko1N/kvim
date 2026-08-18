@@ -4,9 +4,10 @@
 //! last line stops at that line instead of failing. A horizontal motion sets the
 //! preferred column. A vertical motion keeps it. See `docs/input-actions.md`.
 
-use kvim_core::{LineIndex, TextBuffer};
+use kvim_core::{CharPosition, LineIndex, TextBuffer};
 
 use super::cursor::{ColumnLimit, Cursor, PreferredColumn};
+use super::text_object::{CharReader, Delimiter, DelimiterShape, scan_backward, scan_forward};
 
 /// The character class that the word motions compare.
 ///
@@ -127,6 +128,152 @@ pub(super) fn move_line_end(
     Cursor::clamped_with_preferred(buffer, line, usize::MAX, PreferredColumn::LineEnd, limit)
 }
 
+/// Moves the cursor to the last non-blank character of its line, or of a later
+/// line.
+///
+/// `g_` and `$` differ only when a line ends with blanks: `$` reaches the last
+/// column, and this motion reaches the last visible character. The motion keeps
+/// the reached column as the preferred column, so later vertical movement
+/// returns to it instead of following the line end.
+pub(super) fn move_last_non_blank(
+    buffer: &TextBuffer,
+    cursor: Cursor,
+    limit: ColumnLimit,
+    count: usize,
+) -> Cursor {
+    debug_assert!(count > 0, "the resolver rejects a zero count");
+    let line = cursor.line().get().saturating_add(count - 1);
+    let clamped = line.min(buffer.line_count() - 1);
+    let index = buffer
+        .line_index(clamped)
+        .expect("the clamp keeps the line index inside the buffer");
+    Cursor::clamped(buffer, clamped, last_non_blank_column(buffer, index), limit)
+}
+
+/// Moves the cursor to the bracket that matches the pair at or after it.
+///
+/// Returns `None` when the line of the cursor holds no bracket at or after it,
+/// or when the found bracket has no partner inside the scan bound. The caller
+/// then changes nothing, as it does for a text object that finds no pair.
+///
+/// A count repeats the jump, which is the rule for every motion of
+/// `docs/input-actions.md`. A jump that finds no further match ends the
+/// repetition at the last matched bracket.
+pub(super) fn move_matching_bracket(
+    buffer: &TextBuffer,
+    cursor: Cursor,
+    limit: ColumnLimit,
+    count: usize,
+) -> Option<Cursor> {
+    debug_assert!(count > 0, "the resolver rejects a zero count");
+    let mut position = cursor.position(buffer);
+    let mut matched = None;
+    for _ in 0..count {
+        let Some(next) = matching_bracket(buffer, position) else {
+            break;
+        };
+        position = next;
+        matched = Some(next);
+    }
+    matched.map(|position| Cursor::at_position(buffer, position, limit))
+}
+
+/// Returns the bracket that matches the pair at or after one position.
+///
+/// The search first reads the line of `from` forward for the first character of
+/// [`Delimiter::MATCH_PAIRS`], so a `%` before a bracket jumps to the partner of
+/// that bracket, as the reference Vim does. It then walks the buffer toward the
+/// partner and counts the nested pairs of the same delimiter, so an inner pair
+/// never ends the walk.
+///
+/// The walk crosses lines inside
+/// [`TEXT_OBJECT_SCAN_CHARS_MAX`](super::text_object::TEXT_OBJECT_SCAN_CHARS_MAX),
+/// the bound that the bracket text objects already use, because both read the
+/// same nesting.
+///
+/// The search reads text alone. This crate holds no comment and no string
+/// region, so a bracket inside a comment or a string literal matches like every
+/// other bracket.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_core::TextBuffer;
+/// use kvim_editor::matching_bracket;
+/// use kvim_settings::FileSettings;
+///
+/// let buffer = TextBuffer::from_text("call(alpha)\n", &FileSettings::default())
+///     .expect("the text is small");
+/// let start = buffer.char_position(0).expect("the buffer holds the position");
+/// // The cursor stands before the pair, so the search finds `(` first.
+/// assert_eq!(matching_bracket(&buffer, start).map(|found| found.get()), Some(10));
+/// ```
+#[must_use]
+pub fn matching_bracket(buffer: &TextBuffer, from: CharPosition) -> Option<CharPosition> {
+    let line = buffer.char_to_line(from);
+    let line_start = buffer.line_start(line).get();
+    let column = from.get() - line_start;
+    let (offset, pair) = buffer
+        .line_text(line)
+        .chars()
+        .enumerate()
+        .skip(column)
+        .find_map(|(index, character)| BracketPair::of(character).map(|pair| (index, pair)))?;
+
+    let mut reader = CharReader::new(buffer);
+    let position = line_start + offset;
+    let matched = match pair.side {
+        BracketSide::Open => scan_forward(
+            &mut reader,
+            buffer.len_chars(),
+            position + 1,
+            pair.open,
+            pair.close,
+        )?,
+        BracketSide::Close => {
+            scan_backward(&mut reader, position.checked_sub(1)?, pair.open, pair.close)?
+        }
+    };
+    buffer.char_position(matched).ok()
+}
+
+/// Which end of its pair one bracket character names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BracketSide {
+    /// The character opens the pair, so the partner follows it.
+    Open,
+    /// The character closes the pair, so the partner precedes it.
+    Close,
+}
+
+/// One bracket character resolved against the delimiter table.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct BracketPair {
+    open: char,
+    close: char,
+    side: BracketSide,
+}
+
+impl BracketPair {
+    /// Returns the pair of one character, or `None` when it is no bracket.
+    fn of(character: char) -> Option<Self> {
+        Delimiter::MATCH_PAIRS.iter().find_map(|delimiter| {
+            let DelimiterShape::Balanced { open, close } = delimiter.shape() else {
+                debug_assert!(false, "Delimiter::MATCH_PAIRS names balanced pairs only");
+                return None;
+            };
+            let side = if character == open {
+                BracketSide::Open
+            } else if character == close {
+                BracketSide::Close
+            } else {
+                return None;
+            };
+            Some(Self { open, close, side })
+        })
+    }
+}
+
 /// Moves the cursor to the first non-blank character of one line.
 ///
 /// The `gg` and `G` motions use this rule.
@@ -202,6 +349,19 @@ fn first_non_blank_column(buffer: &TextBuffer, line: LineIndex) -> usize {
     text.chars()
         .position(|character| !character.is_whitespace())
         .unwrap_or_else(|| text.chars().count().saturating_sub(1))
+}
+
+fn last_non_blank_column(buffer: &TextBuffer, line: LineIndex) -> usize {
+    // A line of blanks holds no non-blank character. Vim keeps `g_` in the
+    // first column there, so the cursor stays inside the line.
+    buffer
+        .line_text(line)
+        .chars()
+        .enumerate()
+        .filter(|(_, character)| !character.is_whitespace())
+        .map(|(column, _)| column)
+        .last()
+        .unwrap_or(0)
 }
 
 /// Repeats one word walk and stops as soon as the walk makes no progress.

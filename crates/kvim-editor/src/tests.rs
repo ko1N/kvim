@@ -27,6 +27,7 @@ const MOTION_COMMANDS: &[Command] = &[
     Command::MoveNextWordEnd,
     Command::MoveFirstColumn,
     Command::MoveFirstNonBlank,
+    Command::MoveLastNonBlank,
     Command::MoveLineEnd,
     Command::MoveFirstLine,
     Command::MoveLastLine,
@@ -356,6 +357,199 @@ fn motions_over_an_empty_line_and_a_line_of_blanks_stay_valid() {
         None,
     );
     assert_eq!(position(&view), (2, 0));
+}
+
+/// Four lines that separate the four line-end targets: an indented line that
+/// ends with blanks, a Unicode line that ends with blanks, a line of blanks
+/// alone, and a line without a blank.
+const LINE_ENDS: &str = "  alpha  \n\tαβγ  δε  \n   \nplain";
+
+#[test]
+fn each_line_end_motion_reaches_its_own_column() {
+    // The column of `0`, of `^` and `_`, of `g_`, and of `$` on each line.
+    let expected: &[(usize, usize, usize, usize, usize)] = &[
+        (0, 0, 2, 6, 8),
+        (1, 0, 1, 7, 9),
+        // A line of blanks holds no non-blank character: `^` keeps the last
+        // column that Vim keeps, and `g_` keeps the first one.
+        (2, 0, 2, 0, 2),
+        (3, 0, 0, 4, 4),
+    ];
+
+    let mut text = buffer(LINE_ENDS);
+    for &(line, first_column, first_non_blank, last_non_blank, line_end) in expected {
+        let targets = [
+            (Command::MoveFirstColumn, first_column),
+            (Command::MoveFirstNonBlank, first_non_blank),
+            (Command::MoveLastNonBlank, last_non_blank),
+            (Command::MoveLineEnd, line_end),
+        ];
+        for (command, column) in targets {
+            let mut state = EditingState::new();
+            let mut view = window(10, 80);
+            if line > 0 {
+                apply(
+                    &mut text,
+                    &mut state,
+                    &mut view,
+                    Command::MoveDown,
+                    count(line as u32),
+                );
+            }
+            apply(&mut text, &mut state, &mut view, command, None);
+            assert_eq!(position(&view), (line, column), "{command} on line {line}");
+        }
+    }
+}
+
+#[test]
+fn a_count_before_the_last_non_blank_motion_names_a_later_line() {
+    let mut text = buffer(LINE_ENDS);
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
+    apply(
+        &mut text,
+        &mut state,
+        &mut view,
+        Command::MoveLastNonBlank,
+        count(4),
+    );
+    assert_eq!(position(&view), (3, 4));
+
+    // A count past the last line stops at the last line.
+    apply(
+        &mut text,
+        &mut state,
+        &mut view,
+        Command::MoveLastNonBlank,
+        count(9_999),
+    );
+    assert_eq!(position(&view), (3, 4));
+}
+
+/// Moves the cursor to one line and one column with plain motions.
+fn place(
+    text: &mut TextBuffer,
+    state: &mut EditingState,
+    view: &mut WindowState,
+    line: usize,
+    column: usize,
+) {
+    apply(text, state, view, Command::MoveFirstLine, None);
+    if line > 0 {
+        apply(text, state, view, Command::MoveDown, count(line as u32));
+    }
+    apply(text, state, view, Command::MoveFirstColumn, None);
+    if column > 0 {
+        apply(text, state, view, Command::MoveRight, count(column as u32));
+    }
+}
+
+/// One `%` case: the buffer text, the start position, and the position that the
+/// jump reaches, or `None` when the buffer holds no match for that start.
+type BracketCase = (&'static str, (usize, usize), Option<(usize, usize)>);
+
+#[test]
+fn the_bracket_motion_reaches_the_partner_of_every_pair() {
+    let expected: &[BracketCase] = &[
+        // From the open bracket, and back from the close bracket.
+        ("foo(bar)\n", (0, 3), Some((0, 7))),
+        ("foo(bar)\n", (0, 7), Some((0, 3))),
+        // From a position before the pair the line scan finds `(` first, so the
+        // jump reaches the partner of that bracket, not the bracket itself.
+        ("foo(bar)\n", (0, 0), Some((0, 7))),
+        // A nested pair of the same delimiter never ends the walk.
+        ("(a(b)c)\n", (0, 0), Some((0, 6))),
+        ("(a(b)c)\n", (0, 2), Some((0, 4))),
+        // Each delimiter of the table counts its own pair only.
+        ("{a[b]c}\n", (0, 0), Some((0, 6))),
+        ("{a[b]c}\n", (0, 2), Some((0, 4))),
+        // The walk crosses lines.
+        ("fn main() {\n    let x = 1;\n}\n", (0, 10), Some((2, 0))),
+        ("fn main() {\n    let x = 1;\n}\n", (2, 0), Some((0, 10))),
+        // A line without a bracket at or after the cursor reaches nothing.
+        ("plain text\n", (0, 0), None),
+        ("(a) tail\n", (0, 5), None),
+        // An unmatched bracket reaches nothing.
+        ("foo(bar\n", (0, 3), None),
+        ("bar)\n", (0, 3), None),
+        // The angle brackets stay out of the table, because `<` and `>` are
+        // comparison operators.
+        ("a<b>c\n", (0, 1), None),
+        // A Unicode line counts characters, not bytes.
+        ("αβ(γδ)ε\n", (0, 2), Some((0, 5))),
+        ("αβ(γδ)ε\n", (0, 0), Some((0, 5))),
+    ];
+
+    for &(source, (line, column), target) in expected {
+        let mut text = buffer(source);
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
+        place(&mut text, &mut state, &mut view, line, column);
+        let outcome = apply(
+            &mut text,
+            &mut state,
+            &mut view,
+            Command::MoveMatchingBracket,
+            None,
+        );
+        match target {
+            Some(reached) => {
+                assert_eq!(outcome, CommandOutcome::Applied, "{source:?}");
+                assert_eq!(position(&view), reached, "{source:?} from {line}:{column}");
+            }
+            None => {
+                assert_eq!(outcome, CommandOutcome::SearchMissed, "{source:?}");
+                assert_eq!(
+                    position(&view),
+                    (line, column),
+                    "{source:?} keeps the cursor without a match"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn a_count_repeats_the_bracket_motion() {
+    let mut text = buffer("(a(b)c)\n");
+    // The pair returns the cursor, so an even count ends where it started.
+    let expected: &[(u32, (usize, usize))] = &[(1, (0, 6)), (2, (0, 0)), (3, (0, 6))];
+    for &(repeat, reached) in expected {
+        let mut state = EditingState::new();
+        let mut view = window(10, 80);
+        apply(
+            &mut text,
+            &mut state,
+            &mut view,
+            Command::MoveMatchingBracket,
+            count(repeat),
+        );
+        assert_eq!(position(&view), reached, "a count of {repeat}");
+    }
+}
+
+#[test]
+fn the_bracket_motion_reads_text_alone() {
+    // The crate holds no comment and no string region, so a bracket inside a
+    // string literal matches like every other bracket. `docs/input-actions.md`
+    // records the rule.
+    let mut text = buffer("call(\")\")\n");
+    let mut state = EditingState::new();
+    let mut view = window(10, 80);
+    place(&mut text, &mut state, &mut view, 0, 4);
+    apply(
+        &mut text,
+        &mut state,
+        &mut view,
+        Command::MoveMatchingBracket,
+        None,
+    );
+    assert_eq!(
+        position(&view),
+        (0, 6),
+        "the close bracket inside the string"
+    );
 }
 
 #[test]

@@ -261,6 +261,61 @@ fn a_backward_motion_deletes_before_the_cursor() {
 }
 
 #[test]
+fn an_operator_over_the_bracket_motion_takes_both_brackets() {
+    // The start column and the text that remains after `d%`. The motion is
+    // characterwise and inclusive, so the matched bracket belongs to the range
+    // in both directions.
+    let expected: &[(usize, &str, &str)] = &[
+        (4, "call\n", "(alpha)"),
+        (10, "call\n", "(alpha)"),
+        // From a position before the pair the range starts at the cursor.
+        (0, "\n", "call(alpha)"),
+    ];
+    for &(column, remaining, yanked) in expected {
+        let mut session = Session::new("call(alpha)\n");
+        place(&mut session, 0, column);
+        session.apply(Command::DeleteOverMotion, None);
+        assert_eq!(
+            session.apply(Command::MoveMatchingBracket, None),
+            CommandOutcome::Changed,
+            "d% from column {column}"
+        );
+        assert_eq!(session.text(), remaining, "d% from column {column}");
+        assert_eq!(session.register().map(|value| value.0), Some(yanked));
+    }
+}
+
+#[test]
+fn an_operator_without_a_bracket_match_changes_nothing() {
+    let mut session = Session::new("call(alpha\n");
+    place(&mut session, 0, 4);
+    session.apply(Command::DeleteOverMotion, None);
+    assert_eq!(
+        session.apply(Command::MoveMatchingBracket, None),
+        CommandOutcome::OperatorAborted
+    );
+    assert_eq!(session.text(), "call(alpha\n");
+    assert_eq!(session.state.pending_operator(), None);
+}
+
+#[test]
+fn the_two_line_end_operators_differ_on_a_line_of_trailing_blanks() {
+    // `$` reaches the last column, and `g_` the last visible character, so the
+    // two operators keep a different remainder.
+    let expected: &[(Command, &str)] = &[
+        (Command::MoveLineEnd, "  \n"),
+        (Command::MoveLastNonBlank, "    \n"),
+    ];
+    for &(motion, remaining) in expected {
+        let mut session = Session::new("  alpha  \n");
+        place(&mut session, 0, 2);
+        session.apply(Command::DeleteOverMotion, None);
+        assert_eq!(session.apply(motion, None), CommandOutcome::Changed);
+        assert_eq!(session.text(), remaining, "delete over {motion}");
+    }
+}
+
+#[test]
 fn a_word_delete_at_the_line_end_keeps_the_line_break() {
     let mut session = Session::new("one two\nthree\n");
     place(&mut session, 0, 4);

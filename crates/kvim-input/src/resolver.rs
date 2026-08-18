@@ -813,6 +813,52 @@ mod tests {
         );
     }
 
+    /// The key sequences that reach one end of the line, or the matching
+    /// bracket, with the command that each one names.
+    ///
+    /// `_` and `^` share a command, and so do `Home` with `0` and `End` with
+    /// `$`, because the two keys of each pair name the same target. Only `g_`
+    /// and `%` name a target that no other key reaches.
+    fn line_and_bracket_keys() -> Vec<(Vec<Key>, Command)> {
+        vec![
+            (vec![ch('0')], Command::MoveFirstColumn),
+            (vec![Key::plain(KeyCode::Home)], Command::MoveFirstColumn),
+            (vec![ch('^')], Command::MoveFirstNonBlank),
+            (vec![ch('_')], Command::MoveFirstNonBlank),
+            (vec![ch('$')], Command::MoveLineEnd),
+            (vec![Key::plain(KeyCode::End)], Command::MoveLineEnd),
+            (vec![ch('g'), ch('_')], Command::MoveLastNonBlank),
+            (vec![ch('%')], Command::MoveMatchingBracket),
+        ]
+    }
+
+    #[test]
+    fn every_line_and_bracket_key_reaches_its_motion() {
+        for (keys, expected) in line_and_bracket_keys() {
+            let mut resolver = resolver();
+            assert_eq!(
+                feed(&mut resolver, &keys),
+                command(expected),
+                "Normal mode must reach `{expected}`"
+            );
+        }
+    }
+
+    #[test]
+    fn every_line_and_bracket_key_reaches_a_waiting_operator() {
+        for (keys, expected) in line_and_bracket_keys() {
+            let mut resolver = resolver();
+            // The operator moves the keys into the operator-pending scope, so a
+            // key that scope does not hold would reach no command at all.
+            resolver.resolve(ch('d'), NOW);
+            assert_eq!(
+                feed(&mut resolver, &keys),
+                command(expected),
+                "a waiting operator must reach `{expected}`"
+            );
+        }
+    }
+
     #[test]
     fn a_cancel_key_ends_a_waiting_operator() {
         let escape = Key::plain(KeyCode::Esc);
