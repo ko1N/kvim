@@ -30,8 +30,16 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 use tokio_util::task::TaskTracker;
 
+mod watch;
+
 #[cfg(test)]
 mod tests;
+
+pub use watch::{
+    FileWatcher, WATCH_BATCH_DIRECTORIES_MAX, WATCH_BATCH_QUEUE_MAX, WATCH_BURST_EVENTS_MAX,
+    WATCH_COALESCE_WINDOW, WATCH_EVENT_QUEUE_MAX, WatchBatch, WatchError, WatchEvent,
+    WatchFidelity, WatchKind, is_ignored,
+};
 
 /// The number of results that the runtime holds for the event loop.
 pub const EVENT_QUEUE_CAPACITY: usize = 256;

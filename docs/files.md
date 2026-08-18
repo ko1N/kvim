@@ -250,7 +250,9 @@ One row takes exactly one state, which decides its color and its suffix:
 
 The generated names are a small fixed list beside the icon table: `.direnv`,
 `.git`, `__pycache__`, `node_modules`, and `target`. The list is presentation
-data, like the icon table, and it selects no parser and no language server.
+data, like the icon table, and it selects no parser and no language server. The
+workspace watch below ignores exactly these names, so one list answers both
+questions.
 
 An entry that the Git ignore rules name takes the same state, so the two rules
 extend each other and never disagree about one row. The fixed list stays the
@@ -379,6 +381,66 @@ moves to the closest visible parent.
 
 Collapsing a directory drops its loaded entries, so the loaded state stays
 inside the bound below and a later expansion reads current entries.
+
+### Workspace Watch
+
+A watcher observes the workspace root, so the tree follows a change that another
+program made without a refresh command.
+
+The `runtime` module owns the watcher, because it is the one portable boundary
+for the `notify` dependency. See [`architecture.md`](architecture.md). The
+watcher converts every platform event into one typed value, and no `notify` type
+crosses that boundary. The typed kinds are `Created`, `Removed`, `Renamed`,
+`Modified`, and `Unknown`, which a platform reports when it names no kind.
+
+The watcher runs its platform callback and one coalescing task beside the event
+loop. The loop reads one published burst as it reads a language event, and it
+performs no filesystem work of its own.
+
+One logical change writes many platform events, and one compiler run writes
+thousands. The watcher therefore collects events for `WATCH_COALESCE_WINDOW` and
+publishes one burst for that window. Kvim coalesces itself instead of adding a
+debouncer dependency, because the burst is a small pure accumulation over typed
+values and it tests without a filesystem.
+
+The burst names the directories whose listing may have changed. `Created`,
+`Removed`, `Renamed`, and `Unknown` name the directory of the path. `Modified`
+names no directory, because the entries of that directory stay the same. A burst
+records a content change instead, and the sidebar asks for the repository state
+again, as a save and a mutation already do. [`git.md`](git.md) owns the refresh
+triggers.
+
+The tree reads only the directories that the burst named. Every read takes the
+ordinary refresh path, so the expansion, the selection, and the first visible row
+all survive.
+
+The watcher ignores the generated directory names of the row-state list above:
+`.direnv`, `.git`, `__pycache__`, `node_modules`, and `target`. One list answers
+both questions, so the two rules can never disagree about one entry. The filter
+runs inside the platform callback, before every queue, so an ignored subtree
+costs no queue space and no later work. A workspace whose own root carries such
+a name still reports every change inside it, because the comparison starts below
+the root.
+
+Every queue is bounded. A full queue, a burst above the directory bound, and a
+failed platform read all drop events. A burst that lost events reports
+`Dropped`, and the sidebar then reads every expanded directory again instead of
+trusting an incomplete set. A drop therefore never leaves the tree stale, and no
+queue ever grows without a limit.
+
+A host that refuses the watch leaves the editor fully usable. The editor names
+that state once for each session and the refresh command reads the workspace by
+hand.
+
+### Watch Bounds
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Window of one burst | `WATCH_COALESCE_WINDOW` | 200 ms | One save writes a temporary file and renames it, so a shorter window would read one directory twice. A reader still sees a new file at once. |
+| Waiting platform events | `WATCH_EVENT_QUEUE_MAX` | 1024 | One burst of an ordinary change writes far fewer events. The bound absorbs a burst without holding the platform callback. |
+| Waiting bursts | `WATCH_BATCH_QUEUE_MAX` | 16 | The event loop reads one burst per window, so a queue of 16 covers a loop that is briefly busy. |
+| Directories of one burst | `WATCH_BATCH_DIRECTORIES_MAX` | 64 | The value matches `TREE_PENDING_READS_MAX`, so one burst never names more reads than the tree queues. |
+| Events of one burst | `WATCH_BURST_EVENTS_MAX` | 4096 | The bound ends one window even while a program writes without pause, so the consumer always receives its burst. |
 
 ### Tree Bounds
 

@@ -10,5 +10,6 @@ version.workspace = true
 thiserror.workspace = true
 
 # Runtime
+notify.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
