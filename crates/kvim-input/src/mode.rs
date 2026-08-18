@@ -228,8 +228,8 @@ pub enum TreePrompt {
     AddDirectory,
     /// Give the selected entry another name.
     Rename,
-    /// Narrow the visible rows to the names that hold the query.
-    Filter,
+    /// Mark the rows whose name holds the query.
+    Search,
 }
 
 impl TreePrompt {
@@ -240,7 +240,7 @@ impl TreePrompt {
             Self::AddFile => "new file: ",
             Self::AddDirectory => "new directory: ",
             Self::Rename => "rename: ",
-            Self::Filter => "filter: ",
+            Self::Search => "search: ",
         }
     }
 }

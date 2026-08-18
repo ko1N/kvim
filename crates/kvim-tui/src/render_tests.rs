@@ -353,6 +353,26 @@ fn a_search_highlights_every_match_and_marks_the_current_one() {
 }
 
 #[test]
+fn esc_and_ctrl_c_both_end_the_buffer_search() {
+    for end in [Key::plain(KeyCode::Esc), Key::ctrl(KeyCode::Char('c'))] {
+        let mut session = with_lines(30, 8, 3);
+        type_keys(&mut session, "/line");
+        press_code(&mut session, KeyCode::Enter);
+        assert_eq!(style_at(&session, 5, 1).bg, Some(SEARCH));
+        assert_eq!(style_at(&session, 5, 2).bg, Some(ACCENT_WARM));
+
+        session.handle_event(TerminalEvent::Key(end), NOW);
+
+        assert_ne!(
+            style_at(&session, 5, 1).bg,
+            Some(SEARCH),
+            "`{end:?}` ends the search and the highlight with it"
+        );
+        assert_ne!(style_at(&session, 5, 2).bg, Some(ACCENT_WARM));
+    }
+}
+
+#[test]
 fn an_edit_moves_the_search_matches_with_the_text() {
     let mut session = with_lines(30, 8, 3);
     type_keys(&mut session, "/line");

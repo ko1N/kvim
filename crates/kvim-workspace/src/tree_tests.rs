@@ -15,8 +15,8 @@ use super::mutation::{
 use super::temp::TempDir;
 use super::tree::{
     DirectoryListing, EntryKind, Expansion, FileTree, LinkKind, RowContent, TREE_DEPTH_MAX,
-    TREE_DIRECTORY_ENTRIES_MAX, TREE_ENTRIES_MAX, TREE_FILTER_CHARS_MAX, TreeEntry, Truncation,
-    read_directory,
+    TREE_DIRECTORY_ENTRIES_MAX, TREE_ENTRIES_MAX, TREE_SEARCH_CHARS_MAX, TREE_SEARCH_READS_MAX,
+    TreeEntry, Truncation, read_directory,
 };
 use super::tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 use crate::BufferId;
@@ -57,6 +57,15 @@ fn labels(tree: &FileTree) -> Vec<String> {
             RowContent::Directory { name, .. } => format!("{name}/"),
             RowContent::Notice(_) => "!".to_owned(),
         })
+        .collect()
+}
+
+/// Returns the name of every row that the active search marked.
+fn marked(tree: &FileTree) -> Vec<String> {
+    tree.rows()
+        .iter()
+        .filter(|row| row.matched.is_some())
+        .filter_map(|row| row.name().map(str::to_owned))
         .collect()
 }
 
@@ -171,8 +180,8 @@ fn the_default_filter_hides_dotfiles_and_the_named_files() {
 }
 
 #[test]
-fn a_query_keeps_the_matching_rows_and_the_directories_above_them() {
-    let directory = TempDir::new("tree-query");
+fn a_search_keeps_every_row_and_marks_the_matching_names() {
+    let directory = TempDir::new("tree-search");
     directory.file("src/lib.rs", "");
     directory.file("src/notes.txt", "");
     directory.file("README.md", "");
@@ -182,15 +191,146 @@ fn a_query_keeps_the_matching_rows_and_the_directories_above_them() {
     pump(&mut tree);
     tree.expand(&root.join("src"));
     pump(&mut tree);
+    let visible = vec!["src/", "lib.rs", "notes.txt", "README.md"];
 
-    tree.set_query("LIB");
-    assert_eq!(labels(&tree), vec!["src/", "lib.rs"]);
+    tree.start_search("LIB");
+    assert_eq!(labels(&tree), visible, "a search removes no row");
+    assert_eq!(marked(&tree), vec!["lib.rs".to_owned()]);
+    assert_eq!(
+        tree.rows()[1]
+            .matched
+            .map(|matched| (matched.start, matched.len)),
+        Some((0, 3)),
+        "the mark covers the matched characters of the name"
+    );
 
-    tree.set_query("");
+    // An empty query ends the search, so no row keeps a mark.
+    tree.start_search("");
+    assert_eq!(labels(&tree), visible);
+    assert!(marked(&tree).is_empty());
+    assert_eq!(tree.search_query(), None);
+}
+
+#[test]
+fn a_search_opens_the_directory_of_one_match_and_the_end_restores_the_expansion() {
+    let directory = TempDir::new("tree-search-open");
+    directory.file("kept/inner.txt", "");
+    directory.file("closed/deep/target.rs", "");
+    let root = root_of(&directory);
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+    tree.expand(&root.join("kept"));
+    pump(&mut tree);
+    assert_eq!(labels(&tree), vec!["closed/", "kept/", "inner.txt"]);
+
+    // The match sits below a directory that the tree never listed, so the
+    // search reads it and opens every directory above the match.
+    tree.start_search("target");
+    pump(&mut tree);
     assert_eq!(
         labels(&tree),
-        vec!["src/", "lib.rs", "notes.txt", "README.md"]
+        vec!["closed/", "deep/", "target.rs", "kept/", "inner.txt"]
     );
+    assert_eq!(marked(&tree), vec!["target.rs".to_owned()]);
+    assert_eq!(
+        expansion(&tree, &root.join("closed")),
+        Some(Expansion::Expanded)
+    );
+
+    tree.end_search();
+    assert_eq!(
+        labels(&tree),
+        vec!["closed/", "kept/", "inner.txt"],
+        "the end closes the directories that the search opened and keeps the others"
+    );
+    assert_eq!(
+        expansion(&tree, &root.join("closed")),
+        Some(Expansion::Collapsed)
+    );
+    assert_eq!(
+        expansion(&tree, &root.join("kept")),
+        Some(Expansion::Expanded)
+    );
+}
+
+#[test]
+fn a_directory_that_the_user_opens_during_a_search_stays_open() {
+    let directory = TempDir::new("tree-search-user-open");
+    directory.file("one/first.txt", "");
+    directory.file("two/second.txt", "");
+    let root = root_of(&directory);
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+
+    tree.start_search("first");
+    pump(&mut tree);
+    assert_eq!(
+        expansion(&tree, &root.join("one")),
+        Some(Expansion::Expanded)
+    );
+
+    // The user opens the second directory while the search runs.
+    tree.expand(&root.join("two"));
+    pump(&mut tree);
+
+    tree.end_search();
+    assert_eq!(
+        expansion(&tree, &root.join("one")),
+        Some(Expansion::Collapsed)
+    );
+    assert_eq!(
+        expansion(&tree, &root.join("two")),
+        Some(Expansion::Expanded)
+    );
+}
+
+#[test]
+fn a_search_without_a_match_marks_no_row_and_ends_with_no_change() {
+    let directory = TempDir::new("tree-search-empty");
+    directory.file("src/lib.rs", "");
+    let root = root_of(&directory);
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+    tree.expand(&root.join("src"));
+    pump(&mut tree);
+    let before = labels(&tree);
+
+    tree.start_search("zzz");
+    pump(&mut tree);
+    assert_eq!(labels(&tree), before);
+    assert!(marked(&tree).is_empty());
+
+    tree.end_search();
+    assert_eq!(labels(&tree), before);
+    assert_eq!(
+        expansion(&tree, &root.join("src")),
+        Some(Expansion::Expanded)
+    );
+}
+
+#[test]
+fn one_search_reads_no_more_directories_than_the_bound_allows() {
+    let directory = TempDir::new("tree-search-bound");
+    for index in 0..TREE_SEARCH_READS_MAX + 8 {
+        directory.file(&format!("d{index:03}/entry.txt"), "");
+    }
+    let root = root_of(&directory);
+
+    let mut tree = FileTree::new(root);
+    pump(&mut tree);
+
+    tree.start_search("entry");
+    let read = pump(&mut tree);
+
+    assert!(
+        read.len() <= TREE_SEARCH_READS_MAX,
+        "one search reads at most TREE_SEARCH_READS_MAX directories, not {}",
+        read.len()
+    );
+    assert!(!read.is_empty(), "the search reads the closed directories");
 }
 
 #[test]
@@ -396,9 +536,12 @@ fn the_depth_bound_stops_the_expansion() {
 #[test]
 fn the_query_bound_keeps_the_first_characters() {
     let mut tree = FileTree::new(PathBuf::from("/workspace"));
-    tree.set_query(&"a".repeat(TREE_FILTER_CHARS_MAX * 2));
+    tree.start_search(&"a".repeat(TREE_SEARCH_CHARS_MAX * 2));
 
-    assert_eq!(tree.filter().query().chars().count(), TREE_FILTER_CHARS_MAX);
+    assert_eq!(
+        tree.search_query().map(|query| query.chars().count()),
+        Some(TREE_SEARCH_CHARS_MAX)
+    );
 }
 
 #[cfg(unix)]

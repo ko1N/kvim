@@ -83,10 +83,10 @@ pub use ripgrep::{
     RIPGREP_OUTPUT_BYTES_MAX, RIPGREP_PROGRAM, parse_matches, ripgrep_command,
 };
 pub use tree::{
-    DirectoryListing, EntryKind, Expansion, FileTree, HIDDEN_NAMES, HiddenPolicy, LinkKind, Notice,
-    ReadError, RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX, TREE_DIRECTORY_SCAN_MAX,
-    TREE_ENTRIES_MAX, TREE_FILTER_CHARS_MAX, TREE_PENDING_READS_MAX, TreeEntry, TreeFilter,
-    TreeRow, Truncation, read_directory,
+    DirectoryListing, EntryKind, Expansion, FileTree, HIDDEN_NAMES, HiddenPolicy, LinkKind,
+    NameMatch, Notice, ReadError, RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX,
+    TREE_DIRECTORY_SCAN_MAX, TREE_ENTRIES_MAX, TREE_PENDING_READS_MAX, TREE_SEARCH_CHARS_MAX,
+    TREE_SEARCH_MATCHES_MAX, TREE_SEARCH_READS_MAX, TreeEntry, TreeRow, Truncation, read_directory,
 };
 pub use tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 pub use undo_file::{

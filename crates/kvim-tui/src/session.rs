@@ -59,7 +59,7 @@ use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, FileBuffer, FileOperation,
     FileRequest, FileResult, FileTree, MutationError, MutationOutcome, OpenRequest, OpenedFile,
     PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot, SaveError,
-    SaveRequest, SavedBuffer, TREE_FILTER_CHARS_MAX, TransferMode, WorkspaceRequest,
+    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TransferMode, WorkspaceRequest,
     WorkspaceResult, render_content,
 };
 
@@ -73,7 +73,9 @@ use super::language::{
 use super::layout::RegionKind;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::theme::Theme;
-use super::tree::{TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMotion, TreeRefusal, TreeSidebar};
+use super::tree::{
+    TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion, TreeRefusal, TreeSidebar,
+};
 use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 
 /// The largest message that the message line keeps, in characters.
@@ -361,7 +363,7 @@ impl PromptLine {
         match self.kind {
             PromptKind::CommandLine => COMMAND_LINE_CHARS_MAX,
             PromptKind::Search => SEARCH_QUERY_CHARS_MAX,
-            PromptKind::Tree(TreePrompt::Filter) => TREE_FILTER_CHARS_MAX,
+            PromptKind::Tree(TreePrompt::Search) => TREE_SEARCH_CHARS_MAX,
             PromptKind::Tree(
                 TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename,
             ) => TREE_NAME_CHARS_MAX,
@@ -797,6 +799,7 @@ impl Session {
             Command::PreviousDiagnostic => {
                 return self.jump_diagnostic(DiagnosticJump::Previous).or(cleared);
             }
+            Command::EndSearch => return self.end_search().or(cleared),
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
             Command::RevealInFileTree => return self.reveal_active_file().or(cleared),
             _ => {}
@@ -2044,6 +2047,9 @@ impl Session {
                 });
                 self.tree.move_selection(motion);
             }
+            Command::SearchNext => return self.select_tree_match(SearchDirection::Forward),
+            Command::SearchPrevious => return self.select_tree_match(SearchDirection::Backward),
+            Command::EndSearch => self.tree.end_search(),
             Command::TreeSelectParent => self.tree.select_parent(),
             Command::TreeToggleEntry => self.tree.toggle_selected(),
             Command::TreeCollapseEntry => self.tree.collapse_selected(),
@@ -2051,7 +2057,7 @@ impl Session {
             Command::TreeRefresh => self.tree.refresh_all(),
             Command::TreeToggleHidden => self.tree.toggle_hidden(),
             Command::TreeOpenEntry => return self.open_selected_entry(),
-            Command::TreeFilter => return self.open_prompt(PromptKind::Tree(TreePrompt::Filter)),
+            Command::TreeSearch => return self.open_prompt(PromptKind::Tree(TreePrompt::Search)),
             Command::TreeAddFile => {
                 return self.open_prompt(PromptKind::Tree(TreePrompt::AddFile));
             }
@@ -2165,8 +2171,8 @@ impl Session {
     /// Runs one accepted file-tree prompt line.
     fn run_tree_prompt(&mut self, prompt: TreePrompt, text: &str) -> Redraw {
         match prompt {
-            TreePrompt::Filter => {
-                self.tree.set_query(text);
+            TreePrompt::Search => {
+                self.tree.start_search(text);
                 Redraw::Needed
             }
             TreePrompt::AddFile => {
@@ -2778,6 +2784,25 @@ impl Session {
             version,
         });
         if outcome == CommandOutcome::SearchMissed {
+            self.set_message("no match", MessageLevel::Warning);
+        }
+        Redraw::Needed
+    }
+
+    /// Ends the active buffer search.
+    ///
+    /// The highlighted matches disappear, and the cursor stays where the last
+    /// move left it. `Esc` and `Ctrl-C` both reach this entry point.
+    fn end_search(&mut self) -> Redraw {
+        if self.search.take().is_none() {
+            return Redraw::Skipped;
+        }
+        Redraw::Needed
+    }
+
+    /// Moves the file-tree selection to the next or the previous match.
+    fn select_tree_match(&mut self, direction: SearchDirection) -> Redraw {
+        if self.tree.select_match(direction) == TreeMatchOutcome::Missed {
             self.set_message("no match", MessageLevel::Warning);
         }
         Redraw::Needed
