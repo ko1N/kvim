@@ -4,7 +4,9 @@
 //! output, and no change to editor state. Every window rectangle comes from the
 //! one layout calculation. See `docs/windows.md`.
 
+use std::borrow::Cow;
 use std::iter::Peekable;
+use std::path::Path;
 use std::str::CharIndices;
 
 use ratatui::buffer::Buffer as CellBuffer;
@@ -16,7 +18,7 @@ use kvim_editor::{Cursor, Delimiter, DelimiterShape, Selection, matching_bracket
 use kvim_language::{Diagnostic, DiagnosticSeverity, HighlightSpan, SyntaxRole};
 use kvim_settings::{DisplaySettings, SignColumn};
 
-use super::cells::{RowCell, layout_row, terminal_column};
+use super::cells::{RowCell, layout_row, terminal_column, text_cells, truncate_cells_left};
 use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the winbar of one window occupies.
@@ -39,6 +41,22 @@ const END_OF_BUFFER_GLYPH: &str = "~";
 
 /// The marker that follows the name of a modified buffer.
 const MODIFIED_MARKER: &str = " [+]";
+
+/// The number of cells that the winbar keeps for the scroll position.
+///
+/// Every label occupies three cells, and one blank separates the label from the
+/// right edge of the window.
+const POSITION_CELLS: u16 = 4;
+
+/// The number of cells that the blank left of the path occupies.
+const PATH_INDENT_CELLS: usize = 1;
+
+/// The smallest path region that the winbar keeps, in cells.
+///
+/// The region holds the blank, the truncation marker, and four cells of the
+/// file name. A winbar that cannot spare this much drops the scroll position,
+/// and then the changed marker, because the path names the file.
+const PATH_CELLS_MIN: usize = 6;
 
 /// Whether one window paints the bracket pair that its cursor stands on.
 ///
@@ -65,8 +83,16 @@ pub(super) enum WindowFocus {
 pub(super) struct WindowView<'a> {
     /// The buffer that the window shows.
     pub(super) buffer: &'a TextBuffer,
-    /// The name that the winbar shows.
+    /// The short name of the buffer, which the winbar shows for a buffer that
+    /// holds no file.
     pub(super) name: &'a str,
+    /// The file of the buffer, or `None` for a buffer that holds no file.
+    pub(super) path: Option<&'a Path>,
+    /// The directory that Kvim started in.
+    ///
+    /// The winbar strips this prefix from the path of the buffer, so a window
+    /// names the file the way the user opened it. See `docs/windows.md`.
+    pub(super) root: &'a Path,
     /// The first visible line of the window.
     pub(super) first_line: usize,
     /// The first visible source column of the window.
@@ -240,12 +266,12 @@ pub(super) fn render_window(
     if area.is_empty() {
         return;
     }
-    render_winbar(target, area, theme, view);
     let text = Rect {
         y: area.y.saturating_add(WINBAR_ROWS),
         height: area.height.saturating_sub(WINBAR_ROWS),
         ..area
     };
+    render_winbar(target, area, theme, view, text.height);
     if text.is_empty() {
         return;
     }
@@ -269,29 +295,134 @@ pub(super) fn render_window(
     }
 }
 
+/// Where the visible rows of one window sit inside its buffer.
+///
+/// Kvim follows the Vim convention: the percentage reports the share of the
+/// buffer above the first visible line, and the three named outcomes take
+/// precedence over a number. See `docs/windows.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ScrollPosition {
+    /// Every line of the buffer is visible.
+    All,
+    /// The first line of the buffer is visible, and later lines are not.
+    Top,
+    /// The last line of the buffer is visible, and earlier lines are not.
+    Bottom,
+    /// The share of the buffer above the first visible line, in percent.
+    Percent(u8),
+}
+
+impl ScrollPosition {
+    /// Returns the position of one window over its buffer.
+    fn measure(first_line: usize, rows: usize, lines: usize) -> Self {
+        let above = first_line;
+        let below = lines.saturating_sub(first_line.saturating_add(rows));
+        match (above, below) {
+            (0, 0) => Self::All,
+            (_, 0) => Self::Bottom,
+            (0, _) => Self::Top,
+            (above, below) => {
+                let total = above.saturating_add(below);
+                let percent = above.saturating_mul(100) / total;
+                debug_assert!(
+                    percent < 100,
+                    "one line below the view keeps the share under the whole buffer"
+                );
+                Self::Percent(u8::try_from(percent).unwrap_or(99))
+            }
+        }
+    }
+
+    /// Returns the label that the winbar shows.
+    ///
+    /// Every label occupies exactly three cells, so the right edge of the
+    /// winbar never moves while a window scrolls.
+    fn label(self) -> Cow<'static, str> {
+        match self {
+            Self::All => Cow::Borrowed("ALL"),
+            Self::Top => Cow::Borrowed("TOP"),
+            Self::Bottom => Cow::Borrowed("BOT"),
+            Self::Percent(percent) => Cow::Owned(format!("{percent:>2}%")),
+        }
+    }
+}
+
+/// Returns the path that the winbar shows for one window.
+///
+/// A file inside the workspace root shows its path relative to that root, so
+/// the winbar names the file the way the user opened it. A file outside the
+/// root keeps its complete path, because no relative path reaches it. A buffer
+/// that holds no file shows its short name.
+fn window_path<'a>(view: &WindowView<'a>) -> Cow<'a, str> {
+    let Some(path) = view.path else {
+        return Cow::Borrowed(view.name);
+    };
+    path.strip_prefix(view.root)
+        .unwrap_or(path)
+        .to_string_lossy()
+}
+
 /// Renders the winbar band of one window.
-fn render_winbar(target: &mut CellBuffer, area: Rect, theme: Theme, view: &WindowView<'_>) {
+///
+/// The band shows, from the left, one blank, the path of the buffer, and the
+/// changed marker. It shows the scroll position at the right edge. A band that
+/// cannot hold every part drops the scroll position first and the changed
+/// marker second, because the path names the file.
+fn render_winbar(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    view: &WindowView<'_>,
+    rows: u16,
+) {
     let band = Rect {
         height: WINBAR_ROWS,
         ..area
     };
     target.set_style(band, theme.style(ThemeRole::Winbar));
+    let width = usize::from(band.width);
+    if width == 0 {
+        return;
+    }
     let title = match view.focus {
         WindowFocus::Focused => ThemeRole::Title,
         WindowFocus::Unfocused => ThemeRole::TitleMuted,
     };
-    let marker = if view.buffer.is_modified() {
+
+    let shows_position = width >= usize::from(POSITION_CELLS) + PATH_CELLS_MIN;
+    let name_cells = if shows_position {
+        width - usize::from(POSITION_CELLS)
+    } else {
+        width
+    };
+    let marker = if view.buffer.is_modified()
+        && name_cells >= text_cells(MODIFIED_MARKER) + PATH_CELLS_MIN
+    {
         MODIFIED_MARKER
     } else {
         ""
     };
+    let path_cells = name_cells.saturating_sub(PATH_INDENT_CELLS + text_cells(marker));
+    let path = window_path(view);
     target.set_stringn(
         band.x,
         band.y,
-        format!(" {}{marker}", view.name),
-        usize::from(band.width),
+        format!(" {}{marker}", truncate_cells_left(&path, path_cells)),
+        name_cells,
         theme.style(title),
     );
+
+    if shows_position {
+        let position =
+            ScrollPosition::measure(view.first_line, usize::from(rows), view.buffer.line_count());
+        target.set_stringn(
+            band.right() - POSITION_CELLS,
+            band.y,
+            format!("{} ", position.label()),
+            usize::from(POSITION_CELLS),
+            theme.style(ThemeRole::Winbar),
+        );
+    }
 }
 
 /// The prepared state that every row of one window shares.
@@ -818,6 +949,8 @@ fn bracket_cells(view: &WindowView<'_>, rows: u16) -> Vec<BracketCell> {
 
 #[cfg(test)]
 mod tests {
+    use std::path::{Path, PathBuf};
+
     use ratatui::buffer::Buffer as CellBuffer;
     use ratatui::layout::Rect;
     use ratatui::style::{Color, Style};
@@ -848,6 +981,8 @@ mod tests {
         let view = WindowView {
             buffer: &buffer,
             name: "test.rs",
+            path: None,
+            root: Path::new("/workspace"),
             first_line: 0,
             left_column: 0,
             cursor: Cursor::ORIGIN,
@@ -864,6 +999,185 @@ mod tests {
         let mut target = CellBuffer::empty(AREA);
         render_window(&mut target, AREA, Theme::new(settings.theme), &view);
         target
+    }
+
+    /// The workspace root of every winbar test.
+    const ROOT: &str = "/workspace";
+
+    /// Returns one rendered row as text, without the trailing blanks.
+    ///
+    /// A wide character owns two cells, and the cell buffer fills the second one
+    /// with a blank, so the scan skips it. The result then reads as the terminal
+    /// shows the row.
+    fn row_of(target: &CellBuffer, y: u16) -> String {
+        let area = *target.area();
+        let mut text = String::new();
+        let mut tail = 0;
+        for x in area.x..area.right() {
+            let Some(cell) = target.cell((x, y)) else {
+                continue;
+            };
+            if tail > 0 {
+                tail -= 1;
+                continue;
+            }
+            tail = super::text_cells(cell.symbol()).saturating_sub(1);
+            text.push_str(cell.symbol());
+        }
+        text.trim_end().to_owned()
+    }
+
+    /// Renders one window over `lines` numbered lines and returns its winbar.
+    ///
+    /// The window shows the rows of `area` below the winbar row, so the caller
+    /// selects the scroll position through `lines` and `first_line`.
+    fn winbar(path: Option<&Path>, lines: usize, first_line: usize, area: Rect) -> String {
+        let text: String = (0..lines).map(|index| format!("line{index}\n")).collect();
+        let buffer =
+            TextBuffer::from_text(&text, &FileSettings::default()).expect("the test text is small");
+        let settings = EditorSettings::default();
+        let view = WindowView {
+            buffer: &buffer,
+            name: "[Scratch]",
+            path,
+            root: Path::new(ROOT),
+            first_line,
+            left_column: 0,
+            cursor: Cursor::ORIGIN,
+            selection: None,
+            matches: &[],
+            match_chars: 0,
+            highlights: &[],
+            diagnostics: &[],
+            focus: WindowFocus::Focused,
+            brackets: BracketHighlight::Hidden,
+            display: &settings.display,
+            tab_width: usize::from(settings.indent.tab_width.get()),
+        };
+        let mut target = CellBuffer::empty(area);
+        render_window(&mut target, area, Theme::new(settings.theme), &view);
+        row_of(&target, area.y)
+    }
+
+    /// Returns the winbar row that one left text and one scroll label produce.
+    ///
+    /// The label ends one cell before the right edge of the window, and blanks
+    /// fill the cells between the two parts.
+    fn expected_row(width: u16, left: &str, label: &str) -> String {
+        let blanks = usize::from(width) - 1 - super::text_cells(left) - super::text_cells(label);
+        format!("{left}{}{label}", " ".repeat(blanks))
+    }
+
+    /// Returns one absolute path inside the workspace root.
+    fn inside(relative: &str) -> PathBuf {
+        Path::new(ROOT).join(relative)
+    }
+
+    #[test]
+    fn the_winbar_shows_the_path_relative_to_the_workspace_root() {
+        let path = inside("src/main.rs");
+        assert_eq!(
+            winbar(Some(&path), 2, 0, AREA),
+            expected_row(AREA.width, " src/main.rs", "ALL")
+        );
+    }
+
+    #[test]
+    fn a_buffer_without_a_file_shows_its_short_name() {
+        assert_eq!(
+            winbar(None, 2, 0, AREA),
+            expected_row(AREA.width, " [Scratch]", "ALL")
+        );
+    }
+
+    #[test]
+    fn a_file_outside_the_workspace_root_keeps_its_complete_path() {
+        // No relative path reaches the file, so the winbar names it in full.
+        let path = Path::new("/other/notes.md");
+        assert_eq!(
+            winbar(Some(path), 2, 0, AREA),
+            expected_row(AREA.width, " /other/notes.md", "ALL")
+        );
+    }
+
+    #[test]
+    fn a_path_of_exactly_the_available_width_keeps_every_character() {
+        // The winbar keeps one blank left of the path and four cells for the
+        // scroll position, so the path region holds 35 cells here.
+        let exact = "a".repeat(35);
+        assert_eq!(
+            winbar(Some(&inside(&exact)), 2, 0, AREA),
+            expected_row(AREA.width, &format!(" {exact}"), "ALL")
+        );
+        // One cell more cuts the start and spends one cell on the marker.
+        let long = "a".repeat(36);
+        assert_eq!(
+            winbar(Some(&inside(&long)), 2, 0, AREA),
+            expected_row(AREA.width, &format!(" <{}", "a".repeat(34)), "ALL")
+        );
+    }
+
+    #[test]
+    fn a_long_path_loses_its_start_and_keeps_the_file_name() {
+        let path = inside("deep/nested/directory/tree/my-folder/file.md");
+        assert_eq!(
+            winbar(Some(&path), 2, 0, AREA),
+            expected_row(AREA.width, " <d/directory/tree/my-folder/file.md", "ALL")
+        );
+    }
+
+    #[test]
+    fn the_truncated_path_never_splits_a_wide_character() {
+        // Eighteen wide characters need 36 cells, and the path region holds 35,
+        // so the marker replaces the first character.
+        let wide = "漢".repeat(18);
+        assert_eq!(
+            winbar(Some(&inside(&wide)), 2, 0, AREA),
+            expected_row(AREA.width, &format!(" <{}", "漢".repeat(17)), "ALL")
+        );
+        // A path region of 36 cells still shows 17 wide characters, because the
+        // eighteenth would overflow the region by one cell.
+        let area = Rect {
+            width: AREA.width + 1,
+            ..AREA
+        };
+        assert_eq!(
+            winbar(Some(&inside(&"漢".repeat(19))), 2, 0, area),
+            expected_row(area.width, &format!(" <{}", "漢".repeat(17)), "ALL")
+        );
+    }
+
+    #[test]
+    fn the_winbar_reports_where_the_view_sits_in_the_buffer() {
+        // The rectangle holds one winbar row and three text rows.
+        let path = inside("main.rs");
+        let cases = [
+            (3, 0, "ALL"),
+            (10, 0, "TOP"),
+            (10, 7, "BOT"),
+            (10, 3, "42%"),
+            (100, 1, " 1%"),
+        ];
+        for (lines, first_line, label) in cases {
+            assert_eq!(
+                winbar(Some(&path), lines, first_line, AREA),
+                expected_row(AREA.width, " main.rs", label),
+                "{lines} lines from line {first_line} show `{label}`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_winbar_drops_the_scroll_position_before_the_path() {
+        let path = inside("src/main.rs");
+        let narrow = |width: u16| winbar(Some(&path), 2, 0, Rect { width, ..AREA });
+        // Ten cells still hold the position and the smallest path region.
+        assert_eq!(narrow(10), expected_row(10, " <n.rs", "ALL"));
+        // Nine cells give every cell to the path.
+        assert_eq!(narrow(9), " <main.rs");
+        assert_eq!(narrow(3), " <s");
+        // One cell holds the blank alone, so the row carries no text.
+        assert_eq!(narrow(1), "");
     }
 
     /// Returns the foreground color of one cell of the first text row.
@@ -887,6 +1201,8 @@ mod tests {
         let view = WindowView {
             buffer: &buffer,
             name: "test.rs",
+            path: None,
+            root: Path::new("/workspace"),
             first_line: 0,
             left_column: 0,
             cursor: Cursor::ORIGIN,
@@ -1098,6 +1414,8 @@ mod tests {
         let view = |selection| WindowView {
             buffer: &buffer,
             name: "test.rs",
+            path: None,
+            root: Path::new("/workspace"),
             first_line: 0,
             left_column: 0,
             cursor: Cursor::ORIGIN,

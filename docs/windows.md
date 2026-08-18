@@ -200,8 +200,26 @@ The terminal holds three bands. The window tree receives the body band only.
 - The message line is the last row. It shows the last message, and the command
   line and the search prompt share it.
 
-One winbar row sits above the text of every window. It shows the buffer name
-and a marker for a modified buffer.
+One winbar row sits above the text of every window. It shows, from the left, one
+blank, the path of the buffer, and a marker for a modified buffer. It shows the
+scroll position at the right edge.
+
+The path is relative to the directory that Kvim started in, which is the
+workspace root that the file tree shows. A file outside that root keeps its
+complete path, because no relative path reaches it. A buffer that holds no file
+shows its short name. A path that is too long for the row loses its start, and a
+`<` marks the cut, so the file name always stays visible. The cut counts
+terminal cells, so it never splits a wide character and never overflows the row.
+
+The scroll position reports where the visible rows sit inside the buffer, in
+three cells: `ALL` while the complete buffer fits, `TOP` while the first line is
+visible, `BOT` while the last line is visible, and otherwise the share of the
+buffer above the first visible line, in percent. Kvim follows the Vim
+convention, so the three named outcomes take precedence over a number.
+
+A winbar that cannot hold every part drops them in a fixed order: the scroll
+position first, then the changed marker. The path always survives, because it
+names the file.
 
 A terminal that cannot hold every band drops the bands in a deterministic
 order: the body first, then the statusline. The message line survives longest,

@@ -8,9 +8,14 @@
 //! Line wrapping stays disabled, so one buffer line produces one terminal row.
 //! A long line scrolls horizontally and clips at the window edge.
 
+use std::borrow::Cow;
+
 use unicode_width::UnicodeWidthChar;
 
 use kvim_core::TerminalColumn;
+
+/// The glyph that marks a text whose start does not fit the available cells.
+pub(super) const TRUNCATION_MARKER: &str = "<";
 
 /// The largest number of source characters that one rendered row reads.
 ///
@@ -78,6 +83,52 @@ fn measure(value: char, cell: usize, tab_width: usize) -> (usize, Option<char>) 
         Some(0) => (0, None),
         Some(width) => (width, Some(value)),
     }
+}
+
+/// Returns the number of cells that one character occupies outside a line.
+///
+/// The rule matches [`measure`] for every character except the tab, because a
+/// tab reaches a tab stop that only a rendered buffer line defines.
+fn char_cells(value: char) -> usize {
+    value.width().unwrap_or(1)
+}
+
+/// Returns the number of terminal cells that one text occupies.
+///
+/// The measurement never counts bytes and never counts characters: a wide
+/// character occupies two cells, a combining mark occupies none, and a control
+/// character occupies one blank cell. The text carries no tab, because a tab
+/// stop belongs to one rendered buffer line.
+pub(super) fn text_cells(text: &str) -> usize {
+    text.chars().take(ROW_SCAN_CHARS_MAX).map(char_cells).sum()
+}
+
+/// Shortens one text on the left so that it occupies at most `cells` cells.
+///
+/// The end of the text always survives, because the file name at the end of a
+/// path names the buffer. A shortened text starts with [`TRUNCATION_MARKER`],
+/// so a reader sees that the start is missing. The cut never splits a wide
+/// character, so the result never overflows the available cells.
+pub(super) fn truncate_cells_left(text: &str, cells: usize) -> Cow<'_, str> {
+    if text_cells(text) <= cells {
+        return Cow::Borrowed(text);
+    }
+    let Some(budget) = cells.checked_sub(text_cells(TRUNCATION_MARKER)) else {
+        // A band without room for the marker shows nothing of the text.
+        return Cow::Borrowed("");
+    };
+    let mut used = 0;
+    let mut start = text.len();
+    for (index, value) in text.char_indices().rev().take(ROW_SCAN_CHARS_MAX) {
+        let width = char_cells(value);
+        if used + width > budget {
+            break;
+        }
+        used += width;
+        start = index;
+    }
+    debug_assert!(used <= budget, "the loop stops before the budget overflows");
+    Cow::Owned(format!("{TRUNCATION_MARKER}{}", &text[start..]))
 }
 
 /// Returns the terminal column of one source column inside one line.
@@ -159,7 +210,7 @@ pub(super) fn layout_row(
 mod tests {
     use kvim_core::TerminalColumn;
 
-    use super::{RowSymbol, layout_row, terminal_column};
+    use super::{RowSymbol, layout_row, terminal_column, text_cells, truncate_cells_left};
 
     const TAB: usize = 4;
 
@@ -221,6 +272,43 @@ mod tests {
         assert_eq!(cells.len(), 4);
         assert_eq!(cells[2].column, 2);
         assert_eq!(cells[3].column, 3);
+    }
+
+    #[test]
+    fn a_text_that_fits_survives_the_left_truncation_unchanged() {
+        assert_eq!(truncate_cells_left("src/main.rs", 11), "src/main.rs");
+        assert_eq!(truncate_cells_left("src/main.rs", 40), "src/main.rs");
+    }
+
+    #[test]
+    fn the_left_truncation_keeps_the_end_of_the_text_and_marks_the_cut() {
+        assert_eq!(
+            truncate_cells_left("my-folder/file.md", 14),
+            "<older/file.md"
+        );
+        assert_eq!(truncate_cells_left("src/main.rs", 6), "<in.rs");
+        assert_eq!(truncate_cells_left("src/main.rs", 1), "<");
+        assert_eq!(truncate_cells_left("src/main.rs", 0), "");
+    }
+
+    #[test]
+    fn the_left_truncation_never_splits_a_wide_character() {
+        assert_eq!(
+            text_cells("漢字abc"),
+            7,
+            "each wide character owns two cells"
+        );
+        // Five cells leave four behind the marker, and the wide character at
+        // the cut needs two of them, so the text drops it instead of showing
+        // half of it. The result then stays one cell below the limit.
+        for cells in 4..=5 {
+            let shortened = truncate_cells_left("漢字abc", cells);
+            assert_eq!(shortened, "<abc");
+            assert!(text_cells(&shortened) <= cells);
+        }
+        // Six cells hold the marker and the complete wide character.
+        assert_eq!(truncate_cells_left("漢字abc", 6), "<字abc");
+        assert_eq!(text_cells("<字abc"), 6);
     }
 
     #[test]

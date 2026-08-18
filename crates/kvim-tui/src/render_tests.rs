@@ -117,6 +117,15 @@ fn is_reversed(session: &Session, x: u16, y: u16) -> bool {
         .contains(Modifier::REVERSED)
 }
 
+/// Returns the complete winbar row of one window, with its trailing blank.
+///
+/// The left text starts at the first cell of the window, and the scroll label
+/// ends one cell before the right edge.
+fn winbar(width: u16, left: &str, label: &str) -> String {
+    let blanks = usize::from(width) - 1 - left.chars().count() - label.chars().count();
+    format!("{left}{}{label} ", " ".repeat(blanks))
+}
+
 /// Creates a session over one terminal size.
 fn session(width: u16, height: u16) -> Session {
     Session::new(
@@ -237,7 +246,10 @@ fn one_window_shows_the_winbar_the_text_and_the_chrome() {
 
     // Row 0 is the winbar, rows 1 to 5 hold the text, row 6 is the statusline,
     // and row 7 is the message line.
-    assert_eq!(row(&session, 0), " [Scratch] [+]");
+    assert_eq!(
+        row(&session, 0),
+        winbar(28, " [Scratch] [+]", "ALL").trim_end()
+    );
     assert_eq!(row(&session, 1), " 1   alpha");
     assert_eq!(
         row(&session, 2),
@@ -251,10 +263,48 @@ fn one_window_shows_the_winbar_the_text_and_the_chrome() {
 #[test]
 fn the_winbar_marks_a_modified_buffer_only_after_a_change() {
     let mut session = session(28, 6);
-    assert_eq!(row(&session, 0), " [Scratch]");
+    assert_eq!(row(&session, 0), winbar(28, " [Scratch]", "ALL").trim_end());
     press(&mut session, 'i');
     type_keys(&mut session, "x");
-    assert_eq!(row(&session, 0), " [Scratch] [+]");
+    assert_eq!(
+        row(&session, 0),
+        winbar(28, " [Scratch] [+]", "ALL").trim_end()
+    );
+}
+
+#[test]
+fn the_winbar_names_an_open_file_relative_to_the_directory_that_kvim_started_in() {
+    let directory = TempDir::new("render-winbar-path");
+    let path = directory.file("src/main.rs", "one\ntwo\nthree\nfour\nfive\nsix\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    // The session starts in the temporary directory, so the winbar strips that
+    // prefix from the path of the buffer.
+    let mut session = Session::new(Rect::new(0, 0, 30, 6), settings, directory.path.clone());
+    open_file(&mut session, path);
+
+    // The window holds three text rows over six buffer lines, so the view sits
+    // at the top of the buffer.
+    assert_eq!(
+        row(&session, 0),
+        winbar(30, " src/main.rs", "TOP").trim_end()
+    );
+
+    // One typed character adds the changed marker beside the path.
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    assert_eq!(
+        row(&session, 0),
+        winbar(30, " src/main.rs [+]", "TOP").trim_end()
+    );
+
+    // The last line reaches the bottom of the buffer.
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "G");
+    assert_eq!(
+        row(&session, 0),
+        winbar(30, " src/main.rs [+]", "BOT").trim_end()
+    );
 }
 
 #[test]
@@ -585,10 +635,8 @@ fn several_splits_each_render_their_own_winbar_and_focus_style() {
     assert_eq!(session.windows().window_count(), 2);
 
     let buffer = draw(&session);
-    assert_eq!(
-        row_of(&buffer, 0),
-        " [Scratch] [+]                 [Scratch] [+]"
-    );
+    let bar = winbar(30, " [Scratch] [+]", "ALL");
+    assert_eq!(row_of(&buffer, 0), format!("{bar}{bar}").trim_end());
     assert_eq!(
         row_of(&buffer, 1),
         " 1   alpha                     1   alpha"
@@ -623,7 +671,9 @@ fn two_splits_paint_two_different_buffers() {
     let second = directory.write("second.rs", "fn second() {}\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, workspace_root());
+    // The session starts in the directory that holds both files, so each winbar
+    // names its buffer relative to that directory.
+    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
 
     open_file(&mut session, first);
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
@@ -632,7 +682,12 @@ fn two_splits_paint_two_different_buffers() {
     let buffer = draw(&session);
     assert_eq!(
         row_of(&buffer, 0),
-        " first.rs                      second.rs"
+        format!(
+            "{}{}",
+            winbar(30, " first.rs", "ALL"),
+            winbar(30, " second.rs", "ALL")
+        )
+        .trim_end()
     );
     assert_eq!(
         row_of(&buffer, 1),

@@ -68,6 +68,8 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                 let window = WindowView {
                     buffer: text,
                     name: file.name(),
+                    path: file.path(),
+                    root: view.tree.tree().root(),
                     first_line: state.first_line(),
                     left_column: state.left_column(),
                     cursor: state.cursor(),
