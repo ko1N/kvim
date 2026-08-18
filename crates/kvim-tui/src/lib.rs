@@ -48,6 +48,7 @@ mod app;
 mod buffer_view;
 mod cells;
 mod chrome;
+mod clipboard;
 mod icons;
 mod language;
 mod layout;

@@ -492,9 +492,11 @@ impl<C: TerminalControl> Drop for TerminalSession<C> {
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
+    use std::future;
     use std::rc::Rc;
 
     use super::*;
+    use crate::{TerminationSignal, TerminationSource};
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     enum ControlStep {
@@ -715,6 +717,38 @@ mod tests {
                 ControlStep::Setup,
             ],
             "a suspended session must not restore an unchanged terminal"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_termination_signal_leaves_the_loop_and_restores_the_terminal() {
+        let log = Rc::new(RefCell::new(Vec::new()));
+        let session = TerminalSession::enter(FakeControl::new(&log)).expect("setup succeeds");
+        let (requests, mut terminations) = TerminationSource::channel();
+        requests
+            .send(TerminationSignal::Terminate)
+            .await
+            .expect("the source holds its receiver");
+
+        // The editor waits for a terminal event and a termination request
+        // together. The request must end the wait, so the loop leaves and the
+        // caller restores exactly as it does after the last window closes.
+        let terminated = tokio::select! {
+            () = future::pending::<()>() => false,
+            _ = terminations.recv() => true,
+        };
+        assert!(terminated, "a termination request must end the event wait");
+        session.restore().expect("restore succeeds");
+
+        assert_eq!(
+            steps(&log),
+            vec![
+                ControlStep::Setup,
+                ControlStep::HookInstalled,
+                ControlStep::Restore,
+                ControlStep::HookRemoved,
+            ],
+            "a terminated editor must never leave the terminal in raw mode"
         );
     }
 

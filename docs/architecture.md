@@ -41,10 +41,10 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
 | `kvim-runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. | Slice 1 |
-| `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, and normalized terminal events. | Slice 2 |
+| `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, normalized terminal events, and the process termination signals. | Slice 2 |
 | `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. | Slices 7–8 |
 | `kvim-workspace` | Files, buffers, atomic save, the file tree, workspace mutations, and pickers. | Slices 9–11 |
-| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, and starts the editor. | Slice 1 |
+| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, reports the host diagnostics, and starts the editor. | Slice 1 |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
 and file code must not contain language-specific path rules. Only a language
@@ -111,15 +111,17 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
-| 4 | `kvim-tui` | every crate above except `kvim-clipboard` |
-| 5 | `kvim` | `kvim-settings`, `kvim-tui` |
+| 4 | `kvim-tui` | every crate above |
+| 5 | `kvim` | `kvim-clipboard`, `kvim-language`, `kvim-settings`, `kvim-tui`, `kvim-workspace` |
 
 `kvim-runtime` and `kvim-terminal` need no setting today. Add
 `kvim-settings` to either one when a setting reaches it.
 
-`kvim-clipboard` has no consumer yet. The editor gains one when the register
-commands reach the system clipboard. The crate builds and tests with the
-workspace in the meantime.
+`kvim-clipboard` has two consumers. `kvim-tui` mirrors the unnamed register
+into the system clipboard. `kvim` reads the selected commands for the
+diagnostics report. Both reach the platform through the same selection, so no
+module above the crate names a clipboard command. See
+[`clipboard.md`](clipboard.md).
 
 The binary is the composition root. It constructs dependencies and starts the
 editor.

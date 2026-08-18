@@ -9,13 +9,16 @@ use std::time::Duration;
 use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
+use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
 use kvim_input::Mode;
 use kvim_language::LspError;
+use kvim_runtime::ProcessOutput;
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{FocusChange, Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
+use super::clipboard::SessionClipboard;
 use super::language::LanguageRequestKind;
 use super::session::{MessageLevel, Redraw, RunState, Session};
 use super::window::WindowId;
@@ -1193,4 +1196,196 @@ fn a_pending_count_reports_no_deadline_at_all() {
         "the buffer holds one line"
     );
     assert_eq!(session.mode(), Mode::Normal);
+}
+
+/// Creates a session whose clipboard reaches its value through one command.
+///
+/// The command never runs. Each test returns its output through
+/// [`Session::apply_clipboard_result`], exactly as the event loop does.
+fn clipboard_session(lines: &[&str]) -> Session {
+    with_text(lines).with_clipboard(SessionClipboard::deferred())
+}
+
+/// Returns the standard input of the clipboard command that waits.
+fn clipboard_text(session: &mut Session) -> String {
+    let request = session
+        .take_clipboard_request()
+        .expect("the transition queued one clipboard command");
+    String::from_utf8(request.stdin).expect("the editor writes UTF-8 text")
+}
+
+/// Returns the output of one clipboard command that succeeded.
+fn clipboard_output(stdout: &str) -> ProcessOutput {
+    ProcessOutput {
+        status_code: Some(0),
+        stdout: stdout.as_bytes().to_vec(),
+        stderr: Vec::new(),
+    }
+}
+
+#[test]
+fn a_yank_sends_the_register_value_to_the_system_clipboard() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    assert_eq!(
+        clipboard_text(&mut session),
+        "alpha\n",
+        "a linewise yank carries its line ending across the boundary"
+    );
+    assert_eq!(
+        session.apply_clipboard_result(Ok(clipboard_output(""))),
+        Redraw::Skipped,
+        "a clipboard write that succeeded reports nothing"
+    );
+    assert_eq!(message(&session), "");
+}
+
+#[test]
+fn a_failed_clipboard_write_keeps_the_register_value() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Err(ClipboardFailure::Failed));
+    assert!(
+        message(&session).contains("register still holds the value"),
+        "the yank succeeded, so the report names the clipboard alone: {}",
+        message(&session)
+    );
+
+    // The register survived the failure, so a paste still returns the value.
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Err(ClipboardFailure::Failed));
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+}
+
+#[test]
+fn a_failed_clipboard_read_falls_back_to_the_internal_register() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
+
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    // A refused submission is the same expected runtime state as a failed
+    // command, so the paste still applies the internal register.
+    session.apply_clipboard_result(Err(ClipboardFailure::Refused));
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+}
+
+#[test]
+fn a_kvim_yank_pastes_with_the_shape_that_it_recorded() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    assert_eq!(clipboard_text(&mut session), "alpha\n");
+    session.apply_clipboard_result(Ok(clipboard_output("")));
+
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    // The clipboard still holds the text that Kvim wrote, so the recorded
+    // linewise shape applies. See `docs/clipboard.md`.
+    session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+}
+
+#[test]
+fn an_external_copy_pastes_characterwise() {
+    let mut session = clipboard_session(&["alpha"]);
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Ok(clipboard_output("gamma")));
+    assert_eq!(
+        session.buffer().to_string(),
+        "agammalpha",
+        "text that Kvim never wrote is characterwise"
+    );
+}
+
+#[test]
+fn an_external_copy_that_ends_with_a_line_ending_pastes_linewise() {
+    let mut session = clipboard_session(&["alpha"]);
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Ok(clipboard_output("gamma\n")));
+    assert_eq!(session.buffer().to_string(), "alpha\ngamma");
+}
+
+#[test]
+fn an_oversized_clipboard_value_never_reaches_the_register() {
+    let mut session = clipboard_session(&["alpha"]);
+    type_keys(&mut session, "yy");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Ok(clipboard_output("")));
+
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    let oversized = "b".repeat(CLIPBOARD_BYTES_MAX + 1);
+    session.apply_clipboard_result(Ok(clipboard_output(&oversized)));
+    assert!(
+        message(&session).contains("clipboard bound"),
+        "the report names the bound: {}",
+        message(&session)
+    );
+    assert_eq!(
+        session.buffer().to_string(),
+        "alpha\nalpha",
+        "the paste falls back to the internal register"
+    );
+}
+
+#[test]
+fn a_missing_clipboard_command_is_reported_once_for_each_session() {
+    // A session without an injected clipboard reaches no command at all, which
+    // is the supported state of a host without a clipboard tool.
+    let mut session = with_text(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    assert!(
+        message(&session).contains("no system clipboard command"),
+        "the first operation names the missing command: {}",
+        message(&session)
+    );
+    assert!(
+        session.take_clipboard_request().is_none(),
+        "a host without a command runs none"
+    );
+
+    type_keys(&mut session, "yy");
+    assert_eq!(
+        message(&session),
+        "",
+        "the missing command is reported once for each session"
+    );
+}
+
+#[test]
+fn a_clipboard_output_without_a_pending_operation_changes_nothing() {
+    let mut session = clipboard_session(&["alpha"]);
+    assert_eq!(
+        session.apply_clipboard_result(Ok(clipboard_output("gamma"))),
+        Redraw::Skipped,
+        "an output that no operation waits for is obsolete"
+    );
+    assert_eq!(session.buffer().to_string(), "alpha");
+    assert_eq!(message(&session), "");
+}
+
+#[test]
+fn a_newer_clipboard_operation_never_leaves_a_paste_waiting() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    let _ = clipboard_text(&mut session);
+    session.apply_clipboard_result(Ok(clipboard_output("")));
+
+    type_keys(&mut session, "p");
+    let _ = clipboard_text(&mut session);
+    // A yank displaces the read that the paste waits for. The paste must then
+    // apply the internal register instead of waiting forever.
+    type_keys(&mut session, "yy");
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+    assert_eq!(
+        clipboard_text(&mut session),
+        "alpha\n",
+        "the displacing yank owns the clipboard command"
+    );
 }

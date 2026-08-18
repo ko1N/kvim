@@ -16,6 +16,12 @@
 //! rejects a result for an obsolete buffer version. Parsing therefore never
 //! runs on the event loop. See `docs/language-services.md`.
 //!
+//! A yank, a delete, and a change write the unnamed register, and a paste reads
+//! the system clipboard. Both directions leave the event loop through
+//! [`Session::take_clipboard_request`] and return through
+//! [`Session::apply_clipboard_result`], so no clipboard command ever runs on
+//! this path. See `docs/clipboard.md`.
+//!
 //! The session reads no clock. The event loop measures the elapsed time and
 //! passes it in, which keeps every transition deterministic and testable.
 
@@ -30,10 +36,11 @@ use ratatui::Frame;
 use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
+use kvim_clipboard::{ClipboardFailure, ClipboardNotice, ClipboardRead};
 use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer};
 use kvim_editor::{
-    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, Registers,
-    SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Selection, WindowState,
+    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, RegisterValue,
+    Registers, SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Selection, WindowState,
 };
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Mode, PromptEdit,
@@ -44,6 +51,7 @@ use kvim_language::{
     DocumentPosition, FormatEdits, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageOutcome,
     LanguageRegistry, LanguageRequestId, LspError, Publication, SourceLocation, SyntaxTree,
 };
+use kvim_runtime::{ProcessOutput, ProcessRequest};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
@@ -56,6 +64,7 @@ use kvim_workspace::{
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
 use super::chrome::shell_areas;
+use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
 use super::language::{
     AfterSave, DiagnosticJump, Float, FormatOnSave, LanguageNotice, LanguageQuery, LanguageRequest,
     LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, jump_target,
@@ -128,6 +137,86 @@ enum PendingFile {
         /// The step that follows the save.
         then: AfterSave,
     },
+}
+
+/// The system clipboard operation that the editor waits for.
+///
+/// The session runs one clipboard operation at a time. A newer operation
+/// resolves the operation that it displaces, so a deferred paste can never
+/// wait for a result that no longer arrives.
+#[derive(Debug)]
+enum ClipboardWork {
+    /// The system clipboard receives this unnamed-register value.
+    Copy(RegisterValue),
+    /// This paste runs after the system clipboard read resolves.
+    Paste {
+        /// The paste command that the key named.
+        command: Command,
+        /// The count that the key named.
+        count: Option<NonZeroU32>,
+    },
+}
+
+/// How far the pending system clipboard operation has progressed.
+///
+/// A command exists only while an operation holds it, and an operation waits
+/// for an output only after the event loop took that command. The variants
+/// carry the command and the operation together, so neither half can exist
+/// without the other. Every transition below is a method, so no caller writes
+/// the progression by hand.
+#[derive(Debug)]
+enum ClipboardActivity {
+    /// No clipboard operation runs.
+    Idle,
+    /// One operation waits for the event loop to take its command.
+    Queued {
+        /// The command that the bounded process service must run.
+        request: ProcessRequest,
+        /// The operation that the output of that command finishes.
+        work: ClipboardWork,
+    },
+    /// One operation waits for the output of the command that it handed over.
+    Running {
+        /// The operation that the output finishes.
+        work: ClipboardWork,
+    },
+}
+
+impl ClipboardActivity {
+    /// Holds one operation until the event loop takes its command.
+    fn queue(&mut self, request: ProcessRequest, work: ClipboardWork) {
+        *self = Self::Queued { request, work };
+    }
+
+    /// Hands the queued command over and waits for its output.
+    ///
+    /// Returns the command exactly once, because the operation leaves the
+    /// queued state with it.
+    fn dispatch(&mut self) -> Option<ProcessRequest> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Queued { request, work } => {
+                *self = Self::Running { work };
+                Some(request)
+            }
+            // A running operation already handed its command over.
+            Self::Running { work } => {
+                *self = Self::Running { work };
+                None
+            }
+            Self::Idle => None,
+        }
+    }
+
+    /// Ends the activity and returns the operation that it held.
+    ///
+    /// A queued command that no one took never runs, which is exactly what a
+    /// displaced operation needs.
+    fn finish(&mut self) -> Option<ClipboardWork> {
+        match std::mem::replace(self, Self::Idle) {
+            Self::Idle => None,
+            Self::Queued { work, .. } | Self::Running { work } => Some(work),
+        }
+    }
 }
 
 /// The reason that one file request produced no result.
@@ -392,6 +481,16 @@ pub struct Session {
     ripgrep_reported: bool,
     editing: EditingState,
     registers: Registers,
+    /// The system clipboard boundary that the composition root selected.
+    clipboard: SessionClipboard,
+    /// The clipboard operation that runs now, and how far it progressed.
+    clipboard_activity: ClipboardActivity,
+    /// The unnamed-register revision that the system clipboard already holds.
+    ///
+    /// The revision counts every register write, so one comparison covers every
+    /// yank, delete, and change without a text comparison. See
+    /// `docs/clipboard.md`.
+    clipboard_revision: u64,
     resolver: Resolver,
     /// The language adapters of this build. Only an adapter selects a path.
     languages: LanguageRegistry,
@@ -446,6 +545,9 @@ impl Session {
             ripgrep_reported: false,
             editing: EditingState::new(),
             registers: Registers::default(),
+            clipboard: SessionClipboard::default(),
+            clipboard_activity: ClipboardActivity::Idle,
+            clipboard_revision: 0,
             resolver: Resolver::new(Registry::first_release(), settings.input),
             languages: LanguageRegistry::first_release(),
             analysis: BTreeMap::new(),
@@ -460,6 +562,16 @@ impl Session {
         };
         session.reconcile_viewports();
         session
+    }
+
+    /// Injects the system clipboard that the composition root selected.
+    ///
+    /// A session without this call reaches no clipboard command at all, which
+    /// keeps every test free from the host clipboard. See `docs/clipboard.md`.
+    #[must_use]
+    pub(super) fn with_clipboard(mut self, clipboard: SessionClipboard) -> Self {
+        self.clipboard = clipboard;
+        self
     }
 
     /// Returns the terminal rectangle that the session renders into.
@@ -594,9 +706,10 @@ impl Session {
         self.reconcile_viewports();
         self.reconcile_tree();
         self.reconcile_picker();
+        let mirrored = self.reconcile_clipboard();
         let rows = self.resolver.which_key(now);
         if rows.as_deref() == self.which_key.as_deref() {
-            return Redraw::Skipped;
+            return mirrored;
         }
         self.which_key = rows;
         Redraw::Needed
@@ -663,6 +776,13 @@ impl Session {
                 return self.close_window(UnsavedChanges::Refuse).or(cleared);
             }
             Command::ToggleComment => return self.toggle_comment().or(cleared),
+            // A paste reads the system clipboard first, so the unnamed register
+            // carries an external copy as well. See `docs/clipboard.md`.
+            Command::PasteAfter | Command::PasteBefore => {
+                return self
+                    .start_clipboard(ClipboardWork::Paste { command, count })
+                    .or(cleared);
+            }
             // The language commands build one bounded request or read the
             // published diagnostics. None of them waits for a server.
             Command::GoToDefinition => {
@@ -694,12 +814,20 @@ impl Session {
                 return cleared;
             }
         }
+        self.apply_editing_command(command, count).or(cleared)
+    }
+
+    /// Applies one command to the buffer of the focused window.
+    ///
+    /// A deferred paste reaches the same entry point after its system clipboard
+    /// read resolved, so both paths run the identical transition.
+    fn apply_editing_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
         let auto = self.auto_indent(command);
         let outcome = self.edit(|editing, context, window| {
             editing.apply_indented(context, window, command, count, auto)
         });
         self.sync_context();
-        self.report(outcome).or(cleared)
+        self.report(outcome)
     }
 
     /// Points the session at the buffer of the focused window.
@@ -2117,6 +2245,144 @@ impl Session {
         self.file_pending = None;
         self.file_outbox = None;
         self.set_message(failure.message(), MessageLevel::Error);
+        Redraw::Needed
+    }
+
+    /// Takes the clipboard command that the bounded process service must run.
+    ///
+    /// The event loop never runs a clipboard command itself, so the command
+    /// leaves the session as a request and returns as one output. See
+    /// `docs/responsiveness.md`.
+    pub fn take_clipboard_request(&mut self) -> Option<ProcessRequest> {
+        self.clipboard_activity.dispatch()
+    }
+
+    /// Applies the output of one clipboard command.
+    ///
+    /// A refused submission and a failed command both reach this entry point as
+    /// a typed failure. A failed write keeps the unnamed register, and a failed
+    /// read falls back to it, so no clipboard failure loses editor data. See
+    /// `docs/clipboard.md`.
+    pub fn apply_clipboard_result(
+        &mut self,
+        output: Result<ProcessOutput, ClipboardFailure>,
+    ) -> Redraw {
+        let Some(work) = self.clipboard_activity.finish() else {
+            // A newer operation displaced this one, so its output is obsolete.
+            return Redraw::Skipped;
+        };
+        match work {
+            ClipboardWork::Copy(value) => {
+                let notice = self.clipboard.finish_copy(&value, output);
+                self.report_clipboard(notice)
+            }
+            ClipboardWork::Paste { command, count } => {
+                let read = self.clipboard.finish_read(output);
+                self.publish_paste(command, count, read)
+            }
+        }
+    }
+
+    /// Mirrors a new unnamed-register value into the system clipboard.
+    ///
+    /// A yank, a delete, and a change all write the unnamed register, so the
+    /// register revision alone reports every value that the system clipboard
+    /// must receive. See `docs/clipboard.md`.
+    fn reconcile_clipboard(&mut self) -> Redraw {
+        if self.registers.revision() == self.clipboard_revision {
+            return Redraw::Skipped;
+        }
+        let redraw = match self.registers.unnamed().cloned() {
+            Some(value) => self.start_clipboard(ClipboardWork::Copy(value)),
+            None => Redraw::Skipped,
+        };
+        // A displaced paste can write the register again with the value that it
+        // read from the system clipboard, and that value needs no write back.
+        self.clipboard_revision = self.registers.revision();
+        redraw
+    }
+
+    /// Starts one clipboard operation and resolves the one it displaces.
+    fn start_clipboard(&mut self, work: ClipboardWork) -> Redraw {
+        let displaced = self.abandon_clipboard();
+        let started = match work {
+            ClipboardWork::Copy(value) => match self.clipboard.copy(&value) {
+                ClipboardStep::Done(notice) => self.report_clipboard(notice),
+                ClipboardStep::Waiting(request) => {
+                    self.defer_clipboard(request, ClipboardWork::Copy(value))
+                }
+            },
+            ClipboardWork::Paste { command, count } => match self.clipboard.read() {
+                ClipboardStep::Done(read) => self.publish_paste(command, count, read),
+                ClipboardStep::Waiting(request) => {
+                    self.defer_clipboard(request, ClipboardWork::Paste { command, count })
+                }
+            },
+        };
+        started.or(displaced)
+    }
+
+    /// Holds one operation until the bounded process service returns its output.
+    fn defer_clipboard(&mut self, request: ProcessRequest, work: ClipboardWork) -> Redraw {
+        self.clipboard_activity.queue(request, work);
+        Redraw::Skipped
+    }
+
+    /// Resolves the pending clipboard operation from internal state alone.
+    fn abandon_clipboard(&mut self) -> Redraw {
+        match self.clipboard_activity.finish() {
+            // The unnamed register still holds the value, so a dropped write
+            // loses nothing.
+            None | Some(ClipboardWork::Copy(_)) => Redraw::Skipped,
+            Some(ClipboardWork::Paste { command, count }) => {
+                self.publish_paste(command, count, ClipboardRead::Fallback(None))
+            }
+        }
+    }
+
+    /// Applies one paste over the register value that the read resolved.
+    ///
+    /// A value from the system clipboard becomes the unnamed register first, so
+    /// an external copy pastes exactly like a Kvim yank.
+    fn publish_paste(
+        &mut self,
+        command: Command,
+        count: Option<NonZeroU32>,
+        read: ClipboardRead,
+    ) -> Redraw {
+        let notice = match read {
+            ClipboardRead::Value(value) => {
+                let ending = self.buffer().line_ending();
+                self.registers.set_unnamed(register_value(value, ending));
+                // The value came from the system clipboard, so it needs no
+                // write back.
+                self.clipboard_revision = self.registers.revision();
+                None
+            }
+            // A failed read falls back to the internal register, so a paste
+            // always works.
+            ClipboardRead::Fallback(notice) => notice,
+        };
+        // The focus can move while the read runs, and a picker or the file tree
+        // owns every key while it holds the focus.
+        if self.picker.is_some() || self.sidebar_has_focus() {
+            return self.report_clipboard(notice);
+        }
+        let applied = self.apply_editing_command(command, count);
+        let reported = self.report_clipboard(notice);
+        self.reconcile_viewports();
+        applied.or(reported)
+    }
+
+    /// Reports one clipboard notice on the message line.
+    ///
+    /// Every notice describes a clipboard that did not receive or return the
+    /// value. The editor register still holds it, so the level stays a warning.
+    fn report_clipboard(&mut self, notice: Option<ClipboardNotice>) -> Redraw {
+        let Some(notice) = notice else {
+            return Redraw::Skipped;
+        };
+        self.set_message(notice.to_string(), MessageLevel::Warning);
         Redraw::Needed
     }
 

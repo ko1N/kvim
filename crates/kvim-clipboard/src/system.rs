@@ -4,8 +4,11 @@
 //! shape. The rules above it, in [`Clipboard`](super::Clipboard), own the shape,
 //! the transfer bound, and the failure reports.
 //!
-//! The platform branch lives in [`detect_system_clipboard`]. No other module
-//! names a clipboard command, and no other module reads the target platform.
+//! The platform branch lives in [`ClipboardSelection`], and
+//! [`detect_system_clipboard`] builds its implementation from that value. No
+//! other module names a clipboard command, and no other module reads the target
+//! platform. A caller that must report the selected commands, for example the
+//! diagnostics report of the executable, reads [`ClipboardSelection::commands`].
 
 use std::ffi::OsString;
 use std::fmt;
@@ -14,6 +17,206 @@ use std::path::Path;
 use kvim_runtime::{PROCESS_DEADLINE_DEFAULT, ProcessOutput, ProcessRequest};
 
 use super::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
+
+/// The environment variable that marks a Wayland session.
+///
+/// The detection reads whether the variable exists. It never reads and never
+/// reports the value.
+const WAYLAND_VARIABLE: &str = "WAYLAND_DISPLAY";
+
+/// The macOS clipboard commands. `docs/clipboard.md` binds the table.
+const MACOS_COMMANDS: ClipboardCommands = ClipboardCommands {
+    write: ClipboardCommand {
+        program: "pbcopy",
+        args: &[],
+    },
+    read: ClipboardCommand {
+        program: "pbpaste",
+        args: &[],
+    },
+};
+
+/// One clipboard command of one platform.
+///
+/// The value is the canonical form of the command. No module above this crate
+/// names a clipboard program or a clipboard argument.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_clipboard::LinuxTool;
+///
+/// let commands = LinuxTool::Wayland.commands();
+/// assert_eq!(commands.read.program, "wl-paste");
+/// assert_eq!(commands.read.to_string(), "wl-paste --no-newline");
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClipboardCommand {
+    /// The program that the command runs.
+    pub program: &'static str,
+    /// The arguments of that program.
+    pub args: &'static [&'static str],
+}
+
+impl fmt::Display for ClipboardCommand {
+    /// Writes the command as one shell-like line, so a report can print it.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.program)?;
+        for arg in self.args {
+            write!(formatter, " {arg}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The write command and the read command of one clipboard.
+///
+/// The two commands always exist together, so no selection can offer one
+/// direction alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ClipboardCommands {
+    /// The command that writes the clipboard.
+    pub write: ClipboardCommand,
+    /// The command that reads the clipboard.
+    pub read: ClipboardCommand,
+}
+
+/// The platform that decides which clipboard commands exist.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_clipboard::{ClipboardPlatform, ClipboardSelection, DisplaySession};
+///
+/// // The composition root reports the platform of this build, then selects the
+/// // commands that the host provides. A host that provides none is supported.
+/// let selection = ClipboardSelection::select(
+///     ClipboardPlatform::current(),
+///     DisplaySession::detect(),
+///     |_| false,
+/// );
+/// assert_eq!(selection.commands(), None);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardPlatform {
+    /// A macOS host, which provides `pbcopy` and `pbpaste`.
+    MacOs,
+    /// A Linux host, which provides one of the tools of [`LinuxTool`].
+    Linux,
+    /// Any other host. Kvim serves it without a clipboard command.
+    Other,
+}
+
+impl ClipboardPlatform {
+    /// Returns the platform of this build.
+    #[must_use]
+    pub const fn current() -> Self {
+        if cfg!(target_os = "macos") {
+            Self::MacOs
+        } else if cfg!(target_os = "linux") {
+            Self::Linux
+        } else {
+            Self::Other
+        }
+    }
+}
+
+/// The clipboard commands that one host selects.
+///
+/// [`detect_system_clipboard`] builds its implementation from this value, so a
+/// caller can ask which commands a session uses without creating a clipboard.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_clipboard::{ClipboardPlatform, ClipboardSelection, DisplaySession, LinuxTool};
+///
+/// let selection = ClipboardSelection::select(
+///     ClipboardPlatform::Linux,
+///     DisplaySession::Wayland,
+///     |_| true,
+/// );
+/// assert_eq!(
+///     selection,
+///     ClipboardSelection::Linux {
+///         session: DisplaySession::Wayland,
+///         tool: LinuxTool::Wayland,
+///     }
+/// );
+/// let commands = selection.commands().expect("the tool exists");
+/// assert_eq!(commands.write.program, "wl-copy");
+///
+/// // A host without any clipboard command is a supported environment.
+/// let absent = ClipboardSelection::select(ClipboardPlatform::Other, DisplaySession::X11, |_| true);
+/// assert_eq!(absent, ClipboardSelection::Absent);
+/// assert_eq!(absent.commands(), None);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ClipboardSelection {
+    /// The macOS commands.
+    MacOs,
+    /// One Linux tool of one display session.
+    Linux {
+        /// The session that ordered the candidates.
+        session: DisplaySession,
+        /// The selected tool.
+        tool: LinuxTool,
+    },
+    /// The host provides no clipboard command.
+    Absent,
+}
+
+impl ClipboardSelection {
+    /// Selects the clipboard of this host.
+    ///
+    /// The function reads the target platform, the presence of a Wayland
+    /// session, and the executable search path. It runs once at startup.
+    #[must_use]
+    pub fn detect() -> Self {
+        Self::select(
+            ClipboardPlatform::current(),
+            DisplaySession::detect(),
+            program_on_path,
+        )
+    }
+
+    /// Selects the clipboard of one host without reading that host.
+    ///
+    /// The function is pure: the caller reports the platform, the session, and
+    /// which programs exist.
+    #[must_use]
+    pub fn select(
+        platform: ClipboardPlatform,
+        session: DisplaySession,
+        available: impl Fn(&str) -> bool,
+    ) -> Self {
+        match platform {
+            ClipboardPlatform::MacOs => {
+                if available(MACOS_COMMANDS.write.program) && available(MACOS_COMMANDS.read.program)
+                {
+                    Self::MacOs
+                } else {
+                    Self::Absent
+                }
+            }
+            ClipboardPlatform::Linux => match select_linux_tool(session, available) {
+                Some(tool) => Self::Linux { session, tool },
+                None => Self::Absent,
+            },
+            ClipboardPlatform::Other => Self::Absent,
+        }
+    }
+
+    /// Returns the commands of this selection, or `None` without a clipboard.
+    #[must_use]
+    pub const fn commands(self) -> Option<ClipboardCommands> {
+        match self {
+            Self::MacOs => Some(MACOS_COMMANDS),
+            Self::Linux { tool, .. } => Some(tool.commands()),
+            Self::Absent => None,
+        }
+    }
+}
 
 /// The system clipboard of one host.
 ///
@@ -141,11 +344,11 @@ impl<E: ProcessExecutor> MacOsClipboard<E> {
 
 impl<E: ProcessExecutor> SystemClipboard for MacOsClipboard<E> {
     fn write(&mut self, text: &str) -> Result<(), ClipboardFailure> {
-        run_write(&self.executor, "pbcopy", &[], text)
+        run_write(&self.executor, MACOS_COMMANDS.write, text)
     }
 
     fn read(&mut self) -> Result<String, ClipboardFailure> {
-        run_read(&self.executor, "pbpaste", &[])
+        run_read(&self.executor, MACOS_COMMANDS.read)
     }
 }
 
@@ -163,40 +366,54 @@ pub enum LinuxTool {
 }
 
 impl LinuxTool {
-    /// Returns the program that writes the clipboard.
+    /// Returns the two commands of this tool.
+    ///
+    /// This table is the one place that names a Linux clipboard command.
+    /// `docs/clipboard.md` binds it.
     #[must_use]
-    pub const fn write_program(self) -> &'static str {
+    pub const fn commands(self) -> ClipboardCommands {
         match self {
-            Self::Wayland => "wl-copy",
-            Self::XClip => "xclip",
-            Self::XSel => "xsel",
+            Self::Wayland => ClipboardCommands {
+                write: ClipboardCommand {
+                    program: "wl-copy",
+                    args: &[],
+                },
+                read: ClipboardCommand {
+                    program: "wl-paste",
+                    args: &["--no-newline"],
+                },
+            },
+            Self::XClip => ClipboardCommands {
+                write: ClipboardCommand {
+                    program: "xclip",
+                    args: &["-selection", "clipboard"],
+                },
+                read: ClipboardCommand {
+                    program: "xclip",
+                    args: &["-selection", "clipboard", "-o"],
+                },
+            },
+            Self::XSel => ClipboardCommands {
+                write: ClipboardCommand {
+                    program: "xsel",
+                    args: &["--clipboard", "--input"],
+                },
+                read: ClipboardCommand {
+                    program: "xsel",
+                    args: &["--clipboard", "--output"],
+                },
+            },
         }
+    }
+
+    /// Returns the program that writes the clipboard.
+    const fn write_program(self) -> &'static str {
+        self.commands().write.program
     }
 
     /// Returns the program that reads the clipboard.
-    #[must_use]
-    pub const fn read_program(self) -> &'static str {
-        match self {
-            Self::Wayland => "wl-paste",
-            Self::XClip => "xclip",
-            Self::XSel => "xsel",
-        }
-    }
-
-    const fn write_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Wayland => &[],
-            Self::XClip => &["-selection", "clipboard"],
-            Self::XSel => &["--clipboard", "--input"],
-        }
-    }
-
-    const fn read_args(self) -> &'static [&'static str] {
-        match self {
-            Self::Wayland => &["--no-newline"],
-            Self::XClip => &["-selection", "clipboard", "-o"],
-            Self::XSel => &["--clipboard", "--output"],
-        }
+    const fn read_program(self) -> &'static str {
+        self.commands().read.program
     }
 }
 
@@ -222,20 +439,11 @@ impl<E: ProcessExecutor> LinuxClipboard<E> {
 
 impl<E: ProcessExecutor> SystemClipboard for LinuxClipboard<E> {
     fn write(&mut self, text: &str) -> Result<(), ClipboardFailure> {
-        run_write(
-            &self.executor,
-            self.tool.write_program(),
-            self.tool.write_args(),
-            text,
-        )
+        run_write(&self.executor, self.tool.commands().write, text)
     }
 
     fn read(&mut self) -> Result<String, ClipboardFailure> {
-        run_read(
-            &self.executor,
-            self.tool.read_program(),
-            self.tool.read_args(),
-        )
+        run_read(&self.executor, self.tool.commands().read)
     }
 }
 
@@ -246,6 +454,21 @@ pub enum DisplaySession {
     Wayland,
     /// An X11 session, or an unknown session.
     X11,
+}
+
+impl DisplaySession {
+    /// Returns the display session of this host.
+    ///
+    /// The function reads whether the Wayland variable exists. It never reads
+    /// and never reports the value.
+    #[must_use]
+    pub fn detect() -> Self {
+        if std::env::var_os(WAYLAND_VARIABLE).is_some() {
+            Self::Wayland
+        } else {
+            Self::X11
+        }
+    }
 }
 
 /// Selects the Linux clipboard tool of one session.
@@ -286,10 +509,10 @@ pub fn select_linux_tool(
 
 /// Selects the clipboard implementation of this host.
 ///
-/// The function reads the target platform, the presence of a Wayland session,
-/// and the executable search path. It runs once at startup, and the composition
-/// root injects the result. A host without any clipboard command receives
-/// [`NoClipboard`].
+/// The function builds the implementation of [`ClipboardSelection::detect`], so
+/// the selection rules live in one place. It runs once at startup, and the
+/// composition root injects the result. A host without any clipboard command
+/// receives [`NoClipboard`].
 ///
 /// # Examples
 ///
@@ -315,23 +538,11 @@ pub fn detect_system_clipboard<E>(executor: E) -> Box<dyn SystemClipboard>
 where
     E: ProcessExecutor + 'static,
 {
-    if cfg!(target_os = "macos") {
-        if program_on_path("pbcopy") && program_on_path("pbpaste") {
-            return Box::new(MacOsClipboard::new(executor));
-        }
-        return Box::new(NoClipboard);
+    match ClipboardSelection::detect() {
+        ClipboardSelection::MacOs => Box::new(MacOsClipboard::new(executor)),
+        ClipboardSelection::Linux { tool, .. } => Box::new(LinuxClipboard::new(tool, executor)),
+        ClipboardSelection::Absent => Box::new(NoClipboard),
     }
-    if cfg!(target_os = "linux") {
-        let session = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
-            DisplaySession::Wayland
-        } else {
-            DisplaySession::X11
-        };
-        if let Some(tool) = select_linux_tool(session, program_on_path) {
-            return Box::new(LinuxClipboard::new(tool, executor));
-        }
-    }
-    Box::new(NoClipboard)
 }
 
 /// Reports whether one program exists on the executable search path.
@@ -348,11 +559,10 @@ pub fn program_on_path(name: &str) -> bool {
 
 fn run_write(
     executor: &impl ProcessExecutor,
-    program: &str,
-    args: &[&str],
+    command: ClipboardCommand,
     text: &str,
 ) -> Result<(), ClipboardFailure> {
-    let mut request = request(program, args);
+    let mut request = request(command);
     request.stdin = text.as_bytes().to_vec();
     let output = executor.run(request)?;
     if output.status_code == Some(0) {
@@ -363,19 +573,18 @@ fn run_write(
 
 fn run_read(
     executor: &impl ProcessExecutor,
-    program: &str,
-    args: &[&str],
+    command: ClipboardCommand,
 ) -> Result<String, ClipboardFailure> {
-    let output = executor.run(request(program, args))?;
+    let output = executor.run(request(command))?;
     if output.status_code != Some(0) {
         return Err(ClipboardFailure::Failed);
     }
     String::from_utf8(output.stdout).map_err(|_| ClipboardFailure::NotText)
 }
 
-fn request(program: &str, args: &[&str]) -> ProcessRequest {
-    let mut request = ProcessRequest::new(program);
-    request.args = args.iter().map(OsString::from).collect();
+fn request(command: ClipboardCommand) -> ProcessRequest {
+    let mut request = ProcessRequest::new(command.program);
+    request.args = command.args.iter().map(OsString::from).collect();
     request.output_bytes_max = CLIPBOARD_BYTES_MAX;
     request.deadline = PROCESS_DEADLINE_DEFAULT;
     request
