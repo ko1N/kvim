@@ -37,10 +37,11 @@ use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{ClipboardFailure, ClipboardNotice, ClipboardRead};
-use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer};
+use kvim_core::{BufferVersion, CharPosition, EditTransaction, LineIndex, TextBuffer};
 use kvim_editor::{
-    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, RegisterValue,
-    Registers, SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Selection, WindowState,
+    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, MoveDirection,
+    RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Selection,
+    WindowState, selection_move_indent_line,
 };
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Mode, PromptEdit,
@@ -895,31 +896,50 @@ impl Session {
 
     /// Returns the automatic indent that one command uses for a new line.
     ///
-    /// Only `o`, `O`, and a repeat of either read the value. The session asks
-    /// the accepted analysis of the current buffer version, and falls back to
-    /// the previous-line rule when no result answers. The editor never waits
-    /// for a parse result. See `docs/language-services.md`.
+    /// Only `o`, `O`, a Visual selection move, and a repeat of one of them read
+    /// the value. The session asks the accepted analysis of the current buffer
+    /// version, and falls back to the previous-line rule when no result
+    /// answers. The editor never waits for a parse result. See
+    /// `docs/language-services.md`.
     fn auto_indent(&self, command: Command) -> AutoIndent {
         let buffer = self.buffer();
-        let line = self.cursor().line();
+        let cursor_line = self.cursor().line();
+        // The moved block lands behind one line, so it takes the indent of a new
+        // line at the end of that line. Only the editor knows which line that
+        // is, because the line follows from the selection and the direction.
+        if let Some(direction) = MoveDirection::of_command(command) {
+            let landing = self
+                .selection()
+                .and_then(|selection| selection_move_indent_line(buffer, selection, direction));
+            let Some(line) = landing else {
+                return AutoIndent::PreviousLine;
+            };
+            return self.indent_level_after(line);
+        }
         let byte = match command {
             // The new line opens after the text of the cursor line.
-            Command::OpenLineBelow => {
-                let end = buffer.line_len_chars(line);
-                let Ok(column) = buffer.source_column(line, end) else {
-                    return AutoIndent::PreviousLine;
-                };
-                buffer
-                    .char_to_byte(buffer.column_to_char(line, column))
-                    .get()
-            }
+            Command::OpenLineBelow => return self.indent_level_after(cursor_line),
             // The new line opens before the text of the cursor line.
-            Command::OpenLineAbove => buffer.char_to_byte(buffer.line_start(line)).get(),
+            Command::OpenLineAbove => buffer.char_to_byte(buffer.line_start(cursor_line)).get(),
             // Every other command ignores the value, and a repeat re-reads it
             // through the command that it replays.
             _ => return AutoIndent::PreviousLine,
         };
         self.indent_level(byte)
+    }
+
+    /// Returns the syntax indent for a new line behind the text of one line.
+    fn indent_level_after(&self, line: LineIndex) -> AutoIndent {
+        let buffer = self.buffer();
+        let end = buffer.line_len_chars(line);
+        let Ok(column) = buffer.source_column(line, end) else {
+            return AutoIndent::PreviousLine;
+        };
+        self.indent_level(
+            buffer
+                .char_to_byte(buffer.column_to_char(line, column))
+                .get(),
+        )
     }
 
     /// Returns the syntax indent for a new line at one byte offset.

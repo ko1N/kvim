@@ -12,6 +12,7 @@ use kvim_core::{
     CharPosition, CharRange, EditTransaction, IndentPolicy, LineIndex, ShiftDirection, TextBuffer,
     TextChange,
 };
+use kvim_input::Command;
 
 use super::cursor::Cursor;
 use super::register::{RegisterShape, RegisterValue};
@@ -123,12 +124,40 @@ pub(super) enum PastePlacement {
 }
 
 /// The direction that a Visual selection moves.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_editor::MoveDirection;
+/// use kvim_input::Command;
+///
+/// assert_eq!(
+///     MoveDirection::of_command(Command::MoveSelectionUp),
+///     Some(MoveDirection::Up),
+/// );
+/// // Every other command moves no selection.
+/// assert_eq!(MoveDirection::of_command(Command::MoveDown), None);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum MoveDirection {
+pub enum MoveDirection {
     /// Move the selected lines one line down.
     Down,
     /// Move the selected lines one line up.
     Up,
+}
+
+impl MoveDirection {
+    /// Returns the direction that one command moves a Visual selection in.
+    ///
+    /// Returns `None` for every command that moves no selection.
+    #[must_use]
+    pub const fn of_command(command: Command) -> Option<Self> {
+        match command {
+            Command::MoveSelectionDown => Some(Self::Down),
+            Command::MoveSelectionUp => Some(Self::Up),
+            _ => None,
+        }
+    }
 }
 
 /// The block edge that a block insert writes at.
@@ -252,6 +281,68 @@ pub(super) fn selection_lines(buffer: &TextBuffer, selection: Selection) -> (Lin
     }
 }
 
+/// Returns the line that a moved Visual selection lands behind.
+///
+/// The moved block takes the automatic indent of a new line at the end of this
+/// line, so a caller that holds a parse result reads the syntax indent level
+/// there and hands it to the editor. Returns `None` when a buffer limit blocks
+/// the move, and when the block lands at the first line of the buffer, where no
+/// line precedes it. See `docs/text-model.md`.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_core::TextBuffer;
+/// use kvim_editor::{MoveDirection, Selection, selection_move_indent_line};
+/// use kvim_settings::FileSettings;
+///
+/// let buffer = TextBuffer::from_text("struct Foo {\n}\nfield: u8,\n", &FileSettings::default())
+///     .expect("the text is small");
+/// let line = |index| buffer.line_index(index).expect("the line exists");
+/// let one_line = |index| Selection::Linewise {
+///     first: line(index),
+///     last: line(index),
+/// };
+///
+/// // The field moves up over the closing brace and lands behind `struct Foo {`.
+/// assert_eq!(
+///     selection_move_indent_line(&buffer, one_line(2), MoveDirection::Up),
+///     Some(line(0)),
+/// );
+/// // The brace moves down over the field and lands behind it.
+/// assert_eq!(
+///     selection_move_indent_line(&buffer, one_line(1), MoveDirection::Down),
+///     Some(line(2)),
+/// );
+/// // The brace moves up to the first line, where no line precedes it.
+/// assert_eq!(
+///     selection_move_indent_line(&buffer, one_line(1), MoveDirection::Up),
+///     None,
+/// );
+/// ```
+#[must_use]
+pub fn selection_move_indent_line(
+    buffer: &TextBuffer,
+    selection: Selection,
+    direction: MoveDirection,
+) -> Option<LineIndex> {
+    let (first, last) = selection_lines(buffer, selection);
+    match direction {
+        // The line below the selection swaps over the block, so the block lands
+        // behind that line.
+        MoveDirection::Down => {
+            let below = last.get() + 1;
+            (below < buffer.line_count()).then(|| line_at(buffer, below))
+        }
+        // The block passes the line above it, so it lands behind the line before
+        // that one.
+        MoveDirection::Up => first
+            .get()
+            .checked_sub(2)
+            .map(|index| line_at(buffer, index)),
+    }
+}
+
 /// Returns the indent width that the automatic-indent fallback rule produces.
 ///
 /// The rule copies the indent of the previous non-empty line, counted from the
@@ -271,10 +362,15 @@ pub(super) fn fallback_indent_columns(
     0
 }
 
-/// Returns the indent width of one new line.
+/// Returns the indent width of one syntax-tree level count.
 ///
 /// A level count from the language adapter becomes a column count here, so the
 /// shift width of `EditorSettings` stays the only source of the indent size.
+fn level_columns(indent: IndentPolicy, levels: u16) -> usize {
+    usize::from(levels).saturating_mul(usize::from(indent.shift_width().get()))
+}
+
+/// Returns the indent width of one new line.
 fn auto_indent_columns(
     buffer: &TextBuffer,
     indent: IndentPolicy,
@@ -282,9 +378,7 @@ fn auto_indent_columns(
     auto: AutoIndent,
 ) -> usize {
     match auto {
-        AutoIndent::Levels(levels) => {
-            usize::from(levels).saturating_mul(usize::from(indent.shift_width().get()))
-        }
+        AutoIndent::Levels(levels) => level_columns(indent, levels),
         AutoIndent::PreviousLine => fallback_indent_columns(buffer, indent, from),
     }
 }
@@ -539,9 +633,10 @@ pub(super) fn plan_shift_lines(
 
 /// Plans one move of the selected lines by one line, with a reindent.
 ///
-/// The moved lines keep their relative indent. The first moved line takes the
-/// indent of the previous non-empty line, which is the automatic-indent
-/// fallback rule of `docs/text-model.md`. Returns `None` at the buffer limits,
+/// The moved lines keep their relative indent, and an empty line inside the
+/// block stays empty. The first moved line takes the automatic indent of its
+/// new position, so a block that moves into a scope gains one level and a block
+/// that moves out of one loses a level. Returns `None` at the buffer limits,
 /// where no move is possible.
 pub(super) fn plan_move_lines(
     buffer: &TextBuffer,
@@ -550,6 +645,7 @@ pub(super) fn plan_move_lines(
     first: LineIndex,
     last: LineIndex,
     direction: MoveDirection,
+    auto: AutoIndent,
 ) -> Option<EditPlan> {
     let (region_first, region_last, block_offset, cursor_line) = match direction {
         MoveDirection::Down => {
@@ -578,7 +674,7 @@ pub(super) fn plan_move_lines(
         MoveDirection::Down => lines.insert(0, buffer.line_text(line_at(buffer, region_last))),
         MoveDirection::Up => lines.push(buffer.line_text(line_at(buffer, region_first))),
     }
-    reindent_block(indent, buffer, &mut lines, region_first, block_offset);
+    reindent_block(indent, buffer, &mut lines, region_first, block_offset, auto);
 
     let range = char_range(
         buffer,
@@ -827,35 +923,53 @@ fn plan_blockwise_paste(
     }
 }
 
-/// Aligns the moved block with the previous non-empty line and keeps its shape.
+/// Aligns the moved block with its new scope and keeps its shape.
+///
+/// The syntax rule of the language adapter answers first, so the block gains one
+/// level when it moves into a scope and loses one level when it leaves one.
+/// Without a parse result the previous-line rule answers instead: the block
+/// copies the indent of the nearest non-empty line above its new position.
 fn reindent_block(
     indent: IndentPolicy,
     buffer: &TextBuffer,
     lines: &mut [String],
     region_first: usize,
     block_offset: usize,
+    auto: AutoIndent,
 ) {
+    // Exactly one line swaps over the block, so the block is one line shorter
+    // than the window that the plan rewrites. The swapped line keeps its own
+    // indent, because it stays in its scope.
+    let block_end = block_offset + lines.len().saturating_sub(1);
     let Some(block_first) = lines.get(block_offset) else {
         return;
     };
     if block_first.trim().is_empty() {
         return;
     }
+    let current = indent.measure(block_first).columns as isize;
 
-    let above = lines[..block_offset]
-        .iter()
-        .rev()
-        .find(|line| !line.trim().is_empty())
-        .map(|line| indent.measure(line).columns);
-    let target = match (above, region_first) {
-        (Some(columns), _) => columns,
-        (None, 0) => 0,
-        (None, _) => fallback_indent_columns(buffer, indent, line_at(buffer, region_first - 1)),
+    let target = match auto {
+        AutoIndent::Levels(levels) => level_columns(indent, levels),
+        AutoIndent::PreviousLine => {
+            // The line that swaps over the block, when the block moves down.
+            let above = lines[..block_offset]
+                .iter()
+                .rev()
+                .find(|line| !line.trim().is_empty())
+                .map(|line| indent.measure(line).columns);
+            match (above, region_first) {
+                (Some(columns), _) => columns,
+                (None, 0) => 0,
+                (None, _) => {
+                    fallback_indent_columns(buffer, indent, line_at(buffer, region_first - 1))
+                }
+            }
+        }
     };
 
-    let current = indent.measure(block_first).columns as isize;
     let delta = target as isize - current;
-    for line in lines.iter_mut().skip(block_offset) {
+    for line in &mut lines[block_offset..block_end] {
         if line.trim().is_empty() {
             continue;
         }
