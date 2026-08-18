@@ -507,14 +507,49 @@ fn tracked_status(field: &str) -> Option<GitStatus> {
 mod tests {
     use std::path::{Path, PathBuf};
 
-    use kvim_runtime::ProcessOutput;
+    use kvim_runtime::{
+        ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeLimits, SubmitError,
+    };
 
-    use crate::temp::TempDir;
+    use crate::temp::{TempDir, TempRepository};
 
     use super::{
         GIT_STATUS_DEADLINE, GIT_STATUS_ENTRIES_MAX, GIT_STATUS_OUTPUT_BYTES_MAX, GitStatus,
         GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
     };
+
+    /// Reads the status of one workspace root through the bounded process
+    /// service, exactly as the terminal event loop does.
+    ///
+    /// The call runs the real `git` command, so it proves the flags of
+    /// [`GitStatusRequest::command`]. A recorded output can never prove them.
+    fn read_status(root: &Path) -> Result<GitStatusSnapshot, GitStatusFailure> {
+        let request = GitStatusRequest::new(root.to_path_buf());
+        let command = request.command();
+        let limits = RuntimeLimits::new(1, 1, 1).expect("every capacity is nonzero");
+        let tokio = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .expect("the test host starts one Tokio runtime");
+        tokio.block_on(async move {
+            let (runtime, mut events) = Runtime::<ProcessOutput>::with_limits(limits);
+            let handle =
+                PublicationGate::default().begin(RequestSlot::new(1), &runtime.cancellation_root());
+            let submitted: Result<(), SubmitError> =
+                runtime.submit_process(handle, command, |output| output);
+            submitted.expect("the isolated runtime holds one free permit");
+            let event = events
+                .recv()
+                .await
+                .expect("every accepted request produces one result");
+            let output = event
+                .result
+                .expect("the development shell and the build sandbox both provide git");
+            runtime.shutdown().await;
+            request.publish(&output)
+        })
+    }
 
     /// The workspace root of every parser test.
     fn root() -> PathBuf {
@@ -723,13 +758,12 @@ mod tests {
             .iter()
             .map(|value| value.to_string_lossy().into_owned())
             .collect();
+        // The format flags need no assertion here. One real read proves them
+        // by its result, and a recorded output could never prove them at all.
         assert!(
             args.contains(&"--no-optional-locks".to_owned()),
             "the read gives up every optional lock of the repository"
         );
-        assert!(args.contains(&"--porcelain=v2".to_owned()));
-        assert!(args.contains(&"-z".to_owned()));
-        assert!(args.contains(&"--ignored=traditional".to_owned()));
         assert_eq!(
             args.last().map(String::as_str),
             Some("."),
@@ -741,22 +775,11 @@ mod tests {
     }
 
     #[test]
-    fn a_refused_read_reports_that_no_status_is_available() {
-        let output = ProcessOutput {
-            status_code: Some(128),
-            stdout: Vec::new(),
-            stderr: b"fatal: not a git repository".to_vec(),
-        };
-        assert_eq!(
-            GitStatusRequest::new(root()).publish(&output),
-            Err(GitStatusFailure::Unavailable),
-            "the exit code decides the state, never the message text"
-        );
-    }
-
-    #[test]
-    fn a_directory_outside_a_repository_reports_no_status() {
-        let dir = TempDir::new("git-plain");
+    fn a_root_without_a_repository_marker_reports_no_status() {
+        // Git answered, but no directory above the root holds a repository
+        // marker, so no path of the output can resolve. The branch stays
+        // reachable through an inherited `GIT_DIR`.
+        let dir = TempDir::new("git-unmarked");
         let output = ProcessOutput {
             status_code: Some(0),
             stdout: Vec::new(),
@@ -769,28 +792,84 @@ mod tests {
     }
 
     #[test]
-    fn a_workspace_below_the_repository_resolves_against_the_top_level() {
-        let dir = TempDir::new("git-nested");
-        dir.dir(".git");
-        let workspace = dir.dir("crates/kvim");
-        let output = ProcessOutput {
-            status_code: Some(0),
-            stdout: b"1 .M N... 100644 100644 100644 aa bb crates/kvim/src/main.rs\0".to_vec(),
-            stderr: Vec::new(),
-        };
-        let snapshot = GitStatusRequest::new(workspace.clone())
-            .publish(&output)
-            .expect("the temporary directory holds one repository marker");
+    fn the_snapshot_reads_no_path_outside_its_own_root() {
+        let snapshot = snapshot(&ordinary(".M", "src/main.rs"));
+        assert_eq!(snapshot.state(Path::new("/elsewhere/src/main.rs")), None);
+    }
+
+    #[test]
+    fn the_status_flags_report_every_state_of_one_real_repository() {
+        // The recorded records above prove the parser. This test proves the
+        // flags: only a real invocation shows that `--ignored=traditional`
+        // still names one directory instead of every file below it, and that
+        // `--porcelain=v2` still writes the format that the parser reads.
+        let repository = TempRepository::new("git-states");
+        repository.file(".gitignore", "build/\n");
+        repository.file("src/modified.rs", "one\n");
+        repository.file("src/staged.rs", "one\n");
+        repository.file("docs/clean.md", "one\n");
+        repository.commit("record the first state");
+
+        repository.file("src/modified.rs", "one\ntwo\n");
+        repository.file("src/staged.rs", "one\ntwo\n");
+        repository.git(&["add", "src/staged.rs"]);
+        repository.file("src/untracked.rs", "one\n");
+        repository.file("build/output.o", "one\n");
+
+        let snapshot = read_status(repository.path()).expect("the directory is one repository");
+        let state = |name: &str| snapshot.state(&repository.join(name));
+
+        assert_eq!(state("src/modified.rs"), Some(GitStatus::Modified));
+        assert_eq!(state("src/staged.rs"), Some(GitStatus::Staged));
+        assert_eq!(state("src/untracked.rs"), Some(GitStatus::Untracked));
+        assert_eq!(state("build"), Some(GitStatus::Ignored));
+        assert_eq!(
+            state("build/output.o"),
+            Some(GitStatus::Ignored),
+            "one collapsed directory record covers every file below it"
+        );
+        assert_eq!(
+            state("src"),
+            Some(GitStatus::StagedAndModified),
+            "the directory reports both halves of the changes below it"
+        );
+        assert_eq!(state("docs/clean.md"), None);
+        assert_eq!(state("docs"), None, "a clean subtree reports nothing");
+    }
+
+    #[test]
+    fn a_workspace_below_the_repository_reads_its_own_subtree() {
+        let repository = TempRepository::new("git-nested");
+        repository.file("crates/kvim/src/main.rs", "one\n");
+        repository.file("docs/outside.md", "one\n");
+        repository.commit("record the first state");
+
+        repository.file("crates/kvim/src/main.rs", "one\ntwo\n");
+        repository.file("docs/outside.md", "one\ntwo\n");
+
+        let workspace = repository.join("crates/kvim");
+        let snapshot = read_status(&workspace).expect("the directory sits inside one repository");
+
         assert_eq!(snapshot.root(), workspace.as_path());
         assert_eq!(
             snapshot.state(&workspace.join("src/main.rs")),
-            Some(GitStatus::Modified)
+            Some(GitStatus::Modified),
+            "Git reports the path against the top level, and the snapshot resolves it"
+        );
+        assert_eq!(
+            snapshot.state(&repository.join("docs/outside.md")),
+            None,
+            "the pathspec keeps the report inside the workspace root"
         );
     }
 
     #[test]
-    fn the_snapshot_reads_no_path_outside_its_own_root() {
-        let snapshot = snapshot(&ordinary(".M", "src/main.rs"));
-        assert_eq!(snapshot.state(Path::new("/elsewhere/src/main.rs")), None);
+    fn a_directory_outside_a_repository_reports_no_status() {
+        let dir = TempDir::new("git-plain");
+        assert_eq!(
+            read_status(&dir.path),
+            Err(GitStatusFailure::Unavailable),
+            "the refusal is a normal state, never an error of the editor"
+        );
     }
 }

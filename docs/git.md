@@ -158,3 +158,37 @@ The parser is pure and defensive. It drops a record that names no known type, a
 record with too few fields, a record whose path holds a root component or a
 parent step, a record whose path leaves the workspace root, and the last record
 when the output bound stopped inside it. A malformed record is never a panic.
+
+## Tests
+
+Two kinds of test cover this boundary, and each proves what the other cannot.
+
+Most tests drive the pure parser with recorded `git status --porcelain=v2 -z`
+bytes. They are deterministic, they need no external command, and they cover
+every record type, every malformed shape, and every bound.
+
+A small set runs the real command end to end through the bounded process
+service. Only a real invocation proves that the flags are right: a recorded
+output cannot show that `--ignored=traditional` still names one directory
+instead of every file below it, or that `--porcelain=v2` still writes the format
+that the parser reads. Three facts need one real read each: every state of one
+repository, the top-level discovery below a repository, and a directory that is
+no repository.
+
+`TempRepository` in the `test-support` module of `kvim-workspace` builds each
+such repository. The development shell and the build sandbox both provide `git`,
+so these tests run everywhere the test suite runs.
+
+A test must never pass or fail by the configuration of the host, which
+[`architecture.md`](architecture.md) binds. Three rules hold:
+
+- Every setup command states its own author, because the build sandbox names
+  none, and neutralizes the system file and the global file through the
+  environment of the child.
+- Every repository sets its own empty `core.excludesFile`. The status read runs
+  through the process service and inherits the settings of the editor, not those
+  of the setup commands, so only a value inside the repository can keep a global
+  ignore file of the developer out of the result. The local value wins over
+  every other one.
+- Every repository names its initial branch, so a Git release that changes its
+  own default changes no result.

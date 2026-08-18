@@ -25,3 +25,10 @@ thiserror.workspace = true
 
 # Runtime
 tokio-util.workspace = true
+
+[dev-dependencies]
+# Runtime
+#
+# The Git tests drive one real status read through the bounded process service,
+# which needs a Tokio runtime. No editor path of this crate starts one.
+tokio.workspace = true
