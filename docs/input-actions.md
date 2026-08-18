@@ -335,8 +335,12 @@ transaction, so one undo reverses it and `.` replays it.
 | `/` | Open the search prompt | Normal |
 | `n` | Move to the next match | Normal |
 | `N` | Move to the previous match | Normal |
+| `Esc` | End the active search | Normal |
+| `Ctrl-C` | End the active search | Normal |
 
-Search uses smart-case matching. See [`settings.md`](settings.md).
+Search uses smart-case matching. See [`settings.md`](settings.md). Ending the
+search removes the match highlight. Both end keys reach the file-tree search as
+well.
 
 ### Visual Selection
 
@@ -404,7 +408,11 @@ behind them.
 | `x` | Cut the selected entry |
 | `p` | Paste the held entries |
 | `H` | Show or hide the hidden entries |
-| `/` | Filter the visible entries |
+| `/` | Search the visible entries |
+| `n` | Select the next match |
+| `N` | Select the previous match |
+| `Esc` | End the active search |
+| `Ctrl-C` | End the active search |
 | `q` | Close the file tree |
 | `Ctrl-E` | Close the file tree |
 | `Ctrl-Q` | Close the file tree |
@@ -420,6 +428,11 @@ selected row keeps the same scroll margin that a buffer window keeps.
 `a`, `A`, `r`, and `/` read one line through the prompt of the message line, not
 through a second input mechanism. The prompt returns the keys to the sidebar
 when it closes. `Esc` and `Ctrl-C` cancel the prompt.
+
+The tree search keeps every row. It marks each matching name, and `n` and `N`
+move the selection between the marks. The search opens a closed directory that
+holds a match, and the end of the search closes exactly those directories
+again. See [`files.md`](files.md).
 
 `a` and `p` act on the destination directory, which is the selected directory,
 or the directory of the selected file. `Enter` on a file opens it in the editor

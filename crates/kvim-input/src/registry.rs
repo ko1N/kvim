@@ -737,6 +737,15 @@ fn first_release_bindings() -> Vec<Binding> {
     add(table, NORMAL, &[ch('/')], Command::OpenSearchPrompt);
     add(table, NORMAL, &[ch('n')], Command::SearchNext);
     add(table, NORMAL, &[ch('N')], Command::SearchPrevious);
+    // The reference configuration ends the search highlight from Normal mode,
+    // and it maps `<C-c>` to `<Esc>` everywhere, so both keys end the search.
+    add(
+        table,
+        NORMAL,
+        &[Key::plain(KeyCode::Esc)],
+        Command::EndSearch,
+    );
+    add(table, NORMAL, &[ctrl('c')], Command::EndSearch);
 
     // Visual selection.
     add(table, VISUAL_MODES, &[ch('J')], Command::MoveSelectionDown);
@@ -916,8 +925,10 @@ fn add_picker_bindings(table: &mut Vec<Binding>) {
 ///
 /// The keys follow the reference Neo-tree subset, and the navigation keys
 /// follow the buffer instead, so one row list moves like another. The sidebar
-/// holds no leader sequence. `Ctrl-E` and `q` both close the sidebar, and the
-/// directional focus keys leave it. See `docs/input-actions.md`.
+/// holds no leader sequence. `n` and `N` move between the search matches, and
+/// `Esc` and `Ctrl-C` end the search, as they do in a buffer window. `Ctrl-E`
+/// and `q` both close the sidebar, and the directional focus keys leave it. See
+/// `docs/input-actions.md`.
 fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('j'), Command::MoveDown);
     add_tree(table, ch('k'), Command::MoveUp);
@@ -940,7 +951,11 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('x'), Command::TreeCutEntry);
     add_tree(table, ch('p'), Command::TreePasteEntries);
     add_tree(table, ch('H'), Command::TreeToggleHidden);
-    add_tree(table, ch('/'), Command::TreeFilter);
+    add_tree(table, ch('/'), Command::TreeSearch);
+    add_tree(table, ch('n'), Command::SearchNext);
+    add_tree(table, ch('N'), Command::SearchPrevious);
+    add_tree(table, Key::plain(KeyCode::Esc), Command::EndSearch);
+    add_tree(table, ctrl('c'), Command::EndSearch);
     add_tree(
         table,
         Key::plain(KeyCode::Backspace),

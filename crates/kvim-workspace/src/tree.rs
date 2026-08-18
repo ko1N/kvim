@@ -39,8 +39,22 @@ pub const TREE_DEPTH_MAX: usize = 16;
 /// The largest number of directory reads that wait for the worker service.
 pub const TREE_PENDING_READS_MAX: usize = 64;
 
-/// The largest number of characters in one filter query.
-pub const TREE_FILTER_CHARS_MAX: usize = 64;
+/// The largest number of characters in one search query.
+pub const TREE_SEARCH_CHARS_MAX: usize = 64;
+
+/// The largest number of directories that one search reads.
+///
+/// A match may sit inside a directory that the tree never listed, so the search
+/// asks for those listings. The bound stops one search from walking a complete
+/// workspace.
+pub const TREE_SEARCH_READS_MAX: usize = 64;
+
+/// The largest number of matches that one search marks.
+///
+/// A short query matches many names. The bound keeps the marked rows small
+/// enough for highlighting and for repeated match movement, as the buffer
+/// search bounds its own match list.
+pub const TREE_SEARCH_MATCHES_MAX: usize = 256;
 
 /// The names that the tree hides while the hidden policy is [`HiddenPolicy::Hide`].
 ///
@@ -211,49 +225,24 @@ impl HiddenPolicy {
     }
 }
 
-/// The visibility rules of the tree.
-#[derive(Clone, Debug)]
-pub struct TreeFilter {
-    hidden: HiddenPolicy,
-    query: String,
-}
-
-impl Default for TreeFilter {
-    fn default() -> Self {
-        Self {
-            hidden: HiddenPolicy::Hide,
-            query: String::new(),
-        }
+/// Reports whether the hidden-entry policy keeps one name.
+fn keeps(hidden: HiddenPolicy, name: &str) -> bool {
+    match hidden {
+        HiddenPolicy::Show => true,
+        HiddenPolicy::Hide => !name.starts_with('.') && !HIDDEN_NAMES.contains(&name),
     }
 }
 
-impl TreeFilter {
-    /// Returns the hidden-entry policy.
-    #[must_use]
-    pub const fn hidden(&self) -> HiddenPolicy {
-        self.hidden
-    }
-
-    /// Returns the narrowing query in lowercase, or an empty string.
-    #[must_use]
-    pub fn query(&self) -> &str {
-        &self.query
-    }
-
-    /// Reports whether the policy keeps one name.
-    #[must_use]
-    fn keeps(&self, name: &str) -> bool {
-        match self.hidden {
-            HiddenPolicy::Show => true,
-            HiddenPolicy::Hide => !name.starts_with('.') && !HIDDEN_NAMES.contains(&name),
-        }
-    }
-
-    /// Reports whether one name matches the query.
-    #[must_use]
-    fn matches(&self, name: &str) -> bool {
-        self.query.is_empty() || name.to_lowercase().contains(&self.query)
-    }
+/// The characters of one entry name that the active search matched.
+///
+/// The values count characters of the name, never bytes, so a renderer places
+/// the highlight at one cell column of the row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NameMatch {
+    /// The first matched character of the name.
+    pub start: usize,
+    /// The number of matched characters.
+    pub len: usize,
 }
 
 /// Whether one directory row holds its children.
@@ -313,6 +302,8 @@ pub struct TreeRow {
     pub depth: usize,
     /// What the row shows.
     pub content: RowContent,
+    /// The characters that the active search matched, or `None`.
+    pub matched: Option<NameMatch>,
 }
 
 impl TreeRow {
@@ -320,6 +311,15 @@ impl TreeRow {
     #[must_use]
     pub const fn is_selectable(&self) -> bool {
         !matches!(self.content, RowContent::Notice(_))
+    }
+
+    /// Returns the entry name, or `None` for a notice row.
+    #[must_use]
+    pub fn name(&self) -> Option<&str> {
+        match &self.content {
+            RowContent::File { name, .. } | RowContent::Directory { name, .. } => Some(name),
+            RowContent::Notice(_) => None,
+        }
     }
 
     /// Returns the kind of the entry, or `None` for a notice row.
@@ -331,6 +331,31 @@ impl TreeRow {
             RowContent::Notice(_) => None,
         }
     }
+}
+
+/// Who opened one directory of the tree.
+///
+/// The tree records the owner before it opens anything, so the end of a search
+/// closes exactly the directories that the search opened and keeps every
+/// directory that the user opened.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Opened {
+    /// The user opened the directory, or a reveal opened it for the user.
+    User,
+    /// The active search opened the directory to show a match below it.
+    Search,
+}
+
+/// One active file-tree search.
+///
+/// The search removes no row. It marks the names that hold the query, and it
+/// opens the directories that hold a match. See `docs/files.md`.
+#[derive(Clone, Debug)]
+struct TreeSearch {
+    /// The query in lowercase, bounded by [`TREE_SEARCH_CHARS_MAX`] characters.
+    query: String,
+    /// The directories that this search asked the caller to read.
+    read: BTreeSet<PathBuf>,
 }
 
 /// The loaded state of one directory.
@@ -381,11 +406,13 @@ enum DirectoryState {
 pub struct FileTree {
     root: PathBuf,
     directories: BTreeMap<PathBuf, DirectoryState>,
-    expanded: BTreeSet<PathBuf>,
+    /// Every open directory and the owner that opened it.
+    expanded: BTreeMap<PathBuf, Opened>,
     pending: VecDeque<PathBuf>,
     selected: Option<PathBuf>,
     reveal: Option<PathBuf>,
-    filter: TreeFilter,
+    hidden: HiddenPolicy,
+    search: Option<TreeSearch>,
     rows: Vec<TreeRow>,
 }
 
@@ -396,14 +423,15 @@ impl FileTree {
         let mut tree = Self {
             root: root.clone(),
             directories: BTreeMap::new(),
-            expanded: BTreeSet::new(),
+            expanded: BTreeMap::new(),
             pending: VecDeque::new(),
             selected: None,
             reveal: None,
-            filter: TreeFilter::default(),
+            hidden: HiddenPolicy::Hide,
+            search: None,
             rows: Vec::new(),
         };
-        tree.expanded.insert(root.clone());
+        tree.expanded.insert(root.clone(), Opened::User);
         tree.pending.push_back(root);
         tree
     }
@@ -420,10 +448,10 @@ impl FileTree {
         &self.rows
     }
 
-    /// Returns the current visibility rules.
+    /// Returns the hidden-entry policy.
     #[must_use]
-    pub const fn filter(&self) -> &TreeFilter {
-        &self.filter
+    pub const fn hidden(&self) -> HiddenPolicy {
+        self.hidden
     }
 
     /// Returns the selected path, or `None` while the tree shows no row.
@@ -463,7 +491,7 @@ impl FileTree {
     /// [`FileTree::apply_read_failure`].
     pub fn take_pending_read(&mut self) -> Option<PathBuf> {
         while let Some(path) = self.pending.pop_front() {
-            if self.expanded.contains(&path) {
+            if self.expanded.contains_key(&path) || self.searched(&path) {
                 return Some(path);
             }
         }
@@ -476,8 +504,9 @@ impl FileTree {
     /// their entries still exist. It drops the state of an entry that
     /// disappeared.
     pub fn apply_listing(&mut self, listing: DirectoryListing) {
-        if !self.expanded.contains(&listing.path) {
-            // The user collapsed the directory while the read ran.
+        if !self.expanded.contains_key(&listing.path) && !self.searched(&listing.path) {
+            // The user collapsed the directory, or the search ended, while the
+            // read ran.
             return;
         }
         let names: BTreeSet<&str> = listing
@@ -518,7 +547,7 @@ impl FileTree {
 
     /// Records that one directory read failed.
     pub fn apply_read_failure(&mut self, path: &Path) {
-        if !self.expanded.contains(path) {
+        if !self.expanded.contains_key(path) && !self.searched(path) {
             return;
         }
         self.directories
@@ -531,7 +560,9 @@ impl FileTree {
         if !self.accepts(path) {
             return;
         }
-        self.expanded.insert(path.to_path_buf());
+        // A directory that the user opens survives the end of a search, even
+        // when the search opened it first.
+        self.expanded.insert(path.to_path_buf(), Opened::User);
         if !self.directories.contains_key(path) {
             self.push_pending(path);
         }
@@ -545,7 +576,7 @@ impl FileTree {
     pub fn collapse(&mut self, path: &Path) {
         let stale: Vec<PathBuf> = self
             .expanded
-            .iter()
+            .keys()
             .filter(|loaded| loaded.starts_with(path))
             .cloned()
             .collect();
@@ -564,7 +595,7 @@ impl FileTree {
 
     /// Opens one closed directory and closes one open directory.
     pub fn toggle(&mut self, path: &Path) {
-        if self.expanded.contains(path) {
+        if self.expanded.contains_key(path) {
             self.collapse(path);
         } else {
             self.expand(path);
@@ -573,7 +604,7 @@ impl FileTree {
 
     /// Asks for a new read of one expanded directory.
     pub fn refresh(&mut self, path: &Path) {
-        if !self.expanded.contains(path) {
+        if !self.expanded.contains_key(path) {
             return;
         }
         self.push_pending(path);
@@ -581,7 +612,7 @@ impl FileTree {
 
     /// Asks for a new read of every expanded directory, from the root down.
     pub fn refresh_all(&mut self) {
-        for path in self.expanded.iter().cloned().collect::<Vec<PathBuf>>() {
+        for path in self.expanded.keys().cloned().collect::<Vec<PathBuf>>() {
             self.push_pending(&path);
         }
     }
@@ -645,21 +676,66 @@ impl FileTree {
 
     /// Shows dotfiles and the named files, or hides them again.
     pub fn toggle_hidden(&mut self) {
-        self.filter.hidden = self.filter.hidden.toggled();
+        self.hidden = self.hidden.toggled();
         self.rebuild();
     }
 
-    /// Narrows the visible rows to the names that hold the query.
+    /// Starts one search, or refines the query of the active one.
     ///
-    /// The tree keeps the first [`TREE_FILTER_CHARS_MAX`] characters and
-    /// compares in lowercase.
-    pub fn set_query(&mut self, query: &str) {
-        self.filter.query = query
+    /// The search keeps every row. It marks the names that hold the query and
+    /// opens the directories that hold a match, so the reader keeps the tree
+    /// that the search found the match in. An empty query ends the search.
+    ///
+    /// The tree keeps the first [`TREE_SEARCH_CHARS_MAX`] characters and
+    /// compares without case.
+    pub fn start_search(&mut self, query: &str) {
+        let query: String = query
             .chars()
-            .take(TREE_FILTER_CHARS_MAX)
+            .take(TREE_SEARCH_CHARS_MAX)
             .flat_map(char::to_lowercase)
             .collect();
+        if query.is_empty() {
+            self.end_search();
+            return;
+        }
+        match self.search.as_mut() {
+            // A refined query reuses the listings that this search already
+            // read, so a longer query never asks for one directory twice.
+            Some(search) => search.query = query,
+            None => {
+                self.search = Some(TreeSearch {
+                    query,
+                    read: BTreeSet::new(),
+                });
+            }
+        }
         self.rebuild();
+    }
+
+    /// Ends the active search and restores the expansion of the user.
+    ///
+    /// The expansion map carries the owner of every open directory, so the
+    /// restore is one commit over that map instead of a rollback: every
+    /// directory that the search opened closes, and every directory that the
+    /// user opened stays open. A directory that disappeared meanwhile holds no
+    /// listing and no row, so it leaves the same consistent state behind.
+    pub fn end_search(&mut self) {
+        if self.search.take().is_none() {
+            return;
+        }
+        self.expanded.retain(|_, opened| *opened == Opened::User);
+        // A listing outside the expansion set would hold the entry bound while
+        // it shows no row, so the tree drops it exactly as a collapse does.
+        let expanded = &self.expanded;
+        self.directories
+            .retain(|path, _| expanded.contains_key(path));
+        self.rebuild();
+    }
+
+    /// Returns the query of the active search, or `None`.
+    #[must_use]
+    pub fn search_query(&self) -> Option<&str> {
+        self.search.as_ref().map(|search| search.query.as_str())
     }
 
     /// Returns the index of the selected row.
@@ -700,6 +776,126 @@ impl FileTree {
             .map(|row| row.path.clone())
     }
 
+    /// Reports whether the active search asked for one directory listing.
+    fn searched(&self, path: &Path) -> bool {
+        self.search
+            .as_ref()
+            .is_some_and(|search| search.read.contains(path))
+    }
+
+    /// Opens every loaded directory that holds a match of the active search.
+    ///
+    /// A match may sit below a closed directory, so the search opens that
+    /// directory and every directory above it. The bound on the holders bounds
+    /// the expansion work of one search.
+    fn open_matched_directories(&mut self) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        let mut holders: Vec<PathBuf> = Vec::new();
+        for (directory, state) in &self.directories {
+            if holders.len() >= TREE_SEARCH_MATCHES_MAX {
+                break;
+            }
+            let DirectoryState::Listed { entries, .. } = state else {
+                continue;
+            };
+            let holds = entries.iter().any(|entry| {
+                keeps(self.hidden, &entry.name) && name_match(&entry.name, &search.query).is_some()
+            });
+            if holds {
+                holders.push(directory.clone());
+            }
+        }
+        for holder in holders {
+            self.open_for_search(&holder);
+        }
+    }
+
+    /// Opens one directory and every directory above it for the search.
+    ///
+    /// The call never replaces the owner of a directory that the user opened,
+    /// so the end of the search keeps that directory open.
+    fn open_for_search(&mut self, directory: &Path) {
+        let Ok(relative) = directory.strip_prefix(&self.root) else {
+            return;
+        };
+        let mut path = self.root.clone();
+        for component in relative.components() {
+            path.push(component);
+            if !self.accepts(&path) {
+                return;
+            }
+            self.expanded.entry(path.clone()).or_insert(Opened::Search);
+        }
+    }
+
+    /// Asks for the listings that the active search still needs.
+    ///
+    /// A match may sit inside a directory that the tree never listed, so the
+    /// search reads the directories of every loaded listing. The read set grows
+    /// one listing at a time and stops at [`TREE_SEARCH_READS_MAX`], so one
+    /// search never walks a complete workspace.
+    fn queue_search_reads(&mut self) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        if search.read.len() >= TREE_SEARCH_READS_MAX {
+            return;
+        }
+        let mut wanted: Vec<PathBuf> = Vec::new();
+        for (directory, state) in &self.directories {
+            let DirectoryState::Listed { entries, .. } = state else {
+                continue;
+            };
+            for entry in entries {
+                if entry.kind != EntryKind::Directory || !keeps(self.hidden, &entry.name) {
+                    continue;
+                }
+                let path = directory.join(&entry.name);
+                if self.directories.contains_key(&path)
+                    || search.read.contains(&path)
+                    || self.pending.iter().any(|queued| *queued == path)
+                    || !self.accepts(&path)
+                {
+                    continue;
+                }
+                wanted.push(path);
+            }
+        }
+        let Some(search) = self.search.as_mut() else {
+            debug_assert!(false, "the guard above returned without an active search");
+            return;
+        };
+        for path in wanted {
+            if search.read.len() >= TREE_SEARCH_READS_MAX
+                || self.pending.len() >= TREE_PENDING_READS_MAX
+            {
+                return;
+            }
+            search.read.insert(path.clone());
+            self.pending.push_back(path);
+        }
+    }
+
+    /// Marks the rows whose name holds the query of the active search.
+    fn mark_matches(&self, rows: &mut [TreeRow]) {
+        let Some(search) = self.search.as_ref() else {
+            return;
+        };
+        let mut found = 0usize;
+        for row in rows {
+            if found >= TREE_SEARCH_MATCHES_MAX {
+                return;
+            }
+            let Some(matched) = row.name().and_then(|name| name_match(name, &search.query)) else {
+                continue;
+            };
+            row.matched = Some(matched);
+            found += 1;
+        }
+    }
+
     /// Reports whether one path may hold loaded state.
     fn accepts(&self, path: &Path) -> bool {
         self.depth_of(path)
@@ -725,7 +921,7 @@ impl FileTree {
     /// Returns the loaded state of every entry that one new listing removed.
     fn stale_descendants(&self, directory: &Path, names: &BTreeSet<&str>) -> Vec<PathBuf> {
         self.expanded
-            .iter()
+            .keys()
             .chain(self.directories.keys())
             .filter(|path| path.as_path() != directory && path.starts_with(directory))
             .filter(|path| {
@@ -760,8 +956,13 @@ impl FileTree {
 
     /// Rebuilds the visible rows and reconciles the selection.
     fn rebuild(&mut self) {
+        // A search may open one directory, so it runs before the rows exist.
+        self.open_matched_directories();
+        self.queue_search_reads();
+
         let mut rows = Vec::new();
         self.collect_rows(&self.root.clone(), 0, &mut rows);
+        self.mark_matches(&mut rows);
         self.rows = rows;
 
         if let Some(target) = self.reveal.clone()
@@ -789,8 +990,12 @@ impl FileTree {
         self.selected = ancestor.or_else(|| self.first_selectable());
     }
 
-    /// Appends the rows of one expanded directory and returns their count.
-    fn collect_rows(&self, directory: &Path, depth: usize, rows: &mut Vec<TreeRow>) -> usize {
+    /// Appends the rows of one expanded directory.
+    ///
+    /// Every entry that the hidden policy keeps becomes one row. A search marks
+    /// the matching rows instead of removing the others, so the visible tree
+    /// stays the tree that the reader navigated.
+    fn collect_rows(&self, directory: &Path, depth: usize, rows: &mut Vec<TreeRow>) {
         debug_assert!(
             depth <= TREE_DEPTH_MAX,
             "expand refuses a directory at or below the depth bound"
@@ -801,50 +1006,37 @@ impl FileTree {
             Some(DirectoryState::Unreadable) | None => &[],
         };
 
-        let mut kept = 0;
         for entry in entries {
-            if !self.filter.keeps(&entry.name) {
+            if !keeps(self.hidden, &entry.name) {
                 continue;
             }
             let path = directory.join(&entry.name);
-            match entry.kind {
-                EntryKind::File => {
-                    if !self.filter.matches(&entry.name) {
-                        continue;
-                    }
-                    rows.push(TreeRow {
-                        path,
-                        depth,
-                        content: RowContent::File {
-                            name: entry.name.clone(),
-                            link: entry.link,
-                        },
-                    });
-                    kept += 1;
+            let content = match entry.kind {
+                EntryKind::File => RowContent::File {
+                    name: entry.name.clone(),
+                    link: entry.link,
+                },
+                EntryKind::Directory => RowContent::Directory {
+                    name: entry.name.clone(),
+                    link: entry.link,
+                    expansion: self.expansion_of(&path),
+                },
+            };
+            let open = matches!(
+                content,
+                RowContent::Directory {
+                    expansion: Expansion::Expanded,
+                    ..
                 }
-                EntryKind::Directory => {
-                    let expansion = self.expansion_of(&path);
-                    let mut children = Vec::new();
-                    let matched = if expansion == Expansion::Expanded {
-                        self.collect_rows(&path, depth + 1, &mut children)
-                    } else {
-                        0
-                    };
-                    if matched == 0 && !self.filter.matches(&entry.name) {
-                        continue;
-                    }
-                    rows.push(TreeRow {
-                        path,
-                        depth,
-                        content: RowContent::Directory {
-                            name: entry.name.clone(),
-                            link: entry.link,
-                            expansion,
-                        },
-                    });
-                    rows.append(&mut children);
-                    kept += 1 + matched;
-                }
+            );
+            rows.push(TreeRow {
+                path: path.clone(),
+                depth,
+                content,
+                matched: None,
+            });
+            if open {
+                self.collect_rows(&path, depth + 1, rows);
             }
         }
 
@@ -866,14 +1058,14 @@ impl FileTree {
                 path: directory.to_path_buf(),
                 depth,
                 content: RowContent::Notice(notice),
+                matched: None,
             });
         }
-        kept
     }
 
     /// Returns the expansion state of one directory path.
     fn expansion_of(&self, path: &Path) -> Expansion {
-        if !self.expanded.contains(path) {
+        if !self.expanded.contains_key(path) {
             return Expansion::Collapsed;
         }
         if self.directories.contains_key(path) {
@@ -882,6 +1074,34 @@ impl FileTree {
             Expansion::Pending
         }
     }
+}
+
+/// Returns the characters of one name that hold the query.
+///
+/// The comparison runs over characters, never over bytes, and it ignores the
+/// case, exactly as the buffer search does. The result therefore indexes the
+/// characters of the original name.
+fn name_match(name: &str, query: &str) -> Option<NameMatch> {
+    debug_assert!(
+        !query.is_empty(),
+        "an empty query ends the search instead of matching every name"
+    );
+    let needle: Vec<char> = query.chars().collect();
+    let haystack: Vec<char> = name.chars().collect();
+    if needle.is_empty() || haystack.len() < needle.len() {
+        return None;
+    }
+    (0..=haystack.len() - needle.len())
+        .find(|start| {
+            haystack[*start..]
+                .iter()
+                .zip(&needle)
+                .all(|(left, right)| left == right || left.to_lowercase().eq(right.to_lowercase()))
+        })
+        .map(|start| NameMatch {
+            start,
+            len: needle.len(),
+        })
 }
 
 /// The direction of one selection move.

@@ -18,6 +18,7 @@ use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{TREE_PENDING_READS_MAX, temp::TempDir};
 
 use super::session::{FileRequestFailure, Session};
+use super::theme::{Theme, ThemeRole};
 use super::tree::TREE_TITLE_ROWS;
 
 const NOW: Duration = Duration::ZERO;
@@ -367,7 +368,7 @@ fn the_text_operations_open_the_prompt_of_the_message_line() {
         ('a', "new file: "),
         ('A', "new directory: "),
         ('r', "rename: "),
-        ('/', "filter: "),
+        ('/', "search: "),
     ];
     for (key, prefix) in cases {
         let (_dir, mut session) = workspace();
@@ -540,16 +541,178 @@ fn a_second_ctrl_e_closes_the_sidebar() {
     assert_eq!(session.mode(), Mode::Insert);
 }
 
-#[test]
-fn a_filter_narrows_the_rows_to_the_matching_names() {
-    let (_dir, mut session) = workspace();
+/// Creates one workspace whose names make every search match unambiguous.
+///
+/// The root holds one directory that a test opens itself, one directory that
+/// stays closed until a search opens it, and one file that matches no query.
+fn search_workspace() -> (TempDir, Session) {
+    let dir = TempDir::new("tree-search");
+    dir.file("open/target_one.rs", "");
+    dir.file("closed/target_two.rs", "");
+    dir.file("plain.txt", "");
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    drain(&mut session);
     reveal(&mut session);
+    // `closed` is the first row, so one step down reaches `open`.
+    press(&mut session, 'j');
+    press(&mut session, 'l');
+    drain(&mut session);
+    (dir, session)
+}
 
-    press(&mut session, '/');
-    type_keys(&mut session, "read");
-    press_code(&mut session, KeyCode::Enter);
+/// Runs one search over the file tree and applies every queued read.
+fn search(session: &mut Session, query: &str) {
+    press(session, '/');
+    type_keys(session, query);
+    press_code(session, KeyCode::Enter);
+    drain(session);
+}
 
-    assert_eq!(sidebar_rows(&session), vec!["  README.md".to_owned()]);
+/// Returns the sidebar columns of one row that carry a search-match color.
+///
+/// The renderer paints the matched characters with the match role of the theme,
+/// so the background of a cell reports the mark.
+fn match_columns(session: &Session, row: u16) -> Vec<u16> {
+    let theme = Theme::new(EditorSettings::default().theme);
+    let marked = theme.style(ThemeRole::SearchMatch).bg;
+    let current = theme.style(ThemeRole::CurrentSearchMatch).bg;
+    let buffer = draw(session);
+    (SIDEBAR_X..WIDTH)
+        .filter(|x| {
+            buffer
+                .cell((*x, row))
+                .is_some_and(|cell| cell.style().bg == marked || cell.style().bg == current)
+        })
+        .map(|x| x - SIDEBAR_X)
+        .collect()
+}
+
+/// Returns the entry name of one rendered sidebar row.
+fn entry_name(row: &str) -> &str {
+    row.trim_start_matches([' ', '\u{25be}', '\u{25b8}'])
+}
+
+/// The rows of the search workspace before one search runs.
+fn rows_before_the_search() -> Vec<String> {
+    vec![
+        "▸ closed".to_owned(),
+        "▾ open".to_owned(),
+        "    target_one.rs".to_owned(),
+        "  plain.txt".to_owned(),
+    ]
+}
+
+/// The rows of the search workspace while the search shows both matches.
+fn rows_during_the_search() -> Vec<String> {
+    vec![
+        "▾ closed".to_owned(),
+        "    target_two.rs".to_owned(),
+        "▾ open".to_owned(),
+        "    target_one.rs".to_owned(),
+        "  plain.txt".to_owned(),
+    ]
+}
+
+#[test]
+fn a_search_keeps_every_row_and_marks_every_match() {
+    let (_dir, mut session) = search_workspace();
+    assert_eq!(sidebar_rows(&session), rows_before_the_search());
+
+    search(&mut session, "target");
+
+    // Every entry that the reader saw before the search stays visible. Only
+    // the expansion marker of the opened directory changes.
+    let rows = sidebar_rows(&session);
+    let names: Vec<&str> = rows.iter().map(|row| entry_name(row)).collect();
+    for row in rows_before_the_search() {
+        let name = entry_name(&row);
+        assert!(names.contains(&name), "the search keeps the entry `{name}`");
+    }
+    assert_eq!(rows, rows_during_the_search());
+
+    // The name of a match starts behind the indent and the expansion marker,
+    // so the mark covers the six characters of `target` alone.
+    let marked: Vec<u16> = (4..10).collect();
+    assert_eq!(match_columns(&session, 2), marked, "the revealed match");
+    assert_eq!(match_columns(&session, 4), marked, "the open match");
+    assert!(
+        match_columns(&session, 5).is_empty(),
+        "a row without a match carries no mark"
+    );
+}
+
+#[test]
+fn n_and_capital_n_move_between_the_matches_in_row_order() {
+    let (_dir, mut session) = search_workspace();
+    search(&mut session, "target");
+    assert_eq!(selected_name(&session), "open");
+
+    // `n` takes the next match below the selection and wraps at the last one.
+    press(&mut session, 'n');
+    assert_eq!(selected_name(&session), "target_one.rs");
+    press(&mut session, 'n');
+    assert_eq!(selected_name(&session), "target_two.rs");
+
+    // `N` takes the previous match and wraps at the first one.
+    press(&mut session, 'N');
+    assert_eq!(selected_name(&session), "target_one.rs");
+    press(&mut session, 'N');
+    assert_eq!(selected_name(&session), "target_two.rs");
+}
+
+#[test]
+fn esc_and_ctrl_c_both_end_the_search_and_restore_the_expansion() {
+    for end in ["esc", "ctrl-c"] {
+        let (_dir, mut session) = search_workspace();
+        search(&mut session, "target");
+        assert_eq!(sidebar_rows(&session), rows_during_the_search());
+
+        if end == "esc" {
+            press_code(&mut session, KeyCode::Esc);
+        } else {
+            press_ctrl(&mut session, 'c');
+        }
+
+        assert_eq!(
+            sidebar_rows(&session),
+            rows_before_the_search(),
+            "`{end}` closes the directory that the search opened and keeps the other"
+        );
+        assert!(
+            match_columns(&session, 3).is_empty(),
+            "`{end}` removes every mark"
+        );
+    }
+}
+
+#[test]
+fn a_query_without_a_match_changes_no_row_and_reports_the_missing_match() {
+    let (_dir, mut session) = search_workspace();
+
+    search(&mut session, "zzzz");
+
+    assert_eq!(sidebar_rows(&session), rows_before_the_search());
+    assert!(match_columns(&session, 3).is_empty());
+
+    press(&mut session, 'n');
+    assert_eq!(message(&session), "no match");
+    assert_eq!(selected_name(&session), "open");
+}
+
+#[test]
+fn an_end_without_an_active_search_changes_nothing() {
+    let (_dir, mut session) = search_workspace();
+    let before = sidebar_rows(&session);
+    let selected = selected_name(&session);
+
+    press_code(&mut session, KeyCode::Esc);
+    press_ctrl(&mut session, 'c');
+
+    assert_eq!(sidebar_rows(&session), before);
+    assert_eq!(selected_name(&session), selected);
 }
 
 #[test]

@@ -16,12 +16,12 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
-use kvim_editor::Viewport;
+use kvim_editor::{SearchDirection, Viewport};
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, LinkKind,
-    MutateRequest, MutationOutcome, Notice, OpenBuffer, ReadError, RowContent, TransferMode,
-    TreeRow, WorkspaceRequest,
+    MutateRequest, MutationOutcome, NameMatch, Notice, OpenBuffer, ReadError, RowContent,
+    TransferMode, TreeRow, WorkspaceRequest,
 };
 
 use super::buffer_view::WindowFocus;
@@ -54,6 +54,15 @@ const MARKER_CELLS: usize = 2;
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";
+
+/// The result of one move between the matches of the file-tree search.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum TreeMatchOutcome {
+    /// The selection moved to one match.
+    Moved,
+    /// The tree shows no match, so the selection stayed where it was.
+    Missed,
+}
 
 /// One move of the file-tree selection, measured in rows.
 ///
@@ -333,9 +342,50 @@ impl TreeSidebar {
         self.tree.toggle_hidden();
     }
 
-    /// Narrows the visible rows to the names that hold the query.
-    pub(super) fn set_query(&mut self, query: &str) {
-        self.tree.set_query(query);
+    /// Starts one search, or refines the query of the active one.
+    ///
+    /// The search keeps every row. It may open a directory that holds a match,
+    /// and it may need the listing of a directory that the tree never read, so
+    /// the sidebar queues the next read here as every other transition does.
+    pub(super) fn start_search(&mut self, query: &str) {
+        self.tree.start_search(query);
+        self.pump();
+    }
+
+    /// Ends the active search and restores the expansion of the user.
+    pub(super) fn end_search(&mut self) {
+        self.tree.end_search();
+    }
+
+    /// Moves the selection to the next or the previous match.
+    ///
+    /// The move wraps at the first and the last match, as `n` and `N` wrap in
+    /// a buffer window.
+    pub(super) fn select_match(&mut self, direction: SearchDirection) -> TreeMatchOutcome {
+        let rows = self.tree.rows();
+        let current = self.selected_index().unwrap_or(0);
+        let found = match direction {
+            SearchDirection::Forward => rows
+                .iter()
+                .skip(current.saturating_add(1))
+                .find(|row| row.matched.is_some())
+                .or_else(|| rows.iter().find(|row| row.matched.is_some())),
+            SearchDirection::Backward => rows[..current.min(rows.len())]
+                .iter()
+                .rev()
+                .find(|row| row.matched.is_some())
+                .or_else(|| rows.iter().rev().find(|row| row.matched.is_some())),
+        };
+        let Some(row) = found else {
+            return TreeMatchOutcome::Missed;
+        };
+        debug_assert!(
+            row.is_selectable(),
+            "a notice row carries no name, so it never holds a match"
+        );
+        let path = row.path.clone();
+        self.tree.select(&path);
+        TreeMatchOutcome::Moved
     }
 
     /// Holds the selected entry for the next paste.
@@ -636,7 +686,8 @@ pub(super) fn render_tree(
                 .patch(theme.style(ThemeRole::Title)),
             RowContent::File { .. } => theme.style(ThemeRole::Text),
         };
-        let style = if row.is_selectable() && selected == Some(row.path.as_path()) {
+        let current = row.is_selectable() && selected == Some(row.path.as_path());
+        let style = if current {
             cursor = Some(Position::new(body.x, y));
             style.patch(theme.style(ThemeRole::PopupSelection))
         } else {
@@ -649,8 +700,68 @@ pub(super) fn render_tree(
         // The icon carries its own color over the row style, so a selected row
         // keeps its background behind the glyph.
         render_row_icon(target, body, y, row, icons, theme, style);
+        // The search marks every match. The selected row carries the match that
+        // `n` and `N` moved to, so it reads as the current one, exactly as the
+        // match under the cursor does in a buffer window.
+        if let Some(matched) = row.matched {
+            let role = if current {
+                ThemeRole::CurrentSearchMatch
+            } else {
+                ThemeRole::SearchMatch
+            };
+            render_row_match(
+                target,
+                body,
+                y,
+                row,
+                icons,
+                matched,
+                style.patch(theme.style(role)),
+            );
+        }
     }
     cursor
+}
+
+/// Returns the cell column of the entry name inside one sidebar row.
+///
+/// The name follows the indent of the depth, the expansion marker, and the
+/// reserved icon cells. A hidden icon reserves none, so both icon settings
+/// place the name at the column that [`row_text`] wrote it to.
+fn name_offset_cells(row: &TreeRow, icons: FileTreeIcons) -> usize {
+    let icon = match icons {
+        FileTreeIcons::Hidden => 0,
+        FileTreeIcons::Shown => ICON_CELLS,
+    };
+    row.depth * TREE_INDENT_CELLS + MARKER_CELLS + icon
+}
+
+/// Paints the matched characters of one row.
+///
+/// A match that starts outside the sidebar keeps the clipped text that the row
+/// already wrote, and a match that reaches the right edge stops there.
+fn render_row_match(
+    target: &mut CellBuffer,
+    body: Rect,
+    y: u16,
+    row: &TreeRow,
+    icons: FileTreeIcons,
+    matched: NameMatch,
+    style: Style,
+) {
+    let Ok(offset) = u16::try_from(name_offset_cells(row, icons) + matched.start) else {
+        debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
+        return;
+    };
+    let Ok(cells) = u16::try_from(matched.len) else {
+        debug_assert!(false, "the query stays inside TREE_SEARCH_CHARS_MAX");
+        return;
+    };
+    if offset >= body.width {
+        return;
+    }
+    let width = cells.min(body.width - offset);
+    target.set_style(Rect::new(body.x + offset, y, width, 1), style);
 }
 
 /// Paints the icon cell of one row with the color of its role.

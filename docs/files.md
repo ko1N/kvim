@@ -230,10 +230,26 @@ names stay aligned in both states.
 ### Visibility
 
 The tree hides an entry whose name starts with a full stop, and the names
-`.DS_Store` and `thumbs.db`. One command shows every entry again. A filter query
-narrows the visible rows to the names that hold the query, compared in
-lowercase. A directory stays visible while its own name matches or while it
-holds one matching descendant.
+`.DS_Store` and `thumbs.db`. One command shows every entry again.
+
+### Tree Search
+
+The tree search behaves like the buffer search. It removes no row. It marks
+every name that holds the query, compared without case, and one key pair moves
+the selection between the marks in row order. The move wraps at the first and
+the last match, as `n` and `N` wrap in a buffer window.
+
+A match may sit below a directory that is closed, or inside a directory that
+the tree never listed. The search therefore reads the directories of every
+loaded listing through the bounded worker service, never on the event loop, and
+it opens the directories above each match.
+
+The tree records the owner of every open directory before it opens anything, so
+the end of a search is one commit instead of a rollback: every directory that
+the search opened closes, and every directory that the user opened stays open.
+A directory that the user opens while the search runs therefore survives the
+end of that search. `Esc` and `Ctrl-C` both end the search, and an empty query
+ends it as well.
 
 Kvim reads no Git ignore rules for the tree in the first release.
 
@@ -246,7 +262,7 @@ The sidebar owns every key while it holds the focus.
 a file, and on a closed directory, `h` selects the directory that holds the
 entry. `l` on a file opens that file in the editor window, as `Enter` does, so
 one key always moves the reader deeper into the tree. An operation that
-needs text, such as a rename, an add, or a filter, reads one line through the
+needs text, such as a rename, an add, or a search, reads one line through the
 prompt of the message line. The tree opens no second input mechanism.
 
 The tree runs one workspace operation at a time, as the file operations do. The
@@ -280,7 +296,9 @@ inside the bound below and a later expansion reads current entries.
 | Entries of the complete tree | `TREE_ENTRIES_MAX` | 8192 | The value holds 16 full directories, which is more than one navigation session expands. |
 | Depth below the root | `TREE_DEPTH_MAX` | 16 | A Rust repository nests far less. The bound also stops a symbolic link that points at one of its own parents. |
 | Waiting directory reads | `TREE_PENDING_READS_MAX` | 64 | One reveal or refresh queues few reads. The bound keeps the queue from growing while the worker is busy. |
-| Characters of one filter query | `TREE_FILTER_CHARS_MAX` | 64 | A filter query is a short name fragment. |
+| Characters of one search query | `TREE_SEARCH_CHARS_MAX` | 64 | A search query is a short name fragment. |
+| Directories of one search read | `TREE_SEARCH_READS_MAX` | 64 | One search reveals the matches around the reader instead of walking a complete workspace. |
+| Matches of one search | `TREE_SEARCH_MATCHES_MAX` | 256 | The reader refines the query instead of stepping through more marks. |
 
 A directory above the entry bound shows its first entries in the order above and
 reports the truncation as one visible row. The tree never shows a partial

@@ -134,6 +134,7 @@ semantic_commands! {
     OpenSearchPrompt => ("open-search-prompt", "Open the search prompt"),
     SearchNext => ("search-next", "Move to the next match"),
     SearchPrevious => ("search-previous", "Move to the previous match"),
+    EndSearch => ("end-search", "End the active search"),
 
     // Visual selection.
     MoveSelectionDown => ("move-selection-down", "Move the selection down one line"),
@@ -164,7 +165,7 @@ semantic_commands! {
     TreeCutEntry => ("tree-cut-entry", "Cut the selected entry"),
     TreePasteEntries => ("tree-paste-entries", "Paste the held entries"),
     TreeToggleHidden => ("tree-toggle-hidden", "Show or hide the hidden entries"),
-    TreeFilter => ("tree-filter", "Filter the visible entries"),
+    TreeSearch => ("tree-search", "Search the visible entries"),
 
     // The pickers.
     PickerSelectNext => ("picker-select-next", "Select the next result"),
