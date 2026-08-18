@@ -1,4 +1,5 @@
-//! The which-key overlay and the language-service float.
+//! The which-key overlay, the language-service float, and the notification
+//! overlay.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
 //! The which-key overlay lists the keys that may follow the pending key
@@ -10,6 +11,11 @@
 //! text or the diagnostics at the cursor. It is decoration: it changes no
 //! buffer text, no line mapping, and no cursor position. See
 //! `docs/language-services.md`.
+//!
+//! The notification overlay sits in the bottom right corner of the body band.
+//! It shows the work-done progress of every language server and every editor
+//! message on one surface. It is decoration as well: it moves no cursor, and it
+//! paints over the buffer text.
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
@@ -18,6 +24,7 @@ use kvim_input::WhichKeyRow;
 use kvim_language::DiagnosticSeverity;
 
 use super::language::Float;
+use super::notify::NotificationRow;
 use super::theme::{Theme, ThemeRole};
 
 /// The largest number of binding rows that the overlay shows.
@@ -37,6 +44,109 @@ const OVERLAY_TITLE: &str = " Which Key ";
 
 /// The number of cells that a float keeps beside its widest row.
 const FLOAT_PADDING_CELLS: usize = 2;
+
+/// The number of cells that the notification overlay keeps beside its text.
+///
+/// The reference configuration keeps the same gap between its text and the
+/// right edge of the editor area. The overlay paints a background, so it holds
+/// that gap inside its own rectangle instead: the panel reaches the corner, the
+/// text sits one cell in from it, and the panel carries no border. The panel
+/// keeps no row above or below its text, because every such row would hide one
+/// more row of the buffer without separating anything.
+const NOTIFICATION_PADDING_CELLS: u16 = 1;
+
+/// The number of cells that the padding of both sides occupies.
+const NOTIFICATION_PADDING_TOTAL: u16 = NOTIFICATION_PADDING_CELLS.saturating_mul(2);
+
+/// Renders the notification overlay in the bottom right corner of the body.
+///
+/// The overlay covers the buffer text, so it blanks its rectangle first and
+/// paints the surface color of the theme behind every row. The reference
+/// configuration paints no background at all. A terminal cell holds no alpha
+/// channel, so the surface color carries that separation instead of a blend at
+/// draw time. See `docs/language-services.md`.
+pub(super) fn render_notifications(
+    target: &mut CellBuffer,
+    body: Rect,
+    theme: Theme,
+    rows: &[NotificationRow<'_>],
+) {
+    if body.is_empty() || rows.is_empty() {
+        return;
+    }
+    let painted: Vec<Vec<(String, ThemeRole)>> = rows.iter().map(segments).collect();
+    // A terminal that cannot hold every row keeps the newest reports, because
+    // the older ones already left the message line.
+    let shown = painted.len().min(usize::from(body.height));
+    let painted = &painted[painted.len() - shown..];
+    let Ok(height) = u16::try_from(shown) else {
+        debug_assert!(false, "the row bound of the board keeps the height small");
+        return;
+    };
+    let text_width = painted.iter().map(|row| row_width(row)).max().unwrap_or(0);
+    let width = text_width
+        .saturating_add(NOTIFICATION_PADDING_TOTAL)
+        .clamp(1, body.width);
+    let area = Rect::new(body.right() - width, body.bottom() - height, width, height);
+    let surface = theme.style(ThemeRole::Surface);
+    fill(target, area, " ");
+    target.set_style(area, surface);
+    let content_right = area.right().saturating_sub(NOTIFICATION_PADDING_CELLS);
+    for (index, row) in painted.iter().enumerate() {
+        let Ok(offset) = u16::try_from(index) else {
+            debug_assert!(false, "the row bound of the board keeps the index small");
+            break;
+        };
+        let y = area.y + offset;
+        // Every row is right-aligned, so it starts one row width left of the
+        // padded right edge. A row that is wider than the panel starts at the
+        // left edge instead and clips, so no cell reaches outside the panel.
+        let mut x = content_right.saturating_sub(row_width(row)).max(area.x);
+        for (text, role) in row {
+            if x >= content_right {
+                break;
+            }
+            let style = surface.patch(theme.style(*role));
+            let remaining = usize::from(content_right - x);
+            target.set_stringn(x, y, text, remaining, style);
+            let painted_cells = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);
+            x = x.saturating_add(painted_cells);
+        }
+    }
+}
+
+/// Returns the painted segments of one notification row.
+fn segments(row: &NotificationRow<'_>) -> Vec<(String, ThemeRole)> {
+    match row {
+        NotificationRow::Item {
+            state,
+            message,
+            percentage,
+        } => {
+            let mut painted = vec![
+                (format!("{} ", state.label()), state.role()),
+                ((*message).to_owned(), ThemeRole::NotificationMessage),
+            ];
+            if let Some(percentage) = percentage {
+                painted.push((format!(" {}%", percentage.get()), state.role()));
+            }
+            painted
+        }
+        NotificationRow::Group { title, spinner } => {
+            let mut painted = vec![((*title).to_owned(), ThemeRole::NotificationGroup)];
+            if let Some(spinner) = spinner {
+                painted.push((format!(" {spinner}"), ThemeRole::NotificationGroup));
+            }
+            painted
+        }
+    }
+}
+
+/// Returns the number of cells that one painted row occupies.
+fn row_width(row: &[(String, ThemeRole)]) -> u16 {
+    let cells: usize = row.iter().map(|(text, _)| text.chars().count()).sum();
+    u16::try_from(cells).unwrap_or(u16::MAX)
+}
 
 /// Renders the which-key overlay at the bottom of the body band.
 ///

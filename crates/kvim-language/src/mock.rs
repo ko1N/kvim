@@ -167,6 +167,7 @@ fn config(root: PathBuf, diagnostics_enabled: bool) -> SessionConfig {
     SessionConfig {
         adapter: "mock",
         language_id: "mock",
+        server: "mock-server",
         root: WorkspaceRoot::new(root).expect("the root is absolute"),
         options: json!({}),
         indent: IndentSettings::default(),

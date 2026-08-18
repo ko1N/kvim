@@ -17,6 +17,7 @@ use super::document::ContentChange;
 use super::mock::{
     DOCUMENT, DOCUMENT_URI, Harness, MockServer, PIPE_BYTES, ROOT, connected, pipe, session,
 };
+use super::progress::{ProgressPercentage, ProgressReport, ProgressStage, SessionGeneration};
 use super::protocol::{
     ArrayBudget, DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
     LSP_OUTPUT_BYTES_MAX, LspBound, LspError, SourceSpan, WorkspaceRoot, deserialize_bounded_array,
@@ -672,13 +673,14 @@ async fn answers_an_unsolicited_server_request() {
         .send(&json!({
             "jsonrpc": "2.0",
             "id": 91,
-            "method": "window/workDoneProgress/create",
-            "params": { "token": "progress" }
+            "method": "workspace/applyEdit",
+            "params": { "edit": {} }
         }))
         .await;
 
     // An unanswered server request stalls the server, so the session always
-    // answers.
+    // answers. Kvim implements no such request, so it reports the method as
+    // unknown.
     let answer = server.read_message().await;
     assert_eq!(answer["id"], 91);
     assert_eq!(answer["error"]["code"], -32601);
@@ -1164,4 +1166,243 @@ fn a_space_in_a_path_survives_the_uri_round_trip() {
         root.path_from_uri(&uri).expect("the URI is contained"),
         path
     );
+}
+
+/// Sends one `$/progress` notification from the mock server.
+async fn send_progress(server: &mut MockServer, token: &Value, value: Value) {
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "$/progress",
+            "params": { "token": token, "value": value },
+        }))
+        .await;
+}
+
+/// Waits for the next progress report of the session.
+async fn next_progress(harness: &mut Harness) -> ProgressReport {
+    match harness.next().await {
+        LanguageOutcome::Progress(report) => report,
+        other => panic!("unexpected outcome {other:?}"),
+    }
+}
+
+#[tokio::test]
+async fn declares_work_done_progress_and_accepts_the_token_creation() {
+    let (mut harness, mut server) = connected();
+    let initialize = server.expect("initialize").await;
+    // A server sends no progress before the client declares the capability.
+    assert_eq!(
+        initialize["params"]["capabilities"]["window"]["workDoneProgress"],
+        true
+    );
+    server
+        .respond(
+            &initialize["id"],
+            json!({ "capabilities": { "positionEncoding": "utf-8" } }),
+        )
+        .await;
+    server.expect("initialized").await;
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 91,
+            "method": "window/workDoneProgress/create",
+            "params": { "token": "index" },
+        }))
+        .await;
+    let answer = server.read_message().await;
+    assert_eq!(answer["id"], 91);
+    assert_eq!(answer["result"], Value::Null);
+    assert!(
+        answer.get("error").is_none(),
+        "the client accepts the token"
+    );
+    harness.stop();
+}
+
+#[tokio::test]
+async fn publishes_the_begin_report_and_end_of_one_progress_token() {
+    let (mut harness, mut server) = connected();
+    server.handshake().await;
+    let token = json!("rustAnalyzer/Indexing");
+
+    send_progress(
+        &mut server,
+        &token,
+        json!({ "kind": "begin", "title": "Indexing", "message": "start" }),
+    )
+    .await;
+    let begin = next_progress(&mut harness).await;
+    assert_eq!(begin.token.get(), "rustAnalyzer/Indexing");
+    assert_eq!(begin.server, "mock-server");
+    assert_eq!(begin.generation, SessionGeneration::FIRST);
+    assert_eq!(
+        begin.stage,
+        ProgressStage::Begin {
+            title: "Indexing".to_owned(),
+            message: Some("start".to_owned()),
+            percentage: None,
+        }
+    );
+
+    send_progress(
+        &mut server,
+        &token,
+        json!({ "kind": "report", "message": "Building compile-time-deps" }),
+    )
+    .await;
+    assert_eq!(
+        next_progress(&mut harness).await.stage,
+        ProgressStage::Report {
+            message: Some("Building compile-time-deps".to_owned()),
+            percentage: None,
+        }
+    );
+
+    send_progress(&mut server, &token, json!({ "kind": "end" })).await;
+    assert_eq!(
+        next_progress(&mut harness).await.stage,
+        ProgressStage::End { message: None }
+    );
+}
+
+#[tokio::test]
+async fn publishes_the_reported_percentage_and_drops_one_outside_its_range() {
+    let (mut harness, mut server) = connected();
+    server.handshake().await;
+    // An integer token reaches the same identity as a string token.
+    let token = json!(7);
+
+    send_progress(
+        &mut server,
+        &token,
+        json!({ "kind": "begin", "title": "Indexing", "percentage": 42 }),
+    )
+    .await;
+    let begin = next_progress(&mut harness).await;
+    assert_eq!(begin.token.get(), "7");
+    assert_eq!(
+        begin.stage,
+        ProgressStage::Begin {
+            title: "Indexing".to_owned(),
+            message: None,
+            percentage: ProgressPercentage::new(42),
+        }
+    );
+
+    send_progress(
+        &mut server,
+        &token,
+        json!({ "kind": "report", "percentage": 250 }),
+    )
+    .await;
+    assert_eq!(
+        next_progress(&mut harness).await.stage,
+        ProgressStage::Report {
+            message: None,
+            percentage: None,
+        },
+        "a percentage outside the protocol range reports no completion"
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_sends_no_progress_publishes_no_report() {
+    let (mut harness, mut server) = connected();
+    server.handshake().await;
+    let text = opened(&harness, &mut server, "fn main() {}\n").await;
+    harness
+        .handle()
+        .hover(
+            Path::new(DOCUMENT),
+            text.version(),
+            DocumentPosition::new(0, 0),
+        )
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/hover").await;
+    server
+        .respond(&sent["id"], json!({ "contents": "quiet" }))
+        .await;
+
+    // The hover answer is the first outcome, so no progress preceded it.
+    let LanguageOutcome::Hover { text: hover, .. } = harness.next().await else {
+        panic!("the session answers the hover without any progress report");
+    };
+    assert_eq!(hover.as_deref(), Some("quiet"));
+}
+
+#[tokio::test]
+async fn a_progress_value_that_carries_no_stage_reports_nothing_and_never_fails() {
+    let (mut harness, mut server) = connected();
+    server.handshake().await;
+    let text = opened(&harness, &mut server, "fn main() {}\n").await;
+
+    // The same method carries the partial results of a request, whose value
+    // holds no work-done stage. Progress is decoration, so the session drops
+    // every unreadable report instead of reporting a failure.
+    send_progress(
+        &mut server,
+        &json!("partial"),
+        json!([{ "uri": "file:///x" }]),
+    )
+    .await;
+    send_progress(&mut server, &json!("partial"), json!({ "kind": "future" })).await;
+
+    harness
+        .handle()
+        .hover(
+            Path::new(DOCUMENT),
+            text.version(),
+            DocumentPosition::new(0, 0),
+        )
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/hover").await;
+    server
+        .respond(&sent["id"], json!({ "contents": "still alive" }))
+        .await;
+
+    let LanguageOutcome::Hover { text: hover, .. } = harness.next().await else {
+        panic!("the session drops the unreadable reports and answers the hover");
+    };
+    assert_eq!(hover.as_deref(), Some("still alive"));
+}
+
+#[tokio::test]
+async fn a_restart_during_progress_reports_a_later_generation() {
+    let (first_transport, first_server) = pipe();
+    let (second_transport, mut second_server) = pipe();
+    let mut harness = session(vec![first_transport, second_transport], true);
+    let mut first_server = first_server;
+    first_server.handshake().await;
+    send_progress(
+        &mut first_server,
+        &json!("index"),
+        json!({ "kind": "begin", "title": "Indexing" }),
+    )
+    .await;
+    let before = next_progress(&mut harness).await;
+    assert_eq!(before.generation, SessionGeneration::FIRST);
+
+    // The server ends while the operation still runs.
+    drop(first_server);
+    assert!(matches!(
+        harness.next().await,
+        LanguageOutcome::Failed { .. }
+    ));
+    assert!(matches!(harness.next().await, LanguageOutcome::Restarted));
+
+    second_server.handshake().await;
+    send_progress(
+        &mut second_server,
+        &json!("index"),
+        json!({ "kind": "begin", "title": "Indexing" }),
+    )
+    .await;
+    let after = next_progress(&mut harness).await;
+    // The new attempt assigns its own tokens, so the editor drops every report
+    // of the attempt that failed.
+    assert_eq!(after.generation, SessionGeneration::FIRST.next());
+    assert!(after.generation > before.generation);
 }

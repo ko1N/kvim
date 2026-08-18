@@ -238,6 +238,7 @@ below must always agree.
 | Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
 | Definition locations | `LSP_LOCATIONS_MAX` | 128 locations | One definition query answers with one target, or with few candidates. A larger list means a wrong or hostile answer. |
 | Formatting edits | `LSP_FORMAT_EDITS_MAX` | 4,096 edits | The transaction bound of [`text-model.md`](text-model.md), so every accepted formatter answer becomes exactly one undoable transaction. |
+| Progress string | `LSP_PROGRESS_CHARS_MAX` | 128 characters | One progress token, title, or message names one operation. A longer string cannot fit on the overlay row, so the session clips it and drops a token above it. |
 | Hover text | `LSP_HOVER_BYTES_MAX` | 16 KiB | One hover float shows a signature and a short description. A larger text cannot fit on a terminal screen. |
 | Restarts | `LSP_RESTARTS_MAX` | 3 restarts | A server that fails four times in one session is broken. Further restarts would loop instead of reporting the state. |
 | Handshake deadline | `LSP_INITIALIZE_DEADLINE` | 30 s | A cold server indexes a workspace before it answers `initialize`. Thirty seconds reports a stuck server without failing a normal cold start. |
@@ -249,6 +250,57 @@ A received list that passes its bound produces a typed failure. Kvim publishes
 no partial result. Nested lists of one answer share one element budget, so a
 server cannot allocate without limit by splitting many elements over many short
 lists.
+
+## Work-Done Progress
+
+Kvim declares the `window.workDoneProgress` client capability, so a server may
+report the state of a long operation. The session accepts the
+`window/workDoneProgress/create` request and parses the `$/progress`
+notification. It publishes one typed report through the same event path that
+every other result uses. No code above the session parses protocol text.
+
+Every report carries the generation of the session attempt that produced it. A
+restart raises the generation, because the new server assigns its own tokens.
+The editor drops every report below the generation that it already accepted, so
+a report of a server that no longer runs never changes visible state.
+
+Only a `begin` report creates an item. A `report` or an `end` for a token that
+no `begin` created addresses no item, so it changes nothing.
+
+The same notification also carries the partial results of a request, whose value
+holds no work-done stage. Progress is decoration, so the session drops every
+report that it cannot read and never reports a failure for one.
+
+## Notification Overlay
+
+One overlay shows every report of the editor. It sits in the bottom right
+corner of the body band, above the statusline. It is decoration: it moves no
+cursor, it changes no buffer text, and it paints over the buffer.
+
+The overlay holds one group for each language server and one group for the
+editor messages. A group shows its items and then its own title row, which
+names the server and carries the spinner while one item of the group runs. An
+item shows its state, its message, and the completion that the server reported.
+A finished item shows the done icon and leaves after its lifetime.
+
+The reference `fidget.nvim` configuration overrides the notification function of
+the editor, so one surface shows every report. Kvim mirrors every message of the
+message line onto the overlay for the same reason. The message line keeps its
+own behavior: the mirror adds a second surface and removes nothing.
+
+The reference paints no background and lets the buffer text show through the
+overlay. Kvim paints the surface color of the theme instead, so the overlay
+reads as one clean panel. A terminal cell holds no alpha channel, so one
+semantic theme role carries that separation instead of a blend at draw time. The
+panel reaches the corner and keeps one cell between its text and its left and
+right edge, which places the text where the reference places it. It carries no
+border and keeps no row above or below its text, because every such row would
+hide one more row of the buffer without separating anything.
+
+[`settings.md`](settings.md) owns the row bound, the spinner period, and the
+lifetime of a finished item. [`responsiveness.md`](responsiveness.md) owns the
+deadline path that advances the spinner, because the renderer draws only after a
+visible state change and runs no frame loop.
 
 ## Diagnostics
 

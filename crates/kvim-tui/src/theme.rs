@@ -119,6 +119,14 @@ pub enum ThemeRole {
     TitleMuted,
     /// The selected row of a popup list.
     PopupSelection,
+    /// The state of one running item of the notification overlay.
+    NotificationRunning,
+    /// The state of one finished item of the notification overlay.
+    NotificationDone,
+    /// The message of one item of the notification overlay.
+    NotificationMessage,
+    /// The group title and the spinner of the notification overlay.
+    NotificationGroup,
     /// The workspace root path in the header row of the file tree.
     TreeRoot,
     /// The name of one directory in the file tree.
@@ -219,6 +227,28 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             ThemeRole::TitleMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),
             ThemeRole::PopupSelection => Style::new().bg(POPUP_SELECTION_BACKGROUND),
+            // The notification overlay paints one panel over the buffer, so
+            // every role of it carries the surface background. The reference
+            // configuration paints no background and lets the buffer text show
+            // through. A terminal cell holds no alpha channel, so the surface
+            // color of the theme carries that separation instead of a blend at
+            // draw time. See `docs/language-services.md`.
+            ThemeRole::NotificationRunning => Style::new()
+                .fg(ACCENT_WARM)
+                .bg(self.surface)
+                .add_modifier(Modifier::ITALIC),
+            ThemeRole::NotificationDone => Style::new()
+                .fg(HINT)
+                .bg(self.surface)
+                .add_modifier(Modifier::ITALIC),
+            ThemeRole::NotificationMessage => Style::new()
+                .fg(TEXT)
+                .bg(self.surface)
+                .add_modifier(Modifier::ITALIC),
+            ThemeRole::NotificationGroup => Style::new()
+                .fg(TITLE)
+                .bg(self.surface)
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC),
             ThemeRole::TreeRoot => Style::new()
                 .fg(TITLE)
                 .bg(self.surface)
@@ -348,6 +378,10 @@ mod tests {
             ThemeRole::Title,
             ThemeRole::TitleMuted,
             ThemeRole::TreeRoot,
+            ThemeRole::NotificationRunning,
+            ThemeRole::NotificationDone,
+            ThemeRole::NotificationMessage,
+            ThemeRole::NotificationGroup,
         ] {
             assert_eq!(
                 theme.style(role).bg,

@@ -71,6 +71,7 @@ use super::language::{
     LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, jump_target,
 };
 use super::layout::RegionKind;
+use super::notify::NotificationBoard;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::theme::Theme;
 use super::tree::{
@@ -410,6 +411,8 @@ pub(super) struct Visible<'a> {
     pub(super) message: Option<&'a Message>,
     pub(super) float: Option<&'a Float>,
     pub(super) which_key: Option<&'a [WhichKeyRow]>,
+    /// The notification board that the bottom-right overlay paints.
+    pub(super) notifications: &'a NotificationBoard,
 }
 
 impl Visible<'_> {
@@ -522,6 +525,14 @@ pub struct Session {
     /// The open floating overlay of the language services.
     float: Option<Float>,
     which_key: Option<Vec<WhichKeyRow>>,
+    /// The progress of every language server and every mirrored message.
+    notifications: NotificationBoard,
+    /// The elapsed time that the event loop reported last.
+    ///
+    /// The session reads no clock. The loop passes the elapsed time into every
+    /// entry point, and a report that carries no time of its own, such as a
+    /// message, uses this value. See `docs/responsiveness.md`.
+    clock: Duration,
     run: RunState,
 }
 
@@ -568,6 +579,8 @@ impl Session {
             message: None,
             float: None,
             which_key: None,
+            notifications: NotificationBoard::default(),
+            clock: Duration::ZERO,
             run: RunState::Running,
         };
         session.reconcile_viewports();
@@ -648,18 +661,40 @@ impl Session {
 
     /// Returns the elapsed time of the next state change that no event causes.
     ///
-    /// The which-key overlay is the only such change: a pending sequence holds
-    /// no deadline and waits for the next key. The event loop therefore waits
-    /// for a terminal event or for this time, never for a frame interval.
+    /// Two changes reach this path. The which-key overlay appears after its
+    /// delay, and a pending sequence holds no deadline and waits for the next
+    /// key. The notification overlay advances its spinner and removes a
+    /// finished item after its lifetime. The event loop therefore waits for a
+    /// terminal event or for the earlier of these two times, never for a frame
+    /// interval. See `docs/responsiveness.md`.
     #[must_use]
     pub fn next_deadline(&self) -> Option<Duration> {
-        self.resolver
+        let overlay = self
+            .resolver
             .overlay_deadline()
-            .filter(|_| self.which_key.is_none())
+            .filter(|_| self.which_key.is_none());
+        let notifications = self
+            .notifications
+            .next_deadline(self.settings.notifications);
+        match (overlay, notifications) {
+            (Some(overlay), Some(notifications)) => Some(overlay.min(notifications)),
+            (Some(time), None) | (None, Some(time)) => Some(time),
+            (None, None) => None,
+        }
+    }
+
+    /// Records the elapsed time that the event loop reported.
+    ///
+    /// The loop calls this before it applies a background result, because such
+    /// a result carries no time of its own and may report a message that the
+    /// notification overlay must expire later. See `docs/responsiveness.md`.
+    pub fn advance_clock(&mut self, now: Duration) {
+        self.clock = self.clock.max(now);
     }
 
     /// Applies one normalized terminal event.
     pub fn handle_event(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
+        self.advance_clock(now);
         let redraw = match event {
             TerminalEvent::Key(key) => self.handle_key(key, now),
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
@@ -671,9 +706,10 @@ impl Session {
 
     /// Applies the state changes that the elapsed time alone causes.
     ///
-    /// Only the which-key overlay reaches this path, because the pending
-    /// sequence itself never expires.
+    /// The which-key overlay and the notification overlay reach this path,
+    /// because the pending sequence itself never expires.
     pub fn tick(&mut self, now: Duration) -> Redraw {
+        self.advance_clock(now);
         self.settle(now)
     }
 
@@ -704,6 +740,7 @@ impl Session {
             message: self.message.as_ref(),
             float: self.float.as_ref(),
             which_key: self.which_key.as_deref(),
+            notifications: &self.notifications,
         }
     }
 
@@ -717,9 +754,10 @@ impl Session {
         self.reconcile_tree();
         self.reconcile_picker();
         let mirrored = self.reconcile_clipboard();
+        let advanced = self.notifications.advance(now, self.settings.notifications);
         let rows = self.resolver.which_key(now);
         if rows.as_deref() == self.which_key.as_deref() {
-            return mirrored;
+            return mirrored.or(advanced);
         }
         self.which_key = rows;
         Redraw::Needed
@@ -1554,6 +1592,12 @@ impl Session {
     pub fn apply_language_event(&mut self, event: LanguageEvent) -> Redraw {
         match event.outcome {
             LanguageOutcome::Diagnostics(set) => self.publish_diagnostics(set),
+            LanguageOutcome::Progress(report) => self.notifications.report(
+                event.adapter,
+                &report,
+                self.clock,
+                self.settings.notifications,
+            ),
             LanguageOutcome::Definition {
                 request,
                 version,
@@ -2906,7 +2950,18 @@ impl Session {
 
     /// Replaces the message line.
     fn set_message(&mut self, text: impl Into<String>, level: MessageLevel) {
-        self.message = Some(Message::new(text, level));
+        let message = Message::new(text, level);
+        // One surface shows every report, which the reference configuration
+        // reaches by overriding the notification function of the editor. The
+        // message line keeps its own behavior, and the overlay shows the same
+        // text for the configured lifetime. See `docs/language-services.md`.
+        self.notifications.notify(
+            message.text(),
+            level,
+            self.clock,
+            self.settings.notifications,
+        );
+        self.message = Some(message);
     }
 
     /// Empties the message line and reports whether it held a message.

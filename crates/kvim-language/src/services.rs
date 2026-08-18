@@ -130,6 +130,7 @@ impl LanguageServices {
                 let config = SessionConfig {
                     adapter: adapter.id(),
                     language_id: declaration.language_id,
+                    server: declaration.program,
                     root: self.root.clone(),
                     options: declaration.options(self.settings.language),
                     indent: self.settings.indent,

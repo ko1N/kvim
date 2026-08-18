@@ -74,6 +74,7 @@ mod document;
 mod json;
 mod markdown;
 mod nix;
+mod progress;
 mod protocol;
 mod rust;
 mod server;
@@ -95,6 +96,10 @@ pub use document::{
 pub use json::JsonAdapter;
 pub use markdown::MarkdownAdapter;
 pub use nix::NixAdapter;
+pub use progress::{
+    LSP_PROGRESS_CHARS_MAX, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
+    SessionGeneration,
+};
 pub use protocol::{
     DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
     LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError,

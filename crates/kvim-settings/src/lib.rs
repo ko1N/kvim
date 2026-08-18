@@ -32,6 +32,23 @@ pub const PENDING_KEYS_MAX: u8 = 4;
 /// `docs/input-actions.md`.
 pub const WHICH_KEY_DELAY_DEFAULT: Duration = Duration::from_millis(500);
 
+/// The largest number of rows that the notification overlay paints.
+///
+/// The reference `fidget.nvim` configuration uses the same render limit. See
+/// `docs/language-services.md`.
+pub const NOTIFICATION_ROWS_MAX: usize = 16;
+
+/// The default time of one complete spinner cycle of the notification overlay.
+///
+/// The reference `fidget.nvim` configuration names the same period for its
+/// `dots` pattern.
+pub const NOTIFICATION_SPINNER_PERIOD_DEFAULT: Duration = Duration::from_secs(1);
+
+/// The default time that a finished notification stays visible.
+///
+/// The reference `fidget.nvim` configuration names the same value.
+pub const NOTIFICATION_DONE_TTL_DEFAULT: Duration = Duration::from_secs(2);
+
 /// One 24-bit terminal color.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Rgb {
@@ -339,6 +356,37 @@ impl Default for InputSettings {
     }
 }
 
+/// The bounds and the timing of the notification overlay.
+///
+/// The overlay shows the progress of every language server and every editor
+/// message on one surface. The event loop drives the spinner and the removal of
+/// a finished item from these two times, so no frame loop exists. See
+/// `docs/language-services.md` and `docs/responsiveness.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct NotificationSettings {
+    /// The largest number of rows that the overlay paints.
+    ///
+    /// The overlay drops its oldest item above this bound.
+    pub rows_max: usize,
+    /// The time of one complete spinner cycle.
+    ///
+    /// The overlay divides the period by the number of spinner frames, so the
+    /// pattern completes exactly once in this time.
+    pub spinner_period: Duration,
+    /// The time that a finished item stays visible.
+    pub done_ttl: Duration,
+}
+
+impl Default for NotificationSettings {
+    fn default() -> Self {
+        Self {
+            rows_max: NOTIFICATION_ROWS_MAX,
+            spinner_period: NOTIFICATION_SPINNER_PERIOD_DEFAULT,
+            done_ttl: NOTIFICATION_DONE_TTL_DEFAULT,
+        }
+    }
+}
+
 /// The language service policy.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LanguageSettings {
@@ -408,6 +456,8 @@ pub struct EditorSettings {
     pub input: InputSettings,
     /// The language service policy.
     pub language: LanguageSettings,
+    /// The bounds and the timing of the notification overlay.
+    pub notifications: NotificationSettings,
     /// The search behavior of the editor.
     pub search: SearchSettings,
     /// The two background colors that Kvim overrides.

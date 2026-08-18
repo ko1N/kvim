@@ -52,6 +52,7 @@ mod clipboard;
 mod icons;
 mod language;
 mod layout;
+mod notify;
 mod overlay;
 mod picker;
 mod render;

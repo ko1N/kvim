@@ -37,6 +37,7 @@ use kvim_settings::IndentSettings;
 use super::document::{
     ContentChange, DiagnosticSet, FormatEdits, RawDiagnostic, RawTextEdit, SourceLocation, TextEdit,
 };
+use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
 use super::protocol::{
     ArrayBudget, DocumentPosition, LspBound, LspError, POSITION_ENCODING, ProtocolReader,
     ProtocolWriter, RpcEnvelope, RpcId, SourceSpan, WorkspaceRoot, deserialize_bounded_array,
@@ -85,6 +86,15 @@ pub const LSP_FORMAT_DEADLINE: Duration = Duration::from_secs(10);
 /// The deadline of the `shutdown` and `exit` sequence.
 pub const LSP_SHUTDOWN_DEADLINE: Duration = Duration::from_millis(250);
 
+/// The notification that publishes the diagnostics of one document.
+const DIAGNOSTICS_METHOD: &str = "textDocument/publishDiagnostics";
+
+/// The notification that reports the state of one long server operation.
+const PROGRESS_METHOD: &str = "$/progress";
+
+/// The server request that creates one work-done progress token.
+const PROGRESS_CREATE_METHOD: &str = "window/workDoneProgress/create";
+
 /// The identity of one language-server request.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LanguageRequestId(u64);
@@ -102,6 +112,12 @@ impl LanguageRequestId {
 pub enum LanguageOutcome {
     /// The server published diagnostics for one document version.
     Diagnostics(DiagnosticSet),
+    /// The server reported the state of one long operation.
+    ///
+    /// The report is decoration: it changes no buffer text and no cursor. It
+    /// carries the generation of the attempt that produced it, so a report of a
+    /// session that already restarted never changes visible state.
+    Progress(ProgressReport),
     /// The server answered one definition request.
     Definition {
         /// The request that this answer completes.
@@ -366,6 +382,8 @@ pub(super) struct SessionConfig {
     pub(super) adapter: &'static str,
     /// The protocol language identifier of every document of this session.
     pub(super) language_id: &'static str,
+    /// The program that runs the server, which titles one overlay group.
+    pub(super) server: &'static str,
     /// The containment boundary of every path and every `file` URI.
     pub(super) root: WorkspaceRoot,
     /// The initialization options that the adapter declared.
@@ -535,8 +553,17 @@ async fn supervise(
     cancellation: CancellationToken,
 ) {
     let mut restarts = 0_usize;
+    let mut generation = SessionGeneration::FIRST;
     loop {
-        let outcome = attempt(&mut factory, &config, &mut requests, &events, &cancellation).await;
+        let outcome = attempt(
+            &mut factory,
+            &config,
+            generation,
+            &mut requests,
+            &events,
+            &cancellation,
+        )
+        .await;
         match outcome {
             AttemptOutcome::Stopped => break,
             AttemptOutcome::NotInstalled => {
@@ -557,6 +584,10 @@ async fn supervise(
                     break;
                 }
                 restarts += 1;
+                // The new server assigns its own progress tokens, so the next
+                // attempt reports a later generation and the editor drops every
+                // report of the attempt that failed.
+                generation = generation.next();
                 // The new server holds no document, so the caller must open its
                 // buffers again before it queries them.
                 emit(&events, config.adapter, LanguageOutcome::Restarted).await;
@@ -570,6 +601,7 @@ async fn supervise(
 async fn attempt(
     factory: &mut TransportFactory,
     config: &SessionConfig,
+    generation: SessionGeneration,
     requests: &mut mpsc::Receiver<SessionRequest>,
     events: &mpsc::Sender<LanguageEvent>,
     cancellation: &CancellationToken,
@@ -590,6 +622,7 @@ async fn attempt(
     let reader = tokio::spawn(read_envelopes(ProtocolReader::new(output), envelope_sender));
     let mut session = Session {
         config,
+        generation,
         events,
         writer: ProtocolWriter::new(input),
         documents: HashMap::new(),
@@ -641,6 +674,8 @@ async fn emit(
 /// The live state of one server attempt.
 struct Session<'a> {
     config: &'a SessionConfig,
+    /// The attempt that this session serves, which every progress report names.
+    generation: SessionGeneration,
     events: &'a mpsc::Sender<LanguageEvent>,
     writer: ProtocolWriter<Box<dyn AsyncWrite + Send + Unpin>>,
     documents: HashMap<PathBuf, OpenDocument>,
@@ -701,6 +736,9 @@ impl Session<'_> {
                     "rootUri": root_uri,
                     "capabilities": {
                         "general": { "positionEncodings": [POSITION_ENCODING] },
+                        // A server sends `$/progress` only after the client
+                        // declares that it shows work-done progress.
+                        "window": { "workDoneProgress": true },
                         "textDocument": {
                             "synchronization": {
                                 "dynamicRegistration": false,
@@ -782,8 +820,14 @@ impl Session<'_> {
         if let Some(method) = envelope.method {
             if let Some(id) = envelope.id {
                 // An unanswered server request stalls the server, so Kvim always
-                // answers, even though it implements no such request.
-                return self.writer.reject_server_request(id).await;
+                // answers. It accepts the creation of one progress token,
+                // because the overlay shows the reports of that token, and it
+                // reports every other method as unknown.
+                return if method == PROGRESS_CREATE_METHOD {
+                    self.writer.accept_server_request(id).await
+                } else {
+                    self.writer.reject_server_request(id).await
+                };
             }
             let result = self.notification(&method, envelope.params.as_deref());
             return self.report(None, result).await;
@@ -802,13 +846,26 @@ impl Session<'_> {
         self.report(Some(pending.id), result).await
     }
 
-    /// Publishes the diagnostics of one notification and ignores every other.
+    /// Publishes the diagnostics and the progress of one notification.
+    ///
+    /// Every other notification carries no visible state, so the session
+    /// ignores it.
     fn notification(
         &self,
         method: &str,
         params: Option<&RawValue>,
     ) -> Result<Option<LanguageOutcome>, LspError> {
-        if method != "textDocument/publishDiagnostics" || !self.config.diagnostics_enabled {
+        match method {
+            PROGRESS_METHOD => Ok(parse_progress(params, self.generation, self.config.server)
+                .map(LanguageOutcome::Progress)),
+            DIAGNOSTICS_METHOD => self.diagnostics(params),
+            _ => Ok(None),
+        }
+    }
+
+    /// Publishes the diagnostics of one notification.
+    fn diagnostics(&self, params: Option<&RawValue>) -> Result<Option<LanguageOutcome>, LspError> {
+        if !self.config.diagnostics_enabled {
             return Ok(None);
         }
         let params = params.ok_or(LspError::MalformedResponse)?;
