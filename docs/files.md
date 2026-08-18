@@ -204,7 +204,7 @@ target, so an expanded link to a directory shows that directory.
 
 ### Row Layout
 
-Every row of the sidebar holds the same four parts, from the left edge:
+Every row of the sidebar holds the same five parts, from the left edge:
 
 1. One mark cell. The selected row paints its mark there, and every other row
    keeps the cell blank, so one mark never moves a name.
@@ -213,6 +213,9 @@ Every row of the sidebar holds the same four parts, from the left edge:
 3. Two glyph cells. They hold the icon of the entry, or the expansion marker of
    a directory while the tree hides its icons.
 4. The name of the entry, and the suffix of the row state behind it.
+5. One Git mark cell at the right edge. Every row reserves it, and a row without
+   a recorded Git state keeps it blank, so one mark never moves a name and never
+   covers one. [`git.md`](git.md) owns the marks and their states.
 
 An indent guide is one box-drawing character of one terminal cell. A level that
 holds a further entry below the row draws a trunk, and the last child of a level
@@ -238,7 +241,7 @@ One row takes exactly one state, which decides its color and its suffix:
 | --- | --- |
 | Directory | The name takes the title color. |
 | File | The name takes the normal text color. |
-| Generated | The name dims, because the entry holds machine output. |
+| Generated | The name dims, because the entry holds machine output or the Git ignore rules name it. |
 | Held | The name dims and gains the suffix of the pending file operation. |
 | Omitted | The row dims and turns italic. It counts entries, it names none. |
 | Incomplete | The row warns and turns italic, because a read kept entries out. |
@@ -246,6 +249,15 @@ One row takes exactly one state, which decides its color and its suffix:
 The generated names are a small fixed list beside the icon table: `.direnv`,
 `.git`, `__pycache__`, `node_modules`, and `target`. The list is presentation
 data, like the icon table, and it selects no parser and no language server.
+
+An entry that the Git ignore rules name takes the same state, so the two rules
+extend each other and never disagree about one row. The fixed list stays the
+answer for a workspace that is no repository and for a host without `git`. The
+Git mark separates the two cases. [`git.md`](git.md) owns that decision.
+
+The name of a changed file takes the color of its Git state. A directory keeps
+the title color, because its state rolls up from the entries below it and names
+no change of the directory itself.
 
 A held entry carries the mode of the file-operation clipboard, never two
 separate flags, so the row can never report a cut and a copy at one time. The
@@ -346,6 +358,9 @@ reveals the new entry.
 
 Reveal expands every parent directory of one path and selects that entry. It
 loads only the directories on that path.
+
+A refresh also asks for the repository state again, as a save and a workspace
+mutation do. [`git.md`](git.md) owns the refresh triggers.
 
 Refresh reads one expanded directory again. The reconciliation keeps every
 expanded directory and the selection while their entries still exist. It drops

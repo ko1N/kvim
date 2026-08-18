@@ -8,6 +8,7 @@
 
 use kvim_language::SyntaxRole;
 use kvim_settings::{Rgb, ThemeSettings};
+use kvim_workspace::GitStatus;
 use ratatui::style::{Color, Modifier, Style};
 
 /// The normal text color.
@@ -132,6 +133,8 @@ pub enum ThemeRole {
     TreeIndentGuide,
     /// The mark at the left edge of the selected file-tree row.
     TreeSelectionMark,
+    /// One recorded Git state of a file-tree entry.
+    TreeGit(GitStatus),
     /// An error message.
     Error,
     /// A warning message.
@@ -230,6 +233,18 @@ impl Theme {
             ThemeRole::TreeIncomplete => Style::new().fg(WARNING).add_modifier(Modifier::ITALIC),
             ThemeRole::TreeIndentGuide => Style::new().fg(TEXT_MUTED),
             ThemeRole::TreeSelectionMark => Style::new().fg(TEXT_DIM),
+            // The Git roles decorate the row behind them as well. A change of
+            // the working tree takes the warm accent that the reference
+            // configuration paints, and the index takes the calm color of a
+            // recorded state. An ignored entry dims like a generated one, so
+            // one rule decides the color of every quiet row.
+            ThemeRole::TreeGit(GitStatus::Modified | GitStatus::StagedAndModified) => {
+                Style::new().fg(ACCENT_WARM)
+            }
+            ThemeRole::TreeGit(GitStatus::Staged) => Style::new().fg(HINT),
+            ThemeRole::TreeGit(GitStatus::Untracked) => Style::new().fg(INFO),
+            ThemeRole::TreeGit(GitStatus::Ignored) => Style::new().fg(TEXT_MUTED),
+            ThemeRole::TreeGit(GitStatus::Conflicted) => Style::new().fg(ERROR),
             // An icon decorates the row below it, so it carries a foreground
             // color only and keeps the row background and the selection.
             ThemeRole::Icon(role) => Style::new().fg(icon_color(role)),

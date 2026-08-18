@@ -25,6 +25,7 @@
             packages = [
               pkgs.cargo
               pkgs.clippy
+              pkgs.git
               pkgs.nixfmt
               pkgs.ripgrep
               pkgs.rust-analyzer
@@ -52,6 +53,7 @@
               wrapProgram "$out/bin/kvim" \
                 --prefix PATH : ${
                   nixpkgs.lib.makeBinPath [
+                    pkgs.git
                     pkgs.ripgrep
                     pkgs.rust-analyzer
                   ]

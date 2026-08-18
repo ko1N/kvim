@@ -15,11 +15,15 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
+use kvim_language::LspError;
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
-use kvim_workspace::{TREE_PENDING_READS_MAX, temp::TempDir};
+use kvim_workspace::{
+    GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusSnapshot, TREE_PENDING_READS_MAX,
+    temp::TempDir,
+};
 
-use super::session::{FileRequestFailure, Session};
+use super::session::{FileRequestFailure, Redraw, Session};
 use super::theme::{Theme, ThemeRole};
 use super::tree::{TREE_TITLE_ROWS, root_label};
 
@@ -1623,7 +1627,301 @@ fn a_narrow_sidebar_clips_every_row_at_its_own_edge() {
         .collect();
     assert_eq!(
         rows[2..],
-        ["▌  └ ▾ inn".to_owned(), "     └   a".to_owned()],
+        ["▌  └ ▾ in".to_owned(), "     └".to_owned()],
         "every row stops at the right edge of the sidebar"
+    );
+}
+
+/// Creates one workspace whose entries cover every recorded Git state.
+///
+/// The sidebar shows one ignored directory, one collapsed directory, and four
+/// files, so one snapshot covers every mark and the roll-up together. The
+/// opening status read stays queued, so each test decides when it answers.
+fn git_workspace() -> (TempDir, Session) {
+    let dir = TempDir::new("tree-git");
+    dir.file("src/main.rs", "");
+    dir.dir("build");
+    dir.file("modified.rs", "");
+    dir.file("new.rs", "");
+    dir.file("notes.log", "");
+    dir.file("staged.rs", "");
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    drain(&mut session);
+    reveal(&mut session);
+    (dir, session)
+}
+
+/// One ordinary record of `git status --porcelain=v2 -z`.
+fn git_record(field: &str, path: &str) -> String {
+    format!(
+        "1 {field} N... 100644 100644 100644 \
+         78981922613b2afb6025042ff6bd878ac1994e85 \
+         78981922613b2afb6025042ff6bd878ac1994e85 {path}\0"
+    )
+}
+
+/// The recorded status of the workspace that [`git_workspace`] builds.
+fn git_output() -> String {
+    format!(
+        "! build/\0{}{}{}? new.rs\0! notes.log\0",
+        git_record(".M", "src/main.rs"),
+        git_record(".M", "modified.rs"),
+        git_record("M.", "staged.rs"),
+    )
+}
+
+/// Publishes one recorded status output, as the event loop does.
+fn publish_git(session: &mut Session, root: &Path, output: &str) {
+    let request = session
+        .take_git_request()
+        .expect("the sidebar asks for one status read");
+    assert_eq!(request.root(), root, "the read names the workspace root");
+    assert_eq!(
+        request.command().program,
+        GIT_PROGRAM,
+        "the read leaves the session as one external command"
+    );
+    session.apply_git_result(Ok(GitStatusSnapshot::parse(root, root, output.as_bytes())));
+}
+
+/// Returns the Git mark at the right edge of one sidebar row.
+fn git_mark(session: &Session, row: u16) -> String {
+    draw(session)
+        .cell((WIDTH - 1, row))
+        .expect("the test reads the last cell of the sidebar")
+        .symbol()
+        .to_owned()
+}
+
+#[test]
+fn the_sidebar_marks_every_recorded_git_state_and_rolls_a_directory_up() {
+    let (dir, mut session) = git_workspace();
+    assert_eq!(
+        sidebar_rows(&session),
+        vec![
+            "▌  ▸ build".to_owned(),
+            "   ▸ src".to_owned(),
+            "     modified.rs".to_owned(),
+            "     new.rs".to_owned(),
+            "     notes.log".to_owned(),
+            "     staged.rs".to_owned(),
+        ]
+    );
+    assert!(
+        (1..=6).all(|row| git_mark(&session, row) == " "),
+        "the sidebar shows no mark before the first status read"
+    );
+
+    publish_git(&mut session, &dir.path, &git_output());
+
+    assert_eq!(git_mark(&session, 1), "☑", "an ignored directory");
+    assert_eq!(
+        git_mark(&session, 2),
+        "●",
+        "a collapsed directory reports the change of the entry below it"
+    );
+    assert_eq!(git_mark(&session, 3), "●", "a modified entry");
+    assert_eq!(git_mark(&session, 4), "□", "an untracked entry");
+    assert_eq!(git_mark(&session, 5), "☑", "an ignored entry");
+    assert_eq!(git_mark(&session, 6), "■", "a staged entry");
+}
+
+#[test]
+fn a_changed_name_takes_its_state_color_and_an_ignored_name_dims() {
+    let (dir, mut session) = git_workspace();
+    publish_git(&mut session, &dir.path, &git_output());
+
+    // The name of an entry starts behind the mark cell, the indent guides, and
+    // the glyph cells.
+    let modified = sidebar_style(&session, 5, 3);
+    let untracked = sidebar_style(&session, 5, 4);
+    let ignored = sidebar_style(&session, 5, 5);
+    assert_eq!(
+        modified.fg,
+        theme().style(ThemeRole::TreeGit(GitStatus::Modified)).fg
+    );
+    assert_eq!(
+        untracked.fg,
+        theme().style(ThemeRole::TreeGit(GitStatus::Untracked)).fg
+    );
+    assert_eq!(
+        ignored.fg,
+        theme().style(ThemeRole::TreeMuted).fg,
+        "an ignored entry dims like one generated name"
+    );
+    assert_ne!(
+        modified.fg,
+        theme().style(ThemeRole::Text).fg,
+        "a changed name separates from an unchanged one"
+    );
+    assert_eq!(
+        sidebar_style(&session, 5, 2).fg,
+        theme().style(ThemeRole::TreeDirectory).fg,
+        "a directory keeps the title color, because its state rolls up"
+    );
+}
+
+#[test]
+fn the_refresh_command_asks_for_the_repository_state_again() {
+    let (dir, mut session) = git_workspace();
+    publish_git(&mut session, &dir.path, &git_output());
+    assert!(
+        session.take_git_request().is_none(),
+        "the sidebar runs one status read at a time"
+    );
+
+    press(&mut session, 'R');
+    drain(&mut session);
+    assert_eq!(
+        session
+            .take_git_request()
+            .map(|request| request.root().to_path_buf()),
+        Some(dir.path.clone())
+    );
+}
+
+/// Refuses every queued language request, like an editor without a server.
+///
+/// A save waits for the formatter, so the request must be answered before the
+/// file request reaches the worker. See `docs/language-services.md`.
+fn refuse_language_requests(session: &mut Session) {
+    while let Some(request) = session.take_language_request() {
+        let kind = request.kind();
+        session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+    }
+}
+
+#[test]
+fn a_save_asks_for_the_repository_state_again() {
+    let dir = TempDir::new("tree-git-save");
+    let path = dir.write("main.rs", "one\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, dir.path.clone());
+    drain(&mut session);
+    let _opening_read = session.take_git_request();
+
+    session.open_path(path);
+    refuse_language_requests(&mut session);
+    drain_file(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "two ");
+    press_code(&mut session, KeyCode::Esc);
+    press(&mut session, ':');
+    type_keys(&mut session, "w");
+    press_code(&mut session, KeyCode::Enter);
+    assert!(
+        session.take_git_request().is_none(),
+        "the tree waits for the save before it reads the repository again"
+    );
+
+    refuse_language_requests(&mut session);
+    drain_file(&mut session);
+    assert!(
+        !session.buffer().is_modified(),
+        "the save reached the workspace"
+    );
+    assert!(
+        session.take_git_request().is_some(),
+        "the saved file changed the working tree"
+    );
+}
+
+#[test]
+fn a_workspace_mutation_asks_for_the_repository_state_again() {
+    let (dir, mut session) = git_workspace();
+    publish_git(&mut session, &dir.path, &git_output());
+
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'r');
+    type_keys(&mut session, "renamed.rs");
+    press_code(&mut session, KeyCode::Enter);
+    drain(&mut session);
+
+    assert!(dir.join("renamed.rs").exists());
+    assert!(
+        session.take_git_request().is_some(),
+        "the rename changed the entries of the workspace"
+    );
+}
+
+#[test]
+fn a_snapshot_of_another_workspace_never_reaches_the_rows() {
+    let (dir, mut session) = git_workspace();
+    let elsewhere = Path::new("/elsewhere");
+    session.apply_git_result(Ok(GitStatusSnapshot::parse(
+        elsewhere,
+        elsewhere,
+        b"? new.rs\0",
+    )));
+
+    assert_eq!(
+        git_mark(&session, 4),
+        " ",
+        "a snapshot of another root names no entry of this one"
+    );
+    publish_git(&mut session, &dir.path, &git_output());
+    assert_eq!(git_mark(&session, 4), "□");
+}
+
+#[test]
+fn a_failed_status_read_keeps_the_tree_and_its_marks() {
+    let (dir, mut session) = git_workspace();
+    publish_git(&mut session, &dir.path, &git_output());
+
+    press(&mut session, 'R');
+    drain(&mut session);
+    let _refused_read = session.take_git_request();
+    assert_eq!(
+        session.apply_git_result(Err(GitStatusFailure::Unavailable)),
+        Redraw::Skipped
+    );
+
+    assert_eq!(
+        sidebar_rows(&session).len(),
+        6,
+        "a failed read keeps every row of the tree"
+    );
+    assert_eq!(
+        git_mark(&session, 3),
+        "●",
+        "a failed read keeps the marks of the last successful one"
+    );
+    assert!(
+        !message(&session).contains("git"),
+        "a failed read reports nothing"
+    );
+}
+
+#[test]
+fn a_missing_git_command_reaches_the_message_line_once() {
+    let (_dir, mut session) = git_workspace();
+    let _opening_read = session.take_git_request();
+    assert_eq!(
+        session.apply_git_result(Err(GitStatusFailure::CommandMissing)),
+        Redraw::Needed
+    );
+    assert!(
+        message(&session).contains("git"),
+        "a missing command is a normal state that the editor names"
+    );
+
+    press(&mut session, 'R');
+    drain(&mut session);
+    let _second_read = session.take_git_request();
+    assert_eq!(
+        session.apply_git_result(Err(GitStatusFailure::CommandMissing)),
+        Redraw::Skipped,
+        "the editor names the missing command once for each session"
+    );
+    assert_eq!(
+        sidebar_rows(&session).len(),
+        6,
+        "the tree stays fully usable without the repository state"
     );
 }

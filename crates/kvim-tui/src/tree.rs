@@ -20,9 +20,9 @@ use ratatui::style::Style;
 use kvim_editor::{SearchDirection, Viewport};
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
-    DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, LinkKind,
-    MutateRequest, MutationOutcome, Notice, OpenBuffer, ReadError, RowContent, TransferMode,
-    TreeRow, WorkspaceRequest,
+    DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
+    GitStatusRequest, GitStatusSnapshot, LinkKind, MutateRequest, MutationOutcome, Notice,
+    OpenBuffer, ReadError, RowContent, TransferMode, TreeRow, WorkspaceRequest,
 };
 
 use super::buffer_view::WindowFocus;
@@ -72,8 +72,33 @@ const LINK_SUFFIX: &str = "@";
 /// The tree dims these entries, because they hold machine output instead of
 /// work of the user. The list is presentation data beside the icon table, and
 /// it names a small fixed set, so one lookup costs a bounded number of
-/// comparisons. See `docs/files.md`.
+/// comparisons. The Git ignore rules dim the same way, and the list stays the
+/// answer for a workspace that is no repository. See `docs/files.md` and
+/// `docs/git.md`.
 const GENERATED_NAMES: [&str; 5] = [".direnv", ".git", "__pycache__", "node_modules", "target"];
+
+/// The number of cells that the Git mark reserves at the right edge.
+///
+/// The column stays blank on every row without a Git state, so one mark never
+/// moves a name.
+const GIT_MARK_CELLS: usize = 1;
+
+/// Returns the mark of one recorded Git state.
+///
+/// The glyphs are presentation data beside the icon table, as the reference
+/// configuration paints them: a filled shape for a change that the reader owns,
+/// an outlined shape for an entry that the repository does not track yet, and a
+/// checked box for an entry that the ignore rules name.
+const fn git_mark(status: GitStatus) -> &'static str {
+    match status {
+        GitStatus::Staged => "■",
+        GitStatus::Modified => "●",
+        GitStatus::StagedAndModified => "◆",
+        GitStatus::Untracked => "□",
+        GitStatus::Ignored => "☑",
+        GitStatus::Conflicted => "▲",
+    }
+}
 
 /// What one sidebar row shows, beyond the name that it holds.
 ///
@@ -100,10 +125,15 @@ impl RowState {
     /// Returns the state of one visible row.
     ///
     /// A held entry wins over every other state, because the pending file
-    /// operation is the report that the reader waits for.
-    fn of(row: &TreeRow, held: Option<TransferMode>) -> Self {
+    /// operation is the report that the reader waits for. An entry that the Git
+    /// ignore rules name reads as generated content, so one rule decides the
+    /// color of every quiet row. See `docs/git.md`.
+    fn of(row: &TreeRow, held: Option<TransferMode>, git: Option<GitStatus>) -> Self {
         if let Some(mode) = held {
             return Self::Held(mode);
+        }
+        if git == Some(GitStatus::Ignored) && row.is_selectable() {
+            return Self::Generated;
         }
         match &row.content {
             // A count of hidden entries reports a choice of the reader, and a
@@ -140,6 +170,15 @@ impl RowState {
             Self::Incomplete => ThemeRole::TreeIncomplete,
         }
     }
+}
+
+/// The result of one completed Git status read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum GitPublication {
+    /// The snapshot describes the workspace that the sidebar shows.
+    Applied,
+    /// The snapshot describes another workspace root, so the sidebar drops it.
+    Obsolete,
 }
 
 /// The result of one move between the matches of the file-tree search.
@@ -229,6 +268,14 @@ pub(super) struct TreeSidebar {
     outbox: Option<WorkspaceRequest>,
     /// The operation that the sidebar waits for.
     pending: Option<PendingWorkspace>,
+    /// The Git status read that the event loop must submit.
+    ///
+    /// One read runs at a time. A newer trigger replaces the queued request, so
+    /// the sidebar never asks for two reads of one workspace. See
+    /// `docs/git.md`.
+    git_outbox: Option<GitStatusRequest>,
+    /// The published Git state of the workspace, while one read produced it.
+    git: Option<GitStatusSnapshot>,
     /// The home directory of the user, while the environment names one.
     ///
     /// The header shortens the root path against this value. The sidebar reads
@@ -246,11 +293,14 @@ impl TreeSidebar {
             first_row: 0,
             outbox: None,
             pending: None,
+            git_outbox: None,
+            git: None,
             home: env::var_os("HOME")
                 .map(PathBuf::from)
                 .filter(|path| path.is_absolute()),
         };
         sidebar.pump();
+        sidebar.request_git_status();
         sidebar
     }
 
@@ -287,6 +337,39 @@ impl TreeSidebar {
         self.outbox.take()
     }
 
+    /// Returns the Git status read that the event loop must submit.
+    pub(super) fn take_git_request(&mut self) -> Option<GitStatusRequest> {
+        self.git_outbox.take()
+    }
+
+    /// Asks for a new read of the repository state.
+    ///
+    /// The sidebar queues one read. A save, a workspace mutation, and the
+    /// refresh command each reach this entry point, and no timer does, because
+    /// the renderer runs no unconditional frame loop. See `docs/git.md`.
+    pub(super) fn request_git_status(&mut self) {
+        self.git_outbox = Some(GitStatusRequest::new(self.tree.root().to_path_buf()));
+    }
+
+    /// Publishes one completed Git status read.
+    ///
+    /// The publication gate already rejects the result of a request that a
+    /// newer one replaced. This second check rejects a snapshot of another
+    /// workspace root from the visible state itself.
+    pub(super) fn apply_git_status(&mut self, snapshot: GitStatusSnapshot) -> GitPublication {
+        if snapshot.root() != self.tree.root() {
+            return GitPublication::Obsolete;
+        }
+        self.git = Some(snapshot);
+        GitPublication::Applied
+    }
+
+    /// Returns the recorded Git state of one entry, or `None` while none is
+    /// known.
+    pub(super) fn git_state(&self, path: &Path) -> Option<GitStatus> {
+        self.git.as_ref()?.state(path)
+    }
+
     /// Applies one completed directory read and asks for the next one.
     pub(super) fn apply_directory(
         &mut self,
@@ -315,6 +398,9 @@ impl TreeSidebar {
             self.tree.reveal(selection);
         }
         self.pump();
+        // A mutation adds, removes, or renames an entry, so the recorded state
+        // of the workspace changed with it.
+        self.request_git_status();
     }
 
     /// Reports that one workspace operation produced no result.
@@ -445,10 +531,11 @@ impl TreeSidebar {
         }
     }
 
-    /// Asks for a new read of every expanded directory.
+    /// Asks for a new read of every expanded directory and of the repository.
     pub(super) fn refresh_all(&mut self) {
         self.tree.refresh_all();
         self.pump();
+        self.request_git_status();
     }
 
     /// Shows the hidden entries, or hides them again.
@@ -849,7 +936,13 @@ pub(super) fn render_tree(
         };
         let row = &rows[index];
         let y = body.y + offset;
-        let state = RowState::of(row, sidebar.held_mode(&row.path));
+        // A notice row carries the path of its own directory, so it must not
+        // borrow the Git state of that directory.
+        let git = row
+            .is_selectable()
+            .then(|| sidebar.git_state(&row.path))
+            .flatten();
+        let state = RowState::of(row, sidebar.held_mode(&row.path), git);
         let style = theme
             .style(ThemeRole::Text)
             .patch(theme.style(state.role()));
@@ -864,11 +957,13 @@ pub(super) fn render_tree(
         // indent depth.
         target.set_style(Rect::new(body.x, y, body.width, 1), style);
         let guides = row_guides(rows, index);
+        // The Git mark owns the last cell of every row, so a long name never
+        // covers it and no mark ever moves a name.
         target.set_stringn(
             body.x,
             y,
             row_text(row, &guides, state, icons),
-            width,
+            width.saturating_sub(GIT_MARK_CELLS),
             style,
         );
         // The guides carry their own color, so they separate from the names
@@ -893,6 +988,23 @@ pub(super) fn render_tree(
         // The icon carries its own color over the row style, so a selected row
         // keeps its background behind the glyph.
         render_row_icon(target, body, y, row, icons, theme, style);
+        if let Some(status) = git {
+            render_git_mark(target, body, y, status, theme, style);
+            // The name of a changed file takes the color of its state. A
+            // directory keeps the title color, because its state rolls up from
+            // the entries below it and names no change of the directory itself.
+            // A dimmed row keeps its own color, so a quiet row stays quiet.
+            if state == RowState::File {
+                paint_span(
+                    target,
+                    body,
+                    y,
+                    name_offset_cells(row.depth),
+                    row.name().map_or(0, |name| name.chars().count()),
+                    style.patch(theme.style(ThemeRole::TreeGit(status))),
+                );
+            }
+        }
         // The search marks every match. The selected row carries the match that
         // `n` and `N` moved to, so it reads as the current one, exactly as the
         // match under the cursor does in a buffer window. The mark wins over
@@ -959,6 +1071,35 @@ fn paint_span(
     }
     let width = cells.min(body.width - start);
     target.set_style(Rect::new(body.x + start, y, width, 1), style);
+}
+
+/// Paints the Git mark of one row at the right edge of the sidebar.
+///
+/// The mark reports the state of the entry, and of every entry below a
+/// directory. A sidebar that holds no cell for the mark paints none, so a very
+/// narrow sidebar still shows its names. See `docs/git.md`.
+fn render_git_mark(
+    target: &mut CellBuffer,
+    body: Rect,
+    y: u16,
+    status: GitStatus,
+    theme: Theme,
+    style: Style,
+) {
+    let Ok(cells) = u16::try_from(GIT_MARK_CELLS) else {
+        debug_assert!(false, "the mark column holds one cell");
+        return;
+    };
+    let Some(offset) = body.width.checked_sub(cells) else {
+        return;
+    };
+    target.set_stringn(
+        body.x.saturating_add(offset),
+        y,
+        git_mark(status),
+        GIT_MARK_CELLS,
+        style.patch(theme.style(ThemeRole::TreeGit(status))),
+    );
 }
 
 /// Paints the icon cell of one row with the color of its role.
@@ -1034,7 +1175,7 @@ fn render_header(
 mod tests {
     use std::path::PathBuf;
 
-    use kvim_workspace::{Notice, RowContent, TreeRow};
+    use kvim_workspace::{GitStatus, LinkKind, Notice, RowContent, TransferMode, TreeRow};
 
     use super::{RowState, ThemeRole};
 
@@ -1060,14 +1201,61 @@ mod tests {
                 total: 9000,
             }),
             None,
+            None,
         );
-        let counted = RowState::of(&notice_row(Notice::Hidden { count: 5 }), None);
+        let counted = RowState::of(&notice_row(Notice::Hidden { count: 5 }), None, None);
         assert_eq!(truncated.role(), ThemeRole::TreeIncomplete);
         assert_eq!(counted.role(), ThemeRole::TreeNotice);
         assert_eq!(
-            RowState::of(&notice_row(Notice::Unreadable), None).role(),
+            RowState::of(&notice_row(Notice::Unreadable), None, None).role(),
             ThemeRole::TreeIncomplete,
             "a failed read warns like a truncated one"
         );
+    }
+
+    /// Returns one file row of the workspace root.
+    fn file_row(name: &str) -> TreeRow {
+        TreeRow {
+            path: PathBuf::from("/workspace").join(name),
+            depth: 0,
+            content: RowContent::File {
+                name: name.to_owned(),
+                link: LinkKind::Direct,
+            },
+            matched: None,
+        }
+    }
+
+    #[test]
+    fn an_ignored_entry_dims_like_one_generated_name() {
+        // The fixed generated list and the Git ignore rules must not disagree
+        // about one row, so both reach the same state. See `docs/git.md`.
+        let ignored = RowState::of(&file_row("kvim.log"), None, Some(GitStatus::Ignored));
+        let generated = RowState::of(&file_row("node_modules"), None, None);
+        assert_eq!(ignored, generated);
+        assert_eq!(ignored.role(), ThemeRole::TreeMuted);
+    }
+
+    #[test]
+    fn a_notice_row_never_borrows_the_state_of_its_directory() {
+        let row = notice_row(Notice::Hidden { count: 5 });
+        assert!(!row.is_selectable());
+        assert_eq!(
+            RowState::of(&row, None, Some(GitStatus::Ignored)).role(),
+            ThemeRole::TreeNotice
+        );
+    }
+
+    #[test]
+    fn a_held_entry_keeps_its_pending_operation_over_the_git_state() {
+        // The pending file operation is the report that the reader waits for,
+        // so it wins over the recorded state of the repository.
+        let held = RowState::of(
+            &file_row("main.rs"),
+            Some(TransferMode::Copy),
+            Some(GitStatus::Modified),
+        );
+        assert_eq!(held, RowState::Held(TransferMode::Copy));
+        assert_eq!(held.suffix(), " (copied)");
     }
 }

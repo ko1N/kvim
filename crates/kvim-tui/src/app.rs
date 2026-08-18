@@ -30,7 +30,10 @@ use kvim_terminal::{
     CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
     TerminalSession, TerminationSource,
 };
-use kvim_workspace::{BUFFERS_MAX, FileResult, PickerResult, PickerSlot, WorkspaceResult};
+use kvim_workspace::{
+    BUFFERS_MAX, FileResult, GitStatusFailure, GitStatusSnapshot, PickerResult, PickerSlot,
+    WorkspaceResult,
+};
 
 use super::clipboard::{SessionClipboard, command_failure, refused_submission};
 use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
@@ -80,6 +83,13 @@ const PREVIEW_SLOT: RequestSlot = RequestSlot::new(5);
 /// replaces. See `docs/clipboard.md`.
 const CLIPBOARD_SLOT: RequestSlot = RequestSlot::new(6);
 
+/// The publication slot of the Git status of the workspace.
+///
+/// The file tree runs one status read at a time, so a newer trigger cancels the
+/// read that it replaces and the gate rejects the obsolete result. See
+/// `docs/git.md`.
+const GIT_SLOT: RequestSlot = RequestSlot::new(7);
+
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -116,6 +126,8 @@ enum WorkResult {
     Picker(PickerResult),
     /// One system clipboard command finished.
     Clipboard(ProcessOutput),
+    /// One Git status read of the workspace finished.
+    Git(Result<GitStatusSnapshot, GitStatusFailure>),
 }
 
 /// A failure that ends the editor.
@@ -394,6 +406,42 @@ fn submit_background_work(
     submit_workspace_work(editor, runtime, gate);
     submit_picker_work(editor, runtime, gate);
     submit_clipboard_work(editor, runtime, gate);
+    submit_git_work(editor, runtime, gate);
+}
+
+/// Hands the queued Git status read to the bounded process service.
+///
+/// The command reads the repository, so it never runs on this loop. A refused
+/// submission returns to the session as a typed failure, which keeps the marks
+/// of the last successful read. See `docs/git.md`.
+fn submit_git_work(editor: &mut Session, runtime: &Runtime<WorkResult>, gate: &PublicationGate) {
+    let Some(request) = editor.take_git_request() else {
+        return;
+    };
+    let handle = gate.begin(GIT_SLOT, &runtime.cancellation_root());
+    let command = request.command();
+    let submitted = runtime.submit_process(handle, command, move |output| {
+        WorkResult::Git(request.publish(&output))
+    });
+    if submitted.is_err() {
+        editor.apply_git_result(Err(GitStatusFailure::Unavailable));
+    }
+}
+
+/// Returns the typed Git failure of one runtime failure.
+///
+/// A command that cannot start is a normal state: the editor names it once and
+/// stays usable without the repository state.
+const fn git_failure(error: &RuntimeError) -> GitStatusFailure {
+    match error {
+        RuntimeError::ProcessSpawn(_) => GitStatusFailure::CommandMissing,
+        RuntimeError::Cancelled
+        | RuntimeError::Timeout
+        | RuntimeError::WorkerFailure(_)
+        | RuntimeError::ProcessRead(_)
+        | RuntimeError::ProcessWrite(_)
+        | RuntimeError::OutputLimit { .. } => GitStatusFailure::Unavailable,
+    }
 }
 
 /// Hands the queued clipboard command to the bounded process service.
@@ -568,6 +616,7 @@ fn complete(
     let analysis = event.request.slot() == ANALYSIS_SLOT;
     let workspace = event.request.slot() == WORKSPACE_SLOT;
     let clipboard = event.request.slot() == CLIPBOARD_SLOT;
+    let git = event.request.slot() == GIT_SLOT;
     let picker = if event.request.slot() == PICKER_SLOT {
         Some(PickerSlot::Candidates)
     } else if event.request.slot() == PREVIEW_SLOT {
@@ -592,6 +641,7 @@ fn complete(
         (_, Ok(WorkResult::Workspace(result))) => editor.apply_workspace_result(result),
         (_, Ok(WorkResult::Picker(result))) => editor.apply_picker_result(result),
         (_, Ok(WorkResult::Clipboard(output))) => editor.apply_clipboard_result(Ok(output)),
+        (_, Ok(WorkResult::Git(result))) => editor.apply_git_result(result),
         (Some(slot), Err(error)) => editor.abandon_picker_request(slot, picker_failure(&error)),
         // A clipboard command that fails, times out, or is cancelled keeps the
         // unnamed register, so the yank or the paste still holds its value.
@@ -604,6 +654,9 @@ fn complete(
             editor.abandon_analysis_request();
             Redraw::Skipped
         }
+        // A status read that fails, times out, or is cancelled keeps the marks
+        // of the last successful read, because they are decoration.
+        (None, Err(error)) if git => editor.apply_git_result(Err(git_failure(&error))),
         (None, Err(error)) if workspace => editor.abandon_workspace_request(failure(&error)),
         (None, Err(error)) => editor.abandon_file_request(failure(&error)),
     })

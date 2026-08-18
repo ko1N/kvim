@@ -57,10 +57,10 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, FileBuffer, FileOperation,
-    FileRequest, FileResult, FileTree, MutationError, MutationOutcome, OpenRequest, OpenedFile,
-    PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot, SaveError,
-    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TransferMode, WorkspaceRequest,
-    WorkspaceResult, render_content,
+    FileRequest, FileResult, FileTree, GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
+    MutationError, MutationOutcome, OpenRequest, OpenedFile, PICKER_QUERY_CHARS_MAX, PickerKind,
+    PickerRequest, PickerResult, PickerSlot, SaveError, SaveRequest, SavedBuffer,
+    TREE_SEARCH_CHARS_MAX, TransferMode, WorkspaceRequest, WorkspaceResult, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -74,7 +74,8 @@ use super::layout::RegionKind;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::theme::Theme;
 use super::tree::{
-    TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion, TreeRefusal, TreeSidebar,
+    GitPublication, TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
+    TreeRefusal, TreeSidebar,
 };
 use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 
@@ -482,6 +483,11 @@ pub struct Session {
     /// A missing command is a normal state, so the editor reports it once and
     /// stays usable.
     ripgrep_reported: bool,
+    /// Reports whether the editor already named the missing `git` command.
+    ///
+    /// A missing command is a normal state, so the editor reports it once and
+    /// stays usable without the repository state. See `docs/git.md`.
+    git_reported: bool,
     editing: EditingState,
     registers: Registers,
     /// The system clipboard boundary that the composition root selected.
@@ -546,6 +552,7 @@ impl Session {
             tree_region: None,
             picker: None,
             ripgrep_reported: false,
+            git_reported: false,
             editing: EditingState::new(),
             registers: Registers::default(),
             clipboard: SessionClipboard::default(),
@@ -2204,6 +2211,40 @@ impl Session {
         self.tree.take_request()
     }
 
+    /// Takes the Git status read that the bounded process service must run.
+    ///
+    /// The session never runs `git` itself, so the command leaves the session
+    /// as a request and returns as one snapshot. See `docs/git.md`.
+    pub fn take_git_request(&mut self) -> Option<GitStatusRequest> {
+        self.tree.take_git_request()
+    }
+
+    /// Applies one completed Git status read as one state transition.
+    ///
+    /// A refused submission and a failed command both reach this entry point as
+    /// a typed failure. The file tree keeps every row and every key, and it
+    /// keeps the marks of the last successful read, so no failure removes
+    /// workspace state. A missing `git` command reaches the message line once
+    /// for each session.
+    pub fn apply_git_result(
+        &mut self,
+        result: Result<GitStatusSnapshot, GitStatusFailure>,
+    ) -> Redraw {
+        let failure = match result {
+            Ok(snapshot) => match self.tree.apply_git_status(snapshot) {
+                GitPublication::Applied => return Redraw::Needed,
+                GitPublication::Obsolete => return Redraw::Skipped,
+            },
+            Err(failure) => failure,
+        };
+        if failure == GitStatusFailure::CommandMissing && !self.git_reported {
+            self.git_reported = true;
+            self.set_message(GIT_MISSING_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        }
+        Redraw::Skipped
+    }
+
     /// Applies one completed workspace operation as one state transition.
     pub fn apply_workspace_result(&mut self, result: WorkspaceResult) -> Redraw {
         let redraw = match result {
@@ -2643,6 +2684,9 @@ impl Session {
         let name = saved.path.display().to_string();
         let bytes = saved.bytes;
         target.mark_saved(saved.path, saved.identity);
+        // The saved file changed the working tree, so the recorded state of the
+        // workspace changed with it.
+        self.tree.request_git_status();
         self.set_message(
             format!("\"{name}\" {lines}L, {bytes}B written"),
             MessageLevel::Info,
@@ -2960,6 +3004,10 @@ const NO_REVEAL_PATH_NOTE: &str =
 
 /// The message that a server position outside the buffer shows.
 const OUTSIDE_BUFFER_NOTE: &str = "the language server named a position outside the buffer";
+
+/// The message that a missing `git` command shows once for each session.
+const GIT_MISSING_NOTE: &str =
+    "the `git` command is not available; the file tree shows no repository state";
 
 /// The title band of the hover float.
 const HOVER_TITLE: &str = " Hover ";
