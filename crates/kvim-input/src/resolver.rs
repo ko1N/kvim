@@ -1002,9 +1002,14 @@ mod tests {
             "the sidebar holds no leader sequence, so Space acts at once"
         );
         assert_eq!(
-            resolver.resolve(ch('3'), NOW),
-            Resolution::NoMatch,
-            "the sidebar reads no count"
+            feed(&mut resolver, &[ch('3'), ch('j')]),
+            counted(Command::MoveDown, 3),
+            "the sidebar moves with the buffer navigation keys, so it reads a count"
+        );
+        assert_eq!(
+            feed(&mut resolver, &[ch('g'), ch('g')]),
+            command(Command::MoveFirstLine),
+            "the sidebar owns the `gg` sequence as the buffer does"
         );
     }
 

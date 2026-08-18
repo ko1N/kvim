@@ -554,29 +554,20 @@ fn a_filter_narrows_the_rows_to_the_matching_names() {
 
 #[test]
 fn the_sidebar_scrolls_so_the_selected_row_stays_visible() {
-    let dir = TempDir::new("tree-scroll");
     // The workspace holds more files than the sidebar shows at once.
-    for index in 0..20 {
-        dir.file(&format!("file{index:02}.rs"), "\n");
-    }
-    let root = dir.path.clone();
-    let mut settings = EditorSettings::default();
-    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
-    drain(&mut session);
-    reveal(&mut session);
+    let (_dir, mut session) = flat_workspace(TALL_ENTRIES);
 
-    for _ in 0..19 {
+    for _ in 0..TALL_ENTRIES - 1 {
         press(&mut session, 'j');
     }
 
     let rows = sidebar_rows(&session);
     assert!(
-        rows.contains(&"  file19.rs".to_owned()),
+        rows.contains(&entry_row(TALL_ENTRIES - 1)),
         "the selected row stays inside the sidebar"
     );
     assert!(
-        !rows.contains(&"  file00.rs".to_owned()),
+        !rows.contains(&entry_row(0)),
         "the rows above the visible window scroll away"
     );
 }
@@ -853,5 +844,284 @@ fn an_obsolete_result_leaves_the_queue_usable() {
             "  README.md".to_owned(),
         ],
         "the tree keeps its rows"
+    );
+}
+
+/// The number of tree rows that the sidebar shows in a terminal of [`HEIGHT`]
+/// rows.
+///
+/// The statusline and the message line take the last two terminal rows, and the
+/// sidebar title takes the first row of the region.
+const SIDEBAR_ROWS: usize = (HEIGHT - 2 - TREE_TITLE_ROWS) as usize;
+
+/// The number of rows that `Ctrl-D` and `Ctrl-U` move.
+///
+/// The sidebar reads the buffer rule, which is half of the visible rows.
+const HALF_PAGE_ROWS: usize = SIDEBAR_ROWS / 2;
+
+/// The number of rows that `Ctrl-F` and `Ctrl-B` move.
+///
+/// The sidebar reads the buffer rule, which is the visible rows less the
+/// two-row overlap that keeps the reader oriented.
+const FULL_PAGE_ROWS: usize = SIDEBAR_ROWS - 2;
+
+/// The number of files in the workspace of the navigation tests.
+///
+/// The count passes the visible rows twice over, so a page move stays inside
+/// the tree and a clamp at the last row is a real transition.
+const TALL_ENTRIES: usize = 20;
+
+/// Returns one plain character key.
+fn plain(value: char) -> Key {
+    Key::plain(KeyCode::Char(value))
+}
+
+/// Returns one character key with the Control chord.
+fn ctrl(value: char) -> Key {
+    Key::ctrl(KeyCode::Char(value))
+}
+
+/// Feeds a run of keys.
+fn press_keys(session: &mut Session, keys: &[Key]) {
+    for &key in keys {
+        session.handle_event(TerminalEvent::Key(key), NOW);
+    }
+}
+
+/// Creates one flat workspace of `entries` files and opens its sidebar.
+///
+/// Every name sorts in order, so row `n` holds `entry-n`. A move is therefore
+/// one row index, and the test needs no path.
+fn flat_workspace(entries: usize) -> (TempDir, Session) {
+    let dir = TempDir::new("tree-motion");
+    for index in 0..entries {
+        dir.file(&format!("entry-{index:02}"), "\n");
+    }
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    drain(&mut session);
+    reveal(&mut session);
+    (dir, session)
+}
+
+/// Returns the row index of the selection, or `None` while nothing is selected.
+fn selected_index(session: &Session) -> Option<usize> {
+    let tree = session.file_tree();
+    let selected = tree.selected()?;
+    tree.rows()
+        .iter()
+        .position(|row| row.is_selectable() && row.path == selected)
+}
+
+/// Returns the row index of the selection and reports an empty tree.
+fn selected_row_index(session: &Session) -> usize {
+    selected_index(session).expect("the tree of the test holds a selection")
+}
+
+/// Returns the entry rows of the sidebar, without the statusline below them.
+///
+/// [`sidebar_rows`] stops at the first empty row, so it reaches the statusline
+/// once the tree fills the sidebar. This entry point reads the region of the
+/// entries alone, which lets a test assert the first and the last visible row.
+fn visible_entries(session: &Session) -> Vec<String> {
+    let rows = u16::try_from(SIDEBAR_ROWS).expect("the test terminal is small");
+    (TREE_TITLE_ROWS..TREE_TITLE_ROWS + rows)
+        .map(|row| sidebar_row(session, row))
+        .collect()
+}
+
+/// Returns the row text of one entry of the flat workspace.
+fn entry_row(index: usize) -> String {
+    format!("  entry-{index:02}")
+}
+
+#[test]
+fn the_navigation_keys_move_the_tree_selection_like_a_buffer() {
+    let cases: [(&str, usize, Vec<Key>, usize); 16] = [
+        ("j moves one row down", 0, vec![plain('j')], 1),
+        ("k moves one row up", 5, vec![plain('k')], 4),
+        ("k stops at the first row", 0, vec![plain('k')], 0),
+        (
+            "Ctrl-D moves half a page down",
+            0,
+            vec![ctrl('d')],
+            HALF_PAGE_ROWS,
+        ),
+        (
+            "Ctrl-U moves half a page up",
+            HALF_PAGE_ROWS * 2,
+            vec![ctrl('u')],
+            HALF_PAGE_ROWS,
+        ),
+        ("Ctrl-U stops at the first row", 0, vec![ctrl('u')], 0),
+        (
+            "Ctrl-F moves a full page down",
+            0,
+            vec![ctrl('f')],
+            FULL_PAGE_ROWS,
+        ),
+        (
+            "Ctrl-B moves a full page up",
+            FULL_PAGE_ROWS + 1,
+            vec![ctrl('b')],
+            1,
+        ),
+        (
+            "G reaches the last row",
+            0,
+            vec![plain('G')],
+            TALL_ENTRIES - 1,
+        ),
+        (
+            "gg reaches the first row",
+            6,
+            vec![plain('g'), plain('g')],
+            0,
+        ),
+        (
+            "a page move stops at the last row",
+            TALL_ENTRIES - 2,
+            vec![ctrl('d'), ctrl('d')],
+            TALL_ENTRIES - 1,
+        ),
+        ("a count repeats j", 0, vec![plain('5'), plain('j')], 5),
+        (
+            "a count repeats Ctrl-D",
+            0,
+            vec![plain('2'), ctrl('d')],
+            HALF_PAGE_ROWS * 2,
+        ),
+        (
+            "a count names the row of G",
+            0,
+            vec![plain('1'), plain('2'), plain('G')],
+            11,
+        ),
+        (
+            "a count names the row of gg",
+            9,
+            vec![plain('3'), plain('g'), plain('g')],
+            2,
+        ),
+        (
+            "a count above the row count clamps",
+            0,
+            vec![plain('9'), plain('9'), plain('G')],
+            TALL_ENTRIES - 1,
+        ),
+    ];
+
+    for (name, start, keys, expected) in cases {
+        let (_dir, mut session) = flat_workspace(TALL_ENTRIES);
+        for _ in 0..start {
+            press(&mut session, 'j');
+        }
+        assert_eq!(selected_row_index(&session), start, "{name}: the start row");
+
+        press_keys(&mut session, &keys);
+
+        assert_eq!(selected_row_index(&session), expected, "{name}");
+    }
+}
+
+#[test]
+fn a_navigation_key_leaves_an_empty_tree_unselected() {
+    let (_dir, mut session) = flat_workspace(0);
+    assert!(
+        session.file_tree().rows().is_empty(),
+        "the workspace of this test holds no entry"
+    );
+
+    // Every move reads the row count first, so none of them may reach a row
+    // index of an empty tree.
+    for key in [
+        plain('j'),
+        plain('k'),
+        ctrl('d'),
+        ctrl('u'),
+        ctrl('f'),
+        ctrl('b'),
+        plain('G'),
+    ] {
+        press_keys(&mut session, &[key]);
+        assert_eq!(selected_index(&session), None, "{key:?} selects no row");
+    }
+    press_keys(&mut session, &[plain('g'), plain('g')]);
+    assert_eq!(selected_index(&session), None, "gg selects no row");
+}
+
+#[test]
+fn every_navigation_key_keeps_the_one_row_of_a_one_row_tree() {
+    let (_dir, mut session) = flat_workspace(1);
+
+    for key in [
+        plain('j'),
+        plain('k'),
+        ctrl('d'),
+        ctrl('u'),
+        ctrl('f'),
+        ctrl('b'),
+        plain('G'),
+    ] {
+        press_keys(&mut session, &[key]);
+        assert_eq!(selected_row_index(&session), 0, "{key:?} keeps the one row");
+    }
+    press_keys(&mut session, &[plain('g'), plain('g')]);
+    assert_eq!(selected_row_index(&session), 0, "gg keeps the one row");
+}
+
+#[test]
+fn the_sidebar_keeps_the_scroll_margin_around_the_selected_row() {
+    let margin = usize::from(EditorSettings::default().display.scrolloff_rows);
+    assert!(
+        margin > 0 && margin * 2 < SIDEBAR_ROWS,
+        "the sidebar of this test is taller than twice the scroll margin"
+    );
+
+    let (_dir, mut session) = flat_workspace(TALL_ENTRIES);
+    assert_eq!(
+        visible_entries(&session).first(),
+        Some(&entry_row(0)),
+        "the sidebar starts at the first row"
+    );
+
+    // The first half page leaves room for the margin below the selection, so
+    // the visible rows stay where they are.
+    press_keys(&mut session, &[ctrl('d')]);
+    assert_eq!(
+        visible_entries(&session).first(),
+        Some(&entry_row(0)),
+        "a selection inside the margin moves no row"
+    );
+
+    // The second half page puts the selection close to the last visible row, so
+    // the sidebar scrolls until the margin fits below it again.
+    press_keys(&mut session, &[ctrl('d')]);
+    let selected = selected_row_index(&session);
+    assert!(
+        selected + margin >= SIDEBAR_ROWS,
+        "the second half page passes the margin of the visible rows"
+    );
+    assert_eq!(
+        visible_entries(&session).first(),
+        Some(&entry_row(selected + margin + 1 - SIDEBAR_ROWS)),
+        "the margin below the selection decides the first visible row"
+    );
+
+    // `G` reaches the last row, where no content can fill the margin below, so
+    // the sidebar stops at its own end instead of scrolling past it.
+    press_keys(&mut session, &[plain('G')]);
+    let rows = visible_entries(&session);
+    assert_eq!(
+        rows.last(),
+        Some(&entry_row(TALL_ENTRIES - 1)),
+        "the last row of the tree is the last visible row"
+    );
+    assert_eq!(
+        rows.first(),
+        Some(&entry_row(TALL_ENTRIES - SIDEBAR_ROWS)),
+        "the sidebar shows a full region of rows at its end"
     );
 }

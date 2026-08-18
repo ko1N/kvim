@@ -39,9 +39,9 @@ use tokio_util::sync::CancellationToken;
 use kvim_clipboard::{ClipboardFailure, ClipboardNotice, ClipboardRead};
 use kvim_core::{BufferVersion, CharPosition, EditTransaction, LineIndex, TextBuffer};
 use kvim_editor::{
-    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState, MoveDirection,
-    RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX, SearchDirection, SearchQuery, Selection,
-    WindowState, selection_move_indent_line,
+    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState,
+    MOTION_COUNT_MAX, MoveDirection, RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX,
+    SearchDirection, SearchQuery, Selection, Viewport, WindowState, selection_move_indent_line,
 };
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Mode, PromptEdit,
@@ -73,7 +73,7 @@ use super::language::{
 use super::layout::RegionKind;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::theme::Theme;
-use super::tree::{TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeRefusal, TreeSidebar};
+use super::tree::{TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMotion, TreeRefusal, TreeSidebar};
 use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 
 /// The largest message that the message line keeps, in characters.
@@ -761,7 +761,7 @@ impl Session {
         // The sidebar owns every key while it holds the focus, so a tree
         // command never reaches the buffer of an editor window.
         if self.sidebar_has_focus() {
-            return self.apply_tree_command(command).or(cleared);
+            return self.apply_tree_command(command, count).or(cleared);
         }
         match command {
             Command::OpenFilePicker => return self.open_picker(PickerKind::Files).or(cleared),
@@ -2002,10 +2002,48 @@ impl Session {
     }
 
     /// Applies one semantic command while the sidebar holds the keys.
-    fn apply_tree_command(&mut self, command: Command) -> Redraw {
+    ///
+    /// The navigation commands are the buffer commands, so the tree moves by
+    /// the same rule. The sidebar bounds every move by its own rows.
+    fn apply_tree_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+        let repeat = count
+            .map_or(1, |value| value.get() as usize)
+            .min(MOTION_COUNT_MAX);
         match command {
-            Command::MoveDown => self.tree.select_next(),
-            Command::MoveUp => self.tree.select_previous(),
+            Command::MoveDown => self.tree.move_selection(TreeMotion::Down(repeat)),
+            Command::MoveUp => self.tree.move_selection(TreeMotion::Up(repeat)),
+            Command::MoveHalfPageDown => {
+                let rows = self.tree_viewport().map_or(1, Viewport::half_page_rows);
+                self.tree
+                    .move_selection(TreeMotion::Down(rows.saturating_mul(repeat)));
+            }
+            Command::MoveHalfPageUp => {
+                let rows = self.tree_viewport().map_or(1, Viewport::half_page_rows);
+                self.tree
+                    .move_selection(TreeMotion::Up(rows.saturating_mul(repeat)));
+            }
+            Command::MoveFullPageDown => {
+                let rows = self.tree_viewport().map_or(1, Viewport::full_page_rows);
+                self.tree
+                    .move_selection(TreeMotion::Down(rows.saturating_mul(repeat)));
+            }
+            Command::MoveFullPageUp => {
+                let rows = self.tree_viewport().map_or(1, Viewport::full_page_rows);
+                self.tree
+                    .move_selection(TreeMotion::Up(rows.saturating_mul(repeat)));
+            }
+            // A count before `gg` or `G` names one row, not a number of steps,
+            // exactly as it names one line in a buffer window.
+            Command::MoveFirstLine => {
+                let row = count.map_or(0, |value| value.get() as usize - 1);
+                self.tree.move_selection(TreeMotion::ToRow(row));
+            }
+            Command::MoveLastLine => {
+                let motion = count.map_or(TreeMotion::LastRow, |value| {
+                    TreeMotion::ToRow(value.get() as usize - 1)
+                });
+                self.tree.move_selection(motion);
+            }
             Command::TreeSelectParent => self.tree.select_parent(),
             Command::TreeToggleEntry => self.tree.toggle_selected(),
             Command::TreeCollapseEntry => self.tree.collapse_selected(),
@@ -2215,18 +2253,33 @@ impl Session {
         Redraw::Needed
     }
 
-    /// Moves the visible tree rows so the selected row stays in the sidebar.
+    /// Returns the visible region of the file-tree sidebar.
     ///
-    /// The layout owns the rectangle of the sidebar, so the session reads the
-    /// number of visible rows from it. A hidden sidebar shows none.
-    fn reconcile_tree(&mut self) {
-        let rows = self
+    /// The layout owns the rectangle of the sidebar, and the title row sits
+    /// above the entries, so the region of the rows is one row shorter. The
+    /// page moves read the half-page and the full-page rule from this value, so
+    /// `Ctrl-D` covers the same fraction of the sidebar as it covers of a
+    /// buffer window.
+    ///
+    /// A hidden sidebar, and a sidebar that holds the title alone, report no
+    /// region.
+    fn tree_viewport(&self) -> Option<Viewport> {
+        let area = self
             .tree_region
-            .and_then(|id| self.windows.layout().area(id))
-            .map_or(0, |area| {
-                usize::from(area.height.saturating_sub(TREE_TITLE_ROWS))
-            });
-        self.tree.reconcile(rows);
+            .and_then(|id| self.windows.layout().area(id))?;
+        let rows = NonZeroU16::new(area.height.saturating_sub(TREE_TITLE_ROWS))?;
+        let cells = NonZeroU16::new(area.width)?;
+        Some(Viewport::new(rows, cells))
+    }
+
+    /// Moves the visible tree rows so the selected row keeps the scroll margin.
+    ///
+    /// The sidebar reads the same margin as a buffer window, so both regions
+    /// keep the same number of rows around the reader.
+    fn reconcile_tree(&mut self) {
+        let viewport = self.tree_viewport();
+        self.tree
+            .reconcile(viewport, usize::from(self.settings.display.scrolloff_rows));
     }
 
     /// Applies one completed file operation as one state transition.
