@@ -583,6 +583,33 @@ mod tests {
     }
 
     #[test]
+    fn an_arrow_motion_takes_a_count_only_where_the_mode_holds_one() {
+        let right = Key::plain(KeyCode::Right);
+        let word_right = Key::ctrl(KeyCode::Right);
+        for mode in Mode::ALL {
+            let mut resolver = resolver();
+            resolver.set_context(InputContext::Mode(mode));
+            let expected = if mode.accepts_count() {
+                counted(Command::MoveRight, 3)
+            } else {
+                // Insert mode holds no count, so the digit becomes buffer text
+                // and the arrow moves one column.
+                command(Command::MoveRight)
+            };
+            assert_eq!(
+                feed(&mut resolver, &[ch('3'), right]),
+                expected,
+                "a counted arrow in {mode}"
+            );
+            assert_eq!(
+                resolver.resolve(word_right, NOW),
+                command(Command::MoveNextWordStart),
+                "the word chord in {mode}"
+            );
+        }
+    }
+
+    #[test]
     fn a_count_belongs_to_normal_mode_and_the_visual_modes() {
         for mode in Mode::ALL {
             let mut resolver = resolver();

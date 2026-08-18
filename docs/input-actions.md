@@ -243,6 +243,12 @@ three Visual modes separately only where their behavior differs.
 | `j` | Move down | Normal, Visual, Visual Line |
 | `k` | Move up | Normal, Visual, Visual Line |
 | `l` | Move right | Normal, Visual, Visual Line |
+| `Left` | Move left | Normal, Insert, Visual, Visual Line, Visual Block |
+| `Down` | Move down | Normal, Insert, Visual, Visual Line, Visual Block |
+| `Up` | Move up | Normal, Insert, Visual, Visual Line, Visual Block |
+| `Right` | Move right | Normal, Insert, Visual, Visual Line, Visual Block |
+| `Ctrl-Left` | Move to the previous word start | Normal, Insert, Visual, Visual Line, Visual Block |
+| `Ctrl-Right` | Move to the next word start | Normal, Insert, Visual, Visual Line, Visual Block |
 | `w` | Move to the next word start | Normal, Visual, Visual Line |
 | `b` | Move to the previous word start | Normal, Visual, Visual Line |
 | `e` | Move to the next word end | Normal, Visual, Visual Line |
@@ -260,6 +266,19 @@ three Visual modes separately only where their behavior differs.
 | `zb` | Align the cursor line to the window bottom | Normal, Visual, Visual Line |
 
 A decimal count before a motion repeats it.
+
+The arrow keys name the same four motions as `h`, `j`, `k`, and `l`, and the two
+word chords name the same motions as `w` and `b`. All six stay available in
+Insert mode, where a letter is buffer text, so the user never leaves Insert mode
+to move the cursor. Insert mode holds no count, so a digit before an arrow stays
+buffer text there. A vertical arrow keeps the preferred display column, exactly
+as `j` and `k` do.
+
+macOS sends the `Option` chord as the `Alt` modifier, so `Option-Left` and
+`Option-Right` arrive as `Alt-Left` and `Alt-Right`. The `terminal` module folds
+both onto `Ctrl-Left` and `Ctrl-Right` while it normalizes the key, so the
+registry holds one entry for each word motion. The enhanced keyboard reporting
+flags keep a modified arrow distinct from a plain arrow.
 
 ### Operators, Registers, And Repeat
 
