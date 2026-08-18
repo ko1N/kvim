@@ -7,8 +7,9 @@
 use ratatui::Frame;
 
 use kvim_editor::{Cursor, WindowState};
+use kvim_input::Mode;
 
-use super::buffer_view::{WindowFocus, WindowView, cursor_cell, render_window};
+use super::buffer_view::{BracketHighlight, WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
 use super::overlay::{render_float, render_notifications, render_which_key};
@@ -79,6 +80,16 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     highlights: view.highlights(id),
                     diagnostics: view.diagnostics(id),
                     focus,
+                    // The bracket pair answers a Normal-mode `%`, and the mode
+                    // belongs to the focused window, so only that window paints
+                    // the pair under its cursor.
+                    brackets: if focus == WindowFocus::Focused
+                        && view.editing.mode() == Mode::Normal
+                    {
+                        BracketHighlight::Shown
+                    } else {
+                        BracketHighlight::Hidden
+                    },
                     display: &view.settings.display,
                     tab_width: usize::from(view.settings.indent.tab_width.get()),
                 };
