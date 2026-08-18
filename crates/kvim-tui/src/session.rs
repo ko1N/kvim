@@ -2950,18 +2950,11 @@ impl Session {
 
     /// Replaces the message line.
     fn set_message(&mut self, text: impl Into<String>, level: MessageLevel) {
-        let message = Message::new(text, level);
-        // One surface shows every report, which the reference configuration
-        // reaches by overriding the notification function of the editor. The
-        // message line keeps its own behavior, and the overlay shows the same
-        // text for the configured lifetime. See `docs/language-services.md`.
-        self.notifications.notify(
-            message.text(),
-            level,
-            self.clock,
-            self.settings.notifications,
-        );
-        self.message = Some(message);
+        // The message line and the statusline own every editor report. The
+        // notification overlay carries language server progress alone, so an
+        // ordinary report never reaches a second surface. See
+        // `docs/language-services.md`.
+        self.message = Some(Message::new(text, level));
     }
 
     /// Empties the message line and reports whether it held a message.

@@ -48,6 +48,9 @@ const MUTED: Color = Color::Rgb(0x3b, 0x42, 0x61);
 /// The title color of the reference palette.
 const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
 
+/// The editor background of the reference palette.
+const BASE: Color = Color::Rgb(0x11, 0x13, 0x17);
+
 /// Renders one session and returns the terminal cell buffer.
 fn draw(session: &Session) -> CellBuffer {
     let area = session.area();
@@ -722,14 +725,19 @@ fn the_notification_overlay_anchors_to_the_bottom_right_corner() {
     // group title takes the last body row and the item takes the row above it.
     assert!(row(&session, 20).ends_with("In progress... Building compile-time-deps"));
     assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
-    // One cell of padding separates the text from the left and the right edge
-    // of the panel, and the panel carries no border.
-    let surface = Color::Rgb(0x16, 0x1a, 0x20);
-    let base = Color::Rgb(0x11, 0x13, 0x17);
+    // One cell of padding keeps the text off the right edge, and the overlay
+    // paints no background: every cell of it keeps the editor background.
+    let buffer = draw(&session);
+    assert_eq!(
+        buffer.cell((78, 20)).expect("the cell is inside").symbol(),
+        "s",
+        "the widest row ends one cell in from the right edge"
+    );
     for y in 20..=21 {
-        assert_eq!(style_at(&session, 79, y).bg, Some(surface));
-        assert_eq!(style_at(&session, 37, y).bg, Some(surface));
-        assert_eq!(style_at(&session, 36, y).bg, Some(base));
+        for x in 36..80 {
+            let style = buffer.cell((x, y)).expect("the cell is inside").style();
+            assert_eq!(style.bg, Some(BASE), "cell ({x}, {y}) paints no panel");
+        }
     }
     // The overlay is decoration, so it never moves the terminal cursor.
     assert_eq!(cursor_position(&session), before);
@@ -756,6 +764,9 @@ fn the_group_title_carries_the_server_name_and_the_reported_percentage() {
     assert_eq!(title.fg, Some(TITLE));
     assert!(title.add_modifier.contains(Modifier::BOLD));
     assert!(title.add_modifier.contains(Modifier::ITALIC));
+    // The painted text carries a foreground color alone, so the cell keeps the
+    // background of the row behind it.
+    assert_eq!(title.bg, Some(BASE));
 }
 
 #[test]
@@ -835,33 +846,76 @@ fn the_overlay_stays_inside_a_narrow_terminal() {
         "the row {title:?} fits the terminal"
     );
     assert!(title.contains("rust-analyzer"));
-    assert_eq!(
-        style_at(&session, 0, body_bottom).bg,
-        Some(Color::Rgb(0x16, 0x1a, 0x20))
-    );
+    // A clipped row still paints no background of its own.
+    for x in 0..20 {
+        assert_eq!(style_at(&session, x, body_bottom).bg, Some(BASE));
+    }
 }
 
 #[test]
-fn one_editor_message_reaches_the_same_overlay() {
+fn one_editor_message_stays_off_the_notification_overlay() {
     let mut session = session(80, 24);
     // The empty scratch buffer holds no match, so the search reports one.
     press(&mut session, '/');
     press(&mut session, 'x');
     press_code(&mut session, KeyCode::Enter);
 
-    // The message line keeps its own behavior.
+    // The message line owns every ordinary editor report.
     let message = session
         .message()
         .expect("the search reports the missed query");
     assert_eq!(message.text(), "no match");
     assert_eq!(message.level(), MessageLevel::Warning);
-    // One surface shows every report, so the same text reaches the overlay.
-    assert!(row(&session, 20).ends_with("✓ no match"));
-    assert!(row(&session, 21).ends_with("editor"));
-    // The message keeps the color of its severity on the overlay.
-    let warning = Color::Rgb(0xe0, 0xaf, 0x68);
-    let width = u16::try_from("✓ no match".chars().count()).expect("the row is short");
-    assert_eq!(style_at(&session, 79 - width, 20).fg, Some(warning));
+    assert!(row(&session, 23).starts_with("no match"));
+
+    // The overlay carries language server progress alone, so the message
+    // reaches no second surface and leaves the board without a deadline.
+    assert!(!row(&session, 20).contains("no match"));
+    assert!(!row(&session, 21).contains("no match"));
+    assert!(!row(&session, 21).contains("editor"));
+    assert_eq!(session.next_deadline(), None);
+}
+
+#[test]
+fn the_overlay_paints_no_background_over_the_buffer_text() {
+    // Every text row of the body must reach under the overlay, so the test can
+    // read the buffer behind it.
+    let mut session = session(80, 24);
+    press(&mut session, 'i');
+    for index in 0..21 {
+        if index > 0 {
+            press_code(&mut session, KeyCode::Enter);
+        }
+        // The line fills every text column, so the overlay covers buffer text
+        // rather than blank cells.
+        type_keys(&mut session, &"-".repeat(75));
+    }
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "gg");
+    start_indexing(&mut session, NOW, "index", "Building compile-time-deps");
+
+    // The item row is the widest row, so it sets the left edge of the overlay.
+    // The group title is shorter, which leaves the buffer visible inside the
+    // same bounding box.
+    let buffer = draw(&session);
+    let title_start =
+        79 - u16::try_from("rust-analyzer ⠋".chars().count()).expect("the row is short");
+    for x in 37..title_start {
+        let cell = buffer
+            .cell((x, 21))
+            .expect("the test reads a cell inside the terminal");
+        assert_eq!(
+            cell.symbol(),
+            "-",
+            "column {x} of the overlay box shows the buffer text behind it"
+        );
+        assert_eq!(cell.style().bg, Some(BASE));
+    }
+    // The padding cell beside the widest row keeps the buffer as well.
+    let padding = buffer
+        .cell((79, 20))
+        .expect("the test reads a cell inside the terminal");
+    assert_eq!(padding.symbol(), "-");
 }
 
 #[test]

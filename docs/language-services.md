@@ -273,29 +273,31 @@ report that it cannot read and never reports a failure for one.
 
 ## Notification Overlay
 
-One overlay shows every report of the editor. It sits in the bottom right
-corner of the body band, above the statusline. It is decoration: it moves no
-cursor, it changes no buffer text, and it paints over the buffer.
+One overlay shows the work-done progress of the language servers. It sits in the
+bottom right corner of the body band, above the statusline. It is decoration: it
+moves no cursor, it changes no buffer text, and it paints over the buffer.
 
-The overlay holds one group for each language server and one group for the
-editor messages. A group shows its items and then its own title row, which
-names the server and carries the spinner while one item of the group runs. An
-item shows its state, its message, and the completion that the server reported.
-A finished item shows the done icon and leaves after its lifetime.
+The overlay holds one group for each language server. A group shows its items
+and then its own title row, which names the server and carries the spinner while
+one item of the group runs. An item shows its state, its message, and the
+completion that the server reported. A finished item shows the done icon and
+leaves after its lifetime.
 
-The reference `fidget.nvim` configuration overrides the notification function of
-the editor, so one surface shows every report. Kvim mirrors every message of the
-message line onto the overlay for the same reason. The message line keeps its
-own behavior: the mirror adds a second surface and removes nothing.
+The overlay carries language server progress alone. Every other report of the
+editor, such as a completed save, a clipboard notice, or a failed file
+operation, stays on the message line and the statusline. The reference
+`fidget.nvim` configuration also routes the editor notifications onto its
+surface, and Kvim does not: a second surface for those reports repeats what the
+message line already shows. An editor with no server activity therefore paints
+no overlay and reports no deadline for one.
 
-The reference paints no background and lets the buffer text show through the
-overlay. Kvim paints the surface color of the theme instead, so the overlay
-reads as one clean panel. A terminal cell holds no alpha channel, so one
-semantic theme role carries that separation instead of a blend at draw time. The
-panel reaches the corner and keeps one cell between its text and its left and
-right edge, which places the text where the reference places it. It carries no
-border and keeps no row above or below its text, because every such row would
-hide one more row of the buffer without separating anything.
+The overlay paints text alone, as the reference does. It carries no background
+and no border, so the buffer text and the end-of-buffer markers stay visible
+between and around its rows. Every theme role of the overlay owns a foreground
+color only, because a background would hide the buffer behind it. The overlay
+reaches the corner and keeps one cell between its text and the right edge, which
+places the text where the reference places it. It keeps no row above or below
+its text.
 
 [`settings.md`](settings.md) owns the row bound, the spinner period, and the
 lifetime of a finished item. [`responsiveness.md`](responsiveness.md) owns the

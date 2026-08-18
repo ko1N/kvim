@@ -227,27 +227,18 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             ThemeRole::TitleMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),
             ThemeRole::PopupSelection => Style::new().bg(POPUP_SELECTION_BACKGROUND),
-            // The notification overlay paints one panel over the buffer, so
-            // every role of it carries the surface background. The reference
-            // configuration paints no background and lets the buffer text show
-            // through. A terminal cell holds no alpha channel, so the surface
-            // color of the theme carries that separation instead of a blend at
-            // draw time. See `docs/language-services.md`.
-            ThemeRole::NotificationRunning => Style::new()
-                .fg(ACCENT_WARM)
-                .bg(self.surface)
-                .add_modifier(Modifier::ITALIC),
-            ThemeRole::NotificationDone => Style::new()
-                .fg(HINT)
-                .bg(self.surface)
-                .add_modifier(Modifier::ITALIC),
-            ThemeRole::NotificationMessage => Style::new()
-                .fg(TEXT)
-                .bg(self.surface)
-                .add_modifier(Modifier::ITALIC),
+            // The notification overlay paints text alone over the buffer, as
+            // the reference configuration does, so every role of it carries a
+            // foreground color only. A background would hide the buffer text
+            // and the end-of-buffer markers behind the overlay. See
+            // `docs/language-services.md`.
+            ThemeRole::NotificationRunning => {
+                Style::new().fg(ACCENT_WARM).add_modifier(Modifier::ITALIC)
+            }
+            ThemeRole::NotificationDone => Style::new().fg(HINT).add_modifier(Modifier::ITALIC),
+            ThemeRole::NotificationMessage => Style::new().fg(TEXT).add_modifier(Modifier::ITALIC),
             ThemeRole::NotificationGroup => Style::new()
                 .fg(TITLE)
-                .bg(self.surface)
                 .add_modifier(Modifier::BOLD | Modifier::ITALIC),
             ThemeRole::TreeRoot => Style::new()
                 .fg(TITLE)
@@ -378,16 +369,22 @@ mod tests {
             ThemeRole::Title,
             ThemeRole::TitleMuted,
             ThemeRole::TreeRoot,
-            ThemeRole::NotificationRunning,
-            ThemeRole::NotificationDone,
-            ThemeRole::NotificationMessage,
-            ThemeRole::NotificationGroup,
         ] {
             assert_eq!(
                 theme.style(role).bg,
                 Some(surface),
                 "{role:?} uses the surface"
             );
+        }
+        // The notification overlay paints text alone, so no role of it may own
+        // a background color. A background would hide the buffer behind it.
+        for role in [
+            ThemeRole::NotificationRunning,
+            ThemeRole::NotificationDone,
+            ThemeRole::NotificationMessage,
+            ThemeRole::NotificationGroup,
+        ] {
+            assert_eq!(theme.style(role).bg, None, "{role:?} paints no background");
         }
     }
 

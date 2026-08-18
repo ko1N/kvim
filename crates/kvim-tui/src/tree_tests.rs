@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
 use kvim_language::LspError;
-use kvim_settings::{EditorSettings, FileTreeIcons, NOTIFICATION_DONE_TTL_DEFAULT};
+use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
     GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusSnapshot, TREE_PENDING_READS_MAX,
@@ -70,15 +70,6 @@ fn workspace_with_icons(icons: FileTreeIcons) -> (TempDir, Session) {
     let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
     drain(&mut session);
     (dir, session)
-}
-
-/// Lets every mirrored message leave the notification overlay.
-///
-/// The overlay shows every editor message for its lifetime, and it paints over
-/// the sidebar. A test that reads the rows of the tree alone lets that lifetime
-/// pass first. See `docs/language-services.md`.
-fn settle_notifications(session: &mut Session) {
-    session.tick(NOTIFICATION_DONE_TTL_DEFAULT);
 }
 
 /// Runs every queued workspace operation, as the event loop does.
@@ -743,7 +734,6 @@ fn an_end_without_an_active_search_changes_nothing() {
 fn the_sidebar_scrolls_so_the_selected_row_stays_visible() {
     // The workspace holds more files than the sidebar shows at once.
     let (_dir, mut session) = flat_workspace(TALL_ENTRIES);
-    settle_notifications(&mut session);
 
     for _ in 0..TALL_ENTRIES - 1 {
         press(&mut session, 'j');
@@ -1280,7 +1270,6 @@ fn the_sidebar_keeps_the_scroll_margin_around_the_selected_row() {
     );
 
     let (_dir, mut session) = flat_workspace(TALL_ENTRIES);
-    settle_notifications(&mut session);
     assert_eq!(
         visible_entries(&session).first(),
         Some(&entry_row(0)),
@@ -1416,7 +1405,6 @@ fn the_indent_guides_draw_a_trunk_and_close_the_last_child_with_an_elbow() {
     drain(&mut session);
 
     // The rows fill the sidebar, so the assertion reads the entry rows alone.
-    settle_notifications(&mut session);
     let rows = sidebar_rows(&session);
     assert_eq!(
         rows[..9],
@@ -1445,7 +1433,6 @@ fn every_row_selects_its_icon_by_extension_and_by_well_known_name() {
     let (_dir, mut session) = appearance_workspace(FileTreeIcons::Shown);
     press(&mut session, 'l');
     drain(&mut session);
-    settle_notifications(&mut session);
 
     assert_eq!(
         sidebar_rows(&session),
@@ -1556,7 +1543,6 @@ fn the_selected_row_carries_one_band_and_one_mark_at_its_left_edge() {
 fn every_row_below_the_last_entry_stays_empty() {
     let (_dir, mut session) = workspace();
     reveal(&mut session);
-    settle_notifications(&mut session);
 
     // The workspace holds three entries and one hidden count, so the rows below
     // the fifth one hold no text at all. The statusline and the message line
@@ -1925,7 +1911,6 @@ fn a_missing_git_command_reaches_the_message_line_once() {
         "a missing command is a normal state that the editor names"
     );
 
-    settle_notifications(&mut session);
     press(&mut session, 'R');
     drain(&mut session);
     let _second_read = session.take_git_request();
