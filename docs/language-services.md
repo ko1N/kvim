@@ -311,9 +311,37 @@ cursor position. A diagnostic carries the buffer version that produced it. Kvim
 discards a diagnostic for an obsolete buffer version.
 
 Kvim orders diagnostics by position, so diagnostic navigation is deterministic.
-The diagnostic float shows the diagnostics at the cursor position.
+The diagnostic float shows every diagnostic of the cursor position, not the
+first one alone. One blank row separates two diagnostics, so a reader sees where
+one message ends and the next one starts.
 
 [`input-actions.md`](input-actions.md) owns the diagnostic keys.
+
+## The language float
+
+The hover answer and the diagnostics of the cursor position share one float, so
+both follow one placement rule.
+
+The float sits beside the cursor cell of the window that asked, not at the
+bottom of the terminal. It stands one row below the cursor line, and it flips
+above that line when the rows below cannot hold it. It never covers the cursor
+line itself, because that line holds the text that the float describes. When
+neither side holds the complete float, it takes the larger side and clips its
+height there, so it stays anchored to the cursor.
+
+The float belongs to one window, so it never reaches outside that window
+rectangle. In a split it sits inside its own window. It starts at the cursor
+column and moves left until its right edge sits inside the window.
+
+The float bounds both dimensions. A long message wraps at `FLOAT_COLUMNS_MAX`
+terminal cells, or at the window width when the window is narrower. The wrap
+counts terminal cells, so it never splits a wide character. The float shows at
+most `FLOAT_ROWS_MAX` rows and replaces the last row with `...` as soon as it
+holds more, so no row disappears without a note.
+
+The float is decoration. It changes no buffer text, no line mapping, and no
+cursor position, and the next key closes it. See [`windows.md`](windows.md) for
+the overlay layering.
 
 ## Formatting
 

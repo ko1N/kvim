@@ -131,6 +131,63 @@ pub(super) fn truncate_cells_left(text: &str, cells: usize) -> Cow<'_, str> {
     Cow::Owned(format!("{TRUNCATION_MARKER}{}", &text[start..]))
 }
 
+/// Breaks one text into rows of at most `cells` terminal cells each.
+///
+/// The break prefers the last space that fits, so a word survives one row
+/// whenever it can. A word that is wider than the whole row breaks inside
+/// itself, because no later break would ever fit it. The cut counts cells, so
+/// it never splits a wide character and no row overflows the available cells.
+/// An empty text produces one empty row, so a blank separator row survives.
+///
+/// The scan reads at most [`ROW_SCAN_CHARS_MAX`] characters, so one
+/// pathological text produces a finite number of rows.
+pub(super) fn wrap_cells(text: &str, cells: usize) -> Vec<String> {
+    debug_assert!(cells >= 1, "the caller reserves at least one cell for text");
+    let mut rows: Vec<String> = Vec::new();
+    let mut row = String::new();
+    let mut used = 0;
+    // The byte offset inside `row` that follows the last space, or `None` while
+    // the row holds no space that a break may use.
+    let mut after_space: Option<usize> = None;
+
+    for value in text.chars().take(ROW_SCAN_CHARS_MAX) {
+        let width = char_cells(value);
+        if width > cells {
+            // A character that is wider than a complete row fits no row at all,
+            // so the wrap drops it instead of overflowing one.
+            continue;
+        }
+        if used + width > cells {
+            // A break at the last space keeps the word whole, but only while it
+            // leaves visible text behind. Leading indentation holds no word, so
+            // the row breaks inside the word instead of emitting a blank row.
+            match after_space.filter(|at| !row[..*at].trim_end_matches(' ').is_empty()) {
+                Some(at) => {
+                    let rest = row.split_off(at);
+                    while row.ends_with(' ') {
+                        row.pop();
+                    }
+                    rows.push(std::mem::replace(&mut row, rest));
+                }
+                None => rows.push(std::mem::take(&mut row)),
+            }
+            used = text_cells(&row);
+            after_space = None;
+        }
+        row.push(value);
+        used += width;
+        if value == ' ' {
+            after_space = Some(row.len());
+        }
+    }
+    rows.push(row);
+    debug_assert!(
+        rows.iter().all(|row| text_cells(row) <= cells),
+        "every break stops before the row overflows the available cells"
+    );
+    rows
+}
+
 /// Returns the terminal column of one source column inside one line.
 ///
 /// The scan stops after [`ROW_SCAN_CHARS_MAX`] characters, so the result of a
@@ -210,7 +267,9 @@ pub(super) fn layout_row(
 mod tests {
     use kvim_core::TerminalColumn;
 
-    use super::{RowSymbol, layout_row, terminal_column, text_cells, truncate_cells_left};
+    use super::{
+        RowSymbol, layout_row, terminal_column, text_cells, truncate_cells_left, wrap_cells,
+    };
 
     const TAB: usize = 4;
 
@@ -309,6 +368,38 @@ mod tests {
         // Six cells hold the marker and the complete wide character.
         assert_eq!(truncate_cells_left("漢字abc", 6), "<字abc");
         assert_eq!(text_cells("<字abc"), 6);
+    }
+
+    #[test]
+    fn a_wrap_breaks_at_the_last_space_that_fits() {
+        assert_eq!(
+            wrap_cells("cannot borrow the value twice", 12),
+            vec!["cannot", "borrow the", "value twice"],
+        );
+        assert_eq!(wrap_cells("short", 12), vec!["short"]);
+        assert_eq!(wrap_cells("", 12), vec![""], "a blank row survives");
+    }
+
+    #[test]
+    fn a_wrap_breaks_inside_a_word_that_no_row_can_hold() {
+        assert_eq!(wrap_cells("abcdefghij", 4), vec!["abcd", "efgh", "ij"]);
+        // Leading indentation holds no word, so the row breaks inside the word
+        // instead of emitting a blank row.
+        assert_eq!(wrap_cells("    indented", 8), vec!["    inde", "nted"]);
+    }
+
+    #[test]
+    fn a_wrap_never_splits_a_wide_character() {
+        // Three cells hold one wide character, and the second one starts the
+        // next row instead of losing half of itself.
+        let rows = wrap_cells("漢字漢字", 3);
+        assert_eq!(rows, vec!["漢", "字", "漢", "字"]);
+        for row in &rows {
+            assert!(text_cells(row) <= 3, "no row overflows the available cells");
+        }
+        assert_eq!(wrap_cells("漢字abc", 5), vec!["漢字a", "bc"]);
+        // One cell can never hold a wide character, so the wrap drops it.
+        assert_eq!(wrap_cells("a漢b", 1), vec!["a", "b"]);
     }
 
     #[test]

@@ -239,6 +239,17 @@ that may follow the pending key sequence, one key for each row, and it shows a
 bounded number of rows. [`input-actions.md`](input-actions.md) owns the rows and
 the delay.
 
+The language float covers a part of one window instead of the body band. It sits
+beside the cursor cell of the focused window, so it never reaches outside that
+window rectangle, and a split places it inside its own window. It uses the same
+cursor cell that the frame reports for the terminal cursor, so the float and the
+cursor never disagree. [`language-services.md`](language-services.md) owns the
+placement rule and the bounds.
+
+The overlays paint in a fixed order over the window tree: the notification
+overlay first, then the language float, then the which-key overlay, and the
+picker last over the complete terminal.
+
 ## Theme
 
 The theme maps semantic roles to terminal styles. Call sites request a role,

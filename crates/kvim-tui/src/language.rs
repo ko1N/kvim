@@ -32,11 +32,34 @@ use kvim_workspace::BufferId;
 /// describes text the server never received.
 pub const LANGUAGE_OUTBOX_MAX: usize = 64;
 
-/// The rows that one floating overlay shows.
+/// The rows that one floating overlay shows below its title.
+///
+/// The float sits beside the cursor, so it covers buffer text that the reader
+/// still needs. The bound keeps one long hover text or one long diagnostic from
+/// filling the window. The overlay replaces the last row with a note when it
+/// holds more rows than the bound allows.
 pub const FLOAT_ROWS_MAX: usize = 16;
 
-/// The characters that one floating overlay row holds.
+/// The terminal cells that one floating overlay row occupies.
+///
+/// A wrapped row stays readable at this width, and the float still leaves the
+/// buffer text beside it visible in a wide terminal. A narrower window wraps at
+/// its own width instead, because the float never reaches outside the window.
 pub const FLOAT_COLUMNS_MAX: usize = 96;
+
+/// The rows that one float keeps before the overlay wraps them.
+///
+/// The overlay shows at most [`FLOAT_ROWS_MAX`] rows and replaces the last one
+/// with a note as soon as it holds more, so one extra row is enough to report
+/// that the float hides content.
+const FLOAT_SOURCE_ROWS_MAX: usize = FLOAT_ROWS_MAX + 1;
+
+/// The characters that one source row of a float keeps.
+///
+/// The overlay shows at most [`FLOAT_ROWS_MAX`] rows of [`FLOAT_COLUMNS_MAX`]
+/// cells, so no character beyond this bound can ever become visible text. The
+/// bound keeps one pathological message small before any wrapping runs.
+const FLOAT_SOURCE_CHARS_MAX: usize = FLOAT_ROWS_MAX * FLOAT_COLUMNS_MAX;
 
 /// One document synchronization or one question for the language services.
 ///
@@ -354,7 +377,9 @@ pub(super) fn jump_target(
 /// One row of a floating overlay.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct FloatRow {
-    /// The text of the row, clipped to [`FLOAT_COLUMNS_MAX`] characters.
+    /// The text of the row. A source row holds at most
+    /// [`FLOAT_SOURCE_CHARS_MAX`] characters, and the overlay wraps it into
+    /// rows of at most [`FLOAT_COLUMNS_MAX`] terminal cells.
     pub(super) text: String,
     /// The severity that colors the row, or `None` for neutral text.
     pub(super) severity: Option<DiagnosticSeverity>,
@@ -378,7 +403,7 @@ impl Float {
     pub(super) fn text(title: &'static str, text: &str) -> Self {
         let rows = text
             .lines()
-            .take(FLOAT_ROWS_MAX)
+            .take(FLOAT_SOURCE_ROWS_MAX)
             .map(|line| FloatRow {
                 text: clip(line),
                 severity: None,
@@ -388,11 +413,16 @@ impl Float {
     }
 
     /// Creates a bounded float from the diagnostics at one position.
+    ///
+    /// One position can carry several diagnostics, and the float shows every
+    /// one of them. A blank row separates two diagnostics, so a reader sees
+    /// where one message ends and the next one starts.
     #[must_use]
     pub(super) fn diagnostics(title: &'static str, diagnostics: &[&Diagnostic]) -> Self {
         let rows = diagnostics
             .iter()
-            .flat_map(|diagnostic| {
+            .enumerate()
+            .flat_map(|(position, diagnostic)| {
                 let severity = diagnostic.severity;
                 let source = diagnostic.source.as_deref().unwrap_or_default();
                 let prefix = if source.is_empty() {
@@ -400,29 +430,35 @@ impl Float {
                 } else {
                     format!("{source}: ")
                 };
-                diagnostic
-                    .message
-                    .lines()
-                    .enumerate()
-                    .map(move |(index, line)| FloatRow {
-                        text: if index == 0 {
-                            clip(&format!("{prefix}{line}"))
-                        } else {
-                            clip(line)
-                        },
-                        severity: Some(severity),
-                    })
-                    .collect::<Vec<_>>()
+                let separator = (position > 0).then(|| FloatRow {
+                    text: String::new(),
+                    severity: None,
+                });
+                separator.into_iter().chain(
+                    diagnostic
+                        .message
+                        .lines()
+                        .enumerate()
+                        .map(move |(index, line)| FloatRow {
+                            text: if index == 0 {
+                                clip(&format!("{prefix}{line}"))
+                            } else {
+                                clip(line)
+                            },
+                            severity: Some(severity),
+                        })
+                        .collect::<Vec<_>>(),
+                )
             })
-            .take(FLOAT_ROWS_MAX)
+            .take(FLOAT_SOURCE_ROWS_MAX)
             .collect();
         Self { title, rows }
     }
 }
 
-/// Clips one row to [`FLOAT_COLUMNS_MAX`] characters.
+/// Clips one source row to [`FLOAT_SOURCE_CHARS_MAX`] characters.
 fn clip(line: &str) -> String {
-    line.chars().take(FLOAT_COLUMNS_MAX).collect()
+    line.chars().take(FLOAT_SOURCE_CHARS_MAX).collect()
 }
 
 /// The language-service state that the session owns.
