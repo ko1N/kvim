@@ -50,8 +50,9 @@ const OPEN_DIRECTORY: Icon = Icon {
 /// The icons of the well-known file names.
 ///
 /// The table comes before the extension table, so `Cargo.lock` reads as a lock
-/// file and `.gitignore` reads as a Git file. The comparison ignores the case
-/// of ASCII letters, because a filesystem may hold either spelling.
+/// file and `.gitignore` reads as a Git file. It also names a file that carries
+/// no extension at all, such as `LICENSE`. The comparison ignores the case of
+/// ASCII letters, because a filesystem may hold either spelling.
 const NAMED_FILES: &[(&str, Icon)] = &[
     (
         ".gitignore",
@@ -79,6 +80,20 @@ const NAMED_FILES: &[(&str, Icon)] = &[
         Icon {
             glyph: "\u{e702}",
             role: IconRole::VersionControl,
+        },
+    ),
+    (
+        "LICENSE",
+        Icon {
+            glyph: "\u{f0e3}",
+            role: IconRole::Document,
+        },
+    ),
+    (
+        "LICENCE",
+        Icon {
+            glyph: "\u{f0e3}",
+            role: IconRole::Document,
         },
     ),
     (

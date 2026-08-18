@@ -14,7 +14,7 @@ use super::mutation::{
 };
 use super::temp::TempDir;
 use super::tree::{
-    DirectoryListing, EntryKind, Expansion, FileTree, LinkKind, RowContent, TREE_DEPTH_MAX,
+    DirectoryListing, EntryKind, Expansion, FileTree, LinkKind, Notice, RowContent, TREE_DEPTH_MAX,
     TREE_DIRECTORY_ENTRIES_MAX, TREE_ENTRIES_MAX, TREE_SEARCH_CHARS_MAX, TREE_SEARCH_READS_MAX,
     TreeEntry, Truncation, read_directory,
 };
@@ -47,15 +47,17 @@ fn pump(tree: &mut FileTree) -> Vec<PathBuf> {
 
 /// Returns one label for every visible row.
 ///
-/// A directory label ends with a slash, and a notice label is one exclamation
-/// mark, so one comparison covers the row order and the row kinds.
+/// A directory label ends with a slash, a read report is one exclamation mark,
+/// and a hidden count names its number, so one comparison covers the row order
+/// and the row kinds.
 fn labels(tree: &FileTree) -> Vec<String> {
     tree.rows()
         .iter()
         .map(|row| match &row.content {
             RowContent::File { name, .. } => name.clone(),
             RowContent::Directory { name, .. } => format!("{name}/"),
-            RowContent::Notice(_) => "!".to_owned(),
+            RowContent::Notice(Notice::Hidden { count }) => format!("({count} hidden)"),
+            RowContent::Notice(Notice::Truncated { .. } | Notice::Unreadable) => "!".to_owned(),
         })
         .collect()
 }
@@ -167,7 +169,11 @@ fn the_default_filter_hides_dotfiles_and_the_named_files() {
 
     let mut tree = FileTree::new(root);
     pump(&mut tree);
-    assert_eq!(labels(&tree), vec!["main.rs"]);
+    assert_eq!(
+        labels(&tree),
+        vec!["main.rs", "(3 hidden)"],
+        "the count reports the entries that the policy keeps out of the rows"
+    );
 
     tree.toggle_hidden();
     assert_eq!(
@@ -176,7 +182,38 @@ fn the_default_filter_hides_dotfiles_and_the_named_files() {
     );
 
     tree.toggle_hidden();
-    assert_eq!(labels(&tree), vec!["main.rs"]);
+    assert_eq!(labels(&tree), vec!["main.rs", "(3 hidden)"]);
+}
+
+#[test]
+fn the_hidden_count_belongs_to_the_directory_that_holds_the_entries() {
+    let directory = TempDir::new("tree-hidden-count");
+    directory.file(".root-one", "");
+    directory.file(".root-two", "");
+    directory.file("src/.inner", "");
+    directory.file("src/main.rs", "");
+    directory.dir("empty");
+    let root = root_of(&directory);
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+    tree.expand(&root.join("src"));
+    pump(&mut tree);
+
+    // Each directory counts its own hidden entries, and the count follows the
+    // entries of that directory. A directory that hides none carries no count.
+    assert_eq!(
+        labels(&tree),
+        vec!["empty/", "src/", "main.rs", "(1 hidden)", "(2 hidden)"]
+    );
+    let depths: Vec<usize> = tree.rows().iter().map(|row| row.depth).collect();
+    assert_eq!(depths, vec![0, 0, 1, 1, 0]);
+    assert!(
+        tree.rows()
+            .iter()
+            .all(|row| row.is_selectable() == row.name().is_some()),
+        "a count row names no entry, so the selection never rests on it"
+    );
 }
 
 #[test]

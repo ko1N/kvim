@@ -118,6 +118,20 @@ pub enum ThemeRole {
     TitleMuted,
     /// The selected row of a popup list.
     PopupSelection,
+    /// The workspace root path in the header row of the file tree.
+    TreeRoot,
+    /// The name of one directory in the file tree.
+    TreeDirectory,
+    /// An entry that holds machine output, or that a file operation holds.
+    TreeMuted,
+    /// A file-tree row that counts the entries the tree keeps out of its rows.
+    TreeNotice,
+    /// A file-tree row that reports a bounded or a failed directory read.
+    TreeIncomplete,
+    /// One indent guide of the file tree.
+    TreeIndentGuide,
+    /// The mark at the left edge of the selected file-tree row.
+    TreeSelectionMark,
     /// An error message.
     Error,
     /// A warning message.
@@ -202,6 +216,20 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             ThemeRole::TitleMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),
             ThemeRole::PopupSelection => Style::new().bg(POPUP_SELECTION_BACKGROUND),
+            ThemeRole::TreeRoot => Style::new()
+                .fg(TITLE)
+                .bg(self.surface)
+                .add_modifier(Modifier::ITALIC),
+            // Every file-tree role below decorates the row behind it, so it
+            // carries a foreground color only and keeps the selection band.
+            ThemeRole::TreeDirectory => Style::new().fg(TITLE),
+            ThemeRole::TreeMuted => Style::new().fg(TEXT_MUTED),
+            ThemeRole::TreeNotice => Style::new().fg(TEXT_MUTED).add_modifier(Modifier::ITALIC),
+            // An incomplete read keeps entries that the reader expects out of
+            // the rows, so it warns instead of reading as one quiet report.
+            ThemeRole::TreeIncomplete => Style::new().fg(WARNING).add_modifier(Modifier::ITALIC),
+            ThemeRole::TreeIndentGuide => Style::new().fg(TEXT_MUTED),
+            ThemeRole::TreeSelectionMark => Style::new().fg(TEXT_DIM),
             // An icon decorates the row below it, so it carries a foreground
             // color only and keeps the row background and the selection.
             ThemeRole::Icon(role) => Style::new().fg(icon_color(role)),
@@ -304,6 +332,7 @@ mod tests {
             ThemeRole::Winbar,
             ThemeRole::Title,
             ThemeRole::TitleMuted,
+            ThemeRole::TreeRoot,
         ] {
             assert_eq!(
                 theme.style(role).bg,
