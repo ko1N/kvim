@@ -25,7 +25,8 @@ use super::TerminalError;
 
 /// The enhanced keyboard reporting flags that Kvim requests.
 ///
-/// The flags keep the `Ctrl-Alt`, `Ctrl-Enter`, and `Ctrl-\` chords distinct.
+/// The flags keep the `Ctrl-Alt`, `Ctrl-Enter`, `Ctrl-\`, and modified arrow
+/// chords distinct from their unmodified keys.
 /// See `docs/input-actions.md` for the bindings that depend on them.
 const KEYBOARD_ENHANCEMENT_FLAGS: KeyboardEnhancementFlags =
     KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES

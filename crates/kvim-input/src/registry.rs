@@ -662,6 +662,21 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::MovePreviousWordStart,
     );
     add(table, MOTION_MODES, &[ch('e')], Command::MoveNextWordEnd);
+    // The arrow keys name the same four motions as `h`, `j`, `k`, and `l`, and
+    // they stay available in Insert mode, where a letter is buffer text. The
+    // `Ctrl` arrows name the two word motions there as well, so the user never
+    // leaves Insert mode to move by word. `terminal` folds the macOS `Option`
+    // chord into the `Ctrl` arrow, so one entry serves both chords.
+    for (key, command) in [
+        (Key::plain(KeyCode::Left), Command::MoveLeft),
+        (Key::plain(KeyCode::Down), Command::MoveDown),
+        (Key::plain(KeyCode::Up), Command::MoveUp),
+        (Key::plain(KeyCode::Right), Command::MoveRight),
+        (Key::ctrl(KeyCode::Left), Command::MovePreviousWordStart),
+        (Key::ctrl(KeyCode::Right), Command::MoveNextWordStart),
+    ] {
+        add(table, ALL_MODES, &[key], command);
+    }
     add(table, MOTION_MODES, &[ch('0')], Command::MoveFirstColumn);
     add(table, MOTION_MODES, &[ch('^')], Command::MoveFirstNonBlank);
     add(table, MOTION_MODES, &[ch('$')], Command::MoveLineEnd);
@@ -1084,6 +1099,38 @@ mod tests {
                 registry.command(mode, &keys),
                 Some(Command::DeleteSelection),
                 "{mode} deletes the selection"
+            );
+        }
+    }
+
+    #[test]
+    fn the_arrow_keys_and_the_word_chords_reach_the_motions_in_every_mode() {
+        let registry = Registry::first_release();
+        let cases = [
+            (Key::plain(KeyCode::Left), Command::MoveLeft),
+            (Key::plain(KeyCode::Down), Command::MoveDown),
+            (Key::plain(KeyCode::Up), Command::MoveUp),
+            (Key::plain(KeyCode::Right), Command::MoveRight),
+            (Key::ctrl(KeyCode::Left), Command::MovePreviousWordStart),
+            (Key::ctrl(KeyCode::Right), Command::MoveNextWordStart),
+        ];
+        for mode in Mode::ALL {
+            for (key, expected) in cases {
+                assert_eq!(
+                    registry.command(mode, &[key]),
+                    Some(expected),
+                    "{mode} `{}` must reach `{expected}`",
+                    super::KeyLabel(key)
+                );
+            }
+        }
+        // The letter motions stay out of Insert mode, where a letter is buffer
+        // text. Only the arrow keys and the word chords move the cursor there.
+        for letter in ['h', 'j', 'k', 'l', 'w', 'b'] {
+            assert_eq!(
+                registry.command(Mode::Insert, &[ch(letter)]),
+                None,
+                "`{letter}` is buffer text in Insert mode"
             );
         }
     }

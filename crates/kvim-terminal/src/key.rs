@@ -113,7 +113,7 @@ impl Key {
         let alt = event.modifiers.contains(KeyModifiers::ALT);
         if alt
             && !control
-            && let Some(key) = legacy_alt_chord(event.code)
+            && let Some(key) = alt_chord_alias(event.code)
         {
             return Some(key);
         }
@@ -146,22 +146,30 @@ impl Key {
     }
 }
 
-/// Restores the `Ctrl-Alt-H`, `Ctrl-Alt-J`, `Ctrl-Alt-K`, and `Ctrl-Alt-L`
-/// chords from the legacy `Alt` encoding.
+/// Folds the `Alt` keys that Kvim binds under another chord into that chord.
 ///
-/// Several terminals and terminal multiplexers send these chords as `Alt` over a
-/// control character, or as `Alt-Backspace` and `Alt-Enter`. The fixup keeps
-/// directional pane resizing usable when the terminal cannot report the true
-/// chord. It returns `None` for every other `Alt` key.
-fn legacy_alt_chord(code: CrosstermKeyCode) -> Option<Key> {
-    let target = match code {
-        CrosstermKeyCode::Char('\u{8}') | CrosstermKeyCode::Backspace => 'h',
-        CrosstermKeyCode::Char('\n') | CrosstermKeyCode::Enter => 'j',
-        CrosstermKeyCode::Char('\u{b}') => 'k',
-        CrosstermKeyCode::Char('\u{c}') => 'l',
+/// Two sources produce an `Alt` chord that names a bound key. Several terminals
+/// and terminal multiplexers send `Ctrl-Alt-H`, `Ctrl-Alt-J`, `Ctrl-Alt-K`, and
+/// `Ctrl-Alt-L` as `Alt` over a control character, or as `Alt-Backspace` and
+/// `Alt-Enter`. macOS sends the `Option` chord as the `Alt` modifier, so
+/// `Option-Left` and `Option-Right` arrive as `Alt-Left` and `Alt-Right`.
+///
+/// Both word chords name one motion each, so the alias folds the `Alt` arrows
+/// into the `Ctrl` arrows and the mapping registry holds one entry for each word
+/// motion. The alias returns `None` for every other `Alt` key.
+fn alt_chord_alias(code: CrosstermKeyCode) -> Option<Key> {
+    let aliased = match code {
+        CrosstermKeyCode::Left => Key::ctrl(KeyCode::Left),
+        CrosstermKeyCode::Right => Key::ctrl(KeyCode::Right),
+        CrosstermKeyCode::Char('\u{8}') | CrosstermKeyCode::Backspace => {
+            Key::ctrl_alt(KeyCode::Char('h'))
+        }
+        CrosstermKeyCode::Char('\n') | CrosstermKeyCode::Enter => Key::ctrl_alt(KeyCode::Char('j')),
+        CrosstermKeyCode::Char('\u{b}') => Key::ctrl_alt(KeyCode::Char('k')),
+        CrosstermKeyCode::Char('\u{c}') => Key::ctrl_alt(KeyCode::Char('l')),
         _ => return None,
     };
-    Some(Key::ctrl_alt(KeyCode::Char(target)))
+    Some(aliased)
 }
 
 #[cfg(test)]
@@ -220,6 +228,64 @@ mod tests {
             Key::from_key_event(sent),
             Some(Key::ctrl_alt(KeyCode::Char('h')))
         );
+    }
+
+    #[test]
+    fn an_arrow_key_carries_its_modifier_chord() {
+        // The enhanced keyboard reporting flags of `lifecycle` keep the three
+        // forms distinct, so the normalizer must not fold them together.
+        let cases = [
+            (
+                CrosstermKeyCode::Left,
+                KeyModifiers::NONE,
+                Key::plain(KeyCode::Left),
+            ),
+            (
+                CrosstermKeyCode::Right,
+                KeyModifiers::NONE,
+                Key::plain(KeyCode::Right),
+            ),
+            (
+                CrosstermKeyCode::Up,
+                KeyModifiers::NONE,
+                Key::plain(KeyCode::Up),
+            ),
+            (
+                CrosstermKeyCode::Down,
+                KeyModifiers::NONE,
+                Key::plain(KeyCode::Down),
+            ),
+            (
+                CrosstermKeyCode::Left,
+                KeyModifiers::CONTROL,
+                Key::ctrl(KeyCode::Left),
+            ),
+            (
+                CrosstermKeyCode::Right,
+                KeyModifiers::CONTROL,
+                Key::ctrl(KeyCode::Right),
+            ),
+            // macOS sends the `Option` chord as the `Alt` modifier, and both
+            // word chords name one motion each.
+            (
+                CrosstermKeyCode::Left,
+                KeyModifiers::ALT,
+                Key::ctrl(KeyCode::Left),
+            ),
+            (
+                CrosstermKeyCode::Right,
+                KeyModifiers::ALT,
+                Key::ctrl(KeyCode::Right),
+            ),
+        ];
+        for (code, modifiers, expected) in cases {
+            let sent = event(code, modifiers, KeyEventKind::Press);
+            assert_eq!(
+                Key::from_key_event(sent),
+                Some(expected),
+                "{code:?} with {modifiers:?} must normalize to {expected:?}"
+            );
+        }
     }
 
     #[test]
