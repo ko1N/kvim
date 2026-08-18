@@ -1,4 +1,4 @@
-//! Behavior tests for the language registry and the Rust Tree-sitter adapter.
+//! Behavior tests for the language registry and the Tree-sitter adapters.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -91,6 +91,17 @@ fn analysis_error(source: &str) -> AnalysisError {
     }
 }
 
+/// Analyzes one source with the adapter that the registry selects for a path.
+fn analyze_path(path: &str, source: &str) -> Analysis {
+    let text = buffer(source);
+    let input = AnalysisInput::new(text.version(), Arc::from(text.to_string()));
+    LanguageRegistry::first_release()
+        .adapter(Path::new(path))
+        .expect("the registry serves the path")
+        .analyze(&input, &CancellationToken::new())
+        .expect("the test source stays inside every bound")
+}
+
 /// Returns the roles of one line, in ascending byte order.
 fn roles(analysis: &Analysis, line: u32) -> Vec<SyntaxRole> {
     analysis
@@ -118,9 +129,9 @@ fn only_an_adapter_selects_a_path() {
         registry.adapter(Path::new("src/main.rs")).unwrap().id(),
         "rust"
     );
-    // The first release supports Rust only, and the extension match is
-    // case-sensitive.
-    for path in ["src/main.RS", "notes.md", "rs"] {
+    // Only a registered language reaches an adapter, and the extension match
+    // is case-sensitive.
+    for path in ["src/main.RS", "notes.txt", "rs"] {
         assert_eq!(
             registry.adapter(Path::new(path)).err(),
             Some(AnalysisError::UnsupportedPath),
@@ -449,4 +460,100 @@ fn two_adapters_that_claim_one_path_are_an_ambiguous_failure() {
         registry.adapter(Path::new("main.rs")).err(),
         Some(AnalysisError::AmbiguousPath)
     );
+}
+
+#[test]
+fn every_registered_extension_selects_its_adapter() {
+    let registry = LanguageRegistry::first_release();
+
+    for (path, id) in [
+        ("Cargo.toml", "toml"),
+        ("docs/notes.markdown", "markdown"),
+        ("flake.nix", "nix"),
+        ("package.json", "json"),
+        ("README.md", "markdown"),
+        ("src/main.rs", "rust"),
+    ] {
+        assert_eq!(
+            registry
+                .adapter(Path::new(path))
+                .map(LanguageAdapter::id)
+                .ok(),
+            Some(id),
+            "{path} belongs to the {id} adapter"
+        );
+    }
+}
+
+#[test]
+fn a_file_name_selects_an_adapter_as_an_extension_does() {
+    let registry = LanguageRegistry::first_release();
+
+    // A lock file in the JSON format carries the extension of its tool, not
+    // the extension of its format.
+    assert_eq!(
+        registry.adapter(Path::new("flake.lock")).unwrap().id(),
+        "json"
+    );
+    assert_eq!(
+        registry
+            .adapter(Path::new("nested/flake.lock"))
+            .unwrap()
+            .id(),
+        "json",
+        "the name rule reads the file name, never the directory"
+    );
+    // The name is exact, so another lock file reaches no adapter.
+    assert_eq!(
+        registry.adapter(Path::new("Cargo.lock")).err(),
+        Some(AnalysisError::UnsupportedPath)
+    );
+}
+
+#[test]
+fn every_registered_language_produces_terminal_independent_roles() {
+    let toml = analyze_path("Cargo.toml", "# note\n[package]\nname = \"kvim\"\n");
+    assert_eq!(roles(&toml, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&toml, 2).contains(&SyntaxRole::String));
+
+    let nix = analyze_path("flake.nix", "# note\n{ value = 1; }\n");
+    assert_eq!(roles(&nix, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&nix, 1).contains(&SyntaxRole::Number));
+
+    let json = analyze_path("flake.lock", "{\n  \"nodes\": 1\n}\n");
+    assert!(roles(&json, 1).contains(&SyntaxRole::String));
+    assert!(roles(&json, 1).contains(&SyntaxRole::Number));
+
+    let markdown = analyze_path("README.md", "# Title\n\ntext\n");
+    assert!(roles(&markdown, 0).contains(&SyntaxRole::Type));
+}
+
+#[test]
+fn each_language_reports_its_own_comment_token() {
+    let registry = LanguageRegistry::first_release();
+
+    for (path, token) in [("Cargo.toml", "#"), ("flake.nix", "#"), ("main.rs", "//")] {
+        assert_eq!(
+            registry
+                .adapter(Path::new(path))
+                .unwrap()
+                .comment()
+                .line_token(),
+            Some(token),
+            "{path} carries its own line comment"
+        );
+    }
+}
+
+#[test]
+fn a_language_without_a_comment_keeps_the_toggle_disabled() {
+    let registry = LanguageRegistry::first_release();
+
+    // JSON and Markdown define no comment, so the toggle finds no token and
+    // reports the same reason that a file without an adapter reports.
+    for path in ["flake.lock", "package.json", "README.md"] {
+        let comment = registry.adapter(Path::new(path)).unwrap().comment();
+        assert_eq!(comment.line_token(), None, "{path} has no line comment");
+        assert_eq!(comment.block(), None, "{path} has no block comment");
+    }
 }
