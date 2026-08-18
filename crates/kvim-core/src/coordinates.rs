@@ -131,9 +131,10 @@ impl CharPosition {
 ///
 /// let buffer = TextBuffer::from_text("one\ntwo\n", &FileSettings::default())
 ///     .expect("the text is small");
-/// assert_eq!(buffer.line_count(), 3);
-/// assert_eq!(buffer.line_index(2).expect("the last line exists").get(), 2);
-/// assert!(buffer.line_index(3).is_err());
+/// assert_eq!(buffer.line_count(), 2);
+/// assert_eq!(buffer.line_index(1).expect("the last line exists").get(), 1);
+/// // The final line ending terminates the last line, so no line follows it.
+/// assert!(buffer.line_index(2).is_err());
 /// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct LineIndex(usize);

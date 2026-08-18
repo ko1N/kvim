@@ -113,13 +113,13 @@ fn insert_mode_typing_reaches_the_buffer_including_digits() {
     type_keys(&mut session, "let x = 42;");
     press_code(&mut session, KeyCode::Enter);
     type_keys(&mut session, "y");
-    assert_eq!(session.buffer().to_string(), "let x = 42;\ny");
+    assert_eq!(session.buffer().to_string(), "let x = 42;\ny\n");
     assert!(session.buffer().is_modified());
 
     // The same digit opens a count again after the mode returns to Normal.
     press_code(&mut session, KeyCode::Esc);
     type_keys(&mut session, "2gg");
-    assert_eq!(session.buffer().to_string(), "let x = 42;\ny");
+    assert_eq!(session.buffer().to_string(), "let x = 42;\ny\n");
 }
 
 #[test]
@@ -131,19 +131,19 @@ fn insert_mode_wires_enter_and_backspace_to_the_editor_entry_points() {
     // `Enter` copies the indent of the previous non-empty line.
     press_code(&mut session, KeyCode::Enter);
     type_keys(&mut session, "beta");
-    assert_eq!(session.buffer().to_string(), "    alpha\n    beta");
+    assert_eq!(session.buffer().to_string(), "    alpha\n    beta\n");
 
     // `Backspace` deletes one character at a time.
     for _ in 0..4 {
         press_code(&mut session, KeyCode::Backspace);
     }
-    assert_eq!(session.buffer().to_string(), "    alpha\n    ");
+    assert_eq!(session.buffer().to_string(), "    alpha\n    \n");
 
     // At column zero it joins the cursor line with the line above it.
     for _ in 0..5 {
         press_code(&mut session, KeyCode::Backspace);
     }
-    assert_eq!(session.buffer().to_string(), "    alpha");
+    assert_eq!(session.buffer().to_string(), "    alpha\n");
 }
 
 #[test]
@@ -151,14 +151,14 @@ fn the_tab_key_follows_the_indent_settings() {
     let mut soft = session(40, 10);
     press(&mut soft, 'i');
     press_code(&mut soft, KeyCode::Tab);
-    assert_eq!(soft.buffer().to_string(), "    ");
+    assert_eq!(soft.buffer().to_string(), "    \n");
 
     let mut settings = EditorSettings::default();
     settings.indent.expand_tab = false;
     let mut hard = Session::new(Rect::new(0, 0, 40, 10), settings, workspace_root());
     press(&mut hard, 'i');
     press_code(&mut hard, KeyCode::Tab);
-    assert_eq!(hard.buffer().to_string(), "\t");
+    assert_eq!(hard.buffer().to_string(), "\t\n");
 }
 
 #[test]
@@ -413,7 +413,7 @@ fn a_search_without_a_match_reports_it_and_keeps_the_cursor() {
     type_keys(&mut session, "zeta");
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(message(&session), "no match");
-    assert_eq!(session.buffer().to_string(), "alpha");
+    assert_eq!(session.buffer().to_string(), "alpha\n");
 }
 
 #[test]
@@ -430,7 +430,7 @@ fn an_exhausted_history_reports_instead_of_changing_the_buffer() {
     let mut session = session(40, 10);
     press(&mut session, 'u');
     assert_eq!(message(&session), "no further change");
-    assert_eq!(session.buffer().to_string(), "");
+    assert_eq!(session.buffer().to_string(), "\n");
 }
 
 #[test]
@@ -649,7 +649,7 @@ fn a_failed_save_keeps_the_buffer_usable() {
         Some(MessageLevel::Error)
     );
     assert!(session.buffer().is_modified());
-    assert_eq!(session.buffer().to_string(), "text");
+    assert_eq!(session.buffer().to_string(), "text\n");
 }
 
 #[test]
@@ -905,7 +905,7 @@ fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
 
     press(&mut session, 'i');
     type_keys(&mut session, "text");
-    assert_eq!(session.buffer().to_string(), "text");
+    assert_eq!(session.buffer().to_string(), "text\n");
 }
 
 #[test]
@@ -1256,7 +1256,7 @@ fn a_failed_clipboard_write_keeps_the_register_value() {
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
     let _ = session.apply_clipboard_result(Err(ClipboardFailure::Failed));
-    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta\n");
 }
 
 #[test]
@@ -1280,7 +1280,7 @@ fn a_clipboard_write_that_reported_no_outcome_reports_nothing() {
         type_keys(&mut session, "p");
         let _ = clipboard_text(&mut session);
         let _ = session.apply_clipboard_result(Err(failure));
-        assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+        assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta\n");
         assert_eq!(message(&session), "");
     }
 }
@@ -1336,7 +1336,7 @@ fn a_failed_clipboard_read_falls_back_to_the_internal_register() {
     // A refused submission is the same expected runtime state as a failed
     // command, so the paste still applies the internal register.
     let _ = session.apply_clipboard_result(Err(ClipboardFailure::Refused));
-    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta\n");
 }
 
 #[test]
@@ -1351,7 +1351,7 @@ fn a_kvim_yank_pastes_with_the_shape_that_it_recorded() {
     // The clipboard still holds the text that Kvim wrote, so the recorded
     // linewise shape applies. See `docs/clipboard.md`.
     let _ = session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
-    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta\n");
 }
 
 #[test]
@@ -1362,7 +1362,7 @@ fn an_external_copy_pastes_characterwise() {
     let _ = session.apply_clipboard_result(Ok(clipboard_output("gamma")));
     assert_eq!(
         session.buffer().to_string(),
-        "agammalpha",
+        "agammalpha\n",
         "text that Kvim never wrote is characterwise"
     );
 }
@@ -1373,7 +1373,7 @@ fn an_external_copy_that_ends_with_a_line_ending_pastes_linewise() {
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
     let _ = session.apply_clipboard_result(Ok(clipboard_output("gamma\n")));
-    assert_eq!(session.buffer().to_string(), "alpha\ngamma");
+    assert_eq!(session.buffer().to_string(), "alpha\ngamma\n");
 }
 
 #[test]
@@ -1394,7 +1394,7 @@ fn an_oversized_clipboard_value_never_reaches_the_register() {
     );
     assert_eq!(
         session.buffer().to_string(),
-        "alpha\nalpha",
+        "alpha\nalpha\n",
         "the paste falls back to the internal register"
     );
 }
@@ -1431,7 +1431,7 @@ fn a_clipboard_output_without_a_pending_operation_changes_nothing() {
         Redraw::Skipped,
         "an output that no operation waits for is obsolete"
     );
-    assert_eq!(session.buffer().to_string(), "alpha");
+    assert_eq!(session.buffer().to_string(), "alpha\n");
     assert_eq!(message(&session), "");
 }
 
@@ -1447,7 +1447,7 @@ fn a_newer_clipboard_operation_never_leaves_a_paste_waiting() {
     // A yank displaces the read that the paste waits for. The paste must then
     // apply the internal register instead of waiting forever.
     type_keys(&mut session, "yy");
-    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+    assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta\n");
     assert_eq!(
         clipboard_text(&mut session),
         "alpha\n",

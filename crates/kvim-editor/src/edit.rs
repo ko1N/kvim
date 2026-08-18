@@ -220,25 +220,22 @@ pub(super) fn lines_text(buffer: &TextBuffer, first: LineIndex, last: LineIndex)
 
 /// Returns the range that a linewise delete removes.
 ///
-/// The range holds the line ending after the last line. The last line of the
-/// buffer holds no line ending, so the range absorbs the line ending before the
-/// first line instead. This keeps the remaining lines terminated.
+/// The range holds the line ending of the last removed line, so the remaining
+/// lines keep their own terminators. A delete of every line keeps the line
+/// ending of the buffer instead, because the buffer always holds one line and
+/// that line carries its terminator.
 pub(super) fn linewise_delete_range(
     buffer: &TextBuffer,
     first: LineIndex,
     last: LineIndex,
 ) -> CharRange {
-    let (start, end) = if last.get() + 1 < buffer.line_count() {
-        let next = line_at(buffer, last.get() + 1);
-        (
-            buffer.line_start(first).get(),
-            buffer.line_start(next).get(),
-        )
-    } else if first.get() > 0 {
-        let previous = line_at(buffer, first.get() - 1);
-        (line_content_end(buffer, previous), buffer.len_chars())
+    let start = buffer.line_start(first).get();
+    let end = if last.get() + 1 < buffer.line_count() {
+        buffer.line_start(line_at(buffer, last.get() + 1)).get()
+    } else if start == 0 {
+        line_content_end(buffer, last)
     } else {
-        (buffer.line_start(first).get(), buffer.len_chars())
+        buffer.len_chars()
     };
     char_range(buffer, start, end)
 }
@@ -849,7 +846,9 @@ fn plan_linewise_paste(
             value.text().to_owned(),
             line.get() + 1,
         ),
-        // The last line holds no line ending, so the paste opens one first.
+        // No line follows the last line, so the paste opens the new lines at
+        // the end of the cursor line. The terminator of that line then ends the
+        // last pasted line, which keeps the buffer terminated.
         PastePlacement::After => (
             line_content_end(buffer, line),
             format!(
@@ -889,10 +888,13 @@ fn plan_blockwise_paste(
     let mut appended = String::new();
     for (offset, block_line) in value.block_lines(buffer.line_ending()).iter().enumerate() {
         let index = cursor.line().get() + offset;
+        // The last line of the buffer ends with its own terminator, so an
+        // appended line starts at the buffer end and carries its terminator
+        // behind it.
         if index >= line_count {
-            appended.push_str(ending);
             appended.push_str(&" ".repeat(column));
             appended.push_str(block_line);
+            appended.push_str(ending);
             continue;
         }
         let line = line_at(buffer, index);

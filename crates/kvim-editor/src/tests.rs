@@ -15,7 +15,7 @@ use kvim_settings::{
 
 /// Five lines that cover a long line, an indented line, an empty line, a line of
 /// blanks, and a last line without a terminator.
-const SAMPLE: &str = "alpha beta\n    gamma\n\n   \nlast";
+const SAMPLE: &str = "alpha beta\n    gamma\n\n   \nlast\n";
 
 const MOTION_COMMANDS: &[Command] = &[
     Command::MoveLeft,
@@ -103,6 +103,24 @@ fn search(
 
 fn position(view: &WindowState) -> (usize, usize) {
     (view.cursor().line().get(), view.cursor().column().get())
+}
+
+#[test]
+fn the_last_line_motion_stops_on_the_last_terminated_line() {
+    // The final line ending terminates `beta`, so `G` reaches that line. An
+    // empty line behind it would be a line that the file never held.
+    let mut text = buffer("alpha\nbeta\n");
+    let mut state = EditingState::new();
+    let mut view = window(6, 20);
+    apply(
+        &mut text,
+        &mut state,
+        &mut view,
+        Command::MoveLastLine,
+        None,
+    );
+    assert_eq!(position(&view), (1, 0));
+    assert_eq!(text.line_count(), 2);
 }
 
 #[test]
@@ -1135,7 +1153,7 @@ fn the_viewport_keeps_the_scroll_margin_at_both_edges() {
 
     // The margin stops at the last line, so the viewport shows the buffer end.
     let end = viewport(10, 80).reconciled(&text, Cursor::clamped(&text, 100, 0, limit), &display);
-    assert_eq!(end.first_line(), 91);
+    assert_eq!(end.first_line(), 90);
 }
 
 #[test]

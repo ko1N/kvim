@@ -119,6 +119,29 @@ endings uses the first detected line ending for new lines and keeps existing
 lines unchanged. The buffer model treats a line ending as a line terminator, not
 as text inside the line.
 
+## Lines And The File End
+
+A line ending terminates its line. It does not separate that line from an empty
+line behind it. A file that ends with one line ending therefore holds as many
+lines as it holds line endings, which is the count that the reference editor
+shows. `"one\ntwo\n"` and `"one\ntwo"` both hold two lines.
+
+The buffer text always ends with a line ending. The last line then carries a
+terminator like every other line, so `o`, `Enter`, and a paste open a new line
+behind it. `core` terminates the last line when the loaded text ends without one.
+
+`core` records the file end that the loaded file held. The save writes that file
+end, so a file that ended without a line ending receives none, and a file that
+ended with one keeps exactly one. A save that changes nothing writes the bytes
+that the file held. `files.md` owns the save.
+
+An empty file holds one empty line. The buffer text is one line ending, and the
+save writes an empty file again.
+
+A buffer always holds at least one line, so a delete of every line keeps one
+empty line. Every planned edit keeps the terminator of the last line, because a
+buffer text without it would lose the last line of the file.
+
 ## Size Limits
 
 Kvim rejects an oversized file before it publishes a buffer. Rejection happens

@@ -40,7 +40,7 @@ mod transaction;
 #[cfg(test)]
 mod tests;
 
-pub use buffer::{BufferVersion, EditError, LineEnding, LoadError, TextBuffer};
+pub use buffer::{BufferVersion, EditError, FinalLineEnding, LineEnding, LoadError, TextBuffer};
 pub use coordinates::{
     ByteOffset, CharPosition, CoordinateError, LineIndex, SourceColumn, TerminalColumn,
 };

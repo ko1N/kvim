@@ -396,7 +396,7 @@ fn a_missing_search_command_is_reported_once_and_keeps_the_editor_usable() {
     press_code(&mut session, KeyCode::Esc);
     press(&mut session, 'i');
     type_keys(&mut session, "ok");
-    assert_eq!(session.buffer().to_string(), "ok");
+    assert_eq!(session.buffer().to_string(), "ok\n");
 }
 
 #[test]

@@ -537,7 +537,7 @@ fn closing_the_sidebar_returns_the_focus_to_the_editor() {
     type_keys(&mut session, "x");
     assert_eq!(
         session.buffer().to_string(),
-        "x",
+        "x\n",
         "the editor owns the keys again"
     );
 }

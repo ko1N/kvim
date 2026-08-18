@@ -43,8 +43,10 @@ compares the resolved path again before it publishes a new buffer.
 Opening a path that holds no file starts an empty buffer. The first save writes
 a new file at that path.
 
-A buffer records its dirty state, its loaded line ending, and the file metadata
-that Kvim observed at load time or at the last successful save.
+A buffer records its dirty state, its loaded line ending, the file end that the
+file held, and the file metadata that Kvim observed at load time or at the last
+successful save. The save writes the recorded file end, so a file without a
+final line ending never receives one. See [`text-model.md`](text-model.md).
 
 Unloading a buffer removes it from the buffer list. Every window that shows the
 buffer must first move to another buffer. Kvim stages that replacement buffer

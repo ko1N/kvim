@@ -17,7 +17,7 @@ use std::time::SystemTime;
 
 use thiserror::Error;
 
-use kvim_core::{LineEnding, TextBuffer};
+use kvim_core::{FinalLineEnding, LineEnding, TextBuffer};
 use kvim_settings::FileSettings;
 
 /// The counter that keeps two temporary file names of one process apart.
@@ -295,13 +295,25 @@ fn resolve(path: &Path) -> PathBuf {
         .unwrap_or_else(|_| path.to_path_buf())
 }
 
-/// Returns the complete buffer text with the line ending of the buffer.
+/// Returns the file content of one buffer.
 ///
 /// A buffer that loaded carriage return and line feed keeps that terminator for
-/// every line that the editor wrote with a line feed alone. See
+/// every line that the editor wrote with a line feed alone. A file that ended
+/// without a line ending receives none, because the buffer terminates its last
+/// line for editing alone. A file that ended with one keeps exactly one. See
 /// `docs/text-model.md`.
 #[must_use]
 pub fn render_content(buffer: &TextBuffer) -> String {
+    let mut content = with_line_endings(buffer);
+    let ending = buffer.line_ending().as_str();
+    if buffer.final_line_ending() == FinalLineEnding::Absent && content.ends_with(ending) {
+        content.truncate(content.len() - ending.len());
+    }
+    content
+}
+
+/// Returns the complete buffer text with the line ending of the buffer.
+fn with_line_endings(buffer: &TextBuffer) -> String {
     let text = buffer.to_string();
     match buffer.line_ending() {
         LineEnding::Lf => text,

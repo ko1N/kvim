@@ -929,13 +929,14 @@ mod tests {
 
     #[test]
     fn a_row_after_the_last_line_marks_the_sign_column_in_a_readable_color() {
-        // The buffer holds one line, so every later row of the window marks the
-        // end of the buffer. The marker sits left of the number column.
+        // The line ending terminates the one line of the buffer, so every row
+        // behind the first text row marks the end of the buffer. The marker
+        // sits left of the number column.
         let target = draw_marked("only\n", &[], AREA.width);
         let theme = Theme::new(EditorSettings::default().theme);
         let marker = theme.style(ThemeRole::EndOfBuffer);
 
-        for y in super::WINBAR_ROWS + 2..AREA.height {
+        for y in super::WINBAR_ROWS + 1..AREA.height {
             let (symbol, style) = cell_at(&target, AREA.x, y);
             assert_eq!(symbol, END_OF_BUFFER_GLYPH, "row {y} marks absent text");
             assert_eq!(style.fg, marker.fg, "row {y} keeps the marker color");
@@ -987,7 +988,7 @@ mod tests {
 
         // The first text row holds the marked line and shows the error sign.
         assert_eq!(cell_at(&target, AREA.x, super::WINBAR_ROWS).0, "E");
-        for y in super::WINBAR_ROWS + 2..AREA.height {
+        for y in super::WINBAR_ROWS + 1..AREA.height {
             assert_eq!(
                 cell_at(&target, AREA.x, y).0,
                 END_OF_BUFFER_GLYPH,
