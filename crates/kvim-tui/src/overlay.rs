@@ -13,9 +13,9 @@
 //! `docs/language-services.md`.
 //!
 //! The notification overlay sits in the bottom right corner of the body band.
-//! It shows the work-done progress of every language server and every editor
-//! message on one surface. It is decoration as well: it moves no cursor, and it
-//! paints over the buffer text.
+//! It shows the work-done progress of every language server, and nothing else.
+//! It is decoration as well: it moves no cursor, and it paints its text over the
+//! buffer without a background.
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
@@ -48,11 +48,10 @@ const FLOAT_PADDING_CELLS: usize = 2;
 /// The number of cells that the notification overlay keeps beside its text.
 ///
 /// The reference configuration keeps the same gap between its text and the
-/// right edge of the editor area. The overlay paints a background, so it holds
-/// that gap inside its own rectangle instead: the panel reaches the corner, the
-/// text sits one cell in from it, and the panel carries no border. The panel
-/// keeps no row above or below its text, because every such row would hide one
-/// more row of the buffer without separating anything.
+/// right edge of the editor area. The overlay reaches the corner and holds that
+/// gap inside its own rectangle, so the text sits one cell in from the edge.
+/// The overlay keeps no row above or below its text, because every such row
+/// would push the text further from the corner without separating anything.
 const NOTIFICATION_PADDING_CELLS: u16 = 1;
 
 /// The number of cells that the padding of both sides occupies.
@@ -60,11 +59,10 @@ const NOTIFICATION_PADDING_TOTAL: u16 = NOTIFICATION_PADDING_CELLS.saturating_mu
 
 /// Renders the notification overlay in the bottom right corner of the body.
 ///
-/// The overlay covers the buffer text, so it blanks its rectangle first and
-/// paints the surface color of the theme behind every row. The reference
-/// configuration paints no background at all. A terminal cell holds no alpha
-/// channel, so the surface color carries that separation instead of a blend at
-/// draw time. See `docs/language-services.md`.
+/// The overlay paints text alone, as the reference configuration does. It
+/// blanks no cell and carries no background and no border, so the buffer text
+/// and the end-of-buffer markers stay visible between and around its rows. See
+/// `docs/language-services.md`.
 pub(super) fn render_notifications(
     target: &mut CellBuffer,
     body: Rect,
@@ -88,9 +86,6 @@ pub(super) fn render_notifications(
         .saturating_add(NOTIFICATION_PADDING_TOTAL)
         .clamp(1, body.width);
     let area = Rect::new(body.right() - width, body.bottom() - height, width, height);
-    let surface = theme.style(ThemeRole::Surface);
-    fill(target, area, " ");
-    target.set_style(area, surface);
     let content_right = area.right().saturating_sub(NOTIFICATION_PADDING_CELLS);
     for (index, row) in painted.iter().enumerate() {
         let Ok(offset) = u16::try_from(index) else {
@@ -106,7 +101,9 @@ pub(super) fn render_notifications(
             if x >= content_right {
                 break;
             }
-            let style = surface.patch(theme.style(*role));
+            // Every notification role carries a foreground color alone, so the
+            // painted cell keeps the background of the buffer behind it.
+            let style = theme.style(*role);
             let remaining = usize::from(content_right - x);
             target.set_stringn(x, y, text, remaining, style);
             let painted_cells = u16::try_from(text.chars().count()).unwrap_or(u16::MAX);

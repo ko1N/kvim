@@ -131,9 +131,8 @@ boundary and the language server session.
 | Spinner period | 1 s |
 | Finished item lifetime | 2 s |
 
-The notification overlay shows the work-done progress of every language server
-and every editor message on one surface. The row bound drops the oldest row
-above it. The spinner period is the time of one complete spinner cycle, and the
+The notification overlay shows the work-done progress of every language server,
+and nothing else. The row bound drops the oldest row above it. The spinner period is the time of one complete spinner cycle, and the
 overlay divides it by the number of spinner frames. The lifetime is the time
 that a finished item stays visible.
 

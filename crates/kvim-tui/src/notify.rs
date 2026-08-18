@@ -1,11 +1,12 @@
 //! The notification board that the bottom-right overlay paints.
 //!
-//! One surface shows every report of the editor: the work-done progress of each
-//! language server, and every message that the message line shows. The board is
-//! a pure value. It reads no clock: the event loop passes the elapsed time into
-//! every call, and the board reports the elapsed time of its next visible
-//! change through [`NotificationBoard::next_deadline`]. The loop waits for that
-//! time beside its terminal events, so the spinner needs no frame loop. See
+//! The overlay reports the work-done progress of each language server, and
+//! nothing else. Every ordinary editor report stays on the message line and the
+//! statusline. The board is a pure value. It reads no clock: the event loop
+//! passes the elapsed time into every call, and the board reports the elapsed
+//! time of its next visible change through
+//! [`NotificationBoard::next_deadline`]. The loop waits for that time beside its
+//! terminal events, so the spinner needs no frame loop. See
 //! `docs/responsiveness.md` and `docs/language-services.md`.
 
 use std::time::Duration;
@@ -15,7 +16,7 @@ use kvim_language::{
 };
 use kvim_settings::NotificationSettings;
 
-use super::session::{MessageLevel, Redraw};
+use super::session::Redraw;
 use super::theme::ThemeRole;
 
 /// The state word of one running item.
@@ -25,9 +26,6 @@ const RUNNING_LABEL: &str = "In progress...";
 ///
 /// The reference `fidget.nvim` configuration names the same icon.
 const DONE_ICON: &str = "✓";
-
-/// The title of the group that holds the editor messages.
-const EDITOR_GROUP_TITLE: &str = "editor";
 
 /// The animated spinner of one group that holds a running item.
 ///
@@ -41,18 +39,6 @@ const SPINNER_FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "�
 /// A period that divides into nothing would leave a deadline that no transition
 /// clears, and the event loop would stop serving input.
 const SPINNER_FRAME_MIN: Duration = Duration::from_millis(1);
-
-/// The source that one group of the board reports for.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum GroupKey {
-    /// The language server that one adapter declares.
-    Language {
-        /// The identifier of the adapter that owns the session.
-        adapter: &'static str,
-    },
-    /// The editor itself, which reports through the message line.
-    Editor,
-}
 
 /// The state of one progress item.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -69,68 +55,34 @@ enum ProgressState {
     },
 }
 
-/// What one item of the board reports.
-///
-/// A progress item carries the token that addresses it, and a message carries
-/// the severity that colors it. Neither state can hold the data of the other.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum ItemKind {
-    /// One server operation, addressed by the token that its `begin` created.
-    Progress {
-        /// The token that the server assigned.
-        token: ProgressToken,
-        /// The state of the operation.
-        state: ProgressState,
-    },
-    /// One editor message, which no later report changes.
-    Message {
-        /// The severity that the message line also shows.
-        level: MessageLevel,
-        /// The elapsed time at which the editor reported the message.
-        at: Duration,
-    },
-}
-
-/// One item of the board.
+/// One item of the board: one server operation of one language server.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NotificationItem {
     /// The order of the item, which names the oldest item of the board.
     sequence: u64,
     /// The text that the overlay shows beside the state.
     message: String,
-    /// What the item reports.
-    kind: ItemKind,
+    /// The token that the `begin` of the operation assigned.
+    token: ProgressToken,
+    /// The state of the operation.
+    state: ProgressState,
 }
 
 impl NotificationItem {
     /// Returns the elapsed time at which the item finished, or `None` while it
     /// still runs.
     const fn finished_at(&self) -> Option<Duration> {
-        match self.kind {
-            ItemKind::Progress {
-                state: ProgressState::Finished { at },
-                ..
-            }
-            | ItemKind::Message { at, .. } => Some(at),
-            ItemKind::Progress {
-                state: ProgressState::Running { .. },
-                ..
-            } => None,
+        match self.state {
+            ProgressState::Finished { at } => Some(at),
+            ProgressState::Running { .. } => None,
         }
     }
 
     /// Returns the row that the overlay paints for this item.
     fn row(&self) -> NotificationRow<'_> {
-        let (state, percentage) = match &self.kind {
-            ItemKind::Progress {
-                state: ProgressState::Running { percentage },
-                ..
-            } => (RowState::Running, *percentage),
-            ItemKind::Progress {
-                state: ProgressState::Finished { .. },
-                ..
-            } => (RowState::Finished, None),
-            ItemKind::Message { level, .. } => (RowState::Message(*level), None),
+        let (state, percentage) = match self.state {
+            ProgressState::Running { percentage } => (RowState::Running, percentage),
+            ProgressState::Finished { .. } => (RowState::Finished, None),
         };
         NotificationRow::Item {
             state,
@@ -140,16 +92,14 @@ impl NotificationItem {
     }
 }
 
-/// One group of the board: everything that one source reports.
+/// One group of the board: everything that one language server reports.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NotificationGroup {
-    /// The source that the group reports for.
-    key: GroupKey,
+    /// The identifier of the adapter that owns the session.
+    adapter: &'static str,
     /// The title row of the group.
     title: &'static str,
     /// The newest session attempt whose reports the group accepts.
-    ///
-    /// The editor group reports no session, so its value never changes.
     generation: SessionGeneration,
     /// The items of the group, oldest first.
     items: Vec<NotificationItem>,
@@ -162,8 +112,6 @@ pub(super) enum RowState {
     Running,
     /// One server operation that finished.
     Finished,
-    /// One editor message of this severity.
-    Message(MessageLevel),
 }
 
 impl RowState {
@@ -172,22 +120,16 @@ impl RowState {
     pub(super) const fn label(self) -> &'static str {
         match self {
             Self::Running => RUNNING_LABEL,
-            Self::Finished | Self::Message(_) => DONE_ICON,
+            Self::Finished => DONE_ICON,
         }
     }
 
     /// Returns the theme role of the state column.
-    ///
-    /// A mirrored message keeps the color of its severity, so the overlay never
-    /// hides what the message line reports.
     #[must_use]
     pub(super) const fn role(self) -> ThemeRole {
         match self {
             Self::Running => ThemeRole::NotificationRunning,
             Self::Finished => ThemeRole::NotificationDone,
-            Self::Message(MessageLevel::Error) => ThemeRole::Error,
-            Self::Message(MessageLevel::Warning) => ThemeRole::Warning,
-            Self::Message(MessageLevel::Info) => ThemeRole::Info,
         }
     }
 }
@@ -224,9 +166,9 @@ struct Spinner {
 
 /// The bounded notification state of one editor session.
 ///
-/// The board holds one group for each language server and one group for the
-/// editor messages. Every group holds bounded items, and the board drops its
-/// oldest item above [`NotificationSettings::rows_max`] rows.
+/// The board holds one group for each language server. Every group holds
+/// bounded items, and the board drops its oldest item above
+/// [`NotificationSettings::rows_max`] rows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct NotificationBoard {
     groups: Vec<NotificationGroup>,
@@ -285,11 +227,14 @@ impl NotificationBoard {
         now: Duration,
         settings: NotificationSettings,
     ) -> Redraw {
-        let key = GroupKey::Language { adapter };
         // A generation raise drops every row of the attempt that failed, which
         // is a visible change even when the report itself addresses no item.
         let mut invalidated = Redraw::Skipped;
-        let index = match self.groups.iter().position(|group| group.key == key) {
+        let index = match self
+            .groups
+            .iter()
+            .position(|group| group.adapter == adapter)
+        {
             Some(index) => {
                 let group = &mut self.groups[index];
                 if report.generation < group.generation {
@@ -310,7 +255,7 @@ impl NotificationBoard {
             }
             None => {
                 self.groups.push(NotificationGroup {
-                    key,
+                    adapter,
                     title: report.server,
                     generation: report.generation,
                     items: Vec::new(),
@@ -323,7 +268,7 @@ impl NotificationBoard {
         let found = group
             .items
             .iter()
-            .position(|item| addresses(item, &report.token));
+            .position(|item| item.token == report.token);
         let applied = match (&report.stage, found) {
             (
                 ProgressStage::Begin {
@@ -341,11 +286,9 @@ impl NotificationBoard {
                 group.items.push(NotificationItem {
                     sequence,
                     message: message.clone().unwrap_or_else(|| title.clone()),
-                    kind: ItemKind::Progress {
-                        token: report.token.clone(),
-                        state: ProgressState::Running {
-                            percentage: *percentage,
-                        },
+                    token: report.token.clone(),
+                    state: ProgressState::Running {
+                        percentage: *percentage,
                     },
                 });
                 Applied::Started
@@ -361,11 +304,8 @@ impl NotificationBoard {
                 if let Some(message) = message {
                     item.message.clone_from(message);
                 }
-                item.kind = ItemKind::Progress {
-                    token: report.token.clone(),
-                    state: ProgressState::Running {
-                        percentage: *percentage,
-                    },
+                item.state = ProgressState::Running {
+                    percentage: *percentage,
                 };
                 Applied::Changed
             }
@@ -374,10 +314,7 @@ impl NotificationBoard {
                 if let Some(message) = message {
                     item.message.clone_from(message);
                 }
-                item.kind = ItemKind::Progress {
-                    token: report.token.clone(),
-                    state: ProgressState::Finished { at: now },
-                };
+                item.state = ProgressState::Finished { at: now };
                 Applied::Changed
             }
             // A report or an end for a token that no `begin` created addresses
@@ -395,42 +332,6 @@ impl NotificationBoard {
             if self.running_items() == 1 {
                 self.spinner.advanced_at = now;
             }
-        }
-        self.enforce_bound(settings);
-        Redraw::Needed
-    }
-
-    /// Mirrors one message of the message line onto the overlay.
-    ///
-    /// The message line keeps its own behavior. The board shows the same text
-    /// for [`NotificationSettings::done_ttl`], so one surface shows every
-    /// report of the editor.
-    pub(super) fn notify(
-        &mut self,
-        text: &str,
-        level: MessageLevel,
-        now: Duration,
-        settings: NotificationSettings,
-    ) -> Redraw {
-        let sequence = self.next_sequence;
-        self.next_sequence = self.next_sequence.saturating_add(1);
-        let item = NotificationItem {
-            sequence,
-            message: text.to_owned(),
-            kind: ItemKind::Message { level, at: now },
-        };
-        match self
-            .groups
-            .iter_mut()
-            .find(|group| group.key == GroupKey::Editor)
-        {
-            Some(group) => group.items.push(item),
-            None => self.groups.push(NotificationGroup {
-                key: GroupKey::Editor,
-                title: EDITOR_GROUP_TITLE,
-                generation: SessionGeneration::FIRST,
-                items: vec![item],
-            }),
         }
         self.enforce_bound(settings);
         Redraw::Needed
@@ -545,11 +446,6 @@ enum Applied {
     Changed,
     /// The report addressed no item of the board.
     Ignored,
-}
-
-/// Reports whether one item carries the named progress token.
-fn addresses(item: &NotificationItem, token: &ProgressToken) -> bool {
-    matches!(&item.kind, ItemKind::Progress { token: owned, .. } if owned == token)
 }
 
 /// Returns the time between two spinner frames.
