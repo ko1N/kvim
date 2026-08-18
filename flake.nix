@@ -49,6 +49,10 @@
 
             nativeBuildInputs = [ pkgs.makeWrapper ];
 
+            # The file tree reads the repository state through the `git`
+            # command, so its tests need that command inside the build sandbox.
+            nativeCheckInputs = [ pkgs.git ];
+
             postFixup = ''
               wrapProgram "$out/bin/kvim" \
                 --prefix PATH : ${
