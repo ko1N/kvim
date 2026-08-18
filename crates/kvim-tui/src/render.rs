@@ -30,6 +30,9 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     // cursor cell: the one of the focused window. An unfocused window reports
     // none, and the terminal then shows no cursor there. See `docs/windows.md`.
     let mut cursor_at = None;
+    // The language float belongs to the focused window, so it needs that
+    // rectangle as well as the cursor cell inside it. See `docs/windows.md`.
+    let mut focused_area = None;
     // A focused sidebar owns the keys, so its selected row wins the one cursor
     // cell that a frame reports.
     let mut sidebar_cursor = None;
@@ -97,6 +100,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                 };
                 render_window(target, region.area, theme, &window);
                 if focus == WindowFocus::Focused {
+                    focused_area = Some(region.area);
                     cursor_at = cursor_cell(region.area, &window);
                 }
             }
@@ -146,7 +150,15 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         render_notifications(target, bands.body, theme, &view.notifications.rows());
     }
     if let Some(float) = view.float {
-        render_float(target, bands.body, theme, float);
+        // The float answers a question about the cursor, so it sits beside that
+        // cursor inside its own window instead of at the bottom of the body.
+        render_float(
+            target,
+            focused_area.unwrap_or(bands.body),
+            cursor_at,
+            theme,
+            float,
+        );
     }
     if let Some(rows) = view.which_key {
         render_which_key(target, bands.body, theme, rows);

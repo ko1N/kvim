@@ -12,6 +12,8 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use serde_json::{Value, json};
 
@@ -20,7 +22,7 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
-use super::language::send_request;
+use super::language::{FLOAT_ROWS_MAX, send_request};
 use super::session::{MessageLevel, Session};
 
 /// The elapsed time of every transition. The session reads no clock.
@@ -203,6 +205,55 @@ impl Editor {
                 .map(|row| row.text.clone())
                 .collect::<Vec<_>>()
         })
+    }
+
+    /// Renders one frame and returns every row as text and the cursor cell.
+    ///
+    /// The float must follow the cell that the terminal draws its own cursor
+    /// in, so every placement assertion reads both from the same frame. A row
+    /// keeps its trailing blanks, because the title band of a float ends with
+    /// one blank and its column must stay readable.
+    fn frame(&self) -> (Vec<String>, (u16, u16)) {
+        let area = self.session.area();
+        let backend = TestBackend::new(area.width, area.height);
+        let mut terminal = Terminal::new(backend).expect("the test backend never fails");
+        terminal
+            .draw(|frame| self.session.render(frame))
+            .expect("the test backend never fails");
+        let cursor = terminal
+            .get_cursor_position()
+            .expect("the test backend never fails");
+        let buffer = terminal.backend().buffer().clone();
+        let rows = (area.y..area.bottom())
+            .map(|y| {
+                let mut text = String::new();
+                for x in area.x..area.right() {
+                    if let Some(cell) = buffer.cell((x, y)) {
+                        text.push_str(cell.symbol());
+                    }
+                }
+                text
+            })
+            .collect();
+        (rows, (cursor.x, cursor.y))
+    }
+
+    /// Returns the frame rows, the cursor cell, and the corner of the float.
+    ///
+    /// Every test buffer holds plain characters of one cell each, so the byte
+    /// offset of the title inside one row is also its terminal column.
+    fn float_frame(&self, title: &str) -> (Vec<String>, (u16, u16), (u16, u16)) {
+        let (rows, cursor) = self.frame();
+        let corner = rows
+            .iter()
+            .enumerate()
+            .find_map(|(y, row)| {
+                let x = row.find(title)?;
+                let corner = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+                Some(corner)
+            })
+            .unwrap_or_else(|| panic!("the frame shows the float title {title}\n{rows:#?}"));
+        (rows, cursor, corner)
     }
 
     /// Returns the diagnostic messages of the active buffer, in order.
@@ -420,6 +471,250 @@ async fn a_definition_answer_without_a_target_reports_it() {
 
     assert_eq!(editor.message(), "no definition found");
     assert_eq!(editor.cursor(), (0, 0));
+}
+
+/// The title band of the diagnostic float.
+const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
+
+/// The title band of the hover float.
+const HOVER_TITLE: &str = " Hover ";
+
+/// Returns the text of one float row, without the padding of the float.
+///
+/// `offset` counts rows from the title band, so offset one is the first text
+/// row. The text of a row starts one cell inside the float.
+fn float_text(rows: &[String], corner: (u16, u16), offset: usize) -> String {
+    let row = &rows[usize::from(corner.1) + offset];
+    row[usize::from(corner.0) + 1..].trim_end().to_owned()
+}
+
+/// Starts one editor over a buffer that holds `lines` numbered lines.
+async fn editor_with_lines(label: &str, lines: usize) -> Editor {
+    let text: String = (0..lines).map(|index| format!("line{index}\n")).collect();
+    Editor::start(label, &[("main.rs", &text)]).await
+}
+
+/// Publishes one diagnostic over one line and opens the float at its start.
+async fn open_diagnostic_float(editor: &mut Editor, line: u32, message: &str) {
+    let uri = editor.uri("main.rs");
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([{ "range": span(line, 0, 4), "severity": 1, "message": message }]),
+        ))
+        .await;
+    editor.publish().await;
+    editor.press(" e");
+}
+
+#[tokio::test]
+async fn the_diagnostic_float_sits_below_the_cursor_cell() {
+    let mut editor = editor_with_lines("float-below", 8).await;
+    editor.press("jj");
+    open_diagnostic_float(&mut editor, 2, "unused value").await;
+
+    let (rows, cursor, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    assert_eq!(
+        corner,
+        (cursor.0, cursor.1 + 1),
+        "the float starts at the cursor column, one row below the cursor line",
+    );
+    assert!(
+        rows[usize::from(cursor.1)].contains("line2"),
+        "the float never covers the line that it describes",
+    );
+    assert_eq!(float_text(&rows, corner, 1), "unused value");
+}
+
+#[tokio::test]
+async fn the_diagnostic_float_flips_above_the_cursor_line_at_the_bottom() {
+    // The buffer is longer than the window, so `G` leaves the cursor on the
+    // last visible row and no row remains below it.
+    let mut editor = editor_with_lines("float-above", 60).await;
+    editor.press("G");
+    open_diagnostic_float(&mut editor, 59, "unused value").await;
+
+    let (rows, cursor, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    assert!(
+        corner.1 < cursor.1,
+        "the float flips above the cursor line: {corner:?} and {cursor:?}",
+    );
+    // The float holds its title band and the one message row, so its last row
+    // sits directly above the cursor line.
+    assert_eq!(float_text(&rows, corner, 1), "unused value");
+    assert_eq!(
+        corner.1 + 2,
+        cursor.1,
+        "the float ends directly above the cursor line",
+    );
+    assert!(
+        rows[usize::from(cursor.1)].contains("line59"),
+        "the float never covers the line that it describes",
+    );
+}
+
+#[tokio::test]
+async fn the_diagnostic_float_moves_left_at_the_right_edge_of_the_window() {
+    let text = format!("{}\n", "x".repeat(70));
+    let mut editor = Editor::start("float-right-edge", &[("main.rs", &text)]).await;
+    let uri = editor.uri("main.rs");
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([{ "range": span(0, 60, 70), "severity": 1, "message": "unused value" }]),
+        ))
+        .await;
+    editor.publish().await;
+    editor.press("$ e");
+
+    let (rows, cursor, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    assert!(
+        corner.0 < cursor.0,
+        "the float moves left of the cursor column: {corner:?} and {cursor:?}",
+    );
+    let row = float_text(&rows, corner, 1);
+    assert_eq!(
+        row, "unused value",
+        "the complete message stays inside the window",
+    );
+}
+
+#[tokio::test]
+async fn the_diagnostic_float_shows_every_diagnostic_of_the_cursor_position() {
+    let mut editor = editor_with_lines("float-many", 8).await;
+    let uri = editor.uri("main.rs");
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([
+                { "range": span(0, 0, 4), "severity": 1, "message": "first fault" },
+                { "range": span(0, 0, 4), "severity": 2, "message": "second fault" },
+            ]),
+        ))
+        .await;
+    editor.publish().await;
+    editor.press(" e");
+
+    let (rows, _, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    let float: Vec<String> = (1..=3)
+        .map(|offset| float_text(&rows, corner, offset))
+        .collect();
+    assert_eq!(
+        float,
+        vec!["first fault", "", "second fault"],
+        "one blank row separates the two diagnostics of the position",
+    );
+}
+
+#[tokio::test]
+async fn the_diagnostic_float_wraps_a_long_message_inside_a_narrow_window() {
+    let mut editor = editor_with_lines("float-wrap", 8).await;
+    editor.session.handle_event(
+        TerminalEvent::Resize {
+            columns: 34,
+            rows: 20,
+        },
+        NOW,
+    );
+    open_diagnostic_float(
+        &mut editor,
+        0,
+        "cannot borrow the value twice in the same scope",
+    )
+    .await;
+
+    let (rows, _, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    let float: Vec<String> = (1..=2)
+        .map(|offset| float_text(&rows, corner, offset))
+        .collect();
+    assert_eq!(
+        float,
+        vec!["cannot borrow the value twice", "in the same scope"],
+        "the message wraps at the width of the narrow window",
+    );
+    // The float keeps one padding cell on each side of its widest row.
+    assert!(
+        usize::from(corner.0) + 2 + float[0].chars().count() <= 34,
+        "the float stays inside the narrow window",
+    );
+}
+
+#[tokio::test]
+async fn the_diagnostic_float_bounds_its_height_and_reports_the_missing_rows() {
+    let mut editor = editor_with_lines("float-height", 8).await;
+    let message: String = (0..40)
+        .map(|index| format!("note{index}\n"))
+        .collect::<String>();
+    open_diagnostic_float(&mut editor, 0, message.trim_end()).await;
+
+    let (rows, _, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    // The float shows the row bound of the language module and no more.
+    assert_eq!(float_text(&rows, corner, 1), "note0");
+    assert_eq!(
+        float_text(&rows, corner, FLOAT_ROWS_MAX - 1),
+        format!("note{}", FLOAT_ROWS_MAX - 2),
+    );
+    assert_eq!(
+        float_text(&rows, corner, FLOAT_ROWS_MAX),
+        "...",
+        "the last row reports that the float hides rows",
+    );
+    assert!(
+        !rows[usize::from(corner.1) + FLOAT_ROWS_MAX + 1].contains("note"),
+        "the float ends after its row bound",
+    );
+}
+
+#[tokio::test]
+async fn the_language_float_stays_inside_its_own_window_after_a_split() {
+    let mut editor = editor_with_lines("float-split", 8).await;
+    editor.press(" ");
+    editor.press_code(KeyCode::Enter);
+    let right = editor.session.area().width / 2;
+    open_diagnostic_float(&mut editor, 0, "unused value").await;
+
+    let (_, cursor, corner) = editor.float_frame(DIAGNOSTIC_TITLE);
+    assert!(
+        cursor.0 >= right,
+        "the split moves the focus into the right window",
+    );
+    assert_eq!(
+        corner,
+        (cursor.0, cursor.1 + 1),
+        "the float follows the cursor of the focused window",
+    );
+    assert!(
+        corner.0 >= right,
+        "the float sits inside the window that asked, not in the body band",
+    );
+}
+
+#[tokio::test]
+async fn the_hover_float_follows_the_cursor_through_the_same_rule() {
+    let mut editor = editor_with_lines("float-hover", 8).await;
+    editor.press("jj");
+    editor.press(" k");
+    editor.pump();
+    let request = editor.expect_request("textDocument/hover").await;
+    editor
+        .server
+        .respond(
+            &request["id"],
+            json!({ "contents": { "kind": "markdown", "value": "fn main()" } }),
+        )
+        .await;
+    editor.publish().await;
+
+    let (rows, cursor, corner) = editor.float_frame(HOVER_TITLE);
+    assert_eq!(
+        corner,
+        (cursor.0, cursor.1 + 1),
+        "the hover float uses the placement rule of the diagnostic float",
+    );
+    assert_eq!(float_text(&rows, corner, 1), "fn main()");
 }
 
 #[tokio::test]
