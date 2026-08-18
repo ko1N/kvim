@@ -87,6 +87,45 @@ pub(super) struct WindowView<'a> {
     pub(super) tab_width: usize,
 }
 
+/// What the sign cell of one window row shows.
+///
+/// One row shows one sign at most. A diagnostic names a buffer line, and a row
+/// after the last buffer line holds no buffer line, so the two can never
+/// compete for the cell: the row decides which value applies. A row without a
+/// diagnostic and with a buffer line shows no sign at all.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowSign {
+    /// The strictest severity that marks the buffer line of the row.
+    Diagnostic(DiagnosticSeverity),
+    /// The row sits after the last line of the buffer.
+    EndOfBuffer,
+}
+
+impl RowSign {
+    /// Returns the glyph of the sign.
+    ///
+    /// The glyphs follow the reference configuration, which shows `E` for an
+    /// error and `H` for a warning. Every glyph occupies exactly one terminal
+    /// cell, so the sign column never shifts the buffer text sideways.
+    const fn glyph(self) -> &'static str {
+        match self {
+            Self::Diagnostic(DiagnosticSeverity::Error) => "E",
+            Self::Diagnostic(DiagnosticSeverity::Warning) => "H",
+            Self::Diagnostic(DiagnosticSeverity::Information) => "I",
+            Self::Diagnostic(DiagnosticSeverity::Hint) => "H",
+            Self::EndOfBuffer => END_OF_BUFFER_GLYPH,
+        }
+    }
+
+    /// Returns the theme role that colors the sign.
+    const fn role(self) -> ThemeRole {
+        match self {
+            Self::Diagnostic(severity) => severity_role(severity),
+            Self::EndOfBuffer => ThemeRole::EndOfBuffer,
+        }
+    }
+}
+
 /// One syntax role over inclusive source columns of one visible line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ColumnRole {
@@ -200,7 +239,7 @@ pub(super) fn render_window(
         let line = view.first_line.saturating_add(usize::from(row));
         let y = text.y.saturating_add(row);
         if line >= view.buffer.line_count() {
-            render_end_of_buffer(target, text, y, theme);
+            painter.render_end_of_buffer(target, text, y);
             continue;
         }
         painter.render_gutter(target, text, y, line);
@@ -233,22 +272,6 @@ fn render_winbar(target: &mut CellBuffer, area: Rect, theme: Theme, view: &Windo
     );
 }
 
-/// Renders one row below the last buffer line.
-///
-/// The end-of-buffer color equals the editor background, so the glyph marks the
-/// row without drawing the reader's eye. The reference configuration does the
-/// same.
-fn render_end_of_buffer(target: &mut CellBuffer, text: Rect, y: u16, theme: Theme) {
-    let row = Rect {
-        y,
-        height: 1,
-        ..text
-    };
-    let style = theme.style(ThemeRole::EndOfBuffer);
-    target.set_style(row, style);
-    target.set_stringn(row.x, y, END_OF_BUFFER_GLYPH, usize::from(row.width), style);
-}
-
 /// The prepared state that every row of one window shares.
 struct RowPainter<'a> {
     view: &'a WindowView<'a>,
@@ -259,6 +282,27 @@ struct RowPainter<'a> {
 }
 
 impl RowPainter<'_> {
+    /// Renders one row after the last buffer line.
+    ///
+    /// The row holds no text and no number, so the marker takes the sign cell
+    /// at the left edge of the window. A window without a reserved sign column
+    /// still marks that cell, because no number and no character claims it.
+    fn render_end_of_buffer(&self, target: &mut CellBuffer, text: Rect, y: u16) {
+        let row = Rect {
+            y,
+            height: 1,
+            ..text
+        };
+        target.set_style(row, self.theme.style(ThemeRole::Text));
+        target.set_stringn(
+            row.x,
+            y,
+            RowSign::EndOfBuffer.glyph(),
+            usize::from(row.width.min(SIGN_COLUMN_CELLS)),
+            self.theme.style(RowSign::EndOfBuffer.role()),
+        );
+    }
+
     /// Renders the sign column and the number column of one row.
     ///
     /// The cursor line shows its absolute number. Every other line shows its
@@ -274,12 +318,13 @@ impl RowPainter<'_> {
             // The strictest severity of one line owns its sign, so a warning
             // never hides an error on the same line.
             if let Some(severity) = line_severity(self.view.diagnostics, line) {
+                let sign = RowSign::Diagnostic(severity);
                 target.set_stringn(
                     area.x,
                     y,
-                    severity_sign(severity),
+                    sign.glyph(),
                     usize::from(signs),
-                    self.theme.style(severity_role(severity)),
+                    self.theme.style(sign.role()),
                 );
             }
         }
@@ -518,19 +563,6 @@ const fn severity_role(severity: DiagnosticSeverity) -> ThemeRole {
     }
 }
 
-/// Returns the sign glyph of one diagnostic severity.
-///
-/// The glyphs match the reference Neovim configuration, and each one occupies
-/// exactly one terminal cell, so the sign column never shifts the buffer text.
-const fn severity_sign(severity: DiagnosticSeverity) -> &'static str {
-    match severity {
-        DiagnosticSeverity::Error => "E",
-        DiagnosticSeverity::Warning => "W",
-        DiagnosticSeverity::Information => "I",
-        DiagnosticSeverity::Hint => "H",
-    }
-}
-
 /// Returns the strictest severity that marks one line, if any.
 fn line_severity(diagnostics: &[Diagnostic], line: usize) -> Option<DiagnosticSeverity> {
     let line = u32::try_from(line).ok()?;
@@ -700,15 +732,17 @@ fn match_spans(view: &WindowView<'_>, rows: u16) -> Vec<MatchSpan> {
 mod tests {
     use ratatui::buffer::Buffer as CellBuffer;
     use ratatui::layout::Rect;
-    use ratatui::style::Color;
+    use ratatui::style::{Color, Style};
 
     use kvim_core::TextBuffer;
     use kvim_editor::{Cursor, Selection};
-    use kvim_language::{HighlightSpan, SyntaxRole};
+    use kvim_language::{
+        Diagnostic, DiagnosticSeverity, DocumentPosition, HighlightSpan, SourceSpan, SyntaxRole,
+    };
     use kvim_settings::{EditorSettings, FileSettings};
 
     use super::super::theme::{Theme, ThemeRole};
-    use super::{WindowFocus, WindowView, render_window};
+    use super::{END_OF_BUFFER_GLYPH, WindowFocus, WindowView, render_window};
 
     /// The window rectangle of every test, including the winbar row.
     const AREA: Rect = Rect {
@@ -754,6 +788,141 @@ mod tests {
         Theme::new(EditorSettings::default().theme)
             .style(ThemeRole::Syntax(role))
             .fg
+    }
+
+    /// Renders one buffer with diagnostics into a window of a chosen width.
+    fn draw_marked(text: &str, diagnostics: &[Diagnostic], width: u16) -> CellBuffer {
+        let buffer =
+            TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+        let settings = EditorSettings::default();
+        let view = WindowView {
+            buffer: &buffer,
+            name: "test.rs",
+            first_line: 0,
+            left_column: 0,
+            cursor: Cursor::ORIGIN,
+            selection: None,
+            matches: &[],
+            match_chars: 0,
+            highlights: &[],
+            diagnostics,
+            focus: WindowFocus::Unfocused,
+            display: &settings.display,
+            tab_width: usize::from(settings.indent.tab_width.get()),
+        };
+        let area = Rect { width, ..AREA };
+        let mut target = CellBuffer::empty(area);
+        render_window(&mut target, area, Theme::new(settings.theme), &view);
+        target
+    }
+
+    /// Returns one diagnostic that marks the first character of one line.
+    fn diagnostic(line: u32, severity: DiagnosticSeverity) -> Diagnostic {
+        Diagnostic {
+            span: SourceSpan::new(
+                DocumentPosition::new(line, 0),
+                DocumentPosition::new(line, 1),
+            ),
+            severity,
+            message: "the test message".to_owned(),
+            source: None,
+        }
+    }
+
+    /// Returns the symbol and the style of one cell.
+    fn cell_at(target: &CellBuffer, x: u16, y: u16) -> (String, Style) {
+        let cell = target
+            .cell((x, y))
+            .expect("the test reads a cell inside the window");
+        (cell.symbol().to_owned(), cell.style())
+    }
+
+    #[test]
+    fn a_row_after_the_last_line_marks_the_sign_column_in_a_readable_color() {
+        // The buffer holds one line, so every later row of the window marks the
+        // end of the buffer. The marker sits left of the number column.
+        let target = draw_marked("only\n", &[], AREA.width);
+        let theme = Theme::new(EditorSettings::default().theme);
+        let marker = theme.style(ThemeRole::EndOfBuffer);
+
+        for y in super::WINBAR_ROWS + 2..AREA.height {
+            let (symbol, style) = cell_at(&target, AREA.x, y);
+            assert_eq!(symbol, END_OF_BUFFER_GLYPH, "row {y} marks absent text");
+            assert_eq!(style.fg, marker.fg, "row {y} keeps the marker color");
+            assert_ne!(style.fg, style.bg, "row {y} keeps the marker readable");
+        }
+        // The number column starts after the marker and stays empty.
+        assert_eq!(
+            cell_at(&target, AREA.x + 1, AREA.height - 1).0,
+            " ",
+            "no number follows the marker"
+        );
+    }
+
+    #[test]
+    fn a_warning_and_an_error_take_the_sign_column_in_their_own_colors() {
+        let theme = Theme::new(EditorSettings::default().theme);
+        let cases = [
+            (DiagnosticSeverity::Warning, "H", ThemeRole::Warning),
+            (DiagnosticSeverity::Error, "E", ThemeRole::Error),
+        ];
+        for (severity, glyph, role) in cases {
+            let target = draw_marked("one\ntwo\n", &[diagnostic(1, severity)], AREA.width);
+            // The sign marks the second buffer line, which is the second text
+            // row of the window.
+            let (symbol, style) = cell_at(&target, AREA.x, super::WINBAR_ROWS + 1);
+            assert_eq!(symbol, glyph, "{severity:?} owns its glyph");
+            assert_eq!(
+                style.fg,
+                theme.style(role).fg,
+                "{severity:?} owns its color"
+            );
+            // The unmarked line keeps its sign cell empty.
+            assert_eq!(cell_at(&target, AREA.x, super::WINBAR_ROWS).0, " ");
+        }
+    }
+
+    #[test]
+    fn a_row_after_the_last_line_shows_the_marker_and_never_a_diagnostic_sign() {
+        // The server names a range that reaches past the last buffer line. The
+        // row holds no buffer line, so the marker wins the sign cell.
+        let span = SourceSpan::new(DocumentPosition::new(0, 0), DocumentPosition::new(40, 0));
+        let stale = Diagnostic {
+            span,
+            severity: DiagnosticSeverity::Error,
+            message: "the test message".to_owned(),
+            source: None,
+        };
+        let target = draw_marked("one\n", &[stale], AREA.width);
+
+        // The first text row holds the marked line and shows the error sign.
+        assert_eq!(cell_at(&target, AREA.x, super::WINBAR_ROWS).0, "E");
+        for y in super::WINBAR_ROWS + 2..AREA.height {
+            assert_eq!(
+                cell_at(&target, AREA.x, y).0,
+                END_OF_BUFFER_GLYPH,
+                "row {y} holds no buffer line, so it shows the marker"
+            );
+        }
+    }
+
+    #[test]
+    fn a_narrow_window_keeps_the_marker_and_one_text_cell() {
+        // The gutter never takes the complete width, so one text cell survives.
+        let narrow = 6;
+        let target = draw_marked("one\n", &[], narrow);
+
+        assert_eq!(
+            cell_at(&target, AREA.x, AREA.height - 1).0,
+            END_OF_BUFFER_GLYPH,
+            "the narrow window still marks absent text"
+        );
+        let gutter = super::gutter_cells(
+            &TextBuffer::from_text("one\n", &FileSettings::default()).unwrap(),
+            &EditorSettings::default().display,
+            narrow,
+        );
+        assert!(gutter < narrow, "one text cell stays visible");
     }
 
     #[test]

@@ -18,6 +18,7 @@ use kvim_input::Command;
 use kvim_settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSettings};
 use kvim_workspace::BufferId;
 
+use super::buffer_view::WINBAR_ROWS;
 use super::layout::{RegionKind, WindowLayout, compute_layout, first_extent};
 
 /// The largest number of leaf windows that the tree holds.
@@ -1232,7 +1233,13 @@ impl Windows {
         self.sync_viewports();
     }
 
-    /// Resizes every visible viewport to its window rectangle.
+    /// Resizes every visible viewport to the text rows of its window rectangle.
+    ///
+    /// The winbar row belongs to the window rectangle but shows no buffer line,
+    /// so a viewport over the complete rectangle would reserve one row that the
+    /// renderer never paints with text. The tree therefore removes that row
+    /// here. The gutter width depends on the buffer, which this module never
+    /// holds, so the caller narrows the width after this call.
     ///
     /// A size change keeps both scroll offsets, so a split, a close, and a
     /// terminal resize never move the reader back to the start of the buffer.
@@ -1244,7 +1251,13 @@ impl Windows {
             .regions()
             .iter()
             .filter(|region| region.kind == RegionKind::Editor)
-            .map(|region| (region.id, region.area.width, region.area.height))
+            .map(|region| {
+                (
+                    region.id,
+                    region.area.width,
+                    region.area.height.saturating_sub(WINBAR_ROWS),
+                )
+            })
             .collect();
         for (id, width, height) in sizes {
             let (Some(width), Some(height)) = (NonZeroU16::new(width), NonZeroU16::new(height))

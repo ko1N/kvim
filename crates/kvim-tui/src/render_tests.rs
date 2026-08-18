@@ -14,6 +14,7 @@ use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
+use super::buffer_view::WINBAR_ROWS;
 use super::session::Session;
 use super::window::WindowId;
 
@@ -152,6 +153,38 @@ fn with_lines(width: u16, height: u16, lines: usize) -> Session {
     press_code(&mut session, KeyCode::Esc);
     type_keys(&mut session, "gg");
     session
+}
+
+#[test]
+fn every_window_paints_the_rows_that_its_rectangle_reserves() {
+    // The rectangle of a window holds one winbar row and the text rows. The
+    // viewport must report the text rows alone, and the renderer must paint
+    // every row of the rectangle, so no row of the terminal stays unclaimed.
+    for height in 6..14u16 {
+        let mut session = with_lines(40, height, 3);
+        // The inverse adaptive rule stacks a second window below the first.
+        session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('\\'))), NOW);
+        let buffer = draw(&session);
+
+        for region in session.windows().layout().regions() {
+            let area = region.area;
+            let viewport = session
+                .windows()
+                .viewport(region.id)
+                .expect("every editor region owns one viewport");
+            assert_eq!(
+                u16::from(viewport.height_rows()) + WINBAR_ROWS,
+                area.height,
+                "the window reserves the text rows of its rectangle at {height} rows"
+            );
+            for y in area.y + WINBAR_ROWS..area.bottom() {
+                assert!(
+                    !row_of(&buffer, y).is_empty(),
+                    "row {y} of the rectangle at {height} rows carries text or a marker"
+                );
+            }
+        }
+    }
 }
 
 #[test]

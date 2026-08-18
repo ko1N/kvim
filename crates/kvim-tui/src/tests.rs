@@ -9,6 +9,7 @@ use kvim_settings::{DisplaySettings, FileSettings, HorizontalSplitPlacement, Win
 
 use kvim_workspace::BufferId;
 
+use super::buffer_view::WINBAR_ROWS;
 use super::{
     AdaptiveSplit, CloseOutcome, Direction, LayoutChange, Orientation, RegionKind, SPLIT_DEPTH_MAX,
     SidebarSide, SplitError, WindowId, WindowLayout, WindowOutcome, Windows,
@@ -782,21 +783,23 @@ fn the_inverse_adaptive_command_mirrors_the_orientation() {
 }
 
 #[test]
-fn the_viewport_of_a_window_follows_its_rectangle() {
+fn the_viewport_of_a_window_follows_the_text_rows_of_its_rectangle() {
     let mut tree = windows(120, 40);
     let left = tree.focused_window();
     let right = tree
         .split(Orientation::Vertical)
         .expect("the terminal is wide");
 
+    // The winbar row belongs to the rectangle and shows no buffer line, so the
+    // viewport reports one row less than the rectangle holds.
     let viewport = tree.viewport(right).expect("the window exists");
     assert_eq!(viewport.width_cells().get(), area(&tree, right).width);
-    assert_eq!(viewport.height_rows().get(), 40);
+    assert_eq!(viewport.height_rows().get(), 40 - WINBAR_ROWS);
 
     tree.set_terminal(Rect::new(0, 0, 80, 20));
     let viewport = tree.viewport(left).expect("the window exists");
     assert_eq!(viewport.width_cells().get(), area(&tree, left).width);
-    assert_eq!(viewport.height_rows().get(), 20);
+    assert_eq!(viewport.height_rows().get(), 20 - WINBAR_ROWS);
 }
 
 #[test]
@@ -823,13 +826,19 @@ fn a_split_and_a_terminal_resize_keep_the_scroll_offset() {
     let viewport = tree.viewport(scrolled).expect("the window exists");
     assert_eq!(viewport.first_line(), scroll.first_line());
     assert_eq!(viewport.left_column(), scroll.left_column());
-    assert_eq!(viewport.height_rows().get(), area(&tree, scrolled).height);
+    assert_eq!(
+        viewport.height_rows().get(),
+        area(&tree, scrolled).height - WINBAR_ROWS
+    );
 
     // A terminal resize changes both dimensions of every window.
     tree.set_terminal(Rect::new(0, 0, 60, 24));
     let viewport = tree.viewport(scrolled).expect("the window exists");
     assert_eq!(viewport.first_line(), scroll.first_line());
     assert_eq!(viewport.left_column(), scroll.left_column());
-    assert_eq!(viewport.height_rows().get(), area(&tree, scrolled).height);
+    assert_eq!(
+        viewport.height_rows().get(),
+        area(&tree, scrolled).height - WINBAR_ROWS
+    );
     assert_eq!(viewport.width_cells().get(), area(&tree, scrolled).width);
 }

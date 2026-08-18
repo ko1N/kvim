@@ -88,7 +88,7 @@ pub enum ThemeRole {
     Text,
     /// A glyph that stands for absent text.
     NonText,
-    /// The rows below the last buffer line.
+    /// The marker on the rows below the last buffer line.
     EndOfBuffer,
     /// The cell that holds the cursor.
     Cursor,
@@ -173,7 +173,11 @@ impl Theme {
         match role {
             ThemeRole::Text => Style::new().fg(TEXT).bg(self.base),
             ThemeRole::NonText => Style::new().fg(NON_TEXT).bg(self.base),
-            ThemeRole::EndOfBuffer => Style::new().fg(self.base).bg(self.base),
+            // The reference palette paints the marker in the background color
+            // and hides it. Kvim marks the rows that hold no text instead, so
+            // the marker takes the color of a glyph that stands for absent
+            // text and stays readable without drawing the reader's eye.
+            ThemeRole::EndOfBuffer => Style::new().fg(NON_TEXT).bg(self.base),
             // The cursor inverts the cell below it, so it needs no color of its
             // own and stays correct over text, a selection, and a match.
             ThemeRole::Cursor => Style::new().add_modifier(Modifier::REVERSED),
@@ -286,6 +290,7 @@ mod tests {
         for role in [
             ThemeRole::Text,
             ThemeRole::NonText,
+            ThemeRole::EndOfBuffer,
             ThemeRole::LineNumber,
             ThemeRole::CursorLineNumber,
             ThemeRole::SignColumn,
@@ -306,6 +311,16 @@ mod tests {
                 "{role:?} uses the surface"
             );
         }
+    }
+
+    #[test]
+    fn the_end_of_buffer_marker_stays_readable_over_the_editor_background() {
+        // The role owned the background color on both sides and hid the marker.
+        let marker = theme().style(ThemeRole::EndOfBuffer);
+        assert_ne!(
+            marker.fg, marker.bg,
+            "the marker must separate from the row behind it"
+        );
     }
 
     #[test]
