@@ -679,7 +679,36 @@ fn first_release_bindings() -> Vec<Binding> {
     }
     add(table, MOTION_MODES, &[ch('0')], Command::MoveFirstColumn);
     add(table, MOTION_MODES, &[ch('^')], Command::MoveFirstNonBlank);
+    // `_` and `^` name the first non-blank character, and `g_` names the last
+    // one. `$` and `g_` differ only on a line that ends with blanks.
+    add(table, MOTION_MODES, &[ch('_')], Command::MoveFirstNonBlank);
     add(table, MOTION_MODES, &[ch('$')], Command::MoveLineEnd);
+    add(
+        table,
+        MOTION_MODES,
+        &[ch('g'), ch('_')],
+        Command::MoveLastNonBlank,
+    );
+    add(
+        table,
+        MOTION_MODES,
+        &[ch('%')],
+        Command::MoveMatchingBracket,
+    );
+    // `Home` and `End` reach the two ends of the line that `0` and `$` reach,
+    // and they stay available in Insert mode, where a letter is buffer text.
+    add(
+        table,
+        ALL_MODES,
+        &[Key::plain(KeyCode::Home)],
+        Command::MoveFirstColumn,
+    );
+    add(
+        table,
+        ALL_MODES,
+        &[Key::plain(KeyCode::End)],
+        Command::MoveLineEnd,
+    );
     add(
         table,
         MOTION_MODES,
@@ -897,7 +926,11 @@ fn add_operator_pending_bindings(table: &mut Vec<Binding>) {
         (ch('e'), Command::MoveNextWordEnd),
         (ch('0'), Command::MoveFirstColumn),
         (ch('^'), Command::MoveFirstNonBlank),
+        (ch('_'), Command::MoveFirstNonBlank),
         (ch('$'), Command::MoveLineEnd),
+        (ch('%'), Command::MoveMatchingBracket),
+        (Key::plain(KeyCode::Home), Command::MoveFirstColumn),
+        (Key::plain(KeyCode::End), Command::MoveLineEnd),
         (ch('G'), Command::MoveLastLine),
         (ctrl('d'), Command::MoveHalfPageDown),
         (ctrl('u'), Command::MoveHalfPageUp),
@@ -915,6 +948,7 @@ fn add_operator_pending_bindings(table: &mut Vec<Binding>) {
         add_scoped(table, SCOPE, &[key], command);
     }
     add_scoped(table, SCOPE, &[ch('g'), ch('g')], Command::MoveFirstLine);
+    add_scoped(table, SCOPE, &[ch('g'), ch('_')], Command::MoveLastNonBlank);
 }
 
 /// Adds the binding table of the picker.

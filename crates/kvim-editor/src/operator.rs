@@ -107,7 +107,10 @@ pub const fn motion_kind(command: Command) -> Option<MotionKind> {
         | Command::MoveFirstNonBlank
         | Command::SearchNext
         | Command::SearchPrevious => Some(MotionKind::Exclusive),
-        Command::MoveNextWordEnd | Command::MoveLineEnd => Some(MotionKind::Inclusive),
+        Command::MoveNextWordEnd
+        | Command::MoveLastNonBlank
+        | Command::MoveLineEnd
+        | Command::MoveMatchingBracket => Some(MotionKind::Inclusive),
         Command::MoveDown
         | Command::MoveUp
         | Command::MoveFirstLine

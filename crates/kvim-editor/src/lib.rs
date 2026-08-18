@@ -73,7 +73,7 @@ mod tests;
 
 pub use cursor::{ColumnLimit, Cursor, PreferredColumn};
 pub use edit::{AutoIndent, MoveDirection, selection_move_indent_line};
-pub use motion::CharClass;
+pub use motion::{CharClass, matching_bracket};
 pub use operator::{MotionKind, Operator, motion_kind};
 pub use register::{REGISTER_BYTES_MAX, RegisterShape, RegisterValue, Registers};
 pub use search::{

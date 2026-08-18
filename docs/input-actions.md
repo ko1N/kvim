@@ -253,8 +253,13 @@ three Visual modes separately only where their behavior differs.
 | `b` | Move to the previous word start | Normal, Visual, Visual Line |
 | `e` | Move to the next word end | Normal, Visual, Visual Line |
 | `0` | Move to the first column | Normal, Visual, Visual Line |
+| `Home` | Move to the first column | Normal, Insert, Visual, Visual Line, Visual Block |
 | `^` | Move to the first non-blank character | Normal, Visual, Visual Line |
+| `_` | Move to the first non-blank character | Normal, Visual, Visual Line |
 | `$` | Move to the end of the line | Normal, Visual, Visual Line |
+| `End` | Move to the end of the line | Normal, Insert, Visual, Visual Line, Visual Block |
+| `g_` | Move to the last non-blank character | Normal, Visual, Visual Line |
+| `%` | Move to the matching bracket | Normal, Visual, Visual Line |
 | `gg` | Move to the first line | Normal, Visual, Visual Line |
 | `G` | Move to the last line, or to the count line | Normal, Visual, Visual Line |
 | `Ctrl-D` | Move down one half page | Normal, Visual, Visual Line |
@@ -273,6 +278,33 @@ Insert mode, where a letter is buffer text, so the user never leaves Insert mode
 to move the cursor. Insert mode holds no count, so a digit before an arrow stays
 buffer text there. A vertical arrow keeps the preferred display column, exactly
 as `j` and `k` do.
+
+Four keys reach the two ends of a line, and two pairs of them name the same
+target. `0` and `Home` reach the first column. `^` and `_` reach the first
+non-blank character. `$` and `End` reach the last column, and `g_` reaches the
+last non-blank character. `$` and `g_` therefore differ only on a line that ends
+with blanks. On a line of blanks alone, `^` keeps the last column and `g_` keeps
+the first one, as the reference Vim does. `Home` and `End` stay available in
+Insert mode, next to the arrow keys.
+
+`%` reads the line of the cursor forward for the first `(`, `)`, `[`, `]`, `{`,
+or `}`. It then moves to the partner of that bracket. The pair table of the text
+objects names these three pairs, so one table serves both the jump and the
+objects. The angle brackets stay out of it, because `<` and `>` are comparison
+operators in most languages. The walk counts the nested pairs of the same
+delimiter and crosses lines inside the text-object scan bound. Two cases reach
+no partner and report no match: a line that holds no bracket at or after the
+cursor, and a bracket without a partner inside that bound. The cursor then stays
+where it stands.
+
+`%` matches by text alone. Kvim holds no comment region and no string region at
+the cursor, so a bracket inside a comment or a string literal matches like every
+other bracket. A count repeats the jump, as it does for every other motion,
+instead of naming a percentage of the file.
+
+An operator takes `g_` and `%` as a characterwise, inclusive target. `dg_`
+therefore deletes to the last non-blank character. `d%` deletes both brackets of
+the pair and the text between them.
 
 macOS sends the `Option` chord as the `Alt` modifier, so `Option-Left` and
 `Option-Right` arrive as `Alt-Left` and `Alt-Right`. The `terminal` module folds

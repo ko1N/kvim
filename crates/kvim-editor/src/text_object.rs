@@ -101,6 +101,21 @@ pub enum DelimiterShape {
 }
 
 impl Delimiter {
+    /// The pairs that the matching-bracket motion jumps between.
+    ///
+    /// The list follows the reference Vim `matchpairs` default. The angle
+    /// brackets stay out of it, because `<` and `>` are comparison operators in
+    /// most languages, so `%` would jump between two unrelated characters.
+    ///
+    /// ```
+    /// use kvim_editor::{Delimiter, DelimiterShape};
+    ///
+    /// for delimiter in Delimiter::MATCH_PAIRS {
+    ///     assert!(matches!(delimiter.shape(), DelimiterShape::Balanced { .. }));
+    /// }
+    /// ```
+    pub const MATCH_PAIRS: &'static [Self] = &[Self::Paren, Self::Bracket, Self::Brace];
+
     /// Returns the canonical shape of the pair.
     ///
     /// This table is the only place that names the delimiter characters.
@@ -275,14 +290,14 @@ struct LoadedLine {
 /// The reader keeps the characters of one line, because a delimiter scan visits
 /// neighbouring positions and reads the same line many times. It answers in
 /// characters, never in bytes, so a multi-byte body reads like any other.
-struct CharReader<'a> {
+pub(super) struct CharReader<'a> {
     buffer: &'a TextBuffer,
     len_chars: usize,
     line: Option<LoadedLine>,
 }
 
 impl<'a> CharReader<'a> {
-    fn new(buffer: &'a TextBuffer) -> Self {
+    pub(super) fn new(buffer: &'a TextBuffer) -> Self {
         Self {
             buffer,
             len_chars: buffer.len_chars(),
@@ -294,7 +309,7 @@ impl<'a> CharReader<'a> {
     ///
     /// A position on a line terminator answers with a line break, which equals
     /// no delimiter. A position at the end of the buffer answers with `None`.
-    fn char_at(&mut self, position: usize) -> Option<char> {
+    pub(super) fn char_at(&mut self, position: usize) -> Option<char> {
         if position >= self.len_chars {
             return None;
         }
@@ -395,7 +410,7 @@ fn enclosing_pair(
 }
 
 /// Scans backward for the open delimiter that no closer inside the run matched.
-fn scan_backward(
+pub(super) fn scan_backward(
     reader: &mut CharReader<'_>,
     from: usize,
     open: char,
@@ -419,7 +434,7 @@ fn scan_backward(
 }
 
 /// Scans forward for the close delimiter that no opener inside the run matched.
-fn scan_forward(
+pub(super) fn scan_forward(
     reader: &mut CharReader<'_>,
     len_chars: usize,
     from: usize,

@@ -118,7 +118,8 @@ pub enum CommandOutcome {
     RegisterEmpty,
     /// The command undoes or redoes, but the history holds no further step.
     HistoryExhausted,
-    /// The command names a search, but no query is active or no match exists.
+    /// The command names a search or a bracket jump, but no query is active and
+    /// no match exists.
     SearchMissed,
     /// The input passes a bound of this module.
     Rejected,
@@ -650,7 +651,15 @@ impl EditingState {
             Command::MoveNextWordEnd => motion::move_next_word_end(buffer, cursor, limit, repeat),
             Command::MoveFirstColumn => motion::move_first_column(buffer, cursor, limit),
             Command::MoveFirstNonBlank => motion::move_first_non_blank(buffer, cursor, limit),
+            Command::MoveLastNonBlank => motion::move_last_non_blank(buffer, cursor, limit, repeat),
             Command::MoveLineEnd => motion::move_line_end(buffer, cursor, limit, repeat),
+            Command::MoveMatchingBracket => {
+                let Some(found) = motion::move_matching_bracket(buffer, cursor, limit, repeat)
+                else {
+                    return MotionResult::Missed;
+                };
+                found
+            }
             // A count before `gg` or `G` names a line, not a number of steps.
             Command::MoveFirstLine => motion::move_to_line(buffer, limit, target_line(count, 0)),
             Command::MoveLastLine => {
