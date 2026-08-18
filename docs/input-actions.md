@@ -165,6 +165,31 @@ the overlay is deterministic.
 The overlay is generated from the active registry for the active mode. It is
 never a separate hand-written list.
 
+The overlay lays its rows out in columns that fill the width of the body band.
+Every column keeps the width of the widest row, so the keys and the labels of
+all columns align. The overlay fills one column from top to bottom before it
+starts the next one, and it takes only as many columns as it can fill, so no
+column stays empty. A terminal that is narrower than one column shows one
+column, which clips at the body edge.
+
+The overlay bounds its height twice. It covers at most half of the body band, so
+the buffer text around the cursor never disappears behind it, and one column
+holds at most ten rows even in a tall terminal. A body band that cannot hold the
+title row and one mapping over its own half shows no overlay. A prefix that
+reaches more mappings than the bounded columns hold loses the last ones, and the
+title row names how many rows the overlay dropped, for example `+2 more`. The
+reader reaches those mappings by typing the next key.
+
+Every row carries one icon, which the group of its command selects. The group is
+a property of the command, so `input` owns it beside the identifier and the
+label, and the interface layer owns every glyph and every color. The groups are
+search, code, window, buffer, and file tree. Every other command falls to one
+default group with one default icon. A key that reaches commands of several
+groups also carries the default icon, because one icon cannot name two groups.
+The one file-tree icon setting turns these glyphs off together with the tree
+glyphs. Without them every column loses the same cells, so the columns stay
+aligned. See [`files.md`](files.md).
+
 The overlay appears after the which-key delay of 500 ms, so a fast key
 combination never flashes it. The event loop supplies the elapsed time.
 

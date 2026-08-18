@@ -53,7 +53,7 @@ mod mode;
 mod registry;
 mod resolver;
 
-pub use command::Command;
+pub use command::{Command, CommandGroup};
 pub use command_line::{COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError};
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 pub use registry::{

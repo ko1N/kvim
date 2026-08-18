@@ -53,11 +53,15 @@ const INFO: Color = Color::Rgb(0x0d, 0xb9, 0xd7);
 /// The color of a hint message.
 const HINT: Color = Color::Rgb(0x1a, 0xbc, 0x9c);
 
-/// The meaning of one file-tree icon.
+/// The meaning of one icon.
 ///
-/// The role names what an entry is, never its color, so the theme keeps every
-/// color value. An icon is presentation data: it selects no parser, no indent
-/// rule, no comment token, and no language server. See `docs/architecture.md`.
+/// The role names what an icon stands for, never its color, so the theme keeps
+/// every color value. An icon is presentation data: it selects no parser, no
+/// indent rule, no comment token, and no language server. See
+/// `docs/architecture.md`.
+///
+/// The file tree names an entry kind, and the which-key overlay names a command
+/// group. Both read from the one icon table of `docs/files.md`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum IconRole {
     /// A directory, open or closed.
@@ -78,6 +82,18 @@ pub enum IconRole {
     Media,
     /// Every other file.
     Unknown,
+    /// A command of the buffer search.
+    CommandSearch,
+    /// A command of the language services.
+    CommandCode,
+    /// A command that acts on a window.
+    CommandWindow,
+    /// A command that acts on a file or a buffer.
+    CommandBuffer,
+    /// A command that acts on the file tree.
+    CommandTree,
+    /// Every other command.
+    CommandOther,
 }
 
 /// One semantic interface role.
@@ -153,7 +169,7 @@ pub enum ThemeRole {
     Info,
     /// A hint message.
     Hint,
-    /// One file-tree icon.
+    /// One icon of the file tree or of the which-key overlay.
     Icon(IconRole),
     /// One syntax role of a language adapter.
     Syntax(SyntaxRole),
@@ -329,6 +345,12 @@ const fn icon_color(role: IconRole) -> Color {
         IconRole::Generated => TEXT_MUTED,
         IconRole::Media => INFO,
         IconRole::Unknown => NON_TEXT,
+        IconRole::CommandSearch => WARNING,
+        IconRole::CommandCode => ACCENT_WARM,
+        IconRole::CommandWindow => INFO,
+        IconRole::CommandBuffer => TEXT,
+        IconRole::CommandTree => TITLE,
+        IconRole::CommandOther => HINT,
     }
 }
 

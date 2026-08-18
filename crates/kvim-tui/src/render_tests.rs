@@ -1,6 +1,7 @@
 //! Tests for the rendered frame: buffer text, line numbers, the cursor, every
 //! selection kind, search matches, chrome, overlays, and narrow terminals.
 
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -15,7 +16,7 @@ use kvim_language::{
     LanguageEvent, LanguageOutcome, LspError, ProgressPercentage, ProgressReport, ProgressStage,
     ProgressToken, SessionGeneration,
 };
-use kvim_settings::{EditorSettings, NotificationSettings, WHICH_KEY_DELAY_DEFAULT};
+use kvim_settings::{EditorSettings, FileTreeIcons, NotificationSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
@@ -52,6 +53,9 @@ const TEXT: Color = Color::Rgb(0xc0, 0xca, 0xf5);
 
 /// The warning color of the reference palette.
 const WARNING: Color = Color::Rgb(0xe0, 0xaf, 0x68);
+
+/// The informational color of the reference palette.
+const INFO: Color = Color::Rgb(0x0d, 0xb9, 0xd7);
 
 /// The failure color of the reference palette.
 const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
@@ -153,6 +157,16 @@ fn session(width: u16, height: u16) -> Session {
         EditorSettings::default(),
         workspace_root(),
     )
+}
+
+/// Creates a session over one terminal size whose interface paints no icon.
+///
+/// The one file-tree icon setting also covers the which-key overlay, so a test
+/// that reads plain row text turns every glyph off through it.
+fn session_without_icons(width: u16, height: u16) -> Session {
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    Session::new(Rect::new(0, 0, width, height), settings, workspace_root())
 }
 
 /// Feeds one plain character key.
@@ -811,26 +825,21 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
 
 #[test]
 fn the_which_key_overlay_lists_one_level_of_next_keys() {
-    let mut session = session(60, 20);
+    let mut session = session_without_icons(60, 20);
     press(&mut session, ' ');
     assert_eq!(row(&session, 5), "~", "the overlay waits for the delay");
 
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 7), " Which Key");
-    assert_eq!(row_of(&buffer, 8), " /      Toggle the comment");
+    assert_eq!(row_of(&buffer, 10), " /      Toggle the comment");
     assert_eq!(
-        row_of(&buffer, 12),
+        row_of(&buffer, 14),
         " f      +3 commands",
         "a key that reaches several commands shows a group marker"
     );
     assert_eq!(
-        row_of(&buffer, 17),
-        " Enter  Split the window with the adaptive rule"
-    );
-    assert_eq!(
         buffer
-            .cell((1, 8))
+            .cell((1, 10))
             .expect("the overlay shows its first key")
             .style()
             .fg,
@@ -850,6 +859,139 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     // `Esc` dismisses the overlay from any depth.
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(row(&session, 15), "~");
+}
+
+#[test]
+fn the_which_key_overlay_fills_a_wide_terminal_with_columns() {
+    let mut session = session_without_icons(120, 30);
+    type_keys(&mut session, " f");
+    session.tick(WHICH_KEY_DELAY);
+    let buffer = draw(&session);
+    // Three columns of thirty-five cells fit, so one row holds every mapping.
+    assert_eq!(row_of(&buffer, 26), " Which Key");
+    assert_eq!(
+        row_of(&buffer, 27),
+        format!(
+            " {:<35}{:<35}{}",
+            "/  Open the ripgrep search picker",
+            "b  Open the buffer picker",
+            "f  Open the file search picker"
+        )
+        .trim_end()
+    );
+    assert_eq!(
+        row_of(&buffer, 28).trim_start().split(' ').next(),
+        Some("Normal"),
+        "the overlay ends above the statusline"
+    );
+}
+
+#[test]
+fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
+    let mut session = session_without_icons(40, 20);
+    type_keys(&mut session, " f");
+    session.tick(WHICH_KEY_DELAY);
+    let buffer = draw(&session);
+    assert_eq!(row_of(&buffer, 14), " Which Key");
+    assert_eq!(row_of(&buffer, 15), " /  Open the ripgrep search picker");
+    assert_eq!(row_of(&buffer, 16), " b  Open the buffer picker");
+    assert_eq!(row_of(&buffer, 17), " f  Open the file search picker");
+}
+
+#[test]
+fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
+    let mut session = session_without_icons(60, 20);
+    press(&mut session, ' ');
+    session.tick(WHICH_KEY_DELAY);
+    let buffer = draw(&session);
+    // The body band holds eighteen rows, so the overlay keeps nine of them,
+    // and eight of those show a mapping.
+    assert_eq!(
+        row_of(&buffer, 9),
+        format!(" Which Key{}+2 more", " ".repeat(42)),
+        "the title row reports the mappings that no column holds"
+    );
+    assert_eq!(row_of(&buffer, 8), "~", "the buffer stays visible above");
+    assert_eq!(row_of(&buffer, 17), " q      Close the focused window");
+
+    // A body band that cannot hold the title and one mapping over its own half
+    // shows no overlay at all, so the buffer never disappears behind it.
+    let mut small = session_without_icons(60, 4);
+    press(&mut small, ' ');
+    small.tick(WHICH_KEY_DELAY);
+    let painted = draw(&small);
+    assert!(
+        (0..4).all(|y| !row_of(&painted, y).contains("Which Key")),
+        "a body band of two rows shows no overlay at all"
+    );
+}
+
+#[test]
+fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
+    let mut session = session(80, 24);
+    press(&mut session, ' ');
+    session.tick(WHICH_KEY_DELAY);
+    let buffer = draw(&session);
+    let icon = |y: u16| {
+        let cell = buffer
+            .cell((1, y))
+            .expect("the overlay paints an icon cell");
+        (cell.symbol().to_owned(), cell.style().fg)
+    };
+    // `/` toggles the comment, which is a language service. `\` splits the
+    // window. `f` opens the pickers, which all reach a file or a buffer.
+    let (code, code_color) = icon(12);
+    let (window, window_color) = icon(13);
+    let (files, files_color) = icon(16);
+    assert_eq!(code_color, Some(ACCENT_WARM));
+    assert_eq!(window_color, Some(INFO));
+    assert_eq!(files_color, Some(TEXT));
+    assert_eq!(
+        [code.as_str(), window.as_str(), files.as_str()]
+            .into_iter()
+            .collect::<BTreeSet<_>>()
+            .len(),
+        3,
+        "each group carries its own glyph"
+    );
+    assert_eq!(
+        row_of(&buffer, 12),
+        format!(" {code} /      Toggle the comment"),
+        "the icon sits left of the key and the label"
+    );
+}
+
+#[test]
+fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
+    // Every picker behind `Space f` opens a file or a buffer, so the three rows
+    // carry one group icon.
+    let files = "\u{f0f6}";
+    let mut painted = session(120, 30);
+    type_keys(&mut painted, " f");
+    painted.tick(WHICH_KEY_DELAY);
+    // With icons every column keeps two further cells, and the columns stay
+    // evenly spaced.
+    let ripgrep = format!("{files} /  Open the ripgrep search picker");
+    let buffers = format!("{files} b  Open the buffer picker");
+    let files_picker = format!("{files} f  Open the file search picker");
+    assert_eq!(
+        row_of(&draw(&painted), 27),
+        format!(" {ripgrep:<37}{buffers:<37}{files_picker}")
+    );
+
+    let mut plain = session_without_icons(120, 30);
+    type_keys(&mut plain, " f");
+    plain.tick(WHICH_KEY_DELAY);
+    assert_eq!(
+        row_of(&draw(&plain), 27),
+        format!(
+            " {:<35}{:<35}{}",
+            "/  Open the ripgrep search picker",
+            "b  Open the buffer picker",
+            "f  Open the file search picker"
+        ),
+        "every column loses the same two cells, so the columns stay aligned"
+    );
 }
 
 #[test]

@@ -294,12 +294,20 @@ The theme colors each icon through an icon role, such as code, configuration,
 document, script, version control, generated, media, or unknown. A call site
 names the role, never a color. See [`windows.md`](windows.md).
 
+The same table also holds one icon for each which-key command group: search,
+code, window, buffer, file tree, and one default icon for every other command.
+`input` names the group of a command, and this table names the glyph and the
+role, so no interface value reaches the input layer. See
+[`input-actions.md`](input-actions.md).
+
 An icon needs a patched font. The `file tree icons` setting turns the icons off
 for a terminal without one. See [`settings.md`](settings.md). One setting turns
-every glyph of the tree off together. The glyph cells keep their width in both
-states, so the names stay aligned. Without the icons a directory shows the
-expansion marker in those cells, so the state of a directory stays visible
-without a patched font.
+every glyph of the tree and of the which-key overlay off together. The glyph
+cells of the tree keep their width in both states, so the names stay aligned.
+Without the icons a directory shows the expansion marker in those cells, so the
+state of a directory stays visible without a patched font. Every which-key
+column loses the same cells instead, so the columns of the overlay stay
+aligned.
 
 ### Visibility
 

@@ -196,7 +196,207 @@ semantic_commands! {
     ToggleFormatOnSave => ("toggle-format-on-save", "Toggle format-on-save for the active buffer"),
 }
 
+/// The group that one command belongs to.
+///
+/// The group is a property of the command, not of one view. The which-key
+/// overlay reads it to pick the icon of a row, and it names no glyph and no
+/// color of its own, because the interface layer owns every presentation
+/// value. See `docs/input-actions.md`.
+///
+/// The group follows the section that declares the command. A section that no
+/// named group covers falls to [`CommandGroup::Other`], which is also the group
+/// of a key that reaches commands of several groups.
+///
+/// The enumeration is exhaustive on purpose. The interface layer holds one icon
+/// for each group, and a new group must therefore fail to compile until it
+/// carries one.
+///
+/// ```
+/// use kvim_input::{Command, CommandGroup};
+///
+/// assert_eq!(Command::SearchNext.group(), CommandGroup::Search);
+/// assert_eq!(Command::MoveLeft.group(), CommandGroup::Other);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CommandGroup {
+    /// A command of the buffer search.
+    Search,
+    /// A command of the language services.
+    Code,
+    /// A command that acts on a window.
+    Window,
+    /// A command that acts on a file or a buffer.
+    Buffer,
+    /// A command that acts on the file tree.
+    Tree,
+    /// Every other command, such as a motion, a text change, or a mode switch.
+    #[default]
+    Other,
+}
+
+impl CommandGroup {
+    /// Returns the group that covers both groups.
+    ///
+    /// One which-key row may stand for several commands. The row keeps the
+    /// shared group while every command behind it agrees, and it falls to
+    /// [`CommandGroup::Other`] as soon as two commands disagree.
+    ///
+    /// ```
+    /// use kvim_input::CommandGroup;
+    ///
+    /// assert_eq!(
+    ///     CommandGroup::Tree.merged(CommandGroup::Tree),
+    ///     CommandGroup::Tree
+    /// );
+    /// assert_eq!(
+    ///     CommandGroup::Tree.merged(CommandGroup::Window),
+    ///     CommandGroup::Other
+    /// );
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn merged(self, other: Self) -> Self {
+        if self as u8 == other as u8 {
+            self
+        } else {
+            Self::Other
+        }
+    }
+}
+
 impl Command {
+    /// Returns the group that the command belongs to.
+    ///
+    /// The match is exhaustive, so a new command cannot reach the overlay
+    /// without a group decision.
+    #[inline]
+    #[must_use]
+    pub const fn group(self) -> CommandGroup {
+        match self {
+            Self::OpenSearchPrompt | Self::SearchNext | Self::SearchPrevious | Self::EndSearch => {
+                CommandGroup::Search
+            }
+
+            Self::ToggleComment
+            | Self::GoToDefinition
+            | Self::ShowHover
+            | Self::ShowDiagnosticFloat
+            | Self::NextDiagnostic
+            | Self::PreviousDiagnostic
+            | Self::ToggleFormatOnSave => CommandGroup::Code,
+
+            Self::FocusWindowLeft
+            | Self::FocusWindowDown
+            | Self::FocusWindowUp
+            | Self::FocusWindowRight
+            | Self::ResizeWindowLeft
+            | Self::ResizeWindowDown
+            | Self::ResizeWindowUp
+            | Self::ResizeWindowRight
+            | Self::SplitAdaptive
+            | Self::SplitInverseAdaptive
+            | Self::CloseWindow => CommandGroup::Window,
+
+            Self::SaveBuffer
+            | Self::RevealInFileTree
+            | Self::OpenBufferPicker
+            | Self::UnloadBuffer
+            | Self::OpenFilePicker
+            | Self::OpenRipgrepPicker => CommandGroup::Buffer,
+
+            Self::TreeOpenEntry
+            | Self::TreeToggleEntry
+            | Self::TreeExpandEntry
+            | Self::TreeCollapseEntry
+            | Self::TreeSelectParent
+            | Self::TreeRefresh
+            | Self::TreeAddFile
+            | Self::TreeAddDirectory
+            | Self::TreeDelete
+            | Self::TreeRename
+            | Self::TreeCopyEntry
+            | Self::TreeCutEntry
+            | Self::TreePasteEntries
+            | Self::TreeToggleHidden
+            | Self::TreeSearch => CommandGroup::Tree,
+
+            Self::InsertBeforeCursor
+            | Self::InsertAtFirstNonBlank
+            | Self::InsertAfterCursor
+            | Self::InsertAtLineEnd
+            | Self::OpenLineBelow
+            | Self::OpenLineAbove
+            | Self::EnterVisual
+            | Self::EnterVisualLine
+            | Self::EnterVisualBlock
+            | Self::OpenCommandLine
+            | Self::ReturnToNormal
+            | Self::MoveLeft
+            | Self::MoveDown
+            | Self::MoveUp
+            | Self::MoveRight
+            | Self::MoveNextWordStart
+            | Self::MovePreviousWordStart
+            | Self::MoveNextWordEnd
+            | Self::MoveFirstColumn
+            | Self::MoveFirstNonBlank
+            | Self::MoveLastNonBlank
+            | Self::MoveLineEnd
+            | Self::MoveMatchingBracket
+            | Self::MoveFirstLine
+            | Self::MoveLastLine
+            | Self::MoveHalfPageDown
+            | Self::MoveHalfPageUp
+            | Self::MoveFullPageDown
+            | Self::MoveFullPageUp
+            | Self::CenterCursorLine
+            | Self::AlignCursorLineTop
+            | Self::AlignCursorLineBottom
+            | Self::DeleteOverMotion
+            | Self::ChangeOverMotion
+            | Self::YankOverMotion
+            | Self::DeleteSelection
+            | Self::ChangeSelection
+            | Self::YankSelection
+            | Self::BlockInsertBefore
+            | Self::BlockInsertAfter
+            | Self::DeleteLine
+            | Self::ChangeLine
+            | Self::YankLine
+            | Self::DeleteToLineEnd
+            | Self::ChangeToLineEnd
+            | Self::PasteAfter
+            | Self::PasteBefore
+            | Self::Undo
+            | Self::Redo
+            | Self::RepeatChange
+            | Self::SelectInnerWord
+            | Self::SelectAroundWord
+            | Self::SelectInnerLongWord
+            | Self::SelectAroundLongWord
+            | Self::SelectInnerParen
+            | Self::SelectAroundParen
+            | Self::SelectInnerBracket
+            | Self::SelectAroundBracket
+            | Self::SelectInnerBrace
+            | Self::SelectAroundBrace
+            | Self::SelectInnerAngle
+            | Self::SelectAroundAngle
+            | Self::SelectInnerDoubleQuote
+            | Self::SelectAroundDoubleQuote
+            | Self::SelectInnerSingleQuote
+            | Self::SelectAroundSingleQuote
+            | Self::SelectInnerBacktick
+            | Self::SelectAroundBacktick
+            | Self::MoveSelectionDown
+            | Self::MoveSelectionUp
+            | Self::ShiftSelectionLeft
+            | Self::ShiftSelectionRight
+            | Self::PickerSelectNext
+            | Self::PickerSelectPrevious => CommandGroup::Other,
+        }
+    }
+
     /// Reports whether the command starts an operator that waits for a target.
     ///
     /// The resolver reads its own answer here: while an operator waits, the
@@ -234,7 +434,7 @@ impl fmt::Display for Command {
 mod tests {
     use std::collections::BTreeSet;
 
-    use super::Command;
+    use super::{Command, CommandGroup};
 
     #[test]
     fn identifiers_and_labels_stay_unique() {
@@ -270,5 +470,44 @@ mod tests {
                 "{id} is not a stable kebab-case identifier"
             );
         }
+    }
+
+    #[test]
+    fn each_section_of_the_command_table_reaches_its_own_group() {
+        let cases = [
+            (Command::SearchNext, CommandGroup::Search),
+            (Command::GoToDefinition, CommandGroup::Code),
+            (Command::CloseWindow, CommandGroup::Window),
+            (Command::SaveBuffer, CommandGroup::Buffer),
+            (Command::TreeRename, CommandGroup::Tree),
+            (Command::MoveLeft, CommandGroup::Other),
+        ];
+        for (command, group) in cases {
+            assert_eq!(command.group(), group, "{command} carries another group");
+        }
+    }
+
+    #[test]
+    fn every_file_tree_command_carries_the_tree_group() {
+        for command in Command::ALL {
+            assert_eq!(
+                command.group() == CommandGroup::Tree,
+                command.id().starts_with("tree-"),
+                "{command} names the file tree, or it does not"
+            );
+        }
+    }
+
+    #[test]
+    fn one_row_over_two_groups_falls_to_the_default_group() {
+        assert_eq!(
+            CommandGroup::Search.merged(CommandGroup::Window),
+            CommandGroup::Other,
+            "no single icon can name two groups"
+        );
+        assert_eq!(
+            CommandGroup::Search.merged(CommandGroup::Search),
+            CommandGroup::Search
+        );
     }
 }

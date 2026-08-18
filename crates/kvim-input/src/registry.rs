@@ -15,7 +15,7 @@ use thiserror::Error;
 use kvim_settings::PENDING_KEYS_MAX;
 use kvim_terminal::{Chord, Key, KeyCode};
 
-use super::command::Command;
+use super::command::{Command, CommandGroup};
 use super::mode::{BindingScope, Mode};
 
 /// A non-empty key sequence that fits the pending-key maximum.
@@ -242,6 +242,11 @@ pub struct WhichKeyRow {
     pub key: Key,
     /// What the key reaches.
     pub target: WhichKeyTarget,
+    /// The group of every command behind the key.
+    ///
+    /// A key that reaches commands of several groups carries
+    /// [`CommandGroup::Other`], so one row always names exactly one group.
+    pub group: CommandGroup,
 }
 
 impl WhichKeyRow {
@@ -381,10 +386,14 @@ impl Registry {
         {
             let key = sequence.keys()[prefix.len()];
             match rows.last_mut() {
-                Some(last) if last.key == key => last.target = last.target.grown(),
+                Some(last) if last.key == key => {
+                    last.target = last.target.grown();
+                    last.group = last.group.merged(command.group());
+                }
                 _ => rows.push(WhichKeyRow {
                     key,
                     target: WhichKeyTarget::Command(*command),
+                    group: command.group(),
                 }),
             }
         }
@@ -1023,7 +1032,7 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
 #[cfg(test)]
 mod tests {
     use super::{
-        Binding, BindingScope, Command, Key, KeyCode, Mode, Registry, RegistryError,
+        Binding, BindingScope, Command, CommandGroup, Key, KeyCode, Mode, Registry, RegistryError,
         WhichKeyTarget, ch, ctrl, leader,
     };
 
@@ -1283,6 +1292,22 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[test]
+    fn a_group_row_carries_the_group_that_every_command_behind_it_shares() {
+        let registry = Registry::first_release();
+        let rows = registry.rows_for_prefix(Mode::Normal, &[leader()]);
+        let group_of = |label: &str| {
+            rows.iter()
+                .find(|row| row.key_label().to_string() == label)
+                .map(|row| row.group)
+        };
+        // Every picker behind `Space f` opens a file or a buffer, so the row
+        // keeps that one group.
+        assert_eq!(group_of("f"), Some(CommandGroup::Buffer));
+        assert_eq!(group_of("c"), Some(CommandGroup::Code));
+        assert_eq!(group_of("q"), Some(CommandGroup::Window));
     }
 
     #[test]

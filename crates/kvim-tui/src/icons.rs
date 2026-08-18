@@ -1,14 +1,17 @@
-//! The icon table of the file tree.
+//! The one icon table of the editor.
 //!
-//! An icon is presentation data. The table keys on a file extension and on a
-//! well-known file name, and it never selects a parser, an indent rule, a
-//! comment token, or a language server. `docs/architecture.md` records this one
-//! narrow exception to the language-adapter rule.
+//! An icon is presentation data. The file-tree table keys on a file extension
+//! and on a well-known file name, and the which-key table keys on a command
+//! group. Neither ever selects a parser, an indent rule, a comment token, or a
+//! language server. `docs/architecture.md` records this one narrow exception to
+//! the language-adapter rule.
 //!
 //! Every glyph needs a patched font, which the reference configuration installs.
-//! A terminal without one hides the icons through [`FileTreeIcons`]. Each glyph
+//! A terminal without one hides the icons through [`FileTreeIcons`]. That one
+//! setting covers the file tree and the which-key overlay together. Each glyph
 //! occupies one terminal cell, so the rows align with icons and without them.
 
+use kvim_input::CommandGroup;
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{Expansion, RowContent, TreeRow};
 
@@ -259,6 +262,43 @@ const EXTENSIONS: &[(&str, Icon)] = &[
     ),
 ];
 
+impl Icon {
+    /// Returns the icon of one which-key command group.
+    ///
+    /// The mapping lives beside the file-tree table, because the interface
+    /// layer owns every glyph and every color. `kvim-input` names the group
+    /// alone. A group that the table does not name receives the default
+    /// keyboard icon, which every ordinary mapping carries.
+    pub(super) const fn of_group(group: CommandGroup) -> Self {
+        match group {
+            CommandGroup::Search => Self {
+                glyph: "\u{f002}",
+                role: IconRole::CommandSearch,
+            },
+            CommandGroup::Code => Self {
+                glyph: "\u{f121}",
+                role: IconRole::CommandCode,
+            },
+            CommandGroup::Window => Self {
+                glyph: "\u{f2d0}",
+                role: IconRole::CommandWindow,
+            },
+            CommandGroup::Buffer => Self {
+                glyph: "\u{f0f6}",
+                role: IconRole::CommandBuffer,
+            },
+            CommandGroup::Tree => Self {
+                glyph: "\u{f07b}",
+                role: IconRole::CommandTree,
+            },
+            CommandGroup::Other => Self {
+                glyph: "\u{f11c}",
+                role: IconRole::CommandOther,
+            },
+        }
+    }
+}
+
 /// Returns the icon of one file name.
 ///
 /// A well-known name wins over the extension, and an unknown name receives the
@@ -303,5 +343,77 @@ pub(super) fn row_icon(row: &TreeRow, icons: FileTreeIcons) -> Option<Icon> {
         RowContent::File { name, .. } => Some(file_icon(name)),
         RowContent::Directory { expansion, .. } => Some(directory_icon(*expansion)),
         RowContent::Notice(_) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeSet;
+
+    use kvim_input::CommandGroup;
+
+    use crate::cells::text_cells;
+
+    use super::Icon;
+
+    /// Every group that the icon table names.
+    const NAMED_GROUPS: &[CommandGroup] = &[
+        CommandGroup::Search,
+        CommandGroup::Code,
+        CommandGroup::Window,
+        CommandGroup::Buffer,
+        CommandGroup::Tree,
+    ];
+
+    #[test]
+    fn every_named_command_group_reaches_its_own_icon() {
+        let glyphs = NAMED_GROUPS
+            .iter()
+            .map(|group| Icon::of_group(*group).glyph)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            glyphs.len(),
+            NAMED_GROUPS.len(),
+            "a reader tells the groups apart by the glyph"
+        );
+        let roles = NAMED_GROUPS
+            .iter()
+            .map(|group| Icon::of_group(*group).role)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            roles.len(),
+            NAMED_GROUPS.len(),
+            "a reader tells the groups apart by the color"
+        );
+    }
+
+    #[test]
+    fn a_command_without_a_named_group_reaches_the_default_icon() {
+        let default = Icon::of_group(CommandGroup::Other);
+        assert_eq!(
+            default,
+            Icon::of_group(CommandGroup::default()),
+            "the default group and the default icon name the same rows"
+        );
+        assert!(
+            NAMED_GROUPS
+                .iter()
+                .all(|group| Icon::of_group(*group) != default),
+            "no named group shares the default icon"
+        );
+    }
+
+    #[test]
+    fn every_group_icon_occupies_one_terminal_cell() {
+        // The columns of the overlay reserve the same width for every icon, so
+        // a wider glyph would move one label out of its column.
+        for group in NAMED_GROUPS.iter().copied().chain([CommandGroup::Other]) {
+            let glyph = Icon::of_group(group).glyph;
+            assert_eq!(
+                text_cells(glyph),
+                1,
+                "{group:?} carries a glyph of one cell"
+            );
+        }
     }
 }
