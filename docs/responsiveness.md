@@ -139,3 +139,30 @@ shutdown operation.
 Terminal restoration runs after runtime shutdown and also runs while the process
 unwinds from a panic. See [`architecture.md`](architecture.md) for the release
 profile that keeps unwinding available.
+
+### Termination Signals
+
+The default action of `SIGTERM`, `SIGINT`, and `SIGHUP` ends the process while
+the editor still holds raw mode, the alternate screen, and the enhanced keyboard
+flags. No restore step runs, so a terminated editor would leave the terminal
+unusable.
+
+The terminal crate owns a termination source. It reports the first of those
+three signals as one value. The event loop reads that value beside its terminal
+events, its worker results, and its language events, in every wait it performs.
+The loop must observe a termination in each of its waits, including the wait
+that holds a deadline.
+
+A termination request ends the event loop through the same outcome as the last
+closed window. The shutdown order above then runs, and terminal restoration runs
+after it. The signal path adds no second exit path and no second restore step
+list.
+
+The source reports one request and then reports nothing again. A second signal
+therefore needs no handling: shutdown after the first request is bounded by the
+worker deadlines, the process deadlines, and the language server shutdown
+deadline.
+
+Only Unix defines these signals. macOS and Linux are the supported platforms. On
+another platform the source reports no request, and the remaining exit paths
+stay unchanged.

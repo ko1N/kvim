@@ -44,6 +44,29 @@ and an external copy reaches the editor.
 A yank, a delete, and a change write the unnamed register and then write the
 system clipboard. A paste reads the system clipboard.
 
+## The Event Loop
+
+The terminal event loop must never wait for a clipboard command. See
+[`responsiveness.md`](responsiveness.md). Every clipboard operation therefore
+runs in two steps.
+
+1. The session runs the operation. An implementation that needs no external
+   command finishes at once. An implementation that needs one produces a command
+   instead of a value.
+2. The event loop hands that command to the bounded process service. The output
+   returns to the session, which repeats the same operation over that output and
+   finishes it.
+
+A yank finishes on the first step from the view of the user, because the unnamed
+register already holds the value. A paste waits for the second step, because it
+needs the clipboard text. A paste that waits changes nothing, so the buffer stays
+exactly as it was until the read resolves.
+
+The session runs one clipboard operation at a time, and one publication slot
+holds it. A newer operation cancels the command of the operation that it
+replaces and resolves that operation from internal state, so a waiting paste can
+never wait for a result that no longer arrives.
+
 ## Linewise Values Across The Boundary
 
 A register value is characterwise, linewise, or blockwise. A system clipboard

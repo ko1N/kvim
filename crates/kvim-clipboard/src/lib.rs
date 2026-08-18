@@ -44,8 +44,9 @@ mod system;
 mod tests;
 
 pub use system::{
-    DisplaySession, LinuxClipboard, LinuxTool, MacOsClipboard, MemoryClipboard, NoClipboard,
-    ProcessExecutor, SystemClipboard, detect_system_clipboard, program_on_path, select_linux_tool,
+    ClipboardCommand, ClipboardCommands, ClipboardPlatform, ClipboardSelection, DisplaySession,
+    LinuxClipboard, LinuxTool, MacOsClipboard, MemoryClipboard, NoClipboard, ProcessExecutor,
+    SystemClipboard, detect_system_clipboard, program_on_path, select_linux_tool,
 };
 
 /// The largest text that Kvim moves across the system clipboard, in bytes.

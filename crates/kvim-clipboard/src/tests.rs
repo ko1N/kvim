@@ -7,10 +7,10 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::{
-    CLIPBOARD_BYTES_MAX, Clipboard, ClipboardFailure, ClipboardNotice, ClipboardRead,
-    ClipboardShape, ClipboardValue, DisplaySession, LinuxClipboard, LinuxTool, MacOsClipboard,
-    MemoryClipboard, NoClipboard, OwnedClipboardValue, ProcessExecutor, SystemClipboard,
-    select_linux_tool,
+    CLIPBOARD_BYTES_MAX, Clipboard, ClipboardFailure, ClipboardNotice, ClipboardPlatform,
+    ClipboardRead, ClipboardSelection, ClipboardShape, ClipboardValue, DisplaySession,
+    LinuxClipboard, LinuxTool, MacOsClipboard, MemoryClipboard, NoClipboard, OwnedClipboardValue,
+    ProcessExecutor, SystemClipboard, select_linux_tool,
 };
 use kvim_runtime::{ProcessOutput, ProcessRequest};
 
@@ -465,4 +465,69 @@ fn a_wayland_session_prefers_wayland_and_falls_back_through_x11() {
         "an X11 session never selects the Wayland tool"
     );
     assert_eq!(select_linux_tool(DisplaySession::X11, |_| false), None);
+}
+
+#[test]
+fn a_mac_os_host_needs_both_commands_to_select_the_mac_os_clipboard() {
+    assert_eq!(
+        ClipboardSelection::select(ClipboardPlatform::MacOs, DisplaySession::X11, |_| true),
+        ClipboardSelection::MacOs
+    );
+    assert_eq!(
+        ClipboardSelection::select(ClipboardPlatform::MacOs, DisplaySession::X11, |name| name
+            == "pbcopy"),
+        ClipboardSelection::Absent,
+        "a host that reads no clipboard has no usable clipboard"
+    );
+}
+
+#[test]
+fn a_host_without_a_tool_selects_no_clipboard() {
+    assert_eq!(
+        ClipboardSelection::select(ClipboardPlatform::Linux, DisplaySession::Wayland, |_| false),
+        ClipboardSelection::Absent
+    );
+    assert_eq!(
+        ClipboardSelection::select(ClipboardPlatform::Other, DisplaySession::X11, |_| true),
+        ClipboardSelection::Absent
+    );
+    assert_eq!(
+        ClipboardSelection::Absent.commands(),
+        None,
+        "a host without a command names no command"
+    );
+}
+
+#[test]
+fn every_selection_names_the_documented_commands() {
+    let macos = ClipboardSelection::MacOs
+        .commands()
+        .expect("the macOS selection names its commands");
+    assert_eq!(macos.write.to_string(), "pbcopy");
+    assert_eq!(macos.read.to_string(), "pbpaste");
+
+    let expected = [
+        (LinuxTool::Wayland, "wl-copy", "wl-paste --no-newline"),
+        (
+            LinuxTool::XClip,
+            "xclip -selection clipboard",
+            "xclip -selection clipboard -o",
+        ),
+        (
+            LinuxTool::XSel,
+            "xsel --clipboard --input",
+            "xsel --clipboard --output",
+        ),
+    ];
+    for (tool, write, read) in expected {
+        let selection = ClipboardSelection::Linux {
+            session: DisplaySession::X11,
+            tool,
+        };
+        let commands = selection
+            .commands()
+            .expect("a Linux selection names its commands");
+        assert_eq!(commands.write.to_string(), write);
+        assert_eq!(commands.read.to_string(), read);
+    }
 }

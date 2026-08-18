@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 # Kvim crates
+kvim-clipboard.workspace = true
 kvim-core.workspace = true
 kvim-editor.workspace = true
 kvim-input.workspace = true

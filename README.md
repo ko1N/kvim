@@ -1,20 +1,56 @@
 # Kvim
 
-Kvim is a modal terminal editor for Rust projects. It provides Vim-style editing, a dynamic window tree, a file tree, fuzzy pickers, Rust Tree-sitter highlighting, and rust-analyzer services in one executable.
-
-The first release is in progress. The current executable parses its command line and reports that interactive editing arrives later.
+Kvim is a modal terminal editor for Rust projects. It provides Vim-style
+editing, a dynamic window tree, a file tree sidebar, fuzzy pickers, Rust
+Tree-sitter highlighting, and `rust-analyzer` services in one executable. Kvim
+runs on macOS and on Linux. This release reads no configuration file, so every
+setting keeps the default that this document records.
 
 ## Install
 
-Kvim targets macOS and Linux. Install Rust 1.85 or newer, then run:
+Kvim needs Rust 1.85 or newer when you build it with Cargo.
+
+### With Nix
+
+The repository provides a flake. Run the editor without an installation:
+
+```sh
+nix run github:ko1N/kvim
+```
+
+Install the package into your profile:
+
+```sh
+nix profile install github:ko1N/kvim
+```
+
+Build the executable from a checkout:
+
+```sh
+nix build
+```
+
+The package wraps the executable and puts `rg` and `rust-analyzer` on its
+search path, so a Nix installation provides every external command.
+
+To work on Kvim itself, enter the development shell:
+
+```sh
+nix develop
+```
+
+The shell supplies Cargo, Rust, `rustfmt`, Clippy, `nixfmt`, `rg`, and
+`rust-analyzer`.
+
+### With Cargo
 
 ```sh
 cargo install --git https://github.com/ko1N/kvim.git --locked kvim
 ```
 
-The command installs the `kvim` executable into Cargo's binary directory, usually `~/.cargo/bin`.
-
-Kvim runs `rg` and `rust-analyzer` as external commands. Put both on `PATH`. The Nix package wraps the executable and supplies them.
+The command installs the `kvim` executable into the binary directory of Cargo,
+usually `~/.cargo/bin`. A Cargo installation does not supply the external
+commands. Install them yourself, as the next section describes.
 
 ## Use
 
@@ -25,7 +61,129 @@ kvim src/main.rs
 kvim
 ```
 
-Run `kvim --help` for all command forms, and `kvim --version` for the version.
+Kvim uses the working directory as the workspace root. The file tree, the
+pickers, and the language server all work inside that root.
+
+Space is the leader key. `Space ff` opens the file picker, `Space f/` opens the
+search picker, `Space o` lists the loaded buffers, and `gd` goes to a
+definition. Press the leader key and wait half a second. The which-key overlay
+then lists the keys that can follow.
+
+Run `kvim --help` for the command forms, and `kvim --version` for the version.
+
+## Diagnostics
+
+Run this command first when a feature seems to be missing:
+
+```sh
+kvim --diagnostics
+```
+
+The command prints a plain-text report and exits. The report names the version,
+the workspace root, the state of every external command, the clipboard commands
+of this host, and the resource limits. It writes no escape sequence, so you can
+redirect it to a file or paste it into a bug report.
+
+## External Commands
+
+Kvim runs three kinds of external command. Each one is optional. Kvim reports a
+missing command once and stays fully usable without it.
+
+| Command | Enables | Without it |
+|---|---|---|
+| `rg` | The search picker on `Space f/` | The search picker returns no result. Kvim reports the missing command once. Every other picker still works. |
+| `rust-analyzer` | Diagnostics, go-to-definition, hover, and formatting | The buffer stays fully editable. Kvim shows no diagnostics and answers no definition or hover request. Tree-sitter highlighting and the comment toggle still work, because they need no server. |
+| A clipboard command | The system clipboard | The editor registers still hold every yank and every paste. Only the exchange with other applications stops. |
+
+Put `rg` and `rust-analyzer` on `PATH`. A Nix installation does this for you.
+
+## Clipboard
+
+Kvim selects the clipboard command once at startup. It never guesses per
+operation.
+
+| Platform | Write | Read |
+|---|---|---|
+| macOS | `pbcopy` | `pbpaste` |
+| Linux, Wayland | `wl-copy` | `wl-paste --no-newline` |
+| Linux, X11 | `xclip -selection clipboard` | `xclip -selection clipboard -o` |
+| Linux, X11 fallback | `xsel --clipboard --input` | `xsel --clipboard --output` |
+
+On Linux, Kvim prefers the Wayland commands when the session is a Wayland
+session. It then falls back through the X11 commands in the order above, and it
+selects the first command that exists on `PATH`.
+
+A host without any clipboard command is a supported environment, and a remote
+terminal is the common case. The editor stays fully usable. A yank still fills
+the internal register, and a paste still reads it. Kvim reports the missing
+command once for each session.
+
+## Limits
+
+Every bound below is fixed in this release.
+
+| Limit | Value | Effect when you reach it |
+|---|---|---|
+| File size | 4 MiB | Kvim refuses to load the file and reports the size. |
+| Clipboard transfer | 1 MiB | The value stays in the internal register, and Kvim reports that it was too large. |
+| Loaded buffers | 128 | Kvim opens no further buffer until you unload one. |
+| Picker candidates | 4096 | The picker shows the first candidates and reports the truncation above the list. |
+| Search matches | 1024 | The search picker shows the first matches and reports the truncation. Refine the query. |
+| Undo steps in one undo file | 64 | The undo file keeps the newest steps. The running session keeps its complete history in memory. |
+| Command count | 9999 | The input resolver refuses a larger count prefix. |
+| Keys of one binding sequence | 4 | No key sequence in the mapping registry is longer. |
+
+Kvim also loads UTF-8 files only. It rejects a directory, a device file, a
+binary file, and any other encoding with a clear message. It does not guess an
+encoding and it does not transcode.
+
+## Failure Behavior And Recovery
+
+Kvim treats every failure below as a normal runtime state. None of them loses
+your text.
+
+**A clipboard command fails.** The internal register keeps the value, so the
+yank succeeded. Kvim reports the failure and continues. A paste falls back to
+the internal register.
+
+**The language server is absent.** Kvim reports the state once and starts no
+further server for that language. The buffer stays fully editable, and Kvim
+shows no diagnostics.
+
+**The language server crashes.** Kvim restarts it at most three times in one
+session. Each new server holds no document, so Kvim reports the restart and
+opens the buffers again. After the last restart, the editor continues without
+the server.
+
+**The language server is slow.** Every request carries a deadline. Kvim reports
+the timeout and keeps the buffer usable. A formatting failure or a formatting
+timeout never cancels a save: Kvim writes the unformatted content and reports
+the state.
+
+**A file exceeds the size limit.** Kvim refuses to load it and reports the
+size. No buffer changes.
+
+**A save conflicts with an external change.** Kvim compares the file size and
+the modification time before it overwrites a file. When either differs from the
+recorded value, Kvim reports the conflict and writes nothing. The buffer stays
+dirty and usable. Reload the file with `:e`, then apply your change again.
+
+**A save fails.** Kvim writes to a temporary file in the target directory and
+renames it over the target, so a reader never sees a partial file. A failure at
+any step leaves the buffer dirty and leaves no temporary file behind. Retry the
+save.
+
+**An undo file is damaged.** Kvim checks the magic value, the format version,
+the content length, the content hash, and the replayed result. A record that
+fails any check is ignored. The buffer starts with empty undo history and stays
+correct.
+
+**Kvim panics.** A panic hook restores the terminal before the process ends. It
+leaves the alternate screen, disables raw mode, shows the cursor, restores the
+cursor shape, and pops the keyboard enhancement flags. The hook then prints the
+normal panic message. Terminal restoration does not depend on unwinding,
+because some platforms abort a panic without running any destructor. Your shell
+therefore stays usable, and unsaved buffer content is lost.
 
 ## License
 

@@ -22,16 +22,17 @@ use kvim_language::{
     ANALYSIS_DEADLINE, LanguageEvent, LanguageRegistry, LanguageServices, LspError,
 };
 use kvim_runtime::{
-    PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent, SubmitError,
+    ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent, SubmitError,
     WORKER_DEADLINE_DEFAULT,
 };
 use kvim_settings::EditorSettings;
 use kvim_terminal::{
     CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
-    TerminalSession,
+    TerminalSession, TerminationSource,
 };
 use kvim_workspace::{BUFFERS_MAX, FileResult, PickerResult, PickerSlot, WorkspaceResult};
 
+use super::clipboard::{SessionClipboard, command_failure, refused_submission};
 use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
 use super::picker::PickerFailure;
 use super::session::{AnalysisResult, FileRequestFailure, Redraw, RunState, Session};
@@ -72,6 +73,13 @@ const PICKER_SLOT: RequestSlot = RequestSlot::new(4);
 /// A newer selection cancels the preview that it replaces.
 const PREVIEW_SLOT: RequestSlot = RequestSlot::new(5);
 
+/// The publication slot of every system clipboard command.
+///
+/// The session runs one clipboard operation at a time, so one slot holds every
+/// write and every read. A newer operation cancels the command that it
+/// replaces. See `docs/clipboard.md`.
+const CLIPBOARD_SLOT: RequestSlot = RequestSlot::new(6);
+
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -106,6 +114,8 @@ enum WorkResult {
     Workspace(WorkspaceResult),
     /// One picker operation finished.
     Picker(PickerResult),
+    /// One system clipboard command finished.
+    Clipboard(ProcessOutput),
 }
 
 /// A failure that ends the editor.
@@ -141,7 +151,8 @@ pub enum PanicProbe {
 enum Step {
     /// The iteration applied a transition.
     Handled(Redraw),
-    /// The terminal event stream ended.
+    /// The editor must leave its event loop, because the terminal event stream
+    /// ended or the process received a termination signal.
     Stop,
     /// The terminal event stream reported one failure.
     Failed(TerminalError),
@@ -150,8 +161,10 @@ enum Step {
 /// Runs the editor until it closes its last window.
 ///
 /// The terminal returns to its original state on every exit path, including a
-/// panic. The panic hook of the terminal session owns that path, because a
-/// panic aborts without running a destructor on some platforms.
+/// panic and a termination signal. The panic hook of the terminal session owns
+/// the panic path, because a panic aborts without running a destructor on some
+/// platforms. A termination signal leaves the event loop instead, so the
+/// restore below writes the same steps as an ordinary exit.
 ///
 /// The caller resolves the workspace root, because the language services
 /// perform no filesystem lookup. The root is the containment boundary of every
@@ -171,7 +184,10 @@ pub async fn run(
 ) -> Result<(), EditorError> {
     let mut terminal =
         TerminalSession::enter(CrosstermControl::new()).map_err(EditorError::Terminal)?;
-    let outcome = drive(&mut terminal, settings, root, path, probe).await;
+    // The listener registers the process signal handlers, so it belongs beside
+    // the terminal setup and not inside the loop.
+    let terminations = TerminationSource::from_process();
+    let outcome = drive(&mut terminal, terminations, settings, root, path, probe).await;
     terminal.restore().map_err(EditorError::Terminal)?;
     outcome
 }
@@ -188,8 +204,13 @@ const fn cursor_shape(mode: Mode) -> CursorShape {
 }
 
 /// Drives one editor session over the process terminal.
+///
+/// The loop leaves on the first termination request of `terminations`, so a
+/// `SIGTERM`, a `SIGINT`, or a `SIGHUP` ends the editor through the ordinary
+/// shutdown and the ordinary restore. See `docs/responsiveness.md`.
 async fn drive<C: TerminalControl>(
     session: &mut TerminalSession<C>,
+    mut terminations: TerminationSource,
     settings: EditorSettings,
     root: PathBuf,
     path: Option<PathBuf>,
@@ -197,11 +218,16 @@ async fn drive<C: TerminalControl>(
 ) -> Result<(), EditorError> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(EditorError::Draw)?;
     let size = terminal.size().map_err(EditorError::Draw)?;
+    // The clipboard selection reads the platform and the executable search path
+    // once, here at the start, so no operation ever guesses. The editor and the
+    // registers name no platform, no command, and no selection. See
+    // `docs/clipboard.md`.
     let mut editor = Session::new(
         Rect::new(0, 0, size.width, size.height),
         settings,
         root.clone(),
-    );
+    )
+    .with_clipboard(SessionClipboard::detect());
     let mut events = EventSource::from_terminal();
     // The file operations and the buffer analysis run on the bounded worker
     // service, so the loop below performs no filesystem work and no parsing.
@@ -247,6 +273,7 @@ async fn drive<C: TerminalControl>(
                     event = events.next_event() => apply(&mut editor, event, start.elapsed()),
                     result = results.recv() => complete(&mut editor, &gate, result),
                     outcome = next_language_event(&mut language) => publish(&mut editor, outcome),
+                    _ = terminations.recv() => Step::Stop,
                     () = sleep(deadline - now) => Step::Handled(editor.tick(start.elapsed())),
                 }
             }
@@ -263,6 +290,7 @@ async fn drive<C: TerminalControl>(
                     event = events.next_event() => apply(&mut editor, event, start.elapsed()),
                     result = results.recv() => complete(&mut editor, &gate, result),
                     outcome = next_language_event(&mut language) => publish(&mut editor, outcome),
+                    _ = terminations.recv() => Step::Stop,
                 }
             }
         };
@@ -365,6 +393,28 @@ fn submit_background_work(
     submit_analysis_work(editor, runtime, gate);
     submit_workspace_work(editor, runtime, gate);
     submit_picker_work(editor, runtime, gate);
+    submit_clipboard_work(editor, runtime, gate);
+}
+
+/// Hands the queued clipboard command to the bounded process service.
+///
+/// The command reaches the system clipboard, so it never runs on this loop. A
+/// refused submission returns to the session as a typed failure, which keeps
+/// the unnamed register and lets a deferred paste fall back to it. See
+/// `docs/clipboard.md`.
+fn submit_clipboard_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) {
+    let Some(command) = editor.take_clipboard_request() else {
+        return;
+    };
+    let handle = gate.begin(CLIPBOARD_SLOT, &runtime.cancellation_root());
+    let submitted = runtime.submit_process(handle, command, WorkResult::Clipboard);
+    if let Err(error) = submitted {
+        editor.apply_clipboard_result(Err(refused_submission(error)));
+    }
 }
 
 /// Hands the queued picker work to the bounded worker and process services.
@@ -517,6 +567,7 @@ fn complete(
     }
     let analysis = event.request.slot() == ANALYSIS_SLOT;
     let workspace = event.request.slot() == WORKSPACE_SLOT;
+    let clipboard = event.request.slot() == CLIPBOARD_SLOT;
     let picker = if event.request.slot() == PICKER_SLOT {
         Some(PickerSlot::Candidates)
     } else if event.request.slot() == PREVIEW_SLOT {
@@ -540,7 +591,13 @@ fn complete(
         (_, Ok(WorkResult::Analysis(result))) => editor.apply_analysis_result(result),
         (_, Ok(WorkResult::Workspace(result))) => editor.apply_workspace_result(result),
         (_, Ok(WorkResult::Picker(result))) => editor.apply_picker_result(result),
+        (_, Ok(WorkResult::Clipboard(output))) => editor.apply_clipboard_result(Ok(output)),
         (Some(slot), Err(error)) => editor.abandon_picker_request(slot, picker_failure(&error)),
+        // A clipboard command that fails, times out, or is cancelled keeps the
+        // unnamed register, so the yank or the paste still holds its value.
+        (None, Err(error)) if clipboard => {
+            editor.apply_clipboard_result(Err(command_failure(&error)))
+        }
         // An analysis that fails, times out, or is cancelled renders plain text
         // and reports nothing, because highlighting is decoration.
         (None, Err(_)) if analysis => {
