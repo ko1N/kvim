@@ -10,12 +10,16 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
-use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
+use kvim_language::{
+    LanguageEvent, LanguageOutcome, ProgressPercentage, ProgressReport, ProgressStage,
+    ProgressToken, SessionGeneration,
+};
+use kvim_settings::{EditorSettings, NotificationSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
 use super::buffer_view::WINBAR_ROWS;
-use super::session::Session;
+use super::session::{MessageLevel, Redraw, Session};
 use super::window::WindowId;
 
 const NOW: Duration = Duration::ZERO;
@@ -649,4 +653,288 @@ fn each_window_counts_its_relative_numbers_from_its_own_cursor() {
         .area(right)
         .expect("the window is visible");
     assert_eq!(cursor_position(&session), (area.x + 5, area.y + 3));
+}
+
+/// The notification settings that every test session holds.
+const NOTIFICATIONS: NotificationSettings = NotificationSettings {
+    rows_max: 16,
+    spinner_period: Duration::from_secs(1),
+    done_ttl: Duration::from_secs(2),
+};
+
+/// The time between two spinner frames of those settings.
+const SPINNER_FRAME: Duration = Duration::from_millis(100);
+
+/// The server name that titles the notification group of the tests.
+const SERVER: &str = "rust-analyzer";
+
+/// Builds one progress event of one session attempt.
+fn progress(generation: SessionGeneration, token: &str, stage: ProgressStage) -> LanguageEvent {
+    LanguageEvent {
+        adapter: "rust",
+        outcome: LanguageOutcome::Progress(ProgressReport {
+            generation,
+            server: SERVER,
+            token: ProgressToken::new(token.to_owned()).expect("the test token is short"),
+            stage,
+        }),
+    }
+}
+
+/// Applies one progress report of one attempt at one elapsed time.
+fn report_of(
+    session: &mut Session,
+    generation: SessionGeneration,
+    now: Duration,
+    token: &str,
+    stage: ProgressStage,
+) -> Redraw {
+    session.advance_clock(now);
+    session.apply_language_event(progress(generation, token, stage))
+}
+
+/// Applies one progress report of the first session attempt.
+fn report(session: &mut Session, now: Duration, token: &str, stage: ProgressStage) -> Redraw {
+    report_of(session, SessionGeneration::FIRST, now, token, stage)
+}
+
+/// Starts one running item with the message of the reference screenshot.
+fn start_indexing(session: &mut Session, now: Duration, token: &str, message: &str) {
+    report(
+        session,
+        now,
+        token,
+        ProgressStage::Begin {
+            title: "Indexing".to_owned(),
+            message: Some(message.to_owned()),
+            percentage: None,
+        },
+    );
+}
+
+#[test]
+fn the_notification_overlay_anchors_to_the_bottom_right_corner() {
+    let mut session = session(80, 24);
+    let before = cursor_position(&session);
+    start_indexing(&mut session, NOW, "index", "Building compile-time-deps");
+
+    // The body band ends above the statusline and the message line, so the
+    // group title takes the last body row and the item takes the row above it.
+    assert!(row(&session, 20).ends_with("In progress... Building compile-time-deps"));
+    assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
+    // One cell of padding separates the text from the left and the right edge
+    // of the panel, and the panel carries no border.
+    let surface = Color::Rgb(0x16, 0x1a, 0x20);
+    let base = Color::Rgb(0x11, 0x13, 0x17);
+    for y in 20..=21 {
+        assert_eq!(style_at(&session, 79, y).bg, Some(surface));
+        assert_eq!(style_at(&session, 37, y).bg, Some(surface));
+        assert_eq!(style_at(&session, 36, y).bg, Some(base));
+    }
+    // The overlay is decoration, so it never moves the terminal cursor.
+    assert_eq!(cursor_position(&session), before);
+}
+
+#[test]
+fn the_group_title_carries_the_server_name_and_the_reported_percentage() {
+    let mut session = session(80, 24);
+    report(
+        &mut session,
+        NOW,
+        "index",
+        ProgressStage::Begin {
+            title: "Indexing".to_owned(),
+            message: None,
+            percentage: ProgressPercentage::new(42),
+        },
+    );
+
+    // A `begin` without a message shows the title of the operation.
+    assert!(row(&session, 20).ends_with("In progress... Indexing 42%"));
+    assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
+    let title = style_at(&session, 79 - "rust-analyzer ⠋".chars().count() as u16, 21);
+    assert_eq!(title.fg, Some(TITLE));
+    assert!(title.add_modifier.contains(Modifier::BOLD));
+    assert!(title.add_modifier.contains(Modifier::ITALIC));
+}
+
+#[test]
+fn the_spinner_advances_one_frame_for_each_reported_deadline() {
+    let mut session = session(80, 24);
+    start_indexing(&mut session, NOW, "index", "Indexing");
+
+    // The elapsed time alone drives the animation, so the session reports the
+    // moment of the next frame and the loop waits for it.
+    assert_eq!(session.next_deadline(), Some(SPINNER_FRAME));
+    assert_eq!(session.tick(SPINNER_FRAME), Redraw::Needed);
+    assert!(row(&session, 21).ends_with("rust-analyzer ⠙"));
+    // The transition leaves a later deadline behind, so the loop never repeats
+    // the same catch-up step.
+    assert_eq!(session.next_deadline(), Some(SPINNER_FRAME * 2));
+    session.tick(SPINNER_FRAME * 2);
+    assert!(row(&session, 21).ends_with("rust-analyzer ⠹"));
+}
+
+#[test]
+fn a_finished_item_shows_the_done_icon_and_leaves_after_its_lifetime() {
+    let mut session = session(80, 24);
+    start_indexing(&mut session, NOW, "index", "Indexing");
+    report(
+        &mut session,
+        NOW,
+        "index",
+        ProgressStage::End {
+            message: Some("Indexed".to_owned()),
+        },
+    );
+
+    assert!(row(&session, 20).ends_with("✓ Indexed"));
+    // No item runs, so the group shows no spinner and only the removal remains.
+    assert!(row(&session, 21).ends_with("rust-analyzer"));
+    assert_eq!(session.next_deadline(), Some(NOTIFICATIONS.done_ttl));
+
+    assert_eq!(session.tick(NOTIFICATIONS.done_ttl), Redraw::Needed);
+    assert!(!row(&session, 21).contains("rust-analyzer"));
+    assert_eq!(session.next_deadline(), None);
+}
+
+#[test]
+fn the_overlay_drops_its_oldest_row_above_the_row_bound() {
+    let mut session = session(80, 40);
+    let items = NOTIFICATIONS.rows_max + 4;
+    for index in 0..items {
+        start_indexing(
+            &mut session,
+            NOW,
+            &format!("token-{index}"),
+            &format!("crate-{index}"),
+        );
+    }
+
+    // The group keeps its own title row, so the bound leaves one row less for
+    // the items.
+    let body_bottom = 40 - 2 - 1;
+    let title = body_bottom;
+    let top = title + 1 - u16::try_from(NOTIFICATIONS.rows_max).expect("the bound is small");
+    assert!(row(&session, top).ends_with(&format!("crate-{}", items - NOTIFICATIONS.rows_max + 1)));
+    assert!(!row(&session, top - 1).contains("crate-"));
+    assert!(row(&session, title).ends_with("rust-analyzer ⠋"));
+    assert!(row(&session, title - 1).ends_with(&format!("crate-{}", items - 1)));
+}
+
+#[test]
+fn the_overlay_stays_inside_a_narrow_terminal() {
+    let mut session = session(20, 8);
+    start_indexing(&mut session, NOW, "index", "Building compile-time-deps");
+
+    // The panel never grows past the body band, so the row is clipped instead.
+    let body_bottom = 8 - 2 - 1;
+    let title = row(&session, body_bottom);
+    assert!(
+        title.chars().count() <= 20,
+        "the row {title:?} fits the terminal"
+    );
+    assert!(title.contains("rust-analyzer"));
+    assert_eq!(
+        style_at(&session, 0, body_bottom).bg,
+        Some(Color::Rgb(0x16, 0x1a, 0x20))
+    );
+}
+
+#[test]
+fn one_editor_message_reaches_the_same_overlay() {
+    let mut session = session(80, 24);
+    // The empty scratch buffer holds no match, so the search reports one.
+    press(&mut session, '/');
+    press(&mut session, 'x');
+    press_code(&mut session, KeyCode::Enter);
+
+    // The message line keeps its own behavior.
+    let message = session
+        .message()
+        .expect("the search reports the missed query");
+    assert_eq!(message.text(), "no match");
+    assert_eq!(message.level(), MessageLevel::Warning);
+    // One surface shows every report, so the same text reaches the overlay.
+    assert!(row(&session, 20).ends_with("✓ no match"));
+    assert!(row(&session, 21).ends_with("editor"));
+    // The message keeps the color of its severity on the overlay.
+    let warning = Color::Rgb(0xe0, 0xaf, 0x68);
+    let width = u16::try_from("✓ no match".chars().count()).expect("the row is short");
+    assert_eq!(style_at(&session, 79 - width, 20).fg, Some(warning));
+}
+
+#[test]
+fn an_obsolete_session_and_an_unknown_token_never_change_the_overlay() {
+    let mut session = session(80, 24);
+    let restarted = SessionGeneration::FIRST.next();
+    report_of(
+        &mut session,
+        restarted,
+        NOW,
+        "index",
+        ProgressStage::Begin {
+            title: "Indexing".to_owned(),
+            message: Some("after the restart".to_owned()),
+            percentage: None,
+        },
+    );
+    let shown = row(&session, 20);
+
+    // The attempt that failed reports its own tokens, so its report reaches no
+    // item of the session that replaced it.
+    assert_eq!(
+        report(
+            &mut session,
+            NOW,
+            "index",
+            ProgressStage::End {
+                message: Some("from the old server".to_owned()),
+            },
+        ),
+        Redraw::Skipped
+    );
+    assert_eq!(row(&session, 20), shown);
+
+    // A token that no `begin` created addresses no item at all.
+    assert_eq!(
+        report_of(
+            &mut session,
+            restarted,
+            NOW,
+            "unknown",
+            ProgressStage::Report {
+                message: Some("never opened".to_owned()),
+                percentage: None,
+            },
+        ),
+        Redraw::Skipped
+    );
+    assert_eq!(row(&session, 20), shown);
+    assert!(!row(&session, 19).contains("never opened"));
+}
+
+#[test]
+fn a_later_attempt_clears_the_rows_of_the_attempt_that_failed() {
+    let mut session = session(80, 24);
+    start_indexing(&mut session, NOW, "index", "before the restart");
+    assert!(row(&session, 20).ends_with("before the restart"));
+
+    // The first report of the new attempt addresses no item, because the new
+    // server assigns its own tokens. It still drops every row of the attempt
+    // that failed, which is a visible change and needs a frame.
+    assert_eq!(
+        report_of(
+            &mut session,
+            SessionGeneration::FIRST.next(),
+            NOW,
+            "index",
+            ProgressStage::End {
+                message: Some("late".to_owned()),
+            },
+        ),
+        Redraw::Needed
+    );
+    assert!(!row(&session, 20).contains("before the restart"));
+    assert!(!row(&session, 21).contains("rust-analyzer"));
 }

@@ -123,6 +123,24 @@ the lint check onto `clippy` and the compile check onto `check`.
 [`language-services.md`](language-services.md) owns the language adapter
 boundary and the language server session.
 
+## Notifications
+
+| Field | Default |
+|---|---|
+| Overlay rows | 16 rows |
+| Spinner period | 1 s |
+| Finished item lifetime | 2 s |
+
+The notification overlay shows the work-done progress of every language server
+and every editor message on one surface. The row bound drops the oldest row
+above it. The spinner period is the time of one complete spinner cycle, and the
+overlay divides it by the number of spinner frames. The lifetime is the time
+that a finished item stays visible.
+
+The defaults match the reference `fidget.nvim` configuration.
+[`language-services.md`](language-services.md) owns the overlay, and
+[`responsiveness.md`](responsiveness.md) owns the deadline that drives it.
+
 ## Theme
 
 | Field | Default |

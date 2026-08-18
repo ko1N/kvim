@@ -28,8 +28,16 @@ deadline, or an accepted background result requests a render.
 
 ### Time-Driven Transitions
 
-The elapsed time alone drives one state change: the which-key overlay. The
-session reports the elapsed time of that change, and the loop wakes for it.
+The elapsed time alone drives two state changes: the which-key overlay and the
+notification overlay. The session reports the earlier elapsed time of the two,
+and the loop wakes for it.
+
+The notification overlay advances its spinner one frame for each frame
+interval, and it removes a finished item after its lifetime.
+[`language-services.md`](language-services.md) owns that overlay. It runs no
+frame loop: it reports a time only while it holds a running item or a finished
+item, and every transition that it performs leaves a strictly later time
+behind.
 
 Two rules keep that path safe:
 

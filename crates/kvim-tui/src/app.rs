@@ -283,8 +283,10 @@ async fn drive<C: TerminalControl>(
             Some(deadline) if deadline > now => {
                 tokio::select! {
                     event = events.next_event() => apply(&mut editor, event, start.elapsed()),
-                    result = results.recv() => complete(&mut editor, &gate, result),
-                    outcome = next_language_event(&mut language) => publish(&mut editor, outcome),
+                    result = results.recv() => complete(&mut editor, &gate, result, start.elapsed()),
+                    outcome = next_language_event(&mut language) => {
+                        publish(&mut editor, outcome, start.elapsed())
+                    }
                     _ = terminations.recv() => Step::Stop,
                     () = sleep(deadline - now) => Step::Handled(editor.tick(start.elapsed())),
                 }
@@ -300,8 +302,10 @@ async fn drive<C: TerminalControl>(
             Some(_) | None => {
                 tokio::select! {
                     event = events.next_event() => apply(&mut editor, event, start.elapsed()),
-                    result = results.recv() => complete(&mut editor, &gate, result),
-                    outcome = next_language_event(&mut language) => publish(&mut editor, outcome),
+                    result = results.recv() => complete(&mut editor, &gate, result, start.elapsed()),
+                    outcome = next_language_event(&mut language) => {
+                        publish(&mut editor, outcome, start.elapsed())
+                    }
                     _ = terminations.recv() => Step::Stop,
                 }
             }
@@ -362,7 +366,11 @@ async fn next_language_event(language: &mut Option<LanguageServices>) -> Languag
 }
 
 /// Applies one typed result of the language services.
-fn publish(editor: &mut Session, event: LanguageEvent) -> Step {
+///
+/// The loop reports the elapsed time first, because a progress report and a
+/// message both need it and neither carries a time of its own.
+fn publish(editor: &mut Session, event: LanguageEvent, now: Duration) -> Step {
+    editor.advance_clock(now);
     Step::Handled(editor.apply_language_event(event))
 }
 
@@ -604,7 +612,9 @@ fn complete(
     editor: &mut Session,
     gate: &PublicationGate,
     event: Option<RuntimeEvent<WorkResult>>,
+    now: Duration,
 ) -> Step {
+    editor.advance_clock(now);
     let Some(event) = event else {
         // The runtime is gone, so no further result can arrive.
         return Step::Handled(Redraw::Skipped);

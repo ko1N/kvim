@@ -642,6 +642,17 @@ where
         .await
     }
 
+    /// Accepts one server request that needs no value, such as the creation of
+    /// one work-done progress token.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failures of [`ProtocolWriter::notify`].
+    pub async fn accept_server_request(&mut self, id: RpcId) -> Result<(), LspError> {
+        self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }))
+            .await
+    }
+
     /// Answers one unsolicited server request, so the server does not stall.
     ///
     /// Kvim implements no server-to-client request, so it reports the method as

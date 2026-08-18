@@ -11,7 +11,7 @@ use kvim_editor::{Cursor, WindowState};
 use super::buffer_view::{WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
-use super::overlay::{render_float, render_which_key};
+use super::overlay::{render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::session::Visible;
 use super::theme::ThemeRole;
@@ -126,6 +126,11 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         focused_cursor,
     );
     render_message(target, bands.message, theme, view.prompt, view.message);
+    // The notification overlay reports the background work of the editor, so
+    // the two overlays that answer the last key paint over it.
+    if !view.notifications.is_empty() {
+        render_notifications(target, bands.body, theme, &view.notifications.rows());
+    }
     if let Some(float) = view.float {
         render_float(target, bands.body, theme, float);
     }
