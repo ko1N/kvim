@@ -71,7 +71,9 @@ impl ProcessExecutor for DeferredExecutor {
         }
         state.recorded = Some(request);
         // The operation has not finished. The caller finds the recorded command
-        // and repeats the operation, so it never reads this failure.
+        // and repeats the operation, so it never reads this failure. The value
+        // also carries `ClipboardEvidence::Unknown`, so it can never become a
+        // failure report even if a later caller did read it.
         Err(ClipboardFailure::Cancelled)
     }
 }
@@ -151,10 +153,11 @@ impl SessionClipboard {
             ClipboardStep::Done(notice) => notice,
             // One write runs one command, so the delivered output finishes it.
             // The bound keeps a defect of that shape from restarting the
-            // command forever.
+            // command forever. An operation that did not finish proves no
+            // clipboard failure, so it reports none.
             ClipboardStep::Waiting(_) => {
                 debug_assert!(false, "one clipboard write runs one command");
-                Some(ClipboardNotice::CommandFailed)
+                None
             }
         }
     }
@@ -172,7 +175,7 @@ impl SessionClipboard {
             // See [`SessionClipboard::finish_copy`] for the same bound.
             ClipboardStep::Waiting(_) => {
                 debug_assert!(false, "one clipboard read runs one command");
-                ClipboardRead::Fallback(Some(ClipboardNotice::CommandFailed))
+                ClipboardRead::Fallback(None)
             }
         }
     }

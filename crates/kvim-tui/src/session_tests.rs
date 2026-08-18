@@ -1260,6 +1260,71 @@ fn a_failed_clipboard_write_keeps_the_register_value() {
 }
 
 #[test]
+fn a_clipboard_write_that_reported_no_outcome_reports_nothing() {
+    // `wl-copy` and `xclip` own the selection through a background process that
+    // inherits the captured output streams, so a write that succeeded holds
+    // those streams open and reaches the process deadline. The write worked, so
+    // the message line must stay empty. See `docs/clipboard.md`.
+    for failure in [ClipboardFailure::Timeout, ClipboardFailure::Cancelled] {
+        let mut session = clipboard_session(&["alpha", "beta"]);
+        type_keys(&mut session, "yy");
+        assert_eq!(clipboard_text(&mut session), "alpha\n");
+        assert_eq!(
+            session.apply_clipboard_result(Err(failure)),
+            Redraw::Skipped,
+            "{failure} proves no clipboard failure, so nothing changes"
+        );
+        assert_eq!(message(&session), "", "{failure} reports nothing");
+
+        // The register kept the value on this path as well.
+        type_keys(&mut session, "p");
+        let _ = clipboard_text(&mut session);
+        let _ = session.apply_clipboard_result(Err(failure));
+        assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
+        assert_eq!(message(&session), "");
+    }
+}
+
+#[test]
+fn a_clipboard_write_that_a_signal_ended_reports_the_failure() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    let _ = clipboard_text(&mut session);
+    // A signal leaves no exit status, so the command reported no success.
+    let signalled = ProcessOutput {
+        status_code: None,
+        stdout: Vec::new(),
+        stderr: Vec::new(),
+    };
+    assert_eq!(
+        session.apply_clipboard_result(Ok(signalled)),
+        Redraw::Needed
+    );
+    assert!(
+        message(&session).contains("register still holds the value"),
+        "a proven failure still reaches the message line: {}",
+        message(&session)
+    );
+}
+
+#[test]
+fn a_write_that_a_newer_write_displaced_reports_nothing() {
+    let mut session = clipboard_session(&["alpha", "beta"]);
+    type_keys(&mut session, "yy");
+    let _ = clipboard_text(&mut session);
+    // The newer yank owns the clipboard, and the displaced write resolves from
+    // internal state alone, so neither yank reports anything.
+    type_keys(&mut session, "jyy");
+    assert_eq!(message(&session), "");
+    assert_eq!(clipboard_text(&mut session), "beta\n");
+    assert_eq!(
+        session.apply_clipboard_result(Ok(clipboard_output(""))),
+        Redraw::Skipped
+    );
+    assert_eq!(message(&session), "");
+}
+
+#[test]
 fn a_failed_clipboard_read_falls_back_to_the_internal_register() {
     let mut session = clipboard_session(&["alpha", "beta"]);
     type_keys(&mut session, "yy");

@@ -108,6 +108,30 @@ expected runtime states. None of them may lose editor data.
 - Kvim reports a missing clipboard command once for each session, not once for
   each operation.
 
+Kvim reports only a proven failure. Each failure states whether the transfer
+provably did not happen, or whether Kvim never learned the outcome.
+
+| Outcome | Report |
+|---|---|
+| The command reported a non-zero status, or a signal ended it | Kvim reports the failure |
+| The command did not start | Kvim reports the failure |
+| The bounded process service refused the command | Kvim reports the failure |
+| The clipboard holds bytes that are not text | Kvim reports the bytes |
+| The command passed its deadline | Kvim reports nothing |
+| A newer operation or the shutdown cancelled the command | Kvim reports nothing |
+
+The deadline row is not a convenience. The Linux write commands own the
+selection through a background process, and that process inherits the captured
+output streams of the command. Those streams therefore stay open for as long as
+the selection lives, so the bounded process service sees the deadline instead of
+the exit status of a write that succeeded. A deadline on a write is the normal
+end of a successful `wl-copy` or `xclip` write, so it must never reach the
+message line. A write that truly fails exits with a status before it owns any
+selection, which keeps the report for the case that needs it.
+
+Kvim keeps the register value on every one of these paths, so a silent outcome
+still loses nothing.
+
 The editor stays fully usable without any clipboard command. A remote terminal
 without a clipboard tool is a supported environment.
 
