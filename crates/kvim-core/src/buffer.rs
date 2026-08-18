@@ -128,6 +128,45 @@ impl LineEnding {
     }
 }
 
+/// What the file behind one buffer holds at its end.
+///
+/// A text file normally ends with a line ending, and that byte terminates its
+/// last line. The buffer text always ends with a line ending, so the last line
+/// is a line like every other one: a motion reaches it, and a new line opens
+/// behind it. This value records what the file held, so the save writes the
+/// bytes that the file had instead of the bytes that the buffer keeps.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_core::FinalLineEnding;
+///
+/// assert_eq!(FinalLineEnding::of_text("one\n"), FinalLineEnding::Present);
+/// assert_eq!(FinalLineEnding::of_text("one"), FinalLineEnding::Absent);
+/// assert_eq!(FinalLineEnding::of_text(""), FinalLineEnding::Absent);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FinalLineEnding {
+    /// The file ended with a line ending, and the save writes it.
+    Present,
+    /// The file ended without a line ending, and the save writes none.
+    Absent,
+}
+
+impl FinalLineEnding {
+    /// Reports what one loaded text holds at its end.
+    ///
+    /// Empty text ends with no line ending, so an empty file stays an empty
+    /// file through a save that changes nothing.
+    #[must_use]
+    pub fn of_text(text: &str) -> Self {
+        match text.chars().next_back() {
+            Some(value) if is_line_break(value) => Self::Present,
+            _ => Self::Absent,
+        }
+    }
+}
+
 /// Bounded mutable text with validated coordinates and undoable transactions.
 ///
 /// # Examples
@@ -144,7 +183,7 @@ impl LineEnding {
 /// buffer
 ///     .apply(EditTransaction::single(cursor, TextChange::insert(cursor, "// note\n")))
 ///     .expect("the position fits the buffer");
-/// assert_eq!(buffer.line_count(), 3);
+/// assert_eq!(buffer.line_count(), 2);
 /// assert!(buffer.is_modified());
 ///
 /// assert_eq!(buffer.undo(), Some(cursor));
@@ -153,8 +192,11 @@ impl LineEnding {
 /// ```
 #[derive(Clone, Debug)]
 pub struct TextBuffer {
+    /// The buffer text. It always ends with a line ending, so every line of the
+    /// buffer, including the last one, carries its own terminator.
     rope: Rope,
     line_ending: LineEnding,
+    final_line_ending: FinalLineEnding,
     version: BufferVersion,
     history: UndoHistory,
 }
@@ -162,7 +204,11 @@ pub struct TextBuffer {
 impl TextBuffer {
     /// Creates a buffer from text that a caller already holds in memory.
     ///
-    /// The buffer detects the line ending of the text and keeps it for save.
+    /// The buffer detects the line ending of the text and keeps it for save. It
+    /// also records whether the text ended with that line ending, and it
+    /// terminates the last line when the text did not. The buffer text
+    /// therefore always ends with a line ending, and the save writes the file
+    /// end that [`FinalLineEnding`] records.
     ///
     /// # Errors
     ///
@@ -192,9 +238,16 @@ impl TextBuffer {
             });
         }
 
+        let line_ending = LineEnding::detect(text);
+        let final_line_ending = FinalLineEnding::of_text(text);
+        let mut rope = Rope::from_str(text);
+        if final_line_ending == FinalLineEnding::Absent {
+            rope.insert(rope.len_chars(), line_ending.as_str());
+        }
         Ok(Self {
-            rope: Rope::from_str(text),
-            line_ending: LineEnding::detect(text),
+            rope,
+            line_ending,
+            final_line_ending,
             version: BufferVersion(0),
             history: UndoHistory::new(),
         })
@@ -214,11 +267,57 @@ impl TextBuffer {
 
     /// Returns the number of lines.
     ///
-    /// Text that ends with a line terminator holds one empty last line, like
-    /// Vim and the rope.
+    /// A line ending terminates its line, so it opens no further empty line.
+    /// `"one\ntwo\n"` holds two lines, exactly as the reference editor counts
+    /// them, and so does `"one\ntwo"`. Empty text holds one empty line, so every
+    /// buffer holds line zero.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_core::TextBuffer;
+    /// use kvim_settings::FileSettings;
+    ///
+    /// let files = FileSettings::default();
+    /// assert_eq!(TextBuffer::from_text("one\ntwo\n", &files).unwrap().line_count(), 2);
+    /// assert_eq!(TextBuffer::from_text("one\ntwo", &files).unwrap().line_count(), 2);
+    /// assert_eq!(TextBuffer::from_text("", &files).unwrap().line_count(), 1);
+    /// ```
     #[must_use]
     pub fn line_count(&self) -> usize {
-        self.rope.len_lines()
+        let lines = self.rope.len_lines();
+        // The terminator of the last line is the end of the text, so the rope
+        // counts the empty text behind it as one more line.
+        if self.ends_with_line_ending() {
+            lines - 1
+        } else {
+            lines
+        }
+    }
+
+    /// Returns what the file behind the buffer holds at its end.
+    #[must_use]
+    pub const fn final_line_ending(&self) -> FinalLineEnding {
+        self.final_line_ending
+    }
+
+    /// Records what the file behind the buffer holds at its end.
+    ///
+    /// A caller that reads the file bytes elsewhere, such as a restored undo
+    /// history, records what that file held, so the next save writes the same
+    /// file end.
+    pub fn set_final_line_ending(&mut self, ending: FinalLineEnding) {
+        self.final_line_ending = ending;
+    }
+
+    /// Reports whether the buffer text ends with a line terminator.
+    ///
+    /// The invariant of [`TextBuffer::from_text`] makes this true, and every
+    /// edit keeps it true. The check stays here so that a broken invariant
+    /// reports one line too few instead of an impossible line count of zero.
+    fn ends_with_line_ending(&self) -> bool {
+        let len_chars = self.rope.len_chars();
+        len_chars > 0 && is_line_break(self.rope.char(len_chars - 1))
     }
 
     /// Returns the line ending that the buffer writes on save.
@@ -262,6 +361,7 @@ impl TextBuffer {
         Self {
             rope: self.rope.clone(),
             line_ending: self.line_ending,
+            final_line_ending: self.final_line_ending,
             version: self.version,
             history: UndoHistory::new(),
         }
@@ -320,7 +420,7 @@ impl TextBuffer {
     /// Returns [`CoordinateError::LineOutOfBounds`] for a line that the buffer
     /// does not hold.
     pub fn line_index(&self, index: usize) -> Result<LineIndex, CoordinateError> {
-        let line_count = self.rope.len_lines();
+        let line_count = self.line_count();
         if index >= line_count {
             return Err(CoordinateError::LineOutOfBounds { index, line_count });
         }
@@ -362,6 +462,12 @@ impl TextBuffer {
     }
 
     /// Returns the line that holds a character position.
+    ///
+    /// The position after the terminator of the last line lies behind every
+    /// line, so it reports the index after the last line. That index is the
+    /// end-of-text position that the language-server protocol expects, and it
+    /// is not a line that [`TextBuffer::line_index`] accepts. Every caller that
+    /// places a cursor clamps the line against [`TextBuffer::line_count`].
     #[must_use]
     pub fn char_to_line(&self, position: CharPosition) -> LineIndex {
         LineIndex::from_validated(self.rope.char_to_line(position.get()))
@@ -547,6 +653,14 @@ impl fmt::Display for TextBuffer {
         }
         Ok(())
     }
+}
+
+/// Reports whether one character terminates a line.
+///
+/// The list of [`LINE_BREAK_CHARS`] leaves out the line feed, so the check adds
+/// it here.
+fn is_line_break(value: char) -> bool {
+    value == '\n' || LINE_BREAK_CHARS.contains(&value)
 }
 
 /// Applies one recorded transaction to the rope.

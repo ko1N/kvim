@@ -175,7 +175,7 @@ impl TextChange {
 /// use kvim_core::{CharRange, EditTransaction, TextBuffer, TextChange};
 /// use kvim_settings::FileSettings;
 ///
-/// let mut buffer = TextBuffer::from_text("hello world", &FileSettings::default())
+/// let mut buffer = TextBuffer::from_text("hello world\n", &FileSettings::default())
 ///     .expect("the text is small");
 /// let cursor = buffer.char_position(0).expect("the position exists");
 /// let start = buffer.char_position(0).expect("the position exists");
@@ -184,7 +184,7 @@ impl TextChange {
 ///
 /// let transaction = EditTransaction::single(cursor, TextChange::replace(range, "goodbye"));
 /// buffer.apply(transaction).expect("the range fits the buffer");
-/// assert_eq!(buffer.to_string(), "goodbye world");
+/// assert_eq!(buffer.to_string(), "goodbye world\n");
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EditTransaction {

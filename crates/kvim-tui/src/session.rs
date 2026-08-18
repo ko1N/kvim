@@ -464,7 +464,8 @@ impl Visible<'_> {
 ///     now,
 /// );
 /// assert_eq!(redraw, Redraw::Needed);
-/// assert_eq!(session.buffer().to_string(), "x");
+/// // The buffer terminates its last line, so the text ends with a line ending.
+/// assert_eq!(session.buffer().to_string(), "x\n");
 /// ```
 pub struct Session {
     area: Rect,

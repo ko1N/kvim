@@ -1,8 +1,8 @@
 //! Behavior tests for the buffer, its coordinates, and its bounded history.
 
 use super::{
-    CharRange, CoordinateError, EditError, EditTransaction, LineEnding, LoadError, TextBuffer,
-    TextChange, UNDO_HISTORY_BYTES_MAX, UNDO_HISTORY_ENTRIES_MAX,
+    CharRange, CoordinateError, EditError, EditTransaction, FinalLineEnding, LineEnding, LoadError,
+    TextBuffer, TextChange, UNDO_HISTORY_BYTES_MAX, UNDO_HISTORY_ENTRIES_MAX,
 };
 use kvim_settings::FileSettings;
 
@@ -68,7 +68,7 @@ fn a_rejected_transaction_leaves_the_buffer_unchanged() {
         Err(EditError::RangeOutOfBounds {
             start: 3,
             end: 8,
-            len_chars: 3,
+            len_chars: 4,
         })
     );
     assert_eq!(
@@ -78,21 +78,23 @@ fn a_rejected_transaction_leaves_the_buffer_unchanged() {
         )),
         Err(EditError::CursorOutOfBounds {
             position: 8,
-            len_chars: 3,
+            len_chars: 4,
         })
     );
-    assert_eq!(buffer.to_string(), "abc");
+    assert_eq!(buffer.to_string(), "abc\n");
     assert_eq!(buffer.version().get(), 0);
     assert!(!buffer.is_modified());
 }
 
 #[test]
 fn a_byte_offset_inside_a_character_is_a_typed_error() {
+    // The buffer terminates the last line of the text, so it holds one line
+    // feed behind the three characters.
     let buffer = buffer("aé漢");
-    assert_eq!(buffer.len_bytes(), 6);
-    assert_eq!(buffer.len_chars(), 3);
+    assert_eq!(buffer.len_bytes(), 7);
+    assert_eq!(buffer.len_chars(), 4);
 
-    for boundary in [0, 1, 3, 6] {
+    for boundary in [0, 1, 3, 6, 7] {
         assert!(buffer.byte_offset(boundary).is_ok());
     }
     for split in [2, 4, 5] {
@@ -102,10 +104,10 @@ fn a_byte_offset_inside_a_character_is_a_typed_error() {
         );
     }
     assert_eq!(
-        buffer.byte_offset(7),
+        buffer.byte_offset(8),
         Err(CoordinateError::ByteOutOfBounds {
-            offset: 7,
-            len_bytes: 6,
+            offset: 8,
+            len_bytes: 7,
         })
     );
 }
@@ -114,8 +116,8 @@ fn a_byte_offset_inside_a_character_is_a_typed_error() {
 fn a_combining_mark_keeps_its_own_character_position() {
     // The text holds one base character and one combining acute accent.
     let mut buffer = buffer("e\u{301}x");
-    assert_eq!(buffer.len_chars(), 3);
-    assert_eq!(buffer.len_bytes(), 4);
+    assert_eq!(buffer.len_chars(), 4);
+    assert_eq!(buffer.len_bytes(), 5);
 
     assert!(buffer.byte_offset(1).is_ok());
     assert_eq!(
@@ -125,9 +127,9 @@ fn a_combining_mark_keeps_its_own_character_position() {
 
     // An edit between the base character and the mark keeps valid text.
     replace(&mut buffer, 1, 1, "\u{302}");
-    assert_eq!(buffer.to_string(), "e\u{302}\u{301}x");
+    assert_eq!(buffer.to_string(), "e\u{302}\u{301}x\n");
     assert_eq!(buffer.undo().map(|cursor| cursor.get()), Some(1));
-    assert_eq!(buffer.to_string(), "e\u{301}x");
+    assert_eq!(buffer.to_string(), "e\u{301}x\n");
 }
 
 #[test]
@@ -141,10 +143,10 @@ fn every_coordinate_kind_rejects_its_invalid_value() {
         })
     );
     assert_eq!(
-        buffer.line_index(3),
+        buffer.line_index(2),
         Err(CoordinateError::LineOutOfBounds {
-            index: 3,
-            line_count: 3,
+            index: 2,
+            line_count: 2,
         })
     );
     let line = buffer.line_index(0).expect("the first line exists");
@@ -177,10 +179,46 @@ fn coordinates_convert_across_a_multi_byte_line() {
 }
 
 #[test]
+fn a_final_line_ending_terminates_the_last_line_instead_of_opening_one() {
+    // The reference editor shows one line for `"one\n"`. The rope counts the
+    // empty text behind the terminator as one more line, and the buffer does
+    // not, so both editors show the same last line.
+    let counts = [
+        ("one\ntwo\n", 2),
+        ("one\ntwo", 2),
+        ("one\r\ntwo\r\n", 2),
+        ("one\n", 1),
+        ("one", 1),
+        ("one\n\n", 2),
+        ("\n", 1),
+        ("", 1),
+    ];
+    for (text, lines) in counts {
+        let buffer = buffer(text);
+        assert_eq!(buffer.line_count(), lines, "{text:?}");
+        assert!(buffer.line_index(lines - 1).is_ok(), "{text:?}");
+        assert!(buffer.line_index(lines).is_err(), "{text:?}");
+    }
+}
+
+#[test]
+fn a_text_without_a_final_line_ending_keeps_its_last_line_and_its_file_end() {
+    // The buffer terminates the last line, so a new line opens behind it like
+    // behind every other line. The recorded file end keeps the two texts apart.
+    let with = buffer("one\ntwo\n");
+    let without = buffer("one\ntwo");
+    assert_eq!(with.to_string(), without.to_string());
+    assert_eq!(with.line_count(), without.line_count());
+    assert_eq!(with.final_line_ending(), FinalLineEnding::Present);
+    assert_eq!(without.final_line_ending(), FinalLineEnding::Absent);
+    assert_eq!(buffer("").final_line_ending(), FinalLineEnding::Absent);
+}
+
+#[test]
 fn both_line_endings_survive_load_and_line_access() {
     let unix = buffer("one\ntwo\n");
     assert_eq!(unix.line_ending(), LineEnding::Lf);
-    assert_eq!(unix.line_count(), 3);
+    assert_eq!(unix.line_count(), 2);
     assert_eq!(
         unix.line_text(unix.line_index(1).expect("the line exists")),
         "two"
@@ -188,7 +226,7 @@ fn both_line_endings_survive_load_and_line_access() {
 
     let windows = buffer("one\r\ntwo\r\n");
     assert_eq!(windows.line_ending(), LineEnding::Crlf);
-    assert_eq!(windows.line_count(), 3);
+    assert_eq!(windows.line_count(), 2);
     let line = windows.line_index(0).expect("the line exists");
     assert_eq!(windows.line_text(line), "one");
     assert_eq!(windows.line_len_chars(line), 3);
@@ -214,18 +252,18 @@ fn undo_and_redo_walk_the_history_in_both_directions() {
     let mut buffer = buffer("");
     replace(&mut buffer, 0, 0, "one");
     replace(&mut buffer, 3, 3, " two");
-    assert_eq!(buffer.to_string(), "one two");
+    assert_eq!(buffer.to_string(), "one two\n");
 
     assert!(buffer.undo().is_some());
-    assert_eq!(buffer.to_string(), "one");
+    assert_eq!(buffer.to_string(), "one\n");
     assert!(buffer.undo().is_some());
-    assert_eq!(buffer.to_string(), "");
+    assert_eq!(buffer.to_string(), "\n");
     assert_eq!(buffer.undo(), None);
 
     assert!(buffer.redo().is_some());
-    assert_eq!(buffer.to_string(), "one");
+    assert_eq!(buffer.to_string(), "one\n");
     assert_eq!(buffer.redo().map(|cursor| cursor.get()), Some(7));
-    assert_eq!(buffer.to_string(), "one two");
+    assert_eq!(buffer.to_string(), "one two\n");
     assert_eq!(buffer.redo(), None);
 }
 
@@ -237,10 +275,10 @@ fn a_new_transaction_discards_the_redo_entries() {
     assert!(buffer.undo().is_some());
 
     replace(&mut buffer, 3, 3, " three");
-    assert_eq!(buffer.to_string(), "one three");
+    assert_eq!(buffer.to_string(), "one three\n");
     assert_eq!(buffer.redo(), None);
     assert!(buffer.undo().is_some());
-    assert_eq!(buffer.to_string(), "one");
+    assert_eq!(buffer.to_string(), "one\n");
 }
 
 #[test]
@@ -280,7 +318,8 @@ fn the_history_keeps_at_most_the_entry_bound() {
         undone += 1;
     }
     assert_eq!(undone, UNDO_HISTORY_ENTRIES_MAX);
-    assert_eq!(buffer.len_chars(), overflow);
+    // The buffer keeps the line ending that terminates its one line.
+    assert_eq!(buffer.len_chars(), overflow + 1);
 }
 
 #[test]

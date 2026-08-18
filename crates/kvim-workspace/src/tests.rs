@@ -269,6 +269,67 @@ fn an_open_request_builds_one_buffer_and_a_save_request_writes_it() {
 }
 
 #[test]
+fn a_save_that_changes_nothing_writes_the_bytes_that_the_file_held() {
+    // The buffer terminates its last line so that the editor can reach it. The
+    // save writes the file end that the file held, so an unchanged file keeps
+    // every byte, with and without a final line ending.
+    let directory = TempDir::new("save-round-trip");
+    let contents = [
+        "one\ntwo\n",
+        "one\ntwo",
+        "one\n",
+        "one",
+        "\n",
+        "",
+        "one\r\ntwo\r\n",
+        "one\r\ntwo",
+    ];
+    for (index, content) in contents.iter().enumerate() {
+        let path = directory.write(&format!("file{index}.txt"), content);
+        let opened = FileRequest::Open(OpenRequest {
+            path: path.clone(),
+            files: files(),
+        })
+        .run();
+        let FileResult::Opened { outcome, .. } = opened else {
+            panic!("an open request returns an open result");
+        };
+        let file = outcome.expect("the file is a small UTF-8 file");
+        assert!(!file.text.is_modified(), "{content:?}");
+
+        let saved = FileRequest::Save(SaveRequest {
+            buffer: super::BufferId::new(1),
+            path: file.path.clone(),
+            content: file::render_content(&file.text),
+            expected: file.identity,
+            snapshot: file.text.clone(),
+            files: files(),
+        })
+        .run();
+        let FileResult::Saved { outcome, .. } = saved else {
+            panic!("a save request returns a save result");
+        };
+        outcome.expect("the recorded identity still matches");
+        assert_eq!(
+            fs::read_to_string(&path).expect("the file exists"),
+            *content,
+            "the save of {content:?} changed the file"
+        );
+    }
+}
+
+#[test]
+fn a_file_without_a_final_line_ending_keeps_that_end_through_an_edit() {
+    let mut text = buffer("one\ntwo");
+    edit(&mut text, 0, 0, "zero\n");
+    assert_eq!(file::render_content(&text), "zero\none\ntwo");
+
+    let mut terminated = buffer("one\ntwo\n");
+    edit(&mut terminated, 0, 0, "zero\n");
+    assert_eq!(file::render_content(&terminated), "zero\none\ntwo\n");
+}
+
+#[test]
 fn one_path_reaches_one_buffer() {
     let settings = files();
     let (mut buffers, scratch) = Buffers::new(FileBuffer::scratch(&settings));

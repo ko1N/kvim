@@ -213,7 +213,8 @@ fn every_operator_over_every_motion_produces_its_range() {
         (Command::MoveNextWordEnd, " beta\nsecond\n", "alpha"),
         (Command::MoveRight, "lpha beta\nsecond\n", "a"),
         (Command::MoveLineEnd, "\nsecond\n", "alpha beta"),
-        (Command::MoveDown, "", "alpha beta\nsecond\n"),
+        // A delete of every line keeps the one empty line that a buffer holds.
+        (Command::MoveDown, "\n", "alpha beta\nsecond\n"),
     ];
 
     for (motion, remaining, yanked) in expected {
@@ -398,11 +399,15 @@ fn a_count_before_the_repeated_operator_key_covers_several_lines() {
 
 #[test]
 fn a_line_delete_on_the_last_line_keeps_the_lines_above_terminated() {
-    let mut session = Session::new("one\ntwo");
-    place(&mut session, 1, 0);
-    session.run(&[Command::DeleteOverMotion, Command::DeleteOverMotion]);
-    assert_eq!(session.text(), "one");
-    assert_eq!(session.register(), Some(("two\n", RegisterShape::Linewise)));
+    // The delete removes the line ending of the removed line, whatever the file
+    // held at its end, so the line above it keeps its own terminator.
+    for text in ["one\ntwo", "one\ntwo\n"] {
+        let mut session = Session::new(text);
+        place(&mut session, 1, 0);
+        session.run(&[Command::DeleteOverMotion, Command::DeleteOverMotion]);
+        assert_eq!(session.text(), "one\n", "{text:?}");
+        assert_eq!(session.register(), Some(("two\n", RegisterShape::Linewise)));
+    }
 }
 
 #[test]
@@ -905,10 +910,13 @@ fn paste_before_and_after_follows_the_linewise_shape() {
 
 #[test]
 fn a_linewise_paste_after_the_last_line_opens_a_new_line() {
-    let mut session = Session::new("one");
-    set_register(&mut session, RegisterValue::linewise("new", LineEnding::Lf));
-    session.apply(Command::PasteAfter, None);
-    assert_eq!(session.text(), "one\nnew");
+    for text in ["one", "one\n"] {
+        let mut session = Session::new(text);
+        set_register(&mut session, RegisterValue::linewise("new", LineEnding::Lf));
+        session.apply(Command::PasteAfter, None);
+        assert_eq!(session.text(), "one\nnew\n", "{text:?}");
+        assert_eq!(session.position(), (1, 0), "{text:?}");
+    }
 }
 
 #[test]
@@ -934,7 +942,9 @@ fn a_blockwise_paste_past_the_last_line_opens_the_missing_lines() {
         RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf),
     );
     session.apply(Command::PasteBefore, None);
-    assert_eq!(session.text(), "XXab\nYY");
+    // The buffer terminates its last line, and the save writes the file end
+    // that the loaded text held.
+    assert_eq!(session.text(), "XXab\nYY\n");
 }
 
 #[test]

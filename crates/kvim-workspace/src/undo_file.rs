@@ -14,8 +14,10 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use kvim_core::{CharRange, EditTransaction, LineEnding, TextBuffer, TextChange};
+use kvim_core::{CharRange, EditTransaction, FinalLineEnding, LineEnding, TextBuffer, TextChange};
 use kvim_settings::FileSettings;
+
+use super::file::render_content;
 
 /// The first bytes of every undo file.
 const UNDO_FILE_MAGIC: [u8; 8] = *b"KVIMUNDO";
@@ -199,6 +201,9 @@ impl UndoRecord {
             return None;
         }
         let mut buffer = TextBuffer::from_text(&self.base, files).ok()?;
+        // The base text is a buffer text, which always ends with a line ending.
+        // The file decides what a later save writes at the end.
+        buffer.set_final_line_ending(FinalLineEnding::of_text(content));
         for step in &self.steps {
             let cursor = buffer.char_position(step.cursor_before).ok()?;
             let start = buffer.char_position(step.start).ok()?;
@@ -209,7 +214,7 @@ impl UndoRecord {
             let change = TextChange::replace(range, step.inserted.clone());
             buffer.apply(EditTransaction::single(cursor, change)).ok()?;
         }
-        if buffer.to_string() != content {
+        if render_content(&buffer) != content {
             return None;
         }
         buffer.mark_saved();
