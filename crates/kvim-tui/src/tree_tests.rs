@@ -38,9 +38,10 @@ const WORKSPACE_STEPS_MAX: usize = TREE_PENDING_READS_MAX;
 
 /// Creates one workspace and one session over it.
 ///
-/// The root is canonical, so it matches the path that a loaded buffer holds.
-/// The session hides the icons, so a row assertion reads the structure of the
-/// tree alone. One test turns them on again.
+/// The root is the canonical path of the temporary directory, so it matches
+/// the path that a loaded buffer holds. The session hides the icons, so a row
+/// assertion reads the structure of the tree alone. One test turns them on
+/// again.
 fn workspace() -> (TempDir, Session) {
     workspace_with_icons(FileTreeIcons::Hidden)
 }
@@ -52,7 +53,7 @@ fn workspace_with_icons(icons: FileTreeIcons) -> (TempDir, Session) {
     dir.file("README.md", "kvim\n");
     dir.file(".hidden", "secret\n");
     dir.dir("docs");
-    let root = fs::canonicalize(&dir.path).expect("the temporary directory exists");
+    let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = icons;
     let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
@@ -130,6 +131,19 @@ fn sidebar_rows(session: &Session) -> Vec<String> {
         .collect()
 }
 
+/// Returns the message of the session as text.
+///
+/// A message that holds a path needs this entry point instead of
+/// [`message_line`], because the message line paints one terminal row and drops
+/// every character behind it. The length of a temporary path is a property of
+/// the host, so a rendered assertion over such a message would report the
+/// ambient temporary directory instead of the transition.
+fn message(session: &Session) -> String {
+    session
+        .message()
+        .map_or_else(String::new, |message| message.text().to_owned())
+}
+
 /// Returns the message line as text.
 fn message_line(session: &Session) -> String {
     let buffer = draw(session);
@@ -173,7 +187,7 @@ fn ctrl_e_opens_the_sidebar_and_shows_the_ordered_rows() {
 #[test]
 fn a_reveal_expands_the_ancestors_and_selects_the_active_file() {
     let (dir, mut session) = workspace();
-    let path = fs::canonicalize(dir.join("src/main.rs")).expect("the file exists");
+    let path = dir.join("src/main.rs");
     session.open_path(path.clone());
     drain_file(&mut session);
 
@@ -351,7 +365,7 @@ fn a_new_file_reaches_the_workspace_and_the_tree_selects_it() {
 #[test]
 fn a_rename_applies_the_buffer_path_and_the_tree_as_one_transition() {
     let (dir, mut session) = workspace();
-    let path = fs::canonicalize(dir.join("README.md")).expect("the file exists");
+    let path = dir.join("README.md");
     session.open_path(path);
     drain_file(&mut session);
     reveal(&mut session);
@@ -383,7 +397,13 @@ fn a_copy_and_a_paste_move_the_entry_into_the_selected_directory() {
     press(&mut session, 'j');
     press(&mut session, 'j');
     press(&mut session, 'y');
-    assert!(message_line(&session).contains("copied"));
+    assert_eq!(
+        message(&session),
+        format!(
+            "{} is copied for the next paste",
+            dir.join("README.md").display()
+        )
+    );
     press(&mut session, 'k');
     press(&mut session, 'k');
     press(&mut session, 'p');
@@ -422,8 +442,9 @@ fn a_refused_mutation_reports_it_and_changes_nothing() {
     press_code(&mut session, KeyCode::Enter);
     drain(&mut session);
 
-    assert!(
-        message_line(&session).contains("exists already"),
+    assert_eq!(
+        message(&session),
+        format!("{} exists already", dir.join("src").display()),
         "a destination collision reports the typed rejection"
     );
     assert!(dir.join("src").is_dir());
@@ -499,7 +520,7 @@ fn the_sidebar_scrolls_so_the_selected_row_stays_visible() {
     for index in 0..20 {
         dir.file(&format!("file{index:02}.rs"), "\n");
     }
-    let root = fs::canonicalize(&dir.path).expect("the temporary directory exists");
+    let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
     let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);

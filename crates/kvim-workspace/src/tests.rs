@@ -430,18 +430,20 @@ fn the_undo_file_round_trip_uses_the_filesystem() {
 
 #[test]
 fn the_undo_file_lives_under_the_state_directory() {
-    let Some(path) = undo_file::undo_file_path(Path::new("/tmp/kvim-example.rs")) else {
-        // The platform reports no state directory, so Kvim keeps no undo file.
-        return;
-    };
+    // The test names its own state directory, so the rule holds on a host
+    // without one and the assertions always run.
+    let state = Path::new("/state");
+    let path = undo_file::undo_file_path_in(state, Path::new("/tmp/kvim-example.rs"));
+
+    assert!(path.starts_with(state));
     assert!(path.extension().is_some_and(|value| value == "kvu"));
     assert!(
         path.parent()
             .is_some_and(|parent| parent.ends_with("kvim/undo"))
     );
     assert_ne!(
-        undo_file::undo_file_path(Path::new("/tmp/kvim-other.rs")),
-        Some(path),
+        undo_file::undo_file_path_in(state, Path::new("/tmp/kvim-other.rs")),
+        path,
         "two paths reach two undo files"
     );
 }

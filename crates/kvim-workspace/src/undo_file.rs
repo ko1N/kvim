@@ -226,12 +226,20 @@ impl UndoRecord {
 /// Returns `None` when the platform reports no state directory.
 #[must_use]
 pub fn undo_file_path(target: &Path) -> Option<PathBuf> {
-    let directory = state_directory()?.join(UNDO_DIRECTORY);
+    Some(undo_file_path_in(&state_directory()?, target))
+}
+
+/// Returns the undo file of one target path under the given state directory.
+///
+/// The rule is deterministic, so a caller that holds its own state directory,
+/// such as a test, needs no environment variable.
+#[must_use]
+pub(crate) fn undo_file_path_in(state: &Path, target: &Path) -> PathBuf {
     let name = format!(
         "{:016x}.{UNDO_FILE_EXTENSION}",
         content_hash_bytes(target.as_os_str().as_encoded_bytes())
     );
-    Some(directory.join(name))
+    state.join(UNDO_DIRECTORY).join(name)
 }
 
 /// Returns the directory that holds the editor state of this user.

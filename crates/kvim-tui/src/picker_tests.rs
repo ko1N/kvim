@@ -5,7 +5,6 @@
 //! filesystem work and starts no process itself, so each test runs the queued
 //! picker requests as the event loop does.
 
-use std::fs;
 use std::time::Duration;
 
 use ratatui::Terminal;
@@ -42,7 +41,8 @@ const PICKER_STEPS_MAX: usize = 8;
 
 /// Creates one workspace and one session over it.
 ///
-/// The root is canonical, so it matches the path that a loaded buffer holds.
+/// The root is the canonical path of the temporary directory, so it matches
+/// the path that a loaded buffer holds.
 fn workspace() -> (TempDir, Session) {
     let dir = TempDir::new("picker");
     dir.file(
@@ -53,7 +53,7 @@ fn workspace() -> (TempDir, Session) {
     dir.file("README.md", "kvim\n");
     dir.file(".gitignore", "target/\n");
     dir.file("target/debug/kvim", "binary\n");
-    let root = fs::canonicalize(&dir.path).expect("the temporary directory exists");
+    let root = dir.path.clone();
     let session = Session::new(
         Rect::new(0, 0, WIDTH, HEIGHT),
         EditorSettings::default(),
@@ -402,8 +402,7 @@ fn a_missing_search_command_is_reported_once_and_keeps_the_editor_usable() {
 #[test]
 fn the_buffer_picker_lists_the_loaded_buffers() {
     let (dir, mut session) = workspace();
-    let root = fs::canonicalize(&dir.path).expect("the temporary directory exists");
-    session.open_path(root.join("src/main.rs"));
+    session.open_path(dir.join("src/main.rs"));
     drain_file(&mut session);
 
     open_picker(&mut session, "o");

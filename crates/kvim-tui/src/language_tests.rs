@@ -64,7 +64,7 @@ impl Editor {
             "the harness prepares one server for each attempt"
         );
         let directory = TempDir::new(label);
-        let root = std::fs::canonicalize(&directory.path).expect("the directory exists");
+        let root = directory.path.clone();
         for (name, content) in files {
             directory.write(name, content);
         }
