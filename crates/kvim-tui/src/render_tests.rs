@@ -10,8 +10,9 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
+use kvim_clipboard::ClipboardFailure;
 use kvim_language::{
-    LanguageEvent, LanguageOutcome, ProgressPercentage, ProgressReport, ProgressStage,
+    LanguageEvent, LanguageOutcome, LspError, ProgressPercentage, ProgressReport, ProgressStage,
     ProgressToken, SessionGeneration,
 };
 use kvim_settings::{EditorSettings, NotificationSettings, WHICH_KEY_DELAY_DEFAULT};
@@ -19,6 +20,7 @@ use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
 use super::buffer_view::WINBAR_ROWS;
+use super::clipboard::SessionClipboard;
 use super::session::{MessageLevel, Redraw, Session};
 use super::window::WindowId;
 
@@ -143,7 +145,7 @@ fn open_file(session: &mut Session, path: PathBuf) {
     let request = session
         .take_file_request()
         .expect("the open queued one file request");
-    session.apply_file_result(request.run());
+    let _ = session.apply_file_result(request.run());
 }
 
 /// Creates a session that holds `lines` numbered lines, with the cursor at the
@@ -991,4 +993,130 @@ fn a_later_attempt_clears_the_rows_of_the_attempt_that_failed() {
     );
     assert!(!row(&session, 20).contains("before the restart"));
     assert!(!row(&session, 21).contains("rust-analyzer"));
+}
+
+/// Creates a session that writes no undo file, over one terminal size.
+///
+/// A save must reach the file alone, so the test reads the one write that it
+/// asked for.
+fn save_session(width: u16, height: u16) -> Session {
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    Session::new(Rect::new(0, 0, width, height), settings, workspace_root())
+}
+
+/// Refuses every queued language request, like an editor without a server.
+///
+/// The event loop performs the same step, so a save that waits for a formatter
+/// continues instead of stalling.
+fn refuse_language_requests(session: &mut Session) {
+    while let Some(request) = session.take_language_request() {
+        let kind = request.kind();
+        let _ = session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+    }
+}
+
+/// Saves the active buffer and publishes the completed write.
+///
+/// The steps are the ones that the event loop runs, and no terminal event
+/// follows them, so the frame that a test draws afterwards is the frame that
+/// the completed save must produce.
+fn save_and_publish(session: &mut Session) -> Redraw {
+    let _ = session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    refuse_language_requests(session);
+    let request = session
+        .take_file_request()
+        .expect("the save queued one file request");
+    session.apply_file_result(request.run())
+}
+
+#[test]
+fn a_completed_save_paints_its_report_and_clears_the_changed_marker() {
+    let directory = TempDir::new("render-save");
+    let path = directory.write("main.rs", "one\ntwo\n");
+    // The report names the absolute path of the temporary directory, so the
+    // terminal must be wide enough to paint the complete message.
+    let mut session = save_session(200, 10);
+    open_file(&mut session, path.clone());
+
+    // One typed character leaves the buffer with an unsaved change.
+    press(&mut session, 'i');
+    type_keys(&mut session, "// ");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(
+        row(&session, 0).contains("[+]"),
+        "the winbar marks the changed buffer: {}",
+        row(&session, 0)
+    );
+
+    assert_eq!(
+        save_and_publish(&mut session),
+        Redraw::Needed,
+        "a completed save changes the marker and the message line"
+    );
+    assert!(
+        !row(&session, 0).contains("[+]"),
+        "the completed save clears the marker in the same frame: {}",
+        row(&session, 0)
+    );
+    assert!(
+        row(&session, 9).contains("written"),
+        "the completed save names the write on the message line: {}",
+        row(&session, 9)
+    );
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "// one\ntwo\n"
+    );
+}
+
+#[test]
+fn a_failed_save_paints_its_failure_and_keeps_the_changed_marker() {
+    let directory = TempDir::new("render-save-failure");
+    let mut session = save_session(60, 10);
+    // The path holds no file yet, so the open starts a new empty buffer. Its
+    // directory is missing, so no write can succeed.
+    open_file(&mut session, directory.join("missing").join("main.rs"));
+    press(&mut session, 'i');
+    type_keys(&mut session, "text");
+    press_code(&mut session, KeyCode::Esc);
+
+    assert_eq!(
+        save_and_publish(&mut session),
+        Redraw::Needed,
+        "a failed save changes the message line"
+    );
+    assert!(
+        row(&session, 0).contains("[+]"),
+        "the failed save keeps the marker: {}",
+        row(&session, 0)
+    );
+    assert!(
+        row(&session, 9).contains("cannot save"),
+        "the failed save names the failure on the message line: {}",
+        row(&session, 9)
+    );
+}
+
+#[test]
+fn a_failed_clipboard_write_paints_its_report_without_a_key_event() {
+    let mut session = save_session(90, 10).with_clipboard(SessionClipboard::deferred());
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "yy");
+    let _ = session
+        .take_clipboard_request()
+        .expect("the yank queued one clipboard command");
+
+    assert_eq!(
+        session.apply_clipboard_result(Err(ClipboardFailure::Failed)),
+        Redraw::Needed,
+        "a failed clipboard write changes the message line"
+    );
+    assert!(
+        row(&session, 9).contains("register still holds the value"),
+        "the failed write names the state on the message line: {}",
+        row(&session, 9)
+    );
 }

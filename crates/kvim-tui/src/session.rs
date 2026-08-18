@@ -90,6 +90,11 @@ pub const MESSAGE_CHARS_MAX: usize = 512;
 ///
 /// Kvim renders only after a visible state change. It runs no unconditional
 /// frame loop. See `docs/responsiveness.md`.
+///
+/// Every publication path of the session marks its answer `#[must_use]`. A
+/// dropped [`Redraw::Needed`] leaves a changed message, marker, or overlay off
+/// the screen until an unrelated event paints the next frame, so the compiler
+/// refuses the drop instead.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Redraw {
     /// The visible state changed.
@@ -1300,6 +1305,7 @@ impl Session {
     ///
     /// A result that reaches no open picker changes nothing, because the reader
     /// already closed the overlay that asked for it.
+    #[must_use]
     pub fn apply_picker_result(&mut self, result: PickerResult) -> Redraw {
         let Some(picker) = self.picker.as_mut() else {
             return Redraw::Skipped;
@@ -1313,6 +1319,7 @@ impl Session {
     ///
     /// A missing external command is a normal state. The editor names it once
     /// and stays fully usable without the search picker.
+    #[must_use]
     pub fn abandon_picker_request(&mut self, slot: PickerSlot, failure: PickerFailure) -> Redraw {
         let Some(picker) = self.picker.as_mut() else {
             return Redraw::Skipped;
@@ -1503,6 +1510,7 @@ impl Session {
     ///
     /// A result for an obsolete buffer version changes nothing and enters no
     /// cache. A typed failure renders plain text and keeps the buffer editable.
+    #[must_use]
     pub fn apply_analysis_result(&mut self, result: AnalysisResult) -> Redraw {
         self.analysis_pending = None;
         let Some(file) = self.buffers.get(result.buffer) else {
@@ -1557,6 +1565,7 @@ impl Session {
     ///
     /// The services assign the identity of a query, and the session records it
     /// so a later answer reaches the question that asked for it.
+    #[must_use]
     pub fn apply_language_dispatch(
         &mut self,
         kind: LanguageRequestKind,
@@ -1589,6 +1598,7 @@ impl Session {
     ///
     /// Every result passes the buffer-version gate before it changes visible
     /// state, so an obsolete answer never reaches the screen.
+    #[must_use]
     pub fn apply_language_event(&mut self, event: LanguageEvent) -> Redraw {
         match event.outcome {
             LanguageOutcome::Diagnostics(set) => self.publish_diagnostics(set),
@@ -2270,6 +2280,7 @@ impl Session {
     /// keeps the marks of the last successful read, so no failure removes
     /// workspace state. A missing `git` command reaches the message line once
     /// for each session.
+    #[must_use]
     pub fn apply_git_result(
         &mut self,
         result: Result<GitStatusSnapshot, GitStatusFailure>,
@@ -2290,6 +2301,7 @@ impl Session {
     }
 
     /// Applies one completed workspace operation as one state transition.
+    #[must_use]
     pub fn apply_workspace_result(&mut self, result: WorkspaceResult) -> Redraw {
         let redraw = match result {
             WorkspaceResult::Directory { path, outcome } => {
@@ -2306,6 +2318,7 @@ impl Session {
     ///
     /// The workspace and the buffers keep the state that they held before the
     /// request, so the user can repeat the operation.
+    #[must_use]
     pub fn abandon_workspace_request(&mut self, failure: FileRequestFailure) -> Redraw {
         self.tree.abandon_request();
         self.set_message(failure.message(), MessageLevel::Error);
@@ -2379,6 +2392,7 @@ impl Session {
     }
 
     /// Applies one completed file operation as one state transition.
+    #[must_use]
     pub fn apply_file_result(&mut self, result: FileResult) -> Redraw {
         let pending = self.file_pending.take();
         match result {
@@ -2410,6 +2424,7 @@ impl Session {
     ///
     /// The buffer keeps every unsaved change, so the user can repeat the
     /// operation.
+    #[must_use]
     pub fn abandon_file_request(&mut self, failure: FileRequestFailure) -> Redraw {
         self.file_pending = None;
         self.file_outbox = None;
@@ -2432,6 +2447,7 @@ impl Session {
     /// a typed failure. A failed write keeps the unnamed register, and a failed
     /// read falls back to it, so no clipboard failure loses editor data. See
     /// `docs/clipboard.md`.
+    #[must_use]
     pub fn apply_clipboard_result(
         &mut self,
         output: Result<ProcessOutput, ClipboardFailure>,

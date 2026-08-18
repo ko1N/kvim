@@ -54,6 +54,22 @@ Two rules keep that path safe:
 Every submission loop of the event loop is bounded by a named constant, so a
 queue that offers the same work again can never hold the loop.
 
+### Request Dispatch
+
+One iteration hands every queued request to the service that runs it before the
+loop waits again. One submission can queue the work of another owner: a
+formatting request that no language server accepts completes the save that
+waited for it. The dispatch therefore repeats inside a named bound. A request
+that stayed in its outbox would reach its service only after the next terminal
+event, and the user would see the result of a command follow an unrelated key.
+
+A refused submission is a state change like any other. It names its state on the
+message line, so the dispatch reports its own redraw request and the frame
+follows it. Every transition that changes a painted value must report that
+change, including a transition that runs outside a terminal event. A dropped
+redraw request leaves the changed message, marker, or overlay off the screen
+until an unrelated event paints the next frame.
+
 ## Bounded Work
 
 Run external commands through a bounded and cancellable process service. Run

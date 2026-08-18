@@ -102,7 +102,7 @@ fn drain(session: &mut Session) {
         if request.command().is_some() {
             continue;
         }
-        session.apply_picker_result(request.run(&CancellationToken::new()));
+        let _ = session.apply_picker_result(request.run(&CancellationToken::new()));
     }
     panic!("one transition queues fewer picker requests than the bound");
 }
@@ -110,7 +110,7 @@ fn drain(session: &mut Session) {
 /// Runs the queued file operation, as the event loop does.
 fn drain_file(session: &mut Session) {
     if let Some(request) = session.take_file_request() {
-        session.apply_file_result(request.run());
+        let _ = session.apply_file_result(request.run());
     }
 }
 
@@ -333,7 +333,7 @@ fn accepting_one_search_row_opens_the_file_at_the_matched_line() {
         stdout: b"./src/main.rs:3:9:    let needle = 1;\n".to_vec(),
         stderr: Vec::new(),
     });
-    session.apply_picker_result(result);
+    let _ = session.apply_picker_result(result);
     let rows = results(&session);
     assert!(
         rows.iter().any(|row| row.starts_with("main.rs:3  src")),
@@ -376,7 +376,7 @@ fn a_missing_search_command_is_reported_once_and_keeps_the_editor_usable() {
         .take_picker_request()
         .expect("the query starts one search");
 
-    session.abandon_picker_request(PickerSlot::Candidates, PickerFailure::CommandMissing);
+    let _ = session.abandon_picker_request(PickerSlot::Candidates, PickerFailure::CommandMissing);
     let reported = session
         .message()
         .map(|message| message.text().to_owned())
@@ -389,7 +389,7 @@ fn a_missing_search_command_is_reported_once_and_keeps_the_editor_usable() {
     // The next key clears the message line, and the second failure adds no
     // second report.
     press_ctrl(&mut session, 'j');
-    session.abandon_picker_request(PickerSlot::Candidates, PickerFailure::CommandMissing);
+    let _ = session.abandon_picker_request(PickerSlot::Candidates, PickerFailure::CommandMissing);
     assert_eq!(session.message().map(|message| message.text()), None);
 
     // The editor stays fully usable without the search picker.

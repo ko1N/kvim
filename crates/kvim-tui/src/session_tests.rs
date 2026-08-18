@@ -507,7 +507,7 @@ fn asks_a_question(session: &mut Session) -> bool {
     while let Some(request) = session.take_language_request() {
         let kind = request.kind();
         asked |= kind == LanguageRequestKind::Query;
-        session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+        let _ = session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
     }
     asked
 }
@@ -518,7 +518,7 @@ fn run_file_request(session: &mut Session) {
     let request = session
         .take_file_request()
         .expect("the transition queued one file request");
-    session.apply_file_result(request.run());
+    let _ = session.apply_file_result(request.run());
 }
 
 #[test]
@@ -1245,7 +1245,7 @@ fn a_failed_clipboard_write_keeps_the_register_value() {
     let mut session = clipboard_session(&["alpha", "beta"]);
     type_keys(&mut session, "yy");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Err(ClipboardFailure::Failed));
+    let _ = session.apply_clipboard_result(Err(ClipboardFailure::Failed));
     assert!(
         message(&session).contains("register still holds the value"),
         "the yank succeeded, so the report names the clipboard alone: {}",
@@ -1255,7 +1255,7 @@ fn a_failed_clipboard_write_keeps_the_register_value() {
     // The register survived the failure, so a paste still returns the value.
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Err(ClipboardFailure::Failed));
+    let _ = session.apply_clipboard_result(Err(ClipboardFailure::Failed));
     assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
 }
 
@@ -1264,13 +1264,13 @@ fn a_failed_clipboard_read_falls_back_to_the_internal_register() {
     let mut session = clipboard_session(&["alpha", "beta"]);
     type_keys(&mut session, "yy");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
 
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
     // A refused submission is the same expected runtime state as a failed
     // command, so the paste still applies the internal register.
-    session.apply_clipboard_result(Err(ClipboardFailure::Refused));
+    let _ = session.apply_clipboard_result(Err(ClipboardFailure::Refused));
     assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
 }
 
@@ -1279,13 +1279,13 @@ fn a_kvim_yank_pastes_with_the_shape_that_it_recorded() {
     let mut session = clipboard_session(&["alpha", "beta"]);
     type_keys(&mut session, "yy");
     assert_eq!(clipboard_text(&mut session), "alpha\n");
-    session.apply_clipboard_result(Ok(clipboard_output("")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("")));
 
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
     // The clipboard still holds the text that Kvim wrote, so the recorded
     // linewise shape applies. See `docs/clipboard.md`.
-    session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
     assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta");
 }
 
@@ -1294,7 +1294,7 @@ fn an_external_copy_pastes_characterwise() {
     let mut session = clipboard_session(&["alpha"]);
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Ok(clipboard_output("gamma")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("gamma")));
     assert_eq!(
         session.buffer().to_string(),
         "agammalpha",
@@ -1307,7 +1307,7 @@ fn an_external_copy_that_ends_with_a_line_ending_pastes_linewise() {
     let mut session = clipboard_session(&["alpha"]);
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Ok(clipboard_output("gamma\n")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("gamma\n")));
     assert_eq!(session.buffer().to_string(), "alpha\ngamma");
 }
 
@@ -1316,12 +1316,12 @@ fn an_oversized_clipboard_value_never_reaches_the_register() {
     let mut session = clipboard_session(&["alpha"]);
     type_keys(&mut session, "yy");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Ok(clipboard_output("")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("")));
 
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
     let oversized = "b".repeat(CLIPBOARD_BYTES_MAX + 1);
-    session.apply_clipboard_result(Ok(clipboard_output(&oversized)));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output(&oversized)));
     assert!(
         message(&session).contains("clipboard bound"),
         "the report names the bound: {}",
@@ -1375,7 +1375,7 @@ fn a_newer_clipboard_operation_never_leaves_a_paste_waiting() {
     let mut session = clipboard_session(&["alpha", "beta"]);
     type_keys(&mut session, "yy");
     let _ = clipboard_text(&mut session);
-    session.apply_clipboard_result(Ok(clipboard_output("")));
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("")));
 
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);

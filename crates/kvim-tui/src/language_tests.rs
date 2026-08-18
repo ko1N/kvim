@@ -123,7 +123,7 @@ impl Editor {
             .session
             .take_file_request()
             .expect("the transition queued one file request");
-        self.session.apply_file_result(request.run());
+        let _ = self.session.apply_file_result(request.run());
     }
 
     /// Sends every queued language request, like the terminal event loop.
@@ -131,14 +131,14 @@ impl Editor {
         while let Some(request) = self.session.take_language_request() {
             let kind = request.kind();
             let result = send_request(self.harness.handle(), request);
-            self.session.apply_language_dispatch(kind, result);
+            let _ = self.session.apply_language_dispatch(kind, result);
         }
     }
 
     /// Applies the next result of the language services.
     async fn publish(&mut self) {
         let event = self.harness.next_event().await;
-        self.session.apply_language_event(event);
+        let _ = self.session.apply_language_event(event);
     }
 
     /// Reads the next message that is not an incremental synchronization.
