@@ -875,6 +875,14 @@ that this argument carries. `clang-format` reads the same kind of path in the
 argument that follows its `--assume-filename` flag, and it selects its style and
 its language from that path.
 
+A formatter that reads the format from the extension of that path needs one more
+argument as soon as its adapter owns a file name. A file name key exists exactly
+because the extension of that file names no format, so the program infers no
+format from it and refuses the document. The declaration of such an adapter
+therefore names the format itself, and it keeps the document path beside that
+name for the configuration of the project. The JSON adapter shows the rule: it
+owns `flake.lock`, so it names `--parser json` beside `--stdin-filepath`.
+
 Kvim writes the exact buffer text to the standard input of the program, and it
 reads the formatted document from the standard output. The program runs on the
 bounded process service of [`responsiveness.md`](responsiveness.md), so it never
@@ -926,7 +934,35 @@ buffer whose adapter declares a formatter therefore keeps its format-on-save
 state while that formatter is absent.
 
 A format-on-save failure or timeout does not cancel the save. Kvim saves the
-unformatted buffer content and reports the typed formatting state. A formatter
-program that the host does not hold is a normal state. Kvim reports it once, as
-it reports a language server that is not installed, and every later save writes
-the unformatted content without a further report.
+unformatted buffer content.
+
+The save report names that state. The save writes the message line after the
+format, so a format that wrote its own message would lose it to the save report,
+and the user would read only that the file was written. The format therefore
+hands its state to the save, and the save names the state beside its own result.
+
+The rule gives the user three readable outcomes:
+
+| Outcome | Report | Level |
+|---|---|---|
+| The save wrote formatted content, or no format ran | `"<path>" <lines>L, <bytes>B written` | Info |
+| The formatter is not installed | `the formatter is not installed, so the file holds unformatted content; ` before the same report | Info |
+| The formatter produced no usable document | `the formatter failed, so the file holds unformatted content; ` before the same report | Warning |
+
+The reason leads the report. The message line clips at the terminal width, and
+the path is the one unbounded part of the report. A narrow terminal therefore
+clips the path and never the state of the written file.
+
+A buffer whose adapter declares no formatter belongs to the first row. The
+statusline shows no format-on-save state for such a buffer, so its save report
+promises no format that Kvim never runs.
+
+The note qualifies a message that every save writes. It adds no message and
+repeats none, so a formatter that fails on every save fills no message line.
+This differs from the once-only reports of the sections above, which each add
+one message of their own. A formatter program that the host does not hold is a
+normal state, so its report keeps the level of an ordinary save.
+
+An obsolete answer stays silent. The user typed while the formatter ran, so the
+save writes exactly the content that the user typed and reports its own result
+alone.

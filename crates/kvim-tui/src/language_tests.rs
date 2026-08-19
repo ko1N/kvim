@@ -1137,8 +1137,15 @@ async fn a_failed_formatter_still_saves_the_buffer() {
     );
     assert_eq!(
         editor.session.message().map(|message| message.level()),
-        Some(MessageLevel::Info),
-        "the save reports its own result last"
+        Some(MessageLevel::Warning),
+        "the save reports its own result last, and it names the lost format"
+    );
+    assert!(
+        editor
+            .message()
+            .starts_with("the formatter failed, so the file holds unformatted content; "),
+        "the save report names the failure: {}",
+        editor.message()
     );
 }
 
@@ -1195,6 +1202,13 @@ async fn an_external_formatter_formats_a_buffer_that_its_server_never_formats() 
     editor.run_file_request();
     assert_eq!(editor.file("flake.nix"), "{ }\n");
     assert!(!editor.session.active_buffer().is_modified());
+    // A save that wrote formatted content reports its own result alone, so the
+    // user reads a formatted save apart from an unformatted one.
+    assert!(
+        editor.message().ends_with("B written"),
+        "the save of formatted content names no formatter state: {}",
+        editor.message()
+    );
 
     // The complete formatter answer is one transaction, so one undo reverses it.
     editor.press("u");
@@ -1202,7 +1216,7 @@ async fn an_external_formatter_formats_a_buffer_that_its_server_never_formats() 
 }
 
 #[tokio::test]
-async fn a_failed_external_formatter_still_saves_the_buffer() {
+async fn a_failed_external_formatter_still_saves_the_buffer_and_reports_the_failure() {
     let mut editor = Editor::start("language-external-failure", &[("flake.nix", "{  }\n")]).await;
 
     editor.save();
@@ -1216,6 +1230,37 @@ async fn a_failed_external_formatter_still_saves_the_buffer() {
 
     editor.run_file_request();
     assert_eq!(editor.file("flake.nix"), "{  }\n");
+    // The save writes the message line after the format, so the save report
+    // itself must name the failure. A report that the save replaced would leave
+    // the user with no sign that the file holds unformatted content.
+    assert!(
+        editor
+            .message()
+            .starts_with("the formatter failed, so the file holds unformatted content; "),
+        "the save report names the failure: {}",
+        editor.message()
+    );
+    assert_eq!(
+        editor.session.message().map(|message| message.level()),
+        Some(MessageLevel::Warning),
+        "a formatter that refused the document needs attention"
+    );
+
+    // A second save repeats no extra message. The note qualifies the save
+    // report that every save writes, so it never fills the message line.
+    editor.press("ox");
+    editor.press_code(KeyCode::Esc);
+    editor.save();
+    editor.run_format(Some(1), "");
+    editor.run_file_request();
+    assert_eq!(editor.file("flake.nix"), "{  }\nx\n");
+    assert!(
+        editor
+            .message()
+            .starts_with("the formatter failed, so the file holds unformatted content; "),
+        "every save names the state of the file that it wrote: {}",
+        editor.message()
+    );
 }
 
 #[tokio::test]
@@ -1249,7 +1294,7 @@ async fn an_obsolete_external_format_never_changes_the_buffer() {
 }
 
 #[tokio::test]
-async fn a_missing_formatter_program_reports_its_state_once_and_still_saves() {
+async fn a_missing_formatter_program_names_its_state_in_the_save_report() {
     let mut editor = Editor::start("language-external-missing", &[("flake.nix", "{  }\n")]).await;
 
     editor.save();
@@ -1257,15 +1302,23 @@ async fn a_missing_formatter_program_reports_its_state_once_and_still_saves() {
     let _ = editor
         .session
         .apply_format_result(Err(FormatterFailure::NotInstalled));
-    assert_eq!(
-        editor.message(),
-        "the formatter is not installed; the save continues without it"
-    );
     editor.run_file_request();
     assert_eq!(editor.file("flake.nix"), "{  }\n");
+    assert!(
+        editor
+            .message()
+            .starts_with("the formatter is not installed, so the file holds unformatted content; "),
+        "the save report names the absent program: {}",
+        editor.message()
+    );
+    assert_eq!(
+        editor.session.message().map(|message| message.level()),
+        Some(MessageLevel::Info),
+        "a formatter that the host does not hold is a normal state"
+    );
 
-    // The state never changes while the editor runs, so a second save repeats
-    // no report and still writes the buffer.
+    // The state never changes while the editor runs, so every later save names
+    // it again as part of its own report and adds no second message.
     editor.press("ox");
     editor.press_code(KeyCode::Esc);
     editor.save();
@@ -1273,11 +1326,13 @@ async fn a_missing_formatter_program_reports_its_state_once_and_still_saves() {
     let _ = editor
         .session
         .apply_format_result(Err(FormatterFailure::NotInstalled));
-    assert_eq!(
-        editor.message(),
-        String::new(),
-        "the state never changes while the editor runs, so it repeats no report"
-    );
     editor.run_file_request();
     assert_eq!(editor.file("flake.nix"), "{  }\nx\n");
+    assert!(
+        editor
+            .message()
+            .starts_with("the formatter is not installed, so the file holds unformatted content; "),
+        "every save names the state of the file that it wrote: {}",
+        editor.message()
+    );
 }

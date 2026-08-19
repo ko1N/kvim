@@ -60,11 +60,18 @@ const JSON_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
 /// The external formatter of the JSON adapter.
 ///
 /// `prettier` reads the document on standard input, and it selects its parser
-/// from the file name. The declaration therefore names the place of the
-/// document path beside the flag that carries it.
+/// from the extension of the file name. The adapter also owns a lock file whose
+/// extension names no format, so `prettier` infers no parser for it and refuses
+/// the document. `--parser json` therefore names the format that every path of
+/// this adapter holds.
+///
+/// The declaration keeps the document path beside `--stdin-filepath`, because
+/// `prettier` reads the configuration of the project from that path.
 const JSON_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "prettier",
     args: &[
+        FormatterArgument::Literal("--parser"),
+        FormatterArgument::Literal("json"),
         FormatterArgument::Literal("--stdin-filepath"),
         FormatterArgument::DocumentPath,
     ],

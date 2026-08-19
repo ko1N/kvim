@@ -17,7 +17,7 @@ use super::{
     Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax, CommentStyle,
     FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
     FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, Grammar,
-    IndentRule, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageAdapter,
+    IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageAdapter,
     LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter, Publication, RustAdapter,
     ServerFormatting, SyntaxRole, SyntaxTree,
 };
@@ -1667,6 +1667,38 @@ fn every_registered_adapter_declares_the_formatter_of_its_language() {
             "{path} formats through one of the two paths, or through neither",
         );
     }
+}
+
+#[test]
+fn the_json_formatter_names_its_parser_for_a_path_whose_extension_does_not() {
+    // `prettier` selects its parser from the extension of the document path.
+    // The JSON adapter also owns a lock file whose extension names no format,
+    // so the command must name the parser itself. A command without that name
+    // reaches `prettier`, and `prettier` then refuses the document.
+    let text = buffer("{\"a\":1}\n");
+    let declaration = JsonAdapter::new()
+        .external_formatter()
+        .expect("the JSON adapter declares a formatter");
+
+    let request = FormatterRequest::new(
+        declaration,
+        PathBuf::from("/workspace/flake.lock"),
+        text.version(),
+        text.to_string(),
+    );
+    let command = request.command();
+
+    assert_eq!(command.program, "prettier");
+    assert_eq!(
+        command.args,
+        vec![
+            OsString::from("--parser"),
+            OsString::from("json"),
+            OsString::from("--stdin-filepath"),
+            OsString::from("/workspace/flake.lock"),
+        ],
+        "the command names the parser, and it keeps the path that finds the configuration"
+    );
 }
 
 #[test]
