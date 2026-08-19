@@ -456,18 +456,19 @@ fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     type_keys(&mut session, "q");
     assert!(!completing(&session), "the typed text opens no completion");
 
-    // The first cycle writes the first candidate and opens the list.
+    // The first cycle writes the first candidate and opens the list. The
+    // completion offers the full name, so `q` reaches `quit`.
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "q");
+    assert_eq!(prompt_text(&session), "quit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
 
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "q!");
+    assert_eq!(prompt_text(&session), "quit!");
 
     // The candidates stay anchored to the typed text, so the cycle wraps
     // instead of narrowing the list to the written candidate.
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "q");
+    assert_eq!(prompt_text(&session), "quit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
 }
 
@@ -477,15 +478,15 @@ fn the_command_line_completion_answers_the_size_of_its_candidate_set() {
     press(&mut session, ':');
     type_keys(&mut session, "w");
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "w");
+    assert_eq!(prompt_text(&session), "wq");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "wq");
+    assert_eq!(prompt_text(&session), "write");
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(
         prompt_text(&session),
-        "w",
-        "the list holds `w` and `wq` alone"
+        "wq",
+        "the list holds `wq` and `write` alone"
     );
     press_code(&mut session, KeyCode::Esc);
     press_code(&mut session, KeyCode::Esc);
@@ -527,12 +528,12 @@ fn the_command_line_completion_cycles_backward_and_restores_the_typed_text() {
 
     // A backward cycle from the typed text wraps to the last candidate.
     press_code(&mut session, KeyCode::BackTab);
-    assert_eq!(prompt_text(&session), "e!");
+    assert_eq!(prompt_text(&session), "edit!");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
     press_code(&mut session, KeyCode::BackTab);
-    assert_eq!(prompt_text(&session), "e");
+    assert_eq!(prompt_text(&session), "edit");
     press_code(&mut session, KeyCode::BackTab);
-    assert_eq!(prompt_text(&session), "e!");
+    assert_eq!(prompt_text(&session), "edit!");
 
     // The first cancel restores the typed text and closes the list.
     press_code(&mut session, KeyCode::Esc);
@@ -553,33 +554,37 @@ fn the_command_line_completion_cycles_backward_and_restores_the_typed_text() {
 fn one_typed_key_after_a_cycle_closes_the_list_and_reads_the_new_line() {
     let mut session = session(60, 12);
     press(&mut session, ':');
-    type_keys(&mut session, "w");
+    type_keys(&mut session, "e");
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "w");
+    assert_eq!(prompt_text(&session), "edit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
 
     // The typed key continues from the line as it is shown.
-    press(&mut session, 'q');
-    assert_eq!(prompt_text(&session), "wq");
+    press(&mut session, '!');
+    assert_eq!(prompt_text(&session), "edit!");
     assert!(
         !completing(&session),
         "one insert closes the candidate list"
     );
 
-    // The next completion reads the new line and offers `wq` alone, so it
+    // The next completion reads the new line and offers `edit!` alone, so it
     // never reuses the candidates of the closed list.
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "wq");
+    assert_eq!(prompt_text(&session), "edit!");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Completed);
 
-    // One delete closes the list too, and the completion answers `w` again.
+    // One delete closes the list too, and the completion answers `edit` again.
     press_code(&mut session, KeyCode::Backspace);
     assert!(!completing(&session));
-    assert_eq!(prompt_text(&session), "w");
+    assert_eq!(prompt_text(&session), "edit");
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "wq", "the list holds `w` and `wq`");
+    assert_eq!(
+        prompt_text(&session),
+        "edit!",
+        "the list holds `edit` and `edit!`"
+    );
 }
 
 #[test]
@@ -589,9 +594,9 @@ fn enter_runs_the_command_that_the_completion_wrote_into_the_line() {
     type_keys(&mut session, "q");
     press_code(&mut session, KeyCode::Tab);
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "q!");
+    assert_eq!(prompt_text(&session), "quit!");
 
-    // The line shows `q!`, so `Enter` discards the changes and asks nothing.
+    // The line shows `quit!`, so `Enter` discards the changes and asks nothing.
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(question(&session), "");
     assert_eq!(session.run_state(), RunState::Finished);
