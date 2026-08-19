@@ -1,15 +1,21 @@
 //! The semantic theme roles and the one style lookup of the editor.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! A call site names one role. Only this module holds a color value, so a
-//! palette change never reaches a call site. The base color and the surface
-//! color come from [`ThemeSettings`]. Every other value belongs to the
-//! tokyonight night palette. See `docs/windows.md`.
+//! A call site names one role. This module is the one place in the workspace
+//! that holds a color value, so a palette change never reaches a call site.
+//! To recolor the editor, edit the palette below and rebuild. The default
+//! palette is tokyonight night with a darkened base color and surface color.
+//! See `docs/windows.md`.
 
 use kvim_language::SyntaxRole;
-use kvim_settings::{Rgb, ThemeSettings};
 use kvim_workspace::GitStatus;
 use ratatui::style::{Color, Modifier, Style};
+
+/// The editor background.
+const BASE: Color = Color::Rgb(0x11, 0x13, 0x17);
+
+/// The background band of a pane, an overlay, and a statusline.
+const SURFACE: Color = Color::Rgb(0x16, 0x1a, 0x20);
 
 /// The normal text color.
 const TEXT: Color = Color::Rgb(0xc0, 0xca, 0xf5);
@@ -52,6 +58,30 @@ const INFO: Color = Color::Rgb(0x0d, 0xb9, 0xd7);
 
 /// The color of a hint message.
 const HINT: Color = Color::Rgb(0x1a, 0xbc, 0x9c);
+
+/// The color of an attribute, a macro, and a preprocessor directive.
+const SYNTAX_ATTRIBUTE: Color = Color::Rgb(0x7d, 0xcf, 0xff);
+
+/// The color of a comment.
+const SYNTAX_COMMENT: Color = Color::Rgb(0x56, 0x5f, 0x89);
+
+/// The color of a constructor and of a statement.
+const SYNTAX_CONSTRUCTOR: Color = Color::Rgb(0xbb, 0x9a, 0xf7);
+
+/// The color of a delimiter and of an operator.
+const SYNTAX_OPERATOR: Color = Color::Rgb(0x89, 0xdd, 0xff);
+
+/// The color of a keyword.
+const SYNTAX_KEYWORD: Color = Color::Rgb(0x9d, 0x7c, 0xd8);
+
+/// The color of a property.
+const SYNTAX_PROPERTY: Color = Color::Rgb(0x73, 0xda, 0xca);
+
+/// The color of a string literal.
+const SYNTAX_STRING: Color = Color::Rgb(0x9e, 0xce, 0x6a);
+
+/// The color of a type name.
+const SYNTAX_TYPE: Color = Color::Rgb(0x2a, 0xc3, 0xde);
 
 /// The meaning of one icon.
 ///
@@ -180,11 +210,10 @@ pub enum ThemeRole {
 /// # Examples
 ///
 /// ```
-/// use kvim_settings::ThemeSettings;
 /// use kvim_tui::{Theme, ThemeRole};
 ///
-/// let theme = Theme::new(ThemeSettings::default());
-/// // The editor background is the darkened base color of the settings.
+/// let theme = Theme::new();
+/// // The editor background is the darkened base color of the palette.
 /// let text = theme.style(ThemeRole::Text);
 /// assert_eq!(text.bg, Some(ratatui::style::Color::Rgb(0x11, 0x13, 0x17)));
 /// // The winbar band uses the darkened surface color instead.
@@ -197,13 +226,26 @@ pub struct Theme {
     surface: Color,
 }
 
+impl Default for Theme {
+    /// Returns the palette of this module.
+    ///
+    /// The derived default would fill both fields with [`Color::Reset`], which
+    /// is not the palette, so the default delegates to [`Theme::new`].
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Theme {
-    /// Creates the theme over the two configured background colors.
+    /// Creates the theme over the palette of this module.
+    ///
+    /// The palette is compiled in, so a recolored editor is one edit of this
+    /// module and one rebuild. See `docs/windows.md`.
     #[must_use]
-    pub const fn new(settings: ThemeSettings) -> Self {
+    pub const fn new() -> Self {
         Self {
-            base: color(settings.base),
-            surface: color(settings.surface),
+            base: BASE,
+            surface: SURFACE,
         }
     }
 
@@ -309,23 +351,19 @@ fn syntax_style(role: SyntaxRole) -> Style {
     let style = Style::new();
     match role {
         SyntaxRole::Attribute | SyntaxRole::Macro | SyntaxRole::Preprocessor => {
-            style.fg(Color::Rgb(0x7d, 0xcf, 0xff))
+            style.fg(SYNTAX_ATTRIBUTE)
         }
         SyntaxRole::Boolean | SyntaxRole::Constant | SyntaxRole::Number => style.fg(ACCENT_WARM),
         SyntaxRole::Bracket => style.fg(TEXT_DIM),
-        SyntaxRole::Comment => style
-            .fg(Color::Rgb(0x56, 0x5f, 0x89))
-            .add_modifier(Modifier::ITALIC),
-        SyntaxRole::Constructor | SyntaxRole::Statement => style.fg(Color::Rgb(0xbb, 0x9a, 0xf7)),
-        SyntaxRole::Delimiter | SyntaxRole::Operator => style.fg(Color::Rgb(0x89, 0xdd, 0xff)),
+        SyntaxRole::Comment => style.fg(SYNTAX_COMMENT).add_modifier(Modifier::ITALIC),
+        SyntaxRole::Constructor | SyntaxRole::Statement => style.fg(SYNTAX_CONSTRUCTOR),
+        SyntaxRole::Delimiter | SyntaxRole::Operator => style.fg(SYNTAX_OPERATOR),
         SyntaxRole::Function => style.fg(TITLE),
-        SyntaxRole::Keyword => style
-            .fg(Color::Rgb(0x9d, 0x7c, 0xd8))
-            .add_modifier(Modifier::ITALIC),
+        SyntaxRole::Keyword => style.fg(SYNTAX_KEYWORD).add_modifier(Modifier::ITALIC),
         SyntaxRole::Parameter => style.fg(WARNING),
-        SyntaxRole::Property => style.fg(Color::Rgb(0x73, 0xda, 0xca)),
-        SyntaxRole::String => style.fg(Color::Rgb(0x9e, 0xce, 0x6a)),
-        SyntaxRole::Type => style.fg(Color::Rgb(0x2a, 0xc3, 0xde)),
+        SyntaxRole::Property => style.fg(SYNTAX_PROPERTY),
+        SyntaxRole::String => style.fg(SYNTAX_STRING),
+        SyntaxRole::Type => style.fg(SYNTAX_TYPE),
         SyntaxRole::Variable => style.fg(TEXT),
     }
 }
@@ -354,32 +392,25 @@ const fn icon_color(role: IconRole) -> Color {
     }
 }
 
-/// Converts one settings color into one terminal color.
-const fn color(value: Rgb) -> Color {
-    Color::Rgb(value.red, value.green, value.blue)
-}
-
 #[cfg(test)]
 mod tests {
-    use kvim_language::SyntaxRole;
-    use kvim_settings::{Rgb, ThemeSettings};
-    use ratatui::style::{Color, Modifier};
+    use std::fs;
+    use std::path::Path;
 
-    use super::{Theme, ThemeRole};
+    use kvim_language::SyntaxRole;
+    use ratatui::style::Modifier;
+
+    use super::{BASE, SURFACE, Theme, ThemeRole};
 
     fn theme() -> Theme {
-        Theme::new(ThemeSettings::default())
+        Theme::new()
     }
 
     #[test]
-    fn the_two_configured_colors_reach_every_background_band() {
-        let settings = ThemeSettings {
-            base: Rgb::new(1, 2, 3),
-            surface: Rgb::new(4, 5, 6),
-        };
-        let theme = Theme::new(settings);
-        let base = Color::Rgb(1, 2, 3);
-        let surface = Color::Rgb(4, 5, 6);
+    fn the_two_background_colors_reach_every_background_band() {
+        let theme = theme();
+        let base = BASE;
+        let surface = SURFACE;
         for role in [
             ThemeRole::Text,
             ThemeRole::NonText,
@@ -476,4 +507,56 @@ mod tests {
         SyntaxRole::Type,
         SyntaxRole::Variable,
     ];
+
+    /// The source files that may hold a color value.
+    ///
+    /// This module owns the palette. A test file names a color to assert one,
+    /// which is the only other honest reason to write one.
+    const COLOR_FILES: [&str; 3] = ["theme.rs", "render_tests.rs", "picker_tests.rs"];
+
+    /// Returns every Rust source file of this crate.
+    fn crate_sources(directory: &Path) -> Vec<std::path::PathBuf> {
+        let mut found = Vec::new();
+        let entries = fs::read_dir(directory).expect("the crate source directory is readable");
+        for entry in entries {
+            let path = entry.expect("one directory entry is readable").path();
+            if path.is_dir() {
+                found.extend(crate_sources(&path));
+            } else if path.extension().is_some_and(|kind| kind == "rs") {
+                found.push(path);
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn only_the_theme_module_names_a_color() {
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+        let sources = crate_sources(&root);
+        assert!(!sources.is_empty(), "the crate holds source files to read");
+        for path in sources {
+            let name = path
+                .file_name()
+                .expect("a source file has a name")
+                .to_string_lossy()
+                .into_owned();
+            if COLOR_FILES.contains(&name.as_str()) {
+                continue;
+            }
+            let text = fs::read_to_string(&path).expect("a source file is readable");
+            for (number, line) in text.lines().enumerate() {
+                // A doc line and a comment describe a color without painting
+                // one, so the guard reads code alone.
+                let code = line.trim_start();
+                if code.starts_with("//") {
+                    continue;
+                }
+                assert!(
+                    !code.contains("Color::"),
+                    "{name}:{} names a color; move it to a role in theme.rs",
+                    number + 1
+                );
+            }
+        }
+    }
 }

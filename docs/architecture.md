@@ -58,6 +58,12 @@ by well-known file name. An icon is presentation data, so its table lives in
 a comment token, or a language server, and no icon value may reach the language
 adapters. [`files.md`](files.md) owns the icon table.
 
+The color palette follows the same rule. A color is presentation data, so the
+complete palette lives in `crates/kvim-tui/src/theme.rs` beside the semantic
+roles, and `EditorSettings` holds no color. This keeps recoloring the editor to
+one file and one rebuild. A test fails when a color reaches any other module of
+the crate. [`windows.md`](windows.md) owns the palette.
+
 `kvim-language` and `kvim-workspace` each publish one test seam behind a
 `test-support` feature: the mock language server and the temporary-directory
 helper. The editor tests of `kvim-tui` drive both, so one mock server and one

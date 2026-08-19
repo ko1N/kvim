@@ -590,7 +590,7 @@ fn search(session: &mut Session, query: &str) {
 /// The renderer paints the matched characters with the match role of the theme,
 /// so the background of a cell reports the mark.
 fn match_columns(session: &Session, row: u16) -> Vec<u16> {
-    let theme = Theme::new(EditorSettings::default().theme);
+    let theme = Theme::new();
     let marked = theme.style(ThemeRole::SearchMatch).bg;
     let current = theme.style(ThemeRole::CurrentSearchMatch).bg;
     let buffer = draw(session);
@@ -1349,7 +1349,7 @@ fn sidebar_style(session: &Session, column: u16, row: u16) -> Style {
 
 /// Returns the theme of every test session.
 fn theme() -> Theme {
-    Theme::new(EditorSettings::default().theme)
+    Theme::new()
 }
 
 #[test]

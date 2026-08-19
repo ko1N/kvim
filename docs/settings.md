@@ -142,14 +142,16 @@ The defaults match the reference `fidget.nvim` configuration.
 
 ## Theme
 
-| Field | Default |
-|---|---|
-| Base color | `#111317` |
-| Surface color | `#161a20` |
+`EditorSettings` holds no color. The complete palette lives in
+`crates/kvim-tui/src/theme.rs`, beside the semantic roles that use it, so a user
+who recolors the editor edits one file and rebuilds.
 
-The palette is tokyonight night with these two darkened overrides. Every other
-palette value comes from the tokyonight night palette.
-[`windows.md`](windows.md) owns the semantic theme roles.
+This is a deliberate exception to the rule that every adjustable value belongs
+to `EditorSettings`. A color is presentation data, not behavior, and splitting
+the palette between two crates made the simple act of recoloring the editor
+touch two files. The same reasoning already places the icon table of the file
+tree in `kvim-tui`. [`windows.md`](windows.md) owns the palette, the semantic
+roles, and the instructions for recoloring.
 
 ## Typed Values
 
