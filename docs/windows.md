@@ -238,10 +238,9 @@ The terminal holds three bands. The window tree receives the body band only.
   owns the keys. The question ends the row, so the line draws no cursor behind
   it. See [`input-actions.md`](input-actions.md).
 - The command line can open a candidate list of the completion. The list takes
-  the rows of the body band directly above the message line, so it covers
-  neither the message line nor the statusline. The list appears only while more
-  than one candidate matches, because one candidate needs no choice.
-  [`input-actions.md`](input-actions.md) owns the keys that cycle it.
+  the last rows of the body band, so it covers neither the message line nor the
+  statusline. See
+  [Command-Line Candidate List](#command-line-candidate-list).
 
 One winbar row sits above the text of every window. It shows, from the left, one
 blank, the path of the buffer, and a marker for a modified buffer. It shows the
@@ -286,8 +285,38 @@ cursor never disagree. [`language-services.md`](language-services.md) owns the
 placement rule and the bounds.
 
 The overlays paint in a fixed order over the window tree: the notification
-overlay first, then the language float, then the which-key overlay, and the
-picker last over the complete terminal.
+overlay first, then the language float, then the command-line candidate list,
+then the which-key overlay, and the picker last over the complete terminal.
+
+### Command-Line Candidate List
+
+The candidate list of the command-line completion takes the last rows of the
+body band. The statusline and the message line stay below it. The command line
+that the list describes therefore always stays visible. The list appears only
+while more than one candidate matches, because one candidate needs no choice.
+[`input-actions.md`](input-actions.md) owns the keys that cycle it.
+
+The list shows at most eight rows, and never more rows than the body band
+holds. A list that holds more candidates than rows replaces its last row with
+`...`, so no candidate disappears without a note. The language float reports a
+lost row the same way. See [`language-services.md`](language-services.md). The
+shown candidates always hold the selected one, so a cycle moves the shown
+candidates instead of hiding the selection.
+
+The list is at most 48 cells wide, and never wider than the body band. A
+candidate that is wider than the list clips at the right edge of the list. The
+clip counts terminal cells, so it never splits a wide character.
+
+The text of a row starts one cell inside the list, so a candidate stands above
+the text of the command line, which follows the `:` prefix. The selected row
+carries the selection color of a popup list, which the picker uses for its own
+selected row. The list is decoration: it changes no buffer text, no cursor
+position, and no line mapping.
+
+The list and the notification overlay both reach the last rows of the body
+band. The list draws over the notification overlay. The user cycles the list
+with a key and reads it now. The overlay reports background work that no key
+waits for. See [`language-services.md`](language-services.md).
 
 ## Theme
 

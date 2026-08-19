@@ -132,6 +132,24 @@ impl LineCompletion {
         candidate
     }
 
+    /// Returns the candidates of the completion, in the order of their
+    /// producer.
+    ///
+    /// The list is never empty, because the constructor rejects an empty one.
+    /// The candidate list of `docs/windows.md` paints these texts.
+    pub(super) fn candidates(&self) -> &[String] {
+        &self.candidates
+    }
+
+    /// Returns the row of the candidate that the prompt line shows.
+    ///
+    /// The row always names one candidate of [`LineCompletion::candidates`],
+    /// because the constructor and the cycle keep the selection inside the
+    /// list.
+    pub(super) const fn selected_row(&self) -> usize {
+        self.selected
+    }
+
     /// Returns what the open completion left on the screen.
     ///
     /// The value is never [`CompletionOutcome::Missed`], because the
