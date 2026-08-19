@@ -74,17 +74,32 @@ this fixed set only:
 
 | Command | Effect |
 |---|---|
-| `:w` | Save the active buffer |
-| `:q` | Close the focused window, after a confirmation of unsaved changes |
-| `:q!` | Close the focused window and discard unsaved changes |
+| `:w[rite]` | Save the active buffer |
+| `:q[uit]` | Close the focused window, after a confirmation of unsaved changes |
+| `:q[uit]!` | Close the focused window and discard unsaved changes |
 | `:wq` | Save the active buffer, then close the focused window |
-| `:e <path>` | Open one file in the focused window |
-| `:e` | Read the file of the focused window again, after a confirmation of unsaved changes |
-| `:e!` | Discard the unsaved changes of that buffer and read its file |
+| `:e[dit] <path>` | Open one file in the focused window |
+| `:e[dit]` | Read the file of the focused window again, after a confirmation of unsaved changes |
+| `:e[dit]!` | Discard the unsaved changes of that buffer and read its file |
 | `:<number>` | Move the cursor to that line |
 
-The command line rejects every other input with a concise message. It does not
-guess a command from a prefix.
+Each command declares one full name and the shortest abbreviation that names it.
+The square brackets hold the optional part of the name, so `:q[uit]` accepts
+`:q`, `:qu`, `:qui`, and `:quit`. Every length between the declared minimum and
+the full name reaches the same command. The `!` variant follows the name, so
+`:quit!` works where `:q!` works.
+
+The declared minimum names the command, and the shortest unique prefix does not.
+`w` starts both `write` and `wq`. The minimum of `write` is one character, so
+`:w` saves the buffer and never becomes ambiguous. `wq` declares its two
+characters as the minimum and keeps its own name. `wq` has no longer name.
+
+The declared minimum is a promise. A shorter minimum breaks no command line, but
+a longer one breaks a command line that already works.
+
+The command line rejects every other input with a concise message. It accepts an
+abbreviation of a name in the table above only, so a name that no row declares
+stays unknown.
 
 `Esc` cancels the command line and restores the previous mode. The command line
 holds a bounded query length. `:w` and `:e` use the same save and open path as
@@ -123,9 +138,14 @@ line. A text that matches one name writes that name and opens no list. A text
 that matches no name changes nothing and reports nothing. See
 [`windows.md`](windows.md).
 
-The completion matches a name by its prefix, so `q` offers `q` and `q!`, `w`
-offers `w` and `wq`, and `e` offers `e` and `e!`. A line number is no name, so a
-line of digits offers no candidate.
+The completion offers the full name of a command and never an intermediate
+abbreviation, so one cycle shows the whole name and the list stays short. It
+matches the full name by its prefix, so `q` offers `quit` and `quit!`, `w` offers
+`wq` and `write`, and `e` offers `edit` and `edit!`. A `!` at the end of the
+typed text keeps the `!` variants alone, so `q!` offers `quit!`. The completion
+offers a name that the parser accepts only, so a command without a `!` variant
+never reaches the list with one. A line number is no name, so a line of digits
+offers no candidate.
 
 `Esc` closes an open candidate list and restores the text that the user typed. A
 second `Esc` then cancels the command line. Every other key closes the list and

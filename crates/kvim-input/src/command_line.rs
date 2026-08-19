@@ -1,8 +1,15 @@
 //! The command line parser for the fixed first-release command set.
 //!
-//! Kvim implements no Ex grammar. The parser accepts `:w`, `:q`, `:q!`, `:wq`,
-//! `:e`, `:e!`, `:e <path>`, and `:<number>` only, and rejects every other
-//! line. It never guesses a command from a prefix.
+//! Kvim implements no Ex grammar. The parser accepts `write`, `quit`, `wq`,
+//! `edit`, `edit <path>`, the `!` variant of `quit` and `edit`, and a line
+//! number only. It rejects every other line.
+//!
+//! Each command declares one full name and the shortest abbreviation that names
+//! it, as Vim does. `quit` declares one character, so `q`, `qu`, `qui`, and
+//! `quit` all reach the same command. The declared minimum names the command,
+//! and the shortest unique prefix does not: `w` starts both `write` and `wq`,
+//! and the minimum of `write` keeps `:w` unambiguous. See
+//! `docs/input-actions.md`.
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -57,31 +64,154 @@ pub enum CommandLineError {
         max: u32,
     },
     /// The line matched no accepted command.
-    #[error("the command line accepts :w, :q, :q!, :wq, :e, :e!, :e <path>, and :<number> only")]
+    #[error(
+        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, and :<number> only"
+    )]
     Unknown,
 }
 
+/// The command that one declared name reaches, without its argument.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum NamedCommand {
+    /// The name of [`CommandLineCommand::Edit`], [`CommandLineCommand::Reload`],
+    /// and [`CommandLineCommand::ReloadDiscard`].
+    Edit,
+    /// The name of [`CommandLineCommand::Quit`] and
+    /// [`CommandLineCommand::QuitDiscard`].
+    Quit,
+    /// The name of [`CommandLineCommand::Write`].
+    Write,
+    /// The name of [`CommandLineCommand::WriteQuit`].
+    WriteQuit,
+}
+
+/// Whether a `!` follows the typed name.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Bang {
+    /// The name carries no `!`.
+    Absent,
+    /// The name carries a `!`.
+    Present,
+}
+
+/// One command name and the shortest abbreviation that names it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CommandName {
+    /// The command that the name reaches.
+    command: NamedCommand,
+    /// The full name of the command.
+    full: &'static str,
+    /// The smallest number of leading characters that names the command.
+    ///
+    /// The value is a promise. A later release may declare a smaller minimum,
+    /// because that breaks no command line that already works. A larger one
+    /// breaks a command line that a user already types.
+    minimum: usize,
+}
+
+/// Every declared command name, in ascending order of the full name.
+///
+/// The table is the sole source of the command names, so one new command needs
+/// one new row here and no new completion code. The table holds no `:<number>`
+/// row, because a line number is no name. It holds no `:e <path>` row either,
+/// because the path is an argument of `edit`. See `docs/input-actions.md`.
+const NAMES: [CommandName; 4] = [
+    CommandName {
+        command: NamedCommand::Edit,
+        full: "edit",
+        minimum: 1,
+    },
+    CommandName {
+        command: NamedCommand::Quit,
+        full: "quit",
+        minimum: 1,
+    },
+    CommandName {
+        command: NamedCommand::WriteQuit,
+        full: "wq",
+        minimum: 2,
+    },
+    CommandName {
+        command: NamedCommand::Write,
+        full: "write",
+        minimum: 1,
+    },
+];
+
+impl CommandName {
+    /// Returns the declared name that `stem` abbreviates.
+    ///
+    /// The `stem` holds the typed name without its `!`. Every full name holds
+    /// ASCII characters only, so a `stem` that starts one holds as many
+    /// characters as bytes.
+    fn resolve(stem: &str) -> Option<Self> {
+        let mut matches = NAMES
+            .into_iter()
+            .filter(|name| name.full.starts_with(stem) && stem.len() >= name.minimum);
+        let resolved = matches.next();
+        debug_assert!(
+            matches.next().is_none(),
+            "the declared minimum of each name resolves one command; see docs/input-actions.md"
+        );
+        resolved
+    }
+}
+
 impl CommandLineCommand {
-    /// Every command name that [`CommandLineCommand::parse`] accepts, in
+    /// Returns every command name that the text `line` abbreviates, in
     /// ascending order.
     ///
-    /// The table is the sole source of the command-line completion, so one new
-    /// command needs one new row here and no new completion code. The table
-    /// holds no `:<number>` row, because a line number is no name. It holds no
-    /// `:e <path>` row either, because the path is an argument of `e`. See
-    /// `docs/input-actions.md`.
+    /// The command-line completion reads this function, so one new row of the
+    /// name table serves the parser and the completion together.
+    ///
+    /// The function offers the full name of a command and never an intermediate
+    /// abbreviation, so the list stays short and one cycle shows the whole name.
+    /// It offers a name that [`CommandLineCommand::parse`] accepts only, so a
+    /// command without a `!` variant never reaches the list with one.
     ///
     /// ```
     /// use kvim_input::CommandLineCommand;
     ///
-    /// let names: Vec<&str> = CommandLineCommand::NAMES
-    ///     .iter()
-    ///     .copied()
-    ///     .filter(|name| name.starts_with('q'))
-    ///     .collect();
-    /// assert_eq!(names, ["q", "q!"]);
+    /// assert_eq!(CommandLineCommand::names_matching("q"), ["quit", "quit!"]);
+    /// // A `!` at the end of the text keeps the `!` variants alone.
+    /// assert_eq!(CommandLineCommand::names_matching("q!"), ["quit!"]);
+    /// // `w` starts both names, and `write` declares the smaller minimum.
+    /// assert_eq!(CommandLineCommand::names_matching("w"), ["wq", "write"]);
+    /// // `write` has no `!` variant, and a line number is no name.
+    /// assert!(CommandLineCommand::names_matching("w!").is_empty());
+    /// assert!(CommandLineCommand::names_matching("42").is_empty());
     /// ```
-    pub const NAMES: [&'static str; 6] = ["e", "e!", "q", "q!", "w", "wq"];
+    pub fn names_matching(line: &str) -> Vec<String> {
+        // A separator opens the argument of a command, and an argument is no
+        // name. A leading blank names nothing either.
+        if line.contains(char::is_whitespace) {
+            return Vec::new();
+        }
+        let (stem, bang) = match line.strip_suffix('!') {
+            // A bare `!` names no command.
+            Some("") => return Vec::new(),
+            Some(stem) => (stem, Bang::Present),
+            None => (line, Bang::Absent),
+        };
+        let mut names = Vec::with_capacity(NAMES.len() * 2);
+        for name in NAMES {
+            if !name.full.starts_with(stem) {
+                continue;
+            }
+            debug_assert!(
+                Self::parse(name.full).is_ok(),
+                "the parser reads the same name table, so it accepts every full name"
+            );
+            if bang == Bang::Absent {
+                names.push(name.full.to_owned());
+            }
+            let discarding = format!("{}!", name.full);
+            if Self::parse(&discarding).is_ok() {
+                names.push(discarding);
+            }
+        }
+        names
+    }
 
     /// Parses one command line.
     ///
@@ -102,12 +232,15 @@ impl CommandLineCommand {
     ///
     /// assert_eq!(CommandLineCommand::parse("wq"), Ok(CommandLineCommand::WriteQuit));
     /// assert_eq!(
-    ///     CommandLineCommand::parse("e src/main.rs"),
+    ///     CommandLineCommand::parse("edit src/main.rs"),
     ///     Ok(CommandLineCommand::Edit(PathBuf::from("src/main.rs")))
     /// );
+    /// // Every abbreviation down to the declared minimum names the command.
+    /// assert_eq!(CommandLineCommand::parse("quit"), Ok(CommandLineCommand::Quit));
+    /// assert_eq!(CommandLineCommand::parse("q"), Ok(CommandLineCommand::Quit));
     /// // `:e` without a path reads the file of the focused window again.
     /// assert_eq!(CommandLineCommand::parse("e"), Ok(CommandLineCommand::Reload));
-    /// assert_eq!(CommandLineCommand::parse("e!"), Ok(CommandLineCommand::ReloadDiscard));
+    /// assert_eq!(CommandLineCommand::parse("edit!"), Ok(CommandLineCommand::ReloadDiscard));
     /// assert_eq!(
     ///     CommandLineCommand::parse("42"),
     ///     Ok(CommandLineCommand::GoToLine(NonZeroU32::new(42).unwrap()))
@@ -115,7 +248,7 @@ impl CommandLineCommand {
     /// assert_eq!(
     ///     CommandLineCommand::parse("wqa"),
     ///     Err(CommandLineError::Unknown),
-    ///     "the parser never guesses a command from a prefix"
+    ///     "the parser accepts a declared abbreviation only"
     /// );
     /// ```
     pub fn parse(line: &str) -> Result<Self, CommandLineError> {
@@ -130,38 +263,42 @@ impl CommandLineCommand {
         if trimmed.is_empty() {
             return Err(CommandLineError::Empty);
         }
-        match trimmed {
-            "w" => return Ok(Self::Write),
-            "q" => return Ok(Self::Quit),
-            "q!" => return Ok(Self::QuitDiscard),
-            "wq" => return Ok(Self::WriteQuit),
-            // `:e` reads the file of the focused window again, and `:e!` does
-            // the same after it discards the unsaved changes of that buffer.
-            "e" => return Ok(Self::Reload),
-            "e!" => return Ok(Self::ReloadDiscard),
-            _ => {}
-        }
-        if let Some(rest) = trimmed.strip_prefix('e') {
-            // `:e` needs a separator, so `:edit` stays an unknown command.
-            if rest.starts_with(char::is_whitespace) {
-                let path = rest.trim();
-                debug_assert!(
-                    !path.is_empty(),
-                    "the trimmed line ends with no whitespace, so a separator carries a path"
-                );
-                return Ok(Self::Edit(PathBuf::from(path)));
+        // The first separator ends the name and opens the argument.
+        let (word, argument) = match trimmed.find(char::is_whitespace) {
+            Some(index) => (&trimmed[..index], trimmed[index..].trim()),
+            None => (trimmed, ""),
+        };
+        let (stem, bang) = match word.strip_suffix('!') {
+            Some(stem) => (stem, Bang::Present),
+            None => (word, Bang::Absent),
+        };
+        let Some(name) = CommandName::resolve(stem) else {
+            if argument.is_empty() && word.bytes().all(|value| value.is_ascii_digit()) {
+                return word
+                    .parse::<u32>()
+                    .ok()
+                    .and_then(NonZeroU32::new)
+                    .map(Self::GoToLine)
+                    .ok_or(CommandLineError::LineNumberOutOfRange { max: u32::MAX });
             }
             return Err(CommandLineError::Unknown);
-        }
-        if trimmed.bytes().all(|value| value.is_ascii_digit()) {
-            return trimmed
-                .parse::<u32>()
-                .ok()
-                .and_then(NonZeroU32::new)
-                .map(Self::GoToLine)
-                .ok_or(CommandLineError::LineNumberOutOfRange { max: u32::MAX });
-        }
-        Err(CommandLineError::Unknown)
+        };
+        let argument = (!argument.is_empty()).then_some(argument);
+        // Every combination that no arm names is a rejected line, so `:w!` and
+        // `:wq!` stay unknown and only `edit` carries a path.
+        let command = match (name.command, bang, argument) {
+            (NamedCommand::Write, Bang::Absent, None) => Self::Write,
+            (NamedCommand::Quit, Bang::Absent, None) => Self::Quit,
+            (NamedCommand::Quit, Bang::Present, None) => Self::QuitDiscard,
+            (NamedCommand::WriteQuit, Bang::Absent, None) => Self::WriteQuit,
+            // `:e` reads the file of the focused window again, and `:e!` does
+            // the same after it discards the unsaved changes of that buffer.
+            (NamedCommand::Edit, Bang::Absent, None) => Self::Reload,
+            (NamedCommand::Edit, Bang::Present, None) => Self::ReloadDiscard,
+            (NamedCommand::Edit, Bang::Absent, Some(path)) => Self::Edit(PathBuf::from(path)),
+            _ => return Err(CommandLineError::Unknown),
+        };
+        Ok(command)
     }
 }
 
@@ -170,7 +307,7 @@ mod tests {
     use std::num::NonZeroU32;
     use std::path::PathBuf;
 
-    use super::{COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError};
+    use super::{COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError, NAMES};
 
     fn line(value: u32) -> CommandLineCommand {
         CommandLineCommand::GoToLine(NonZeroU32::new(value).expect("the test line is not zero"))
@@ -180,17 +317,27 @@ mod tests {
     fn the_fixed_command_set_parses() {
         let cases = [
             ("w", CommandLineCommand::Write),
+            ("write", CommandLineCommand::Write),
             ("q", CommandLineCommand::Quit),
+            ("quit", CommandLineCommand::Quit),
             ("q!", CommandLineCommand::QuitDiscard),
+            ("quit!", CommandLineCommand::QuitDiscard),
             ("wq", CommandLineCommand::WriteQuit),
             ("  w  ", CommandLineCommand::Write),
+            ("  quit  ", CommandLineCommand::Quit),
             (
                 "e src/main.rs",
                 CommandLineCommand::Edit(PathBuf::from("src/main.rs")),
             ),
+            (
+                "edit src/main.rs",
+                CommandLineCommand::Edit(PathBuf::from("src/main.rs")),
+            ),
             ("e", CommandLineCommand::Reload),
+            ("edit", CommandLineCommand::Reload),
             ("  e  ", CommandLineCommand::Reload),
             ("e!", CommandLineCommand::ReloadDiscard),
+            ("edit!", CommandLineCommand::ReloadDiscard),
             (
                 "e  a path/with space.rs ",
                 CommandLineCommand::Edit(PathBuf::from("a path/with space.rs")),
@@ -209,27 +356,111 @@ mod tests {
     }
 
     #[test]
-    fn the_name_table_holds_every_command_name_once_and_in_order() {
-        let names = CommandLineCommand::NAMES;
-        for name in names {
+    fn every_length_between_the_declared_minimum_and_the_full_name_parses() {
+        for name in NAMES {
+            let full = CommandLineCommand::parse(name.full);
+            assert!(full.is_ok(), "the full name `:{}` must parse", name.full);
+            for length in name.minimum..=name.full.len() {
+                let abbreviation = &name.full[..length];
+                assert_eq!(
+                    CommandLineCommand::parse(abbreviation),
+                    full,
+                    "`:{abbreviation}` must reach the same command as `:{}`",
+                    name.full
+                );
+            }
+            for length in 0..name.minimum {
+                let shorter = &name.full[..length];
+                assert_ne!(
+                    CommandLineCommand::parse(shorter),
+                    full,
+                    "`:{shorter}` is below the declared minimum of `:{}`",
+                    name.full
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn each_declared_minimum_names_one_command() {
+        let declared: Vec<&str> = NAMES.iter().map(|name| name.full).collect();
+        let mut ordered = declared.clone();
+        ordered.sort_unstable();
+        ordered.dedup();
+        assert_eq!(
+            ordered, declared,
+            "the completion offers the names in this order, and each one once"
+        );
+        for name in NAMES {
+            let minimum = &name.full[..name.minimum];
+            let shadowed: Vec<&str> = NAMES
+                .iter()
+                .filter(|other| {
+                    other.full != name.full
+                        && other.full.starts_with(minimum)
+                        && minimum.len() >= other.minimum
+                })
+                .map(|other| other.full)
+                .collect();
             assert!(
-                CommandLineCommand::parse(name).is_ok(),
-                "the completion offers `:{name}`, so the parser must accept it"
+                shadowed.is_empty(),
+                "`:{minimum}` names `:{}` and also {shadowed:?}",
+                name.full
             );
         }
-        let mut sorted = names;
-        sorted.sort_unstable();
-        assert_eq!(
-            sorted, names,
-            "the completion offers the names in this order"
-        );
-        let mut unique = names.to_vec();
-        unique.dedup();
-        assert_eq!(
-            unique.len(),
-            names.len(),
-            "one command name reaches the completion once"
-        );
+    }
+
+    #[test]
+    fn the_declared_minimum_of_write_resolves_the_prefix_that_wq_shares() {
+        // A plain unique-prefix rule would reject `:w`, because `w` starts both
+        // `write` and `wq`. The declared minimum of `write` names the winner.
+        let cases = [
+            ("w", CommandLineCommand::Write),
+            ("wr", CommandLineCommand::Write),
+            ("wri", CommandLineCommand::Write),
+            ("writ", CommandLineCommand::Write),
+            ("write", CommandLineCommand::Write),
+            ("wq", CommandLineCommand::WriteQuit),
+        ];
+        for (input, expected) in cases {
+            assert_eq!(
+                CommandLineCommand::parse(input),
+                Ok(expected),
+                "`:{input}` must parse"
+            );
+        }
+    }
+
+    #[test]
+    fn the_name_source_offers_a_full_name_that_the_parser_accepts() {
+        let cases: [(&str, &[&str]); 15] = [
+            ("", &["edit", "edit!", "quit", "quit!", "wq", "write"]),
+            ("e", &["edit", "edit!"]),
+            ("e!", &["edit!"]),
+            ("edit", &["edit", "edit!"]),
+            ("q", &["quit", "quit!"]),
+            ("q!", &["quit!"]),
+            ("w", &["wq", "write"]),
+            ("wr", &["write"]),
+            ("wq", &["wq"]),
+            // `write` and `wq` have no `!` variant, and `!` is no name.
+            ("w!", &[]),
+            ("!", &[]),
+            ("x", &[]),
+            ("42", &[]),
+            (" q", &[]),
+            ("e src/ma", &[]),
+        ];
+        for (line, expected) in cases {
+            let names = CommandLineCommand::names_matching(line);
+            assert_eq!(names, expected, "`:{line}` offers {names:?}");
+            for name in &names {
+                assert!(
+                    CommandLineCommand::parse(name).is_ok(),
+                    "the completion offers `:{name}`, so the parser must accept it"
+                );
+            }
+        }
     }
 
     #[test]
@@ -253,15 +484,27 @@ mod tests {
                 "4294967296",
                 CommandLineError::LineNumberOutOfRange { max: u32::MAX },
             ),
-            ("edit foo", CommandLineError::Unknown),
+            // A text longer than the full name names no command.
+            ("quitt", CommandLineError::Unknown),
+            ("edits", CommandLineError::Unknown),
+            // Only `edit` carries an argument, and only `quit` and `edit`
+            // carry a `!`.
+            ("write foo", CommandLineError::Unknown),
+            ("quit foo", CommandLineError::Unknown),
             ("e! src/main.rs", CommandLineError::Unknown),
+            ("edit! src/main.rs", CommandLineError::Unknown),
+            ("w!", CommandLineError::Unknown),
+            ("write!", CommandLineError::Unknown),
+            ("wq!", CommandLineError::Unknown),
             ("e!!", CommandLineError::Unknown),
             ("wqa", CommandLineError::Unknown),
             ("q!!", CommandLineError::Unknown),
+            ("!", CommandLineError::Unknown),
             ("W", CommandLineError::Unknown),
             (":w", CommandLineError::Unknown),
             ("s/a/b/", CommandLineError::Unknown),
             ("12a", CommandLineError::Unknown),
+            ("12 a", CommandLineError::Unknown),
         ];
         for (input, expected) in cases {
             assert_eq!(

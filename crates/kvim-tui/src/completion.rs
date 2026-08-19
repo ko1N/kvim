@@ -9,10 +9,10 @@
 //! and no second mechanism.
 //!
 //! The command names match by prefix, and not by the fuzzy score of the picker.
-//! The command line names the exact sets: `q` offers `q` and `q!` alone, while a
-//! subsequence match would add `wq` as well. A name of one or two characters
-//! also carries no fuzzy signal. The path source of `:e` still ranks with the
-//! scorer of the picker, so one fuzzy rule serves the picker and the paths.
+//! The command line names the exact sets: `q` offers `quit` and `quit!` alone,
+//! while a subsequence match would add `wq` as well. The path source of `:e`
+//! still ranks with the scorer of the picker, so one fuzzy rule serves the
+//! picker and the paths.
 //!
 //! See `docs/input-actions.md`.
 
@@ -152,25 +152,16 @@ impl LineCompletion {
 
 /// Returns the completion candidates of one command line.
 ///
-/// Only a command name completes today, so the producer reads the name table of
-/// the parser and keeps every name that starts with `line`. The comparison uses
-/// the line exactly, so a leading blank offers no candidate. A line that holds a
-/// separator, such as `e src/ma`, matches no name, and a line of digits names a
-/// line number and matches no name either.
+/// Only a command name completes today, so the producer asks the parser which
+/// full names the line abbreviates. The parser owns that rule, because it also
+/// owns the declared abbreviation of each name, so the two can never disagree.
 pub(super) fn command_line_candidates(line: &str) -> Vec<String> {
-    CommandLineCommand::NAMES
-        .iter()
-        .filter(|name| name.starts_with(line))
-        .map(|name| (*name).to_owned())
-        .collect()
+    CommandLineCommand::names_matching(line)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        COMPLETION_CANDIDATES_MAX, CompletionCycle, CompletionOutcome, LineCompletion,
-        command_line_candidates,
-    };
+    use super::{COMPLETION_CANDIDATES_MAX, CompletionCycle, CompletionOutcome, LineCompletion};
 
     /// The character bound of a prompt that accepts every test candidate.
     const CHARS_MAX: usize = 16;
@@ -208,28 +199,5 @@ mod tests {
         assert_eq!(bounded.selected(), last, "the bound drops every later row");
         bounded.cycle(CompletionCycle::Next);
         assert_eq!(bounded.selected(), "c0", "the cycle wraps at the bound");
-    }
-
-    #[test]
-    fn the_command_name_source_offers_no_argument_and_no_line_number() {
-        let cases = [
-            ("", 6),
-            ("q", 2),
-            ("w", 2),
-            ("e", 2),
-            ("wq", 1),
-            ("e src/ma", 0),
-            ("42", 0),
-            (" q", 0),
-            ("x", 0),
-        ];
-        for (line, expected) in cases {
-            let candidates = command_line_candidates(line);
-            assert_eq!(
-                candidates.len(),
-                expected,
-                "`:{line}` offers {candidates:?}"
-            );
-        }
     }
 }
