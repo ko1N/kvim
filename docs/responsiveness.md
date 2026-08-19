@@ -96,7 +96,7 @@ below must always agree.
 | Process concurrency | `PROCESS_CONCURRENCY_LIMIT` | 8 processes | The editor runs few external commands together: one search, one formatter, and one clipboard command. Eight leaves headroom and still bounds the child count. |
 | Worker concurrency | `WORKER_CONCURRENCY_LIMIT_MAX` | 1 to 8 jobs | The runtime clamps the detected parallelism into this range, so a large host does not start dozens of parser threads for one editor. |
 | Process input | `PROCESS_INPUT_BYTES_MAX` | 8 MiB | A formatter receives one buffer. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for expansion. |
-| Process output default | `PROCESS_OUTPUT_BYTES_DEFAULT` | 1 MiB | A picker or formatter result stays small. The default fails early for an unexpected flood. |
+| Process output default | `PROCESS_OUTPUT_BYTES_DEFAULT` | 1 MiB | A picker or clipboard result stays small. The default fails early for an unexpected flood, and a caller with a larger answer names its own limit. |
 | Process output maximum | `PROCESS_OUTPUT_BYTES_MAX` | 16 MiB | No caller may raise the limit above this value. The editor never needs more than four times the largest loaded file. |
 | Process deadline default | `PROCESS_DEADLINE_DEFAULT` | 10 s | A cold formatter or a large search needs seconds. Ten seconds reports a stuck command before the user waits longer. |
 | Worker deadline default | `WORKER_DEADLINE_DEFAULT` | 5 s | A parse or a highlight of a bounded file finishes far below this value. Five seconds reports a runaway job. |
@@ -105,10 +105,12 @@ Kvim uses a smaller process-output maximum than ReviewGraph, which allows
 129 MiB for large Git output. Kvim edits bounded files and never captures a
 repository-sized result.
 
-A caller may set a smaller output limit and a shorter deadline for one request.
-No caller may exceed the maximum values above. The process output limit counts
-standard output and standard error together, so a noisy standard error cannot
-double the captured bytes.
+A caller may set its own output limit and its own deadline for one request,
+inside the maximum values above. The external formatter of
+[`language-services.md`](language-services.md) names a larger output limit than
+the default, because it reads back a complete document. The process output limit
+counts standard output and standard error together, so a noisy standard error
+cannot double the captured bytes.
 
 [`files.md`](files.md) owns picker, file, tree, and workspace-watch limits.
 [`language-services.md`](language-services.md) owns analysis and protocol

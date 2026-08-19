@@ -34,11 +34,14 @@ pub const LANGUAGE_ROOT_MARKERS_MAX: usize = 16;
 
 /// Whether one declared server receives the document-formatting requests.
 ///
-/// Exactly one declaration of one adapter formats, so two servers of one
-/// language never format the same buffer.
+/// Exactly one declaration of one adapter carries this role, so two servers of
+/// one language never format the same buffer. An external formatter of the same
+/// adapter takes precedence over the role, so the role names the fallback
+/// formatter of its language. See `docs/language-services.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ServerFormatting {
-    /// The session sends the document-formatting requests to this server.
+    /// The session sends the document-formatting requests to this server while
+    /// its adapter declares no external formatter.
     Enabled,
     /// This server never receives a document-formatting request.
     Disabled,
@@ -135,7 +138,8 @@ pub struct LanguageServerDeclaration {
     pub args: &'static [&'static str],
     /// The protocol language identifier of a document of this language.
     pub language_id: &'static str,
-    /// Whether this server formats the documents of its adapter.
+    /// Whether this server formats the documents of its adapter while the
+    /// adapter declares no external formatter.
     pub formatting: ServerFormatting,
     /// The workspace root markers that prove that the workspace uses this
     /// server.

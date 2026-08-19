@@ -10,8 +10,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Nix adapter owns.
@@ -61,6 +61,15 @@ const NIX_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     root_markers: &[],
     initialization_options: nil_options,
 }];
+
+/// The external formatter of the Nix adapter.
+///
+/// `nixfmt` reads the document on standard input and writes the formatted
+/// document on standard output, so the declaration names no argument.
+const NIX_FORMATTER: FormatterDeclaration = FormatterDeclaration {
+    program: "nixfmt",
+    args: &[],
+};
 
 /// The language adapter for Nix expressions.
 ///
@@ -123,5 +132,9 @@ impl LanguageAdapter for NixAdapter {
 
     fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
         &NIX_SERVERS
+    }
+
+    fn external_formatter(&self) -> Option<&'static FormatterDeclaration> {
+        Some(&NIX_FORMATTER)
     }
 }

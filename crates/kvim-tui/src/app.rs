@@ -19,7 +19,8 @@ use tokio::time::sleep;
 
 use kvim_input::Mode;
 use kvim_language::{
-    ANALYSIS_DEADLINE, LanguageEvent, LanguageRegistry, LanguageServices, LspError,
+    ANALYSIS_DEADLINE, FormattedDocument, FormatterFailure, LanguageEvent, LanguageRegistry,
+    LanguageServices, LspError,
 };
 use kvim_runtime::{
     FileWatcher, ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent,
@@ -91,6 +92,13 @@ const CLIPBOARD_SLOT: RequestSlot = RequestSlot::new(6);
 /// `docs/git.md`.
 const GIT_SLOT: RequestSlot = RequestSlot::new(7);
 
+/// The publication slot of the external formatter of one buffer.
+///
+/// A save waits for its formatter answer, and the session starts no second
+/// format while one runs, so one slot holds every formatter run. See
+/// `docs/language-services.md`.
+const FORMAT_SLOT: RequestSlot = RequestSlot::new(8);
+
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -142,6 +150,8 @@ enum WorkResult {
     Clipboard(ProcessOutput),
     /// One Git status read of the workspace finished.
     Git(Result<GitStatusSnapshot, GitStatusFailure>),
+    /// One run of the external formatter of one buffer finished.
+    Format(Result<Option<FormattedDocument>, FormatterFailure>),
 }
 
 /// A failure that ends the editor.
@@ -509,6 +519,32 @@ fn submit_background_work(
         .or(submit_picker_work(editor, runtime, gate))
         .or(submit_clipboard_work(editor, runtime, gate))
         .or(submit_git_work(editor, runtime, gate))
+        .or(submit_format_work(editor, runtime, gate))
+}
+
+/// Hands the queued formatter run to the bounded process service.
+///
+/// The program reads the buffer and writes the formatted document, so it never
+/// runs on this loop. A refused submission returns to the session as a typed
+/// failure, which saves the unformatted content. See
+/// `docs/language-services.md`.
+fn submit_format_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) -> Redraw {
+    let Some(request) = editor.take_format_request() else {
+        return Redraw::Skipped;
+    };
+    let handle = gate.begin(FORMAT_SLOT, &runtime.cancellation_root());
+    let command = request.command();
+    let submitted = runtime.submit_process(handle, command, move |output| {
+        WorkResult::Format(request.publish(&output))
+    });
+    if submitted.is_err() {
+        return editor.apply_format_result(Err(FormatterFailure::Unavailable));
+    }
+    Redraw::Skipped
 }
 
 /// Hands the queued Git status read to the bounded process service.
@@ -741,6 +777,7 @@ fn complete(
     let workspace = event.request.slot() == WORKSPACE_SLOT;
     let clipboard = event.request.slot() == CLIPBOARD_SLOT;
     let git = event.request.slot() == GIT_SLOT;
+    let format = event.request.slot() == FORMAT_SLOT;
     let picker = if event.request.slot() == PICKER_SLOT {
         Some(PickerSlot::Candidates)
     } else if event.request.slot() == PREVIEW_SLOT {
@@ -766,6 +803,7 @@ fn complete(
         (_, Ok(WorkResult::Picker(result))) => editor.apply_picker_result(result),
         (_, Ok(WorkResult::Clipboard(output))) => editor.apply_clipboard_result(Ok(output)),
         (_, Ok(WorkResult::Git(result))) => editor.apply_git_result(result),
+        (_, Ok(WorkResult::Format(result))) => editor.apply_format_result(result),
         (Some(slot), Err(error)) => editor.abandon_picker_request(slot, picker_failure(&error)),
         // A clipboard command that fails, times out, or is cancelled keeps the
         // unnamed register, so the yank or the paste still holds its value.
@@ -781,6 +819,11 @@ fn complete(
         // A status read that fails, times out, or is cancelled keeps the marks
         // of the last successful read, because they are decoration.
         (None, Err(error)) if git => editor.apply_git_result(Err(git_failure(&error))),
+        // A formatter that fails, times out, or is cancelled leaves the buffer
+        // as the user typed it, and the save that waited for it still runs.
+        (None, Err(error)) if format => {
+            editor.apply_format_result(Err(FormatterFailure::of(&error)))
+        }
         (None, Err(error)) if workspace => editor.abandon_workspace_request(failure(&error)),
         (None, Err(error)) => editor.abandon_file_request(failure(&error)),
     })
@@ -848,6 +891,68 @@ mod tests {
             editor.take_file_request().is_none(),
             "the dispatch hands the save to the worker service inside one iteration, \
              so the write never waits for the next terminal event"
+        );
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn one_dispatch_runs_the_external_formatter_and_the_save_behind_it() {
+        let directory = TempDir::new("app-dispatch-format");
+        // The Nix adapter declares an external formatter, so the save reaches
+        // the bounded process service instead of a language server.
+        let path = directory.write("flake.nix", "{  }\n");
+        let mut settings = EditorSettings::default();
+        settings.files.undo_file = false;
+        let root = path
+            .parent()
+            .expect("the temporary file holds a parent directory")
+            .to_path_buf();
+        let mut editor = Session::new(Rect::new(0, 0, 80, 24), settings, root);
+        let _ = editor.open_path(path);
+        let request = editor
+            .take_file_request()
+            .expect("the open queued one file request");
+        let _ = editor.apply_file_result(request.run());
+        // One typed character leaves the buffer with an unsaved change, so the
+        // save behind the formatter writes the file.
+        let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char('i'))), NOW);
+        let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(' '))), NOW);
+        let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Esc)), NOW);
+
+        let (runtime, mut results) = Runtime::<WorkResult>::new();
+        let gate = PublicationGate::default();
+        let mut language = None;
+        let _ = editor.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+        let _ = dispatch(&mut editor, &runtime, &gate, &mut language);
+
+        assert!(
+            editor.take_file_request().is_none(),
+            "the save waits for the formatter answer"
+        );
+        // The same dispatch also started the directory read of the file tree,
+        // so the loop applies every result until the formatter answers.
+        let mut answered = false;
+        for _ in 0..DISPATCH_PASSES_MAX + PICKER_DISPATCH_MAX {
+            let event = results
+                .recv()
+                .await
+                .expect("every accepted request produces one result");
+            answered |= event.request.slot() == FORMAT_SLOT;
+            let _ = complete(&mut editor, &gate, Some(event), NOW);
+            if answered {
+                break;
+            }
+        }
+        assert!(
+            answered,
+            "the dispatch handed the run to the process service"
+        );
+
+        // A host without the program answers a typed failure, and a host with
+        // it answers a document. The save follows either answer.
+        assert!(
+            editor.take_file_request().is_some(),
+            "the formatter answer completes the save that waited for it"
         );
         runtime.shutdown().await;
     }

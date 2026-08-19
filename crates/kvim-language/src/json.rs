@@ -10,7 +10,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the JSON adapter owns.
@@ -54,6 +55,19 @@ const JSON_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     root_markers: &[],
     initialization_options: vscode_json_language_server_options,
 }];
+
+/// The external formatter of the JSON adapter.
+///
+/// `prettier` reads the document on standard input, and it selects its parser
+/// from the file name. The declaration therefore names the place of the
+/// document path beside the flag that carries it.
+const JSON_FORMATTER: FormatterDeclaration = FormatterDeclaration {
+    program: "prettier",
+    args: &[
+        FormatterArgument::Literal("--stdin-filepath"),
+        FormatterArgument::DocumentPath,
+    ],
+};
 
 /// The language adapter for JSON documents.
 ///
@@ -124,5 +138,9 @@ impl LanguageAdapter for JsonAdapter {
 
     fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
         &JSON_SERVERS
+    }
+
+    fn external_formatter(&self) -> Option<&'static FormatterDeclaration> {
+        Some(&JSON_FORMATTER)
     }
 }
