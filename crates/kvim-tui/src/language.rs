@@ -20,8 +20,8 @@ use std::sync::Arc;
 use kvim_core::BufferVersion;
 use kvim_language::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition, FormatEdits,
-    LANGUAGE_SERVERS_MAX, LanguageRegistry, LanguageRequestId, LanguageServerHandle,
-    LanguageServerId, LspError, ServerFormatting, SourceLocation,
+    FormatterRequest, LANGUAGE_SERVERS_MAX, LanguageFormatter, LanguageRegistry, LanguageRequestId,
+    LanguageServerHandle, LanguageServerId, LspError, ServerFormatting, SourceLocation,
 };
 use kvim_workspace::BufferId;
 
@@ -482,6 +482,33 @@ impl PendingQuery {
     }
 }
 
+/// One external format that a save waits for.
+///
+/// The session builds the run and never starts the program. The event loop
+/// takes the run and hands it to the bounded process service, so no formatter
+/// ever runs on that loop. See `docs/responsiveness.md`.
+#[derive(Debug)]
+pub(super) struct PendingFormat {
+    /// The buffer that the formatter formats.
+    pub(super) buffer: BufferId,
+    /// The step that follows the save.
+    pub(super) then: AfterSave,
+    /// How far the run progressed.
+    stage: FormatStage,
+}
+
+/// How far one external format progressed.
+///
+/// The run and the stage are one value, so no state can name a queued run that
+/// the event loop already took.
+#[derive(Debug)]
+enum FormatStage {
+    /// The run waits for the event loop.
+    Queued(FormatterRequest),
+    /// The bounded process service runs the formatter.
+    Running,
+}
+
 /// The definition target that waits for its document to load.
 #[derive(Debug)]
 pub(super) struct PendingJump {
@@ -506,6 +533,11 @@ pub(super) enum LanguageNotice {
     UnusedInWorkspace,
     /// The declared server is not installed on this system.
     NotInstalled,
+    /// The declared external formatter is not installed on this system.
+    ///
+    /// The state never fails a save. The editor writes the content that the
+    /// user typed and continues without a format.
+    FormatterMissing,
     /// The session stopped and accepts no further request.
     Stopped,
 }
@@ -532,27 +564,37 @@ impl LanguageNotice {
                 "this workspace uses no language server for this buffer; editing continues"
             }
             Self::NotInstalled => "no language server is installed; editing continues without one",
+            Self::FormatterMissing => {
+                "the formatter is not installed; the save continues without it"
+            }
             Self::Stopped => "the language server stopped; editing continues without it",
         }
     }
 }
 
+/// Returns the formatter that formats one document.
+///
+/// An external formatter takes precedence over a formatting server, so the
+/// adapter of the path decides which path a format-on-save runs. A buffer
+/// without a file name and a path that no adapter owns have no formatter. The
+/// answer is adapter data alone, and every caller derives it again instead of
+/// storing it, because a stored copy could disagree with the adapter table.
+///
+/// Whether a declared server or a declared program is installed, running, or
+/// stopped is a separate runtime state that [`LanguageNotice`] reports.
+pub(super) fn formatter(
+    languages: LanguageRegistry,
+    path: Option<&Path>,
+) -> Option<LanguageFormatter> {
+    languages.adapter(path?).ok()?.formatter()
+}
+
 /// Reports whether a formatter can format one document.
 ///
-/// Formatting reaches the document-formatting request of one language server,
-/// so a buffer without a file name, a path that no adapter owns, and an adapter
-/// that declares no formatting server all have no formatter. The answer is
-/// adapter data alone, and every caller derives it again instead of storing it,
-/// because a stored copy could disagree with the adapter table.
-///
-/// Whether a declared server is installed, running, or stopped is a separate
-/// runtime state that [`LanguageNotice`] reports.
+/// The answer covers both paths: an adapter that declares an external formatter
+/// and an adapter that declares a formatting server can both format a buffer.
 pub(super) fn has_formatter(languages: LanguageRegistry, path: Option<&Path>) -> bool {
-    path.is_some_and(|path| {
-        languages
-            .adapter(path)
-            .is_ok_and(|adapter| adapter.formatter().is_some())
-    })
+    formatter(languages, path).is_some()
 }
 
 /// Whether one buffer formats through its language server before a save.
@@ -861,6 +903,8 @@ pub(super) struct LanguageState {
     format_on_save: BTreeMap<BufferId, FormatOnSave>,
     /// The definition target that waits for its document to load.
     pub(super) jump: Option<PendingJump>,
+    /// The external format that a save waits for.
+    format: Option<PendingFormat>,
 }
 
 impl LanguageState {
@@ -921,6 +965,44 @@ impl LanguageState {
     /// Records one normal state, and reports whether it is new.
     pub(super) fn report(&mut self, notice: LanguageNotice) -> bool {
         self.reported.insert(notice)
+    }
+
+    /// Records one external format that a save waits for.
+    pub(super) fn start_format(
+        &mut self,
+        buffer: BufferId,
+        then: AfterSave,
+        request: FormatterRequest,
+    ) {
+        debug_assert!(
+            self.format.is_none(),
+            "the session runs one format at a time, and a save checks that state first"
+        );
+        self.format = Some(PendingFormat {
+            buffer,
+            then,
+            stage: FormatStage::Queued(request),
+        });
+    }
+
+    /// Reports whether one external format waits for its answer.
+    pub(super) const fn formats(&self) -> bool {
+        self.format.is_some()
+    }
+
+    /// Takes the formatter run that the event loop must submit.
+    pub(super) fn take_format_request(&mut self) -> Option<FormatterRequest> {
+        let pending = self.format.as_mut()?;
+        match std::mem::replace(&mut pending.stage, FormatStage::Running) {
+            FormatStage::Queued(request) => Some(request),
+            // The event loop already took the run, so it owns the answer.
+            FormatStage::Running => None,
+        }
+    }
+
+    /// Takes the external format that one answer completes.
+    pub(super) fn take_format(&mut self) -> Option<PendingFormat> {
+        self.format.take()
     }
 
     /// Publishes the diagnostics that one server reported for one buffer.

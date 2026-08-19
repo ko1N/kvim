@@ -1,20 +1,25 @@
 //! Behavior tests for the language registry and the Tree-sitter adapters.
 
-use std::path::Path;
+use std::ffi::OsString;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
 use kvim_core::{EditTransaction, TextBuffer, TextChange};
-use kvim_runtime::{PublicationGate, RequestSlot, Runtime, RuntimeLimits};
+use kvim_runtime::{ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeLimits};
 use kvim_settings::FileSettings;
 
+use super::formatter::declaration_is_valid;
 use super::server::declarations_are_valid;
 use super::{
     ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_SOURCE_BYTES_MAX, ANALYSIS_SOURCE_LINES_MAX,
-    Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax, CommentStyle, Grammar,
-    IndentRule, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageRegistry,
-    Publication, RustAdapter, SyntaxRole, SyntaxTree,
+    Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax, CommentStyle,
+    FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
+    FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, Grammar,
+    IndentRule, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageAdapter,
+    LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter, Publication, RustAdapter,
+    ServerFormatting, SyntaxRole, SyntaxTree,
 };
 
 /// A second adapter that proves the multi-language seam.
@@ -507,9 +512,13 @@ fn every_registered_adapter_declares_a_valid_server_table() {
              {LANGUAGE_ROOT_MARKERS_MAX} valid root markers for each server",
         );
         assert_eq!(
-            adapter.formatter().is_some(),
-            !adapter.language_servers().is_empty(),
-            "{path} formats through the one server that carries the formatting role",
+            adapter
+                .language_servers()
+                .iter()
+                .filter(|declaration| declaration.formatting == ServerFormatting::Enabled)
+                .count(),
+            usize::from(!adapter.language_servers().is_empty()),
+            "{path} names one server that formats while it declares no external formatter",
         );
     }
 }
@@ -585,4 +594,274 @@ fn a_language_without_a_comment_keeps_the_toggle_disabled() {
         assert_eq!(comment.line_token(), None, "{path} has no line comment");
         assert_eq!(comment.block(), None, "{path} has no block comment");
     }
+}
+
+/// A deterministic formatter for the process tests.
+///
+/// `tr` is a POSIX command, and it maps every lowercase letter onto its
+/// uppercase letter. The tests therefore prove that the buffer reaches the
+/// standard input of the program and that the formatted document returns on the
+/// standard output, without a formatter of the host system.
+const UPPERCASE_FORMATTER: FormatterDeclaration = FormatterDeclaration {
+    program: "tr",
+    args: &[
+        FormatterArgument::Literal("a-z"),
+        FormatterArgument::Literal("A-Z"),
+    ],
+};
+
+/// A program that no host holds, which proves the missing-formatter state.
+const MISSING_FORMATTER: FormatterDeclaration = FormatterDeclaration {
+    program: "kvim-formatter-that-no-host-holds",
+    args: &[],
+};
+
+/// Returns one captured process result.
+fn process_output(status_code: Option<i32>, stdout: &[u8]) -> ProcessOutput {
+    ProcessOutput {
+        status_code,
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    }
+}
+
+/// Returns one run of the Nix formatter over the given buffer text.
+fn nix_run(content: &str) -> (TextBuffer, FormatterRequest) {
+    let text = buffer(content);
+    let declaration = NixAdapter::new()
+        .external_formatter()
+        .expect("the Nix adapter declares a formatter");
+    let request = FormatterRequest::new(
+        declaration,
+        PathBuf::from("/workspace/flake.nix"),
+        text.version(),
+        text.to_string(),
+    );
+    (text, request)
+}
+
+/// Runs one formatter through the bounded process service, exactly as the
+/// terminal event loop does.
+///
+/// The call runs a real program, so it proves the arguments and the standard
+/// input of [`FormatterRequest::command`]. A recorded output can never prove
+/// them.
+async fn run_formatter(
+    request: FormatterRequest,
+) -> Result<Option<FormattedDocument>, FormatterFailure> {
+    let limits = RuntimeLimits::new(1, 1, 1).expect("every capacity is nonzero");
+    let (runtime, mut events) = Runtime::<ProcessOutput>::with_limits(limits);
+    let handle =
+        PublicationGate::default().begin(RequestSlot::new(1), &runtime.cancellation_root());
+    runtime
+        .submit_process(handle, request.command(), |output| output)
+        .expect("the isolated runtime holds one free permit");
+    let event = events
+        .recv()
+        .await
+        .expect("every accepted request produces one result");
+    runtime.shutdown().await;
+    match event.result {
+        Ok(output) => request.publish(&output),
+        Err(error) => Err(FormatterFailure::of(&error)),
+    }
+}
+
+#[test]
+fn an_external_formatter_takes_precedence_over_a_formatting_server() {
+    // The Nix adapter declares both, so the precedence rule decides.
+    let nix = NixAdapter::new();
+    assert_eq!(
+        nix.language_servers()[0].formatting,
+        ServerFormatting::Enabled,
+        "the declared server keeps the fallback role"
+    );
+    assert!(
+        matches!(
+            nix.formatter(),
+            Some(LanguageFormatter::External(declaration)) if declaration.program == "nixfmt"
+        ),
+        "the declared program formats a Nix buffer"
+    );
+
+    // Rust declares no program, so its server formats the buffer.
+    assert!(
+        matches!(
+            RustAdapter::new().formatter(),
+            Some(LanguageFormatter::Server(declaration)) if declaration.id == "rust_analyzer"
+        ),
+        "a language without a program keeps its server formatter"
+    );
+
+    // An adapter that declares neither has no formatter at all.
+    assert!(SecondAdapter.formatter().is_none());
+}
+
+#[test]
+fn every_registered_adapter_declares_the_formatter_of_its_language() {
+    let registry = LanguageRegistry::first_release();
+
+    for (path, program) in [
+        ("Cargo.toml", Some("taplo")),
+        ("flake.nix", Some("nixfmt")),
+        ("package.json", Some("prettier")),
+        ("README.md", Some("prettier")),
+        ("src/main.rs", None),
+    ] {
+        let adapter = registry
+            .adapter(Path::new(path))
+            .expect("the path belongs to one adapter");
+        let declaration = adapter.external_formatter();
+        assert_eq!(
+            declaration.map(|declaration| declaration.program),
+            program,
+            "{path} declares its own external formatter",
+        );
+        assert!(
+            declaration.is_none_or(declaration_is_valid),
+            "{path} names a program and at most {FORMATTER_ARGS_MAX} arguments",
+        );
+        assert!(
+            adapter.formatter().is_some(),
+            "{path} formats through one of the two paths",
+        );
+    }
+}
+
+#[test]
+fn the_formatter_command_substitutes_the_document_path() {
+    let text = buffer("#  Title\n");
+    let declaration = MarkdownAdapter::new()
+        .external_formatter()
+        .expect("the Markdown adapter declares a formatter");
+
+    let request = FormatterRequest::new(
+        declaration,
+        PathBuf::from("/workspace/notes.md"),
+        text.version(),
+        text.to_string(),
+    );
+    let command = request.command();
+
+    assert_eq!(command.program, "prettier");
+    assert_eq!(
+        command.args,
+        vec![
+            OsString::from("--stdin-filepath"),
+            OsString::from("/workspace/notes.md"),
+        ],
+        "prettier selects its parser from the document path"
+    );
+    assert_eq!(command.stdin, b"#  Title\n", "the buffer reaches stdin");
+    assert_eq!(command.output_bytes_max, FORMATTER_OUTPUT_BYTES_MAX);
+    assert_eq!(command.deadline, FORMATTER_DEADLINE);
+}
+
+#[test]
+fn a_formatter_answer_that_kvim_cannot_use_changes_nothing() {
+    let (_text, request) = nix_run("{  }\n");
+
+    assert_eq!(
+        request.publish(&process_output(Some(1), b"{ }\n")),
+        Err(FormatterFailure::Unavailable),
+        "a non-zero exit code reports a refusal"
+    );
+    assert_eq!(
+        request.publish(&process_output(Some(0), &[0xff, 0xfe])),
+        Err(FormatterFailure::Unavailable),
+        "bytes that are not UTF-8 name no document"
+    );
+    assert_eq!(
+        request.publish(&process_output(Some(0), b"")),
+        Err(FormatterFailure::Unavailable),
+        "a program that writes nothing formatted nothing"
+    );
+    assert_eq!(
+        request.publish(&process_output(Some(0), b"{  }\n")),
+        Ok(None),
+        "a buffer that already matches its formatter records no undo step"
+    );
+}
+
+#[test]
+fn a_formatted_document_replaces_the_buffer_as_one_transaction() {
+    let (mut text, request) = nix_run("{  }\n");
+    let document = request
+        .publish(&process_output(Some(0), b"{ }\n"))
+        .expect("the program reported success")
+        .expect("the program changed the document");
+    let cursor = text.char_position(0).expect("the position exists");
+
+    let transaction = document
+        .transaction(&text, cursor)
+        .expect("the buffer still holds the version of the request");
+
+    assert_eq!(
+        transaction.changes().len(),
+        1,
+        "one undo reverses a complete format"
+    );
+    text.apply(transaction).expect("the range fits the buffer");
+    assert_eq!(text.to_string(), "{ }\n");
+}
+
+#[test]
+fn a_formatted_document_of_an_obsolete_buffer_version_is_rejected() {
+    let (mut text, request) = nix_run("{  }\n");
+    let document = request
+        .publish(&process_output(Some(0), b"{ }\n"))
+        .expect("the program reported success")
+        .expect("the program changed the document");
+
+    // The user types while the formatter runs, so the answer describes text
+    // that the buffer no longer holds.
+    let at = text.char_position(0).expect("the position exists");
+    text.apply(EditTransaction::single(at, TextChange::insert(at, "#")))
+        .expect("the position fits");
+    let cursor = text.char_position(0).expect("the position exists");
+
+    assert_eq!(
+        document.transaction(&text, cursor),
+        Err(FormatterFailure::Obsolete)
+    );
+    assert_eq!(
+        text.to_string(),
+        "#{  }\n",
+        "the buffer keeps what the user typed"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_bounded_process_service_formats_one_buffer_off_the_event_loop() {
+    let text = buffer("let value = 1;\n");
+    let request = FormatterRequest::new(
+        &UPPERCASE_FORMATTER,
+        PathBuf::from("/workspace/main.kv"),
+        text.version(),
+        text.to_string(),
+    );
+
+    let document = run_formatter(request)
+        .await
+        .expect("the program ran and reported success")
+        .expect("the program changed the document");
+
+    assert_eq!(document.text(), "LET VALUE = 1;\n");
+    assert_eq!(document.version(), text.version());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_formatter_that_the_host_does_not_hold_reports_that_it_is_not_installed() {
+    let text = buffer("let value = 1;\n");
+    let request = FormatterRequest::new(
+        &MISSING_FORMATTER,
+        PathBuf::from("/workspace/main.kv"),
+        text.version(),
+        text.to_string(),
+    );
+
+    assert_eq!(
+        run_formatter(request).await,
+        Err(FormatterFailure::NotInstalled)
+    );
 }

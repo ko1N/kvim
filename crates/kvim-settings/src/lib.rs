@@ -296,7 +296,11 @@ impl Default for WindowSettings {
 pub struct FileSettings {
     /// Keep a persistent undo file beside the editor state directory.
     pub undo_file: bool,
-    /// Format a buffer through the language server before every save.
+    /// Format a buffer through the formatter of its language before every save.
+    ///
+    /// The setting names no formatter. The language adapter decides whether an
+    /// external program or a language server formats the buffer. See
+    /// `docs/language-services.md`.
     pub format_on_save: bool,
     /// Replace a file through a staged atomic write where the platform supports it.
     pub atomic_save: bool,

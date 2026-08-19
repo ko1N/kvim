@@ -17,10 +17,11 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use serde_json::{Value, json};
 
-use kvim_language::LanguageServerHandle;
 use kvim_language::mock::{
     self, Harness, MockServer, OTHER_SERVER, named_session_at, pipe, session_at,
 };
+use kvim_language::{FormatterFailure, LanguageServerHandle};
+use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
@@ -158,6 +159,27 @@ impl Editor {
         if let Some(other) = self.other.as_mut() {
             other.expect("textDocument/didOpen").await;
         }
+    }
+
+    /// Takes the queued formatter run, like the event loop.
+    fn take_format(&mut self) -> kvim_language::FormatterRequest {
+        self.session
+            .take_format_request()
+            .expect("the save queued one formatter run")
+    }
+
+    /// Runs the queued formatter with one recorded program output.
+    ///
+    /// The bounded process service performs this step for the real program, so
+    /// the test proves the editor path without a formatter of the host system.
+    fn run_format(&mut self, status_code: Option<i32>, stdout: &str) {
+        let request = self.take_format();
+        let output = ProcessOutput {
+            status_code,
+            stdout: stdout.as_bytes().to_vec(),
+            stderr: Vec::new(),
+        };
+        let _ = self.session.apply_format_result(request.publish(&output));
     }
 
     /// Runs the queued file request, like the event loop and the worker service.
@@ -1158,4 +1180,104 @@ async fn a_restart_opens_every_document_again() {
         "fn main() {}\n",
         "a restart never changes the buffer text"
     );
+}
+
+#[tokio::test]
+async fn an_external_formatter_formats_a_buffer_that_its_server_never_formats() {
+    // The Nix adapter declares `nixfmt`, so the declared program formats the
+    // buffer and the session sends no formatting request to its server.
+    let mut editor = Editor::start("language-external-format", &[("flake.nix", "{  }\n")]).await;
+
+    editor.save();
+    editor.run_format(Some(0), "{ }\n");
+    assert_eq!(editor.session.buffer().to_string(), "{ }\n");
+
+    editor.run_file_request();
+    assert_eq!(editor.file("flake.nix"), "{ }\n");
+    assert!(!editor.session.active_buffer().is_modified());
+
+    // The complete formatter answer is one transaction, so one undo reverses it.
+    editor.press("u");
+    assert_eq!(editor.session.buffer().to_string(), "{  }\n");
+}
+
+#[tokio::test]
+async fn a_failed_external_formatter_still_saves_the_buffer() {
+    let mut editor = Editor::start("language-external-failure", &[("flake.nix", "{  }\n")]).await;
+
+    editor.save();
+    // The program reports its refusal through its exit code.
+    editor.run_format(Some(1), "");
+    assert_eq!(
+        editor.session.buffer().to_string(),
+        "{  }\n",
+        "a formatter failure never changes the buffer"
+    );
+
+    editor.run_file_request();
+    assert_eq!(editor.file("flake.nix"), "{  }\n");
+}
+
+#[tokio::test]
+async fn an_obsolete_external_format_never_changes_the_buffer() {
+    let mut editor = Editor::start("language-external-stale", &[("flake.nix", "{  }\n")]).await;
+
+    editor.save();
+    let request = editor.take_format();
+    // The buffer moves to a new version while the formatter runs, so its answer
+    // describes text that no longer exists.
+    editor.press("ix");
+    editor.press_code(KeyCode::Esc);
+    let output = ProcessOutput {
+        status_code: Some(0),
+        stdout: b"{ }\n".to_vec(),
+        stderr: Vec::new(),
+    };
+    let _ = editor.session.apply_format_result(request.publish(&output));
+
+    assert_eq!(
+        editor.session.buffer().to_string(),
+        "x{  }\n",
+        "an obsolete formatter answer never changes the buffer"
+    );
+    editor.run_file_request();
+    assert_eq!(
+        editor.file("flake.nix"),
+        "x{  }\n",
+        "the save writes the content that the user typed"
+    );
+}
+
+#[tokio::test]
+async fn a_missing_formatter_program_reports_its_state_once_and_still_saves() {
+    let mut editor = Editor::start("language-external-missing", &[("flake.nix", "{  }\n")]).await;
+
+    editor.save();
+    let _ = editor.take_format();
+    let _ = editor
+        .session
+        .apply_format_result(Err(FormatterFailure::NotInstalled));
+    assert_eq!(
+        editor.message(),
+        "the formatter is not installed; the save continues without it"
+    );
+    editor.run_file_request();
+    assert_eq!(editor.file("flake.nix"), "{  }\n");
+
+    // The state never changes while the editor runs, so a second save repeats
+    // no report and still writes the buffer.
+    editor.press("ox");
+    editor.press_code(KeyCode::Esc);
+    editor.save();
+    let _ = editor.take_format();
+    let _ = editor
+        .session
+        .apply_format_result(Err(FormatterFailure::NotInstalled));
+    assert_eq!(
+        editor.message(),
+        String::new(),
+        "the state never changes while the editor runs, so it repeats no report"
+    );
+    editor.run_file_request();
+    assert_eq!(editor.file("flake.nix"), "{  }\nx\n");
 }

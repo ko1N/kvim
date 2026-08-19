@@ -30,6 +30,11 @@
 //! names a server product. One adapter may declare several servers, and
 //! `docs/language-services.md` owns the rules that merge their answers.
 //!
+//! An adapter also declares the external formatter of its language through
+//! [`LanguageAdapter::external_formatter`]. That program takes precedence over
+//! a formatting server, so [`LanguageAdapter::formatter`] names the one path
+//! that a format-on-save runs. See `docs/language-services.md`.
+//!
 //! [`LanguageAdapter`] stays object-safe, so the registry holds one adapter for
 //! each language. A later asynchronous method must return a boxed future
 //! instead of using `async fn`, which would break object safety.
@@ -72,6 +77,7 @@ use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextCh
 
 mod analysis;
 mod document;
+mod formatter;
 mod json;
 mod markdown;
 mod nix;
@@ -93,6 +99,10 @@ mod tests;
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
     TextEdit,
+};
+pub use formatter::{
+    FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
+    FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, LanguageFormatter,
 };
 pub use json::JsonAdapter;
 pub use markdown::MarkdownAdapter;
@@ -586,15 +596,32 @@ pub trait LanguageAdapter: Send + Sync {
         &[]
     }
 
-    /// Returns the declared server that formats the documents of this language.
+    /// Returns the external formatter of this language.
     ///
-    /// At most one declaration of one adapter formats, so the answer names one
-    /// server or none. [`crate::LanguageServices`] routes every formatting
-    /// request to that server alone.
-    fn formatter(&self) -> Option<&'static LanguageServerDeclaration> {
+    /// A declaration is data: the program, and its arguments in command order.
+    /// The editor runs what the declaration names, so a new formatter needs
+    /// only this method and no change above the adapter boundary. The default
+    /// answer is none, which leaves the formatting server of the language in
+    /// charge.
+    fn external_formatter(&self) -> Option<&'static FormatterDeclaration> {
+        None
+    }
+
+    /// Returns the formatter that formats the buffers of this language.
+    ///
+    /// An external formatter takes precedence. The declared server formats only
+    /// while the adapter names no program, so `ServerFormatting::Enabled` is the
+    /// fallback role of its adapter. At most one declaration carries that role,
+    /// so the answer names one formatter or none. See
+    /// `docs/language-services.md`.
+    fn formatter(&self) -> Option<LanguageFormatter> {
+        if let Some(declaration) = self.external_formatter() {
+            return Some(LanguageFormatter::External(declaration));
+        }
         self.language_servers()
             .iter()
             .find(|declaration| declaration.formatting == ServerFormatting::Enabled)
+            .map(LanguageFormatter::Server)
     }
 
     /// Reports whether this adapter owns one path.

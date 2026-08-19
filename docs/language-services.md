@@ -40,6 +40,7 @@ An adapter supplies data, not behavior:
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
 | Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, and the initialization options. |
+| External formatter | The program that formats a buffer of this language, and its arguments in command order. One argument is a literal text, or the place of the document path. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
@@ -56,6 +57,11 @@ One adapter declares a table of servers, not one server. A language whose tools
 split the work therefore runs every declared server together. The order of the
 table is the declaration order, and the merge rules below read that order, so
 the merged answer never depends on which server answers first.
+
+Four of the five adapters also declare an external formatter: `nixfmt` for Nix,
+`prettier` for JSON and for Markdown, and `taplo` for TOML. Rust declares none,
+so `rust-analyzer` formats a Rust buffer. The formatting section below owns the
+precedence between the two paths.
 
 TOML and Nix carry `#` as their line comment. JSON and Markdown define no
 comment of their own, so their comment metadata carries no token, and the
@@ -296,7 +302,7 @@ always shows the same result.
 | Diagnostics | The editor keeps the newest set of each server and merges every set. Two diagnostics describe the same problem when their range and their message text are both identical, and the merge keeps the diagnostic of the earlier declaration. The merged list ascends by position. |
 | Hover | The editor joins the non-empty answers in declaration order. One blank row separates two answers. |
 | Definition | The editor takes the first non-empty answer in declaration order. |
-| Formatting | Exactly one declaration of one adapter formats. Only that server receives a formatting request. |
+| Formatting | Exactly one declaration of one adapter carries the formatting role. Only that server receives a formatting request, and only while its adapter declares no external formatter. |
 
 The editor always records the producer of a diagnostic. It keeps the `source`
 field of the protocol when the server sends one, and it names the declaration
@@ -470,15 +476,64 @@ the overlay layering.
 
 ## Formatting
 
-Kvim requests document formatting from the language server of the buffer. It
-applies the accepted formatter edits as one edit transaction, so one undo
-reverses a complete format.
+Kvim formats one buffer through one formatter. An adapter declares an external
+formatter, a formatting server, or neither of them.
 
-Kvim rejects formatter edits whose buffer version is obsolete. It never applies
-an edit that was computed against different content.
+An external formatter takes precedence. Kvim runs the declared program when the
+adapter names one. It sends a document-formatting request only when the adapter
+names no program. `ServerFormatting::Enabled` therefore names the fallback
+formatter of its adapter: the server that formats while the adapter declares no
+external program. Exactly one declaration of one adapter carries that role, so
+two servers of one language never format the same buffer.
+
+The rule follows the reference `conform.nvim` configuration. That configuration
+formats with its own table of programs, and it keeps the language server as the
+fallback.
+
+Kvim applies the accepted answer of either formatter as one edit transaction, so
+one undo reverses a complete format. It rejects an answer whose buffer version
+is obsolete, and it never applies a change that was computed against different
+content.
 
 Formatting has an explicit deadline. A timeout leaves the buffer unchanged and
 does not block terminal input.
+
+### The External Formatter
+
+An external formatter is adapter data: the program, and its arguments in command
+order. One argument is a literal text, or the place of the document path. A
+formatter that reads its rules from the file name needs that place. `prettier`
+takes the document on standard input, and it selects its parser from the path
+that this argument carries.
+
+Kvim writes the exact buffer text to the standard input of the program, and it
+reads the formatted document from the standard output. The program runs on the
+bounded process service of [`responsiveness.md`](responsiveness.md), so it never
+runs on the terminal event loop. Every buffer that Kvim loads stays below
+`PROCESS_INPUT_BYTES_MAX`, so no buffer is too large for that service.
+
+The answer replaces the complete document as one edit transaction. A formatted
+document that equals the buffer content changes nothing, so a buffer that
+already matches its formatter records no undo step.
+
+The `language` module names each bound below as one constant. The constant and
+the row must always agree.
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Arguments of one formatter | `FORMATTER_ARGS_MAX` | 8 arguments | One formatter names a subcommand, a standard-input flag, and the document path. Eight covers that practice and still bounds the command of one buffer. |
+| Captured output | `FORMATTER_OUTPUT_BYTES_MAX` | 8 MiB | The limit counts standard output and standard error together. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB holds the formatted document beside the warnings of the program. |
+| Deadline of one run | `FORMATTER_DEADLINE` | 10 s | A cold formatter reads its configuration before it formats. The value matches `LSP_FORMAT_DEADLINE` and the process deadline of [`responsiveness.md`](responsiveness.md). |
+
+Kvim also rejects a formatted document above the maximum file size of
+[`text-model.md`](text-model.md), because that document would build a buffer
+that Kvim refuses to load.
+
+Kvim rejects the answer of a program that reports a non-zero exit code, that
+writes no text although the buffer holds text, or that writes bytes that are not
+UTF-8. No branch reads the message text of the standard error.
+
+### Format On Save
 
 Format-on-save is enabled for each new buffer. The default belongs to
 `EditorSettings`. The toggle is per buffer, so a change affects only the active
@@ -487,20 +542,22 @@ current state on the message line after each toggle. The statusline also shows
 the state of the focused buffer, so a window focus change reports the state of
 the buffer that the new window shows. See [`windows.md`](windows.md).
 
-Formatting reaches the document-formatting request of one language server, so a
-buffer formats only while its language adapter declares a formatting server.
-Exactly one declaration of one adapter carries that role, so two servers of one
-language never format the same buffer. A buffer without a file name, a path that
-no adapter owns, and an adapter without a formatting declaration therefore have
-no formatter. Kvim shows no format-on-save state for such a buffer, and the
-toggle reports the missing formatter instead of changing a state that no save
-can act on. The per-buffer state itself stays unchanged, so a buffer keeps the
-state that the user chose if a later release declares a server for its language.
+A buffer formats only while its language adapter declares a formatter. A buffer
+without a file name, a path that no adapter owns, and an adapter that declares
+neither an external formatter nor a formatting server therefore have no
+formatter. Kvim shows no format-on-save state for such a buffer, and the toggle
+reports the missing formatter instead of changing a state that no save can act
+on. The per-buffer state itself stays unchanged, so a buffer keeps the state
+that the user chose if a later release declares a formatter for its language.
 
-The rule reads adapter data alone. An installed, missing, or stopped server is a
-runtime state that the reports of the section above own, so a buffer whose
-adapter declares a server keeps its format-on-save state while that server is
-absent.
+The rule reads adapter data alone. An installed, missing, gated, or stopped
+server is a runtime state that the reports of the sections above own, and a
+formatter program that the host does not hold is the same kind of state. A
+buffer whose adapter declares a formatter therefore keeps its format-on-save
+state while that formatter is absent.
 
 A format-on-save failure or timeout does not cancel the save. Kvim saves the
-unformatted buffer content and reports the typed formatting state.
+unformatted buffer content and reports the typed formatting state. A formatter
+program that the host does not hold is a normal state. Kvim reports it once, as
+it reports a language server that is not installed, and every later save writes
+the unformatted content without a further report.

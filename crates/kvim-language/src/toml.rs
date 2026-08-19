@@ -10,7 +10,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the TOML adapter owns.
@@ -50,6 +51,18 @@ const TOML_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     root_markers: &[],
     initialization_options: taplo_options,
 }];
+
+/// The external formatter of the TOML adapter.
+///
+/// `taplo` formats the document that the hyphen names, which is the standard
+/// input, and it writes the formatted document on standard output.
+const TOML_FORMATTER: FormatterDeclaration = FormatterDeclaration {
+    program: "taplo",
+    args: &[
+        FormatterArgument::Literal("fmt"),
+        FormatterArgument::Literal("-"),
+    ],
+};
 
 /// The language adapter for TOML documents.
 ///
@@ -113,5 +126,9 @@ impl LanguageAdapter for TomlAdapter {
 
     fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
         &TOML_SERVERS
+    }
+
+    fn external_formatter(&self) -> Option<&'static FormatterDeclaration> {
+        Some(&TOML_FORMATTER)
     }
 }

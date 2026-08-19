@@ -49,7 +49,8 @@ use kvim_input::{
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
-    DocumentPosition, FormatEdits, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageOutcome,
+    DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure, FormatterRequest,
+    HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
     LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, SyntaxTree,
 };
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch};
@@ -71,7 +72,7 @@ use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
     LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
-    QueryPurpose, QueryState, has_formatter, jump_target,
+    QueryPurpose, QueryState, formatter, has_formatter, jump_target,
 };
 use super::layout::RegionKind;
 use super::notify::NotificationBoard;
@@ -2042,6 +2043,45 @@ impl Session {
         self.report(outcome)
     }
 
+    /// Applies one formatted document as one undoable transaction.
+    ///
+    /// An obsolete answer leaves the buffer as it is, because the user typed
+    /// while the formatter ran and the save writes what the user typed.
+    fn commit_format(&mut self, buffer: BufferId, document: &FormattedDocument) -> Redraw {
+        if buffer != self.active {
+            return Redraw::Skipped;
+        }
+        let Some(file) = self.buffers.get(buffer) else {
+            return Redraw::Skipped;
+        };
+        let cursor = self.cursor().position(file.text());
+        let transaction = match document.transaction(file.text(), cursor) {
+            Ok(transaction) => transaction,
+            Err(failure) => return self.report_formatter_failure(failure),
+        };
+        let outcome = self.edit(|editing, context, window| {
+            editing.apply_transaction(context, window, transaction)
+        });
+        self.sync_context();
+        self.report(outcome)
+    }
+
+    /// Reports one formatter state that changed no buffer content.
+    fn report_formatter_failure(&mut self, failure: FormatterFailure) -> Redraw {
+        match failure {
+            FormatterFailure::NotInstalled => {
+                self.report_language_notice(LanguageNotice::FormatterMissing)
+            }
+            FormatterFailure::Unavailable => {
+                self.set_message(FORMATTER_FAILED_NOTE, MessageLevel::Warning);
+                Redraw::Needed
+            }
+            // The user typed while the formatter ran, so its answer describes
+            // content that the buffer no longer holds.
+            FormatterFailure::Obsolete => Redraw::Skipped,
+        }
+    }
+
     /// Reports whether one answer still describes the current buffer version.
     fn answers_current_buffer(&self, pending: &PendingQuery, version: BufferVersion) -> bool {
         if pending.version != version {
@@ -2452,6 +2492,38 @@ impl Session {
             return Redraw::Needed;
         }
         Redraw::Skipped
+    }
+
+    /// Takes the formatter run that the bounded process service must run.
+    ///
+    /// The session never starts the program itself, so the run leaves the
+    /// session as a request and returns as one formatted document. See
+    /// `docs/language-services.md`.
+    pub fn take_format_request(&mut self) -> Option<FormatterRequest> {
+        self.language.take_format_request()
+    }
+
+    /// Applies one completed run of the external formatter of one buffer.
+    ///
+    /// A refused submission and a failed program both reach this entry point as
+    /// a typed failure. The save that waited for the formatter follows every
+    /// path, so no formatter state ever loses the content that the user typed.
+    #[must_use]
+    pub fn apply_format_result(
+        &mut self,
+        result: Result<Option<FormattedDocument>, FormatterFailure>,
+    ) -> Redraw {
+        let Some(pending) = self.language.take_format() else {
+            // No save waits for this answer, so it changes nothing.
+            return Redraw::Skipped;
+        };
+        let formatted = match result {
+            Ok(Some(document)) => self.commit_format(pending.buffer, &document),
+            // The buffer already matches its formatter.
+            Ok(None) => Redraw::Skipped,
+            Err(failure) => self.report_formatter_failure(failure),
+        };
+        self.start_save(pending.then).or(formatted)
     }
 
     /// Applies one coalesced burst of workspace filesystem changes.
@@ -2941,13 +3013,14 @@ impl Session {
 
     /// Reports whether a save already waits for its formatter answer.
     fn awaits_format(&self) -> bool {
-        matches!(
-            self.language.pending,
-            Some(PendingQuery {
-                purpose: QueryPurpose::FormatBeforeSave(_),
-                ..
-            })
-        )
+        self.language.formats()
+            || matches!(
+                self.language.pending,
+                Some(PendingQuery {
+                    purpose: QueryPurpose::FormatBeforeSave(_),
+                    ..
+                })
+            )
     }
 
     /// Reports whether the active buffer formats before its next save.
@@ -2955,7 +3028,7 @@ impl Session {
     /// A buffer without a file name, and a buffer whose question would replace
     /// another running question, saves without a format instead.
     fn formats_before_save(&self) -> bool {
-        if self.language.pending.is_some() {
+        if self.language.pending.is_some() || self.language.formats() {
             return false;
         }
         let named = self
@@ -2965,7 +3038,11 @@ impl Session {
         named && self.format_on_save(self.active) == FormatOnSave::Enabled
     }
 
-    /// Asks the language server of the active buffer for its formatting edits.
+    /// Formats the active buffer before its save.
+    ///
+    /// An external formatter takes precedence over a formatting server, so the
+    /// adapter of the path decides which path runs. See
+    /// `docs/language-services.md`.
     fn request_format(&mut self, then: AfterSave) -> Redraw {
         let buffer = self.active;
         let Some(file) = self.buffers.get(buffer) else {
@@ -2980,6 +3057,16 @@ impl Session {
             return self.start_save(then);
         };
         let version = file.text().version();
+        if let Some(LanguageFormatter::External(declaration)) =
+            formatter(self.languages, Some(&path))
+        {
+            // The run carries the exact text of this version, because the
+            // answer replaces that text.
+            let content = file.text().to_string();
+            let request = FormatterRequest::new(declaration, path, version, content);
+            self.language.start_format(buffer, then, request);
+            return Redraw::Needed;
+        }
         self.language.pending = Some(PendingQuery::new(
             buffer,
             version,
@@ -3589,6 +3676,9 @@ const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to
 /// The message that the format-on-save toggle of a buffer without a formatter
 /// shows.
 const NO_FORMATTER_NOTE: &str = "no formatter serves this buffer";
+
+/// The message that a formatter run without a usable document shows.
+const FORMATTER_FAILED_NOTE: &str = "the formatter failed; the save continues without it";
 
 /// The message that a comment toggle without a line-comment token shows.
 const NO_COMMENT_TOKEN_NOTE: &str =

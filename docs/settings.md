@@ -90,7 +90,9 @@ tree still aligns. [`files.md`](files.md) owns the icon table.
 
 [`files.md`](files.md) owns saving, conflicts, and persistent undo files. Format
 on save is the default for each new buffer. The per-buffer toggle does not
-change this default. See [`language-services.md`](language-services.md).
+change this default. The setting names no formatter: the language adapter
+decides whether an external program or a language server formats the buffer.
+See [`language-services.md`](language-services.md).
 
 ## Input
 
