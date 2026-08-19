@@ -366,10 +366,11 @@ Kvim calls external commands for the read-only Git status, ripgrep search, the
 language servers, the external formatters, and the system clipboard. The
 package output wraps the executable and supplies `git`, ripgrep, and
 `rust-analyzer`. The wrapper takes `rust-analyzer` from the pinned toolchain,
-so the server version matches the compiler that the flake pins. The wrapper
-supplies that one program alone. The whole toolchain would also put its Cargo
-and its Rust in front of the commands that the user chose for the edited
-project. It supplies no other language server and no formatter. The
+so the server version matches the compiler that the flake pins. It takes that
+one program from the toolchain, and no other program of it. The complete
+toolchain would put its Cargo and its Rust in front of the commands that the
+user chose for the edited project. The wrapper supplies no other language
+server and no formatter. The
 registry declares 22 server programs and 12 formatter programs, and one
 workspace uses few of them, so each of those programs comes from the host
 `PATH`. The package check also needs `git` inside the build sandbox, because

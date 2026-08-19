@@ -87,7 +87,10 @@ Each command declares one full name and the shortest abbreviation that names it.
 The square brackets hold the optional part of the name, so `:q[uit]` accepts
 `:q`, `:qu`, `:qui`, and `:quit`. Every length between the declared minimum and
 the full name reaches the same command. The `!` variant follows the name, so
-`:quit!` works where `:q!` works.
+the parser accepts `:quit!` where it accepts `:q!`. This rule names what the
+parser reads, never what the completion offers. The completion offers a `!`
+variant only while the typed text already holds the `!`. See the Command Line
+Completion section below.
 
 The declared minimum names the command, and the shortest unique prefix does not.
 `w` starts both `write` and `wq`. The minimum of `write` is one character, so
