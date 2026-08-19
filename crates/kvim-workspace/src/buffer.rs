@@ -52,17 +52,33 @@ impl BufferId {
     }
 }
 
+/// What another program did to the file of one buffer.
+///
+/// The marker exists only while Kvim cannot make the buffer current again: the
+/// buffer holds unsaved changes that no reload may replace, or the file is
+/// gone. The buffer stays fully editable in both states. See `docs/files.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ExternalChange {
+    /// The file changed while the buffer held unsaved changes.
+    Changed,
+    /// The file no longer lies at the path of the buffer.
+    Missing,
+}
+
 /// One loaded buffer with its path, its file identity, and its text.
 ///
 /// The file identity is the state that Kvim observed at load time or after the
 /// last successful save. The save path compares it with the current file before
-/// it replaces that file.
+/// it replaces that file, and the reload path compares it before it replaces
+/// the buffer text.
 #[derive(Debug)]
 pub struct FileBuffer {
     text: TextBuffer,
     path: Option<PathBuf>,
     name: String,
     identity: Option<FileIdentity>,
+    /// What another program did to the file that Kvim could not follow.
+    external: Option<ExternalChange>,
 }
 
 impl FileBuffer {
@@ -76,6 +92,7 @@ impl FileBuffer {
             path: None,
             name: SCRATCH_BUFFER_NAME.to_owned(),
             identity: None,
+            external: None,
         }
     }
 
@@ -91,6 +108,7 @@ impl FileBuffer {
             path: Some(path),
             name,
             identity,
+            external: None,
         }
     }
 
@@ -129,6 +147,23 @@ impl FileBuffer {
         self.text.is_modified()
     }
 
+    /// Returns what another program did to the file that Kvim could not follow.
+    ///
+    /// The value is `None` while the buffer and its file agree, which every
+    /// buffer that reloaded or saved does.
+    #[must_use]
+    pub const fn external_change(&self) -> Option<ExternalChange> {
+        self.external
+    }
+
+    /// Records what another program did to the file of this buffer.
+    ///
+    /// The buffer keeps its text and stays editable, because that text is the
+    /// only copy that Kvim can still write.
+    pub const fn mark_external_change(&mut self, change: ExternalChange) {
+        self.external = Some(change);
+    }
+
     /// Gives the buffer the path that a workspace mutation created.
     ///
     /// The identity of the buffer never changes, and the file identity stays
@@ -143,7 +178,21 @@ impl FileBuffer {
         self.name = display_name(&path);
         self.path = Some(path);
         self.identity = Some(identity);
+        self.external = None;
         self.text.mark_saved();
+    }
+
+    /// Replaces the buffer with the text that its file holds now.
+    ///
+    /// The buffer identity, the path, and the name stay, because the reload
+    /// reads the same file. The text of the file becomes the saved state, so
+    /// the reloaded buffer holds no unsaved change and no external change. The
+    /// caller reloads a buffer with unsaved changes only after the user asked
+    /// to discard them. See `docs/files.md`.
+    pub fn reload(&mut self, text: TextBuffer, identity: Option<FileIdentity>) {
+        self.text = text;
+        self.identity = identity;
+        self.external = None;
     }
 }
 

@@ -59,10 +59,11 @@ mod tests;
 #[cfg(test)]
 mod tree_tests;
 
-pub use buffer::{BUFFERS_MAX, BufferId, Buffers, FileBuffer, SCRATCH_BUFFER_NAME};
+pub use buffer::{BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME};
 pub use clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 pub use file::{
-    FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, load, render_content, save,
+    FileChange, FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, identity, load,
+    render_content, save,
 };
 pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use git::{
@@ -82,7 +83,10 @@ pub use picker_request::{
     PREVIEW_LINE_CHARS_MAX, PREVIEW_LINES_MAX, PickerRequest, PickerResult, PickerSlot, Preview,
     PreviewError, PreviewKey, read_preview,
 };
-pub use request::{FileRequest, FileResult, OpenRequest, OpenedFile, SaveRequest, SavedBuffer};
+pub use request::{
+    FileRequest, FileResult, OpenRequest, OpenedFile, RELOAD_TARGETS_MAX, ReloadOutcome,
+    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveRequest, SavedBuffer,
+};
 pub use ripgrep::{
     RIPGREP_COLUMNS_MAX, RIPGREP_DEADLINE, RIPGREP_FILE_MATCHES_MAX, RIPGREP_MATCHES_MAX,
     RIPGREP_OUTPUT_BYTES_MAX, RIPGREP_PROGRAM, parse_matches, ripgrep_command,

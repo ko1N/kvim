@@ -554,6 +554,14 @@ impl LanguageState {
         self.diagnostics.clear();
     }
 
+    /// Drops the published diagnostics of one buffer.
+    ///
+    /// A reload replaces the buffer text, so every published diagnostic of that
+    /// buffer describes text that no longer exists.
+    pub(super) fn forget_diagnostics(&mut self, buffer: BufferId) {
+        self.diagnostics.remove(&buffer);
+    }
+
     /// Returns the diagnostics of one buffer, in ascending position order.
     #[must_use]
     pub(super) fn diagnostics(&self, buffer: BufferId) -> &[Diagnostic] {

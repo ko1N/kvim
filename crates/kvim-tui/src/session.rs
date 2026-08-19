@@ -56,11 +56,13 @@ use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
-    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, FileBuffer, FileOperation,
-    FileRequest, FileResult, FileTree, GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
-    MutationError, MutationOutcome, OpenRequest, OpenedFile, PICKER_QUERY_CHARS_MAX, PickerKind,
-    PickerRequest, PickerResult, PickerSlot, SaveError, SaveRequest, SavedBuffer,
-    TREE_SEARCH_CHARS_MAX, TransferMode, WorkspaceRequest, WorkspaceResult, render_content,
+    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
+    FileOperation, FileRequest, FileResult, FileTree, GitStatusFailure, GitStatusRequest,
+    GitStatusSnapshot, MutationError, MutationOutcome, OpenError, OpenRequest, OpenedFile,
+    PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot,
+    RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer,
+    SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TransferMode, WorkspaceRequest,
+    WorkspaceResult, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -136,7 +138,7 @@ enum UnsavedChanges {
 ///
 /// The editor runs one file operation at a time, so a second request cannot
 /// apply an obsolete result over a newer buffer state.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Debug, Eq, PartialEq)]
 enum PendingFile {
     /// One file is loading.
     Open,
@@ -147,6 +149,65 @@ enum PendingFile {
         /// The step that follows the save.
         then: AfterSave,
     },
+    /// Loaded buffers are checked against their files.
+    Reload {
+        /// The buffers that the result may replace, bounded by the buffer list.
+        targets: Vec<PendingReload>,
+        /// Who asked for the check.
+        origin: ReloadOrigin,
+    },
+}
+
+/// Who asked for one reload check.
+///
+/// A check that the user typed reports its outcome. A background check reports
+/// only an external change that the editor cannot follow, so a workspace that
+/// changes often never fills the message line.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ReloadOrigin {
+    /// The user typed `:e` or `:e!`.
+    Command,
+    /// The workspace watcher reported a change.
+    Watch,
+}
+
+/// Whether one queued reload may replace text that no file holds.
+///
+/// This is the safety rule of the reload path. Only `:e!` reaches
+/// [`UnsavedText::Discard`], because only the user can decide to lose work.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum UnsavedText {
+    /// The reload must never replace it, so a modified buffer keeps its text.
+    Keep,
+    /// The user asked to discard it, which `:e!` does.
+    Discard,
+}
+
+/// One buffer that waits for the outcome of a reload check.
+///
+/// The recorded version is the publication gate: a buffer that changed while
+/// the check ran no longer describes the text that the worker compared, so its
+/// outcome is obsolete.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct PendingReload {
+    /// The buffer that the outcome belongs to.
+    buffer: BufferId,
+    /// The buffer version at the moment that the request left.
+    version: BufferVersion,
+    /// Whether the reload may replace unsaved text.
+    unsaved: UnsavedText,
+}
+
+/// Whether one search recomputation may trust the recorded buffer version.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SearchRefresh {
+    /// Recompute the matches only when the buffer version changed.
+    OnVersionChange,
+    /// Recompute them whatever the version says.
+    ///
+    /// A reload replaces the buffer, and the new buffer counts its versions
+    /// from the start, so the version gate cannot see that change.
+    Always,
 }
 
 /// The system clipboard operation that the editor waits for.
@@ -490,6 +551,11 @@ pub struct Session {
     file_outbox: Option<FileRequest>,
     /// The file operation that the editor waits for.
     file_pending: Option<PendingFile>,
+    /// Reports whether a workspace change still needs its reload check.
+    ///
+    /// The editor runs one file operation at a time, so a burst that arrives
+    /// during a save waits for that save instead of displacing it.
+    reload_due: bool,
     windows: Windows,
     /// The file-tree sidebar, its clipboard, and its workspace requests.
     tree: TreeSidebar,
@@ -582,6 +648,7 @@ impl Session {
             active,
             file_outbox: None,
             file_pending: None,
+            reload_due: false,
             windows: Windows::new(active, shell_areas(area).body, settings.windows),
             tree: TreeSidebar::new(root),
             tree_region: None,
@@ -774,7 +841,7 @@ impl Session {
     /// The overlay rows, the search matches, and the viewports all follow the
     /// state that the transition produced, so the next frame is consistent.
     fn settle(&mut self, now: Duration) -> Redraw {
-        self.refresh_search();
+        self.refresh_search(SearchRefresh::OnVersionChange);
         self.reconcile_viewports();
         self.reconcile_tree();
         self.reconcile_picker();
@@ -1427,6 +1494,10 @@ impl Session {
             CommandLineCommand::Write => return self.save_active(AfterSave::Stay),
             CommandLineCommand::WriteQuit => return self.save_active(AfterSave::CloseWindow),
             CommandLineCommand::Edit(path) => return self.open_path(path),
+            CommandLineCommand::Reload => return self.reload_active(UnsavedText::Keep),
+            CommandLineCommand::ReloadDiscard => {
+                return self.reload_active(UnsavedText::Discard);
+            }
             CommandLineCommand::Quit => return self.close_window(UnsavedChanges::Refuse),
             CommandLineCommand::QuitDiscard => {
                 return self.close_window(UnsavedChanges::Discard);
@@ -2321,11 +2392,17 @@ impl Session {
     /// The burst names the directories that changed, so the file tree reads
     /// only those and keeps its expansion, its selection, and its first visible
     /// row. The rows change when those reads return, so the burst itself paints
-    /// nothing. See `docs/files.md`.
+    /// nothing.
+    ///
+    /// The burst also starts one bounded check of every loaded buffer against
+    /// its file, because a content change names no path and a removed file
+    /// names only its directory. The buffers change when that check returns.
+    /// See `docs/files.md`.
     #[must_use]
     pub fn apply_watch_batch(&mut self, batch: &WatchBatch) -> Redraw {
         self.tree.apply_watch(batch);
         self.reconcile_tree();
+        self.start_watch_reload();
         Redraw::Skipped
     }
 
@@ -2437,6 +2514,15 @@ impl Session {
     /// Applies one completed file operation as one state transition.
     #[must_use]
     pub fn apply_file_result(&mut self, result: FileResult) -> Redraw {
+        let redraw = self.publish_file_result(result);
+        if self.reload_due {
+            self.start_watch_reload();
+        }
+        redraw
+    }
+
+    /// Publishes one completed file operation.
+    fn publish_file_result(&mut self, result: FileResult) -> Redraw {
         let pending = self.file_pending.take();
         match result {
             FileResult::Opened { requested, outcome } => match outcome {
@@ -2456,9 +2542,17 @@ impl Session {
             } => {
                 let then = match pending {
                     Some(PendingFile::Save { then, .. }) => then,
-                    Some(PendingFile::Open) | None => AfterSave::Stay,
+                    Some(PendingFile::Open | PendingFile::Reload { .. }) | None => AfterSave::Stay,
                 };
                 self.publish_save(buffer, &requested, outcome, then)
+            }
+            FileResult::Reloaded { buffers } => {
+                let Some(PendingFile::Reload { targets, origin }) = pending else {
+                    // A newer request displaced this check, so its outcome
+                    // describes buffer states that the editor already left.
+                    return Redraw::Skipped;
+                };
+                self.publish_reload(buffers, &targets, origin)
             }
         }
     }
@@ -2469,8 +2563,23 @@ impl Session {
     /// operation.
     #[must_use]
     pub fn abandon_file_request(&mut self, failure: FileRequestFailure) -> Redraw {
-        self.file_pending = None;
+        let pending = self.file_pending.take();
         self.file_outbox = None;
+        let background = matches!(
+            pending,
+            Some(PendingFile::Reload {
+                origin: ReloadOrigin::Watch,
+                ..
+            })
+        );
+        if self.reload_due {
+            self.start_watch_reload();
+        }
+        if background {
+            // The user asked for no background check, so its failure reports
+            // nothing. The next burst asks again.
+            return Redraw::Skipped;
+        }
         self.set_message(failure.message(), MessageLevel::Error);
         Redraw::Needed
     }
@@ -2626,13 +2735,125 @@ impl Session {
             );
             return Redraw::Needed;
         }
+        self.queue_file_request(request, pending);
+        Redraw::Needed
+    }
+
+    /// Puts one file request in the outbox for the event loop.
+    fn queue_file_request(&mut self, request: FileRequest, pending: PendingFile) {
+        debug_assert!(
+            self.file_pending.is_none(),
+            "the editor runs one file operation at a time"
+        );
         debug_assert!(
             self.file_outbox.is_none(),
             "the event loop takes the queued request before the next command runs"
         );
         self.file_outbox = Some(request);
         self.file_pending = Some(pending);
-        Redraw::Needed
+    }
+
+    /// Reads the file of the focused window again.
+    ///
+    /// `:e` reaches this entry point with [`UnsavedText::Keep`], and `:e!` with
+    /// [`UnsavedText::Discard`]. A buffer that holds unsaved changes reloads
+    /// only through the second form, because the buffer text is then the only
+    /// copy of that work. See `docs/files.md`.
+    fn reload_active(&mut self, unsaved: UnsavedText) -> Redraw {
+        let buffer = self.active;
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return Redraw::Skipped;
+        };
+        let Some(path) = file.path().map(Path::to_path_buf) else {
+            self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
+            return Redraw::Needed;
+        };
+        if unsaved == UnsavedText::Keep && file.is_modified() {
+            self.set_message(UNSAVED_RELOAD_NOTE, MessageLevel::Error);
+            return Redraw::Needed;
+        }
+        let version = file.text().version();
+        self.start_file_request(
+            FileRequest::Reload(ReloadRequest {
+                targets: vec![ReloadTarget {
+                    buffer,
+                    path,
+                    trigger: ReloadTrigger::Read,
+                }],
+                files: self.settings.files,
+            }),
+            PendingFile::Reload {
+                targets: vec![PendingReload {
+                    buffer,
+                    version,
+                    unsaved,
+                }],
+                origin: ReloadOrigin::Command,
+            },
+        )
+    }
+
+    /// Checks every loaded buffer against its file after a workspace change.
+    ///
+    /// The burst names no buffer: a content change carries no path, and a lost
+    /// event leaves the named directories incomplete. The check therefore
+    /// covers every loaded buffer, which the buffer list bounds. A buffer that
+    /// holds unsaved changes is compared and never read, so no reload can
+    /// replace work that no file holds.
+    fn start_watch_reload(&mut self) {
+        if self.file_pending.is_some() {
+            // The editor runs one file operation at a time, so the check
+            // follows the operation that already runs.
+            self.reload_due = true;
+            return;
+        }
+        self.reload_due = false;
+        let ids = self.buffers.ids();
+        debug_assert!(
+            ids.len() <= RELOAD_TARGETS_MAX,
+            "the buffer list bounds itself at BUFFERS_MAX entries"
+        );
+        let mut targets = Vec::new();
+        let mut pending = Vec::new();
+        for id in ids {
+            let Some(file) = self.buffers.get(id) else {
+                debug_assert!(false, "the list answers for every identity that it named");
+                continue;
+            };
+            let Some(path) = file.path().map(Path::to_path_buf) else {
+                // A buffer without a file name has no file to compare.
+                continue;
+            };
+            let identity = file.identity();
+            targets.push(ReloadTarget {
+                buffer: id,
+                path,
+                trigger: if file.is_modified() {
+                    ReloadTrigger::Compare(identity)
+                } else {
+                    ReloadTrigger::Refresh(identity)
+                },
+            });
+            pending.push(PendingReload {
+                buffer: id,
+                version: file.text().version(),
+                unsaved: UnsavedText::Keep,
+            });
+        }
+        if targets.is_empty() {
+            return;
+        }
+        self.queue_file_request(
+            FileRequest::Reload(ReloadRequest {
+                targets,
+                files: self.settings.files,
+            }),
+            PendingFile::Reload {
+                targets: pending,
+                origin: ReloadOrigin::Watch,
+            },
+        );
     }
 
     /// Saves the active buffer, and formats it first when the buffer asks.
@@ -2757,6 +2978,206 @@ impl Session {
         self.language.mark_resync(id);
         self.set_message(format!("\"{name}\" {lines}L, {bytes}B"), MessageLevel::Info);
         self.follow_jump().or(redraw).or(Redraw::Needed)
+    }
+
+    /// Publishes one completed reload check.
+    ///
+    /// Each outcome passes the publication gate of its own buffer, so a buffer
+    /// that changed while the check ran keeps its text. See `docs/files.md`.
+    fn publish_reload(
+        &mut self,
+        buffers: Vec<ReloadedBuffer>,
+        targets: &[PendingReload],
+        origin: ReloadOrigin,
+    ) -> Redraw {
+        let mut redraw = Redraw::Skipped;
+        for result in buffers {
+            let Some(target) = targets
+                .iter()
+                .find(|target| target.buffer == result.buffer)
+                .copied()
+            else {
+                debug_assert!(false, "the worker answers for the targets that it received");
+                continue;
+            };
+            if !self.accepts_reload(target) {
+                continue;
+            }
+            redraw = redraw.or(match result.outcome {
+                // The buffer already holds what the file holds.
+                Ok(ReloadOutcome::Unchanged) => Redraw::Skipped,
+                Ok(ReloadOutcome::Loaded(file)) => self.publish_reloaded_text(target, file, origin),
+                Ok(ReloadOutcome::Conflict) => {
+                    self.report_external(result.buffer, ExternalChange::Changed, origin)
+                }
+                Ok(ReloadOutcome::Missing) => {
+                    self.report_external(result.buffer, ExternalChange::Missing, origin)
+                }
+                Err(error) => self.report_reload_error(result.buffer, &result.path, &error, origin),
+            });
+        }
+        redraw
+    }
+
+    /// Reports whether one reload outcome still describes its buffer.
+    ///
+    /// A buffer that changed while the check ran holds other text than the text
+    /// that the worker compared, so its outcome is obsolete.
+    fn accepts_reload(&self, target: PendingReload) -> bool {
+        self.buffers
+            .get(target.buffer)
+            .is_some_and(|file| file.text().version() == target.version)
+    }
+
+    /// Replaces one buffer with the text that its file holds now.
+    ///
+    /// Every window that shows the buffer keeps its own cursor and its own
+    /// first visible row, and both clamp to the new text, so a file that became
+    /// shorter leaves no cursor beyond its end.
+    fn publish_reloaded_text(
+        &mut self,
+        target: PendingReload,
+        file: OpenedFile,
+        origin: ReloadOrigin,
+    ) -> Redraw {
+        let buffer = target.buffer;
+        let Some(loaded) = self.buffers.get_mut(buffer) else {
+            debug_assert!(false, "the publication gate found the buffer");
+            return Redraw::Skipped;
+        };
+        if target.unsaved == UnsavedText::Keep && loaded.is_modified() {
+            // The safety rule of this path: only the user decides to lose work,
+            // and only `:e!` carries that decision. A modified buffer receives
+            // the comparing trigger, which reads no text at all, and a buffer
+            // that changed while the check ran fails the version gate above.
+            debug_assert!(false, "a comparing target never carries reloaded text");
+            return Redraw::Skipped;
+        }
+        debug_assert!(
+            loaded.path() == Some(file.path.as_path()),
+            "a reload reads the path that its own buffer holds"
+        );
+        let lines = file.text.line_count();
+        let bytes = file.text.len_bytes();
+        loaded.reload(file.text, file.identity);
+        let name = loaded.name().to_owned();
+        self.clamp_windows_of(buffer);
+        // The reloaded buffer counts its versions from the start, so every
+        // value that a buffer version guards must restart with it.
+        self.language.mark_resync(buffer);
+        self.language.forget_diagnostics(buffer);
+        if let Some(entry) = self.analysis.get_mut(&buffer) {
+            *entry = BufferAnalysis::default();
+        }
+        if self.analysis_pending.is_some_and(|(id, _)| id == buffer) {
+            self.analysis_pending = None;
+        }
+        if buffer == self.active {
+            self.refresh_search(SearchRefresh::Always);
+        }
+        self.reconcile_viewports();
+        if origin == ReloadOrigin::Command {
+            self.set_message(
+                format!("\"{name}\" {lines}L, {bytes}B reloaded"),
+                MessageLevel::Info,
+            );
+        }
+        Redraw::Needed
+    }
+
+    /// Clamps the cursor of every window that shows one buffer.
+    fn clamp_windows_of(&mut self, buffer: BufferId) {
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(false, "the caller names a loaded buffer");
+            return;
+        };
+        let text = file.text();
+        for window in self.windows.window_ids() {
+            if self.windows.buffer(window) != Some(buffer) {
+                continue;
+            }
+            let Some(state) = self.windows.state_mut(window) else {
+                debug_assert!(false, "the identity list names leaves of the window tree");
+                continue;
+            };
+            let cursor = state.cursor();
+            self.editing
+                .move_to(text, state, cursor.line().get(), cursor.column().get());
+        }
+    }
+
+    /// Records what another program did to the file of one buffer.
+    ///
+    /// The buffer keeps its text and stays editable, because that text is the
+    /// only copy that Kvim can still write. The answer names whether the editor
+    /// must report the state: a background check reports one state once, so a
+    /// workspace that changes often never fills the message line.
+    fn mark_external(
+        &mut self,
+        buffer: BufferId,
+        change: ExternalChange,
+        origin: ReloadOrigin,
+    ) -> Redraw {
+        let Some(file) = self.buffers.get_mut(buffer) else {
+            debug_assert!(false, "the publication gate found the buffer");
+            return Redraw::Skipped;
+        };
+        let known = file.external_change() == Some(change);
+        file.mark_external_change(change);
+        if known && origin == ReloadOrigin::Watch {
+            return Redraw::Skipped;
+        }
+        Redraw::Needed
+    }
+
+    /// Reports one external change that the editor cannot follow.
+    fn report_external(
+        &mut self,
+        buffer: BufferId,
+        change: ExternalChange,
+        origin: ReloadOrigin,
+    ) -> Redraw {
+        if self.mark_external(buffer, change, origin) == Redraw::Skipped {
+            return Redraw::Skipped;
+        }
+        let name = self
+            .buffers
+            .get(buffer)
+            .map_or_else(String::new, |file| file.name().to_owned());
+        self.set_message(
+            match change {
+                ExternalChange::Changed => {
+                    format!("{name} changed on disk; the buffer keeps its unsaved changes")
+                }
+                ExternalChange::Missing => {
+                    format!("{name} is gone from disk; the buffer keeps the only copy")
+                }
+            },
+            MessageLevel::Warning,
+        );
+        Redraw::Needed
+    }
+
+    /// Reports one file that changed but could not be read again.
+    ///
+    /// The buffer keeps its text, so a file that grew past the size limit, or
+    /// that another program filled with bytes that are not text, still leaves
+    /// the editor usable.
+    fn report_reload_error(
+        &mut self,
+        buffer: BufferId,
+        path: &Path,
+        error: &OpenError,
+        origin: ReloadOrigin,
+    ) -> Redraw {
+        if self.mark_external(buffer, ExternalChange::Changed, origin) == Redraw::Skipped {
+            return Redraw::Skipped;
+        }
+        self.set_message(
+            format!("cannot reload {}: {error}", path.display()),
+            MessageLevel::Error,
+        );
+        Redraw::Needed
     }
 
     /// Publishes one completed save.
@@ -3029,7 +3450,7 @@ impl Session {
     ///
     /// The scan is bounded by the search limits of the `editor` module, so it
     /// stays inside the event-loop budget.
-    fn refresh_search(&mut self) {
+    fn refresh_search(&mut self, refresh: SearchRefresh) {
         let Some(active) = self.buffers.get(self.active) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
             return;
@@ -3038,7 +3459,7 @@ impl Session {
         let Some(search) = self.search.as_mut() else {
             return;
         };
-        if search.version == version {
+        if search.version == version && refresh == SearchRefresh::OnVersionChange {
             return;
         }
         search.matches = search.query.matches(active.text(), &self.settings.search);
@@ -3091,6 +3512,10 @@ const UNSAVED_QUIT_NOTE: &str = "the buffer holds unsaved changes; use :q! to di
 
 /// The message that a refused unload shows.
 const UNSAVED_UNLOAD_NOTE: &str = "the buffer holds unsaved changes; save it before the unload";
+
+/// The message that a refused reload shows.
+const UNSAVED_RELOAD_NOTE: &str =
+    "the buffer holds unsaved changes; use :e! to discard them and reload the file";
 
 /// The message that a save without a file name shows.
 const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to name one";

@@ -79,6 +79,8 @@ this fixed set only:
 | `:q!` | Close the focused window and discard unsaved changes |
 | `:wq` | Save the active buffer, then close the focused window |
 | `:e <path>` | Open one file in the focused window |
+| `:e` | Read the file of the focused window again |
+| `:e!` | Discard the unsaved changes of that buffer and read its file |
 | `:<number>` | Move the cursor to that line |
 
 The command line rejects every other input with a concise message. It does not

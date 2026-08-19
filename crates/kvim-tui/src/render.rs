@@ -72,6 +72,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
                     buffer: text,
                     name: file.name(),
                     path: file.path(),
+                    external: file.external_change(),
                     root: view.tree.tree().root(),
                     first_line: state.first_line(),
                     left_column: state.left_column(),

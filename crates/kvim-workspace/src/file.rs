@@ -46,6 +46,50 @@ impl FileIdentity {
             modified: metadata.modified().ok(),
         }
     }
+
+    /// Compares the recorded state of one file with its current state.
+    ///
+    /// The save asks this question before it overwrites a file, and the reload
+    /// asks it before it replaces a buffer, so one rule answers both
+    /// directions. Kvim reads no file content for the comparison, so the check
+    /// stays cheap for a large file. See `docs/files.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_workspace::{FileChange, FileIdentity};
+    ///
+    /// let recorded = FileIdentity { len_bytes: 12, modified: None };
+    /// let grown = FileIdentity { len_bytes: 20, modified: None };
+    ///
+    /// assert_eq!(FileIdentity::compare(Some(recorded), Some(recorded)), FileChange::Unchanged);
+    /// assert_eq!(FileIdentity::compare(Some(recorded), Some(grown)), FileChange::Changed);
+    /// assert_eq!(FileIdentity::compare(Some(recorded), None), FileChange::Missing);
+    /// // A path that held no file, and holds one now, changed.
+    /// assert_eq!(FileIdentity::compare(None, Some(grown)), FileChange::Changed);
+    /// ```
+    #[must_use]
+    pub fn compare(recorded: Option<Self>, current: Option<Self>) -> FileChange {
+        match (recorded, current) {
+            (Some(recorded), Some(current)) if recorded != current => FileChange::Changed,
+            // A file that appeared where Kvim observed none is another program's
+            // file, not the one that the buffer describes.
+            (None, Some(_)) => FileChange::Changed,
+            (Some(_), None) => FileChange::Missing,
+            (Some(_), Some(_)) | (None, None) => FileChange::Unchanged,
+        }
+    }
+}
+
+/// What happened to one file since Kvim recorded its state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileChange {
+    /// The file still holds the state that Kvim recorded.
+    Unchanged,
+    /// Another program changed, created, or replaced the file.
+    Changed,
+    /// The file no longer lies at the path.
+    Missing,
 }
 
 /// A rejected file open.
@@ -159,6 +203,25 @@ pub fn load(path: &Path, files: &FileSettings) -> Result<LoadedFile, OpenError> 
     })
 }
 
+/// Reads the current state of one file without reading its content.
+///
+/// A path that holds no file is not a failure. The result is then `None`, which
+/// [`FileIdentity::compare`] reads as a missing file.
+///
+/// The call blocks. Run it on the bounded worker service only.
+///
+/// # Errors
+///
+/// Returns [`OpenError::Read`] when the metadata read failed for another reason
+/// than a missing file.
+pub fn identity(path: &Path) -> Result<Option<FileIdentity>, OpenError> {
+    match fs::metadata(resolve(path)) {
+        Ok(metadata) => Ok(Some(FileIdentity::from_metadata(&metadata))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(OpenError::Read(error)),
+    }
+}
+
 /// The outcome of one successful save.
 #[derive(Debug)]
 pub struct SavedFile {
@@ -192,15 +255,12 @@ pub fn save(
         Err(error) => return Err(SaveError::Write(error)),
     };
     let current = existing.as_ref().map(FileIdentity::from_metadata);
-    match (expected, current) {
+    match FileIdentity::compare(expected, current) {
         // A file that another program changed, or that appeared after Kvim
         // opened a path without a file, must not be overwritten.
-        (Some(expected), Some(current)) if expected != current => {
-            return Err(SaveError::Conflict);
-        }
-        (None, Some(_)) => return Err(SaveError::Conflict),
+        FileChange::Changed => return Err(SaveError::Conflict),
         // A file that another program removed carries no content to lose.
-        _ => {}
+        FileChange::Unchanged | FileChange::Missing => {}
     }
 
     if files.atomic_save {

@@ -17,6 +17,7 @@ use kvim_core::{CharPosition, LineIndex, TextBuffer};
 use kvim_editor::{Cursor, Delimiter, DelimiterShape, Selection, matching_bracket};
 use kvim_language::{Diagnostic, DiagnosticSeverity, HighlightSpan, SyntaxRole};
 use kvim_settings::{DisplaySettings, SignColumn};
+use kvim_workspace::ExternalChange;
 
 use super::cells::{RowCell, layout_row, terminal_column, text_cells, truncate_cells_left};
 use super::theme::{Theme, ThemeRole};
@@ -41,6 +42,12 @@ const END_OF_BUFFER_GLYPH: &str = "~";
 
 /// The marker that follows the name of a modified buffer.
 const MODIFIED_MARKER: &str = " [+]";
+
+/// The marker that follows the name of a buffer whose file changed or is gone.
+///
+/// The state hides the modified marker, because it is the state that the reader
+/// must act on: Kvim could not make the buffer current. See `docs/files.md`.
+const EXTERNAL_MARKER: &str = " [!]";
 
 /// The number of cells that the winbar keeps for the scroll position.
 ///
@@ -88,6 +95,11 @@ pub(super) struct WindowView<'a> {
     pub(super) name: &'a str,
     /// The file of the buffer, or `None` for a buffer that holds no file.
     pub(super) path: Option<&'a Path>,
+    /// What another program did to the file that Kvim could not follow.
+    ///
+    /// The value is `None` while the buffer and its file agree, which every
+    /// buffer that reloaded or saved does. See `docs/files.md`.
+    pub(super) external: Option<ExternalChange>,
     /// The directory that Kvim started in.
     ///
     /// The winbar strips this prefix from the path of the buffer, so a window
@@ -395,10 +407,13 @@ fn render_winbar(
     } else {
         width
     };
-    let marker = if view.buffer.is_modified()
-        && name_cells >= text_cells(MODIFIED_MARKER) + PATH_CELLS_MIN
-    {
-        MODIFIED_MARKER
+    let marker = match (view.external, view.buffer.is_modified()) {
+        (Some(_), _) => EXTERNAL_MARKER,
+        (None, true) => MODIFIED_MARKER,
+        (None, false) => "",
+    };
+    let marker = if name_cells >= text_cells(marker) + PATH_CELLS_MIN {
+        marker
     } else {
         ""
     };
@@ -982,6 +997,7 @@ mod tests {
             buffer: &buffer,
             name: "test.rs",
             path: None,
+            external: None,
             root: Path::new("/workspace"),
             first_line: 0,
             left_column: 0,
@@ -1040,6 +1056,7 @@ mod tests {
             buffer: &buffer,
             name: "[Scratch]",
             path,
+            external: None,
             root: Path::new(ROOT),
             first_line,
             left_column: 0,
@@ -1202,6 +1219,7 @@ mod tests {
             buffer: &buffer,
             name: "test.rs",
             path: None,
+            external: None,
             root: Path::new("/workspace"),
             first_line: 0,
             left_column: 0,
@@ -1415,6 +1433,7 @@ mod tests {
             buffer: &buffer,
             name: "test.rs",
             path: None,
+            external: None,
             root: Path::new("/workspace"),
             first_line: 0,
             left_column: 0,
