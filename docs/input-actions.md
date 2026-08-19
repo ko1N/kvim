@@ -101,9 +101,11 @@ The command line rejects every other input with a concise message. It accepts an
 abbreviation of a name in the table above only, so a name that no row declares
 stays unknown.
 
-`Esc` cancels the command line and restores the previous mode. The command line
-holds a bounded query length. `:w` and `:e` use the same save and open path as
-their bound keys. See [`files.md`](files.md).
+`Esc` cancels the command line and restores the previous mode. An open candidate
+list takes that key first, so the cancel of the line follows the cancel of the
+list. See the Command Line Completion section below. The command line holds a
+bounded query length. `:w` and `:e` use the same save and open path as their
+bound keys. See [`files.md`](files.md).
 
 `:q` and `:e` destroy data only while the buffer holds unsaved changes, so each
 one asks only then. `:q` asks only while the focused window is the last window,
@@ -127,7 +129,8 @@ reads these keys:
 
 The completion writes the selected candidate into the line, so the line always
 shows the command that `Enter` runs. The candidate list holds a bounded number
-of names.
+of candidates, and one candidate is one command name or one path.
+[`files.md`](files.md) names that bound.
 
 The candidates stay anchored to the text that the user typed, so one cycle never
 narrows them. A forward cycle past the last candidate wraps to the first one. A
@@ -149,9 +152,10 @@ never reaches the list with one. A line number is no name, so a line of digits
 offers no candidate.
 
 `Esc` closes an open candidate list and restores the text that the user typed. A
-second `Esc` then cancels the command line. Every other key closes the list and
-keeps the line as it is shown, so one typed character continues from the written
-candidate.
+second `Esc` then cancels the command line. One typed character and one
+`Backspace` both close the list and keep the line as it is shown, so the next
+completion reads the new line. A key that the command line does not read changes
+nothing and leaves the list open.
 
 `crates/kvim-input/src/command_line.rs` holds the name table beside the parser,
 so one new command needs one new row and no new completion code.

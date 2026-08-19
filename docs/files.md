@@ -719,6 +719,10 @@ It applies no second filter over the filenames.
 The selection follows its candidate across one refiltering while the query still
 keeps that candidate. A selection that the query drops returns to the best row.
 
+The command-line completion of the path argument of `:e[dit]` ranks with the
+same rule, so one ranking serves the picker and the command line. See
+[The Walk Of The Command Line](#the-walk-of-the-command-line).
+
 ### Git Ignore Rules
 
 The file picker walks the workspace through the same bounded directory reader as
