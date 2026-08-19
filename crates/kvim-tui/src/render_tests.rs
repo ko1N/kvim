@@ -22,7 +22,7 @@ use kvim_workspace::temp::TempDir;
 
 use super::buffer_view::WINBAR_ROWS;
 use super::clipboard::SessionClipboard;
-use super::session::{MessageLevel, Redraw, Session};
+use super::session::{ConfirmedAction, MessageLevel, Redraw, Session};
 use super::window::WindowId;
 
 const NOW: Duration = Duration::ZERO;
@@ -906,6 +906,33 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
     press(&mut session, '/');
     type_keys(&mut session, "abc");
     assert_eq!(row(&session, 5), "/abc");
+}
+
+#[test]
+fn a_confirmation_asks_on_the_message_line_and_draws_no_cursor() {
+    let mut session = session(40, 6);
+    // No formatter serves the scratch buffer, so the toggle reports that and
+    // fills the message line.
+    type_keys(&mut session, " cf");
+    let report = "no formatter serves this buffer";
+    assert_eq!(row(&session, 5), report);
+
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    let line = "Delete one entry? [y/N]:";
+    assert_eq!(
+        row(&session, 5),
+        line,
+        "the question covers the last message"
+    );
+    let end = u16::try_from(line.chars().count()).expect("the question fits the terminal");
+    assert!(
+        !is_reversed(&session, end, 5),
+        "the question reads one key, so it draws no cursor"
+    );
+
+    // The cancelled question leaves the row exactly as it found it.
+    press(&mut session, 'n');
+    assert_eq!(row(&session, 5), report);
 }
 
 #[test]

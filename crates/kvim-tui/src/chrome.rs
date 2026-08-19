@@ -15,7 +15,7 @@ use kvim_input::Mode;
 
 use super::cells::text_cells;
 use super::language::FormatOnSave;
-use super::session::{Message, MessageLevel, PromptLine};
+use super::session::{Confirmation, Message, MessageLevel, PromptLine};
 use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the statusline occupies.
@@ -152,11 +152,15 @@ pub(super) fn render_statusline(
     );
 }
 
-/// Renders the open prompt, or the last message, into the message line.
+/// Renders the open confirmation, the open prompt, or the last message, into
+/// the message line.
+///
+/// The confirmation owns the keys, so its question covers both other entries.
 pub(super) fn render_message(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
+    confirmation: Option<&Confirmation>,
     prompt: Option<&PromptLine>,
     message: Option<&Message>,
 ) {
@@ -165,6 +169,13 @@ pub(super) fn render_message(
     }
     let base = theme.style(ThemeRole::Text);
     target.set_style(area, base);
+    if let Some(confirmation) = confirmation {
+        // The question ends the row and reads one key, so the line draws no
+        // cursor behind it. See `docs/windows.md`.
+        let line = format!("{}? [y/N]:", confirmation.question);
+        target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
+        return;
+    }
     if let Some(prompt) = prompt {
         let line = format!("{}{}", prompt.kind.prefix(), prompt.text);
         let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);

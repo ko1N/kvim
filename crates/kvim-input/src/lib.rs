@@ -59,4 +59,4 @@ pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 pub use registry::{
     Binding, KeyLabel, KeySequence, Registry, RegistryError, WhichKeyRow, WhichKeyTarget,
 };
-pub use resolver::{PromptEdit, Resolution, Resolver};
+pub use resolver::{ConfirmAnswer, PromptEdit, Resolution, Resolver};

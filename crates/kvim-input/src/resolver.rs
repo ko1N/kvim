@@ -32,6 +32,43 @@ pub enum PromptEdit {
     Cancel,
 }
 
+/// The answer to one open confirmation.
+///
+/// The resolver translates the raw key, so the editor never compares a key
+/// value. See `docs/input-actions.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfirmAnswer {
+    /// Perform the action that waits for the answer.
+    Yes,
+    /// Cancel the action and change nothing.
+    No,
+}
+
+impl ConfirmAnswer {
+    /// Returns the answer that one key gives.
+    ///
+    /// Only a plain `y` confirms. The capital `N` of the question names the
+    /// default, so `n`, `Esc`, and every other key cancel.
+    ///
+    /// ```
+    /// use kvim_input::ConfirmAnswer;
+    /// use kvim_terminal::{Key, KeyCode};
+    ///
+    /// let yes = Key::plain(KeyCode::Char('y'));
+    /// let other = Key::plain(KeyCode::Esc);
+    /// assert_eq!(ConfirmAnswer::from_key(yes), ConfirmAnswer::Yes);
+    /// assert_eq!(ConfirmAnswer::from_key(other), ConfirmAnswer::No);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn from_key(key: Key) -> Self {
+        match (key.chord(), key.code()) {
+            (Chord::Plain, KeyCode::Char('y')) => Self::Yes,
+            _ => Self::No,
+        }
+    }
+}
+
 /// The outcome of one resolution request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Resolution {
@@ -44,6 +81,8 @@ pub enum Resolution {
     },
     /// An open prompt owns input and the key edits its line.
     Prompt(PromptEdit),
+    /// An open confirmation owns input and the key answers it.
+    Confirmation(ConfirmAnswer),
     /// The sequence is a valid prefix of at least one longer sequence.
     Pending,
     /// `Esc` or `Ctrl-C` cancelled the pending sequence and the pending count.
@@ -287,10 +326,21 @@ impl Resolver {
 
     /// Resolves one key at the elapsed time `now`.
     ///
-    /// The function cancels pending input on `Esc` or `Ctrl-C` first, then
-    /// accumulates a decimal count in a mode that holds one, then extends the
-    /// pending sequence. The elapsed time only arms the which-key overlay.
+    /// An open confirmation answers first, because it reads one key. The
+    /// function then cancels pending input on `Esc` or `Ctrl-C`, accumulates a
+    /// decimal count in a mode that holds one, and extends the pending
+    /// sequence. The elapsed time only arms the which-key overlay.
     pub fn resolve(&mut self, key: Key, now: Duration) -> Resolution {
+        // A confirmation reads one key and reaches no table, so it answers
+        // before every other branch. Only this context produces an answer, so
+        // no key reaches a closed confirmation.
+        if matches!(self.context, InputContext::Confirmation { .. }) {
+            debug_assert!(
+                matches!(self.pending, PendingInput::Idle),
+                "a context change resets pending input, so a confirmation holds none"
+            );
+            return Resolution::Confirmation(ConfirmAnswer::from_key(key));
+        }
         if self.context.prompt().is_some() {
             debug_assert!(
                 matches!(self.pending, PendingInput::Idle),
@@ -498,7 +548,7 @@ mod tests {
     use kvim_settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
     use kvim_terminal::{Key, KeyCode};
 
-    use super::{PromptEdit, Resolution, Resolver};
+    use super::{ConfirmAnswer, PromptEdit, Resolution, Resolver};
 
     const NOW: Duration = Duration::ZERO;
 
@@ -1083,6 +1133,52 @@ mod tests {
             feed(&mut resolver, &[ch('g'), ch('g')]),
             command(Command::MoveFirstLine),
             "the sidebar owns the `gg` sequence as the buffer does"
+        );
+    }
+
+    #[test]
+    fn a_confirmation_context_answers_every_key() {
+        let cases = [
+            (ch('y'), ConfirmAnswer::Yes),
+            (ch('n'), ConfirmAnswer::No),
+            (Key::plain(KeyCode::Esc), ConfirmAnswer::No),
+            (Key::ctrl(KeyCode::Char('c')), ConfirmAnswer::No),
+            (Key::plain(KeyCode::Enter), ConfirmAnswer::No),
+            // The capital `N` of the question names the default, so the
+            // capital `Y` cancels with every other key.
+            (ch('Y'), ConfirmAnswer::No),
+            (ch('q'), ConfirmAnswer::No),
+            (Key::ctrl(KeyCode::Char('y')), ConfirmAnswer::No),
+        ];
+        for (key, answer) in cases {
+            let mut resolver = resolver();
+            resolver.set_context(InputContext::NORMAL.open_confirmation());
+            assert_eq!(
+                resolver.resolve(key, NOW),
+                Resolution::Confirmation(answer),
+                "{key:?} in a confirmation"
+            );
+        }
+    }
+
+    #[test]
+    fn a_closed_confirmation_takes_no_key_of_a_mode_or_of_an_operator() {
+        let mut resolver = resolver();
+        assert_eq!(
+            resolver.resolve(ch('y'), NOW),
+            command(Command::YankOverMotion),
+            "`y` reaches the yank operator while no confirmation is open"
+        );
+        // The operator waits for its target, so the next key belongs to it.
+        assert_eq!(
+            resolver.resolve(ch('y'), NOW),
+            command(Command::YankOverMotion),
+            "the waiting operator keeps the repeated key"
+        );
+        assert_eq!(
+            feed(&mut resolver, &[ch('2'), ch('n')]),
+            counted(Command::SearchNext, 2),
+            "a pending count keeps its key too"
         );
     }
 

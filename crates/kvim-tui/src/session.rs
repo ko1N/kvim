@@ -44,8 +44,8 @@ use kvim_editor::{
     SearchDirection, SearchQuery, Selection, Viewport, WindowState, selection_move_indent_line,
 };
 use kvim_input::{
-    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, Mode, PromptEdit,
-    PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
+    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, ConfirmAnswer, Mode,
+    PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
@@ -446,6 +446,18 @@ pub enum MessageLevel {
     Info,
 }
 
+/// Clips one text to the [`MESSAGE_CHARS_MAX`] characters of the message line.
+///
+/// The message and the question of a confirmation share the row, so both take
+/// the same bound.
+fn clip_message_line(text: impl Into<String>) -> String {
+    let text = text.into();
+    if text.chars().count() <= MESSAGE_CHARS_MAX {
+        return text;
+    }
+    text.chars().take(MESSAGE_CHARS_MAX).collect()
+}
+
 /// One message-line entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Message {
@@ -458,11 +470,10 @@ pub struct Message {
 impl Message {
     /// Creates a message and clips it to [`MESSAGE_CHARS_MAX`] characters.
     fn new(text: impl Into<String>, level: MessageLevel) -> Self {
-        let mut text = text.into();
-        if text.chars().count() > MESSAGE_CHARS_MAX {
-            text = text.chars().take(MESSAGE_CHARS_MAX).collect();
+        Self {
+            text: clip_message_line(text),
+            level,
         }
-        Self { text, level }
     }
 
     /// Returns the text of the message.
@@ -502,6 +513,49 @@ impl PromptLine {
     }
 }
 
+/// The action that one confirmed question performs.
+///
+/// The editor holds one variant for each action that asks before it destroys
+/// data. A build without a test holds no variant, because no editor action asks
+/// yet, so no confirmation opens there.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ConfirmedAction {
+    /// Report one message on the message line.
+    ///
+    /// The confirmation tests read that message, so they need no editor action
+    /// that destroys data. The variant is a test seam, never editor behavior.
+    #[cfg(test)]
+    Report,
+}
+
+/// One open confirmation and the action that waits for its answer.
+///
+/// The question holds no answer hint. The message line adds `? [y/N]:` when it
+/// draws the row, so every question takes the same form. See `docs/windows.md`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct Confirmation {
+    /// The question, bounded by [`MESSAGE_CHARS_MAX`].
+    pub(super) question: String,
+    /// The action that a `y` answer performs.
+    action: ConfirmedAction,
+}
+
+/// The outcome of one request to open a confirmation.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "no editor action asks yet, so only a test opens a confirmation"
+    )
+)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ConfirmationRequest {
+    /// The confirmation opened and waits for one key.
+    Opened,
+    /// Another confirmation waits already, so the editor opened none.
+    Refused,
+}
+
 /// The accepted search query and the matches that it produced.
 ///
 /// The matches follow one buffer version. A later edit makes them obsolete, and
@@ -539,6 +593,8 @@ pub(super) struct Visible<'a> {
     pub(super) editing: &'a EditingState,
     pub(super) search: Option<&'a ActiveSearch>,
     pub(super) prompt: Option<&'a PromptLine>,
+    /// The open confirmation, which owns the message line while it waits.
+    pub(super) confirmation: Option<&'a Confirmation>,
     pub(super) message: Option<&'a Message>,
     pub(super) float: Option<&'a Float>,
     pub(super) which_key: Option<&'a [WhichKeyRow]>,
@@ -682,6 +738,11 @@ pub struct Session {
     language: LanguageState,
     search: Option<ActiveSearch>,
     prompt: Option<PromptLine>,
+    /// The confirmation that waits for one key, while one is open.
+    ///
+    /// At most one question waits, so a second request opens none. See
+    /// `docs/input-actions.md`.
+    confirmation: Option<Confirmation>,
     message: Option<Message>,
     /// The open floating overlay of the language services.
     float: Option<Float>,
@@ -739,6 +800,7 @@ impl Session {
             language: LanguageState::default(),
             search: None,
             prompt: None,
+            confirmation: None,
             message: None,
             float: None,
             which_key: None,
@@ -901,6 +963,7 @@ impl Session {
             editing: &self.editing,
             search: self.search.as_ref(),
             prompt: self.prompt.as_ref(),
+            confirmation: self.confirmation.as_ref(),
             message: self.message.as_ref(),
             float: self.float.as_ref(),
             which_key: self.which_key.as_deref(),
@@ -949,6 +1012,7 @@ impl Session {
         match self.resolver.resolve(key, now) {
             Resolution::Command { command, count } => self.apply_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
+            Resolution::Confirmation(answer) => self.answer_confirmation(answer),
             // A pending sequence and a cancelled sequence both change only the
             // which-key overlay, and `settle` publishes that change.
             Resolution::Pending | Resolution::Cancelled => Redraw::Skipped,
@@ -1355,6 +1419,68 @@ impl Session {
         let context = self.input_scope().context().open_prompt(kind);
         self.resolver.set_context(context);
         Redraw::Needed
+    }
+
+    /// Opens one confirmation and moves input to it.
+    ///
+    /// The confirmation returns input to the scope that owned it, exactly as a
+    /// prompt does, so a question of the file-tree sidebar returns the keys to
+    /// the sidebar. At most one question waits, so a request while another one
+    /// waits opens nothing and changes nothing.
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "no editor action asks yet, so only a test opens a confirmation"
+        )
+    )]
+    pub(super) fn open_confirmation(
+        &mut self,
+        question: impl Into<String>,
+        action: ConfirmedAction,
+    ) -> ConfirmationRequest {
+        if self.confirmation.is_some() {
+            return ConfirmationRequest::Refused;
+        }
+        self.confirmation = Some(Confirmation {
+            question: clip_message_line(question),
+            action,
+        });
+        let context = self.input_scope().context().open_confirmation();
+        self.resolver.set_context(context);
+        ConfirmationRequest::Opened
+    }
+
+    /// Answers the open confirmation and closes it.
+    ///
+    /// A cancelled question performs nothing and leaves no trace, so the editor
+    /// returns to the state that it held before the question.
+    fn answer_confirmation(&mut self, answer: ConfirmAnswer) -> Redraw {
+        let Some(confirmation) = self.confirmation.take() else {
+            debug_assert!(
+                false,
+                "the resolver answers a confirmation only while one is open"
+            );
+            return Redraw::Skipped;
+        };
+        self.sync_context();
+        match answer {
+            ConfirmAnswer::No => Redraw::Needed,
+            ConfirmAnswer::Yes => self
+                .perform_confirmed(confirmation.action)
+                .or(Redraw::Needed),
+        }
+    }
+
+    /// Performs the action that one confirmed question named.
+    fn perform_confirmed(&mut self, action: ConfirmedAction) -> Redraw {
+        match action {
+            #[cfg(test)]
+            ConfirmedAction::Report => {
+                self.set_message("the confirmation reached its action", MessageLevel::Info);
+                Redraw::Needed
+            }
+        }
     }
 
     /// Returns the scope that owns the keys while no prompt is open.
@@ -3632,8 +3758,11 @@ impl Session {
     }
 
     /// Moves input back to the scope that holds the focus.
+    ///
+    /// An open prompt and an open confirmation both own the keys, so the scope
+    /// below them waits until they close.
     fn sync_context(&mut self) {
-        if self.prompt.is_some() {
+        if self.prompt.is_some() || self.confirmation.is_some() {
             return;
         }
         self.resolver.set_context(self.input_scope().context());

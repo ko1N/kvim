@@ -39,8 +39,8 @@ A switch between two Visual modes keeps the selection anchor. Only the shape of
 the selection changes, so `V` in Visual mode selects the complete lines that the
 existing anchor and cursor cover.
 
-The command line is an input context, not a mode. The file-tree sidebar is an
-input context too. See the sections below.
+The command line is an input context, not a mode. The file-tree sidebar and the
+confirmation are input contexts too. See the sections below.
 
 ## Binding Scopes
 
@@ -89,6 +89,40 @@ guess a command from a prefix.
 `Esc` cancels the command line and restores the previous mode. The command line
 holds a bounded query length. `:w` and `:e` use the same save and open path as
 their bound keys. See [`files.md`](files.md).
+
+## Confirmation
+
+An action that destroys data asks the user first. The question sits on the
+message line, in the form `<question>? [y/N]:`. It opens no window and no
+overlay. The confirmation is an input context, not a mode.
+
+The confirmation reads one key:
+
+| Keys | Effect |
+|---|---|
+| `y` | Perform the action |
+| `n` | Cancel the action |
+| `Esc` | Cancel the action |
+| `Ctrl-C` | Cancel the action |
+| Every other key | Cancel the action |
+
+The capital `N` of the question names the default. Only a plain `y` confirms, so
+`Y` cancels with every other key. The confirmation reads no line and takes no
+`Enter`, and it draws no cursor. A cancelled action changes nothing and leaves
+no trace on the message line.
+
+The confirmation owns the keys only while it is open, so no key reaches it
+before the question appears or after the answer closes it. It holds no count and
+no key sequence, so it never takes the key of a pending operator or of a pending
+count. Opening it resets pending input, exactly as opening a prompt does. The
+answer returns the keys to the scope that owned them, so a question of the
+file-tree sidebar returns the keys to the sidebar.
+
+At most one confirmation is open. A second request while one waits is refused,
+and the open question keeps the line.
+
+Every confirmation follows a key that the user pressed. No background event
+opens one, so a question never takes the key of a user who types.
 
 ## Semantic Commands
 

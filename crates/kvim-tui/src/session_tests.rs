@@ -21,7 +21,9 @@ use kvim_workspace::temp::TempDir;
 
 use super::clipboard::SessionClipboard;
 use super::language::{LanguageRequest, LanguageRequestKind};
-use super::session::{MessageLevel, Redraw, RunState, Session};
+use super::session::{
+    ConfirmationRequest, ConfirmedAction, MessageLevel, Redraw, RunState, Session,
+};
 use super::window::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
@@ -427,6 +429,92 @@ fn a_backspace_on_the_empty_prompt_closes_it() {
     press_code(&mut session, KeyCode::Backspace);
     press_code(&mut session, KeyCode::Backspace);
     // The prompt is closed, so the next key reaches the registry again.
+    press(&mut session, 'i');
+    assert_eq!(session.mode(), Mode::Insert);
+}
+
+/// The message that the test action of a confirmation reports.
+const CONFIRMED: &str = "the confirmation reached its action";
+
+#[test]
+fn a_confirmed_question_performs_its_action_and_returns_the_keys() {
+    let mut session = session(40, 10);
+    assert_eq!(
+        session.open_confirmation("Delete one entry", ConfirmedAction::Report),
+        ConfirmationRequest::Opened
+    );
+    assert_eq!(press(&mut session, 'y'), Redraw::Needed);
+    assert_eq!(message(&session), CONFIRMED);
+    // The answer closes the question, so the mode below it owns the keys again.
+    press(&mut session, 'i');
+    assert_eq!(session.mode(), Mode::Insert);
+}
+
+#[test]
+fn every_other_key_cancels_a_question_and_leaves_no_trace() {
+    // `n` names the default of the question, `Esc` cancels every prompt, and
+    // `Y` and `w` stand for every remaining key.
+    for value in ['n', 'Y', 'w'] {
+        let mut session = session(40, 10);
+        session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+        assert_eq!(press(&mut session, value), Redraw::Needed);
+        assert_eq!(message(&session), "", "{value} performs no action");
+        assert_eq!(
+            session.buffer().to_string(),
+            "\n",
+            "{value} changes no text"
+        );
+        press(&mut session, 'i');
+        assert_eq!(session.mode(), Mode::Insert, "{value} returns the keys");
+    }
+
+    let mut session = session(40, 10);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    assert_eq!(press_code(&mut session, KeyCode::Esc), Redraw::Needed);
+    assert_eq!(message(&session), "", "Esc performs no action");
+    assert_eq!(session.mode(), Mode::Normal);
+}
+
+#[test]
+fn a_second_question_is_refused_while_one_waits() {
+    let mut session = session(40, 10);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    assert_eq!(
+        session.open_confirmation("Delete two entries", ConfirmedAction::Report),
+        ConfirmationRequest::Refused
+    );
+    press(&mut session, 'y');
+    assert_eq!(message(&session), CONFIRMED);
+    // Only one question waited, so the next `y` reaches the yank operator.
+    press(&mut session, 'y');
+    assert_eq!(
+        message(&session),
+        "",
+        "the refused question never reached the message line"
+    );
+}
+
+#[test]
+fn no_key_reaches_a_closed_question() {
+    let mut session = session(40, 10);
+    // Without an open question `y` reaches the yank operator instead.
+    press(&mut session, 'y');
+    press(&mut session, 'y');
+    assert_ne!(
+        message(&session),
+        CONFIRMED,
+        "`y` answers no question while none is open"
+    );
+
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    press(&mut session, 'n');
+    press(&mut session, 'y');
+    press(&mut session, 'y');
+    assert_ne!(
+        message(&session),
+        CONFIRMED,
+        "the answered question takes no further key"
+    );
     press(&mut session, 'i');
     assert_eq!(session.mode(), Mode::Insert);
 }
