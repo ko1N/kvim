@@ -257,6 +257,11 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
             Some("delimiter") => Some(SyntaxRole::Delimiter),
             _ => Some(SyntaxRole::Operator),
         },
+        // A tag names the kind of an element, exactly as a type name names the
+        // kind of a value, so the markup grammars take the type role. The
+        // deeper names of the same family, for example the erroneous end tag of
+        // the HTML query, keep that role.
+        "tag" => Some(SyntaxRole::Type),
         // The `text` family belongs to the prose grammars of the same shared
         // vocabulary. Each name maps onto the role that carries the same
         // meaning, because the role set names source meaning and stays fixed.

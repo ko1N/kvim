@@ -80,12 +80,16 @@ mod asm;
 mod bash;
 mod c;
 mod cpp;
+mod css;
 mod document;
+mod ecma;
 mod encoding;
 mod fish;
 mod formatter;
 mod glsl;
 mod go;
+mod html;
+mod javascript;
 mod json;
 mod lua;
 mod markdown;
@@ -94,10 +98,13 @@ mod progress;
 mod protocol;
 mod python;
 mod rust;
+mod scss;
 mod server;
 mod services;
 mod session;
 mod toml;
+mod tsx;
+mod typescript;
 mod zig;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -111,6 +118,7 @@ pub use asm::AsmAdapter;
 pub use bash::BashAdapter;
 pub use c::CAdapter;
 pub use cpp::CppAdapter;
+pub use css::CssAdapter;
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
     TextEdit,
@@ -122,6 +130,8 @@ pub use formatter::{
 };
 pub use glsl::GlslAdapter;
 pub use go::GoAdapter;
+pub use html::HtmlAdapter;
+pub use javascript::JavascriptAdapter;
 pub use json::JsonAdapter;
 pub use lua::LuaAdapter;
 pub use markdown::MarkdownAdapter;
@@ -137,6 +147,7 @@ pub use protocol::{
 };
 pub use python::PythonAdapter;
 pub use rust::RustAdapter;
+pub use scss::ScssAdapter;
 pub use server::{
     LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId,
     ServerFormatting,
@@ -150,6 +161,8 @@ pub use session::{
     LanguageOutcome, LanguageRequestId, LanguageServerHandle,
 };
 pub use toml::TomlAdapter;
+pub use tsx::TsxAdapter;
+pub use typescript::TypescriptAdapter;
 pub use zig::ZigAdapter;
 
 /// The largest source that one analysis reads, in bytes.
@@ -718,6 +731,9 @@ static C: CAdapter = CAdapter::new();
 /// The C++ adapter of this build.
 static CPP: CppAdapter = CppAdapter::new();
 
+/// The CSS adapter of this build.
+static CSS: CssAdapter = CssAdapter::new();
+
 /// The fish adapter of this build.
 static FISH: FishAdapter = FishAdapter::new();
 
@@ -726,6 +742,12 @@ static GLSL: GlslAdapter = GlslAdapter::new();
 
 /// The Go adapter of this build.
 static GO: GoAdapter = GoAdapter::new();
+
+/// The HTML adapter of this build.
+static HTML: HtmlAdapter = HtmlAdapter::new();
+
+/// The JavaScript adapter of this build.
+static JAVASCRIPT: JavascriptAdapter = JavascriptAdapter::new();
 
 /// The JSON adapter of this build.
 static JSON: JsonAdapter = JsonAdapter::new();
@@ -745,8 +767,17 @@ static PYTHON: PythonAdapter = PythonAdapter::new();
 /// The Rust adapter of this build.
 static RUST: RustAdapter = RustAdapter::new();
 
+/// The SCSS adapter of this build.
+static SCSS: ScssAdapter = ScssAdapter::new();
+
 /// The TOML adapter of this build.
 static TOML: TomlAdapter = TomlAdapter::new();
+
+/// The TSX adapter of this build.
+static TSX: TsxAdapter = TsxAdapter::new();
+
+/// The TypeScript adapter of this build.
+static TYPESCRIPT: TypescriptAdapter = TypescriptAdapter::new();
 
 /// The Zig adapter of this build.
 static ZIG: ZigAdapter = ZigAdapter::new();
@@ -760,19 +791,38 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 /// Exactly one adapter owns each extension and each file name. Two owners make
 /// every path of that key an ambiguous failure, which leaves the buffer without
 /// highlighting, without a server, and without a formatter.
-static ADAPTERS: [&dyn LanguageAdapter; 15] = [
-    &ASM, &BASH, &C, &CPP, &FISH, &GLSL, &GO, &JSON, &LUA, &MARKDOWN, &NIX, &PYTHON, &RUST, &TOML,
+static ADAPTERS: [&dyn LanguageAdapter; 21] = [
+    &ASM,
+    &BASH,
+    &C,
+    &CPP,
+    &CSS,
+    &FISH,
+    &GLSL,
+    &GO,
+    &HTML,
+    &JAVASCRIPT,
+    &JSON,
+    &LUA,
+    &MARKDOWN,
+    &NIX,
+    &PYTHON,
+    &RUST,
+    &SCSS,
+    &TOML,
+    &TSX,
+    &TYPESCRIPT,
     &ZIG,
 ];
 
 impl LanguageRegistry {
     /// Returns the registry of this build.
     ///
-    /// The table holds one adapter for assembly, Bash, C, C++, fish, GLSL, Go,
-    /// JSON, Lua, Markdown, Nix, Python, Rust, TOML, and Zig. A later release
-    /// adds a language by registering one more adapter in the table that this
-    /// constructor names, or by building a registry with
-    /// [`LanguageRegistry::new`].
+    /// The table holds one adapter for assembly, Bash, C, C++, CSS, fish,
+    /// GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust,
+    /// SCSS, TOML, TSX, TypeScript, and Zig. A later release adds a language by
+    /// registering one more adapter in the table that this constructor names,
+    /// or by building a registry with [`LanguageRegistry::new`].
     #[must_use]
     pub const fn first_release() -> Self {
         Self::new(&ADAPTERS)

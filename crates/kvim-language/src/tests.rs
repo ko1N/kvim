@@ -618,6 +618,8 @@ fn each_language_reports_its_own_comment_token() {
         ("init.lua", "--"),
         ("main.py", "#"),
         ("main.rs", "//"),
+        ("main.ts", "//"),
+        ("site.scss", "//"),
     ] {
         assert_eq!(
             registry
@@ -1053,6 +1055,291 @@ fn the_lua_indent_level_follows_the_syntax_tree() {
     );
     assert_eq!(analysis.indent_level(byte("\nend")).unwrap().get(), 1);
     assert_eq!(analysis.indent_level(last("end") + 3).unwrap().get(), 0);
+}
+
+/// One HTML document that carries a comment, a nested element, and an attribute.
+const HTML_SOURCE: &str = "<!-- note -->\n<html>\n    <body>\n        <p class=\"a\">text</p>\n    \
+                           </body>\n</html>\n";
+
+/// One CSS stylesheet that carries a comment, a nested block, and a literal.
+const CSS_SOURCE: &str =
+    "/* note */\ndiv .a {\n    top: 0;\n    margin: calc(\n        1px\n    );\n}\n";
+
+/// One SCSS stylesheet that carries a comment, a nested rule, and a literal.
+const SCSS_SOURCE: &str =
+    "// note\n@mixin m($a) {\n    top: $a;\n    .b {\n        left: 0;\n    }\n}\n";
+
+/// One JavaScript source that carries a comment, nested blocks, and a literal.
+const JAVASCRIPT_SOURCE: &str = "// note\nfunction main(a) {\n    if (a) {\n        const o = \
+                                 {\n            x: [\n                1,\n            ],\n        \
+                                 };\n    }\n}\n";
+
+/// One JavaScript source that carries the JSX dialect.
+const JSX_SOURCE: &str = "const app = <div className=\"a\">text</div>;\n";
+
+/// One TypeScript source that carries a comment, an interface, and a function.
+const TYPESCRIPT_SOURCE: &str = "// note\ninterface Shape {\n    area: number;\n}\n\nfunction \
+                                 main(value: Shape): number {\n    return value.area;\n}\n";
+
+/// One TSX source that carries a comment and a nested JSX element.
+const TSX_SOURCE: &str = "// note\nconst app = (\n    <div className=\"a\">\n        \
+                          <span>text</span>\n    </div>\n);\n";
+
+#[test]
+fn html_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("public/index.html", HTML_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    // The markup grammars name an element with the `tag` word of the shared
+    // vocabulary, so this row also proves the extended role mapping.
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Attribute));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::String));
+}
+
+#[test]
+fn the_html_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("public/index.html", HTML_SOURCE);
+    let byte = |needle: &str| {
+        HTML_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // An element spans its start tag, its content, and its end tag, so a new
+    // line inside it gains one level for each enclosing element.
+    assert_eq!(
+        analysis.indent_level(byte("\n    <body>")).unwrap().get(),
+        1
+    );
+    assert_eq!(
+        analysis.indent_level(byte("\n        <p")).unwrap().get(),
+        2
+    );
+    // An end tag opens with the same character as a start tag, so no closing
+    // delimiter separates the two. Both rows below therefore report one level
+    // too many, which is the documented limit of the HTML indent rule.
+    assert_eq!(
+        analysis.indent_level(byte("\n    </body>")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("\n</html>")).unwrap().get(), 1);
+}
+
+#[test]
+fn css_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("assets/site.css", CSS_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    // A tag selector names an element, so it carries the same role as an HTML
+    // tag name.
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Property));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_css_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("assets/site.css", CSS_SOURCE);
+    let byte = |needle: &str| {
+        CSS_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        CSS_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every scope of CSS carries its own opening and closing character, so
+    // every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    top")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("\n        1px")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("    );")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}")).unwrap().get(), 0);
+}
+
+#[test]
+fn scss_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("styles/site.scss", SCSS_SOURCE);
+
+    // The SCSS query marks a comment twice, and the second name carries no
+    // role, so this row also proves that the highlighter keeps the first name.
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    // The crate ships the SCSS patterns alone, so a property name and a literal
+    // prove that the adapter joined the CSS patterns to them.
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Property));
+    assert!(roles(&analysis, 4).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_scss_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("styles/site.scss", SCSS_SOURCE);
+    let byte = |needle: &str| {
+        SCSS_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        SCSS_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every scope of SCSS carries its own opening and closing character, so
+    // every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    top")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("\n        left")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}")).unwrap().get(), 0);
+}
+
+#[test]
+fn javascript_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/main.js", JAVASCRIPT_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Function));
+    assert!(roles(&analysis, 5).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_javascript_adapter_reads_the_jsx_dialect() {
+    // One grammar reads both dialects, so the `jsx` extension needs no adapter
+    // of its own. The adapter joins the JSX patterns to the JavaScript
+    // patterns, so a JSX element highlights in both files.
+    for path in ["src/main.js", "src/app.jsx"] {
+        let analysis = analyze_path(path, JSX_SOURCE);
+        assert!(
+            roles(&analysis, 0).contains(&SyntaxRole::Type),
+            "{path} highlights the JSX element name"
+        );
+        assert!(
+            roles(&analysis, 0).contains(&SyntaxRole::Attribute),
+            "{path} highlights the JSX attribute name"
+        );
+    }
+}
+
+#[test]
+fn the_javascript_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("src/main.js", JAVASCRIPT_SOURCE);
+    let byte = |needle: &str| {
+        JAVASCRIPT_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        JAVASCRIPT_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every scope of JavaScript carries its own opening and closing character,
+    // so every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n        const"))
+            .unwrap()
+            .get(),
+        2
+    );
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n                1,"))
+            .unwrap()
+            .get(),
+        4
+    );
+    assert_eq!(
+        analysis.indent_level(byte("            ],")).unwrap().get(),
+        3
+    );
+    assert_eq!(analysis.indent_level(last("}")).unwrap().get(), 0);
+}
+
+#[test]
+fn typescript_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/main.ts", TYPESCRIPT_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Type));
+    // The crate ships the type patterns alone, so a JavaScript keyword proves
+    // that the adapter joined the JavaScript patterns to them.
+    assert!(roles(&analysis, 5).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 5).contains(&SyntaxRole::Function));
+}
+
+#[test]
+fn the_typescript_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("src/main.ts", TYPESCRIPT_SOURCE);
+    let byte = |needle: &str| {
+        TYPESCRIPT_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every scope of TypeScript carries its own opening and closing character,
+    // so every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    area")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("}\n\nfunction")).unwrap().get(),
+        0
+    );
+    assert_eq!(
+        analysis.indent_level(byte("\n    return")).unwrap().get(),
+        1
+    );
+}
+
+#[test]
+fn tsx_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/app.tsx", TSX_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Attribute));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Type));
+}
+
+#[test]
+fn the_tsx_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("src/app.tsx", TSX_SOURCE);
+    let byte = |needle: &str| {
+        TSX_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A JSX element spans its opening element, its content, and its closing
+    // element, so a new line inside it gains one level.
+    assert_eq!(analysis.indent_level(byte("\n    <div")).unwrap().get(), 1);
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n        <span"))
+            .unwrap()
+            .get(),
+        2
+    );
+    // A closing element opens with the same character as an opening element, so
+    // the row below reports one level too many. That is the documented limit of
+    // the TSX indent rule.
+    assert_eq!(
+        analysis.indent_level(byte("\n    </div>")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte(");")).unwrap().get(), 0);
 }
 
 #[test]

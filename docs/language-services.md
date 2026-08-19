@@ -46,16 +46,20 @@ The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
-The registry contains one adapter for each of assembly, Bash, C, C++, fish,
-GLSL, Go, JSON, Lua, Markdown, Nix, Python, Rust, TOML, and Zig. Every match is
-case-sensitive. Each of the fifteen adapters declares one language server:
-`asm-lsp` for assembly, `bash-language-server` for Bash, `clangd` for C and for
-C++, `fish-lsp` for fish, `glsl_analyzer` for GLSL, `gopls` for Go,
-`vscode-json-language-server` for JSON, `lua-language-server` for Lua,
+The registry contains one adapter for each of assembly, Bash, C, C++, CSS,
+fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust, SCSS,
+TOML, TSX, TypeScript, and Zig. Every match is case-sensitive. Eighteen of the
+twenty-one adapters declare one language server: `asm-lsp` for assembly,
+`bash-language-server` for Bash, `clangd` for C and for C++,
+`vscode-css-language-server` for CSS and for SCSS, `fish-lsp` for fish,
+`glsl_analyzer` for GLSL, `gopls` for Go, `vscode-html-language-server` for
+HTML, `vscode-json-language-server` for JSON, `lua-language-server` for Lua,
 `marksman` for Markdown, `nil` for Nix, `pyright-langserver` for Python,
-`rust-analyzer` for Rust, `taplo` for TOML, and `zls` for Zig. A later release
-adds an adapter for another language and for its language server, because the
-Language Server Protocol is language independent.
+`rust-analyzer` for Rust, `taplo` for TOML, and `zls` for Zig. JavaScript,
+TypeScript, and TSX each declare two: `vscode-eslint-language-server` for the
+lint problems, and `typescript-language-server` for the type problems. A later
+release adds an adapter for another language and for its language server,
+because the Language Server Protocol is language independent.
 
 Exactly one adapter owns each extension and each file name. Two owners make
 every path of that key an ambiguous failure, which leaves the buffer without
@@ -68,6 +72,15 @@ owns `bash` and `sh`, because one grammar reads the POSIX shell language and the
 Bash extensions of it. Python owns `py` and `pyi`, because one grammar reads the
 source and the stub of a module.
 
+The web languages split their keys by grammar. HTML owns `htm` and `html`.
+JavaScript owns `cjs`, `js`, `jsx`, and `mjs`, because one grammar reads the
+module extensions and the JSX extension of the language. TypeScript owns `cts`,
+`mts`, and `ts`. TSX owns `tsx` alone, because the grammar crate ships a second
+grammar for that dialect, and the plain TypeScript grammar rejects the JSX
+syntax. One adapter carries one grammar entry point, so TSX needs an adapter of
+its own, although it declares the same servers and the same formatter as
+TypeScript.
+
 Bash also owns the file names `.bash_logout`, `.bash_profile`, `.bashrc`, and
 `.profile`. Each name is a startup script of an interactive or a login shell,
 and each one carries no extension, so the file-name key is the only key that
@@ -76,28 +89,38 @@ selects it.
 One adapter declares a table of servers, not one server. A language whose tools
 split the work therefore runs every declared server together. The order of the
 table is the declaration order, and the merge rules below read that order, so
-the merged answer never depends on which server answers first.
+the merged answer never depends on which server answers first. JavaScript,
+TypeScript, and TSX are the languages that split the work today. Each one
+declares the linter first and the type checker second, so the lint message of
+`vscode-eslint-language-server` survives a merge with an identical message of
+`typescript-language-server`. The linter names the rule that produced the
+report, and the type checker does not.
 
-Ten of the fifteen adapters also declare an external formatter: `black` for
-Python, `clang-format` for C and for C++, `goimports` for Go, `lua-format` for
-Lua, `nixfmt` for Nix, `prettier` for JSON and for Markdown, `shfmt` for Bash,
-and `taplo` for TOML. fish, GLSL, Rust, and Zig declare none, so `fish-lsp`,
-`glsl_analyzer`, `rust-analyzer`, and `zls` format a buffer of their language.
-Assembly declares neither, because `asm-lsp` supplies no document formatting, so
-an assembly buffer shows no format-on-save state. `pyright-langserver` supplies
-no document formatting either, so `black` is the only formatter of a Python
-buffer. The formatting section below owns the precedence between the two paths.
+Sixteen of the twenty-one adapters also declare an external formatter: `black`
+for Python, `clang-format` for C and for C++, `goimports` for Go, `lua-format`
+for Lua, `nixfmt` for Nix, `prettier` for CSS, HTML, JavaScript, JSON,
+Markdown, SCSS, TSX, and TypeScript, `shfmt` for Bash, and `taplo` for TOML.
+`prettier` selects its parser from the document path, so the declaration of
+each of those eight languages names that path. fish, GLSL, Rust, and Zig
+declare none, so `fish-lsp`, `glsl_analyzer`, `rust-analyzer`, and `zls` format
+a buffer of their language. Assembly declares neither, because `asm-lsp`
+supplies no document formatting, so an assembly buffer shows no format-on-save
+state. `pyright-langserver` supplies no document formatting either, so `black`
+is the only formatter of a Python buffer. The formatting section below owns the
+precedence between the two paths.
 
-TOML, Nix, assembly, Bash, fish, and Python carry `#` as their line comment, the
-C family, Go, GLSL, Rust, and Zig carry `//`, and Lua carries `--`. The assembly
-grammar reads `#`, `//`, and `;`, because it serves several assembler dialects.
-The adapter writes `#`, because the GNU assembler reads the file on macOS and on
-Linux. Lua opens a long comment with `--[[` and closes it with `]]`. Zig, Bash,
-fish, and Python define no block comment, so the metadata of each one carries
-the line token alone. A triple-quoted Python text is a string expression, not a
-comment, so it stays out of that metadata. JSON and Markdown define
-no comment of their own, so their comment metadata carries no token, and the
-comment toggle stays disabled and reports the reason. That is the same path
+TOML, Nix, assembly, Bash, fish, and Python carry `#` as their line comment,
+the C family, Go, GLSL, JavaScript, Rust, SCSS, TSX, TypeScript, and Zig carry
+`//`, and Lua carries `--`. The assembly grammar reads `#`, `//`, and `;`,
+because it serves several assembler dialects. The adapter writes `#`, because
+the GNU assembler reads the file on macOS and on Linux. Lua opens a long
+comment with `--[[` and closes it with `]]`. Zig, Bash, fish, and Python define
+no block comment, so the metadata of each one carries the line token alone. A
+triple-quoted Python text is a string expression, not a comment, so it stays
+out of that metadata. CSS and HTML define a block comment alone, and JSON and
+Markdown define no comment of their own, so the comment metadata of those four
+languages carries no line token. The first-release toggle reads the line token,
+so it stays disabled for all four and reports the reason. That is the same path
 that a file without an adapter takes.
 
 A file that no adapter serves stays a normal, fully editable buffer. It renders
@@ -113,6 +136,13 @@ buffer.
 
 Parsing and highlighting run only on the bounded worker service. They never run
 on the terminal event loop.
+
+A grammar crate sometimes ships the patterns of its own dialect alone, because
+the upstream query inherits the patterns of a base language. Kvim resolves no
+query inheritance, so such an adapter joins the texts once and keeps the base
+text first. C++ joins the C patterns, SCSS joins the CSS patterns, and
+TypeScript and TSX join the JavaScript patterns. JavaScript joins the JSX
+patterns of its own crate, because one grammar reads both dialects.
 
 Each analysis request carries the buffer version that produced its input. The
 publication gate rejects a result whose buffer version is obsolete. An obsolete
@@ -170,6 +200,14 @@ A bracketed Python expression carries its own opening and closing character, so
 a list, a call, and a parameter list each behave exactly as the equivalent node
 of a brace language.
 
+HTML and TSX close a markup element with a tag, not with a character. An
+`element` node and a `jsx_element` node each span the opening tag, the content,
+and the closing tag, so each one supplies the level of its own content. A
+closing tag opens with the same `<` character as an opening tag, so no closing
+delimiter separates the two, and the adapter names none. A line that holds a
+closing tag therefore reports one indent level too many, and the user corrects
+that line.
+
 ## Analysis Limits
 
 Analysis enforces explicit limits on buffer bytes, buffer lines, syntax nodes,
@@ -214,7 +252,10 @@ literal and a uniform resource identifier take the string role, and a reference
 takes the constant role. The older words of the same vocabulary are mapped that
 way too: a conditional and a repeat take the keyword role, a field takes the
 property role, a method takes the function role, and a parameter takes the
-parameter role.
+parameter role. The `tag` word of the markup grammars is mapped that way as
+well: a tag names the kind of an element, exactly as a type name names the kind
+of a value, so it takes the type role. An HTML tag name, a CSS tag selector,
+and a JSX element name therefore share one role.
 
 A query may also mark one node with a name that carries no role at all, for
 example the spell-check marker of another editor. The highlighter reads the last
@@ -284,6 +325,20 @@ edit transaction completes.
 The session supports diagnostics, definition, hover, and document formatting in
 the first release. It does not support completion, code actions, or symbol
 rename.
+
+Kvim reads the pushed diagnostics of the protocol. The server publishes one set
+with `textDocument/publishDiagnostics`, and the session accepts that
+notification. The protocol also defines a pulled set: a server that answers with
+a `diagnosticProvider` capability expects the client to send
+`textDocument/diagnostic` for each document, and it publishes nothing. Kvim
+sends no such request in this release, so such a server starts, stays healthy,
+and reports no problem. `vscode-eslint-language-server` is such a server today.
+
+The session also sends no workspace configuration. It sends the declared
+initialization options in the `initialize` request, it sends no
+`workspace/didChangeConfiguration` notification, and it rejects the
+`workspace/configuration` request of a server. A server whose behavior depends
+on a pushed or pulled configuration therefore runs with its own defaults.
 
 The Rust adapter declares `rust-analyzer` and maps the language-neutral check
 depth of `EditorSettings` onto the `check.command` option of that server. The
@@ -391,12 +446,15 @@ directory. Kvim resolves one workspace root for the complete editor session.
 Workspace containment rejects every path outside that root. A parent directory
 is therefore outside the workspace, and it decides nothing.
 
-An empty marker table names no marker, so its server always starts. Every
-adapter of the registry declares an empty table today, so every present server
-keeps its behavior. `clangd`, `glsl_analyzer`, `gopls`, `zls`, and `asm-lsp`
-each serve a single file as well as a complete project. The lookup also reads
-the workspace root alone. A marker would therefore stop such a server in an
-ordinary subdirectory layout.
+An empty marker table names no marker, so its server always starts. Only the
+`eslint` declaration of JavaScript, of TypeScript, and of TSX names markers
+today, and it names the twelve file names that can hold an eslint
+configuration. Every other declaration of the registry names none. `clangd`,
+`glsl_analyzer`, `gopls`, `zls`, and `asm-lsp` each serve a single file as well
+as a complete project. `typescript-language-server`,
+`vscode-html-language-server`, and `vscode-css-language-server` do the same. The
+lookup also reads the workspace root alone. A marker would therefore stop such a
+server in an ordinary subdirectory layout.
 
 The language services read the workspace root once, when the editor creates
 them and before the terminal event loop runs. The probe asks the filesystem for
