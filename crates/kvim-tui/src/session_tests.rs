@@ -73,6 +73,14 @@ fn question(session: &Session) -> String {
         .map_or_else(String::new, |confirmation| confirmation.question.clone())
 }
 
+/// Returns the text of the open prompt, or an empty text while none is open.
+fn prompt_text(session: &Session) -> String {
+    session
+        .visible()
+        .prompt
+        .map_or_else(String::new, |prompt| prompt.text.clone())
+}
+
 /// Returns the message text, or an empty text while the line is empty.
 fn message(session: &Session) -> String {
     session
@@ -640,6 +648,40 @@ fn no_key_reaches_a_closed_question() {
     );
     press(&mut session, 'i');
     assert_eq!(session.mode(), Mode::Insert);
+}
+
+#[test]
+fn a_question_over_a_prompt_returns_the_keys_to_that_prompt() {
+    // A question can open while a prompt reads a line, because the overwrite
+    // question follows a worker result instead of a key.
+    for answer in ['y', 'n'] {
+        let mut session = session(40, 10);
+        press(&mut session, '/');
+        type_keys(&mut session, "al");
+        session.open_confirmation("Overwrite one entry", ConfirmedAction::Report);
+        assert_eq!(
+            prompt_text(&session),
+            "al",
+            "the question keeps the text of the prompt"
+        );
+
+        press(&mut session, answer);
+        assert_eq!(question(&session), "", "{answer} closes the question");
+        type_keys(&mut session, "pha");
+        assert_eq!(
+            prompt_text(&session),
+            "alpha",
+            "the prompt reads the keys again after {answer}"
+        );
+
+        press_code(&mut session, KeyCode::Esc);
+        press(&mut session, 'i');
+        assert_eq!(
+            session.mode(),
+            Mode::Insert,
+            "the closed prompt returns the keys to the mode after {answer}"
+        );
+    }
 }
 
 #[test]

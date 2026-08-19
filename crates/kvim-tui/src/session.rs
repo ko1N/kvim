@@ -1452,17 +1452,17 @@ impl Session {
             kind,
             text: String::new(),
         });
-        let context = self.input_scope().context().open_prompt(kind);
-        self.resolver.set_context(context);
+        self.sync_context();
         Redraw::Needed
     }
 
     /// Opens one confirmation and moves input to it.
     ///
-    /// The confirmation returns input to the scope that owned it, exactly as a
+    /// The confirmation returns input to the owner that held it, exactly as a
     /// prompt does, so a question of the file-tree sidebar returns the keys to
-    /// the sidebar. At most one question waits, so a request while another one
-    /// waits opens nothing and changes nothing.
+    /// the sidebar, and a question over an open prompt returns them to that
+    /// prompt. At most one question waits, so a request while another one waits
+    /// opens nothing and changes nothing.
     pub(super) fn open_confirmation(
         &mut self,
         question: impl Into<String>,
@@ -1475,8 +1475,7 @@ impl Session {
             question: clip_message_line(question),
             action,
         });
-        let context = self.input_scope().context().open_confirmation();
-        self.resolver.set_context(context);
+        self.sync_context();
         ConfirmationRequest::Opened
     }
 
@@ -3951,15 +3950,28 @@ impl Session {
         self.sync_context();
     }
 
-    /// Moves input back to the scope that holds the focus.
+    /// Moves input to the owner that holds the keys.
     ///
-    /// An open prompt and an open confirmation both own the keys, so the scope
-    /// below them waits until they close.
+    /// Three owners can be open at the same time, and they own the keys in one
+    /// order. An open confirmation owns them first, because it draws over the
+    /// prompt and reads the next key. An open prompt owns them next. The scope
+    /// of the focus owns them last. Each owner therefore returns the keys to
+    /// the next owner that is still open, so a question that opened over a
+    /// prompt returns them to that prompt and not to the scope below it.
+    ///
+    /// The function derives the owner from the open state alone, so no caller
+    /// records what to return to. Every entry point that opens or closes an
+    /// owner calls it.
     fn sync_context(&mut self) {
-        if self.prompt.is_some() || self.confirmation.is_some() {
-            return;
-        }
-        self.resolver.set_context(self.input_scope().context());
+        let below = self.input_scope().context();
+        let context = if self.confirmation.is_some() {
+            below.open_confirmation()
+        } else if let Some(prompt) = self.prompt.as_ref() {
+            below.open_prompt(prompt.kind)
+        } else {
+            below
+        };
+        self.resolver.set_context(context);
     }
 
     /// Reports one command outcome on the message line.
