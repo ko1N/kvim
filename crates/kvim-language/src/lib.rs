@@ -3,10 +3,10 @@
 //!
 //! The adapter boundary is the multi-language extension point of Kvim. An
 //! adapter supplies data: the paths of its language, the Tree-sitter grammar
-//! with its highlight query, the comment tokens, and the indent rule. Nothing
-//! above the trait names a language, so a release adds a language by
-//! registering one more adapter. This build registers JSON, Markdown, Nix,
-//! Rust, and TOML.
+//! with its highlight query, the comment tokens, the indent rule, the language
+//! servers, and the external formatter. Nothing above the trait names a
+//! language, so a release adds a language by registering one more adapter. This
+//! build registers 25 adapters, which `docs/language-services.md` names.
 //!
 //! Only an adapter can select a path by language, by file extension, or by file
 //! name. Generic `kvim-core`, `kvim-editor`, `kvim-runtime`, `kvim-terminal`,

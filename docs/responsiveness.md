@@ -11,7 +11,7 @@ loop and visible editor state.
 The terminal event loop must not run:
 
 - filesystem reads, writes, or directory scans,
-- external processes, including ripgrep and `rust-analyzer`,
+- external processes, including ripgrep, a language server, and a formatter,
 - Git commands,
 - Language Server Protocol (LSP) requests or responses,
 - Tree-sitter parsing or highlighting,
