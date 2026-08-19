@@ -46,25 +46,42 @@ The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
-The registry contains one adapter for each of JSON, Markdown, Nix, Rust, and
-TOML. Every match is case-sensitive. Each of the five adapters declares one
-language server: `vscode-json-language-server` for JSON, `marksman` for
-Markdown, `nil` for Nix, `rust-analyzer` for Rust, and `taplo` for TOML. A
-later release adds an adapter for another language and for its language
-server, because the Language Server Protocol is language independent.
+The registry contains one adapter for each of assembly, C, C++, GLSL, Go, JSON,
+Markdown, Nix, Rust, TOML, and Zig. Every match is case-sensitive. Each of the
+eleven adapters declares one language server: `asm-lsp` for assembly, `clangd`
+for C and for C++, `glsl_analyzer` for GLSL, `gopls` for Go,
+`vscode-json-language-server` for JSON, `marksman` for Markdown, `nil` for Nix,
+`rust-analyzer` for Rust, `taplo` for TOML, and `zls` for Zig. A later release
+adds an adapter for another language and for its language server, because the
+Language Server Protocol is language independent.
+
+Exactly one adapter owns each extension and each file name. Two owners make
+every path of that key an ambiguous failure, which leaves the buffer without
+highlighting, without a server, and without a formatter. C therefore owns `c`
+and `h`, and C++ owns `cc`, `cpp`, `cxx`, `hh`, `hpp`, and `hxx`. A plain
+header carries C far more often than C++, so the plain extension belongs to C.
+Assembly owns `s` and `S` as two separate names, because the match is
+case-sensitive and the C preprocessor runs over the uppercase name alone.
 
 One adapter declares a table of servers, not one server. A language whose tools
 split the work therefore runs every declared server together. The order of the
 table is the declaration order, and the merge rules below read that order, so
 the merged answer never depends on which server answers first.
 
-Four of the five adapters also declare an external formatter: `nixfmt` for Nix,
-`prettier` for JSON and for Markdown, and `taplo` for TOML. Rust declares none,
-so `rust-analyzer` formats a Rust buffer. The formatting section below owns the
-precedence between the two paths.
+Seven of the eleven adapters also declare an external formatter: `clang-format`
+for C and for C++, `goimports` for Go, `nixfmt` for Nix, `prettier` for JSON and
+for Markdown, and `taplo` for TOML. GLSL, Rust, and Zig declare none, so
+`glsl_analyzer`, `rust-analyzer`, and `zls` format a buffer of their language.
+Assembly declares neither, because `asm-lsp` supplies no document formatting, so
+an assembly buffer shows no format-on-save state. The formatting section below
+owns the precedence between the two paths.
 
-TOML and Nix carry `#` as their line comment. JSON and Markdown define no
-comment of their own, so their comment metadata carries no token, and the
+TOML, Nix, and assembly carry `#` as their line comment, and the C family, Go,
+GLSL, Rust, and Zig carry `//`. The assembly grammar reads `#`, `//`, and `;`,
+because it serves several assembler dialects. The adapter writes `#`, because
+the GNU assembler reads the file on macOS and on Linux. Zig defines no block
+comment, so its metadata carries the line token alone. JSON and Markdown define
+no comment of their own, so their comment metadata carries no token, and the
 comment toggle stays disabled and reports the reason. That is the same path
 that a file without an adapter takes.
 
@@ -158,6 +175,12 @@ not yet cover therefore extends the mapping, never the role set. The `text`
 family of the prose grammars is mapped that way: a title takes the type role, a
 literal and a uniform resource identifier take the string role, and a reference
 takes the constant role.
+
+A query may also mark one node with a name that carries no role at all, for
+example the spell-check marker of another editor. The highlighter reads the last
+capture of one node, so such a marker would take the place of the role and leave
+the node plain. Kvim therefore turns off every capture that carries no role
+before it highlights, and the role of the node survives.
 
 ## The Language Server Session
 
@@ -265,7 +288,10 @@ is therefore outside the workspace, and it decides nothing.
 
 An empty marker table names no marker, so its server always starts. Every
 adapter of the registry declares an empty table today, so every present server
-keeps its behavior.
+keeps its behavior. `clangd`, `glsl_analyzer`, `gopls`, `zls`, and `asm-lsp`
+each serve a single file as well as a complete project. The lookup also reads
+the workspace root alone. A marker would therefore stop such a server in an
+ordinary subdirectory layout.
 
 The language services read the workspace root once, when the editor creates
 them and before the terminal event loop runs. The probe asks the filesystem for
@@ -504,7 +530,9 @@ An external formatter is adapter data: the program, and its arguments in command
 order. One argument is a literal text, or the place of the document path. A
 formatter that reads its rules from the file name needs that place. `prettier`
 takes the document on standard input, and it selects its parser from the path
-that this argument carries.
+that this argument carries. `clang-format` reads the same kind of path in the
+argument that follows its `--assume-filename` flag, and it selects its style and
+its language from that path.
 
 Kvim writes the exact buffer text to the standard input of the program, and it
 reads the formatted document from the standard output. The program runs on the

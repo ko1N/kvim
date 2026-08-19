@@ -112,6 +112,7 @@ fn highlight_configuration(
         grammar.locals_query,
     )
     .map_err(|_| AnalysisError::ParserSetup)?;
+    disable_captures_without_a_role(&mut configuration);
     // The identity mapping keeps every capture name, so the role lookup reads
     // the name that the query of the grammar defines.
     let names: Vec<String> = configuration
@@ -123,6 +124,35 @@ fn highlight_configuration(
     let shared: &'static HighlightConfiguration = Box::leak(Box::new(configuration));
     cache.push((grammar.name, shared));
     Ok(shared)
+}
+
+/// Turns off every capture of one query that carries no role.
+///
+/// The highlighter keeps the last capture of one node and reads the role of
+/// that capture alone. Several grammars mark one node twice, for example
+/// `(comment) @comment @spell`, where the second name is a decoration marker of
+/// another editor. The marker would take the place of the role and leave the
+/// node plain, so the configuration turns every such capture off. A turned-off
+/// capture never reaches a match, and the capture indices keep their order.
+///
+/// The function keeps the injection and the local captures, because the
+/// highlighter reads those names itself and never asks for their role.
+fn disable_captures_without_a_role(configuration: &mut HighlightConfiguration) {
+    let disabled: Vec<String> = configuration
+        .query
+        .capture_names()
+        .iter()
+        .filter(|name| {
+            let owner = name.split('.').next().unwrap_or(name);
+            !matches!(owner, "injection" | "local")
+                && highlight_role(name, &[]).is_none()
+                && !name.is_empty()
+        })
+        .map(|name| (*name).to_owned())
+        .collect();
+    for name in &disabled {
+        configuration.query.disable_capture(name);
+    }
 }
 
 /// Collects the bounded highlight spans of one source.
@@ -190,15 +220,24 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
     match prefix {
         "attribute" => Some(SyntaxRole::Attribute),
         "boolean" => Some(SyntaxRole::Boolean),
+        // A character literal is a string of one character, so it takes the
+        // string role.
+        "character" => Some(SyntaxRole::String),
         "comment" => Some(SyntaxRole::Comment),
         "constant" if bytes.first().is_some_and(u8::is_ascii_digit) => Some(SyntaxRole::Number),
         "constant" => Some(SyntaxRole::Constant),
         "constructor" => Some(SyntaxRole::Constructor),
+        // The C family names a comma and a semicolon `delimiter`, while the
+        // other grammars name the same characters `punctuation.delimiter`.
+        "delimiter" => Some(SyntaxRole::Delimiter),
         "escape" | "string" => Some(SyntaxRole::String),
         "function" if name.split('.').any(|part| part == "macro") => Some(SyntaxRole::Macro),
         "function" => Some(SyntaxRole::Function),
         "keyword" => Some(SyntaxRole::Keyword),
         "label" => Some(SyntaxRole::Statement),
+        // A module name names a namespace of declarations, so it takes the type
+        // role of that namespace.
+        "module" => Some(SyntaxRole::Type),
         "number" => Some(SyntaxRole::Number),
         "operator" => Some(SyntaxRole::Operator),
         "preproc" => Some(SyntaxRole::Preprocessor),
