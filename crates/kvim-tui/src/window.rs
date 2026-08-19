@@ -19,7 +19,7 @@ use kvim_settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSett
 use kvim_workspace::BufferId;
 
 use super::buffer_view::WINBAR_ROWS;
-use super::layout::{RegionKind, WindowLayout, compute_layout, first_extent};
+use super::layout::{RegionKind, WindowLayout, compute_layout, editor_area, first_extent};
 
 /// The largest number of leaf windows that the tree holds.
 ///
@@ -1107,6 +1107,12 @@ impl Windows {
     }
 
     /// Moves the inner edge of one sidebar in the named direction.
+    ///
+    /// The edge is one border of the layout, so it follows the same absolute
+    /// rule as a divider between two windows: the pane that touches the sidebar
+    /// absorbs the cells, a pane that reaches its minimum passes the rest to the
+    /// next pane along, and every other pane keeps its exact width. See
+    /// `docs/windows.md`.
     fn resize_sidebar(&mut self, side: SidebarSide, direction: Direction) -> LayoutChange {
         let grows = match (side, direction) {
             (SidebarSide::Left, Direction::Right) | (SidebarSide::Right, Direction::Left) => true,
@@ -1133,21 +1139,64 @@ impl Windows {
             SidebarSide::Left => (Some(staged), self.right_sidebar),
             SidebarSide::Right => (self.left_sidebar, Some(staged)),
         };
-        let candidate = compute_layout(
-            &self.root,
+        let Some(candidate) = self.staged_tree_beside(left, right, side) else {
+            return LayoutChange::Unchanged;
+        };
+        let layout = compute_layout(
+            &candidate,
             self.focused,
             left,
             right,
             self.terminal,
             &self.settings,
         );
-        if !self.accepts(&candidate) {
+        if !self.accepts(&layout) {
             return LayoutChange::Unchanged;
         }
+        self.root = candidate;
         *self.sidebar_slot(side) = Some(staged);
-        self.layout = candidate;
+        self.layout = layout;
         self.sync_viewports();
         LayoutChange::Changed
+    }
+
+    /// Returns the tree that fills the editor rectangle of two staged sidebars.
+    ///
+    /// The named sidebar owns the border that moves, so the end of the tree at
+    /// that border absorbs the cells. Returns `None` when no arrangement of the
+    /// tree keeps every window at its minimum width.
+    fn staged_tree_beside(
+        &self,
+        left: Option<Sidebar>,
+        right: Option<Sidebar>,
+        side: SidebarSide,
+    ) -> Option<Node> {
+        let before = editor_area(
+            self.left_sidebar,
+            self.right_sidebar,
+            self.terminal,
+            &self.settings,
+        );
+        let after = editor_area(left, right, self.terminal, &self.settings);
+        let delta = i32::from(after.width) - i32::from(before.width);
+        let mut candidate = self.root.clone();
+        if delta == 0 {
+            return Some(candidate);
+        }
+        let end = match side {
+            SidebarSide::Left => ChildSide::First,
+            SidebarSide::Right => ChildSide::Second,
+        };
+        let (extent, minimum) = self.axis(Orientation::Vertical, before);
+        move_edge(
+            &mut candidate,
+            Orientation::Vertical,
+            extent,
+            end,
+            delta,
+            minimum,
+        )?;
+        Some(candidate)
     }
 
     /// Publishes a staged tree only when its layout keeps every minimum.

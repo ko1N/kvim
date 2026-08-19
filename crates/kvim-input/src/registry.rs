@@ -985,8 +985,8 @@ fn add_picker_bindings(table: &mut Vec<Binding>) {
 /// follow the buffer instead, so one row list moves like another. The sidebar
 /// holds no leader sequence. `n` and `N` move between the search matches, and
 /// `Esc` and `Ctrl-C` end the search, as they do in a buffer window. `Ctrl-E`
-/// and `q` both close the sidebar, and the directional focus keys leave it. See
-/// `docs/input-actions.md`.
+/// and `q` both close the sidebar, the directional focus keys leave it, and the
+/// directional resize keys change its width. See `docs/input-actions.md`.
 fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('j'), Command::MoveDown);
     add_tree(table, ch('k'), Command::MoveUp);
@@ -1025,6 +1025,10 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ctrl('j'), Command::FocusWindowDown);
     add_tree(table, ctrl('k'), Command::FocusWindowUp);
     add_tree(table, ctrl('l'), Command::FocusWindowRight);
+    add_tree(table, ctrl_alt('h'), Command::ResizeWindowLeft);
+    add_tree(table, ctrl_alt('j'), Command::ResizeWindowDown);
+    add_tree(table, ctrl_alt('k'), Command::ResizeWindowUp);
+    add_tree(table, ctrl_alt('l'), Command::ResizeWindowRight);
     add_tree(table, ctrl('s'), Command::SaveBuffer);
     add_tree(table, ctrl('q'), Command::CloseWindow);
 }
@@ -1368,6 +1372,26 @@ mod tests {
                 .is_empty(),
             "docs/input-actions.md keeps the leader out of Visual Block mode"
         );
+    }
+
+    #[test]
+    fn the_file_tree_answers_the_resize_keys_itself() {
+        // The sidebar owns its own scope, so a resize key that only the Normal
+        // scope holds never reaches the focused file tree.
+        let registry = Registry::first_release();
+        let cases = [
+            (super::ctrl_alt('h'), Command::ResizeWindowLeft),
+            (super::ctrl_alt('j'), Command::ResizeWindowDown),
+            (super::ctrl_alt('k'), Command::ResizeWindowUp),
+            (super::ctrl_alt('l'), Command::ResizeWindowRight),
+        ];
+        for (key, expected) in cases {
+            assert_eq!(
+                registry.command(BindingScope::Sidebar, &[key]),
+                Some(expected),
+                "the file tree resizes with `{key:?}`"
+            );
+        }
     }
 
     #[test]

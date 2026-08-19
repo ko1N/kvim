@@ -140,9 +140,35 @@ A resize that reaches no arrangement that keeps every minimum leaves the layout
 unchanged.
 
 A sidebar keeps a fixed width, but a directional resize whose neighbor is a
-sidebar changes the sidebar width instead of refusing the command.
+sidebar changes the sidebar width instead of refusing the command. The inner
+edge of a sidebar is one border of the layout, so it follows the same absolute
+rule: the pane that touches the sidebar absorbs the cells, a pane that reaches
+its minimum passes the rest to the next pane along, and every other pane keeps
+its exact width. A sidebar that holds the focus answers the resize keys itself,
+so the file tree resizes without leaving it first.
 
 [`input-actions.md`](input-actions.md) owns the keys for focus and resize.
+
+### Reflow And Explicit Resize
+
+One representation carries two rules, because the two operations want opposite
+behavior. Keep them apart.
+
+- A reflow redistributes proportionally. A terminal resize and a new split
+  change the extent that a subtree divides, and every pane inside that subtree
+  gives or takes its share. The weight expresses that directly, so the layout
+  fills the new terminal without a stale absolute size.
+- An explicit resize command is absolute. It resolves the affected subtree to
+  cells, moves exactly one border by the resize step, and holds every pane that
+  does not share that border at its exact cell count.
+
+The explicit resize derives the weights again from the resulting cell sizes. The
+weight denominator is above every terminal extent, so one weight reproduces one
+cell count exactly, and a repeated command therefore never drifts by one cell.
+
+A proportional explicit resize would move every border of the layout at once,
+which is the behavior that the absolute rule replaces. Do not collapse the two
+rules into one.
 
 ## Minimum Dimensions And Terminal Resize
 
@@ -181,7 +207,9 @@ The file tree opens at 40 cells. The width belongs to `EditorSettings`. See
 [`settings.md`](settings.md).
 
 A sidebar owns its own keys while it holds the focus. The mapping registry keeps
-one binding scope for it, so a tree key never reaches an editor window. See
+one binding scope for it, so a tree key never reaches an editor window. That
+scope holds the directional focus keys and the directional resize keys as well,
+so the focused file tree resizes like an editor window. See
 [`input-actions.md`](input-actions.md).
 
 The sidebar keeps one identity for the complete session. Closing it hides the
