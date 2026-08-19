@@ -84,9 +84,13 @@ identifier, and a counter, so two saves never use one temporary file.
 The `atomic save` setting selects this procedure. A disabled setting writes the
 target file directly. See [`settings.md`](settings.md).
 
-`:q` refuses to close the last window while the buffer holds unsaved changes.
-`:q!` discards them. `:wq` saves first and closes the window after the save
-succeeds. A failed save keeps the window open.
+`:q` asks before it closes the last window while the buffer holds unsaved
+changes. `y` closes the window and discards them, and every other key keeps the
+buffer and the window. The question names the buffer, and the answer closes the
+window only while that named buffer still holds the focus, because an open that
+completes while the question waits makes another buffer active. `:q!` discards
+the changes without a question. `:wq` saves first and closes the window after
+the save succeeds. A failed save keeps the window open.
 
 ## External Change Detection
 
@@ -134,9 +138,9 @@ The check reads a file only when it must:
 A buffer that no window shows reloads with every other buffer, so a background
 buffer is current when the user reaches it.
 
-**Kvim never reloads a buffer that holds an unsaved change.** That buffer is
-marked instead, and the editor reports the external change once. The mark is one
-of two states, and the winbar shows `[!]` for both:
+**A background check never reloads a buffer that holds an unsaved change.** That
+buffer is marked instead, and the editor reports the external change once. The
+mark is one of two states, and the winbar shows `[!]` for both:
 
 - *changed*: the file changed, and the buffer keeps its unsaved changes,
 - *missing*: the file is gone from its path.
@@ -176,9 +180,14 @@ follow, and a refused or failed background check reports nothing at all, because
 the user never asked for it. The next burst asks again.
 
 `:e` without a path is the manual form of the same operation for the buffer of
-the focused window. It reads the file whatever its identity holds. `:e` refuses
-a buffer that holds an unsaved change and names `:e!`, which discards that
-change and reloads. `:e <path>` keeps its own meaning and opens another file.
+the focused window. It reads the file whatever its identity holds. `:e` asks
+before it replaces a buffer that holds an unsaved change, because the file then
+replaces the only copy of that work. `y` reads the file and discards the change,
+and every other key keeps the buffer. The question names the buffer, and the
+answer reads the file of that named buffer, never of the focused window, because
+an open that completes while the question waits makes another buffer active.
+`:e!` discards the change without a question. `:e <path>` keeps its own meaning
+and opens another file.
 
 ## Persistent Undo Files
 

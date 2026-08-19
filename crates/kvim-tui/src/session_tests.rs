@@ -65,6 +65,14 @@ fn type_keys(session: &mut Session, keys: &str) {
     }
 }
 
+/// Returns the open question, or an empty text while none waits.
+fn question(session: &Session) -> String {
+    session
+        .visible()
+        .confirmation
+        .map_or_else(String::new, |confirmation| confirmation.question.clone())
+}
+
 /// Returns the message text, or an empty text while the line is empty.
 fn message(session: &Session) -> String {
     session
@@ -382,20 +390,135 @@ fn the_command_line_runs_the_fixed_command_set_and_rejects_the_rest() {
         "the buffer holds no file name; use :e <path> to name one"
     );
 
-    // `:q` refuses to discard the unsaved changes.
+    // A buffer without a file name refuses the reload and asks nothing,
+    // because no file can replace its text.
+    press(&mut session, ':');
+    type_keys(&mut session, "e");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(
+        message(&session),
+        "the buffer holds no file name; use :e <path> to name one"
+    );
+    assert_eq!(question(&session), "", "a refusal asks nothing");
+
+    // `:q` asks before it discards the unsaved changes.
     press(&mut session, ':');
     type_keys(&mut session, "q");
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(session.run_state(), RunState::Running);
     assert_eq!(
-        message(&session),
-        "the buffer holds unsaved changes; use :q! to discard them"
+        question(&session),
+        "Quit and discard the unsaved changes of [Scratch]"
     );
+    press(&mut session, 'n');
+    assert_eq!(session.run_state(), RunState::Running);
 
     // `:q!` discards them and ends the editor.
     press(&mut session, ':');
     type_keys(&mut session, "q!");
     press_code(&mut session, KeyCode::Enter);
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+/// The question that `:q` asks over the modified scratch buffer.
+const QUIT_QUESTION: &str = "Quit and discard the unsaved changes of [Scratch]";
+
+/// Returns a session whose scratch buffer holds unsaved changes.
+fn modified_session() -> Session {
+    let mut session = session(60, 12);
+    press(&mut session, 'i');
+    type_keys(&mut session, "one");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(session.buffer().is_modified());
+    session
+}
+
+/// Runs one command line and returns nothing, like a typed command.
+fn run_command(session: &mut Session, line: &str) {
+    press(session, ':');
+    type_keys(session, line);
+    press_code(session, KeyCode::Enter);
+}
+
+#[test]
+fn the_quit_command_asks_and_a_confirmed_answer_ends_the_editor() {
+    let mut session = modified_session();
+
+    run_command(&mut session, "q");
+    assert_eq!(
+        question(&session),
+        QUIT_QUESTION,
+        "the question names the buffer"
+    );
+    assert_eq!(
+        session.run_state(),
+        RunState::Running,
+        "the open question ends no editor"
+    );
+
+    press(&mut session, 'y');
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+#[test]
+fn a_cancelled_quit_keeps_the_buffer_and_the_window() {
+    // `n` names the default of the question, `Esc` cancels every prompt, and
+    // `Y` and `w` stand for every remaining key.
+    for value in ['n', 'Y', 'w'] {
+        let mut session = modified_session();
+        run_command(&mut session, "q");
+        press(&mut session, value);
+
+        assert_eq!(
+            session.run_state(),
+            RunState::Running,
+            "{value} keeps the editor running"
+        );
+        assert_eq!(
+            session.buffer().to_string(),
+            "one\n",
+            "{value} keeps the text"
+        );
+        assert!(session.buffer().is_modified(), "{value} keeps the changes");
+        assert_eq!(message(&session), "", "{value} leaves no trace");
+        assert_eq!(question(&session), "", "{value} closes the question");
+        press(&mut session, 'i');
+        assert_eq!(session.mode(), Mode::Insert, "{value} returns the keys");
+    }
+
+    let mut session = modified_session();
+    run_command(&mut session, "q");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(
+        session.run_state(),
+        RunState::Running,
+        "Esc keeps the window"
+    );
+    assert!(session.buffer().is_modified());
+}
+
+#[test]
+fn the_forced_quit_command_asks_nothing_and_ends_the_editor() {
+    let mut session = modified_session();
+
+    run_command(&mut session, "q!");
+
+    assert_eq!(question(&session), "", "`:q!` asks nothing");
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+#[test]
+fn a_quit_of_a_buffer_without_unsaved_changes_asks_nothing() {
+    let mut session = session(60, 12);
+    assert!(!session.buffer().is_modified());
+
+    run_command(&mut session, "q");
+
+    assert_eq!(
+        question(&session),
+        "",
+        "a quit that destroys nothing asks nothing"
+    );
     assert_eq!(session.run_state(), RunState::Finished);
 }
 
@@ -796,6 +919,11 @@ fn write_quit_saves_the_buffer_and_then_ends_the_editor() {
     type_keys(&mut session, "wq");
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(
+        question(&session),
+        "",
+        "the save keeps every change, so `:wq` asks nothing"
+    );
+    assert_eq!(
         session.run_state(),
         RunState::Running,
         "the editor waits for the save result"
@@ -1116,7 +1244,7 @@ fn a_file_that_grew_past_the_size_limit_keeps_its_buffer() {
 }
 
 #[test]
-fn the_edit_command_reloads_a_clean_buffer_and_refuses_a_dirty_one() {
+fn the_edit_command_reloads_a_clean_buffer_and_asks_before_a_dirty_one() {
     let (_directory, path, mut session) = opened_file("session-reload-command", "main.rs", "one\n");
 
     std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
@@ -1130,8 +1258,7 @@ fn the_edit_command_reloads_a_clean_buffer_and_refuses_a_dirty_one() {
         Some(MessageLevel::Info)
     );
 
-    // A buffer with unsaved changes refuses the reload and names the form that
-    // discards them.
+    // A buffer with unsaved changes asks before the file replaces its text.
     press(&mut session, 'i');
     type_keys(&mut session, "typed ");
     press_code(&mut session, KeyCode::Esc);
@@ -1140,13 +1267,125 @@ fn the_edit_command_reloads_a_clean_buffer_and_refuses_a_dirty_one() {
     press_code(&mut session, KeyCode::Enter);
     assert!(
         session.take_file_request().is_none(),
-        "a refused reload reads no file"
+        "the open question reads no file"
+    );
+    assert_eq!(
+        question(&session),
+        "Reload main.rs and discard the unsaved changes",
+        "the question names the buffer"
+    );
+    assert_eq!(session.buffer().to_string(), "typed one\ntwo\n");
+
+    press(&mut session, 'y');
+    run_file_request(&mut session);
+    assert_eq!(session.buffer().to_string(), "one\ntwo\n");
+    assert!(!session.buffer().is_modified());
+}
+
+#[test]
+fn a_cancelled_reload_keeps_the_buffer_and_its_unsaved_text() {
+    // `n` names the default of the question, `Esc` cancels every prompt, and
+    // `Y` and `w` stand for every remaining key.
+    for value in ['n', 'Y', 'w'] {
+        let (_directory, path, mut session) =
+            opened_file("session-reload-cancel", "main.rs", "one\n");
+        std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+        press(&mut session, 'i');
+        type_keys(&mut session, "typed ");
+        press_code(&mut session, KeyCode::Esc);
+
+        press(&mut session, ':');
+        type_keys(&mut session, "e");
+        press_code(&mut session, KeyCode::Enter);
+        press(&mut session, value);
+
+        assert!(
+            session.take_file_request().is_none(),
+            "{value} reads no file"
+        );
+        assert_eq!(
+            session.buffer().to_string(),
+            "typed one\n",
+            "{value} keeps the unsaved text"
+        );
+        assert!(session.buffer().is_modified(), "{value} keeps the changes");
+        assert_eq!(question(&session), "", "{value} closes the question");
+        assert_eq!(message(&session), "", "{value} leaves no trace");
+    }
+}
+
+#[test]
+fn a_confirmed_quit_keeps_the_editor_running_after_another_buffer_became_active() {
+    let (directory, _path, mut session) = opened_file("session-quit-moved", "main.rs", "one\n");
+    press(&mut session, 'i');
+    type_keys(&mut session, "typed ");
+    press_code(&mut session, KeyCode::Esc);
+    let asked = session.active();
+
+    press(&mut session, ':');
+    type_keys(&mut session, "q");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(
+        question(&session),
+        "Quit and discard the unsaved changes of main.rs"
+    );
+
+    // One open completes while the question waits, so another buffer becomes
+    // active. The user approved no loss of that buffer.
+    session.open_path(directory.write("other.rs", "other\n"));
+    run_file_request(&mut session);
+    assert_ne!(session.active(), asked, "the open moved the focus");
+
+    press(&mut session, 'y');
+
+    assert_eq!(
+        session.run_state(),
+        RunState::Running,
+        "the answer quits only while the named buffer holds the focus"
     );
     assert_eq!(
         message(&session),
-        "the buffer holds unsaved changes; use :e! to discard them and reload the file"
+        "the focused window shows another buffer now, so the editor kept running"
     );
-    assert_eq!(session.buffer().to_string(), "typed one\ntwo\n");
+}
+
+#[test]
+fn a_confirmed_reload_reads_the_file_of_the_buffer_that_the_question_named() {
+    let (directory, path, mut session) = opened_file("session-reload-moved", "main.rs", "one\n");
+    press(&mut session, 'i');
+    type_keys(&mut session, "typed ");
+    press_code(&mut session, KeyCode::Esc);
+    let asked = session.active();
+    std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+
+    press(&mut session, ':');
+    type_keys(&mut session, "e");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(
+        question(&session),
+        "Reload main.rs and discard the unsaved changes"
+    );
+
+    // One open completes while the question waits, so another buffer becomes
+    // active. The answer still reads the file of the named buffer.
+    session.open_path(directory.write("other.rs", "other\n"));
+    run_file_request(&mut session);
+    assert_ne!(session.active(), asked, "the open moved the focus");
+
+    press(&mut session, 'y');
+    run_file_request(&mut session);
+
+    let reloaded = session
+        .buffers()
+        .get(asked)
+        .expect("the named buffer stays loaded");
+    assert_eq!(reloaded.text().to_string(), "one\ntwo\n");
+    assert!(!reloaded.is_modified());
+    assert_eq!(
+        session.buffer().to_string(),
+        "other\n",
+        "the reload replaced no other buffer"
+    );
 }
 
 #[test]
@@ -1161,6 +1400,7 @@ fn the_forced_edit_command_discards_the_unsaved_changes_and_reloads() {
     press(&mut session, ':');
     type_keys(&mut session, "e!");
     press_code(&mut session, KeyCode::Enter);
+    assert_eq!(question(&session), "", "`:e!` asks nothing");
     run_file_request(&mut session);
 
     assert_eq!(session.buffer().to_string(), "one\ntwo\n");
