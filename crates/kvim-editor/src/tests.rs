@@ -1253,7 +1253,7 @@ fn an_alignment_near_the_buffer_start_stops_at_the_first_line() {
 }
 
 #[test]
-fn no_command_of_this_slice_changes_the_buffer() {
+fn no_motion_command_changes_the_buffer() {
     let mut text = buffer(SAMPLE);
     let mut state = EditingState::new();
     let mut view = window(6, 20);
@@ -1266,7 +1266,7 @@ fn no_command_of_this_slice_changes_the_buffer() {
 }
 
 #[test]
-fn a_command_of_a_later_slice_stays_unhandled() {
+fn a_command_that_another_layer_owns_stays_unhandled() {
     let mut text = buffer(SAMPLE);
     let mut state = EditingState::new();
     let mut view = window(10, 80);

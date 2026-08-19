@@ -121,9 +121,14 @@ The resolver accepts an optional decimal count before a command sequence. The
 count maximum is 9,999. A count above the maximum is a mismatch and resets
 pending input.
 
-A count belongs to Normal mode and the three Visual modes. Insert mode holds no
-count, because a digit is buffer text there. The `input` module owns this rule,
-so no other module filters digit keys.
+A count belongs to Normal mode, the three Visual modes, the operator-pending
+scope, and the file-tree sidebar. Insert mode holds no count, because a digit is
+buffer text there. The `input` module owns this rule, so no other module filters
+digit keys.
+
+The operator-pending scope reads its own count, so `d2w` deletes two words. A
+count before the operator multiplies with the count before the motion, so `2d3w`
+deletes six words.
 
 The resolver classifies each pending sequence as a complete match, a valid
 prefix, a cancel, or no match. A pending sequence holds at most four keys.
@@ -229,12 +234,9 @@ while background work runs. See [`responsiveness.md`](responsiveness.md).
 
 ## First-Release Bindings
 
-This table is the complete first-release binding set. Slices 5 and 6 name the
-motion, operator, register, paste, undo, redo, search, and dot-repeat subset.
-Where the plan names a command without naming its key, this table uses the
-standard Vim key that the ReviewGraph Vim preset already documents in
-`../reviewgraph/docs/input-actions.md`. Slice 3 must confirm each such key when
-it builds the registry.
+This table is the complete first-release binding set, and the registry in
+`crates/kvim-input/src/registry.rs` implements it. Every key follows the
+standard Vim key for that command.
 
 ### Modes
 

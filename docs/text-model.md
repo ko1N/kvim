@@ -111,7 +111,7 @@ an applied transaction cannot split a character.
 A combining mark keeps its own character position. `core` validates character
 boundaries only, because a grapheme cluster boundary needs a segmentation table
 that `core` does not hold. The `editor` module owns grapheme-aware cursor
-movement when a later slice needs it.
+movement when a later release needs it.
 
 Kvim detects the line ending of the loaded file. It records that line ending
 with the buffer. It writes the same line ending on save. A file with mixed line
@@ -162,6 +162,9 @@ indent level and one tab render at equal width.
 The Visual `<` and `>` commands change the selection by one shift width. The
 comment toggle preserves the existing indent of each affected line.
 
+`kvim-core` supplies the indent measurement, the indent rendering, and the shift
+step. `kvim-editor` owns the automatic indent rule and the shift commands.
+
 ## Automatic Indent
 
 A new line receives an automatic indent. The `Enter` key in Insert mode and the
@@ -198,9 +201,3 @@ two lines join. At the start of the buffer it changes nothing.
 
 The delete is one edit transaction, so one undo reverses it. The delete writes
 no register.
-
-## Deferred Decisions
-
-- The `editor` module owns the automatic indent rule and the shift commands.
-  `core` supplies the indent measurement, the indent rendering, and the shift
-  step. See Slices 6 and 12.

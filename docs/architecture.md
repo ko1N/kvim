@@ -32,19 +32,19 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 
 ## Crates
 
-| Crate | Charter | Arrives |
-|---|---|---|
-| `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. | Slice 4 |
-| `kvim-editor` | Modal editing state: cursors, motions, operators, registers, search, and dot-repeat. | Slices 5–6 |
-| `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. | Slice 3 |
-| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, and the language-server session. Rust, TOML, Markdown, Nix, and JSON are the adapters of the first release, and Rust is the only one with a language server. | Slices 12–13 |
-| `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. | Slice 6 |
-| `kvim-runtime` | Bounded background work: process and worker services, cancellation, deadlines, request identity, and publication gates. | Slice 2 |
-| `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. | Slice 1 |
-| `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, normalized terminal events, and the process termination signals. | Slice 2 |
-| `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. | Slices 7–8 |
-| `kvim-workspace` | Files, buffers, atomic save, the file tree, workspace mutations, and pickers. | Slices 9–11 |
-| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, reports the host diagnostics, and starts the editor. | Slice 1 |
+| Crate | Charter |
+|---|---|
+| `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
+| `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
+| `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. |
+| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, and the language-server session. Rust, TOML, Markdown, Nix, and JSON are the adapters of the first release, and Rust is the only one with a language server. |
+| `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
+| `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
+| `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
+| `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, normalized terminal events, and the process termination signals. |
+| `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. |
+| `kvim-workspace` | Files, buffers, atomic save, the file tree, the read-only Git status, workspace mutations, and pickers. |
+| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, reports the host diagnostics, and starts the editor. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
 and file code must not contain language-specific path rules. Only a language
@@ -53,7 +53,8 @@ carries the format of another language, for example `flake.lock`, reaches its
 adapter through the file-name key.
 
 One narrow exception exists: the file tree selects an icon by file extension and
-by well-known file name. An icon is presentation data, so its table lives in
+by well-known file name, and the which-key overlay selects an icon by command
+group. An icon is presentation data, so one table serves both and lives in
 `kvim-tui` beside the theme. An icon must never select a parser, an indent rule,
 a comment token, or a language server, and no icon value may reach the language
 adapters. [`files.md`](files.md) owns the icon table.
@@ -157,7 +158,7 @@ Each entry records what local code the dependency replaces, where the
 dependency may run, and its cost. Record every new dependency here, or in the
 more specific owning document, before implementation uses it.
 
-### Slice 1
+### Every Crate
 
 - `thiserror`
   - Replaces: hand-written error types, `Display` implementations, and manual
@@ -166,7 +167,7 @@ more specific owning document, before implementation uses it.
     `kvim-core`. Only `kvim-settings` needs no error type.
   - Cost: one derive macro at compile time. No runtime cost.
 
-### Slices 2 And Later
+### The Imperative Boundary
 
 These dependencies must not run inside `kvim-core`. They stay at the
 imperative boundary.
@@ -206,12 +207,13 @@ imperative boundary.
   - Cost: small. It adds owned cancellation tokens.
 - `notify`
   - Replaces: local inotify and FSEvents code for external change hints.
-  - May run: behind a portable `kvim-runtime` service boundary only. No crate
-    depends on it yet.
+  - May run: behind the portable watch service of `kvim-runtime` only. The
+    event loop of `kvim-tui` reads bursts from that service and never touches
+    the platform API.
   - Cost: platform-specific transitive code and one callback thread. Watch
     roots and callback delivery stay bounded.
 
-### Slice 4
+### The Text Model
 
 This dependency runs inside `kvim-core`, because the text storage is the text
 model. `kvim-core` runs no other dependency except `thiserror`.
@@ -233,7 +235,7 @@ model. `kvim-core` runs no other dependency except `thiserror`.
   - Future consideration: move to `ropey` 2.0 after that line reaches a stable
     release. Confirm the character-index API before the move.
 
-### Slice 12
+### The Worker Service
 
 These dependencies run only on the bounded worker service.
 
@@ -263,7 +265,7 @@ These dependencies run only on the bounded worker service.
     `tree-sitter-toml-ng` replaces the unmaintained `tree-sitter-toml` crate,
     which still requires the 0.20 runtime line.
 
-### Slice 13
+### The Language-Server Task
 
 These dependencies run only in the bounded language-server task.
 
@@ -318,14 +320,17 @@ unsafe optimization flags.
 
 The Nix flake pins `nixpkgs` through `flake.lock`. Development, package, check,
 and application outputs support Linux and Darwin systems. The development shell
-supplies Cargo, Rust, rustfmt, Clippy, nixfmt, ripgrep, and `rust-analyzer`.
+supplies Cargo, Rust, rustfmt, Clippy, nixfmt, `git`, ripgrep, and
+`rust-analyzer`.
 
 The package output builds the `kvim` executable from `Cargo.lock`. The package
 version comes from `Cargo.toml`. Package metadata declares the MIT license.
 
-Kvim calls external commands for ripgrep search, `rust-analyzer`, and the system
-clipboard. The package output wraps the executable and supplies ripgrep and
-`rust-analyzer`. The clipboard command comes from the host platform, because it
+Kvim calls external commands for the read-only Git status, ripgrep search,
+`rust-analyzer`, and the system clipboard. The package output wraps the
+executable and supplies `git`, ripgrep, and `rust-analyzer`. The package check
+also needs `git` inside the build sandbox, because the Git status tests run one
+real repository. The clipboard command comes from the host platform, because it
 differs between macOS and each Linux display server. A direct Cargo installation
 requires all of these commands on the caller's `PATH`. Kvim reports a missing
 command as a typed unavailable state and stays usable.
