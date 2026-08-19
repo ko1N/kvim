@@ -98,6 +98,43 @@ unsaved changes. `:q!` and `:e!` ask nothing, and `:wq` asks nothing, because th
 save keeps every change. See the Confirmation section below and
 [`files.md`](files.md).
 
+### Command Line Completion
+
+The command line completes a command name. It reads these keys:
+
+| Keys | Effect |
+|---|---|
+| `Tab` | Write the next candidate into the line |
+| `Shift-Tab` | Write the previous candidate into the line |
+| `Esc` | Close the candidate list and restore the typed text |
+| `Ctrl-C` | Close the candidate list and restore the typed text |
+
+The completion writes the selected candidate into the line, so the line always
+shows the command that `Enter` runs. The candidate list holds a bounded number
+of names.
+
+The candidates stay anchored to the text that the user typed, so one cycle never
+narrows them. A forward cycle past the last candidate wraps to the first one. A
+backward cycle past the first candidate wraps to the last one. A `Shift-Tab` that
+opens the completion selects the last candidate.
+
+A text that matches more than one name opens a candidate list above the message
+line. A text that matches one name writes that name and opens no list. A text
+that matches no name changes nothing and reports nothing. See
+[`windows.md`](windows.md).
+
+The completion matches a name by its prefix, so `q` offers `q` and `q!`, `w`
+offers `w` and `wq`, and `e` offers `e` and `e!`. A line number is no name, so a
+line of digits offers no candidate.
+
+`Esc` closes an open candidate list and restores the text that the user typed. A
+second `Esc` then cancels the command line. Every other key closes the list and
+keeps the line as it is shown, so one typed character continues from the written
+candidate.
+
+`crates/kvim-input/src/command_line.rs` holds the name table beside the parser,
+so one new command needs one new row and no new completion code.
+
 ## Confirmation
 
 An action that destroys data asks the user first. The question sits on the

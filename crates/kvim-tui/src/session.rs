@@ -69,6 +69,9 @@ use kvim_workspace::{
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
 use super::chrome::shell_areas;
 use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
+use super::completion::{
+    CompletionCycle, CompletionOutcome, LineCompletion, command_line_candidates,
+};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
     LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
@@ -510,6 +513,11 @@ pub(super) struct PromptLine {
     pub(super) kind: PromptKind,
     /// The text after the prompt character.
     pub(super) text: String,
+    /// The open completion of the line, while one candidate is written.
+    ///
+    /// The completion belongs to the prompt, so a closed prompt drops it and no
+    /// caller keeps the two in step. See `docs/input-actions.md`.
+    pub(super) completion: Option<LineCompletion>,
 }
 
 impl PromptLine {
@@ -524,6 +532,41 @@ impl PromptLine {
             ) => TREE_NAME_CHARS_MAX,
             PromptKind::Picker => PICKER_QUERY_CHARS_MAX,
         }
+    }
+
+    /// Writes one completion candidate into the line.
+    ///
+    /// The first call over one typed text asks `candidates` for the list of the
+    /// line. Every later call cycles the open completion and asks nothing, so
+    /// the candidates stay anchored to the text that the user typed and one
+    /// cycle never narrows them.
+    ///
+    /// An empty candidate list changes nothing and reports nothing, because a
+    /// text that names no command is a normal state of a line that the user
+    /// still types.
+    fn complete(
+        &mut self,
+        candidates: impl FnOnce(&str) -> Vec<String>,
+        cycle: CompletionCycle,
+    ) -> CompletionOutcome {
+        let chars_max = self.chars_max();
+        let completion = match self.completion.take() {
+            Some(mut open) => {
+                open.cycle(cycle);
+                open
+            }
+            None => {
+                let offered = candidates(&self.text);
+                let Some(open) = LineCompletion::open(&self.text, offered, chars_max, cycle) else {
+                    return CompletionOutcome::Missed;
+                };
+                open
+            }
+        };
+        self.text = completion.selected().to_owned();
+        let outcome = completion.outcome();
+        self.completion = Some(completion);
+        outcome
     }
 }
 
@@ -1451,6 +1494,7 @@ impl Session {
         self.prompt = Some(PromptLine {
             kind,
             text: String::new(),
+            completion: None,
         });
         self.sync_context();
         Redraw::Needed
@@ -1706,11 +1750,16 @@ impl Session {
                 if prompt.text.chars().count() >= prompt.chars_max() {
                     return Redraw::Skipped;
                 }
+                // The insert continues from the line as it is shown, so the
+                // closed completion leaves the written candidate in the text
+                // and the next completion starts from the new line.
+                prompt.completion = None;
                 prompt.text.push(value);
                 self.sync_picker_query();
                 Redraw::Needed
             }
             PromptEdit::DeleteBackward => {
+                prompt.completion = None;
                 // Backspace on the empty line cancels the prompt, like Vim.
                 if prompt.text.pop().is_none() {
                     self.close_prompt();
@@ -1719,11 +1768,44 @@ impl Session {
                 self.sync_picker_query();
                 Redraw::Needed
             }
+            PromptEdit::CompleteNext => self.complete_prompt(CompletionCycle::Next),
+            PromptEdit::CompletePrevious => self.complete_prompt(CompletionCycle::Previous),
             PromptEdit::Cancel => {
+                // The open candidate list takes the cancel first and restores
+                // the typed text, so a second cancel closes the prompt. Only
+                // the command line completes, so no picker query changes here.
+                if let Some(completion) = prompt.completion.take() {
+                    prompt.text = completion.into_typed();
+                    return Redraw::Needed;
+                }
                 self.close_prompt();
                 Redraw::Needed
             }
             PromptEdit::Accept => self.accept_prompt(),
+        }
+    }
+
+    /// Writes the next or the previous completion candidate into the prompt.
+    ///
+    /// Only the command line offers candidates today. Every other prompt reads
+    /// text alone, so it ignores the two completion keys. See
+    /// `docs/input-actions.md`.
+    fn complete_prompt(&mut self, cycle: CompletionCycle) -> Redraw {
+        let Some(prompt) = self.prompt.as_mut() else {
+            debug_assert!(
+                false,
+                "the resolver reports a prompt edit only while one is open"
+            );
+            return Redraw::Skipped;
+        };
+        if prompt.kind != PromptKind::CommandLine {
+            return Redraw::Skipped;
+        }
+        match prompt.complete(command_line_candidates, cycle) {
+            // A line that names no command is a normal state of a line that
+            // the user still types, so the miss reports nothing.
+            CompletionOutcome::Missed => Redraw::Skipped,
+            CompletionOutcome::Completed | CompletionOutcome::Listed => Redraw::Needed,
         }
     }
 

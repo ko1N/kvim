@@ -62,6 +62,27 @@ pub enum CommandLineError {
 }
 
 impl CommandLineCommand {
+    /// Every command name that [`CommandLineCommand::parse`] accepts, in
+    /// ascending order.
+    ///
+    /// The table is the sole source of the command-line completion, so one new
+    /// command needs one new row here and no new completion code. The table
+    /// holds no `:<number>` row, because a line number is no name. It holds no
+    /// `:e <path>` row either, because the path is an argument of `e`. See
+    /// `docs/input-actions.md`.
+    ///
+    /// ```
+    /// use kvim_input::CommandLineCommand;
+    ///
+    /// let names: Vec<&str> = CommandLineCommand::NAMES
+    ///     .iter()
+    ///     .copied()
+    ///     .filter(|name| name.starts_with('q'))
+    ///     .collect();
+    /// assert_eq!(names, ["q", "q!"]);
+    /// ```
+    pub const NAMES: [&'static str; 6] = ["e", "e!", "q", "q!", "w", "wq"];
+
     /// Parses one command line.
     ///
     /// The `line` holds the text after the `:` prompt character, because `:`
@@ -185,6 +206,30 @@ mod tests {
                 "`:{input}` must parse"
             );
         }
+    }
+
+    #[test]
+    fn the_name_table_holds_every_command_name_once_and_in_order() {
+        let names = CommandLineCommand::NAMES;
+        for name in names {
+            assert!(
+                CommandLineCommand::parse(name).is_ok(),
+                "the completion offers `:{name}`, so the parser must accept it"
+            );
+        }
+        let mut sorted = names;
+        sorted.sort_unstable();
+        assert_eq!(
+            sorted, names,
+            "the completion offers the names in this order"
+        );
+        let mut unique = names.to_vec();
+        unique.dedup();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "one command name reaches the completion once"
+        );
     }
 
     #[test]
