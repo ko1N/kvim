@@ -123,6 +123,30 @@ impl MockServer {
             .await;
         self.expect("initialized").await;
     }
+
+    /// Runs the handshake and advertises one diagnostic provider.
+    ///
+    /// The session then asks for the diagnostics of each document instead of
+    /// waiting for a notification, and every request repeats `identifier`. See
+    /// `docs/language-services.md`.
+    pub async fn handshake_pulling(&mut self, identifier: &str) {
+        let initialize = self.expect("initialize").await;
+        self.respond(
+            &initialize["id"],
+            json!({
+                "capabilities": {
+                    "positionEncoding": "utf-8",
+                    "diagnosticProvider": {
+                        "identifier": identifier,
+                        "interFileDependencies": false,
+                        "workspaceDiagnostics": false,
+                    },
+                }
+            }),
+        )
+        .await;
+        self.expect("initialized").await;
+    }
 }
 
 /// The editor side of one session under test.
@@ -185,6 +209,30 @@ pub const SERVER: LanguageServerId = LanguageServerId::new("mock", 0, "mock");
 /// declaration loses every duplicate.
 pub const OTHER_SERVER: LanguageServerId = LanguageServerId::new("mock", 1, "other");
 
+/// Starts one session whose declaration names workspace settings.
+///
+/// A server that reads its behavior from the workspace configuration needs that
+/// channel, so a test that drives it names this constructor. See
+/// `docs/language-services.md`.
+pub fn connected_with_settings(settings: Value) -> (Harness, MockServer) {
+    let (transport, server) = pipe();
+    let mut config = config(SERVER, PathBuf::from(ROOT), true);
+    config.workspace_settings = Some(settings);
+    let (events, receiver) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
+    let (handle, task) = start(
+        TransportFactory::Prepared(vec![transport]),
+        config,
+        events,
+        CancellationToken::new(),
+    );
+    let harness = Harness {
+        handle: Some(handle),
+        events: receiver,
+        task,
+    };
+    (harness, server)
+}
+
 /// Creates the stable configuration of one session under test.
 fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> SessionConfig {
     SessionConfig {
@@ -194,6 +242,7 @@ fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> Ses
         formatting: ServerFormatting::Enabled,
         root: WorkspaceRoot::new(root).expect("the root is absolute"),
         options: json!({}),
+        workspace_settings: None,
         indent: IndentSettings::default(),
         diagnostics_enabled,
     }

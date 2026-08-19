@@ -262,6 +262,7 @@ impl LanguageServices {
             formatting: declaration.formatting,
             root: self.root.clone(),
             options: declaration.options(self.settings.language),
+            workspace_settings: declaration.settings(self.settings.language),
             indent: self.settings.indent,
             diagnostics_enabled: self.settings.language.diagnostics_enabled,
         };

@@ -9,7 +9,7 @@ use std::sync::OnceLock;
 
 use tree_sitter::Language;
 
-use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, ts_ls_options};
+use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
     LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
@@ -94,6 +94,7 @@ const JAVASCRIPT_SERVERS: [LanguageServerDeclaration; 2] = [
         // The linter needs a workspace configuration, so a marker gates it.
         root_markers: &ESLINT_ROOT_MARKERS,
         initialization_options: eslint_options,
+        workspace_settings: Some(eslint_workspace_settings),
     },
     LanguageServerDeclaration {
         id: "ts_ls",
@@ -107,6 +108,7 @@ const JAVASCRIPT_SERVERS: [LanguageServerDeclaration; 2] = [
         // marker gates its start.
         root_markers: &[],
         initialization_options: ts_ls_options,
+        workspace_settings: None,
     },
 ];
 

@@ -78,6 +78,7 @@ const LUA_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // marker gates its start.
     root_markers: &[],
     initialization_options: lua_language_server_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Lua adapter.

@@ -71,6 +71,7 @@ const YAML_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // marker gates its start.
     root_markers: &[],
     initialization_options: yaml_ls_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the YAML adapter.

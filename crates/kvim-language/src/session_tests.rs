@@ -26,9 +26,9 @@ use super::protocol::{
     enforce, read_frame,
 };
 use super::session::{
-    LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX,
-    LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX,
-    LanguageOutcome,
+    LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
+    LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX,
+    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LanguageOutcome,
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
@@ -1319,6 +1319,7 @@ static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
         formatting: ServerFormatting::Enabled,
         root_markers: &[],
         initialization_options: no_options,
+        workspace_settings: None,
     },
     LanguageServerDeclaration {
         id: "second",
@@ -1328,6 +1329,7 @@ static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
         formatting: ServerFormatting::Disabled,
         root_markers: &[],
         initialization_options: no_options,
+        workspace_settings: None,
     },
 ];
 
@@ -1457,6 +1459,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         formatting: ServerFormatting::Enabled,
         root_markers: &["Cargo.toml"],
         initialization_options: no_options,
+        workspace_settings: None,
     },
     LanguageServerDeclaration {
         id: "absent_marker",
@@ -1466,6 +1469,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         formatting: ServerFormatting::Disabled,
         root_markers: &[ABSENT_MARKER],
         initialization_options: no_options,
+        workspace_settings: None,
     },
     LanguageServerDeclaration {
         id: "directory_marker",
@@ -1475,6 +1479,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         formatting: ServerFormatting::Disabled,
         root_markers: &["src"],
         initialization_options: no_options,
+        workspace_settings: None,
     },
     LanguageServerDeclaration {
         id: "no_marker",
@@ -1484,6 +1489,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         formatting: ServerFormatting::Disabled,
         root_markers: &[],
         initialization_options: no_options,
+        workspace_settings: None,
     },
 ];
 
@@ -1538,6 +1544,7 @@ static UNUSED_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclarati
     formatting: ServerFormatting::Enabled,
     root_markers: &[ABSENT_MARKER],
     initialization_options: no_options,
+    workspace_settings: None,
 }];
 
 impl LanguageAdapter for UnusedAdapter {
@@ -1956,4 +1963,280 @@ async fn a_restart_during_progress_reports_a_later_generation() {
     // of the attempt that failed.
     assert_eq!(after.generation, SessionGeneration::FIRST.next());
     assert!(after.generation > before.generation);
+}
+
+/// Opens the test document on a pull session and reads the first pull.
+///
+/// A pull session asks for a new document at once, so the request follows the
+/// `didOpen` notification. See `docs/language-services.md`.
+async fn pull_opened(
+    harness: &Harness,
+    server: &mut MockServer,
+    text: &str,
+) -> (TextBuffer, Value) {
+    let buffer = opened(harness, server, text).await;
+    let pull = server.expect("textDocument/diagnostic").await;
+    (buffer, pull)
+}
+
+/// One diagnostic of the test document with one message.
+fn pulled_item(message: &str) -> Value {
+    json!({
+        "range": { "start": { "line": 0, "character": 3 },
+                   "end": { "line": 0, "character": 7 } },
+        "severity": 1,
+        "message": message,
+    })
+}
+
+#[tokio::test]
+async fn pulls_the_diagnostics_of_a_server_that_publishes_none() {
+    let (mut harness, mut server) = connected();
+    server.handshake_pulling("mock-lint").await;
+    let (text, pull) = pull_opened(&harness, &mut server, "fn main() {}\n").await;
+
+    assert_eq!(pull["params"]["textDocument"]["uri"], DOCUMENT_URI);
+    // The request repeats the provider identifier of the capability, and it
+    // carries no previous result identifier for a new document.
+    assert_eq!(pull["params"]["identifier"], "mock-lint");
+    assert_eq!(pull["params"]["previousResultId"], Value::Null);
+    server
+        .respond(
+            &pull["id"],
+            json!({
+                "kind": "full",
+                "resultId": "first",
+                "items": [pulled_item("pulled")],
+                // The session ignores a related report, because it asks for
+                // each open document on its own.
+                "relatedDocuments": {
+                    "file:///workspace/src/other.rs": { "kind": "full", "items": [] }
+                },
+            }),
+        )
+        .await;
+
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the session publishes the pulled diagnostics");
+    };
+    assert!(set.is_current(text.version()));
+    assert_eq!(set.diagnostics().len(), 1);
+    assert_eq!(set.diagnostics()[0].message, "pulled");
+    // The report names no producer, so the declaration identifier of the
+    // session names it.
+    assert_eq!(set.diagnostics()[0].source, mock::SERVER.server());
+}
+
+#[tokio::test]
+async fn an_unchanged_report_keeps_the_previous_diagnostics() {
+    let (mut harness, mut server) = connected();
+    server.handshake_pulling("mock-lint").await;
+    let (mut text, first) = pull_opened(&harness, &mut server, "fn main() {}\n").await;
+    server
+        .respond(
+            &first["id"],
+            json!({ "kind": "full", "resultId": "first", "items": [pulled_item("kept")] }),
+        )
+        .await;
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the session publishes the first report");
+    };
+    assert_eq!(set.diagnostics()[0].message, "kept");
+
+    edited(&harness, &mut server, &mut text).await;
+    let second = server.expect("textDocument/diagnostic").await;
+    // The next pull repeats the recorded identifier, so the server may answer
+    // that the previous set still describes the document.
+    assert_eq!(second["params"]["previousResultId"], "first");
+    server
+        .respond(
+            &second["id"],
+            json!({ "kind": "unchanged", "resultId": "second" }),
+        )
+        .await;
+
+    edited(&harness, &mut server, &mut text).await;
+    let third = server.expect("textDocument/diagnostic").await;
+    // The unchanged report replaced the recorded identifier, although it
+    // carried no items.
+    assert_eq!(third["params"]["previousResultId"], "second");
+    server
+        .respond(
+            &third["id"],
+            json!({ "kind": "full", "resultId": "third", "items": [pulled_item("later")] }),
+        )
+        .await;
+
+    // The unchanged report published nothing, so the next set that reaches the
+    // editor is the later full report.
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the session publishes the later report");
+    };
+    assert_eq!(set.diagnostics()[0].message, "later");
+}
+
+#[tokio::test]
+async fn rejects_a_pulled_report_for_an_obsolete_buffer_version() {
+    let (mut harness, mut server) = connected();
+    server.handshake_pulling("mock-lint").await;
+    let (mut text, first) = pull_opened(&harness, &mut server, "fn main() {}\n").await;
+
+    // The buffer moves on while the first pull waits for its answer.
+    edited(&harness, &mut server, &mut text).await;
+    server
+        .respond(
+            &first["id"],
+            json!({ "kind": "full", "resultId": "first", "items": [pulled_item("obsolete")] }),
+        )
+        .await;
+
+    let second = server.expect("textDocument/diagnostic").await;
+    // The obsolete report never recorded an identifier, because the session
+    // rejected the complete answer.
+    assert_eq!(second["params"]["previousResultId"], Value::Null);
+    server
+        .respond(
+            &second["id"],
+            json!({ "kind": "full", "items": [pulled_item("current")] }),
+        )
+        .await;
+
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the session publishes the current report");
+    };
+    assert!(set.is_current(text.version()));
+    assert_eq!(set.diagnostics()[0].message, "current");
+}
+
+#[tokio::test]
+async fn a_refresh_request_asks_for_every_open_document_again() {
+    let (mut harness, mut server) = connected();
+    server.handshake_pulling("mock-lint").await;
+    let (_text, first) = pull_opened(&harness, &mut server, "fn main() {}\n").await;
+    server
+        .respond(&first["id"], json!({ "kind": "full", "items": [] }))
+        .await;
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the session publishes the first report");
+    };
+    assert!(set.diagnostics().is_empty());
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 77,
+            "method": "workspace/diagnostic/refresh"
+        }))
+        .await;
+
+    let answer = server.read_message().await;
+    assert_eq!(answer["id"], 77);
+    assert_eq!(answer["result"], Value::Null);
+    // The refresh means "ask me again", so the session pulls the document once
+    // more instead of only answering the request.
+    let second = server.expect("textDocument/diagnostic").await;
+    assert_eq!(second["params"]["textDocument"]["uri"], DOCUMENT_URI);
+    drop(harness);
+}
+
+#[tokio::test]
+async fn a_push_server_receives_no_pull_request() {
+    let (mut harness, mut server) = connected();
+    // The handshake names no diagnostic provider, so the session keeps the push
+    // model of every other declared server.
+    server.handshake().await;
+    let mut text = opened(&harness, &mut server, "fn main() {}\n").await;
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": DOCUMENT_URI,
+                "version": 1,
+                "diagnostics": [pulled_item("pushed")]
+            }
+        }))
+        .await;
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the push path still publishes the diagnostics");
+    };
+    assert_eq!(set.diagnostics()[0].message, "pushed");
+
+    edited(&harness, &mut server, &mut text).await;
+    // A pull session would ask after this delay, and a push session sends
+    // nothing, so the next message is the close notification.
+    time::sleep(LSP_DIAGNOSTIC_PULL_DELAY * 3).await;
+    harness
+        .handle()
+        .close(Path::new(DOCUMENT))
+        .expect("the queue is empty");
+    server.expect("textDocument/didClose").await;
+}
+
+#[tokio::test]
+async fn answers_the_workspace_configuration_of_a_declared_server() {
+    let settings = json!({ "validate": "on", "problems": { "shortenToSingleLine": false } });
+    let (harness, mut server) = mock::connected_with_settings(settings);
+
+    let initialize = server.expect("initialize").await;
+    // The session declares the capability only while its declaration names
+    // settings, so a server without settings never asks.
+    assert_eq!(
+        initialize["params"]["capabilities"]["workspace"]["configuration"],
+        true
+    );
+    server
+        .respond(
+            &initialize["id"],
+            json!({ "capabilities": { "positionEncoding": "utf-8" } }),
+        )
+        .await;
+    server.expect("initialized").await;
+    let pushed = server.expect("workspace/didChangeConfiguration").await;
+    assert_eq!(pushed["params"]["settings"]["validate"], "on");
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 12,
+            "method": "workspace/configuration",
+            "params": { "items": [
+                { "section": "" },
+                { "section": "problems.shortenToSingleLine" },
+                { "section": "absent" }
+            ] }
+        }))
+        .await;
+
+    let answer = server.read_message().await;
+    assert_eq!(answer["id"], 12);
+    // An empty section names the complete object, a dotted section names one
+    // member, and an unknown section answers the null value.
+    assert_eq!(answer["result"][0]["validate"], "on");
+    assert_eq!(answer["result"][1], false);
+    assert_eq!(answer["result"][2], Value::Null);
+    drop(harness);
+}
+
+#[tokio::test]
+async fn reports_the_configuration_request_of_a_server_without_settings() {
+    let (harness, mut server) = connected();
+    server.handshake().await;
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "id": 13,
+            "method": "workspace/configuration",
+            "params": { "items": [{ "section": "" }] }
+        }))
+        .await;
+
+    // A declaration that names no settings keeps the present answer, so the
+    // server runs with its own defaults and never stalls.
+    let answer = server.read_message().await;
+    assert_eq!(answer["id"], 13);
+    assert_eq!(answer["error"]["code"], -32601);
+    drop(harness);
 }

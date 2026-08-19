@@ -102,6 +102,7 @@ const PYTHON_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaratio
     // marker gates its start.
     root_markers: &[],
     initialization_options: pyright_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Python adapter.

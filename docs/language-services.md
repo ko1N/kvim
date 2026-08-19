@@ -39,7 +39,7 @@ An adapter supplies data, not behavior:
 | Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
-| Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, and the initialization options. |
+| Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, the initialization options, and the optional workspace settings. |
 | External formatter | The program that formats a buffer of this language, and its arguments in command order. One argument is a literal text, or the place of the document path. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
@@ -318,10 +318,11 @@ the first configuration of that client, not a special case inside it.
 
 The adapter declares each server as data: the identifier, the program, its
 arguments, the protocol language identifier, the formatting role, the workspace
-root markers, and the initialization options. The session sends what the
-declaration names. Adding a language server therefore means adding one
-declaration to one adapter. No code above the adapter boundary changes, and no
-name, type, or assumption of one server appears there.
+root markers, the initialization options, and the optional workspace settings.
+The session sends what the declaration names. Adding a language server
+therefore means adding one declaration to one adapter. No code above the
+adapter boundary changes, and no name, type, or assumption of one server
+appears there.
 
 One session identity is the pair of the adapter identifier and the declaration
 identifier. The identity also carries the position of the declaration in the
@@ -372,27 +373,10 @@ The session supports diagnostics, definition, hover, and document formatting in
 the first release. It does not support completion, code actions, or symbol
 rename.
 
-Kvim reads the pushed diagnostics of the protocol. The server publishes one set
-with `textDocument/publishDiagnostics`, and the session accepts that
-notification. The protocol also defines a pulled set: a server that answers with
-a `diagnosticProvider` capability expects the client to send
-`textDocument/diagnostic` for each document, and it publishes nothing. Kvim
-sends no such request in this release, so such a server starts, stays healthy,
-and reports no problem. `vscode-eslint-language-server` is such a server today.
-
-The session also sends no workspace configuration. It sends the declared
-initialization options in the `initialize` request, it sends no
-`workspace/didChangeConfiguration` notification, and it rejects the
-`workspace/configuration` request of a server. A server whose behavior depends
-on a pushed or pulled configuration therefore runs with its own defaults.
-`sqls` is such a server today. It reports a problem only after a database
-connection reaches it through a configuration, so an SQL buffer stays fully
-editable and shows no diagnostic in this release.
-
 The Rust adapter declares `rust-analyzer` and maps the language-neutral check
 depth of `EditorSettings` onto the `check.command` option of that server. The
-default check depth runs `clippy`. That mapping function is the one place in
-Kvim that names a setting of one concrete server. See
+default check depth runs `clippy`. A declaration function of this kind is the
+only place in Kvim that names a setting of one concrete server. See
 [`settings.md`](settings.md).
 
 A language without a server declaration, a language whose servers the workspace
@@ -412,6 +396,127 @@ A crashed server restarts a bounded number of times. The new server holds no
 document, so Kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
+
+### The Two Diagnostic Models
+
+The protocol carries diagnostics in two models, and Kvim serves both.
+
+| Model | Message | Direction |
+|---|---|---|
+| Push | `textDocument/publishDiagnostics` | The server sends one set without a request. |
+| Pull | `textDocument/diagnostic` | The client asks, and the server answers one report. |
+
+The handshake selects the model of one session. The session reads the
+`diagnosticProvider` capability of the `initialize` result. A result that names
+that capability selects the pull model, and every other result keeps the push
+model. The model belongs to one server attempt, so a restart reads the
+capability again.
+
+The capability decides whether the session asks. Both models publish one
+diagnostic set through the same path, so nothing above the session knows which
+model produced a set. A pull session still accepts a published notification,
+because the protocol lets one server send both.
+
+Kvim declares no `textDocument.diagnostic` client capability in this release. A
+server that reads that capability therefore keeps the push model, and no
+declared server of the registry changes its model.
+`vscode-eslint-language-server` advertises `diagnosticProvider` without the
+capability, so the pull path serves it. A later release declares the capability
+after every declared server is measured against the pull path.
+
+A pull session asks for one document at three moments:
+
+- after the document opens,
+- after a change of that document settles, which is
+  `LSP_DIAGNOSTIC_PULL_DELAY` after the last accepted `didChange`, and
+- after the server asks for a refresh.
+
+One document holds at most one pull at a time. A later trigger waits for the
+answer of the running pull, so a fast typist starts no request storm. A pull
+also waits while the session already holds `LSP_PENDING_REQUESTS_MAX` requests,
+so a workspace that opens many documents delays a pull instead of failing one.
+
+Every rule of a request applies to a pull. The request carries the buffer
+version of the document, `LSP_DIAGNOSTIC_DEADLINE` bounds it, and the session
+rejects an answer whose buffer version moved. `LSP_DIAGNOSTICS_MAX` bounds the
+returned items exactly as it bounds a published set.
+
+The session asks with the document, with the provider identifier of the
+capability, and with the result identifier of the previous report of that
+document. The answer is one of two reports.
+
+| Report | Content | Result |
+|---|---|---|
+| `full` | A result identifier and the complete items | The session publishes the items and records the identifier. |
+| `unchanged` | A result identifier alone | The session publishes nothing and keeps the recorded identifier. |
+
+An `unchanged` report means that the previous set still describes the document,
+so the editor keeps the set that it already holds for that server. The result
+identifier therefore saves one transfer of an unchanged document.
+`LSP_RESULT_ID_BYTES_MAX` bounds one identifier, because the session holds one
+identifier for each open document. The same bound measures the provider
+identifier of the capability, which every request repeats.
+
+A report may also carry a `relatedDocuments` member, which describes other
+documents. The session ignores that member and never parses it. Kvim pulls each
+open document on its own, so a related report would repeat a set that the
+session already asks for, and an ignored member allocates nothing.
+
+A pull that fails, that times out, or that answers for an obsolete buffer
+version publishes nothing. Diagnostics are decoration, so a lost pull leaves the
+previous set and never reports a request failure to the editor. A transport
+failure still ends the session attempt, as every other fatal failure does.
+
+The server asks Kvim to pull again with `workspace/diagnostic/refresh`. The
+session accepts that request and schedules one pull for each open document of
+that session. Kvim answers every unsolicited server request, so no request of a
+server can stall it.
+
+### The Settings Channel
+
+Some servers read their behavior from the workspace configuration of the client
+instead of the initialization options. Such a server asks with
+`workspace/configuration`, and it expects a `workspace/didChangeConfiguration`
+notification when the configuration changes.
+
+The settings are adapter data. One declaration names a pure function of the
+language-neutral settings, exactly as it names the initialization options, so no
+code above the adapter boundary names a setting of one concrete server.
+
+A declaration that names settings changes three things for its own session:
+
+- The `initialize` request declares the `workspace.configuration` client
+  capability.
+- The session sends one `workspace/didChangeConfiguration` notification with the
+  declared settings after the handshake.
+- The session answers the `workspace/configuration` request of the server.
+
+The answer holds one value for each requested item. An item that names a section
+receives the member of that name, and an item that names no section, or that
+names the empty section, receives the complete settings object. A section that
+the object does not hold receives the null value.
+`LSP_CONFIGURATION_ITEMS_MAX` bounds the item list of one request.
+
+A declaration that names no settings keeps the present behavior. It declares no
+`workspace.configuration` capability, it sends no notification, and it reports
+the `workspace/configuration` request as an unknown method. Such a server runs
+with its own defaults.
+
+The `eslint` declaration of JavaScript, of TypeScript, and of TSX is the one
+declaration that names settings today. It names the four members that the server
+needs to lint one document, and a probe of the installed server measured each
+one:
+
+| Member | Value | Reason |
+|---|---|---|
+| `validate` | `"on"` | The server returns an empty report for every other value. |
+| `nodePath` | null | The server reads this member without a default, and an absent member ends the request with a type failure. |
+| `problems.shortenToSingleLine` | false | The server reads this member without a default, and Kvim wraps a long message in its own float. |
+| `rulesCustomizations` | The empty list | The server walks this list without a default, and Kvim changes no rule severity. |
+
+`sqls` reports a problem only after a database connection reaches it through a
+configuration. That declaration names no settings, so an SQL buffer stays fully
+editable and shows no diagnostic in this release.
 
 ## The Position Encoding
 
@@ -590,7 +695,9 @@ below must always agree.
 | Request queue | `LSP_REQUEST_QUEUE_CAPACITY` | 64 requests | The queue absorbs one burst of editor requests. A full queue returns a saturated result instead of waiting on the event loop. |
 | Result queue | `LSP_EVENT_QUEUE_CAPACITY` | 256 results | The queue matches the runtime result queue of [`responsiveness.md`](responsiveness.md), so one slow frame does not stall a session. |
 | Content changes | `LSP_CONTENT_CHANGES_MAX` | 4,096 changes | The transaction bound of [`text-model.md`](text-model.md). Every transaction that the buffer accepts can therefore synchronize. |
-| Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | The bound counts the diagnostics that one server publishes for one document. One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
+| Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | The bound counts the diagnostics that one server publishes for one document, and the items that one pulled report carries. One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
+| Result identifier | `LSP_RESULT_ID_BYTES_MAX` | 256 B | The bound measures the result identifier of each open document of a pull session, and the provider identifier of that session. A server writes a counter or a hash there, so 256 bytes covers that practice and bounds what the session keeps. |
+| Configuration items | `LSP_CONFIGURATION_ITEMS_MAX` | 64 items | One `workspace/configuration` request asks for the sections of few documents. The value matches `LSP_OPEN_DOCUMENTS_MAX`, so a server may ask for every open document at once and no more. |
 | Definition locations | `LSP_LOCATIONS_MAX` | 128 locations | One definition query answers with one target, or with few candidates. A larger list means a wrong or hostile answer. |
 | Formatting edits | `LSP_FORMAT_EDITS_MAX` | 4,096 edits | The transaction bound of [`text-model.md`](text-model.md), so every accepted formatter answer becomes exactly one undoable transaction. |
 | Progress string | `LSP_PROGRESS_CHARS_MAX` | 128 characters | One progress token, title, or message names one operation. A longer string cannot fit on the overlay row, so the session clips it and drops a token above it. |
@@ -599,6 +706,8 @@ below must always agree.
 | Handshake deadline | `LSP_INITIALIZE_DEADLINE` | 30 s | A cold server indexes a workspace before it answers `initialize`. Thirty seconds reports a stuck server without failing a normal cold start. |
 | Request deadline | `LSP_REQUEST_DEADLINE` | 5 s | A definition or a hover answer is interactive. Five seconds reports a stuck request while the buffer stays editable. |
 | Formatting deadline | `LSP_FORMAT_DEADLINE` | 10 s | A formatter runs a complete pass over the document, so it needs more time than a position query. The value matches the process deadline of [`responsiveness.md`](responsiveness.md). |
+| Diagnostic pull deadline | `LSP_DIAGNOSTIC_DEADLINE` | 10 s | A pull analyses the complete document, and a cold linter loads its configuration first, so it needs the time of a formatter and not the time of a position query. |
+| Diagnostic pull delay | `LSP_DIAGNOSTIC_PULL_DELAY` | 300 ms | The delay after which a change settles and the session pulls again. A typist produces keystrokes far below this interval, so one burst of edits starts one pull. A reader still sees a new report shortly after the last keystroke. |
 | Shutdown deadline | `LSP_SHUTDOWN_DEADLINE` | 250 ms | Editor exit must stay immediate. A server that does not answer `shutdown` in 250 ms is killed instead. |
 
 A received list that passes its bound produces a typed failure. Kvim publishes

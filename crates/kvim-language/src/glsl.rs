@@ -65,6 +65,7 @@ const GLSL_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // The server needs no project file, so no marker gates its start.
     root_markers: &[],
     initialization_options: glsl_analyzer_options,
+    workspace_settings: None,
 }];
 
 /// The language adapter for GLSL shader paths.

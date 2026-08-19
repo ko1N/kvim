@@ -60,6 +60,7 @@ const HTML_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // marker gates its start.
     root_markers: &[],
     initialization_options: html_ls_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the HTML adapter.

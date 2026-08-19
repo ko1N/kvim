@@ -66,6 +66,7 @@ const ZIG_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // gates its start.
     root_markers: &[],
     initialization_options: zls_options,
+    workspace_settings: None,
 }];
 
 /// The language adapter for Zig source paths.

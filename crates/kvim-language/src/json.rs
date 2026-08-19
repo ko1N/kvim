@@ -54,6 +54,7 @@ const JSON_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // gates its start.
     root_markers: &[],
     initialization_options: vscode_json_language_server_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the JSON adapter.

@@ -74,6 +74,7 @@ const FISH_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // directory, so no marker gates its start.
     root_markers: &[],
     initialization_options: fish_lsp_options,
+    workspace_settings: None,
 }];
 
 /// The language adapter for fish script paths.
