@@ -122,8 +122,14 @@ no trace on the message line.
 The confirmation owns the keys only while it is open, so no key reaches it
 before the question appears or after the answer closes it. It holds no count and
 no key sequence, so it never takes the key of a pending operator or of a pending
-count. Opening it resets pending input, exactly as opening a prompt does. The
-answer returns the keys to the scope that owned them, so a question of the
+count. Opening it resets pending input, exactly as opening a prompt does.
+
+Three owners can be open at the same time, and they own the keys in one order.
+The confirmation owns them first, because it draws over the prompt. An open
+prompt owns them next. The scope of the focus owns them last. Each owner returns
+the keys to the next owner that is still open. A question that opened over a
+prompt therefore returns the keys to that prompt, which keeps its text. A
+question with no open prompt returns them to the scope, so a question of the
 file-tree sidebar returns the keys to the sidebar.
 
 At most one confirmation is open. A second request while one waits is refused,
