@@ -224,10 +224,10 @@ requests through one queue and reads typed results from another queue. It never
 reads, writes, or waits for a server. A full request queue returns a typed
 saturated result at once, and the caller keeps its previous visible state.
 
-The handshake declares the UTF-8 position encoding. Kvim rejects a server that
-does not confirm that encoding, because one protocol column must be one UTF-8
-byte offset inside its line. Kvim also answers every unsolicited server request,
-so an unimplemented request cannot stall the server.
+The handshake offers the UTF-8 position encoding first and the UTF-16 position
+encoding second. The section below owns the negotiation and the conversion. Kvim
+also answers every unsolicited server request, so an unimplemented request
+cannot stall the server.
 
 Workspace containment rejects a path outside the workspace root with a typed
 result. The session decodes a `file` URI and rejects another scheme, a malformed
@@ -268,6 +268,71 @@ A crashed server restarts a bounded number of times. The new server holds no
 document, so Kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
+
+## The Position Encoding
+
+Kvim measures every column in UTF-8 bytes. The protocol measures a column in
+UTF-16 code units unless the server confirms another encoding. The session
+negotiates the encoding, records the answer, and converts every column at its
+own boundary. No code above the session reads a protocol column.
+
+The client offers `utf-8` first and `utf-16` second, so a server that supports
+UTF-8 still selects UTF-8. The session then reads the `positionEncoding` field
+of the `initialize` result.
+
+| Answer | Result |
+|---|---|
+| `utf-8` | The session converts nothing. One protocol column is one byte column. |
+| `utf-16` | The session converts every column in both directions. |
+| No field | The protocol defines UTF-16, so the session converts as the row above. |
+| Another value | The session rejects the server and reports the state once. |
+
+Most installed servers name no encoding. `clangd`, `rust-analyzer`, and `zls`
+confirm UTF-8. `gopls`, `nil`, `taplo`, `marksman`, and the servers of JSON,
+Python, TypeScript, Bash, YAML, and Lua all omit the field. A gate that demands
+UTF-8 therefore refuses almost every declared server.
+
+A UTF-16 column indexes the line that its position names, so the conversion
+needs the exact text of that line. A UTF-16 session mirrors the text of every
+document that it holds open. The mirror holds the exact text that the session
+sent to the server, and each `didChange` updates it before the next conversion
+reads it. A UTF-8 session mirrors no text and pays no conversion cost.
+
+A change that the mirror cannot apply proves that the session and the server
+hold different text. The session drops that document, so no later answer of it
+carries a converted column. The editor opens the document again on the next
+resynchronization.
+
+The mirror records the start of each line, so one conversion costs the length of
+its line and never a walk over the document. One list of diagnostics therefore
+stays linear in the text that it marks. Each open document stays below the
+maximum file size of [`text-model.md`](text-model.md), and
+`LSP_OPEN_DOCUMENTS_MAX` bounds the documents, so the mirrors of one session
+stay bounded.
+
+The conversion covers both directions.
+
+| Direction | Values |
+|---|---|
+| Received | The range of a diagnostic, of a definition target, and of a formatting edit. |
+| Sent | The range of every `didChange` change, and the position of a definition or a hover request. |
+
+Kvim reads no range of a hover answer, so that answer carries no column to
+convert.
+
+Two rules bound a column that its line does not hold. A column above the end of
+its line becomes the end of that line, which is the rule that the protocol
+defines. A column inside a character is a typed failure, because an edit at such
+a column would split that character and corrupt the buffer. A line index that
+the document does not hold is the same typed failure. Kvim publishes no partial
+result, so one rejected position rejects the complete answer that carries it.
+
+A definition target can name a document that the session does not hold open. No
+mirrored text then holds the line that the column indexes, so the target keeps
+the line and the column that the server sent. The line stays exact, because no
+encoding changes a line index, and the column stays exact for a line of ASCII
+text. The target moves the cursor and changes no buffer content, so a line with
+text above the Basic Multilingual Plane can place the cursor a few columns away.
 
 ## Workspace Root Markers
 

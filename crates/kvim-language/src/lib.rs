@@ -80,6 +80,7 @@ mod asm;
 mod c;
 mod cpp;
 mod document;
+mod encoding;
 mod formatter;
 mod glsl;
 mod go;
@@ -124,8 +125,8 @@ pub use progress::{
 };
 pub use protocol::{
     DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
-    LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError,
-    POSITION_ENCODING, SourceSpan, WorkspaceRoot,
+    LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError, SourceSpan,
+    WorkspaceRoot,
 };
 pub use rust::RustAdapter;
 pub use server::{

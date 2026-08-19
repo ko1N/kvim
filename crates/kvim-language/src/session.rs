@@ -37,11 +37,11 @@ use kvim_settings::IndentSettings;
 use super::document::{
     ContentChange, DiagnosticSet, FormatEdits, RawDiagnostic, RawTextEdit, SourceLocation, TextEdit,
 };
+use super::encoding::{DocumentMapping, PositionEncoding};
 use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
 use super::protocol::{
-    ArrayBudget, DocumentPosition, LspBound, LspError, POSITION_ENCODING, ProtocolReader,
-    ProtocolWriter, RpcEnvelope, RpcId, SourceSpan, WorkspaceRoot, deserialize_bounded_array,
-    enforce,
+    ArrayBudget, DocumentPosition, LspBound, LspError, ProtocolReader, ProtocolSpan,
+    ProtocolWriter, RpcEnvelope, RpcId, WorkspaceRoot, deserialize_bounded_array, enforce,
 };
 use super::server::{LanguageServerId, ServerFormatting};
 
@@ -525,6 +525,12 @@ struct OpenDocument {
     version: BufferVersion,
     /// The protocol document version of that content.
     revision: i64,
+    /// The position conversion of this document.
+    ///
+    /// A UTF-16 session mirrors the exact text that the server holds, because a
+    /// UTF-16 column only means something against the line that it indexes. A
+    /// UTF-8 session mirrors no text. See `docs/language-services.md`.
+    mapping: DocumentMapping,
 }
 
 /// One request that waits for an answer.
@@ -642,6 +648,7 @@ async fn attempt(
     let mut session = Session {
         config,
         generation,
+        encoding: PositionEncoding::Utf16,
         events,
         writer: ProtocolWriter::new(input),
         documents: HashMap::new(),
@@ -695,6 +702,12 @@ struct Session<'a> {
     config: &'a SessionConfig,
     /// The attempt that this session serves, which every progress report names.
     generation: SessionGeneration,
+    /// The position encoding that the handshake negotiated.
+    ///
+    /// The session serves no editor request before the handshake completes, so
+    /// the value always names the encoding that the running server confirmed.
+    /// UTF-16 is the encoding that the protocol defines until a server answers.
+    encoding: PositionEncoding,
     events: &'a mpsc::Sender<LanguageEvent>,
     writer: ProtocolWriter<Box<dyn AsyncWrite + Send + Unpin>>,
     documents: HashMap<PathBuf, OpenDocument>,
@@ -743,7 +756,7 @@ impl Session<'_> {
         }
     }
 
-    /// Declares the client capabilities and requires the position encoding.
+    /// Declares the client capabilities and negotiates the position encoding.
     async fn initialize(&mut self, envelopes: &mut Envelopes) -> Result<(), LspError> {
         let root_uri = self.config.root.root_uri()?;
         let id = self
@@ -754,7 +767,10 @@ impl Session<'_> {
                     "processId": Value::Null,
                     "rootUri": root_uri,
                     "capabilities": {
-                        "general": { "positionEncodings": [POSITION_ENCODING] },
+                        "general": {
+                            "positionEncodings":
+                                PositionEncoding::OFFERED.map(PositionEncoding::as_str),
+                        },
                         // A server sends `$/progress` only after the client
                         // declares that it shows work-done progress.
                         "window": { "workDoneProgress": true },
@@ -783,15 +799,14 @@ impl Session<'_> {
         let result = self.await_response(envelopes, id).await?;
         let capabilities: Value =
             serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
-        // Kvim measures every column in UTF-8 bytes. A server that answers in
-        // another encoding would report ranges that the buffer does not hold.
-        if capabilities
-            .pointer("/capabilities/positionEncoding")
-            .and_then(Value::as_str)
-            != Some(POSITION_ENCODING)
-        {
-            return Err(LspError::UnsupportedEncoding);
-        }
+        // Kvim measures every column in UTF-8 bytes, and the protocol measures
+        // one column in UTF-16 code units unless the server confirms UTF-8. The
+        // session records the answer and converts every column against it.
+        self.encoding = PositionEncoding::from_result(
+            capabilities
+                .pointer("/capabilities/positionEncoding")
+                .and_then(Value::as_str),
+        )?;
         self.writer.notify("initialized", json!({})).await
     }
 
@@ -911,11 +926,14 @@ impl Session<'_> {
             &mut budget,
         )?;
         // Every diagnostic records its producer, so a buffer that several
-        // servers describe can name the server that found each problem.
+        // servers describe can name the server that found each problem. Every
+        // range converts against the text that the server holds.
         let diagnostics = raw
             .into_iter()
-            .map(|diagnostic| diagnostic.into_diagnostic(self.config.id.server()))
-            .collect();
+            .map(|diagnostic| {
+                diagnostic.into_diagnostic(self.config.id.server(), &document.mapping)
+            })
+            .collect::<Result<Vec<_>, LspError>>()?;
         let set = DiagnosticSet::new(path, document.version, diagnostics);
         Ok(Some(LanguageOutcome::Diagnostics(set)))
     }
@@ -991,6 +1009,7 @@ impl Session<'_> {
                 uri,
                 version,
                 revision: 1,
+                mapping: DocumentMapping::new(self.encoding, text),
             },
         );
         Ok(())
@@ -1007,15 +1026,15 @@ impl Session<'_> {
             LSP_CONTENT_CHANGES_MAX,
             LspBound::ContentChanges,
         )?;
-        let document = self
-            .documents
-            .get_mut(path)
-            .ok_or(LspError::DocumentNotOpen)?;
+        let document = self.documents.get(path).ok_or(LspError::DocumentNotOpen)?;
         let revision = document.revision.saturating_add(1);
-        let content_changes = changes
-            .iter()
-            .map(|change| json!({ "range": change.span, "text": change.text }))
-            .collect::<Vec<_>>();
+        // Every change addresses the text that the server still holds, so every
+        // range converts against the mirror before the mirror moves on.
+        let mut content_changes = Vec::with_capacity(changes.len());
+        for change in changes {
+            let range = document.mapping.span_to_protocol(change.span)?;
+            content_changes.push(json!({ "range": range, "text": change.text }));
+        }
         let uri = document.uri.clone();
         self.writer
             .notify(
@@ -1027,13 +1046,24 @@ impl Session<'_> {
             )
             .await?;
         // The server copy changes only after the notification reached it, so a
-        // failed write leaves the recorded version and revision untouched.
+        // failed write leaves the recorded version, revision, and mirror
+        // untouched.
         let document = self
             .documents
             .get_mut(path)
             .ok_or(LspError::DocumentNotOpen)?;
         document.revision = revision;
         document.version = version;
+        if let Err(error) = document.mapping.apply(changes) {
+            // The mirror and the server copy now hold different text, so every
+            // later conversion of this document would read the wrong line. The
+            // session drops the document instead, and every later request of
+            // that document reports that it is not open. A refused earlier
+            // change reaches this branch, because the editor then sent a change
+            // that describes text the server never received.
+            self.documents.remove(path);
+            return Err(error);
+        }
         Ok(())
     }
 
@@ -1071,7 +1101,7 @@ impl Session<'_> {
             LSP_PENDING_REQUESTS_MAX,
             LspBound::PendingRequests,
         )?;
-        let params = self.query_params(&document.uri, query);
+        let params = self.query_params(document, query)?;
         let protocol_id = self.writer.request(query.method(), params).await?;
         self.pending.insert(
             protocol_id,
@@ -1086,11 +1116,13 @@ impl Session<'_> {
         Ok(())
     }
 
-    fn query_params(&self, uri: &str, query: Query) -> Value {
-        match query {
+    /// Builds the parameters of one question in the negotiated encoding.
+    fn query_params(&self, document: &OpenDocument, query: Query) -> Result<Value, LspError> {
+        let uri = &document.uri;
+        Ok(match query {
             Query::Definition(position) | Query::Hover(position) => json!({
                 "textDocument": { "uri": uri },
-                "position": position,
+                "position": document.mapping.to_protocol(position)?,
             }),
             Query::Format => json!({
                 "textDocument": { "uri": uri },
@@ -1099,7 +1131,7 @@ impl Session<'_> {
                     "insertSpaces": self.config.indent.expand_tab,
                 },
             }),
-        }
+        })
     }
 
     /// Converts one answer while its buffer version is still current.
@@ -1136,7 +1168,10 @@ impl Session<'_> {
                     LspBound::FormatEdits,
                     &mut budget,
                 )?;
-                let edits: Vec<TextEdit> = raw.into_iter().map(RawTextEdit::into_edit).collect();
+                let edits: Vec<TextEdit> = raw
+                    .into_iter()
+                    .map(|edit| edit.into_edit(&document.mapping))
+                    .collect::<Result<_, LspError>>()?;
                 Ok(LanguageOutcome::Formatting {
                     request: pending.id,
                     edits: FormatEdits::new(pending.path.clone(), pending.version, edits),
@@ -1147,7 +1182,10 @@ impl Session<'_> {
 
     /// Converts one definition answer into contained workspace locations.
     ///
-    /// A target outside the workspace root is rejected and never offered.
+    /// A target outside the workspace root is rejected and never offered. A
+    /// target of a document that this session does not hold open keeps the
+    /// column of the server, because no mirrored text holds the line that the
+    /// column indexes. See `docs/language-services.md`.
     fn definition_locations(&self, result: &RawValue) -> Result<Vec<SourceLocation>, LspError> {
         let text = result.get().trim_start();
         let raw = if text.starts_with('[') {
@@ -1161,11 +1199,17 @@ impl Session<'_> {
                     .map_err(|_| LspError::MalformedResponse)?,
             ]
         };
+        let unmirrored = DocumentMapping::Direct;
         Ok(raw
             .into_iter()
             .filter_map(|location| {
                 let (uri, span) = location.parts();
                 let path = self.config.root.path_from_uri(&uri).ok()?;
+                let mapping = self
+                    .documents
+                    .get(&path)
+                    .map_or(&unmirrored, |document| &document.mapping);
+                let span = mapping.span_to_document(span).ok()?;
                 Some(SourceLocation { path, span })
             })
             .collect())
@@ -1259,19 +1303,19 @@ struct PublishedDiagnostics {
 #[serde(untagged)]
 enum RawLocation {
     /// A plain location, which names the document and the range.
-    Direct { uri: String, range: SourceSpan },
+    Direct { uri: String, range: ProtocolSpan },
     /// A location link, which names the target document and its range.
     Link {
         #[serde(rename = "targetUri")]
         target_uri: String,
         #[serde(rename = "targetSelectionRange")]
-        target_selection_range: SourceSpan,
+        target_selection_range: ProtocolSpan,
     },
 }
 
 impl RawLocation {
     /// Returns the URI and the range of the target.
-    fn parts(self) -> (String, SourceSpan) {
+    fn parts(self) -> (String, ProtocolSpan) {
         match self {
             Self::Direct { uri, range } => (uri, range),
             Self::Link {
