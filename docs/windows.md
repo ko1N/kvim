@@ -235,8 +235,9 @@ The terminal holds three bands. The window tree receives the body band only.
   line and the search prompt share it. An ordinary message takes the normal text
   color, so only a warning and a failure stand out. A confirmation shows its
   question on the same row, over the prompt and over the message, because it
-  owns the keys. The question ends the row, so the line draws no cursor behind
-  it. See [`input-actions.md`](input-actions.md).
+  owns the keys. The user types the answer after the hint of the question, so
+  the line draws the cursor after that answer. See
+  [`input-actions.md`](input-actions.md).
 
 The command line can open a candidate list of the completion. The list is an
 overlay, so it takes the last rows of the body band and covers neither the

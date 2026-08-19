@@ -45,8 +45,8 @@ use kvim_editor::{
     SearchDirection, SearchQuery, Selection, Viewport, WindowState, selection_move_indent_line,
 };
 use kvim_input::{
-    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, ConfirmAnswer, Mode,
-    PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
+    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, ConfirmAnswer, ConfirmEdit,
+    Mode, PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
@@ -93,6 +93,13 @@ use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 /// Every message comes from a bounded label or from a typed error, so the bound
 /// only protects the line against an unexpectedly long path.
 pub const MESSAGE_CHARS_MAX: usize = 512;
+
+/// The largest answer that one confirmation accepts, in characters.
+///
+/// The accepted words are `y` and `yes`, so a longer answer cancels the action
+/// already. The bound keeps the question and its answer inside one row. See
+/// `docs/input-actions.md`.
+pub const CONFIRM_ANSWER_CHARS_MAX: usize = 32;
 
 /// Whether the visible state changed and the terminal needs a new frame.
 ///
@@ -615,22 +622,42 @@ pub(super) enum ConfirmedAction {
     Report,
 }
 
-/// One open confirmation and the action that waits for its answer.
+/// One open confirmation, its typed answer, and the action that waits for it.
 ///
 /// The question holds no answer hint. The message line adds `? [y/N]:` when it
 /// draws the row, so every question takes the same form. See `docs/windows.md`.
+///
+/// The confirmation stays beside the prompt model, because a question can open
+/// over an open prompt and that prompt keeps its own text. One value therefore
+/// holds the question, the answer, and the action together, so no two fields of
+/// the session can disagree. See `docs/input-actions.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Confirmation {
     /// The question, bounded by [`MESSAGE_CHARS_MAX`].
     pub(super) question: String,
+    /// The answer that the user typed, bounded by
+    /// [`CONFIRM_ANSWER_CHARS_MAX`].
+    pub(super) answer: String,
     /// The action that a `y` answer performs.
     action: ConfirmedAction,
+}
+
+/// The key that closes one open confirmation.
+///
+/// `Esc` and `Ctrl-C` cancel at any time, so they read no answer. `Enter` reads
+/// the typed answer instead. See `docs/input-actions.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ConfirmationClose {
+    /// `Enter` closes the question and reads the typed answer.
+    Accept,
+    /// `Esc` or `Ctrl-C` closes the question and cancels the action.
+    Cancel,
 }
 
 /// The outcome of one request to open a confirmation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ConfirmationRequest {
-    /// The confirmation opened and waits for one key.
+    /// The confirmation opened and waits for the typed answer.
     Opened,
     /// Another confirmation waits already, so the editor opened none.
     Refused,
@@ -1146,7 +1173,7 @@ impl Session {
         match self.resolver.resolve(key, now) {
             Resolution::Command { command, count } => self.apply_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
-            Resolution::Confirmation(answer) => self.answer_confirmation(answer),
+            Resolution::Confirmation(edit) => self.edit_confirmation(edit),
             // A pending sequence and a cancelled sequence both change only the
             // which-key overlay, and `settle` publishes that change.
             Resolution::Pending | Resolution::Cancelled => Redraw::Skipped,
@@ -1575,25 +1602,65 @@ impl Session {
         }
         self.confirmation = Some(Confirmation {
             question: clip_message_line(question),
+            answer: String::new(),
             action,
         });
         self.sync_context();
         ConfirmationRequest::Opened
     }
 
-    /// Answers the open confirmation and closes it.
+    /// Applies one edit of the answer of the open confirmation.
+    ///
+    /// Only `Enter`, `Esc`, and `Ctrl-C` close the question, so a `Backspace` on
+    /// the empty answer keeps it open. One keypress therefore never performs the
+    /// action. See `docs/input-actions.md`.
+    fn edit_confirmation(&mut self, edit: ConfirmEdit) -> Redraw {
+        let Some(confirmation) = self.confirmation.as_mut() else {
+            debug_assert!(
+                false,
+                "the resolver edits a confirmation only while one is open"
+            );
+            return Redraw::Skipped;
+        };
+        match edit {
+            ConfirmEdit::Insert(value) => {
+                if confirmation.answer.chars().count() >= CONFIRM_ANSWER_CHARS_MAX {
+                    return Redraw::Skipped;
+                }
+                confirmation.answer.push(value);
+                Redraw::Needed
+            }
+            ConfirmEdit::DeleteBackward => {
+                if confirmation.answer.pop().is_none() {
+                    return Redraw::Skipped;
+                }
+                Redraw::Needed
+            }
+            ConfirmEdit::Accept => self.close_confirmation(ConfirmationClose::Accept),
+            ConfirmEdit::Cancel => self.close_confirmation(ConfirmationClose::Cancel),
+            ConfirmEdit::Ignore => Redraw::Skipped,
+        }
+    }
+
+    /// Closes the open confirmation and performs the action that it approves.
     ///
     /// A cancelled question performs nothing and leaves no trace, so the editor
-    /// returns to the state that it held before the question.
-    fn answer_confirmation(&mut self, answer: ConfirmAnswer) -> Redraw {
+    /// returns to the state that it held before the question. An accepted
+    /// question reads the typed answer, and only `y` and `yes` perform the
+    /// action.
+    fn close_confirmation(&mut self, close: ConfirmationClose) -> Redraw {
         let Some(confirmation) = self.confirmation.take() else {
             debug_assert!(
                 false,
-                "the resolver answers a confirmation only while one is open"
+                "the resolver closes a confirmation only while one is open"
             );
             return Redraw::Skipped;
         };
         self.sync_context();
+        let answer = match close {
+            ConfirmationClose::Cancel => ConfirmAnswer::No,
+            ConfirmationClose::Accept => ConfirmAnswer::from_text(&confirmation.answer),
+        };
         match answer {
             ConfirmAnswer::No => Redraw::Needed,
             ConfirmAnswer::Yes => self
@@ -4174,7 +4241,8 @@ impl Session {
     ///
     /// Three owners can be open at the same time, and they own the keys in one
     /// order. An open confirmation owns them first, because it draws over the
-    /// prompt and reads the next key. An open prompt owns them next. The scope
+    /// prompt and reads its own answer. One `Enter` therefore reaches the
+    /// confirmation alone. An open prompt owns them next. The scope
     /// of the focus owns them last. Each owner therefore returns the keys to
     /// the next owner that is still open, so a question that opened over a
     /// prompt returns them to that prompt and not to the scope below it.

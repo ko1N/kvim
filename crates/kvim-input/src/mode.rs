@@ -317,8 +317,10 @@ pub enum InputContext {
     },
     /// One open confirmation owns input.
     ///
-    /// The confirmation reads one key instead of a line, so it holds no prompt
-    /// kind and no text. See `docs/input-actions.md`.
+    /// The confirmation reads its own answer beside the prompt, because a
+    /// question can open over an open prompt and that prompt keeps its text.
+    /// The variant therefore holds no prompt kind. See
+    /// `docs/input-actions.md`.
     Confirmation {
         /// The scope that regains input when the confirmation closes.
         return_to: BindingScope,
@@ -343,7 +345,7 @@ impl InputContext {
 
     /// Returns the prompt that owns input.
     ///
-    /// A confirmation reads no line, so it reports no prompt.
+    /// A confirmation owns its own answer line, so it reports no prompt.
     #[inline]
     pub const fn prompt(self) -> Option<PromptKind> {
         match self {

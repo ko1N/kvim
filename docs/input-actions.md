@@ -110,10 +110,10 @@ bound keys. See [`files.md`](files.md).
 `:q` and `:e` destroy data only while the buffer holds unsaved changes, so each
 one asks only then. `:q` asks only while the focused window is the last window,
 because another open window keeps the buffer and its changes. The question names
-the buffer. `y` performs the action, and every other key keeps the buffer and its
-unsaved changes. `:q!` and `:e!` ask nothing, and `:wq` asks nothing, because the
-save keeps every change. See the Confirmation section below and
-[`files.md`](files.md).
+the buffer. The answer `y` performs the action, and every other answer keeps the
+buffer and its unsaved changes. `:q!` and `:e!` ask nothing, and `:wq` asks
+nothing, because the save keeps every change. See the Confirmation section below
+and [`files.md`](files.md).
 
 ### Command Line Completion
 
@@ -195,25 +195,39 @@ An action that destroys data asks the user first. The question sits on the
 message line, in the form `<question>? [y/N]:`. It opens no window and no
 overlay. The confirmation is an input context, not a mode.
 
-The confirmation reads one key:
+The confirmation reads a typed answer. One keypress therefore never performs the
+action:
 
 | Keys | Effect |
 |---|---|
-| `y` | Perform the action |
-| `n` | Cancel the action |
+| A printable key | Add the character to the answer |
+| `Backspace` | Remove the character before the answer cursor |
+| `Enter` | Read the answer and close the question |
 | `Esc` | Cancel the action |
 | `Ctrl-C` | Cancel the action |
-| Every other key | Cancel the action |
+| Every other key | Change nothing |
 
-The capital `N` of the question names the default. Only a plain `y` confirms, so
-`Y` cancels with every other key. The confirmation reads no line and takes no
-`Enter`, and it draws no cursor. A cancelled action changes nothing and leaves
-no trace on the message line.
+The answer `y` and the answer `yes` perform the action. The confirmation
+compares the letters without case, so `Y`, `Yes`, and `YES` perform it as well.
+Every other answer cancels the action. The capital `N` of the question names the
+default, so an empty answer cancels the action too.
 
-The confirmation owns the keys only while it is open, so no key reaches it
-before the question appears or after the answer closes it. It holds no count and
-no key sequence, so it never takes the key of a pending operator or of a pending
-count. Opening it resets pending input, exactly as opening a prompt does.
+The confirmation completes nothing, so `Tab` and `Shift-Tab` add no character
+and offer no candidate. `Backspace` on an empty answer keeps the question open,
+because only `Enter`, `Esc`, and `Ctrl-C` close it.
+
+The answer holds `CONFIRM_ANSWER_CHARS_MAX` characters, which is 32. A longer
+answer is no accepted word, so the bound rejects the further characters and
+changes nothing else. The row shows the answer after the hint and draws the
+cursor after the answer. A cancelled action changes nothing and leaves no trace
+on the message line.
+
+The confirmation owns every key while it is open, so a key that it does not read
+reaches no other owner. It owns the keys only while it is open, so no key
+reaches it before the question appears or after the answer closes it. It holds
+no count and no key sequence, so it never takes the key of a pending operator or
+of a pending count. Opening it resets pending input, exactly as opening a prompt
+does.
 
 Three owners can be open at the same time, and they own the keys in one order.
 The confirmation owns them first, because it draws over the prompt. An open
@@ -222,6 +236,13 @@ the keys to the next owner that is still open. A question that opened over a
 prompt therefore returns the keys to that prompt, which keeps its text. A
 question with no open prompt returns them to the scope, so a question of the
 file-tree sidebar returns the keys to the sidebar.
+
+The confirmation reads text, and it stays beside the prompt model. A question
+can open over an open prompt, and that prompt keeps its own text, so the two
+lines must exist at the same time. The confirmation also draws a dynamic
+question instead of a static prefix, and it reads its own small key table. One
+open confirmation therefore holds its question, its answer, and its action in
+one value, and `Enter` reaches the confirmation alone.
 
 At most one confirmation is open. A second request while one waits is refused,
 and the open question keeps the line.
@@ -655,15 +676,15 @@ through a second input mechanism. The prompt returns the keys to the sidebar
 when it closes. `Esc` and `Ctrl-C` cancel the prompt.
 
 `d` destroys data, so it asks before it deletes. The question names the entry,
-and it names the count of several entries. `y` performs the removal, and every
-other key leaves every entry in place. The answer returns the keys to the
-sidebar. See the Confirmation section above and [`files.md`](files.md).
+and it names the count of several entries. The answer `y` performs the removal,
+and every other answer leaves every entry in place. The answer returns the keys
+to the sidebar. See the Confirmation section above and [`files.md`](files.md).
 
 `r` and `p` destroy data only when the destination holds an entry already, so
 they ask only then. The question names the destination, and it names the count
-of several destinations. `y` replaces them, and every other key leaves every
-source and every destination in place. A rename onto a free path and a paste
-into a free name ask nothing.
+of several destinations. The answer `y` replaces them, and every other answer
+leaves every source and every destination in place. A rename onto a free path
+and a paste into a free name ask nothing.
 
 The tree search keeps every row. It marks each matching name, and `n` and `N`
 move the selection between the marks. The search opens a closed directory that

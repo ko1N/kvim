@@ -909,7 +909,7 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
 }
 
 #[test]
-fn a_confirmation_asks_on_the_message_line_and_draws_no_cursor() {
+fn a_confirmation_asks_on_the_message_line_and_draws_a_cursor() {
     let mut session = session(40, 6);
     // No formatter serves the scratch buffer, so the toggle reports that and
     // fills the message line.
@@ -918,20 +918,32 @@ fn a_confirmation_asks_on_the_message_line_and_draws_no_cursor() {
     assert_eq!(row(&session, 5), report);
 
     session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-    let line = "Delete one entry? [y/N]:";
+    let hint = "Delete one entry? [y/N]:";
     assert_eq!(
         row(&session, 5),
-        line,
+        hint,
         "the question covers the last message"
     );
-    let end = u16::try_from(line.chars().count()).expect("the question fits the terminal");
+    let end = u16::try_from(hint.chars().count()).expect("the question fits the terminal");
+    assert!(
+        is_reversed(&session, end, 5),
+        "the user types the answer, so the row draws a cursor"
+    );
+
+    // The typed answer follows the hint, and the cursor follows the answer.
+    type_keys(&mut session, "yes");
+    assert_eq!(row(&session, 5), format!("{hint}yes"));
+    assert!(
+        is_reversed(&session, end + 3, 5),
+        "the cursor sits after the typed answer"
+    );
     assert!(
         !is_reversed(&session, end, 5),
-        "the question reads one key, so it draws no cursor"
+        "the cursor left the first cell of the answer"
     );
 
     // The cancelled question leaves the row exactly as it found it.
-    press(&mut session, 'n');
+    press_code(&mut session, KeyCode::Esc);
     assert_eq!(row(&session, 5), report);
 }
 

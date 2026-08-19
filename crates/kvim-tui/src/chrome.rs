@@ -156,6 +156,7 @@ pub(super) fn render_statusline(
 /// the message line.
 ///
 /// The confirmation owns the keys, so its question covers both other entries.
+/// The question, its hint, and the typed answer share the row.
 pub(super) fn render_message(
     target: &mut CellBuffer,
     area: Rect,
@@ -170,10 +171,14 @@ pub(super) fn render_message(
     let base = theme.style(ThemeRole::Text);
     target.set_style(area, base);
     if let Some(confirmation) = confirmation {
-        // The question ends the row and reads one key, so the line draws no
-        // cursor behind it. See `docs/windows.md`.
-        let line = format!("{}? [y/N]:", confirmation.question);
-        target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
+        // The user types the answer after the hint, so the row draws its own
+        // cursor behind that answer, exactly as a prompt does. See
+        // `docs/windows.md`.
+        let line = format!("{}? [y/N]:{}", confirmation.question, confirmation.answer);
+        let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
+        if let Some(cell) = target.cell_mut((x, area.y)) {
+            cell.set_style(base.patch(theme.style(ThemeRole::Cursor)));
+        }
         return;
     }
     if let Some(prompt) = prompt {
