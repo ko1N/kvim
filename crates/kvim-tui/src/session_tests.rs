@@ -20,6 +20,7 @@ use kvim_workspace::ExternalChange;
 use kvim_workspace::temp::TempDir;
 
 use super::clipboard::SessionClipboard;
+use super::completion::{CompletionOutcome, LineCompletion};
 use super::language::{LanguageRequest, LanguageRequestKind};
 use super::session::{
     ConfirmationRequest, ConfirmedAction, MessageLevel, Redraw, RunState, Session,
@@ -79,6 +80,26 @@ fn prompt_text(session: &Session) -> String {
         .visible()
         .prompt
         .map_or_else(String::new, |prompt| prompt.text.clone())
+}
+
+/// Reports whether the open prompt holds a completion.
+fn completing(session: &Session) -> bool {
+    session
+        .visible()
+        .prompt
+        .is_some_and(|prompt| prompt.completion.is_some())
+}
+
+/// Returns what the open completion of the prompt shows.
+///
+/// A prompt without a completion reports [`CompletionOutcome::Missed`], because
+/// no candidate reached its line.
+fn completion_outcome(session: &Session) -> CompletionOutcome {
+    session
+        .visible()
+        .prompt
+        .and_then(|prompt| prompt.completion.as_ref())
+        .map_or(CompletionOutcome::Missed, LineCompletion::outcome)
 }
 
 /// Returns the message text, or an empty text while the line is empty.
@@ -425,6 +446,154 @@ fn the_command_line_runs_the_fixed_command_set_and_rejects_the_rest() {
     press(&mut session, ':');
     type_keys(&mut session, "q!");
     press_code(&mut session, KeyCode::Enter);
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+#[test]
+fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "q");
+    assert!(!completing(&session), "the typed text opens no completion");
+
+    // The first cycle writes the first candidate and opens the list.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "q");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "q!");
+
+    // The candidates stay anchored to the typed text, so the cycle wraps
+    // instead of narrowing the list to the written candidate.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "q");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+}
+
+#[test]
+fn the_command_line_completion_answers_the_size_of_its_candidate_set() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "w");
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "w");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "wq");
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(
+        prompt_text(&session),
+        "w",
+        "the list holds `w` and `wq` alone"
+    );
+    press_code(&mut session, KeyCode::Esc);
+    press_code(&mut session, KeyCode::Esc);
+
+    // One candidate completes the line and opens no list.
+    press(&mut session, ':');
+    type_keys(&mut session, "wq");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Needed);
+    assert_eq!(prompt_text(&session), "wq");
+    assert_eq!(
+        completion_outcome(&session),
+        CompletionOutcome::Completed,
+        "one candidate needs no list"
+    );
+    press_code(&mut session, KeyCode::Esc);
+    press_code(&mut session, KeyCode::Esc);
+
+    // A text that names no command changes nothing and reports nothing.
+    press(&mut session, ':');
+    type_keys(&mut session, "x");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert_eq!(prompt_text(&session), "x");
+    assert!(!completing(&session));
+    assert_eq!(message(&session), "");
+
+    // A line number is no name, so the digits offer no candidate.
+    press_code(&mut session, KeyCode::Backspace);
+    type_keys(&mut session, "42");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert_eq!(prompt_text(&session), "42");
+    assert!(!completing(&session));
+}
+
+#[test]
+fn the_command_line_completion_cycles_backward_and_restores_the_typed_text() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "e");
+
+    // A backward cycle from the typed text wraps to the last candidate.
+    press_code(&mut session, KeyCode::BackTab);
+    assert_eq!(prompt_text(&session), "e!");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+    press_code(&mut session, KeyCode::BackTab);
+    assert_eq!(prompt_text(&session), "e");
+    press_code(&mut session, KeyCode::BackTab);
+    assert_eq!(prompt_text(&session), "e!");
+
+    // The first cancel restores the typed text and closes the list.
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(prompt_text(&session), "e");
+    assert!(!completing(&session));
+    assert!(
+        session.visible().prompt.is_some(),
+        "the first cancel keeps the command line open"
+    );
+
+    // The second cancel closes the command line.
+    press_code(&mut session, KeyCode::Esc);
+    assert!(session.visible().prompt.is_none());
+    assert_eq!(session.mode(), Mode::Normal);
+}
+
+#[test]
+fn one_typed_key_after_a_cycle_closes_the_list_and_reads_the_new_line() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "w");
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "w");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+
+    // The typed key continues from the line as it is shown.
+    press(&mut session, 'q');
+    assert_eq!(prompt_text(&session), "wq");
+    assert!(
+        !completing(&session),
+        "one insert closes the candidate list"
+    );
+
+    // The next completion reads the new line and offers `wq` alone, so it
+    // never reuses the candidates of the closed list.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "wq");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Completed);
+
+    // One delete closes the list too, and the completion answers `w` again.
+    press_code(&mut session, KeyCode::Backspace);
+    assert!(!completing(&session));
+    assert_eq!(prompt_text(&session), "w");
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "wq", "the list holds `w` and `wq`");
+}
+
+#[test]
+fn enter_runs_the_command_that_the_completion_wrote_into_the_line() {
+    let mut session = modified_session();
+    press(&mut session, ':');
+    type_keys(&mut session, "q");
+    press_code(&mut session, KeyCode::Tab);
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "q!");
+
+    // The line shows `q!`, so `Enter` discards the changes and asks nothing.
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(question(&session), "");
     assert_eq!(session.run_state(), RunState::Finished);
 }
 

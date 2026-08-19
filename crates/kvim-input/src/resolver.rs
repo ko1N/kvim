@@ -26,9 +26,17 @@ pub enum PromptEdit {
     Insert(char),
     /// Remove the character before the cursor.
     DeleteBackward,
+    /// Write the next completion candidate into the prompt line.
+    CompleteNext,
+    /// Write the previous completion candidate into the prompt line.
+    CompletePrevious,
     /// Run the prompt line.
     Accept,
     /// Cancel the prompt and restore the previous mode.
+    ///
+    /// An open candidate list takes this edit first and restores the text that
+    /// the user typed, so a second cancel closes the prompt. See
+    /// `docs/input-actions.md`.
     Cancel,
 }
 
@@ -522,6 +530,10 @@ fn is_cancel_key(key: Key) -> bool {
 }
 
 /// Translates one key into a prompt line edit.
+///
+/// Every prompt reads the same keys. A prompt that offers no candidate ignores
+/// the two completion edits, so only the command line answers them today. See
+/// `docs/input-actions.md`.
 fn prompt_edit(key: Key) -> Option<PromptEdit> {
     if is_cancel_key(key) {
         return Some(PromptEdit::Cancel);
@@ -529,6 +541,8 @@ fn prompt_edit(key: Key) -> Option<PromptEdit> {
     match (key.chord(), key.code()) {
         (Chord::Plain, KeyCode::Char(value)) => Some(PromptEdit::Insert(value)),
         (Chord::Plain, KeyCode::Backspace) => Some(PromptEdit::DeleteBackward),
+        (Chord::Plain, KeyCode::Tab) => Some(PromptEdit::CompleteNext),
+        (Chord::Plain, KeyCode::BackTab) => Some(PromptEdit::CompletePrevious),
         (Chord::Plain, KeyCode::Enter) => Some(PromptEdit::Accept),
         _ => None,
     }
@@ -1189,6 +1203,11 @@ mod tests {
             (
                 Key::plain(KeyCode::Backspace),
                 Some(PromptEdit::DeleteBackward),
+            ),
+            (Key::plain(KeyCode::Tab), Some(PromptEdit::CompleteNext)),
+            (
+                Key::plain(KeyCode::BackTab),
+                Some(PromptEdit::CompletePrevious),
             ),
             (Key::plain(KeyCode::Enter), Some(PromptEdit::Accept)),
             (Key::plain(KeyCode::Esc), Some(PromptEdit::Cancel)),

@@ -49,6 +49,7 @@ mod buffer_view;
 mod cells;
 mod chrome;
 mod clipboard;
+mod completion;
 mod icons;
 mod language;
 mod layout;
