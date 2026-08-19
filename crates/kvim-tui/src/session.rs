@@ -890,7 +890,7 @@ pub struct Session {
     language: LanguageState,
     search: Option<ActiveSearch>,
     prompt: Option<PromptLine>,
-    /// The confirmation that waits for one key, while one is open.
+    /// The confirmation that waits for a typed answer, while one is open.
     ///
     /// At most one question waits, so a second request opens none. See
     /// `docs/input-actions.md`.

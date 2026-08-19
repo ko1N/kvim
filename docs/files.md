@@ -85,12 +85,12 @@ The `atomic save` setting selects this procedure. A disabled setting writes the
 target file directly. See [`settings.md`](settings.md).
 
 `:q` asks before it closes the last window while the buffer holds unsaved
-changes. `y` closes the window and discards them, and every other key keeps the
-buffer and the window. The question names the buffer, and the answer closes the
-window only while that named buffer still holds the focus, because an open that
-completes while the question waits makes another buffer active. `:q!` discards
-the changes without a question. `:wq` saves first and closes the window after
-the save succeeds. A failed save keeps the window open.
+changes. The answer `y` closes the window and discards them, and every other
+answer keeps the buffer and the window. The question names the buffer, and the
+answer closes the window only while that named buffer still holds the focus,
+because an open that completes while the question waits makes another buffer
+active. `:q!` discards the changes without a question. `:wq` saves first and
+closes the window after the save succeeds. A failed save keeps the window open.
 
 ## External Change Detection
 
@@ -182,12 +182,12 @@ the user never asked for it. The next burst checks again.
 `:e` without a path is the manual form of the same operation for the buffer of
 the focused window. It reads the file whatever its identity holds. `:e` asks
 before it replaces a buffer that holds an unsaved change, because the file then
-replaces the only copy of that work. `y` reads the file and discards the change,
-and every other key keeps the buffer. The question names the buffer, and the
-answer reads the file of that named buffer, never of the focused window, because
-an open that completes while the question waits makes another buffer active.
-`:e!` discards the change without a question. `:e <path>` keeps its own meaning
-and opens another file.
+replaces the only copy of that work. The answer `y` reads the file and discards
+the change, and every other answer keeps the buffer. The question names the
+buffer, and the answer reads the file of that named buffer, never of the focused
+window, because an open that completes while the question waits makes another
+buffer active. `:e!` discards the change without a question. `:e <path>` keeps
+its own meaning and opens another file.
 
 ## Persistent Undo Files
 
@@ -582,8 +582,8 @@ asks nothing.
 A taken destination refuses the mutation first, exactly as it did before this
 capability. The refusal carries every taken destination and its kind back to the
 editor, and the editor then asks one question. The question names the entry, or
-the number of entries. `y` replaces the named destinations. Every other key
-leaves every source and every destination unchanged.
+the number of entries. The answer `y` replaces the named destinations. Every
+other answer leaves every source and every destination unchanged.
 
 The existence check runs on the bounded worker service with the rest of the
 staging, so the terminal event loop reads no filesystem state. The question
