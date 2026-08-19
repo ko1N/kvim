@@ -85,6 +85,18 @@ enum NamedCommand {
     WriteQuit,
 }
 
+/// The command name of one command line and the path after it.
+///
+/// The value keeps the name exactly as the user typed it, so a completed line
+/// holds the abbreviation that the user chose.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CommandPathArgument<'line> {
+    /// The command name, without its separator.
+    pub name: &'line str,
+    /// The path text after the name, without a surrounding blank.
+    pub typed: &'line str,
+}
+
 /// Whether a `!` follows the typed name.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Bang {
@@ -211,6 +223,49 @@ impl CommandLineCommand {
             }
         }
         names
+    }
+
+    /// Returns the command name of `line` and the path argument after it.
+    ///
+    /// The first blank ends the name and opens its argument, so a line without
+    /// a blank names a command and carries no path. Only `:e[dit]` takes a
+    /// path, so every other name returns `None`. The rule lives beside the name
+    /// table, so the parser and the command-line completion can never disagree
+    /// about which command takes a path.
+    ///
+    /// ```
+    /// use kvim_input::CommandLineCommand;
+    ///
+    /// let argument = CommandLineCommand::path_argument("e src/ma").expect("`:e` takes a path");
+    /// assert_eq!(argument.name, "e");
+    /// assert_eq!(argument.typed, "src/ma");
+    /// // The name keeps the abbreviation that the user typed.
+    /// let full = CommandLineCommand::path_argument("edit ").expect("`:edit` takes a path");
+    /// assert_eq!(full.name, "edit");
+    /// assert_eq!(full.typed, "");
+    /// // A line without a blank is a name, not a path.
+    /// assert_eq!(CommandLineCommand::path_argument("edit"), None);
+    /// // `:e!` reads the file of the focused window again and takes no path.
+    /// assert_eq!(CommandLineCommand::path_argument("e! src"), None);
+    /// // No other command takes a path.
+    /// assert_eq!(CommandLineCommand::path_argument("w src"), None);
+    /// ```
+    #[must_use]
+    pub fn path_argument(line: &str) -> Option<CommandPathArgument<'_>> {
+        let separator = line.find(char::is_whitespace)?;
+        let (name, argument) = line.split_at(separator);
+        // A `!` variant of `edit` reloads the buffer, so it carries no path.
+        if name.ends_with('!') {
+            return None;
+        }
+        let resolved = CommandName::resolve(name)?;
+        if resolved.command != NamedCommand::Edit {
+            return None;
+        }
+        Some(CommandPathArgument {
+            name,
+            typed: argument.trim(),
+        })
     }
 
     /// Parses one command line.

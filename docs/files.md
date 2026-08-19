@@ -734,6 +734,27 @@ file decides first, and the last matching pattern of one file wins.
 The walk reads no global ignore file, no `.git/info/exclude`, and no Git
 configuration, because it starts no Git process.
 
+### The Walk Of The Command Line
+
+The command-line completion of the path argument of `:e[dit]` reads the same
+walk and the same ranking. One open command line asks for exactly one walk, and
+the completion filters the result while the user types. A walk for each typed
+character would repeat the cost of the start, so the completion never starts
+one.
+
+The walk runs on the bounded worker service, and the event loop never waits for
+it. The completion holds no file until the result arrives, so it offers no path
+until then. A cancelled or timed out walk leaves it without a file, which is the
+same usable state. See [`input-actions.md`](input-actions.md) and
+[`responsiveness.md`](responsiveness.md).
+
+One publication slot holds the walk of the command line. A newer command line
+therefore cancels the walk of the line that it replaces, and the gate rejects
+the obsolete result. A result that reaches a closed command line fills no list.
+
+The walk starts at the workspace root and reaches no file above it, so no
+candidate leaves that root.
+
 ### Previews
 
 The file picker and the search picker show the region around the selected line.
@@ -755,7 +776,7 @@ list.
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
 | Candidates of one picker | `PICKER_CANDIDATES_MAX` | 4096 | One reader never inspects more rows, and the bound keeps one keystroke inside the latency budget. |
-| Characters of one query | `PICKER_QUERY_CHARS_MAX` | 128 | A query is a short name fragment or one search pattern. |
+| Characters of one query | `PICKER_QUERY_CHARS_MAX` | 128 | A query is a short name fragment or one search pattern. The path argument of the command line uses the same bound, because it reaches the same ranking. |
 | Characters of one matched line | `PICKER_MATCH_CHARS_MAX` | 160 | One result row shows the start of the matched line, not the complete line. |
 | Files of one walk | `WALK_FILES_MAX` | 4096 | The value is `PICKER_CANDIDATES_MAX`, so the walk collects no file that the picker drops. |
 | Directories of one walk | `WALK_DIRECTORIES_MAX` | 4096 | One repository holds far fewer directories, and the bound stops a looping symbolic link. |
@@ -770,7 +791,8 @@ list.
 | Lines of one preview | `PREVIEW_LINES_MAX` | 200 | The value holds more rows than any terminal shows. |
 | Characters of one preview line | `PREVIEW_LINE_CHARS_MAX` | 400 | The value holds more cells than any terminal row shows. |
 | Lines above the matched line | `PREVIEW_CONTEXT_LINES` | 8 | The reader sees the lines that lead to the match. |
-| Deadline of one walk | `PICKER_WALK_DEADLINE` | 5 s | A bounded walk of one repository finishes far below this value. |
+| Candidates of one completion | `COMPLETION_CANDIDATES_MAX` | 64 | One cycle reaches every candidate with a key, so a longer list holds rows that no reader reaches. The completion keeps the best ranked ones. |
+| Deadline of one walk | `PICKER_WALK_DEADLINE` | 5 s | A bounded walk of one repository finishes far below this value. The walk of the command line uses the same value, because it is the same walk. |
 | Deadline of one search | `RIPGREP_DEADLINE` | 5 s | A cold search of a large repository needs seconds, and the value reports a stuck command. |
 | Deadline of one preview | `PICKER_PREVIEW_DEADLINE` | 2 s | One bounded file read finishes far below this value. |
 

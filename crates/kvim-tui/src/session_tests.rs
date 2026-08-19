@@ -11,13 +11,13 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
-use kvim_input::Mode;
+use kvim_input::{CommandLineCommand, Mode};
 use kvim_language::LspError;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{FocusChange, Key, KeyCode, TerminalEvent};
-use kvim_workspace::ExternalChange;
 use kvim_workspace::temp::TempDir;
+use kvim_workspace::{Candidate, ExternalChange, PickerRequest, PickerResult, rank_candidates};
 
 use super::clipboard::SessionClipboard;
 use super::completion::{CompletionOutcome, LineCompletion};
@@ -600,6 +600,176 @@ fn enter_runs_the_command_that_the_completion_wrote_into_the_line() {
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(question(&session), "");
     assert_eq!(session.run_state(), RunState::Finished);
+}
+
+/// The workspace files that one test walk collects, in walk order.
+///
+/// The walk returns absolute paths below the workspace root, so the candidates
+/// hold the same shape that the file picker receives.
+fn walked_files() -> Vec<Candidate> {
+    [
+        "src/session.rs",
+        "src/main.rs",
+        "docs/windows.md",
+        "src/mode.rs",
+    ]
+    .into_iter()
+    .map(|relative| Candidate::file(&workspace_root(), workspace_root().join(relative)))
+    .collect()
+}
+
+/// Answers the workspace walk that the open command line asked for.
+///
+/// The session performs no filesystem work, so the test plays the part of the
+/// bounded worker service and hands the collected files back.
+fn answer_completion_walk(session: &mut Session, files: Vec<Candidate>) {
+    let request = session
+        .take_completion_request()
+        .expect("the open command line asks for one walk");
+    assert!(
+        matches!(&request, PickerRequest::Files { root } if root == &workspace_root()),
+        "the walk starts at the workspace root, so no candidate leaves it"
+    );
+    assert_eq!(
+        session.apply_completion_result(PickerResult::Candidates {
+            query: String::new(),
+            candidates: files,
+            truncated: false,
+        }),
+        Redraw::Skipped,
+        "the list opens on the next completion key, so the frame is unchanged"
+    );
+}
+
+#[test]
+fn the_command_line_completes_a_path_with_the_ranking_of_the_picker() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    answer_completion_walk(&mut session, walked_files());
+    type_keys(&mut session, "e src/m");
+
+    // The query reaches the directory of a file, so the completion matches the
+    // complete path as the picker does. The two names hold the same score and
+    // the same width, so the source order decides between them.
+    assert_eq!(
+        rank_candidates("src/m", &walked_files()),
+        [1, 3],
+        "the ranking of the completion is the ranking of the picker"
+    );
+
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "e src/mode.rs");
+
+    // The completed line keeps the command name that the user typed, and the
+    // parser accepts it.
+    assert_eq!(
+        CommandLineCommand::parse(&prompt_text(&session)),
+        Ok(CommandLineCommand::Edit(PathBuf::from("src/mode.rs")))
+    );
+
+    // The candidates stay anchored to the typed text, so the cycle wraps.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(prompt_text(&session), "e src/m");
+}
+
+#[test]
+fn the_command_line_offers_no_path_before_the_walk_answers() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/ma");
+
+    // The walk still waits for the worker service, so the key changes nothing
+    // and reports nothing. The event loop never waits for the result.
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert_eq!(prompt_text(&session), "e src/ma");
+    assert!(!completing(&session));
+    assert_eq!(message(&session), "");
+
+    // The same key offers the files after the result arrives.
+    answer_completion_walk(&mut session, walked_files());
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Needed);
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+}
+
+#[test]
+fn a_path_without_a_match_and_an_empty_walk_open_no_list() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    answer_completion_walk(&mut session, walked_files());
+    type_keys(&mut session, "e zz");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert_eq!(prompt_text(&session), "e zz");
+    assert!(!completing(&session));
+    assert_eq!(message(&session), "");
+    press_code(&mut session, KeyCode::Esc);
+
+    // A walk that collected no file leaves the command line in the same state.
+    press(&mut session, ':');
+    answer_completion_walk(&mut session, Vec::new());
+    type_keys(&mut session, "e src");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert_eq!(prompt_text(&session), "e src");
+    assert!(!completing(&session));
+    assert_eq!(message(&session), "");
+}
+
+#[test]
+fn only_the_path_argument_of_edit_reads_the_workspace_files() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    answer_completion_walk(&mut session, walked_files());
+
+    // A line without a blank still names a command, so the name source answers.
+    type_keys(&mut session, "e");
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "edit");
+    press_code(&mut session, KeyCode::Esc);
+    press_code(&mut session, KeyCode::Esc);
+
+    // `:e!` reloads the buffer, and `:w` saves it, so neither takes a path.
+    for line in ["e! src", "w src"] {
+        press(&mut session, ':');
+        answer_completion_walk(&mut session, walked_files());
+        type_keys(&mut session, line);
+        assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+        assert_eq!(prompt_text(&session), line);
+        assert!(!completing(&session));
+        press_code(&mut session, KeyCode::Esc);
+    }
+}
+
+#[test]
+fn a_walk_that_answers_a_closed_command_line_fills_no_list() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    assert!(
+        session.take_completion_request().is_some(),
+        "the open command line asks for one walk"
+    );
+    press_code(&mut session, KeyCode::Esc);
+
+    // The line that asked for the walk is gone, so its result fills no cache.
+    assert_eq!(
+        session.apply_completion_result(PickerResult::Candidates {
+            query: String::new(),
+            candidates: walked_files(),
+            truncated: false,
+        }),
+        Redraw::Skipped
+    );
+
+    // The next command line asks for its own walk and offers no path until it
+    // answers.
+    press(&mut session, ':');
+    assert!(session.take_completion_request().is_some());
+    type_keys(&mut session, "e src/ma");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert_eq!(prompt_text(&session), "e src/ma");
 }
 
 /// The question that `:q` asks over the modified scratch buffer.

@@ -822,6 +822,19 @@ pub struct Session {
     /// At most one question waits, so a second request opens none. See
     /// `docs/input-actions.md`.
     confirmation: Option<Confirmation>,
+    /// The workspace walk that the open command line asked for.
+    ///
+    /// The session walks no directory, so the event loop hands the request to
+    /// the bounded worker service. See `docs/responsiveness.md`.
+    completion_outbox: Option<PickerRequest>,
+    /// The workspace files that complete the path argument of `:e`.
+    ///
+    /// One open command line asks for exactly one walk, and the completion
+    /// filters the result while the user types. The list stays empty while that
+    /// walk runs, and after a cancelled or timed out walk, so the completion
+    /// then offers no path and the command line stays usable. See
+    /// `docs/files.md`.
+    completion_files: Vec<Candidate>,
     message: Option<Message>,
     /// The open floating overlay of the language services.
     float: Option<Float>,
@@ -880,6 +893,8 @@ impl Session {
             search: None,
             prompt: None,
             confirmation: None,
+            completion_outbox: None,
+            completion_files: Vec::new(),
             message: None,
             float: None,
             which_key: None,
@@ -1496,6 +1511,15 @@ impl Session {
             text: String::new(),
             completion: None,
         });
+        if kind == PromptKind::CommandLine {
+            // The path argument of `:e` completes from the workspace files, so
+            // one open command line asks for exactly one walk. A walk for each
+            // typed character would repeat the cost of the start.
+            self.completion_files = Vec::new();
+            self.completion_outbox = Some(PickerRequest::Files {
+                root: self.tree.tree().root().to_path_buf(),
+            });
+        }
         self.sync_context();
         Redraw::Needed
     }
@@ -1710,6 +1734,42 @@ impl Session {
         redraw
     }
 
+    /// Takes the workspace walk that the open command line asked for.
+    ///
+    /// The session walks no directory, so the event loop hands the request to
+    /// the bounded worker service. The command line keeps every key while the
+    /// walk runs. See `docs/responsiveness.md`.
+    pub fn take_completion_request(&mut self) -> Option<PickerRequest> {
+        self.completion_outbox.take()
+    }
+
+    /// Applies the finished workspace walk of the command-line completion.
+    ///
+    /// The list opens on the next completion key, so the result changes no
+    /// visible state and requests no frame.
+    ///
+    /// A result that reaches a closed command line changes nothing, because the
+    /// user already left the line that asked for it.
+    #[must_use]
+    pub fn apply_completion_result(&mut self, result: PickerResult) -> Redraw {
+        let PickerResult::Candidates { candidates, .. } = result else {
+            debug_assert!(
+                false,
+                "the command line asks for one workspace walk and for no preview"
+            );
+            return Redraw::Skipped;
+        };
+        let open = self
+            .prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.kind == PromptKind::CommandLine);
+        if !open {
+            return Redraw::Skipped;
+        }
+        self.completion_files = candidates;
+        Redraw::Skipped
+    }
+
     /// Reports that one picker request produced no result.
     ///
     /// A missing external command is a normal state. The editor names it once
@@ -1790,8 +1850,16 @@ impl Session {
     /// Only the command line offers candidates today. Every other prompt reads
     /// text alone, so it ignores the two completion keys. See
     /// `docs/input-actions.md`.
+    ///
+    /// The producer reads the collected workspace files and no directory, so
+    /// the key never waits for the filesystem.
     fn complete_prompt(&mut self, cycle: CompletionCycle) -> Redraw {
-        let Some(prompt) = self.prompt.as_mut() else {
+        let Self {
+            prompt,
+            completion_files,
+            ..
+        } = self;
+        let Some(prompt) = prompt.as_mut() else {
             debug_assert!(
                 false,
                 "the resolver reports a prompt edit only while one is open"
@@ -1801,9 +1869,14 @@ impl Session {
         if prompt.kind != PromptKind::CommandLine {
             return Redraw::Skipped;
         }
-        match prompt.complete(command_line_candidates, cycle) {
-            // A line that names no command is a normal state of a line that
-            // the user still types, so the miss reports nothing.
+        let outcome = prompt.complete(
+            |line| command_line_candidates(line, completion_files),
+            cycle,
+        );
+        match outcome {
+            // A line that names no command, and a path that the collected files
+            // do not hold, are both normal states of a line that the user still
+            // types, so the miss reports nothing.
             CompletionOutcome::Missed => Redraw::Skipped,
             CompletionOutcome::Completed | CompletionOutcome::Listed => Redraw::Needed,
         }
@@ -4029,6 +4102,10 @@ impl Session {
     fn close_prompt(&mut self) {
         self.prompt = None;
         self.picker = None;
+        // The completion belongs to the command line, so its walk and its files
+        // leave the session with it and fill no list of a later line.
+        self.completion_outbox = None;
+        self.completion_files = Vec::new();
         self.sync_context();
     }
 

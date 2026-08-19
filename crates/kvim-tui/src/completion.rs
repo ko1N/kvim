@@ -3,20 +3,22 @@
 //! The module is pure. It reads no clock, no filesystem, and no process, so one
 //! typed text and one candidate list always produce one selection.
 //!
-//! The model holds candidates, never their source. One producer supplies the
-//! command names of the parser today. A later producer supplies the path
-//! candidates of `:e` and reuses this model unchanged, so a new source adds data
-//! and no second mechanism.
+//! The model holds candidates, never their source. Two producers supply them.
+//! The parser supplies the command names of a line without a blank, and the
+//! collected workspace files supply the path argument of `:e`. Both reach this
+//! model as one candidate list, so the second source adds data and no second
+//! mechanism.
 //!
 //! The command names match by prefix, and not by the fuzzy score of the picker.
 //! The command line names the exact sets: `q` offers `quit` and `quit!` alone,
 //! while a subsequence match would add `wq` as well. The path source of `:e`
-//! still ranks with the scorer of the picker, so one fuzzy rule serves the
+//! ranks with the scorer of the picker instead, so one fuzzy rule serves the
 //! picker and the paths.
 //!
 //! See `docs/input-actions.md`.
 
 use kvim_input::CommandLineCommand;
+use kvim_workspace::{Candidate, rank_candidates};
 
 /// The largest number of candidates that one completion holds.
 ///
@@ -170,11 +172,32 @@ impl LineCompletion {
 
 /// Returns the completion candidates of one command line.
 ///
-/// Only a command name completes today, so the producer asks the parser which
-/// full names the line abbreviates. The parser owns that rule, because it also
-/// owns the declared abbreviation of each name, so the two can never disagree.
-pub(super) fn command_line_candidates(line: &str) -> Vec<String> {
-    CommandLineCommand::names_matching(line)
+/// The first blank of the line ends the command name and opens its argument, so
+/// a line without a blank completes a name and a line with one completes a
+/// path. The parser owns both rules, because it owns the declared abbreviation
+/// of each name and the commands that take a path, so the parser and the
+/// completion can never disagree.
+///
+/// A path candidate keeps the command name that the user typed, so the
+/// completed line still runs the command that the user chose.
+///
+/// The `files` hold the workspace files that the bounded walk of the open
+/// command line collected. The list is empty while that walk runs, and after a
+/// cancelled or timed out walk, so the completion then offers no path and the
+/// command line stays usable. Every file comes from a walk of the workspace
+/// root, so no candidate reaches outside that root. See `docs/files.md`.
+pub(super) fn command_line_candidates(line: &str, files: &[Candidate]) -> Vec<String> {
+    let Some(argument) = CommandLineCommand::path_argument(line) else {
+        return CommandLineCommand::names_matching(line);
+    };
+    rank_candidates(argument.typed, files)
+        .into_iter()
+        // The completion drops every candidate above this bound anyway, so the
+        // producer builds no text that no cycle ever reaches.
+        .take(COMPLETION_CANDIDATES_MAX)
+        .filter_map(|index| files.get(index))
+        .map(|candidate| format!("{} {}", argument.name, candidate.relative_path().display()))
+        .collect()
 }
 
 #[cfg(test)]

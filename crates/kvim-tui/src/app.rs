@@ -99,6 +99,13 @@ const GIT_SLOT: RequestSlot = RequestSlot::new(7);
 /// `docs/language-services.md`.
 const FORMAT_SLOT: RequestSlot = RequestSlot::new(8);
 
+/// The publication slot of the workspace walk of the command-line completion.
+///
+/// One open command line asks for one walk, so a newer command line cancels the
+/// walk of the line that it replaces and the gate rejects the obsolete result.
+/// See `docs/files.md`.
+const COMPLETION_SLOT: RequestSlot = RequestSlot::new(9);
+
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -146,6 +153,8 @@ enum WorkResult {
     Workspace(WorkspaceResult),
     /// One picker operation finished.
     Picker(PickerResult),
+    /// The workspace walk of the command-line completion finished.
+    Completion(PickerResult),
     /// One system clipboard command finished.
     Clipboard(ProcessOutput),
     /// One Git status read of the workspace finished.
@@ -517,6 +526,7 @@ fn submit_background_work(
         .or(submit_analysis_work(editor, runtime, gate))
         .or(submit_workspace_work(editor, runtime, gate))
         .or(submit_picker_work(editor, runtime, gate))
+        .or(submit_completion_work(editor, runtime, gate))
         .or(submit_clipboard_work(editor, runtime, gate))
         .or(submit_git_work(editor, runtime, gate))
         .or(submit_format_work(editor, runtime, gate))
@@ -654,6 +664,30 @@ fn submit_picker_work(
     redraw
 }
 
+/// Hands the workspace walk of the command-line completion to the worker.
+///
+/// The walk is the same job that the file picker submits, so one walk serves
+/// both. The command line reads no directory and waits for no result, so a
+/// refused submission leaves it without a path list and reports nothing. See
+/// `docs/files.md`.
+fn submit_completion_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) -> Redraw {
+    let Some(request) = editor.take_completion_request() else {
+        return Redraw::Skipped;
+    };
+    let deadline = request.deadline();
+    let handle = gate.begin(COMPLETION_SLOT, &runtime.cancellation_root());
+    // A refusal leaves the completion in the state that it already holds, so
+    // the editor has nothing to clear and nothing to report.
+    let _refused = runtime.submit_worker(handle, deadline, move |cancellation| {
+        WorkResult::Completion(request.run(&cancellation))
+    });
+    Redraw::Skipped
+}
+
 /// Returns the publication slot of one picker operation.
 const fn publication_slot(slot: PickerSlot) -> RequestSlot {
     match slot {
@@ -778,6 +812,7 @@ fn complete(
     let clipboard = event.request.slot() == CLIPBOARD_SLOT;
     let git = event.request.slot() == GIT_SLOT;
     let format = event.request.slot() == FORMAT_SLOT;
+    let completion = event.request.slot() == COMPLETION_SLOT;
     let picker = if event.request.slot() == PICKER_SLOT {
         Some(PickerSlot::Candidates)
     } else if event.request.slot() == PREVIEW_SLOT {
@@ -801,6 +836,7 @@ fn complete(
         (_, Ok(WorkResult::Analysis(result))) => editor.apply_analysis_result(result),
         (_, Ok(WorkResult::Workspace(result))) => editor.apply_workspace_result(result),
         (_, Ok(WorkResult::Picker(result))) => editor.apply_picker_result(result),
+        (_, Ok(WorkResult::Completion(result))) => editor.apply_completion_result(result),
         (_, Ok(WorkResult::Clipboard(output))) => editor.apply_clipboard_result(Ok(output)),
         (_, Ok(WorkResult::Git(result))) => editor.apply_git_result(result),
         (_, Ok(WorkResult::Format(result))) => editor.apply_format_result(result),
@@ -824,6 +860,10 @@ fn complete(
         (None, Err(error)) if format => {
             editor.apply_format_result(Err(FormatterFailure::of(&error)))
         }
+        // A walk that fails, times out, or is cancelled leaves the command line
+        // without a path list. The user still types the path in full, so the
+        // editor keeps nothing to clear and reports nothing.
+        (None, Err(_)) if completion => Redraw::Skipped,
         (None, Err(error)) if workspace => editor.abandon_workspace_request(failure(&error)),
         (None, Err(error)) => editor.abandon_file_request(failure(&error)),
     })

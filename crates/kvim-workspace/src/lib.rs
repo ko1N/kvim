@@ -77,7 +77,7 @@ pub use mutation::{
 };
 pub use picker::{
     Acceptance, Candidate, CandidateTarget, PICKER_CANDIDATES_MAX, PICKER_MATCH_CHARS_MAX,
-    PICKER_QUERY_CHARS_MAX, Picker, PickerKind, PreviewTarget,
+    PICKER_QUERY_CHARS_MAX, Picker, PickerKind, PreviewTarget, rank_candidates,
 };
 pub use picker_request::{
     PICKER_PREVIEW_DEADLINE, PICKER_WALK_DEADLINE, PREVIEW_BYTES_MAX, PREVIEW_CONTEXT_LINES,
