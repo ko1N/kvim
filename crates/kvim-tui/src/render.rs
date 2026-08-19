@@ -12,7 +12,7 @@ use kvim_input::Mode;
 use super::buffer_view::{BracketHighlight, WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::layout::RegionKind;
-use super::overlay::{render_float, render_notifications, render_which_key};
+use super::overlay::{render_completion, render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::session::Visible;
 use super::theme::ThemeRole;
@@ -167,6 +167,12 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
             theme,
             float,
         );
+    }
+    // The list answers the last key of the user, so it paints over the
+    // notification overlay, which reports background work instead. See
+    // `docs/windows.md`.
+    if let Some(completion) = view.prompt.and_then(|prompt| prompt.completion.as_ref()) {
+        render_completion(target, bands.body, theme, completion);
     }
     if let Some(rows) = view.which_key {
         // The overlay reads the one icon setting of the file tree, so a

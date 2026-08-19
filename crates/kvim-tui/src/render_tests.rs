@@ -1661,3 +1661,160 @@ fn a_failed_clipboard_write_paints_its_report_without_a_key_event() {
         row(&session, 9)
     );
 }
+
+/// The background of the selected row of a popup list in the reference palette.
+const POPUP_SELECTION: Color = Color::Rgb(0x34, 0x3a, 0x55);
+
+/// The background band of a floating surface in the reference palette.
+const SURFACE: Color = Color::Rgb(0x16, 0x1a, 0x20);
+
+/// The candidate names that an empty command line offers, in their list order.
+const COMMAND_CANDIDATES: [&str; 6] = ["edit", "edit!", "quit", "quit!", "wq", "write"];
+
+/// Opens the command line of one session and offers its candidates.
+fn open_completion(session: &mut Session) {
+    press(session, ':');
+    press_code(session, KeyCode::Tab);
+}
+
+/// Returns the row of one rendered session that carries the selection color.
+fn selected_row(session: &Session) -> Option<u16> {
+    let buffer = draw(session);
+    let area = *buffer.area();
+    (area.y..area.bottom()).find(|y| {
+        buffer
+            .cell((area.x, *y))
+            .is_some_and(|cell| cell.style().bg == Some(POPUP_SELECTION))
+    })
+}
+
+#[test]
+fn the_command_line_lists_its_candidates_above_the_chrome() {
+    let mut session = session(80, 24);
+    let before = cursor_position(&session);
+    open_completion(&mut session);
+
+    // The body band ends above the statusline, so the list takes the last body
+    // rows and the two chrome bands below it stay readable.
+    let first = 22 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
+    for (offset, candidate) in COMMAND_CANDIDATES.iter().enumerate() {
+        let y = first + u16::try_from(offset).expect("the list is short");
+        assert_eq!(
+            row(&session, y),
+            format!(" {candidate}"),
+            "row {y} shows `{candidate}`: {}",
+            row(&session, y)
+        );
+    }
+    assert_eq!(
+        row(&session, 22),
+        statusline_without_state(80, "Normal", "1:1"),
+        "the list covers no cell of the statusline"
+    );
+    assert_eq!(
+        row(&session, 23),
+        ":edit",
+        "the list covers no cell of the message line"
+    );
+    // The list is decoration, so it moves no cursor and it leaves the rows
+    // above it unchanged.
+    assert_eq!(cursor_position(&session), before);
+    assert_eq!(row(&session, first - 1), "~");
+
+    // The selected candidate is the text that the command line shows, so the
+    // selection color follows every cycle.
+    assert_eq!(selected_row(&session), Some(first));
+    assert_eq!(style_at(&session, 0, first + 1).bg, Some(SURFACE));
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(selected_row(&session), Some(first + 1));
+    assert_eq!(row(&session, 23), ":edit!");
+    press_code(&mut session, KeyCode::BackTab);
+    assert_eq!(selected_row(&session), Some(first));
+    assert_eq!(row(&session, 23), ":edit");
+}
+
+#[test]
+fn one_candidate_completes_the_command_line_without_a_list() {
+    let mut session = session(80, 24);
+    type_keys(&mut session, ":wq");
+    press_code(&mut session, KeyCode::Tab);
+
+    // `wq` names one command, so the line completes and no row of the body
+    // shows a list.
+    assert_eq!(row(&session, 23), ":wq");
+    assert_eq!(selected_row(&session), None);
+    for y in 2..22u16 {
+        assert_eq!(row(&session, y), "~", "row {y} shows the buffer alone");
+    }
+}
+
+#[test]
+fn the_candidate_list_reports_the_candidates_that_it_hides() {
+    // The body band of this terminal holds five rows, and the completion offers
+    // six candidates, so the list spends its last row on the note.
+    let mut session = session(40, 7);
+    open_completion(&mut session);
+
+    for (offset, candidate) in COMMAND_CANDIDATES.iter().take(4).enumerate() {
+        let y = u16::try_from(offset).expect("the list is short");
+        // The list is a panel of its own width, so the winbar row that it
+        // reaches keeps the scroll position beside it.
+        assert!(
+            row(&session, y).starts_with(&format!(" {candidate}")),
+            "row {y} shows `{candidate}`: {}",
+            row(&session, y)
+        );
+    }
+    assert_eq!(
+        row(&session, 4),
+        " ...",
+        "the last row reports the hidden candidates: {}",
+        row(&session, 4)
+    );
+    assert_eq!(
+        row(&session, 5),
+        statusline_without_state(40, "Normal", "1:1")
+    );
+    assert_eq!(row(&session, 6), ":edit");
+}
+
+#[test]
+fn the_candidate_list_covers_the_notification_overlay() {
+    // The notification overlay reaches the last body rows as well, and this
+    // terminal is narrow enough for both to want the same cells.
+    let mut session = session(40, 24);
+    start_indexing(&mut session, NOW, "index", "Building compile-time-deps");
+    assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
+    open_completion(&mut session);
+
+    // The user cycles the list with a key and reads it now, so the list draws
+    // over the overlay. See `docs/windows.md`.
+    let last = row(&session, 21);
+    assert!(
+        last.starts_with(" write") && last.ends_with("rust-analyzer ⠋"),
+        "the list covers the left cells of the overlay row: {last}"
+    );
+    assert!(row(&session, 20).starts_with(" wq"));
+}
+
+#[test]
+fn a_narrow_terminal_keeps_the_command_line_readable() {
+    let mut session = session(20, 10);
+    open_completion(&mut session);
+
+    // The list bounds its width by the body band, so it reaches no cell outside
+    // the terminal, and the command line below it stays complete.
+    assert_eq!(row(&session, 9), ":edit");
+    assert_eq!(
+        row(&session, 8),
+        statusline_without_state(20, "Normal", "1:1")
+    );
+    let buffer = draw(&session);
+    for y in 2..8u16 {
+        assert!(
+            row_of(&buffer, y).chars().count() <= 20,
+            "row {y} stays inside the terminal"
+        );
+    }
+    assert_eq!(row(&session, 2), " edit");
+}

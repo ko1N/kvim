@@ -1,5 +1,5 @@
-//! The which-key overlay, the language-service float, and the notification
-//! overlay.
+//! The which-key overlay, the language-service float, the notification overlay,
+//! and the candidate list of the command line.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
 //! The which-key overlay lists the keys that may follow the pending key
@@ -17,6 +17,12 @@
 //! It shows the work-done progress of every language server, and nothing else.
 //! It is decoration as well: it moves no cursor, and it paints its text over the
 //! buffer without a background.
+//!
+//! The candidate list takes the last rows of the body band while the completion
+//! of the command line offers more than one candidate. It covers neither the
+//! statusline nor the message line, so the command line that it describes stays
+//! visible. It draws over the notification overlay, because the user cycles it
+//! with a key and reads it now. See `docs/windows.md`.
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect, Size};
@@ -27,6 +33,7 @@ use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
 
 use super::cells::{text_cells, wrap_cells};
+use super::completion::{CompletionOutcome, LineCompletion};
 use super::icons::{ICON_CELLS, Icon};
 use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, FloatRow};
 use super::notify::NotificationRow;
@@ -67,11 +74,36 @@ const OVERLAY_TITLE: &str = " Which Key ";
 /// stays free at the right edge, so the surface color frames the text.
 const FLOAT_PADDING_CELLS: usize = 2;
 
-/// The text that replaces the last row of a float that hides rows.
+/// The text that replaces the last row of an overlay that hides rows.
 ///
-/// The float bounds its height, so a long answer loses rows. The note reports
-/// the loss instead of letting the answer end without a sign.
-const FLOAT_OVERFLOW_NOTE: &str = "...";
+/// The float and the candidate list both bound their height, so a long answer
+/// and a long candidate set lose rows. The note reports the loss instead of
+/// letting the overlay end without a sign.
+const OVERFLOW_NOTE: &str = "...";
+
+/// The largest number of rows that the candidate list shows.
+///
+/// The list covers the buffer text while the user reads the command line, so a
+/// long candidate set never fills the terminal. The list reports the candidates
+/// that it hides. See `docs/windows.md`.
+const COMPLETION_ROWS_MAX: usize = 8;
+
+/// The largest number of cells that the candidate list occupies.
+///
+/// A command name is short, and a path candidate is long, so the bound keeps a
+/// wide list off the buffer text beside it. A narrower body band bounds the
+/// list further.
+const COMPLETION_COLUMNS_MAX: u16 = 48;
+
+/// The number of cells that the candidate list keeps beside its text.
+///
+/// The left cell puts a candidate above the text of the command line, which
+/// follows the `:` prefix. The right cell frames the text with the same surface
+/// color.
+const COMPLETION_PADDING_CELLS: u16 = 1;
+
+/// The number of cells that the padding of both sides occupies.
+const COMPLETION_PADDING_TOTAL: u16 = COMPLETION_PADDING_CELLS.saturating_mul(2);
 
 /// The number of cells that the notification overlay keeps beside its text.
 ///
@@ -564,8 +596,126 @@ fn fit(lines: &mut Vec<FloatRow>, shown: usize) {
         debug_assert!(false, "the truncation keeps at least one row");
         return;
     };
-    last.text = FLOAT_OVERFLOW_NOTE.to_owned();
+    last.text = OVERFLOW_NOTE.to_owned();
     last.severity = None;
+}
+
+/// Renders the candidate list of the command-line completion.
+///
+/// The list takes the last rows of the body band, so the statusline and the
+/// message line below it stay visible and the user still reads the command line
+/// that the list describes. It covers the buffer text, so it blanks its
+/// rectangle first.
+///
+/// A completion that offers one candidate needs no choice, so it paints no
+/// list. See `docs/windows.md`.
+pub(super) fn render_completion(
+    target: &mut CellBuffer,
+    body: Rect,
+    theme: Theme,
+    completion: &LineCompletion,
+) {
+    match completion.outcome() {
+        // One candidate answers the line alone, and no candidate changes it, so
+        // neither outcome needs a choice from the user.
+        CompletionOutcome::Missed | CompletionOutcome::Completed => return,
+        CompletionOutcome::Listed => {}
+    }
+    if body.is_empty() {
+        return;
+    }
+    let candidates = completion.candidates();
+    // The row bound applies before the measurement, so a candidate that the
+    // list never shows cannot widen it.
+    let rows = candidates
+        .len()
+        .min(usize::from(body.height).min(COMPLETION_ROWS_MAX));
+    let hidden = rows < candidates.len();
+    // A clipped list spends its last row on the note, so the note never hides a
+    // candidate without reporting the loss.
+    let shown = if hidden { rows - 1 } else { rows };
+    let first = completion_first_row(candidates.len(), completion.selected_row(), shown);
+    let Some(painted) = candidates.get(first..first + shown) else {
+        debug_assert!(
+            false,
+            "the window start keeps the shown rows inside the list"
+        );
+        return;
+    };
+
+    let text_cells_max = painted
+        .iter()
+        .map(|candidate| text_cells(candidate))
+        .chain(hidden.then(|| text_cells(OVERFLOW_NOTE)))
+        .max()
+        .unwrap_or(0);
+    let width = u16::try_from(text_cells_max)
+        .unwrap_or(u16::MAX)
+        .saturating_add(COMPLETION_PADDING_TOTAL)
+        .clamp(1, body.width.min(COMPLETION_COLUMNS_MAX));
+    let Ok(height) = u16::try_from(rows) else {
+        debug_assert!(false, "the row bound keeps the list height small");
+        return;
+    };
+    let area = Rect::new(body.x, body.bottom() - height, width, height);
+    // A row that is wider than the list clips at this budget. The budget counts
+    // terminal cells, so the clip never splits a wide character.
+    let budget = usize::from(width.saturating_sub(COMPLETION_PADDING_TOTAL));
+    let x = area.x.saturating_add(COMPLETION_PADDING_CELLS);
+    let surface = theme.style(ThemeRole::Surface);
+    let selected = surface.patch(theme.style(ThemeRole::PopupSelection));
+    fill(target, area, " ");
+    target.set_style(area, surface);
+    for (offset, candidate) in painted.iter().enumerate() {
+        let Ok(offset) = u16::try_from(offset) else {
+            debug_assert!(false, "the row bound keeps the index small");
+            break;
+        };
+        let y = area.y.saturating_add(offset);
+        let style = if first + usize::from(offset) == completion.selected_row() {
+            // The selected candidate is the text that the command line shows,
+            // so its row carries the selection color of a popup list.
+            target.set_style(Rect::new(area.x, y, area.width, 1), selected);
+            selected
+        } else {
+            surface
+        };
+        target.set_stringn(x, y, candidate, budget, style);
+    }
+    if !hidden {
+        return;
+    }
+    target.set_stringn(
+        x,
+        area.bottom().saturating_sub(1),
+        OVERFLOW_NOTE,
+        budget,
+        surface,
+    );
+}
+
+/// Returns the first candidate that the bounded list shows.
+///
+/// The function is pure: `candidates` counts the candidates of the completion,
+/// `selected` names the candidate that the command line shows, and `shown`
+/// counts the rows that the list spends on candidates.
+///
+/// The shown candidates always hold the selected one, so a cycle past the last
+/// shown row moves the window instead of hiding the selection. The window stays
+/// at the end of the list once it reaches it, so the last rows never repeat a
+/// candidate.
+fn completion_first_row(candidates: usize, selected: usize, shown: usize) -> usize {
+    debug_assert!(
+        selected < candidates || candidates == 0,
+        "the completion keeps its selection inside its candidate list"
+    );
+    let Some(last_start) = candidates.checked_sub(shown) else {
+        return 0;
+    };
+    let Some(first) = selected.checked_sub(shown.saturating_sub(1)) else {
+        return 0;
+    };
+    first.min(last_start)
 }
 
 /// Returns the theme role of one diagnostic severity.
@@ -594,9 +744,16 @@ fn fill(target: &mut CellBuffer, area: Rect, symbol: &str) {
 
 #[cfg(test)]
 mod tests {
+    use ratatui::buffer::Buffer as CellBuffer;
     use ratatui::layout::{Position, Rect, Size};
 
-    use super::{ColumnLayout, column_layout, float_area};
+    use crate::completion::{CompletionCycle, LineCompletion};
+    use crate::theme::{Theme, ThemeRole};
+
+    use super::{
+        COMPLETION_ROWS_MAX, ColumnLayout, OVERFLOW_NOTE, column_layout, completion_first_row,
+        float_area, render_completion, text_cells,
+    };
 
     /// One editor window that starts at the top left corner.
     const WINDOW: Rect = Rect {
@@ -743,5 +900,159 @@ mod tests {
         assert_eq!(column_layout(0, 20, 100, 10).shown(0), 0);
         assert_eq!(column_layout(5, 20, 100, 0).shown(5), 0, "no row fits");
         assert_eq!(column_layout(5, 20, 0, 10).shown(5), 0, "no cell is free");
+    }
+
+    /// The character bound of a prompt that accepts every test candidate.
+    const CHARS_MAX: usize = 32;
+
+    /// The candidates of a completion that is longer than the row bound.
+    const MANY: [&str; 12] = [
+        "c00", "c01", "c02", "c03", "c04", "c05", "c06", "c07", "c08", "c09", "c10", "c11",
+    ];
+
+    /// Opens one completion over `candidates`, with the first one selected.
+    fn completion(candidates: &[&str]) -> LineCompletion {
+        let candidates = candidates.iter().map(|text| (*text).to_owned()).collect();
+        LineCompletion::open("c", candidates, CHARS_MAX, CompletionCycle::Next)
+            .expect("the test offers at least one candidate")
+    }
+
+    /// Renders one candidate list over the body band `body`.
+    fn draw_completion(body: Rect, completion: &LineCompletion) -> CellBuffer {
+        let mut target = CellBuffer::empty(body);
+        render_completion(&mut target, body, Theme::new(), completion);
+        target
+    }
+
+    /// Returns one rendered row as text, without the trailing blanks.
+    ///
+    /// A wide character owns two cells, and the cell buffer fills the second one
+    /// with a blank, so the scan skips it. The result then reads as the terminal
+    /// shows the row.
+    fn row_of(target: &CellBuffer, y: u16) -> String {
+        let area = *target.area();
+        let mut text = String::new();
+        let mut tail = 0;
+        for x in area.x..area.right() {
+            let Some(cell) = target.cell((x, y)) else {
+                continue;
+            };
+            if tail > 0 {
+                tail -= 1;
+                continue;
+            }
+            tail = text_cells(cell.symbol()).saturating_sub(1);
+            text.push_str(cell.symbol());
+        }
+        text.trim_end().to_owned()
+    }
+
+    /// Returns the row of the list that carries the selection color.
+    fn selected_row_of(target: &CellBuffer) -> Option<u16> {
+        let area = *target.area();
+        let selected = Theme::new().style(ThemeRole::PopupSelection).bg;
+        (area.y..area.bottom()).find(|y| {
+            target
+                .cell((area.x, *y))
+                .is_some_and(|cell| Some(cell.bg) == selected)
+        })
+    }
+
+    #[test]
+    fn the_candidate_list_bounds_its_rows_and_reports_the_hidden_candidates() {
+        let body = Rect::new(0, 0, 20, 20);
+        let target = draw_completion(body, &completion(&MANY));
+
+        // The list ends at the last body row, so the statusline and the message
+        // line below the body stay visible.
+        let first = body.bottom() - u16::try_from(COMPLETION_ROWS_MAX).expect("the bound is small");
+        let rows: Vec<String> = (first..body.bottom()).map(|y| row_of(&target, y)).collect();
+        println!("rows: {rows:?}");
+        assert_eq!(rows.len(), COMPLETION_ROWS_MAX);
+        // The last row reports the candidates that the bound hides, so no
+        // candidate disappears without a note.
+        assert_eq!(rows[COMPLETION_ROWS_MAX - 1], format!(" {OVERFLOW_NOTE}"));
+        for (offset, row) in rows[..COMPLETION_ROWS_MAX - 1].iter().enumerate() {
+            assert_eq!(
+                row,
+                &format!(" {}", MANY[offset]),
+                "row {offset} of the list"
+            );
+        }
+        // The row above the list keeps the text below it, so the list covers the
+        // last rows of the body alone.
+        assert_eq!(row_of(&target, first - 1), "");
+    }
+
+    #[test]
+    fn the_candidate_list_moves_its_rows_with_the_selection() {
+        let body = Rect::new(0, 0, 20, 20);
+        let mut open = completion(&MANY);
+        let first = body.bottom() - u16::try_from(COMPLETION_ROWS_MAX).expect("the bound is small");
+        assert_eq!(selected_row_of(&draw_completion(body, &open)), Some(first));
+
+        // Seven rows hold candidates, and the eighth holds the note, so the
+        // seventh cycle still reaches the last of those rows.
+        for _ in 0..6 {
+            open.cycle(CompletionCycle::Next);
+        }
+        let target = draw_completion(body, &open);
+        println!("filled: {:?}", row_of(&target, first + 6));
+        assert_eq!(selected_row_of(&target), Some(first + 6));
+        assert_eq!(row_of(&target, first), format!(" {}", MANY[0]));
+
+        // The next cycle leaves no row for the selection, so the shown
+        // candidates move instead of hiding it.
+        open.cycle(CompletionCycle::Next);
+        let target = draw_completion(body, &open);
+        println!("moved: {:?}", row_of(&target, first));
+        assert_eq!(selected_row_of(&target), Some(first + 6));
+        assert_eq!(row_of(&target, first), format!(" {}", MANY[1]));
+        assert_eq!(row_of(&target, first + 6), format!(" {}", MANY[7]));
+        assert_eq!(row_of(&target, first + 7), format!(" {OVERFLOW_NOTE}"));
+    }
+
+    #[test]
+    fn the_candidate_list_clips_a_wide_candidate_without_splitting_it() {
+        // The list keeps one cell beside its text, so a body of seven cells
+        // leaves five for the candidate. Two wide characters occupy four of
+        // them, and the third one no longer fits.
+        let body = Rect::new(0, 0, 7, 4);
+        let target = draw_completion(body, &completion(&["\u{6e2c}\u{8a66}\u{4e00}", "ab"]));
+        let row = row_of(&target, body.bottom() - 2);
+        println!("clipped: {row:?}");
+        assert_eq!(row, " \u{6e2c}\u{8a66}");
+        // The last text cell holds a blank, so the clip leaves no half of a wide
+        // character behind.
+        let cell = target
+            .cell((5, body.bottom() - 2))
+            .expect("the cell is inside");
+        assert_eq!(cell.symbol(), " ");
+    }
+
+    #[test]
+    fn one_candidate_opens_no_list() {
+        let body = Rect::new(0, 0, 20, 20);
+        let target = draw_completion(body, &completion(&["only"]));
+        for y in body.y..body.bottom() {
+            assert_eq!(row_of(&target, y), "", "row {y} stays empty");
+        }
+    }
+
+    #[test]
+    fn the_shown_candidates_always_hold_the_selection() {
+        // The window start is the pure rule behind the moving rows above, so it
+        // answers every selection of one bounded list.
+        for shown in 1..=4usize {
+            for selected in 0..12usize {
+                let first = completion_first_row(12, selected, shown);
+                assert!(
+                    first <= selected && selected < first + shown,
+                    "the window [{first}, {}) holds {selected}",
+                    first + shown
+                );
+                assert!(first + shown <= 12, "the window stays inside the list");
+            }
+        }
     }
 }
