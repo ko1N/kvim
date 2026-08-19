@@ -1503,9 +1503,11 @@ impl Session {
 
     /// Opens one question of an action that destroys data.
     ///
-    /// Every question follows a key that the user pressed, and an open question
-    /// owns every key, so no second question can reach this point. A refusal
-    /// therefore names a defect, and it destroys nothing.
+    /// Every question of this entry point follows a key that the user pressed,
+    /// and an open question owns every key, so no second question can reach this
+    /// point. A refusal therefore names a defect, and it destroys nothing. The
+    /// overwrite question follows a worker result instead, so it opens the
+    /// confirmation directly and handles the refusal itself.
     fn ask_confirmation(&mut self, question: String, action: ConfirmedAction) -> Redraw {
         match self.open_confirmation(question, action) {
             ConfirmationRequest::Opened => {}

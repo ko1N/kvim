@@ -688,7 +688,6 @@ fn a_confirmed_overwrite_replaces_the_destination() {
     drain(&mut session);
 
     let content = fs::read_to_string(dir.join("README.md")).expect("the file exists");
-    println!("destination content: {content}");
     assert_eq!(content, "notes\n", "the answer replaced the destination");
     assert!(!notes.exists(), "the rename leaves no source");
 }
@@ -760,7 +759,6 @@ fn a_confirmed_paste_replaces_the_entry_of_the_destination() {
     drain(&mut session);
 
     let content = fs::read_to_string(dir.join("docs/README.md")).expect("the file exists");
-    println!("destination content: {content}");
     assert_eq!(content, "kvim\n");
     assert!(
         dir.join("README.md").is_file(),
@@ -786,7 +784,6 @@ fn an_overwrite_of_a_destination_that_changed_reports_the_refusal() {
     drain(&mut session);
 
     let report = message(&session);
-    println!("report: {report}");
     assert_eq!(
         report,
         format!(
@@ -820,7 +817,6 @@ fn an_overwrite_of_a_buffer_with_unsaved_changes_asks_nothing() {
     drain(&mut session);
 
     let report = message(&session);
-    println!("report: {report}");
     assert_eq!(
         report,
         format!("{} holds unsaved changes", dir.join("README.md").display()),

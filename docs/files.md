@@ -101,8 +101,8 @@ save. The file identity holds two values:
 - the modification time that the platform reports.
 
 One comparison of the recorded identity with the current identity answers both
-directions: the save asks it before it overwrites a file, and the reload asks it
-before it replaces a buffer. The comparison has three typed results:
+directions: the save reads it before it overwrites a file, and the reload reads
+it before it replaces a buffer. The comparison has three typed results:
 
 | Result | Recorded state | Current state |
 |---|---|---|
@@ -177,7 +177,7 @@ See [`language-services.md`](language-services.md).
 
 A background check reports nothing when it finds nothing that the editor cannot
 follow, and a refused or failed background check reports nothing at all, because
-the user never asked for it. The next burst asks again.
+the user never asked for it. The next burst checks again.
 
 `:e` without a path is the manual form of the same operation for the buffer of
 the focused window. It reads the file whatever its identity holds. `:e` asks

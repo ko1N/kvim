@@ -794,7 +794,6 @@ fn a_collision_reports_every_taken_destination() {
     let MutationError::Collision { entries } = &error else {
         panic!("the destinations hold entries: {error}");
     };
-    println!("collision entries: {entries:?}");
     assert_eq!(
         entries.len(),
         2,
@@ -825,11 +824,9 @@ fn an_approved_overwrite_replaces_the_destination() {
     .expect("the directory is writable");
 
     let content = fs::read_to_string(&destination).expect("the destination exists");
-    println!("destination content: {content}");
     assert_eq!(content, "source");
     assert!(!root.join("new.rs").exists(), "the move leaves no source");
     let names = entry_names(&root);
-    println!("root entries: {names:?}");
     assert_eq!(names, vec!["old.rs".to_owned()], "no parked entry remains");
 }
 
@@ -862,7 +859,6 @@ fn an_overwrite_refuses_a_destination_that_the_answer_did_not_name() {
     )
     .expect_err("the answer names another destination");
 
-    println!("refusal: {error}");
     assert!(matches!(error, MutationError::Collision { .. }));
     assert_eq!(
         fs::read_to_string(root.join("old.rs")).expect("the file exists"),
@@ -896,7 +892,6 @@ fn an_overwrite_refuses_a_destination_that_changed_its_kind() {
     )
     .expect_err("the destination holds another kind");
 
-    println!("refusal: {error}");
     assert!(matches!(error, MutationError::DestinationChanged { .. }));
     assert_eq!(
         fs::read_to_string(destination.join("inner.rs")).expect("the directory survived"),
@@ -930,7 +925,6 @@ fn an_overwrite_of_a_destination_that_became_free_takes_the_free_path() {
     .expect("the directory is writable");
 
     let content = fs::read_to_string(&destination).expect("the destination exists");
-    println!("destination content: {content}");
     assert_eq!(content, "source");
 }
 
@@ -967,10 +961,8 @@ fn a_failed_overwrite_leaves_the_destination_unchanged() {
         .apply()
         .expect_err("the second destination is a directory");
 
-    println!("failure: {error}");
     assert!(matches!(error, MutationError::Filesystem { .. }));
     let kept = fs::read_to_string(&destination).expect("the destination returned");
-    println!("destination content: {kept}");
     assert_eq!(kept, "kept", "a failed overwrite keeps the destination");
     assert_eq!(
         fs::read_to_string(root.join("first.rs")).expect("the source returned"),
@@ -981,7 +973,6 @@ fn a_failed_overwrite_leaves_the_destination_unchanged() {
         "second"
     );
     let names = entry_names(&root.join("dest"));
-    println!("destination directory: {names:?}");
     assert_eq!(
         names,
         vec!["first.rs".to_owned(), "second.rs".to_owned()],
@@ -1009,7 +1000,6 @@ fn an_overwrite_refuses_a_destination_with_unsaved_changes() {
     )
     .expect_err("the buffer of the destination holds unsaved changes");
 
-    println!("refusal: {error}");
     assert!(matches!(error, MutationError::DirtyBuffer { .. }));
     assert_eq!(
         fs::read_to_string(&destination).expect("the file exists"),
@@ -1035,7 +1025,6 @@ fn an_overwrite_refuses_a_destination_outside_the_workspace() {
     )
     .expect_err("the destination leaves the workspace");
 
-    println!("refusal: {error}");
     assert!(
         matches!(error, MutationError::Outside { .. }),
         "an approval never reaches outside the workspace"
@@ -1060,7 +1049,6 @@ fn an_entry_that_names_itself_refuses_the_mutation() {
     )
     .expect_err("the source names its own destination");
 
-    println!("refusal: {error}");
     assert!(matches!(error, MutationError::SameEntry { .. }));
     assert_eq!(
         fs::read_to_string(root.join("lib.rs")).expect("the file exists"),
