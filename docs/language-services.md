@@ -46,12 +46,11 @@ renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
 The registry contains one adapter for each of JSON, Markdown, Nix, Rust, and
-TOML. Every match is case-sensitive. Rust is the only language that declares a
-language server. JSON, Markdown, Nix, and TOML supply a grammar, highlight
-roles, comment metadata, and an indent rule, and they declare no server, so each
-one stays a fully editable buffer without diagnostics. A later release adds an
-adapter for another language and for its language server, because the Language
-Server Protocol is language independent.
+TOML. Every match is case-sensitive. Each of the five adapters declares a
+language server: `vscode-json-language-server` for JSON, `marksman` for
+Markdown, `nil` for Nix, `rust-analyzer` for Rust, and `taplo` for TOML. A
+later release adds an adapter for another language and for its language
+server, because the Language Server Protocol is language independent.
 
 TOML and Nix carry `#` as their line comment. JSON and Markdown define no
 comment of their own, so their comment metadata carries no token, and the

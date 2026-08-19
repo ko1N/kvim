@@ -4,9 +4,12 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use serde_json::{Value, json};
 use tree_sitter::Language;
 
-use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter};
+use kvim_settings::LanguageSettings;
+
+use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration};
 
 /// The file extensions that the JSON adapter owns.
 const JSON_EXTENSIONS: [&str; 1] = ["json"];
@@ -27,6 +30,14 @@ const JSON_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
 /// Returns the JSON grammar of the bundled parser.
 fn json_language() -> Language {
     tree_sitter_json::LANGUAGE.into()
+}
+
+/// Returns the initialization options of `vscode-json-language-server`.
+///
+/// The server needs no option from the language-neutral settings, so the
+/// function returns the empty object and reads nothing from `settings`.
+fn vscode_json_language_server_options(_settings: LanguageSettings) -> Value {
+    json!({})
 }
 
 /// The language adapter for JSON documents.
@@ -94,5 +105,14 @@ impl LanguageAdapter for JsonAdapter {
             scopes: &JSON_INDENT_SCOPES,
             closing_delimiters: &JSON_CLOSING_DELIMITERS,
         }
+    }
+
+    fn language_server(&self) -> Option<LanguageServerDeclaration> {
+        Some(LanguageServerDeclaration {
+            program: "vscode-json-language-server",
+            args: &["--stdio"],
+            language_id: "json",
+            initialization_options: vscode_json_language_server_options,
+        })
     }
 }

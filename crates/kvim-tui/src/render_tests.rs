@@ -410,7 +410,7 @@ fn the_statusline_shows_the_format_on_save_state_of_the_focused_buffer() {
 #[test]
 fn the_statusline_reports_no_format_on_save_state_without_a_formatter() {
     let directory = TempDir::new("render-format-state-absent");
-    let data = directory.write("data.json", "{}\n");
+    let data = directory.write("data.txt", "plain text\n");
     let code = directory.write("code.rs", "fn code() {}\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
@@ -422,8 +422,8 @@ fn the_statusline_reports_no_format_on_save_state_without_a_formatter() {
         statusline_without_state(60, "Normal", "1:1")
     );
 
-    // The JSON adapter declares no language server, so nothing formats the
-    // buffer and the statusline promises no format.
+    // No adapter owns the plain-text path, so nothing formats the buffer and
+    // the statusline promises no format.
     open_file(&mut session, data);
     assert_eq!(
         row(&session, 6),
@@ -435,8 +435,8 @@ fn the_statusline_reports_no_format_on_save_state_without_a_formatter() {
     open_file(&mut session, code);
     assert_eq!(row(&session, 6), statusline(60, "Normal", "fmt:on", "1:1"));
 
-    // The state follows the focus, so moving back to the JSON window drops it
-    // again.
+    // The state follows the focus, so moving back to the plain-text window
+    // drops it again.
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
     assert_eq!(
         row(&session, 6),
@@ -447,7 +447,7 @@ fn the_statusline_reports_no_format_on_save_state_without_a_formatter() {
 #[test]
 fn the_format_on_save_toggle_reports_a_buffer_that_no_formatter_serves() {
     let directory = TempDir::new("render-format-toggle-absent");
-    let data = directory.write("data.json", "{}\n");
+    let data = directory.write("data.txt", "plain text\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
     let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
