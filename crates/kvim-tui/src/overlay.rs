@@ -971,7 +971,6 @@ mod tests {
         // line below the body stay visible.
         let first = body.bottom() - u16::try_from(COMPLETION_ROWS_MAX).expect("the bound is small");
         let rows: Vec<String> = (first..body.bottom()).map(|y| row_of(&target, y)).collect();
-        println!("rows: {rows:?}");
         assert_eq!(rows.len(), COMPLETION_ROWS_MAX);
         // The last row reports the candidates that the bound hides, so no
         // candidate disappears without a note.
@@ -1001,7 +1000,6 @@ mod tests {
             open.cycle(CompletionCycle::Next);
         }
         let target = draw_completion(body, &open);
-        println!("filled: {:?}", row_of(&target, first + 6));
         assert_eq!(selected_row_of(&target), Some(first + 6));
         assert_eq!(row_of(&target, first), format!(" {}", MANY[0]));
 
@@ -1009,7 +1007,6 @@ mod tests {
         // candidates move instead of hiding it.
         open.cycle(CompletionCycle::Next);
         let target = draw_completion(body, &open);
-        println!("moved: {:?}", row_of(&target, first));
         assert_eq!(selected_row_of(&target), Some(first + 6));
         assert_eq!(row_of(&target, first), format!(" {}", MANY[1]));
         assert_eq!(row_of(&target, first + 6), format!(" {}", MANY[7]));
@@ -1024,7 +1021,6 @@ mod tests {
         let body = Rect::new(0, 0, 7, 4);
         let target = draw_completion(body, &completion(&["\u{6e2c}\u{8a66}abc", "ab"]));
         let row = row_of(&target, body.bottom() - 2);
-        println!("clipped: {row:?}");
         // The end of the candidate always survives, because the file name at
         // the end of a path names the file that the user looks for.
         assert_eq!(row, " <abc");

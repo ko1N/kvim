@@ -237,10 +237,11 @@ The terminal holds three bands. The window tree receives the body band only.
   question on the same row, over the prompt and over the message, because it
   owns the keys. The question ends the row, so the line draws no cursor behind
   it. See [`input-actions.md`](input-actions.md).
-- The command line can open a candidate list of the completion. The list takes
-  the last rows of the body band, so it covers neither the message line nor the
-  statusline. See
-  [Command-Line Candidate List](#command-line-candidate-list).
+
+The command line can open a candidate list of the completion. The list is an
+overlay, so it takes the last rows of the body band and covers neither the
+message line nor the statusline. See
+[Command-Line Candidate List](#command-line-candidate-list).
 
 One winbar row sits above the text of every window. It shows, from the left, one
 blank, the path of the buffer, and a marker for a modified buffer. It shows the
