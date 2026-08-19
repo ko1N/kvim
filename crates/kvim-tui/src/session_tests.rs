@@ -630,6 +630,11 @@ fn answer_completion_walk(session: &mut Session, files: Vec<Candidate>) {
         matches!(&request, PickerRequest::Files { root } if root == &workspace_root()),
         "the walk starts at the workspace root, so no candidate leaves it"
     );
+    apply_completion_walk(session, files);
+}
+
+/// Hands the collected files of one taken walk back to the session.
+fn apply_completion_walk(session: &mut Session, files: Vec<Candidate>) {
     assert_eq!(
         session.apply_completion_result(PickerResult::Candidates {
             query: String::new(),
@@ -645,8 +650,8 @@ fn answer_completion_walk(session: &mut Session, files: Vec<Candidate>) {
 fn the_command_line_completes_a_path_with_the_ranking_of_the_picker() {
     let mut session = session(60, 12);
     press(&mut session, ':');
-    answer_completion_walk(&mut session, walked_files());
     type_keys(&mut session, "e src/m");
+    answer_completion_walk(&mut session, walked_files());
 
     // The query reaches the directory of a file, so the completion matches the
     // complete path as the picker does. The two names hold the same score and
@@ -700,8 +705,8 @@ fn the_command_line_offers_no_path_before_the_walk_answers() {
 fn a_path_without_a_match_and_an_empty_walk_open_no_list() {
     let mut session = session(60, 12);
     press(&mut session, ':');
-    answer_completion_walk(&mut session, walked_files());
     type_keys(&mut session, "e zz");
+    answer_completion_walk(&mut session, walked_files());
     assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
     assert_eq!(prompt_text(&session), "e zz");
     assert!(!completing(&session));
@@ -710,8 +715,8 @@ fn a_path_without_a_match_and_an_empty_walk_open_no_list() {
 
     // A walk that collected no file leaves the command line in the same state.
     press(&mut session, ':');
-    answer_completion_walk(&mut session, Vec::new());
     type_keys(&mut session, "e src");
+    answer_completion_walk(&mut session, Vec::new());
     assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
     assert_eq!(prompt_text(&session), "e src");
     assert!(!completing(&session));
@@ -722,10 +727,11 @@ fn a_path_without_a_match_and_an_empty_walk_open_no_list() {
 fn only_the_path_argument_of_edit_reads_the_workspace_files() {
     let mut session = session(60, 12);
     press(&mut session, ':');
-    answer_completion_walk(&mut session, walked_files());
 
-    // A line without a blank still names a command, so the name source answers.
+    // A line without a blank still names a command, so the name source answers
+    // and no walk of the workspace starts.
     type_keys(&mut session, "e");
+    assert!(session.take_completion_request().is_none());
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "edit");
     press_code(&mut session, KeyCode::Esc);
@@ -734,8 +740,11 @@ fn only_the_path_argument_of_edit_reads_the_workspace_files() {
     // `:e!` reloads the buffer, and `:w` saves it, so neither takes a path.
     for line in ["e! src", "w src"] {
         press(&mut session, ':');
-        answer_completion_walk(&mut session, walked_files());
         type_keys(&mut session, line);
+        assert!(
+            session.take_completion_request().is_none(),
+            "`:{line}` takes no path, so it asks for no walk"
+        );
         assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
         assert_eq!(prompt_text(&session), line);
         assert!(!completing(&session));
@@ -743,13 +752,85 @@ fn only_the_path_argument_of_edit_reads_the_workspace_files() {
     }
 }
 
+/// Types one command line and counts the walks that it asked for.
+///
+/// The test plays the part of the event loop and takes the request after every
+/// key, exactly as `submit_completion_work` does.
+fn walks_asked(session: &mut Session, line: &str) -> usize {
+    let mut asked = 0;
+    for value in line.chars() {
+        press(session, value);
+        if session.take_completion_request().is_some() {
+            asked += 1;
+        }
+    }
+    asked
+}
+
+#[test]
+fn only_a_line_that_holds_a_path_argument_asks_for_the_workspace_walk() {
+    // Most command lines take no path, so they walk no directory at all.
+    for line in [
+        "w", "q", "wq", "q!", "42", "e", "e!", "w src", "e! src", "wq foo",
+    ] {
+        let mut session = session(60, 12);
+        press(&mut session, ':');
+        assert_eq!(
+            walks_asked(&mut session, line),
+            0,
+            "`:{line}` holds no path argument, so it asks for no walk"
+        );
+    }
+
+    // The line asks once, when it first holds a path argument. Every later
+    // character of that line asks for no second walk.
+    for line in ["e ", "e src/ma", "edit src/main.rs", "e  x"] {
+        let mut session = session(60, 12);
+        press(&mut session, ':');
+        assert_eq!(
+            walks_asked(&mut session, line),
+            1,
+            "`:{line}` holds a path argument, so it asks for exactly one walk"
+        );
+    }
+}
+
+#[test]
+fn one_open_command_line_asks_for_one_walk_and_the_next_line_asks_again() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/ma");
+    assert!(
+        session.take_completion_request().is_some(),
+        "the path argument asks for one walk"
+    );
+    // The event loop already took the request, so the rest of the line asks for
+    // nothing more.
+    type_keys(&mut session, "in");
+    assert!(session.take_completion_request().is_none());
+
+    // The walk that the line asked for still answers it.
+    apply_completion_walk(&mut session, walked_files());
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+
+    // The closed line drops its files, so the next line asks for its own walk.
+    press_code(&mut session, KeyCode::Esc);
+    press_code(&mut session, KeyCode::Esc);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/ma");
+    assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
+    assert!(session.take_completion_request().is_some());
+}
+
 #[test]
 fn a_walk_that_answers_a_closed_command_line_fills_no_list() {
     let mut session = session(60, 12);
     press(&mut session, ':');
+    type_keys(&mut session, "e ");
     assert!(
         session.take_completion_request().is_some(),
-        "the open command line asks for one walk"
+        "the path argument of the open command line asks for one walk"
     );
     press_code(&mut session, KeyCode::Esc);
 
@@ -766,8 +847,8 @@ fn a_walk_that_answers_a_closed_command_line_fills_no_list() {
     // The next command line asks for its own walk and offers no path until it
     // answers.
     press(&mut session, ':');
-    assert!(session.take_completion_request().is_some());
     type_keys(&mut session, "e src/ma");
+    assert!(session.take_completion_request().is_some());
     assert_eq!(press_code(&mut session, KeyCode::Tab), Redraw::Skipped);
     assert_eq!(prompt_text(&session), "e src/ma");
 }
