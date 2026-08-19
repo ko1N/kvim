@@ -102,9 +102,13 @@ mod scss;
 mod server;
 mod services;
 mod session;
+mod sql;
+mod terraform;
 mod toml;
 mod tsx;
 mod typescript;
+mod xml;
+mod yaml;
 mod zig;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -160,9 +164,13 @@ pub use session::{
     LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_SHUTDOWN_DEADLINE, LanguageEvent,
     LanguageOutcome, LanguageRequestId, LanguageServerHandle,
 };
+pub use sql::SqlAdapter;
+pub use terraform::TerraformAdapter;
 pub use toml::TomlAdapter;
 pub use tsx::TsxAdapter;
 pub use typescript::TypescriptAdapter;
+pub use xml::XmlAdapter;
+pub use yaml::YamlAdapter;
 pub use zig::ZigAdapter;
 
 /// The largest source that one analysis reads, in bytes.
@@ -770,6 +778,12 @@ static RUST: RustAdapter = RustAdapter::new();
 /// The SCSS adapter of this build.
 static SCSS: ScssAdapter = ScssAdapter::new();
 
+/// The SQL adapter of this build.
+static SQL: SqlAdapter = SqlAdapter::new();
+
+/// The Terraform adapter of this build.
+static TERRAFORM: TerraformAdapter = TerraformAdapter::new();
+
 /// The TOML adapter of this build.
 static TOML: TomlAdapter = TomlAdapter::new();
 
@@ -778,6 +792,12 @@ static TSX: TsxAdapter = TsxAdapter::new();
 
 /// The TypeScript adapter of this build.
 static TYPESCRIPT: TypescriptAdapter = TypescriptAdapter::new();
+
+/// The XML adapter of this build.
+static XML: XmlAdapter = XmlAdapter::new();
+
+/// The YAML adapter of this build.
+static YAML: YamlAdapter = YamlAdapter::new();
 
 /// The Zig adapter of this build.
 static ZIG: ZigAdapter = ZigAdapter::new();
@@ -791,7 +811,7 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 /// Exactly one adapter owns each extension and each file name. Two owners make
 /// every path of that key an ambiguous failure, which leaves the buffer without
 /// highlighting, without a server, and without a formatter.
-static ADAPTERS: [&dyn LanguageAdapter; 21] = [
+static ADAPTERS: [&dyn LanguageAdapter; 25] = [
     &ASM,
     &BASH,
     &C,
@@ -809,9 +829,13 @@ static ADAPTERS: [&dyn LanguageAdapter; 21] = [
     &PYTHON,
     &RUST,
     &SCSS,
+    &SQL,
+    &TERRAFORM,
     &TOML,
     &TSX,
     &TYPESCRIPT,
+    &XML,
+    &YAML,
     &ZIG,
 ];
 
@@ -820,9 +844,10 @@ impl LanguageRegistry {
     ///
     /// The table holds one adapter for assembly, Bash, C, C++, CSS, fish,
     /// GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust,
-    /// SCSS, TOML, TSX, TypeScript, and Zig. A later release adds a language by
-    /// registering one more adapter in the table that this constructor names,
-    /// or by building a registry with [`LanguageRegistry::new`].
+    /// SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig. A
+    /// later release adds a language by registering one more adapter in the
+    /// table that this constructor names, or by building a registry with
+    /// [`LanguageRegistry::new`].
     #[must_use]
     pub const fn first_release() -> Self {
         Self::new(&ADAPTERS)

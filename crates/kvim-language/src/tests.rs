@@ -1342,6 +1342,181 @@ fn the_tsx_indent_level_follows_the_syntax_tree() {
     assert_eq!(analysis.indent_level(byte(");")).unwrap().get(), 0);
 }
 
+/// One YAML document that carries a comment, nested blocks, and a literal.
+const YAML_SOURCE: &str = "# note\nroot:\n  a: 1\n  b: true\nlist:\n  - one\n  - name: x\n    \
+                           id: 2\n";
+
+/// One XML document that carries a comment, an attribute, and a nested element.
+const XML_SOURCE: &str = "<!-- note -->\n<root attr=\"v\">\n    <child>text</child>\n</root>\n";
+
+/// One Terraform configuration that carries a comment, a block, and an object.
+const TERRAFORM_SOURCE: &str = "# note\nresource \"aws_s3_bucket\" \"b\" {\n    bucket = \
+                                \"name\"\n    tags = {\n        env = \"dev\"\n    }\n}\n";
+
+/// One SQL file that carries a comment, a column list, and a nested query.
+const SQL_SOURCE: &str = "-- note\ncreate table users (\n    id int primary key,\n    name \
+                          varchar(10)\n);\n\nselect id\nfrom users\nwhere id in (\n    select \
+                          id\n    from admins\n);\n";
+
+#[test]
+fn yaml_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("deploy/values.yaml", YAML_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Property));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Number));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Boolean));
+}
+
+#[test]
+fn the_yaml_indent_level_follows_the_block_entries() {
+    let analysis = analyze_path("deploy/values.yaml", YAML_SOURCE);
+    let byte = |needle: &str| {
+        YAML_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // An entry that owns a nested block supplies the level of that block, so
+    // the first line of the block is exact.
+    assert_eq!(analysis.indent_level(byte("\n  a: 1")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(byte("\n  b: true")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("\n  - name: x")).unwrap().get(),
+        1
+    );
+    assert_eq!(analysis.indent_level(byte("\n    id: 2")).unwrap().get(), 2);
+}
+
+#[test]
+fn xml_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("build/pom.xml", XML_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    // A tag names the kind of an element, so it carries the type role that
+    // every markup grammar of the registry shares.
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Property));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::String));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Type));
+}
+
+#[test]
+fn the_xml_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("build/pom.xml", XML_SOURCE);
+    let byte = |needle: &str| {
+        XML_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // An element spans its start tag, its content, and its end tag, so a new
+    // line inside it gains one level.
+    assert_eq!(
+        analysis.indent_level(byte("\n    <child>")).unwrap().get(),
+        1
+    );
+    // An end tag opens with the same character as a start tag, so the row below
+    // reports one level too many. That is the documented limit of the XML
+    // indent rule.
+    assert_eq!(analysis.indent_level(byte("\n</root>")).unwrap().get(), 1);
+}
+
+#[test]
+fn terraform_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("infra/main.tf", TERRAFORM_SOURCE);
+
+    // The grammar crate ships no query, so every row below also proves that the
+    // vendored query compiled against this grammar and matched its nodes.
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::String));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Property));
+    assert!(roles(&analysis, 4).contains(&SyntaxRole::Property));
+}
+
+#[test]
+fn the_terraform_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("infra/main.tf", TERRAFORM_SOURCE);
+    let byte = |needle: &str| {
+        TERRAFORM_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        TERRAFORM_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every scope of Terraform carries its own opening and closing character,
+    // so every row below is exact.
+    assert_eq!(
+        analysis.indent_level(byte("\n    bucket")).unwrap().get(),
+        1
+    );
+    assert_eq!(
+        analysis.indent_level(byte("\n        env")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}")).unwrap().get(), 0);
+}
+
+#[test]
+fn sql_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("migrations/001_users.sql", SQL_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::String));
+    // A selected column is a field of its relation, so it takes the property
+    // role of the shared vocabulary.
+    assert!(roles(&analysis, 6).contains(&SyntaxRole::Property));
+}
+
+#[test]
+fn the_sql_indent_level_follows_the_parenthesized_scopes() {
+    let analysis = analyze_path("migrations/001_users.sql", SQL_SOURCE);
+    let byte = |needle: &str| {
+        SQL_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        SQL_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every scope of SQL carries its own opening and closing character, so
+    // every row below is exact.
+    assert_eq!(
+        analysis.indent_level(byte("\n    id int")).unwrap().get(),
+        1
+    );
+    assert_eq!(analysis.indent_level(byte("\n    name")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("\n    select")).unwrap().get(),
+        1
+    );
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n    from admins"))
+            .unwrap()
+            .get(),
+        1
+    );
+    assert_eq!(analysis.indent_level(last(")")).unwrap().get(), 0);
+    // A select list carries no delimiter, so it takes no level of its own and
+    // the user indents its continuation.
+    assert_eq!(
+        analysis.indent_level(byte("\nfrom users")).unwrap().get(),
+        0
+    );
+}
+
 #[test]
 fn a_language_without_a_comment_keeps_the_toggle_disabled() {
     let registry = LanguageRegistry::first_release();

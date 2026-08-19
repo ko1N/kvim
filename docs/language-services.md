@@ -48,18 +48,20 @@ and one more entry in the registry table, and no change anywhere else.
 
 The registry contains one adapter for each of assembly, Bash, C, C++, CSS,
 fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust, SCSS,
-TOML, TSX, TypeScript, and Zig. Every match is case-sensitive. Eighteen of the
-twenty-one adapters declare one language server: `asm-lsp` for assembly,
-`bash-language-server` for Bash, `clangd` for C and for C++,
-`vscode-css-language-server` for CSS and for SCSS, `fish-lsp` for fish,
-`glsl_analyzer` for GLSL, `gopls` for Go, `vscode-html-language-server` for
-HTML, `vscode-json-language-server` for JSON, `lua-language-server` for Lua,
+SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig. Every match is
+case-sensitive. Twenty-two of the twenty-five adapters declare one language
+server: `asm-lsp` for assembly, `bash-language-server` for Bash, `clangd` for C
+and for C++, `vscode-css-language-server` for CSS and for SCSS, `fish-lsp` for
+fish, `glsl_analyzer` for GLSL, `gopls` for Go, `vscode-html-language-server`
+for HTML, `vscode-json-language-server` for JSON, `lua-language-server` for Lua,
 `marksman` for Markdown, `nil` for Nix, `pyright-langserver` for Python,
-`rust-analyzer` for Rust, `taplo` for TOML, and `zls` for Zig. JavaScript,
-TypeScript, and TSX each declare two: `vscode-eslint-language-server` for the
-lint problems, and `typescript-language-server` for the type problems. A later
-release adds an adapter for another language and for its language server,
-because the Language Server Protocol is language independent.
+`rust-analyzer` for Rust, `sqls` for SQL, `tofu-ls` for Terraform, `taplo` for
+TOML, `lemminx` for XML, `yaml-language-server` for YAML, and `zls` for Zig.
+JavaScript, TypeScript, and TSX each declare two:
+`vscode-eslint-language-server` for the lint problems, and
+`typescript-language-server` for the type problems. A later release adds an
+adapter for another language and for its language server, because the Language
+Server Protocol is language independent.
 
 Exactly one adapter owns each extension and each file name. Two owners make
 every path of that key an ambiguous failure, which leaves the buffer without
@@ -86,6 +88,16 @@ Bash also owns the file names `.bash_logout`, `.bash_profile`, `.bashrc`, and
 and each one carries no extension, so the file-name key is the only key that
 selects it.
 
+The data and configuration languages split their keys the same way. YAML owns
+`yaml` and `yml`, and it also owns the file names `.clang-format` and
+`.clang-tidy`, because each one holds YAML and carries no extension. XML owns
+`svg`, `xml`, `xsd`, `xsl`, and `xslt`, which are the extensions that `lemminx`
+serves, and each one carries an XML document. The XML grammar crate ships a
+second grammar for a standalone document type definition, and Kvim compiles the
+document grammar alone, because no registered extension names such a file. SQL
+owns `sql`. Terraform owns `tf` and `tfvars`, and it leaves `hcl` unclaimed,
+because a plain HCL file carries another tool that `tofu-ls` does not serve.
+
 One adapter declares a table of servers, not one server. A language whose tools
 split the work therefore runs every declared server together. The order of the
 table is the declaration order, and the merge rules below read that order, so
@@ -96,10 +108,13 @@ declares the linter first and the type checker second, so the lint message of
 `typescript-language-server`. The linter names the rule that produced the
 report, and the type checker does not.
 
-Sixteen of the twenty-one adapters also declare an external formatter: `black`
+Twenty of the twenty-five adapters also declare an external formatter: `black`
 for Python, `clang-format` for C and for C++, `goimports` for Go, `lua-format`
 for Lua, `nixfmt` for Nix, `prettier` for CSS, HTML, JavaScript, JSON,
-Markdown, SCSS, TSX, and TypeScript, `shfmt` for Bash, and `taplo` for TOML.
+Markdown, SCSS, TSX, and TypeScript, `shfmt` for Bash, `sql-formatter` for SQL,
+`taplo` for TOML, `tofu fmt` for Terraform, `xmlformat` for XML, and `yamlfmt`
+for YAML. The reference table names the `xmlformatter` package for XML, and the
+command of that package is `xmlformat`, so the declaration names the command.
 `prettier` selects its parser from the document path, so the declaration of
 each of those eight languages names that path. fish, GLSL, Rust, and Zig
 declare none, so `fish-lsp`, `glsl_analyzer`, `rust-analyzer`, and `zls` format
@@ -109,19 +124,21 @@ state. `pyright-langserver` supplies no document formatting either, so `black`
 is the only formatter of a Python buffer. The formatting section below owns the
 precedence between the two paths.
 
-TOML, Nix, assembly, Bash, fish, and Python carry `#` as their line comment,
-the C family, Go, GLSL, JavaScript, Rust, SCSS, TSX, TypeScript, and Zig carry
-`//`, and Lua carries `--`. The assembly grammar reads `#`, `//`, and `;`,
-because it serves several assembler dialects. The adapter writes `#`, because
-the GNU assembler reads the file on macOS and on Linux. Lua opens a long
-comment with `--[[` and closes it with `]]`. Zig, Bash, fish, and Python define
-no block comment, so the metadata of each one carries the line token alone. A
-triple-quoted Python text is a string expression, not a comment, so it stays
-out of that metadata. CSS and HTML define a block comment alone, and JSON and
-Markdown define no comment of their own, so the comment metadata of those four
-languages carries no line token. The first-release toggle reads the line token,
-so it stays disabled for all four and reports the reason. That is the same path
-that a file without an adapter takes.
+TOML, Nix, assembly, Bash, fish, Python, Terraform, and YAML carry `#` as their
+line comment, the C family, Go, GLSL, JavaScript, Rust, SCSS, TSX, TypeScript,
+and Zig carry `//`, and Lua and SQL carry `--`. Terraform reads `#` and `//` as
+a line comment, and `tofu fmt` writes `#`, so the adapter names that token. The
+assembly grammar reads `#`, `//`, and `;`, because it serves several assembler
+dialects. The adapter writes `#`, because the GNU assembler reads the file on
+macOS and on Linux. Lua opens a long comment with `--[[` and closes it with
+`]]`. Zig, Bash, fish, and Python define no block comment, so the metadata of
+each one carries the line token alone. A triple-quoted Python text is a string
+expression, not a comment, so it stays out of that metadata. CSS, HTML, and XML
+define a block comment alone, and JSON and Markdown define no comment of their
+own, so the comment metadata of those five languages carries no line token. The
+first-release toggle reads the line token, so it stays disabled for all five and
+reports the reason. That is the same path that a file without an adapter
+takes.
 
 A file that no adapter serves stays a normal, fully editable buffer. It renders
 plain text, it uses the fallback indent rule of
@@ -143,6 +160,14 @@ query inheritance, so such an adapter joins the texts once and keeps the base
 text first. C++ joins the C patterns, SCSS joins the CSS patterns, and
 TypeScript and TSX join the JavaScript patterns. JavaScript joins the JSX
 patterns of its own crate, because one grammar reads both dialects.
+
+The HCL grammar crate ships no query at all, so Terraform would highlight
+nothing. Kvim therefore keeps one vendored query file beside the adapter
+sources, at `crates/kvim-language/queries/hcl/highlights.scm`. The file carries
+the origin, the upstream project, and the Apache 2.0 license of its text in its
+own header, and the Terraform module document repeats them. The adapter
+includes the file at compile time, so the single binary still needs no parser
+file and no query file on the host.
 
 Each analysis request carries the buffer version that produced its input. The
 publication gate rejects a result whose buffer version is obsolete. An obsolete
@@ -200,13 +225,28 @@ A bracketed Python expression carries its own opening and closing character, so
 a list, a call, and a parameter list each behave exactly as the equivalent node
 of a brace language.
 
-HTML and TSX close a markup element with a tag, not with a character. An
+HTML, XML, and TSX close a markup element with a tag, not with a character. An
 `element` node and a `jsx_element` node each span the opening tag, the content,
 and the closing tag, so each one supplies the level of its own content. A
 closing tag opens with the same `<` character as an opening tag, so no closing
 delimiter separates the two, and the adapter names none. A line that holds a
 closing tag therefore reports one indent level too many, and the user corrects
 that line.
+
+YAML closes a block collection with indentation alone, exactly as Python closes
+a suite. The YAML adapter therefore names the entry that owns each nested
+collection, `block_mapping_pair` and `block_sequence_item`, and one entry
+supplies the level of its own block. The same two limits follow, and the user
+corrects each affected line: the last line of a block reports one level too
+few, and an entry whose value spans several lines reports one level too many. A
+`flow_mapping` node and a `flow_sequence` node carry their own brackets, so
+both behave exactly as the equivalent node of a brace language.
+
+SQL names its parenthesized constructs alone: the column list of a table, a
+call with its arguments, a value list, a parenthesized predicate, and a nested
+query. Each one carries its own opening and closing character, so each one is
+exact. A select list carries no delimiter of its own, so it takes no level, and
+the user indents a continuation of that list.
 
 ## Analysis Limits
 
@@ -254,8 +294,14 @@ way too: a conditional and a repeat take the keyword role, a field takes the
 property role, a method takes the function role, and a parameter takes the
 parameter role. The `tag` word of the markup grammars is mapped that way as
 well: a tag names the kind of an element, exactly as a type name names the kind
-of a value, so it takes the type role. An HTML tag name, a CSS tag selector,
-and a JSX element name therefore share one role.
+of a value, so it takes the type role. An HTML tag name, a CSS tag selector, an
+XML tag name, and a JSX element name therefore share one role. The `markup`
+family is the newer name of the same `text` family, so each of its names takes
+the role of the older word that carries the same meaning: a heading takes the
+type role, and a link and a raw text take the string role. The remaining older
+words follow the same rule: a floating-point literal takes the number role, a
+storage class takes the keyword role, and a member of a value takes the
+property role.
 
 A query may also mark one node with a name that carries no role at all, for
 example the spell-check marker of another editor. The highlighter reads the last
@@ -339,6 +385,9 @@ initialization options in the `initialize` request, it sends no
 `workspace/didChangeConfiguration` notification, and it rejects the
 `workspace/configuration` request of a server. A server whose behavior depends
 on a pushed or pulled configuration therefore runs with its own defaults.
+`sqls` is such a server today. It reports a problem only after a database
+connection reaches it through a configuration, so an SQL buffer stays fully
+editable and shows no diagnostic in this release.
 
 The Rust adapter declares `rust-analyzer` and maps the language-neutral check
 depth of `EditorSettings` onto the `check.command` option of that server. The
@@ -384,8 +433,9 @@ of the `initialize` result.
 
 Most installed servers name no encoding. `clangd`, `rust-analyzer`, and `zls`
 confirm UTF-8. `gopls`, `nil`, `taplo`, `marksman`, and the servers of JSON,
-Python, TypeScript, Bash, fish, YAML, and Lua all omit the field. A gate that
-demands UTF-8 therefore refuses almost every declared server.
+Python, TypeScript, Bash, fish, Lua, SQL, Terraform, XML, and YAML all omit the
+field. A gate that demands UTF-8 therefore refuses almost every declared
+server.
 
 A UTF-16 column indexes the line that its position names, so the conversion
 needs the exact text of that line. A UTF-16 session mirrors the text of every
@@ -452,9 +502,10 @@ today, and it names the twelve file names that can hold an eslint
 configuration. Every other declaration of the registry names none. `clangd`,
 `glsl_analyzer`, `gopls`, `zls`, and `asm-lsp` each serve a single file as well
 as a complete project. `typescript-language-server`,
-`vscode-html-language-server`, and `vscode-css-language-server` do the same. The
-lookup also reads the workspace root alone. A marker would therefore stop such a
-server in an ordinary subdirectory layout.
+`vscode-html-language-server`, `vscode-css-language-server`, `lemminx`, `sqls`,
+`tofu-ls`, and `yaml-language-server` do the same. The lookup also reads the
+workspace root alone. A marker would therefore stop such a server in an
+ordinary subdirectory layout.
 
 The language services read the workspace root once, when the editor creates
 them and before the terminal event loop runs. The probe asks the filesystem for
