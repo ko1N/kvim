@@ -91,13 +91,13 @@ async fn initializes_and_shuts_down_in_protocol_order() {
 }
 
 #[tokio::test]
-async fn rejects_a_server_that_refuses_the_position_encoding() {
+async fn rejects_a_server_that_confirms_an_unknown_position_encoding() {
     let (mut harness, mut server) = connected();
     let initialize = server.expect("initialize").await;
     server
         .respond(
             &initialize["id"],
-            json!({ "capabilities": { "positionEncoding": "utf-16" } }),
+            json!({ "capabilities": { "positionEncoding": "utf-32" } }),
         )
         .await;
 
@@ -108,6 +108,220 @@ async fn rejects_a_server_that_refuses_the_position_encoding() {
             ..
         }
     ));
+}
+
+/// The test document of every position-encoding test.
+///
+/// The first line holds one character above the Basic Multilingual Plane, so
+/// its byte columns and its UTF-16 columns differ after that character.
+const WIDE_DOCUMENT: &str = "let a = \"\u{1f600}\";\nlet b = 1;\n";
+
+/// The byte column of the closing quotation mark of [`WIDE_DOCUMENT`].
+const QUOTE_BYTE_COLUMN: u32 = 13;
+
+/// The UTF-16 column of that same quotation mark.
+const QUOTE_UTF16_COLUMN: u32 = 11;
+
+/// The byte column and the UTF-16 column of the character before it agree.
+const EMOJI_COLUMN: u32 = 9;
+
+/// Starts one session whose server names no position encoding.
+///
+/// The protocol defines UTF-16 for that answer, so the session converts every
+/// column. See `docs/language-services.md`.
+async fn utf16_session() -> (Harness, MockServer) {
+    let (harness, mut server) = connected();
+    server.handshake_with(None).await;
+    (harness, server)
+}
+
+#[tokio::test]
+async fn a_utf16_session_converts_a_received_diagnostic_range() {
+    let (mut harness, mut server) = utf16_session().await;
+    let text = opened(&harness, &mut server, WIDE_DOCUMENT).await;
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": DOCUMENT_URI,
+                "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": EMOJI_COLUMN },
+                               "end": { "line": 0, "character": QUOTE_UTF16_COLUMN } },
+                    "message": "wide",
+                }],
+            }
+        }))
+        .await;
+
+    let LanguageOutcome::Diagnostics(set) = harness.next().await else {
+        panic!("the session publishes the diagnostics");
+    };
+    assert!(set.is_current(text.version()));
+    assert_eq!(
+        set.diagnostics()[0].span,
+        SourceSpan::new(
+            DocumentPosition::new(0, EMOJI_COLUMN),
+            DocumentPosition::new(0, QUOTE_BYTE_COLUMN),
+        ),
+        "the range marks the wide character in byte columns"
+    );
+}
+
+#[tokio::test]
+async fn a_utf16_session_rejects_a_range_that_splits_a_character() {
+    let (mut harness, mut server) = utf16_session().await;
+    let _text = opened(&harness, &mut server, WIDE_DOCUMENT).await;
+
+    server
+        .send(&json!({
+            "jsonrpc": "2.0",
+            "method": "textDocument/publishDiagnostics",
+            "params": {
+                "uri": DOCUMENT_URI,
+                "diagnostics": [{
+                    "range": { "start": { "line": 0, "character": EMOJI_COLUMN + 1 },
+                               "end": { "line": 0, "character": QUOTE_UTF16_COLUMN } },
+                    "message": "inside the surrogate pair",
+                }],
+            }
+        }))
+        .await;
+
+    // Kvim publishes no partial result, so one rejected position rejects the
+    // complete set.
+    assert!(matches!(
+        harness.next().await,
+        LanguageOutcome::Failed {
+            error: LspError::InvalidPosition,
+            ..
+        }
+    ));
+}
+
+#[tokio::test]
+async fn a_utf16_session_sends_a_converted_position_and_change_range() {
+    let (mut harness, mut server) = utf16_session().await;
+    let mut text = opened(&harness, &mut server, WIDE_DOCUMENT).await;
+
+    harness
+        .handle()
+        .hover(
+            Path::new(DOCUMENT),
+            text.version(),
+            DocumentPosition::new(0, QUOTE_BYTE_COLUMN),
+        )
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/hover").await;
+    assert_eq!(
+        sent["params"]["position"],
+        json!({ "line": 0, "character": QUOTE_UTF16_COLUMN })
+    );
+    server.respond(&sent["id"], Value::Null).await;
+    assert!(matches!(
+        harness.next().await,
+        LanguageOutcome::Hover { .. }
+    ));
+
+    // The insertion sits behind the wide character, so its column differs
+    // between the two encodings.
+    let cursor = text.char_position(10).expect("the position exists");
+    let transaction = EditTransaction::single(cursor, TextChange::insert(cursor, "x"));
+    let before = text.clone();
+    let changes =
+        ContentChange::from_transaction(&before, &transaction).expect("one change stays in bounds");
+    assert_eq!(changes[0].span.start.byte_column, QUOTE_BYTE_COLUMN);
+    let version = text
+        .apply(transaction)
+        .expect("the position fits the buffer");
+    harness
+        .handle()
+        .change(Path::new(DOCUMENT), version, changes)
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/didChange").await;
+    assert_eq!(
+        sent["params"]["contentChanges"][0]["range"],
+        json!({
+            "start": { "line": 0, "character": QUOTE_UTF16_COLUMN },
+            "end": { "line": 0, "character": QUOTE_UTF16_COLUMN },
+        })
+    );
+
+    // The mirror now holds the changed text, so the next conversion reads the
+    // line that the server holds.
+    harness
+        .handle()
+        .hover(
+            Path::new(DOCUMENT),
+            version,
+            DocumentPosition::new(0, QUOTE_BYTE_COLUMN + 1),
+        )
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/hover").await;
+    assert_eq!(
+        sent["params"]["position"],
+        json!({ "line": 0, "character": QUOTE_UTF16_COLUMN + 1 })
+    );
+    server.respond(&sent["id"], Value::Null).await;
+    assert!(matches!(
+        harness.next().await,
+        LanguageOutcome::Hover { .. }
+    ));
+}
+
+#[tokio::test]
+async fn a_utf16_session_converts_a_definition_and_a_formatting_range() {
+    let (mut harness, mut server) = utf16_session().await;
+    let text = opened(&harness, &mut server, WIDE_DOCUMENT).await;
+    let expected = SourceSpan::new(
+        DocumentPosition::new(0, EMOJI_COLUMN),
+        DocumentPosition::new(0, QUOTE_BYTE_COLUMN),
+    );
+
+    harness
+        .handle()
+        .definition(
+            Path::new(DOCUMENT),
+            text.version(),
+            DocumentPosition::new(0, 0),
+        )
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/definition").await;
+    server
+        .respond(
+            &sent["id"],
+            json!([{
+                "uri": DOCUMENT_URI,
+                "range": { "start": { "line": 0, "character": EMOJI_COLUMN },
+                           "end": { "line": 0, "character": QUOTE_UTF16_COLUMN } },
+            }]),
+        )
+        .await;
+    let LanguageOutcome::Definition { locations, .. } = harness.next().await else {
+        panic!("the session answers the definition");
+    };
+    assert_eq!(locations[0].span, expected);
+
+    harness
+        .handle()
+        .format(Path::new(DOCUMENT), text.version())
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/formatting").await;
+    server
+        .respond(
+            &sent["id"],
+            json!([{
+                "range": { "start": { "line": 0, "character": EMOJI_COLUMN },
+                           "end": { "line": 0, "character": QUOTE_UTF16_COLUMN } },
+                "newText": "!",
+            }]),
+        )
+        .await;
+    let LanguageOutcome::Formatting { edits, .. } = harness.next().await else {
+        panic!("the session answers the formatting");
+    };
+    assert_eq!(edits.edits()[0].span, expected);
 }
 
 #[tokio::test]

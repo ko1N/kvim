@@ -16,7 +16,8 @@ use kvim_core::{
     BufferVersion, CharPosition, CharRange, EditTransaction, LineIndex, TextBuffer, TextChange,
 };
 
-use super::protocol::{DocumentPosition, LspBound, LspError, SourceSpan, enforce};
+use super::encoding::DocumentMapping;
+use super::protocol::{DocumentPosition, LspBound, LspError, ProtocolSpan, SourceSpan, enforce};
 
 /// The severity that a language server reports for one diagnostic.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -70,7 +71,7 @@ pub struct Diagnostic {
 /// The wire shape of one diagnostic.
 #[derive(Debug, Deserialize)]
 pub(super) struct RawDiagnostic {
-    range: SourceSpan,
+    range: ProtocolSpan,
     #[serde(default)]
     severity: Option<u8>,
     #[serde(default)]
@@ -85,17 +86,29 @@ impl RawDiagnostic {
     /// `server` is the declaration identifier of the session that received the
     /// diagnostic. It names the producer when the server sends no `source`
     /// field, so every merged diagnostic of one buffer names its origin.
-    pub(super) fn into_diagnostic(self, server: &'static str) -> Diagnostic {
+    ///
+    /// `mapping` converts the range into the byte columns of the editor. See
+    /// `docs/language-services.md`.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LspError::InvalidPosition`] for a range that the document text
+    /// does not hold.
+    pub(super) fn into_diagnostic(
+        self,
+        server: &'static str,
+        mapping: &DocumentMapping,
+    ) -> Result<Diagnostic, LspError> {
         let source = self
             .source
             .filter(|source| !source.is_empty())
             .unwrap_or_else(|| server.to_owned());
-        Diagnostic {
-            span: self.range,
+        Ok(Diagnostic {
+            span: mapping.span_to_document(self.range)?,
             severity: DiagnosticSeverity::from_code(self.severity),
             message: self.message,
             source,
-        }
+        })
     }
 }
 
@@ -179,18 +192,25 @@ pub struct TextEdit {
 /// The wire shape of one text edit.
 #[derive(Debug, Deserialize)]
 pub(super) struct RawTextEdit {
-    range: SourceSpan,
+    range: ProtocolSpan,
     #[serde(rename = "newText")]
     new_text: String,
 }
 
 impl RawTextEdit {
     /// Converts one received edit into its editor value.
-    pub(super) fn into_edit(self) -> TextEdit {
-        TextEdit {
-            span: self.range,
+    ///
+    /// `mapping` converts the range into the byte columns of the editor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LspError::InvalidPosition`] for a range that the document text
+    /// does not hold.
+    pub(super) fn into_edit(self, mapping: &DocumentMapping) -> Result<TextEdit, LspError> {
+        Ok(TextEdit {
+            span: mapping.span_to_document(self.range)?,
             text: self.new_text,
-        }
+        })
     }
 }
 

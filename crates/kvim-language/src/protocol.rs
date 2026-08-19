@@ -42,12 +42,6 @@ pub const LSP_MESSAGES_MAX: usize = 4_000_000;
 /// The JSON-RPC error code that reports an unknown method.
 const RPC_METHOD_NOT_FOUND: i64 = -32601;
 
-/// The position encoding that Kvim requires from every server.
-///
-/// The encoding makes one LSP character offset one UTF-8 byte offset inside its
-/// line, which is the coordinate that `core` already validates.
-pub const POSITION_ENCODING: &str = "utf-8";
-
 /// The quantity that one protocol bound measures.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LspBound {
@@ -123,9 +117,17 @@ pub enum LspError {
     /// The message body is not the answer that the protocol requires.
     #[error("the language server response is malformed")]
     MalformedResponse,
-    /// The server did not confirm the required position encoding.
-    #[error("the language server does not support the {POSITION_ENCODING} position encoding")]
+    /// The server confirmed a position encoding that Kvim never offered.
+    #[error("the language server confirmed an unknown position encoding")]
     UnsupportedEncoding,
+    /// One protocol position does not address a character boundary of its line.
+    ///
+    /// A column inside a character would build an edit that splits that
+    /// character, and a line that the document does not hold addresses no text
+    /// at all. Kvim publishes no partial result, so the failure rejects the
+    /// complete answer that carries the position.
+    #[error("the language server position does not address a character boundary")]
+    InvalidPosition,
     /// The server answered with a JSON-RPC error.
     #[error("the language server returned JSON-RPC error {code}")]
     Response {
@@ -202,10 +204,13 @@ pub fn enforce(actual: usize, limit: usize, measure: LspBound) -> Result<(), Lsp
     Ok(())
 }
 
-/// One position inside one document.
+/// One position inside one document, as the editor measures it.
 ///
-/// The column is a UTF-8 byte offset inside its line, because the session
-/// requires the [`POSITION_ENCODING`] position encoding.
+/// The column is a UTF-8 byte offset inside its line, which is the coordinate
+/// that `core` validates. The value carries no protocol column, and it reaches
+/// no wire message: the session converts it into a [`ProtocolPosition`] with
+/// the position encoding that its handshake negotiated. See
+/// `docs/language-services.md`.
 ///
 /// # Examples
 ///
@@ -216,12 +221,11 @@ pub fn enforce(actual: usize, limit: usize, measure: LspBound) -> Result<(), Lsp
 /// assert_eq!(position.line, 3);
 /// assert_eq!(position.byte_column, 8);
 /// ```
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct DocumentPosition {
     /// The zero-based line index.
     pub line: u32,
     /// The zero-based UTF-8 byte offset inside the line.
-    #[serde(rename = "character")]
     pub byte_column: u32,
 }
 
@@ -233,8 +237,46 @@ impl DocumentPosition {
     }
 }
 
-/// One ascending range inside one document.
+/// One position inside one document, as the protocol measures it.
+///
+/// The `character` field counts UTF-8 bytes or UTF-16 code units. Only the
+/// position encoding that the handshake negotiated decides which unit it holds,
+/// so the value means nothing without its session. The session converts every
+/// value of this type at its own boundary, and no code above the session reads
+/// a protocol column. See `docs/language-services.md`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ProtocolPosition {
+    /// The zero-based line index.
+    pub(crate) line: u32,
+    /// The zero-based column, in the negotiated position encoding.
+    pub(crate) character: u32,
+}
+
+impl ProtocolPosition {
+    /// Creates a position from a line index and a protocol column.
+    pub(crate) const fn new(line: u32, character: u32) -> Self {
+        Self { line, character }
+    }
+}
+
+/// One range inside one document, as the protocol measures it.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub(crate) struct ProtocolSpan {
+    /// The first position of the range.
+    pub(crate) start: ProtocolPosition,
+    /// The position after the range.
+    pub(crate) end: ProtocolPosition,
+}
+
+impl ProtocolSpan {
+    /// Creates a range from two protocol positions.
+    pub(crate) const fn new(start: ProtocolPosition, end: ProtocolPosition) -> Self {
+        Self { start, end }
+    }
+}
+
+/// One ascending range inside one document, as the editor measures it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SourceSpan {
     /// The first position of the range.
     pub start: DocumentPosition,

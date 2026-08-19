@@ -99,17 +99,28 @@ impl MockServer {
     }
 
     /// Runs the handshake that every session starts with.
+    ///
+    /// The mock confirms UTF-8, so its session converts no column.
     pub async fn handshake(&mut self) {
+        self.handshake_with(Some("utf-8")).await;
+    }
+
+    /// Runs the handshake and confirms one position encoding.
+    ///
+    /// `None` sends a result that names no encoding, which the protocol defines
+    /// as UTF-16. The session then converts every column, so a test that drives
+    /// the conversion path names this shape. See `docs/language-services.md`.
+    pub async fn handshake_with(&mut self, encoding: Option<&str>) {
         let initialize = self.expect("initialize").await;
-        assert_eq!(
-            initialize["params"]["capabilities"]["general"]["positionEncodings"][0],
-            "utf-8"
-        );
-        self.respond(
-            &initialize["id"],
-            json!({ "capabilities": { "positionEncoding": "utf-8" } }),
-        )
-        .await;
+        let offered = &initialize["params"]["capabilities"]["general"]["positionEncodings"];
+        assert_eq!(offered[0], "utf-8", "the client prefers UTF-8");
+        assert_eq!(offered[1], "utf-16", "the client also offers UTF-16");
+        let capabilities = match encoding {
+            Some(encoding) => json!({ "positionEncoding": encoding }),
+            None => json!({}),
+        };
+        self.respond(&initialize["id"], json!({ "capabilities": capabilities }))
+            .await;
         self.expect("initialized").await;
     }
 }

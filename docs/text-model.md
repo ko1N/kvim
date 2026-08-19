@@ -51,6 +51,12 @@ types is an explicit operation, never an implicit cast.
 width. The terminal boundary measures width with `unicode-width` and constructs
 the validated value. See [`architecture.md`](architecture.md) for that rule.
 
+A language server measures a column in its own position encoding, which counts
+UTF-8 bytes or UTF-16 code units. That column is a protocol value, not a
+text-model coordinate. The language-server session converts every protocol
+column into a source column at its own boundary, so no protocol column reaches
+`core`. See [`language-services.md`](language-services.md).
+
 ## Edit Transactions
 
 An edit transaction is the only way text changes. A transaction contains the
