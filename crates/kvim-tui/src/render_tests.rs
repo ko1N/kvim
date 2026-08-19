@@ -150,6 +150,17 @@ fn statusline(width: u16, mode: &str, state: &str, position: &str) -> String {
     format!(" {mode} {}{state} {position}", " ".repeat(blanks))
 }
 
+/// Returns the statusline row of a terminal whose focused buffer reports no
+/// format-on-save state, without its trailing blank.
+///
+/// Only a buffer that a formatter can format reports a state, so the mode and
+/// the cursor position are the complete row of every other buffer.
+fn statusline_without_state(width: u16, mode: &str, position: &str) -> String {
+    let used = mode.chars().count() + position.chars().count() + 3;
+    let blanks = usize::from(width) - used;
+    format!(" {mode} {}{position}", " ".repeat(blanks))
+}
+
 /// Creates a session over one terminal size.
 fn session(width: u16, height: u16) -> Session {
     Session::new(
@@ -290,7 +301,12 @@ fn one_window_shows_the_winbar_the_text_and_the_chrome() {
         "~",
         "the rows below the buffer are marked"
     );
-    assert_eq!(row(&session, 6), " Insert          fmt:on 1:6");
+    // The scratch buffer has no file name, so no language adapter and no
+    // formatter serves it, and the statusline reports no format-on-save state.
+    assert_eq!(
+        row(&session, 6),
+        statusline_without_state(28, "Insert", "1:6")
+    );
     assert_eq!(row(&session, 7), "");
 }
 
@@ -392,18 +408,86 @@ fn the_statusline_shows_the_format_on_save_state_of_the_focused_buffer() {
 }
 
 #[test]
+fn the_statusline_reports_no_format_on_save_state_without_a_formatter() {
+    let directory = TempDir::new("render-format-state-absent");
+    let data = directory.write("data.json", "{}\n");
+    let code = directory.write("code.rs", "fn code() {}\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+
+    // The scratch buffer holds no file name, so no adapter serves it.
+    assert_eq!(
+        row(&session, 6),
+        statusline_without_state(60, "Normal", "1:1")
+    );
+
+    // The JSON adapter declares no language server, so nothing formats the
+    // buffer and the statusline promises no format.
+    open_file(&mut session, data);
+    assert_eq!(
+        row(&session, 6),
+        statusline_without_state(60, "Normal", "1:1")
+    );
+
+    // The second window shows a Rust buffer, which one formatter serves.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    open_file(&mut session, code);
+    assert_eq!(row(&session, 6), statusline(60, "Normal", "fmt:on", "1:1"));
+
+    // The state follows the focus, so moving back to the JSON window drops it
+    // again.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(
+        row(&session, 6),
+        statusline_without_state(60, "Normal", "1:1")
+    );
+}
+
+#[test]
+fn the_format_on_save_toggle_reports_a_buffer_that_no_formatter_serves() {
+    let directory = TempDir::new("render-format-toggle-absent");
+    let data = directory.write("data.json", "{}\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+    open_file(&mut session, data);
+
+    // The toggle would change a state that no save can act on, so it reports
+    // the missing formatter and the statusline still shows no state.
+    type_keys(&mut session, " cf");
+    assert_eq!(row(&session, 7), "no formatter serves this buffer");
+    assert_eq!(
+        row(&session, 6),
+        statusline_without_state(60, "Normal", "1:1")
+    );
+}
+
+#[test]
 fn a_narrow_statusline_drops_the_format_on_save_state_before_the_cursor_position() {
+    let directory = TempDir::new("render-narrow-statusline");
+    let path = directory.write("narrow.rs", "fn narrow() {}\n");
+    // Only a buffer that a formatter can format reports a state, so the drop
+    // order needs a Rust buffer.
+    let narrow = |width: u16| {
+        let mut settings = EditorSettings::default();
+        settings.files.undo_file = false;
+        let mut session = Session::new(Rect::new(0, 0, width, 6), settings, directory.path.clone());
+        open_file(&mut session, path.clone());
+        row(&session, 4)
+    };
+
     // The mode label, the state, the cursor position, and one blank between
     // the mode and the state need twenty cells together.
-    assert_eq!(row(&session(20, 6), 4), " Normal  fmt:on 1:1");
+    assert_eq!(narrow(20), " Normal  fmt:on 1:1");
     assert_eq!(
-        row(&session(19, 6), 4),
+        narrow(19),
         " Normal        1:1",
         "the state drops first, because the position moves with every key"
     );
-    assert_eq!(row(&session(12, 6), 4), " Normal 1:1");
+    assert_eq!(narrow(12), " Normal 1:1");
     assert_eq!(
-        row(&session(11, 6), 4),
+        narrow(11),
         " Normal",
         "the mode survives longest, because it decides what the next key does"
     );
@@ -413,9 +497,10 @@ fn a_narrow_statusline_drops_the_format_on_save_state_before_the_cursor_position
 fn the_message_line_marks_only_a_warning_and_a_failure() {
     let mut session = session(60, 6);
 
-    // An ordinary report reads like buffer text.
+    // An ordinary report reads like buffer text. No formatter serves the
+    // scratch buffer, so the toggle reports that instead of a new state.
     type_keys(&mut session, " cf");
-    assert_eq!(row(&session, 5), "format-on-save is off for this buffer");
+    assert_eq!(row(&session, 5), "no formatter serves this buffer");
     assert_eq!(style_at(&session, 0, 5).fg, Some(TEXT));
 
     // The empty scratch buffer holds no match, so the search warns.

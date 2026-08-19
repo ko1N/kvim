@@ -70,7 +70,8 @@ use super::chrome::shell_areas;
 use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
 use super::language::{
     AfterSave, DiagnosticJump, Float, FormatOnSave, LanguageNotice, LanguageQuery, LanguageRequest,
-    LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, jump_target,
+    LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, has_formatter,
+    jump_target,
 };
 use super::layout::RegionKind;
 use super::notify::NotificationBoard;
@@ -469,6 +470,9 @@ pub(super) struct Visible<'a> {
     /// The buffer that the editing state and the active search belong to.
     pub(super) active: BufferId,
     pub(super) analysis: &'a BTreeMap<BufferId, BufferAnalysis>,
+    /// The language adapters of this build, which decide whether a buffer
+    /// reports a format-on-save state.
+    pub(super) languages: LanguageRegistry,
     /// The published diagnostics and the language-service state.
     pub(super) language: &'a LanguageState,
     pub(super) editing: &'a EditingState,
@@ -503,14 +507,20 @@ impl Visible<'_> {
     /// Returns the format-on-save state that the focused window shows.
     ///
     /// The state belongs to one buffer, so a focus change to a window over
-    /// another buffer reports the state of that other buffer.
-    pub(super) fn focused_format_on_save(&self) -> FormatOnSave {
-        let default = FormatOnSave::from_setting(self.settings.files.format_on_save);
+    /// another buffer reports the state of that other buffer. A buffer that no
+    /// formatter can format reports no state, because the state would promise
+    /// an action that no save can perform.
+    pub(super) fn focused_format_on_save(&self) -> Option<FormatOnSave> {
         let Some(buffer) = self.windows.buffer(self.windows.focused_window()) else {
             debug_assert!(false, "the focused window is always a leaf of the tree");
-            return default;
+            return None;
         };
-        self.language.format_on_save(buffer, default)
+        let path = self.buffers.get(buffer).and_then(FileBuffer::path);
+        if !has_formatter(self.languages, path) {
+            return None;
+        }
+        let default = FormatOnSave::from_setting(self.settings.files.format_on_save);
+        Some(self.language.format_on_save(buffer, default))
     }
 }
 
@@ -825,6 +835,7 @@ impl Session {
             buffers: &self.buffers,
             active: self.active,
             analysis: &self.analysis,
+            languages: self.languages,
             language: &self.language,
             editing: &self.editing,
             search: self.search.as_ref(),
@@ -2090,8 +2101,16 @@ impl Session {
     /// Toggles format-on-save for the active buffer and reports the new state.
     ///
     /// The toggle is per buffer, so it changes no other buffer and no default.
+    /// A buffer that no formatter can format keeps its state and reports the
+    /// missing formatter, because a toggle there would change nothing that a
+    /// save can perform.
     fn toggle_format_on_save(&mut self) -> Redraw {
         let buffer = self.active;
+        let path = self.buffers.get(buffer).and_then(FileBuffer::path);
+        if !has_formatter(self.languages, path) {
+            self.set_message(NO_FORMATTER_NOTE, MessageLevel::Info);
+            return Redraw::Needed;
+        }
         let next = self.format_on_save(buffer).toggled();
         self.language.set_format_on_save(buffer, next);
         self.set_message(next.message(), MessageLevel::Info);
@@ -3527,6 +3546,10 @@ const UNSAVED_RELOAD_NOTE: &str =
 
 /// The message that a save without a file name shows.
 const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to name one";
+
+/// The message that the format-on-save toggle of a buffer without a formatter
+/// shows.
+const NO_FORMATTER_NOTE: &str = "no formatter serves this buffer";
 
 /// The message that a comment toggle without a line-comment token shows.
 const NO_COMMENT_TOKEN_NOTE: &str =

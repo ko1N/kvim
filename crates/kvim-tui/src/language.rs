@@ -20,7 +20,7 @@ use std::sync::Arc;
 use kvim_core::BufferVersion;
 use kvim_language::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition,
-    LanguageRequestId, LanguageServerHandle, LspError,
+    LanguageRegistry, LanguageRequestId, LanguageServerHandle, LspError,
 };
 use kvim_workspace::BufferId;
 
@@ -285,6 +285,24 @@ impl LanguageNotice {
             Self::Stopped => "the language server stopped; editing continues without it",
         }
     }
+}
+
+/// Reports whether a formatter can format one document.
+///
+/// Formatting reaches the document-formatting request of a language server, so
+/// a buffer without a file name, a path that no adapter owns, and an adapter
+/// that declares no server all have no formatter. The answer is adapter data
+/// alone, and every caller derives it again instead of storing it, because a
+/// stored copy could disagree with the adapter table.
+///
+/// Whether a declared server is installed, running, or stopped is a separate
+/// runtime state that [`LanguageNotice`] reports.
+pub(super) fn has_formatter(languages: LanguageRegistry, path: Option<&Path>) -> bool {
+    path.is_some_and(|path| {
+        languages
+            .adapter(path)
+            .is_ok_and(|adapter| adapter.language_server().is_some())
+    })
 }
 
 /// Whether one buffer formats through its language server before a save.

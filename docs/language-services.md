@@ -369,5 +369,19 @@ current state on the message line after each toggle. The statusline also shows
 the state of the focused buffer, so a window focus change reports the state of
 the buffer that the new window shows. See [`windows.md`](windows.md).
 
+Formatting reaches the document-formatting request of a language server, so a
+buffer formats only while its language adapter declares one. A buffer without a
+file name, a path that no adapter owns, and an adapter without a declaration
+therefore have no formatter. Kvim shows no format-on-save state for such a
+buffer, and the toggle reports the missing formatter instead of changing a
+state that no save can act on. The per-buffer state itself stays unchanged, so a
+buffer keeps the state that the user chose if a later release declares a server
+for its language.
+
+The rule reads adapter data alone. An installed, missing, or stopped server is a
+runtime state that the reports of the section above own, so a buffer whose
+adapter declares a server keeps its format-on-save state while that server is
+absent.
+
 A format-on-save failure or timeout does not cancel the save. Kvim saves the
 unformatted buffer content and reports the typed formatting state.
