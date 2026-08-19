@@ -181,13 +181,18 @@ impl CommandLineCommand {
     /// It offers a name that [`CommandLineCommand::parse`] accepts only, so a
     /// command without a `!` variant never reaches the list with one.
     ///
+    /// The function offers a `!` variant only while the text already holds the
+    /// `!`. A `!` variant discards unsaved changes and asks nothing, so no cycle
+    /// of a text without a `!` writes one.
+    ///
     /// ```
     /// use kvim_input::CommandLineCommand;
     ///
-    /// assert_eq!(CommandLineCommand::names_matching("q"), ["quit", "quit!"]);
+    /// // The text holds no `!`, so the `!` variant of `quit` stays off the list.
+    /// assert_eq!(CommandLineCommand::names_matching("q"), ["quit"]);
     /// // A `!` at the end of the text keeps the `!` variants alone.
     /// assert_eq!(CommandLineCommand::names_matching("q!"), ["quit!"]);
-    /// // `w` starts both names, and `write` declares the smaller minimum.
+    /// // `w` starts both names, and neither one is a `!` variant.
     /// assert_eq!(CommandLineCommand::names_matching("w"), ["wq", "write"]);
     /// // `write` has no `!` variant, and a line number is no name.
     /// assert!(CommandLineCommand::names_matching("w!").is_empty());
@@ -205,21 +210,31 @@ impl CommandLineCommand {
             Some(stem) => (stem, Bang::Present),
             None => (line, Bang::Absent),
         };
-        let mut names = Vec::with_capacity(NAMES.len() * 2);
+        let mut names = Vec::with_capacity(NAMES.len());
         for name in NAMES {
             if !name.full.starts_with(stem) {
                 continue;
             }
-            debug_assert!(
-                Self::parse(name.full).is_ok(),
-                "the parser reads the same name table, so it accepts every full name"
-            );
-            if bang == Bang::Absent {
-                names.push(name.full.to_owned());
-            }
-            let discarding = format!("{}!", name.full);
-            if Self::parse(&discarding).is_ok() {
-                names.push(discarding);
+            match bang {
+                // The typed text holds no `!`, so the plain name is the whole
+                // offer. A `!` variant discards unsaved changes and asks
+                // nothing, and the user must type that `!` to reach it.
+                Bang::Absent => {
+                    debug_assert!(
+                        Self::parse(name.full).is_ok(),
+                        "the parser reads the same name table, so it accepts every full name"
+                    );
+                    names.push(name.full.to_owned());
+                }
+                // The typed `!` is a deliberate choice, so the completion
+                // serves it. A command without a `!` variant still offers
+                // nothing, because the parser rejects that name.
+                Bang::Present => {
+                    let discarding = format!("{}!", name.full);
+                    if Self::parse(&discarding).is_ok() {
+                        names.push(discarding);
+                    }
+                }
             }
         }
         names
@@ -488,18 +503,27 @@ mod tests {
 
     #[test]
     fn the_name_source_offers_a_full_name_that_the_parser_accepts() {
-        let cases: [(&str, &[&str]); 15] = [
-            ("", &["edit", "edit!", "quit", "quit!", "wq", "write"]),
-            ("e", &["edit", "edit!"]),
+        let cases: [(&str, &[&str]); 20] = [
+            // A text without a `!` offers no `!` variant, so no cycle of that
+            // text writes a command that discards unsaved changes.
+            ("", &["edit", "quit", "wq", "write"]),
+            ("e", &["edit"]),
+            ("edit", &["edit"]),
+            ("q", &["quit"]),
+            ("qu", &["quit"]),
+            // The typed `!` is a deliberate choice, so the completion serves it.
             ("e!", &["edit!"]),
-            ("edit", &["edit", "edit!"]),
-            ("q", &["quit", "quit!"]),
+            ("edit!", &["edit!"]),
             ("q!", &["quit!"]),
+            ("qu!", &["quit!"]),
+            ("quit!", &["quit!"]),
+            // Neither `wq` nor `write` is a `!` variant, so `w` offers both.
             ("w", &["wq", "write"]),
             ("wr", &["write"]),
             ("wq", &["wq"]),
             // `write` and `wq` have no `!` variant, and `!` is no name.
             ("w!", &[]),
+            ("wq!", &[]),
             ("!", &[]),
             ("x", &[]),
             ("42", &[]),
@@ -513,6 +537,10 @@ mod tests {
                 assert!(
                     CommandLineCommand::parse(name).is_ok(),
                     "the completion offers `:{name}`, so the parser must accept it"
+                );
+                assert!(
+                    line.ends_with('!') || !name.ends_with('!'),
+                    "`:{line}` holds no `!`, so the completion must not offer `:{name}`"
                 );
             }
         }

@@ -144,12 +144,17 @@ that matches no name changes nothing and reports nothing. See
 
 The completion offers the full name of a command and never an intermediate
 abbreviation, so one cycle shows the whole name and the list stays short. It
-matches the full name by its prefix, so `q` offers `quit` and `quit!`, `w` offers
-`wq` and `write`, and `e` offers `edit` and `edit!`. A `!` at the end of the
-typed text keeps the `!` variants alone, so `q!` offers `quit!`. The completion
-offers a name that the parser accepts only, so a command without a `!` variant
-never reaches the list with one. A line number is no name, so a line of digits
-offers no candidate.
+matches the full name by its prefix, so `q` offers `quit`, `e` offers `edit`,
+and `w` offers `wq` and `write`. Neither `wq` nor `write` is a `!` variant, so
+the prefix `w` offers both names.
+
+The completion offers no `!` variant that the user did not type. A `!` variant
+discards unsaved changes and asks nothing, so `Tab` on `q` must never reach
+`quit!`. A `!` at the end of the typed text is a deliberate choice. The
+completion then serves that text, so `q!` and `qu!` both offer `quit!`. The
+completion offers a name that the parser accepts only, so a command without a
+`!` variant never reaches the list with one. `w!` therefore offers no candidate.
+A line number is no name, so a line of digits offers no candidate.
 
 `Esc` closes an open candidate list and restores the text that the user typed. A
 second `Esc` then cancels the command line. One typed character and one
