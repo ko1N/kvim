@@ -10,7 +10,8 @@ use std::path::{Path, PathBuf};
 
 use super::clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 use super::mutation::{
-    FileOperation, MUTATION_PATHS_MAX, MutationError, MutationPlan, OpenBuffer, TransferMode,
+    FileOperation, MUTATION_PATHS_MAX, MutationError, MutationPlan, OpenBuffer, Overwrite,
+    TakenDestination, TransferMode,
 };
 use super::temp::TempDir;
 use super::tree::{
@@ -762,6 +763,311 @@ fn a_transfer_refuses_a_destination_collision() {
     );
 }
 
+/// Returns the approval of one file destination.
+fn approved_file(path: &Path) -> Overwrite {
+    Overwrite::Replace(vec![TakenDestination {
+        path: path.to_path_buf(),
+        kind: EntryKind::File,
+    }])
+}
+
+#[test]
+fn a_collision_reports_every_taken_destination() {
+    let directory = TempDir::new("mutate-collision-count");
+    directory.file("first.rs", "source");
+    directory.file("second.rs", "source");
+    directory.file("dest/first.rs", "kept");
+    directory.file("dest/second.rs", "kept");
+    let root = root_of(&directory);
+
+    let error = MutationPlan::stage(
+        &FileOperation::Transfer {
+            mode: TransferMode::Move,
+            sources: vec![root.join("first.rs"), root.join("second.rs")],
+            destination: root.join("dest"),
+        },
+        &root,
+        &[],
+    )
+    .expect_err("both destinations hold an entry");
+
+    let MutationError::Collision { entries } = &error else {
+        panic!("the destinations hold entries: {error}");
+    };
+    println!("collision entries: {entries:?}");
+    assert_eq!(
+        entries.len(),
+        2,
+        "the refusal names every taken destination"
+    );
+    assert_eq!(error.to_string(), "2 entries exist already");
+}
+
+#[test]
+fn an_approved_overwrite_replaces_the_destination() {
+    let directory = TempDir::new("mutate-overwrite");
+    directory.file("new.rs", "source");
+    directory.file("old.rs", "kept");
+    let root = root_of(&directory);
+    let destination = root.join("old.rs");
+
+    MutationPlan::stage_with(
+        &FileOperation::Rename {
+            from: root.join("new.rs"),
+            to: destination.clone(),
+        },
+        &root,
+        &[],
+        &approved_file(&destination),
+    )
+    .expect("the answer approved the destination")
+    .apply()
+    .expect("the directory is writable");
+
+    let content = fs::read_to_string(&destination).expect("the destination exists");
+    println!("destination content: {content}");
+    assert_eq!(content, "source");
+    assert!(!root.join("new.rs").exists(), "the move leaves no source");
+    let names = entry_names(&root);
+    println!("root entries: {names:?}");
+    assert_eq!(names, vec!["old.rs".to_owned()], "no parked entry remains");
+}
+
+/// Returns the sorted names of every entry of one directory.
+fn entry_names(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = fs::read_dir(directory)
+        .expect("the directory exists")
+        .map(|entry| entry.expect("the entry reads").file_name())
+        .map(|name| name.to_string_lossy().into_owned())
+        .collect();
+    names.sort();
+    names
+}
+
+#[test]
+fn an_overwrite_refuses_a_destination_that_the_answer_did_not_name() {
+    let directory = TempDir::new("mutate-overwrite-unnamed");
+    directory.file("new.rs", "source");
+    directory.file("old.rs", "kept");
+    let root = root_of(&directory);
+
+    let error = MutationPlan::stage_with(
+        &FileOperation::Rename {
+            from: root.join("new.rs"),
+            to: root.join("old.rs"),
+        },
+        &root,
+        &[],
+        &approved_file(&root.join("other.rs")),
+    )
+    .expect_err("the answer names another destination");
+
+    println!("refusal: {error}");
+    assert!(matches!(error, MutationError::Collision { .. }));
+    assert_eq!(
+        fs::read_to_string(root.join("old.rs")).expect("the file exists"),
+        "kept"
+    );
+}
+
+#[test]
+fn an_overwrite_refuses_a_destination_that_changed_its_kind() {
+    let directory = TempDir::new("mutate-overwrite-kind");
+    directory.file("new.rs", "source");
+    directory.file("old.rs", "kept");
+    let root = root_of(&directory);
+    let destination = root.join("old.rs");
+    let approval = approved_file(&destination);
+
+    // A watcher event replaced the file with a directory while the question
+    // waited, so the answer would destroy an entry that it never named.
+    fs::remove_file(&destination).expect("the file exists");
+    fs::create_dir(&destination).expect("the name is free");
+    fs::write(destination.join("inner.rs"), "inner").expect("the directory is writable");
+
+    let error = MutationPlan::stage_with(
+        &FileOperation::Rename {
+            from: root.join("new.rs"),
+            to: destination.clone(),
+        },
+        &root,
+        &[],
+        &approval,
+    )
+    .expect_err("the destination holds another kind");
+
+    println!("refusal: {error}");
+    assert!(matches!(error, MutationError::DestinationChanged { .. }));
+    assert_eq!(
+        fs::read_to_string(destination.join("inner.rs")).expect("the directory survived"),
+        "inner"
+    );
+    assert!(root.join("new.rs").is_file(), "the source stays in place");
+}
+
+#[test]
+fn an_overwrite_of_a_destination_that_became_free_takes_the_free_path() {
+    let directory = TempDir::new("mutate-overwrite-gone");
+    directory.file("new.rs", "source");
+    directory.file("old.rs", "kept");
+    let root = root_of(&directory);
+    let destination = root.join("old.rs");
+    let approval = approved_file(&destination);
+
+    fs::remove_file(&destination).expect("the file exists");
+
+    MutationPlan::stage_with(
+        &FileOperation::Rename {
+            from: root.join("new.rs"),
+            to: destination.clone(),
+        },
+        &root,
+        &[],
+        &approval,
+    )
+    .expect("the destination holds no entry")
+    .apply()
+    .expect("the directory is writable");
+
+    let content = fs::read_to_string(&destination).expect("the destination exists");
+    println!("destination content: {content}");
+    assert_eq!(content, "source");
+}
+
+#[test]
+fn a_failed_overwrite_leaves_the_destination_unchanged() {
+    let directory = TempDir::new("mutate-overwrite-failure");
+    directory.file("first.rs", "first");
+    directory.file("second.rs", "second");
+    directory.file("dest/first.rs", "kept");
+    let root = root_of(&directory);
+    let destination = root.join("dest").join("first.rs");
+
+    let plan = MutationPlan::stage_with(
+        &FileOperation::Transfer {
+            mode: TransferMode::Move,
+            sources: vec![root.join("first.rs"), root.join("second.rs")],
+            destination: root.join("dest"),
+        },
+        &root,
+        &[],
+        &approved_file(&destination),
+    )
+    .expect("the answer approved the one taken destination");
+
+    // The second destination becomes a directory between the validation and
+    // the commit, so the commit fails after it replaced the first destination.
+    fs::create_dir(root.join("dest").join("second.rs")).expect("the name is free");
+    fs::write(
+        root.join("dest").join("second.rs").join("inner.rs"),
+        "inner",
+    )
+    .expect("the directory is writable");
+    let error = plan
+        .apply()
+        .expect_err("the second destination is a directory");
+
+    println!("failure: {error}");
+    assert!(matches!(error, MutationError::Filesystem { .. }));
+    let kept = fs::read_to_string(&destination).expect("the destination returned");
+    println!("destination content: {kept}");
+    assert_eq!(kept, "kept", "a failed overwrite keeps the destination");
+    assert_eq!(
+        fs::read_to_string(root.join("first.rs")).expect("the source returned"),
+        "first"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("second.rs")).expect("the source returned"),
+        "second"
+    );
+    let names = entry_names(&root.join("dest"));
+    println!("destination directory: {names:?}");
+    assert_eq!(
+        names,
+        vec!["first.rs".to_owned(), "second.rs".to_owned()],
+        "the unwind leaves no parked entry"
+    );
+}
+
+#[test]
+fn an_overwrite_refuses_a_destination_with_unsaved_changes() {
+    let directory = TempDir::new("mutate-overwrite-dirty");
+    directory.file("new.rs", "source");
+    directory.file("old.rs", "kept");
+    let root = root_of(&directory);
+    let destination = root.join("old.rs");
+    let mut buffer = open_buffer(7, &destination);
+    buffer.is_modified = true;
+
+    let error = MutationPlan::stage(
+        &FileOperation::Rename {
+            from: root.join("new.rs"),
+            to: destination.clone(),
+        },
+        &root,
+        &[buffer],
+    )
+    .expect_err("the buffer of the destination holds unsaved changes");
+
+    println!("refusal: {error}");
+    assert!(matches!(error, MutationError::DirtyBuffer { .. }));
+    assert_eq!(
+        fs::read_to_string(&destination).expect("the file exists"),
+        "kept"
+    );
+}
+
+#[test]
+fn an_overwrite_refuses_a_destination_outside_the_workspace() {
+    let directory = TempDir::new("mutate-overwrite-outside");
+    directory.file("new.rs", "source");
+    let root = root_of(&directory);
+    let outside = root.join("..").join("escape.rs");
+
+    let error = MutationPlan::stage_with(
+        &FileOperation::Rename {
+            from: root.join("new.rs"),
+            to: outside.clone(),
+        },
+        &root,
+        &[],
+        &approved_file(&outside),
+    )
+    .expect_err("the destination leaves the workspace");
+
+    println!("refusal: {error}");
+    assert!(
+        matches!(error, MutationError::Outside { .. }),
+        "an approval never reaches outside the workspace"
+    );
+    assert!(!outside.exists(), "the mutation wrote nothing");
+}
+
+#[test]
+fn an_entry_that_names_itself_refuses_the_mutation() {
+    let directory = TempDir::new("mutate-same-entry");
+    directory.file("lib.rs", "content");
+    let root = root_of(&directory);
+
+    let error = MutationPlan::stage(
+        &FileOperation::Transfer {
+            mode: TransferMode::Move,
+            sources: vec![root.join("lib.rs")],
+            destination: root.clone(),
+        },
+        &root,
+        &[],
+    )
+    .expect_err("the source names its own destination");
+
+    println!("refusal: {error}");
+    assert!(matches!(error, MutationError::SameEntry { .. }));
+    assert_eq!(
+        fs::read_to_string(root.join("lib.rs")).expect("the file exists"),
+        "content"
+    );
+}
+
 #[test]
 fn two_sources_with_one_name_collide_before_any_change() {
     let directory = TempDir::new("mutate-duplicate");
@@ -781,7 +1087,7 @@ fn two_sources_with_one_name_collide_before_any_change() {
     )
     .expect_err("both sources hold one name");
 
-    assert!(matches!(error, MutationError::Collision { .. }));
+    assert!(matches!(error, MutationError::DuplicateDestination { .. }));
     assert_eq!(
         fs::read_dir(root.join("dest"))
             .expect("the directory exists")
@@ -1018,6 +1324,7 @@ fn the_clipboard_builds_one_paste_of_the_held_entries() {
         operation,
         root: root.clone(),
         buffers: Vec::new(),
+        overwrite: Overwrite::Refuse,
     })
     .run();
     let WorkspaceResult::Mutated { outcome } = result else {

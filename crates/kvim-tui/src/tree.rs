@@ -23,7 +23,8 @@ use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
     GitStatusRequest, GitStatusSnapshot, LinkKind, MutateRequest, MutationOutcome, Notice,
-    OpenBuffer, ReadError, RowContent, TransferMode, TreeRow, WorkspaceRequest,
+    OpenBuffer, Overwrite, ReadError, RowContent, TakenDestination, TransferMode, TreeRow,
+    WorkspaceRequest,
 };
 
 use super::buffer_view::WindowFocus;
@@ -225,7 +226,14 @@ enum PendingWorkspace {
         path: PathBuf,
     },
     /// One workspace mutation runs.
-    Mutation,
+    Mutation {
+        /// The operation that the mutation performs.
+        ///
+        /// A refused destination returns the operation to the editor, which
+        /// asks the user before it stages the same operation again. See
+        /// `docs/files.md`.
+        operation: FileOperation,
+    },
 }
 
 /// The reason that the sidebar refused one operation.
@@ -732,6 +740,9 @@ impl TreeSidebar {
 
     /// Queues one validated mutation for the bounded worker service.
     ///
+    /// The `overwrite` value names every destination that the user approved.
+    /// [`Overwrite::Refuse`] destroys no entry that holds a destination.
+    ///
     /// # Errors
     ///
     /// Returns [`TreeRefusal::Busy`] while another workspace operation runs, so
@@ -739,18 +750,31 @@ impl TreeSidebar {
     pub(super) fn start_mutation(
         &mut self,
         operation: FileOperation,
+        overwrite: Overwrite,
         buffers: Vec<OpenBuffer>,
     ) -> Result<(), TreeRefusal> {
         if self.pending.is_some() || self.outbox.is_some() {
             return Err(TreeRefusal::Busy);
         }
         self.outbox = Some(WorkspaceRequest::Mutate(MutateRequest {
-            operation,
+            operation: operation.clone(),
             root: self.tree.root().to_path_buf(),
             buffers,
+            overwrite,
         }));
-        self.pending = Some(PendingWorkspace::Mutation);
+        self.pending = Some(PendingWorkspace::Mutation { operation });
         Ok(())
+    }
+
+    /// Returns the operation of the mutation that the sidebar waits for.
+    ///
+    /// The editor reads it when the worker refuses a taken destination, so the
+    /// question of the overwrite names the operation that the user asked for.
+    pub(super) fn pending_mutation(&self) -> Option<FileOperation> {
+        match self.pending.as_ref()? {
+            PendingWorkspace::Read { .. } => None,
+            PendingWorkspace::Mutation { operation } => Some(operation.clone()),
+        }
     }
 
     /// Moves the visible rows so the selected row keeps the scroll margin.
@@ -851,13 +875,32 @@ pub(super) fn delete_question(paths: &[PathBuf]) -> String {
     let [path] = paths else {
         return format!("Delete {} entries", paths.len());
     };
-    // Every selectable row carries an entry name, so the complete path only
-    // answers for a root that holds no row.
-    let name = path.file_name().map_or_else(
+    format!("Delete {}", question_name(path))
+}
+
+/// Returns the question that an overwrite of the named destinations asks.
+///
+/// The text follows [`delete_question`] above, because both questions name the
+/// entries that the action destroys. One transfer can take several
+/// destinations, so the count keeps the size of the action visible. See
+/// `docs/files.md`.
+pub(super) fn overwrite_question(destinations: &[TakenDestination]) -> String {
+    let [destination] = destinations else {
+        return format!("Overwrite {} entries", destinations.len());
+    };
+    format!("Overwrite {}", question_name(&destination.path))
+}
+
+/// Returns the name that a question shows for one entry.
+///
+/// Every selectable row carries an entry name, so the complete path only
+/// answers for a root that holds no row. A complete path would push the answer
+/// hint of the message line out of view.
+fn question_name(path: &Path) -> String {
+    path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),
-    );
-    format!("Delete {name}")
+    )
 }
 
 /// Returns the workspace root as the header row shows it.

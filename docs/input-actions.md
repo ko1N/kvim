@@ -127,8 +127,13 @@ file-tree sidebar returns the keys to the sidebar.
 At most one confirmation is open. A second request while one waits is refused,
 and the open question keeps the line.
 
-Every confirmation follows a key that the user pressed. No background event
-opens one, so a question never takes the key of a user who types.
+Every confirmation follows an action of the user. A key opens most questions.
+The overwrite question opens when the worker reports that the destination holds
+an entry, because the terminal event loop reads no filesystem state. That report
+belongs to the operation that the user asked for, and the user waits for it.
+
+No unsolicited background event opens a question, so a watcher burst and a
+language server reply never take the key of a user who types.
 
 ## Semantic Commands
 
@@ -554,6 +559,12 @@ when it closes. `Esc` and `Ctrl-C` cancel the prompt.
 and it names the count of several entries. `y` performs the removal, and every
 other key leaves every entry in place. The answer returns the keys to the
 sidebar. See the Confirmation section above and [`files.md`](files.md).
+
+`r` and `p` destroy data only when the destination holds an entry already, so
+they ask only then. The question names the destination, and it names the count
+of several destinations. `y` replaces them, and every other key leaves every
+source and every destination in place. A rename onto a free path and a paste
+into a free name ask nothing.
 
 The tree search keeps every row. It marks each matching name, and `n` and `N`
 move the selection between the marks. The search opens a closed directory that

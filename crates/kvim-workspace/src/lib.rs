@@ -72,7 +72,8 @@ pub use git::{
 };
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
-    MutationError, MutationOutcome, MutationPlan, OpenBuffer, TransferMode,
+    MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite, TakenDestination,
+    TransferMode,
 };
 pub use picker::{
     Acceptance, Candidate, CandidateTarget, PICKER_CANDIDATES_MAX, PICKER_MATCH_CHARS_MAX,

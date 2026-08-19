@@ -6,6 +6,11 @@
 //! [`MutationPlan::apply`] then performs the filesystem work through a staged
 //! replacement, so a failure of one path leaves no partial result.
 //!
+//! A destination that holds an entry refuses the mutation. [`Overwrite`] names
+//! the destinations that one confirmed answer approved, and only those
+//! destinations lose their entries. The commit parks each replaced entry under
+//! a temporary name, so a later failure puts it back. See `docs/files.md`.
+//!
 //! Both functions block. Run them on the bounded worker service only. See
 //! `docs/files.md` and `docs/responsiveness.md`.
 //!
@@ -40,8 +45,37 @@ pub enum TransferMode {
     Move,
 }
 
+/// One destination that holds an entry already.
+///
+/// The kind belongs to the entry that the staging observed. A confirmed answer
+/// carries it back, so the second staging can reject a destination that became
+/// another kind while the question waited.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TakenDestination {
+    /// The destination path.
+    pub path: PathBuf,
+    /// The kind of the entry that holds it.
+    pub kind: EntryKind,
+}
+
+/// Whether one mutation may destroy an entry that holds a destination.
+///
+/// The default refuses every taken destination, so a caller must name each
+/// entry that it destroys.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub enum Overwrite {
+    /// Every taken destination refuses the mutation.
+    #[default]
+    Refuse,
+    /// The named destinations lose their entries.
+    ///
+    /// Every destination outside the list still refuses the mutation, so the
+    /// list is the complete permission of one answer.
+    Replace(Vec<TakenDestination>),
+}
+
 /// One requested workspace mutation.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileOperation {
     /// Create one empty file or one empty directory.
     Create {
@@ -130,9 +164,29 @@ pub enum MutationError {
         /// The rejected path.
         path: PathBuf,
     },
-    /// The destination holds an entry already.
-    #[error("{path} exists already")]
+    /// The destinations hold entries already.
+    ///
+    /// The editor asks the user before it replaces them. See `docs/files.md`.
+    #[error("{}", collision_message(.entries))]
     Collision {
+        /// Every rejected destination, with the kind that it holds.
+        entries: Vec<TakenDestination>,
+    },
+    /// Two sources of one mutation claim one destination name.
+    #[error("two entries claim {path}")]
+    DuplicateDestination {
+        /// The rejected destination.
+        path: PathBuf,
+    },
+    /// The source and the destination name one entry.
+    #[error("{path} is its own destination")]
+    SameEntry {
+        /// The rejected destination.
+        path: PathBuf,
+    },
+    /// One approved destination holds another kind of entry now.
+    #[error("{path} changed while the question waited")]
+    DestinationChanged {
         /// The rejected destination.
         path: PathBuf,
     },
@@ -183,11 +237,24 @@ pub enum MutationError {
     },
 }
 
+/// Returns the message of one destination collision.
+///
+/// One destination appears by its path. Several appear as a count, because the
+/// message line holds one row.
+fn collision_message(entries: &[TakenDestination]) -> String {
+    match entries {
+        [entry] => format!("{} exists already", entry.path.display()),
+        _ => format!("{} entries exist already", entries.len()),
+    }
+}
+
 /// One entry that moves from its origin to its destination.
 #[derive(Clone, Debug)]
 struct Relocation {
     origin: PathBuf,
     destination: PathBuf,
+    /// Whether the destination holds an entry that the commit replaces.
+    replaces: bool,
 }
 
 /// The validated filesystem work of one mutation.
@@ -228,12 +295,36 @@ impl MutationPlan {
         root: &Path,
         buffers: &[OpenBuffer],
     ) -> Result<Self, MutationError> {
+        Self::stage_with(operation, root, buffers, &Overwrite::Refuse)
+    }
+
+    /// Validates one operation that may replace the approved destinations.
+    ///
+    /// The function reads the filesystem, but it writes nothing. Only
+    /// [`Overwrite::Replace`] destroys an entry that holds a destination, and
+    /// only the entries that its list names.
+    ///
+    /// # Errors
+    ///
+    /// Returns every error of [`MutationPlan::stage`], and
+    /// [`MutationError::DestinationChanged`] for an approved destination that
+    /// holds another kind of entry now.
+    pub(crate) fn stage_with(
+        operation: &FileOperation,
+        root: &Path,
+        buffers: &[OpenBuffer],
+        overwrite: &Overwrite,
+    ) -> Result<Self, MutationError> {
         match operation {
             FileOperation::Create { path, kind } => stage_create(path, *kind, root),
             FileOperation::Delete { paths } => stage_delete(paths, root, buffers),
-            FileOperation::Rename { from, to } => {
-                stage_relocations(TransferMode::Move, &[relocate(from, to)], root, buffers)
-            }
+            FileOperation::Rename { from, to } => stage_relocations(
+                TransferMode::Move,
+                &[relocate(from, to)],
+                root,
+                buffers,
+                overwrite,
+            ),
             FileOperation::Transfer {
                 mode,
                 sources,
@@ -249,7 +340,7 @@ impl MutationPlan {
                     })?;
                     relocations.push(relocate(source, &destination.join(name)));
                 }
-                stage_relocations(*mode, &relocations, root, buffers)
+                stage_relocations(*mode, &relocations, root, buffers, overwrite)
             }
         }
     }
@@ -263,7 +354,8 @@ impl MutationPlan {
     /// Performs the validated filesystem work.
     ///
     /// A failure of one path unwinds every staged step, so the workspace keeps
-    /// the state that it held before the call.
+    /// the state that it held before the call. The unwind also puts back every
+    /// entry that an approved overwrite parked.
     ///
     /// # Errors
     ///
@@ -285,10 +377,13 @@ impl MutationPlan {
 }
 
 /// Returns one relocation from a source and a complete destination path.
+///
+/// The relocation replaces nothing until the staging approves its destination.
 fn relocate(origin: &Path, destination: &Path) -> Relocation {
     Relocation {
         origin: origin.to_path_buf(),
         destination: destination.to_path_buf(),
+        replaces: false,
     }
 }
 
@@ -346,14 +441,21 @@ fn stage_delete(
 }
 
 /// Validates one copy or move of complete source and destination pairs.
+///
+/// The loop collects every taken destination instead of stopping at the first
+/// one, so the refusal reports the complete size of the collision. The editor
+/// names that size in its question. See `docs/files.md`.
 fn stage_relocations(
     mode: TransferMode,
     relocations: &[Relocation],
     root: &Path,
     buffers: &[OpenBuffer],
+    overwrite: &Overwrite,
 ) -> Result<MutationPlan, MutationError> {
     check_count(relocations.len())?;
     let mut changed = Vec::new();
+    let mut planned = Vec::with_capacity(relocations.len());
+    let mut collisions = Vec::new();
     for (index, relocation) in relocations.iter().enumerate() {
         check_entry(&relocation.origin, root)?;
         check_entry(&relocation.destination, root)?;
@@ -366,14 +468,20 @@ fn stage_relocations(
                     path: relocation.destination.clone(),
                 })?;
         check_directory(parent)?;
-        check_free(&relocation.destination)?;
+        // An entry that names itself destroys nothing, so it never becomes a
+        // question and it never reaches the commit.
+        if relocation.origin == relocation.destination {
+            return Err(MutationError::SameEntry {
+                path: relocation.destination.clone(),
+            });
+        }
         // Two sources with one name would overwrite each other during the
         // commit, so the collision must fail before any staging starts.
         if relocations[..index]
             .iter()
             .any(|earlier| earlier.destination == relocation.destination)
         {
-            return Err(MutationError::Collision {
+            return Err(MutationError::DuplicateDestination {
                 path: relocation.destination.clone(),
             });
         }
@@ -382,12 +490,24 @@ fn stage_relocations(
                 path: relocation.destination.clone(),
             });
         }
+        let replaces =
+            check_destination(&relocation.destination, overwrite, buffers, &mut collisions)?;
+        planned.push(Relocation {
+            origin: relocation.origin.clone(),
+            destination: relocation.destination.clone(),
+            replaces,
+        });
         changed.push(parent.to_path_buf());
         if mode == TransferMode::Move
             && let Some(parent) = relocation.origin.parent()
         {
             changed.push(parent.to_path_buf());
         }
+    }
+    if !collisions.is_empty() {
+        return Err(MutationError::Collision {
+            entries: collisions,
+        });
     }
     changed.sort();
     changed.dedup();
@@ -396,17 +516,18 @@ fn stage_relocations(
         TransferMode::Copy => Vec::new(),
         TransferMode::Move => buffer_updates(relocations, buffers),
     };
+    let selection = planned
+        .first()
+        .map(|relocation| relocation.destination.clone());
     let work = match mode {
-        TransferMode::Copy => PlannedWork::Copy(relocations.to_vec()),
-        TransferMode::Move => PlannedWork::Move(relocations.to_vec()),
+        TransferMode::Copy => PlannedWork::Copy(planned),
+        TransferMode::Move => PlannedWork::Move(planned),
     };
     Ok(MutationPlan {
         work,
         updates,
         changed,
-        selection: relocations
-            .first()
-            .map(|relocation| relocation.destination.clone()),
+        selection,
     })
 }
 
@@ -468,18 +589,16 @@ fn check_entry(path: &Path, root: &Path) -> Result<(), MutationError> {
     Ok(())
 }
 
-/// Returns the kind of an entry that must exist.
-fn check_exists(path: &Path) -> Result<EntryKind, MutationError> {
+/// Returns the kind of one entry, or `None` while the path holds none.
+fn peek(path: &Path) -> Result<Option<EntryKind>, MutationError> {
     match fs::symlink_metadata(path) {
         // A symbolic link takes the kind of its target, so a link to a
         // directory cannot receive one of its own parents either.
-        Ok(_) => Ok(match fs::metadata(path) {
+        Ok(_) => Ok(Some(match fs::metadata(path) {
             Ok(metadata) if metadata.is_dir() => EntryKind::Directory,
             _ => EntryKind::File,
-        }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Err(MutationError::Missing {
-            path: path.to_path_buf(),
-        }),
+        })),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(MutationError::Filesystem {
             path: path.to_path_buf(),
             source,
@@ -487,17 +606,75 @@ fn check_exists(path: &Path) -> Result<EntryKind, MutationError> {
     }
 }
 
+/// Returns the kind of an entry that must exist.
+fn check_exists(path: &Path) -> Result<EntryKind, MutationError> {
+    peek(path)?.ok_or_else(|| MutationError::Missing {
+        path: path.to_path_buf(),
+    })
+}
+
 /// Rejects a destination that holds an entry already.
 fn check_free(path: &Path) -> Result<(), MutationError> {
-    match fs::symlink_metadata(path) {
-        Ok(_) => Err(MutationError::Collision {
+    match peek(path)? {
+        None => Ok(()),
+        Some(kind) => Err(MutationError::Collision {
+            entries: vec![TakenDestination {
+                path: path.to_path_buf(),
+                kind,
+            }],
+        }),
+    }
+}
+
+/// Reports whether one destination loses the entry that it holds.
+///
+/// A free destination reports `false`. A taken destination that the answer
+/// approved reports `true`. Every other taken destination joins `collisions`,
+/// which refuses the complete mutation after the loop, so no unapproved entry
+/// reaches the commit.
+///
+/// # Errors
+///
+/// Returns [`MutationError::DirtyBuffer`] for a destination whose buffer holds
+/// unsaved changes, and [`MutationError::DestinationChanged`] for an approved
+/// destination that holds another kind of entry now.
+fn check_destination(
+    path: &Path,
+    overwrite: &Overwrite,
+    buffers: &[OpenBuffer],
+    collisions: &mut Vec<TakenDestination>,
+) -> Result<bool, MutationError> {
+    let Some(kind) = peek(path)? else {
+        return Ok(false);
+    };
+    // The destination loses its entry, so it follows the rule of a removal.
+    if let Some(buffer) = buffers
+        .iter()
+        .find(|buffer| buffer.is_modified && buffer.path.starts_with(path))
+    {
+        return Err(MutationError::DirtyBuffer {
+            path: buffer.path.clone(),
+        });
+    }
+    let taken = TakenDestination {
+        path: path.to_path_buf(),
+        kind,
+    };
+    let Overwrite::Replace(approved) = overwrite else {
+        collisions.push(taken);
+        return Ok(false);
+    };
+    match approved.iter().find(|entry| entry.path == path) {
+        Some(entry) if entry.kind == kind => Ok(true),
+        // The world changed while the question waited, so the answer would
+        // destroy another entry than the question named.
+        Some(_) => Err(MutationError::DestinationChanged {
             path: path.to_path_buf(),
         }),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
-        Err(source) => Err(MutationError::Filesystem {
-            path: path.to_path_buf(),
-            source,
-        }),
+        None => {
+            collisions.push(taken);
+            Ok(false)
+        }
     }
 }
 
@@ -558,18 +735,12 @@ struct StagedItem {
     origin: PathBuf,
     temporary: PathBuf,
     destination: PathBuf,
-}
-
-/// How much of one staged transfer reached its destination.
-#[derive(Clone, Copy, Debug)]
-enum StageState {
-    /// The transfer needs an unwind while it drops.
-    Staged {
-        /// The number of items that already hold their destination.
-        committed: usize,
-    },
-    /// The transfer finished. The drop leaves every path in place.
-    Settled,
+    /// Whether the destination holds an entry that the commit replaces.
+    replaces: bool,
+    /// The temporary name of the entry that held the destination.
+    parked: Option<PathBuf>,
+    /// Whether the destination holds the staged entry now.
+    committed: bool,
 }
 
 /// One copy or move that either finishes completely or leaves no trace.
@@ -577,11 +748,15 @@ enum StageState {
 /// Every fallible step writes a temporary name beside the destination. The
 /// commit renames the temporary names, which is one cheap step inside one
 /// directory. A drop before the commit undoes every staged step.
+///
+/// An approved destination keeps its entry until the commit reaches it. The
+/// commit parks that entry under a temporary name first, so the unwind puts it
+/// back and a failed overwrite leaves the destination unchanged.
 #[derive(Debug)]
 struct StagedTransfer {
     mode: TransferMode,
     items: Vec<StagedItem>,
-    state: StageState,
+    settled: bool,
 }
 
 impl StagedTransfer {
@@ -590,7 +765,7 @@ impl StagedTransfer {
         Self {
             mode,
             items: Vec::new(),
-            state: StageState::Staged { committed: 0 },
+            settled: false,
         }
     }
 
@@ -624,13 +799,23 @@ impl StagedTransfer {
             origin: relocation.origin.clone(),
             temporary,
             destination: relocation.destination.clone(),
+            replaces: relocation.replaces,
+            parked: None,
+            committed: false,
         });
         Ok(())
     }
 
     /// Gives every staged entry its destination name.
+    ///
+    /// The commit parks an approved destination before it takes the name, and
+    /// it removes the parked entries only after every destination holds its new
+    /// entry.
     fn commit(mut self) -> Result<(), MutationError> {
         for index in 0..self.items.len() {
+            if self.items[index].replaces {
+                self.items[index].parked = park(&self.items[index].destination)?;
+            }
             let item = &self.items[index];
             fs::rename(&item.temporary, &item.destination).map_err(|source| {
                 MutationError::Filesystem {
@@ -638,42 +823,68 @@ impl StagedTransfer {
                     source,
                 }
             })?;
-            self.state = StageState::Staged {
-                committed: index + 1,
-            };
+            self.items[index].committed = true;
         }
-        self.state = StageState::Settled;
+        self.settled = true;
+        // Every destination holds its new entry, so no parked entry can return.
+        for item in &self.items {
+            if let Some(parked) = &item.parked {
+                let _ = remove_tree(parked);
+            }
+        }
         Ok(())
     }
 }
 
 impl Drop for StagedTransfer {
     fn drop(&mut self) {
-        let StageState::Staged { committed } = self.state else {
+        if self.settled {
             return;
-        };
+        }
         // The unwind repairs a failed transfer. Every step is best effort,
-        // because the mutation already reports the first cause.
-        for item in &self.items[committed..] {
-            match self.mode {
-                TransferMode::Copy => {
+        // because the mutation already reports the first cause. It runs in
+        // reverse order, so each destination is free before its parked entry
+        // returns to it.
+        for item in self.items.iter().rev() {
+            match (self.mode, item.committed) {
+                (TransferMode::Copy, false) => {
                     let _ = remove_tree(&item.temporary);
                 }
-                TransferMode::Move => {
+                (TransferMode::Move, false) => {
                     let _ = fs::rename(&item.temporary, &item.origin);
                 }
-            }
-        }
-        for item in &self.items[..committed] {
-            match self.mode {
-                TransferMode::Copy => {
+                (TransferMode::Copy, true) => {
                     let _ = remove_tree(&item.destination);
                 }
-                TransferMode::Move => {
+                (TransferMode::Move, true) => {
                     let _ = fs::rename(&item.destination, &item.origin);
                 }
             }
+            if let Some(parked) = &item.parked {
+                let _ = fs::rename(parked, &item.destination);
+            }
         }
+    }
+}
+
+/// Renames the entry of one destination to a temporary name beside itself.
+///
+/// The parked entry keeps the complete content of the destination, so the
+/// unwind can put it back. A destination that holds no entry parks nothing.
+fn park(destination: &Path) -> Result<Option<PathBuf>, MutationError> {
+    let parent = destination
+        .parent()
+        .ok_or_else(|| MutationError::NotADirectory {
+            path: destination.to_path_buf(),
+        })?;
+    let parked = parent.join(temporary_name(destination));
+    match fs::rename(destination, &parked) {
+        Ok(()) => Ok(Some(parked)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(MutationError::Filesystem {
+            path: destination.to_path_buf(),
+            source,
+        }),
     }
 }
 
@@ -684,8 +895,15 @@ impl Drop for StagedTransfer {
 /// entry, which the default hidden-entry policy keeps out of the tree.
 #[derive(Debug, Default)]
 struct StagedDiscard {
-    items: Vec<StagedItem>,
+    items: Vec<DiscardedItem>,
     settled: bool,
+}
+
+/// One removed entry that waits under a temporary name.
+#[derive(Debug)]
+struct DiscardedItem {
+    origin: PathBuf,
+    temporary: PathBuf,
 }
 
 impl StagedDiscard {
@@ -699,9 +917,8 @@ impl StagedDiscard {
             path: path.to_path_buf(),
             source,
         })?;
-        self.items.push(StagedItem {
+        self.items.push(DiscardedItem {
             origin: path.to_path_buf(),
-            destination: temporary.clone(),
             temporary,
         });
         Ok(())

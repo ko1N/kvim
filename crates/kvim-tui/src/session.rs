@@ -60,10 +60,10 @@ use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
     FileOperation, FileRequest, FileResult, FileTree, GitStatusFailure, GitStatusRequest,
     GitStatusSnapshot, MutationError, MutationOutcome, OpenError, OpenRequest, OpenedFile,
-    PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot,
+    Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot,
     RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer,
-    SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TransferMode, WorkspaceRequest,
-    WorkspaceResult, render_content,
+    SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
+    WorkspaceRequest, WorkspaceResult, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -80,7 +80,7 @@ use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_are
 use super::theme::Theme;
 use super::tree::{
     GitPublication, TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
-    TreeRefusal, TreeSidebar, delete_question,
+    TreeRefusal, TreeSidebar, delete_question, overwrite_question,
 };
 use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 
@@ -461,6 +461,17 @@ fn clip_message_line(text: impl Into<String>) -> String {
     text.chars().take(MESSAGE_CHARS_MAX).collect()
 }
 
+/// Reports whether one operation can replace the entry of a destination.
+///
+/// A create writes one new entry, and a delete names no destination, so neither
+/// offers an overwrite. See `docs/files.md`.
+fn replaces_an_entry(operation: &FileOperation) -> bool {
+    matches!(
+        operation,
+        FileOperation::Rename { .. } | FileOperation::Transfer { .. }
+    )
+}
+
 /// One message-line entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Message {
@@ -528,6 +539,18 @@ pub(super) enum ConfirmedAction {
     DeleteEntries {
         /// The entries that the question named.
         paths: Vec<PathBuf>,
+    },
+    /// Replace the entries of the named destinations.
+    ///
+    /// The variant holds the operation as well, because the destinations name
+    /// what the overwrite destroys, not what it writes there. The operation
+    /// already names every path, so it reads no tree state again.
+    Overwrite {
+        /// The operation that the user asked for.
+        operation: FileOperation,
+        /// The destinations that the question named, with the kind that the
+        /// staging observed.
+        destinations: Vec<TakenDestination>,
     },
     /// Close the focused window and lose the changes of the named buffer.
     DiscardOnQuit {
@@ -1503,6 +1526,12 @@ impl Session {
                 let staged = self.tree.stage_delete(paths);
                 self.start_tree_mutation(staged)
             }
+            // The worker stages the operation again here, so a destination
+            // that changed while the question waited refuses the overwrite.
+            ConfirmedAction::Overwrite {
+                operation,
+                destinations,
+            } => self.start_tree_overwrite(operation, destinations),
             // The quit reads the focused window again here, so an open that
             // completed meanwhile keeps the unsaved changes of its own buffer.
             ConfirmedAction::DiscardOnQuit { buffer } => self.confirmed_quit(buffer),
@@ -2653,6 +2682,10 @@ impl Session {
     }
 
     /// Queues one staged workspace mutation, or reports the refusal.
+    ///
+    /// The mutation destroys no entry that holds a destination. A taken
+    /// destination returns as one refusal, which opens the question of the
+    /// overwrite. See `docs/files.md`.
     fn start_tree_mutation(&mut self, staged: Result<FileOperation, TreeRefusal>) -> Redraw {
         let operation = match staged {
             Ok(operation) => operation,
@@ -2661,10 +2694,31 @@ impl Session {
                 return Redraw::Needed;
             }
         };
+        self.queue_tree_mutation(operation, Overwrite::Refuse)
+    }
+
+    /// Queues the operation that one confirmed overwrite approved.
+    ///
+    /// The request names every destination that loses its entry, so the worker
+    /// replaces exactly the entries that the question named.
+    fn start_tree_overwrite(
+        &mut self,
+        operation: FileOperation,
+        destinations: Vec<TakenDestination>,
+    ) -> Redraw {
+        debug_assert!(
+            !destinations.is_empty(),
+            "a question of an overwrite names at least one destination"
+        );
+        self.queue_tree_mutation(operation, Overwrite::Replace(destinations))
+    }
+
+    /// Hands one operation to the bounded worker service.
+    fn queue_tree_mutation(&mut self, operation: FileOperation, overwrite: Overwrite) -> Redraw {
         // The worker validates the operation against the loaded buffers, so it
         // receives the complete list with the request.
         let buffers = self.buffers.open_buffers();
-        if let Err(refusal) = self.tree.start_mutation(operation, buffers) {
+        if let Err(refusal) = self.tree.start_mutation(operation, overwrite, buffers) {
             self.set_message(refusal.message(), MessageLevel::Warning);
         }
         Redraw::Needed
@@ -2838,6 +2892,9 @@ impl Session {
     fn publish_mutation(&mut self, outcome: Result<MutationOutcome, MutationError>) -> Redraw {
         let outcome = match outcome {
             Ok(outcome) => outcome,
+            Err(MutationError::Collision { entries }) => {
+                return self.report_collision(entries);
+            }
             Err(error) => {
                 self.tree.abandon_request();
                 self.set_message(error.to_string(), MessageLevel::Error);
@@ -2865,6 +2922,37 @@ impl Session {
         }
         self.tree.release_hold();
         self.tree.apply_mutation(&outcome);
+        Redraw::Needed
+    }
+
+    /// Asks the user before one mutation replaces the entries of its
+    /// destinations, or reports the collision.
+    ///
+    /// The staging refused every taken destination, so the workspace still
+    /// holds every entry here. Only a rename and a transfer offer an overwrite.
+    /// A create keeps the plain refusal, because it writes one new entry.
+    ///
+    /// The refusal arrives from the worker, so another question can wait
+    /// already. The editor then reports the collision and destroys nothing.
+    fn report_collision(&mut self, entries: Vec<TakenDestination>) -> Redraw {
+        let operation = self.tree.pending_mutation();
+        self.tree.abandon_request();
+        let report = MutationError::Collision {
+            entries: entries.clone(),
+        }
+        .to_string();
+        let Some(operation) = operation.filter(replaces_an_entry) else {
+            self.set_message(report, MessageLevel::Error);
+            return Redraw::Needed;
+        };
+        let question = overwrite_question(&entries);
+        let action = ConfirmedAction::Overwrite {
+            operation,
+            destinations: entries,
+        };
+        if self.open_confirmation(question, action) == ConfirmationRequest::Refused {
+            self.set_message(report, MessageLevel::Error);
+        }
         Redraw::Needed
     }
 
