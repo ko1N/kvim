@@ -282,9 +282,10 @@ impl PromptKind {
 
 /// The owner of keyboard input.
 ///
-/// One editor mode, the file-tree sidebar, or one line prompt owns input, never
-/// two of them. The prompt variant holds the scope that regains input when the
-/// prompt closes, so the editor cannot lose that scope while a prompt is open.
+/// One editor mode, the file-tree sidebar, one line prompt, or one confirmation
+/// owns input, never two of them. The prompt variant and the confirmation
+/// variant hold the scope that regains input when they close, so the editor
+/// cannot lose that scope while either one is open.
 ///
 /// ```
 /// use kvim_input::{BindingScope, InputContext, Mode, PromptKind};
@@ -294,6 +295,10 @@ impl PromptKind {
 /// assert_eq!(prompt.prompt(), Some(PromptKind::CommandLine));
 /// assert_eq!(prompt.scope(), BindingScope::Mode(Mode::Normal));
 /// assert_eq!(prompt.close_prompt(), normal);
+///
+/// let confirmation = normal.open_confirmation();
+/// assert_eq!(confirmation.prompt(), None);
+/// assert_eq!(confirmation.close_prompt(), normal);
 /// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum InputContext {
@@ -310,29 +315,39 @@ pub enum InputContext {
         /// The scope that regains input when the prompt closes.
         return_to: BindingScope,
     },
+    /// One open confirmation owns input.
+    ///
+    /// The confirmation reads one key instead of a line, so it holds no prompt
+    /// kind and no text. See `docs/input-actions.md`.
+    Confirmation {
+        /// The scope that regains input when the confirmation closes.
+        return_to: BindingScope,
+    },
 }
 
 impl InputContext {
     /// Normal mode owns input.
     pub const NORMAL: Self = Self::Mode(Mode::Normal);
 
-    /// Returns the scope that owns input, or that regains it when the prompt
-    /// closes.
+    /// Returns the scope that owns input, or that regains it when the prompt or
+    /// the confirmation closes.
     #[inline]
     pub const fn scope(self) -> BindingScope {
         match self {
             Self::Mode(mode) => BindingScope::Mode(mode),
             Self::Sidebar => BindingScope::Sidebar,
             Self::Picker => BindingScope::Picker,
-            Self::Prompt { return_to, .. } => return_to,
+            Self::Prompt { return_to, .. } | Self::Confirmation { return_to } => return_to,
         }
     }
 
     /// Returns the prompt that owns input.
+    ///
+    /// A confirmation reads no line, so it reports no prompt.
     #[inline]
     pub const fn prompt(self) -> Option<PromptKind> {
         match self {
-            Self::Mode(_) | Self::Sidebar | Self::Picker => None,
+            Self::Mode(_) | Self::Sidebar | Self::Picker | Self::Confirmation { .. } => None,
             Self::Prompt { kind, .. } => Some(kind),
         }
     }
@@ -349,9 +364,21 @@ impl InputContext {
         }
     }
 
-    /// Closes an open prompt and restores the scope below it.
+    /// Opens a confirmation over the current context.
     ///
-    /// The function returns a context without a prompt unchanged.
+    /// The return scope stays the scope that owned input before the
+    /// confirmation, so the answer returns the keys to that scope.
+    #[inline]
+    pub const fn open_confirmation(self) -> Self {
+        Self::Confirmation {
+            return_to: self.scope(),
+        }
+    }
+
+    /// Closes an open prompt or an open confirmation and restores the scope
+    /// below it.
+    ///
+    /// The function returns a context without either one unchanged.
     #[inline]
     pub const fn close_prompt(self) -> Self {
         self.scope().context()
@@ -389,6 +416,15 @@ mod tests {
         let command = search.open_prompt(PromptKind::CommandLine);
         assert_eq!(command.scope(), BindingScope::Mode(Mode::Visual));
         assert_eq!(command.close_prompt(), visual);
+    }
+
+    #[test]
+    fn a_confirmation_returns_input_to_the_scope_below_it() {
+        let sidebar = InputContext::Sidebar;
+        let confirmation = sidebar.open_confirmation();
+        assert_eq!(confirmation.prompt(), None);
+        assert_eq!(confirmation.scope(), BindingScope::Sidebar);
+        assert_eq!(confirmation.close_prompt(), sidebar);
     }
 
     #[test]

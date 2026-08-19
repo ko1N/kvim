@@ -144,7 +144,14 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         focused_cursor,
         view.focused_format_on_save(),
     );
-    render_message(target, bands.message, theme, view.prompt, view.message);
+    render_message(
+        target,
+        bands.message,
+        theme,
+        view.confirmation,
+        view.prompt,
+        view.message,
+    );
     // The notification overlay reports the background work of the editor, so
     // the two overlays that answer the last key paint over it.
     if !view.notifications.is_empty() {

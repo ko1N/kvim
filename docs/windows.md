@@ -233,7 +233,10 @@ The terminal holds three bands. The window tree receives the body band only.
   always survives, because the mode decides what the next key does.
 - The message line is the last row. It shows the last message, and the command
   line and the search prompt share it. An ordinary message takes the normal text
-  color, so only a warning and a failure stand out.
+  color, so only a warning and a failure stand out. A confirmation shows its
+  question on the same row, over the prompt and over the message, because it
+  owns the keys. The question ends the row, so the line draws no cursor behind
+  it. See [`input-actions.md`](input-actions.md).
 
 One winbar row sits above the text of every window. It shows, from the left, one
 blank, the path of the buffer, and a marker for a modified buffer. It shows the
