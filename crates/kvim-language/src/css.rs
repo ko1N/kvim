@@ -55,6 +55,7 @@ const CSS_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // marker gates its start.
     root_markers: &[],
     initialization_options: css_ls_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the CSS adapter.

@@ -103,6 +103,7 @@ const CPP_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // workspace that holds a C++ file, so no marker gates its start.
     root_markers: &[],
     initialization_options: clangd_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the C++ adapter.

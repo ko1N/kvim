@@ -54,6 +54,7 @@ const RUST_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // The server fits every Rust workspace, so no marker gates its start.
     root_markers: &[],
     initialization_options: rust_analyzer_options,
+    workspace_settings: None,
 }];
 
 /// Returns the Rust grammar of the bundled parser.

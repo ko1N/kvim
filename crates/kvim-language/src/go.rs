@@ -72,6 +72,7 @@ const GO_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // gates its start.
     root_markers: &[],
     initialization_options: gopls_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Go adapter.

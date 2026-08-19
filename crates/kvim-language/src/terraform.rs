@@ -73,6 +73,7 @@ const TERRAFORM_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclara
     // no marker gates its start.
     root_markers: &[],
     initialization_options: tofu_ls_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Terraform adapter.

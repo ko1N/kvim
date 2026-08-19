@@ -60,6 +60,7 @@ const NIX_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // gates its start.
     root_markers: &[],
     initialization_options: nil_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Nix adapter.

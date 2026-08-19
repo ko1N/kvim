@@ -45,6 +45,7 @@ const MARKDOWN_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclarat
     // gates its start.
     root_markers: &[],
     initialization_options: marksman_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Markdown adapter.

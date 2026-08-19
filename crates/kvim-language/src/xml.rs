@@ -65,6 +65,7 @@ const XML_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // marker gates its start.
     root_markers: &[],
     initialization_options: lemminx_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the XML adapter.

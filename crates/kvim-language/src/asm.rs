@@ -52,6 +52,7 @@ const ASM_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // marker gates its start.
     root_markers: &[],
     initialization_options: asm_lsp_options,
+    workspace_settings: None,
 }];
 
 /// The language adapter for assembly source paths.

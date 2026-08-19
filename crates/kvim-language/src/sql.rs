@@ -61,6 +61,7 @@ const SQL_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     // so no marker gates its start.
     root_markers: &[],
     initialization_options: sqls_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the SQL adapter.

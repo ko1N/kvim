@@ -81,6 +81,7 @@ const BASH_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     // no marker gates its start.
     root_markers: &[],
     initialization_options: bash_language_server_options,
+    workspace_settings: None,
 }];
 
 /// The external formatter of the Bash adapter.

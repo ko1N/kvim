@@ -71,6 +71,10 @@ pub enum LspBound {
     FormatEdits,
     /// The size of one hover text, in bytes.
     HoverBytes,
+    /// The size of one pulled result identifier, in bytes.
+    ResultIdBytes,
+    /// The sections of one workspace configuration request.
+    ConfigurationItems,
     /// The language-server sessions that one workspace runs together.
     Sessions,
 }
@@ -699,7 +703,21 @@ where
     ///
     /// Returns the failures of [`ProtocolWriter::notify`].
     pub async fn accept_server_request(&mut self, id: RpcId) -> Result<(), LspError> {
-        self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": Value::Null }))
+        self.answer_server_request(id, Value::Null).await
+    }
+
+    /// Answers one server request with a value, such as the workspace
+    /// configuration that a server asks for.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failures of [`ProtocolWriter::notify`].
+    pub async fn answer_server_request(
+        &mut self,
+        id: RpcId,
+        result: Value,
+    ) -> Result<(), LspError> {
+        self.write(&json!({ "jsonrpc": "2.0", "id": id, "result": result }))
             .await
     }
 

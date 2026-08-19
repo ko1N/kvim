@@ -151,9 +151,23 @@ pub struct LanguageServerDeclaration {
     pub root_markers: &'static [&'static str],
     /// Maps the language-neutral settings onto the options of this server.
     ///
-    /// The function is pure. It is the one place that may name a setting of one
-    /// concrete server.
+    /// The function is pure. It is one of the two places that may name a
+    /// setting of one concrete server.
     pub initialization_options: fn(LanguageSettings) -> Value,
+    /// Maps the language-neutral settings onto the workspace settings of this
+    /// server.
+    ///
+    /// A server that reads its behavior from the workspace configuration needs
+    /// this data. The session then declares the `workspace.configuration`
+    /// client capability, it sends one `workspace/didChangeConfiguration`
+    /// notification after the handshake, and it answers the
+    /// `workspace/configuration` request of the server.
+    ///
+    /// `None` names no settings, which keeps the session without a
+    /// configuration channel. The function is pure, and it is the second place
+    /// that may name a setting of one concrete server. See
+    /// `docs/language-services.md`.
+    pub workspace_settings: Option<fn(LanguageSettings) -> Value>,
 }
 
 impl LanguageServerDeclaration {
@@ -161,6 +175,15 @@ impl LanguageServerDeclaration {
     #[must_use]
     pub fn options(&self, settings: LanguageSettings) -> Value {
         (self.initialization_options)(settings)
+    }
+
+    /// Returns the workspace settings for the current settings.
+    ///
+    /// The answer is `None` while the declaration names no settings, which
+    /// leaves the session without a configuration channel.
+    #[must_use]
+    pub fn settings(&self, settings: LanguageSettings) -> Option<Value> {
+        self.workspace_settings.map(|map| map(settings))
     }
 }
 
