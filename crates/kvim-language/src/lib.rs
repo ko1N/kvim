@@ -76,8 +76,13 @@ use tree_sitter::{InputEdit, Language, Point, Tree};
 use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange};
 
 mod analysis;
+mod asm;
+mod c;
+mod cpp;
 mod document;
 mod formatter;
+mod glsl;
+mod go;
 mod json;
 mod markdown;
 mod nix;
@@ -88,6 +93,7 @@ mod server;
 mod services;
 mod session;
 mod toml;
+mod zig;
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
@@ -96,6 +102,9 @@ mod session_tests;
 #[cfg(test)]
 mod tests;
 
+pub use asm::AsmAdapter;
+pub use c::CAdapter;
+pub use cpp::CppAdapter;
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
     TextEdit,
@@ -104,6 +113,8 @@ pub use formatter::{
     FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
     FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, LanguageFormatter,
 };
+pub use glsl::GlslAdapter;
+pub use go::GoAdapter;
 pub use json::JsonAdapter;
 pub use markdown::MarkdownAdapter;
 pub use nix::NixAdapter;
@@ -130,6 +141,7 @@ pub use session::{
     LanguageOutcome, LanguageRequestId, LanguageServerHandle,
 };
 pub use toml::TomlAdapter;
+pub use zig::ZigAdapter;
 
 /// The largest source that one analysis reads, in bytes.
 pub const ANALYSIS_SOURCE_BYTES_MAX: usize = 4 * 1024 * 1024;
@@ -685,6 +697,21 @@ pub struct LanguageRegistry {
     adapters: &'static [&'static dyn LanguageAdapter],
 }
 
+/// The assembly adapter of this build.
+static ASM: AsmAdapter = AsmAdapter::new();
+
+/// The C adapter of this build.
+static C: CAdapter = CAdapter::new();
+
+/// The C++ adapter of this build.
+static CPP: CppAdapter = CppAdapter::new();
+
+/// The GLSL adapter of this build.
+static GLSL: GlslAdapter = GlslAdapter::new();
+
+/// The Go adapter of this build.
+static GO: GoAdapter = GoAdapter::new();
+
 /// The JSON adapter of this build.
 static JSON: JsonAdapter = JsonAdapter::new();
 
@@ -700,20 +727,29 @@ static RUST: RustAdapter = RustAdapter::new();
 /// The TOML adapter of this build.
 static TOML: TomlAdapter = TomlAdapter::new();
 
+/// The Zig adapter of this build.
+static ZIG: ZigAdapter = ZigAdapter::new();
+
 /// The registered languages of this editor build.
 ///
 /// This table and the adapter files beside it are the only places that name a
 /// language. A later release adds a language by adding one adapter file and one
 /// entry here.
-static ADAPTERS: [&dyn LanguageAdapter; 5] = [&JSON, &MARKDOWN, &NIX, &RUST, &TOML];
+///
+/// Exactly one adapter owns each extension and each file name. Two owners make
+/// every path of that key an ambiguous failure, which leaves the buffer without
+/// highlighting, without a server, and without a formatter.
+static ADAPTERS: [&dyn LanguageAdapter; 11] = [
+    &ASM, &C, &CPP, &GLSL, &GO, &JSON, &MARKDOWN, &NIX, &RUST, &TOML, &ZIG,
+];
 
 impl LanguageRegistry {
     /// Returns the registry of this build.
     ///
-    /// The table holds one adapter for JSON, Markdown, Nix, Rust, and TOML. A
-    /// later release adds a language by registering one more adapter in the
-    /// table that this constructor names, or by building a registry with
-    /// [`LanguageRegistry::new`].
+    /// The table holds one adapter for assembly, C, C++, GLSL, Go, JSON,
+    /// Markdown, Nix, Rust, TOML, and Zig. A later release adds a language by
+    /// registering one more adapter in the table that this constructor names,
+    /// or by building a registry with [`LanguageRegistry::new`].
     #[must_use]
     pub const fn first_release() -> Self {
         Self::new(&ADAPTERS)

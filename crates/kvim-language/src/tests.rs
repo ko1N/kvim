@@ -473,12 +473,21 @@ fn every_registered_extension_selects_its_adapter() {
     let registry = LanguageRegistry::first_release();
 
     for (path, id) in [
+        ("boot.S", "asm"),
+        ("boot.s", "asm"),
         ("Cargo.toml", "toml"),
+        ("cmd/main.go", "go"),
         ("docs/notes.markdown", "markdown"),
         ("flake.nix", "nix"),
+        ("include/api.h", "c"),
+        ("include/api.hpp", "cpp"),
         ("package.json", "json"),
         ("README.md", "markdown"),
+        ("shaders/light.frag", "glsl"),
+        ("src/main.c", "c"),
+        ("src/main.cpp", "cpp"),
         ("src/main.rs", "rust"),
+        ("src/main.zig", "zig"),
     ] {
         assert_eq!(
             registry
@@ -493,33 +502,57 @@ fn every_registered_extension_selects_its_adapter() {
 
 #[test]
 fn every_registered_adapter_declares_a_valid_server_table() {
-    let registry = LanguageRegistry::first_release();
-
-    for path in [
-        "Cargo.toml",
-        "flake.nix",
-        "package.json",
-        "README.md",
-        "src/main.rs",
-    ] {
-        let adapter = registry
-            .adapter(Path::new(path))
-            .expect("the path belongs to one adapter");
+    for adapter in LanguageRegistry::first_release().adapters() {
+        let id = adapter.id();
         assert!(
             declarations_are_valid(adapter.language_servers()),
-            "{path} declares at most {LANGUAGE_SERVERS_MAX} servers, names each identifier \
-             once, carries at most one formatting server, and names at most \
+            "the {id} adapter declares at most {LANGUAGE_SERVERS_MAX} servers, names each \
+             identifier once, carries at most one formatting server, and names at most \
              {LANGUAGE_ROOT_MARKERS_MAX} valid root markers for each server",
         );
-        assert_eq!(
+        assert!(
             adapter
                 .language_servers()
                 .iter()
                 .filter(|declaration| declaration.formatting == ServerFormatting::Enabled)
-                .count(),
-            usize::from(!adapter.language_servers().is_empty()),
-            "{path} names one server that formats while it declares no external formatter",
+                .count()
+                <= 1,
+            "the {id} adapter names at most one server that formats its buffers",
         );
+    }
+}
+
+#[test]
+fn no_two_adapters_of_the_registry_claim_one_lookup_key() {
+    let registry = LanguageRegistry::first_release();
+
+    // Two adapters that claim one key make every path of that key an ambiguous
+    // failure, which leaves the buffer without highlighting, without a server,
+    // and without a formatter. The probe reads the real selection path, so it
+    // covers the extension key and the file name key together.
+    for adapter in registry.adapters() {
+        let id = adapter.id();
+        for extension in adapter.extensions() {
+            let path = format!("probe.{extension}");
+            assert_eq!(
+                registry
+                    .adapter(Path::new(&path))
+                    .map(LanguageAdapter::id)
+                    .ok(),
+                Some(id),
+                "the {id} adapter owns the .{extension} extension alone",
+            );
+        }
+        for name in adapter.file_names() {
+            assert_eq!(
+                registry
+                    .adapter(Path::new(name))
+                    .map(LanguageAdapter::id)
+                    .ok(),
+                Some(id),
+                "the {id} adapter owns the {name} file name alone",
+            );
+        }
     }
 }
 
@@ -581,6 +614,234 @@ fn each_language_reports_its_own_comment_token() {
             "{path} carries its own line comment"
         );
     }
+}
+
+/// One C source that carries a comment, a nested block, and a literal.
+const C_SOURCE: &str =
+    "// note\nint main(void) {\n    if (1) {\n        int value = 1;\n    }\n}\n";
+
+/// One C++ source that carries a namespace, a class, and a method.
+const CPP_SOURCE: &str = "// note\nnamespace app {\nclass Shape {\n  public:\n    int area() {\n        return 1;\n    }\n};\n}\n";
+
+/// One Zig source that carries a comment, a nested block, and a literal.
+const ZIG_SOURCE: &str =
+    "// note\npub fn main() void {\n    if (true) {\n        var value: u8 = 1;\n    }\n}\n";
+
+/// One Go source that carries a comment, a switch, and one case.
+const GO_SOURCE: &str =
+    "// note\npackage main\n\nfunc main() {\n\tswitch 1 {\n\tcase 1:\n\t\tprintln(1)\n\t}\n}\n";
+
+/// One assembly source that carries a comment, a label, and one instruction.
+const ASM_SOURCE: &str = "# note\n_start:\n    mov $1, %rax\n";
+
+/// One GLSL source that carries a comment, a nested block, and a literal.
+const GLSL_SOURCE: &str =
+    "// note\nvoid main() {\n    if (true) {\n        float value = 1.0;\n    }\n}\n";
+
+#[test]
+fn c_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/main.c", C_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_c_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("src/main.c", C_SOURCE);
+    let byte = |needle: &str| {
+        C_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        C_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A new line at the end of the signature line enters the function block.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    // A new line inside the nested block gains the second level.
+    assert_eq!(
+        analysis.indent_level(byte("\n        int")).unwrap().get(),
+        2
+    );
+    // A line that starts with a closing delimiter loses one level again.
+    assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}\n")).unwrap().get(), 0);
+}
+
+#[test]
+fn cpp_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/main.cpp", CPP_SOURCE);
+
+    // The comment pattern belongs to the C query, and the class name pattern
+    // belongs to the C++ query, so both roles prove the joined query.
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 5).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_cpp_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("src/main.cpp", CPP_SOURCE);
+    let byte = |needle: &str| {
+        CPP_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A new line at the end of the namespace line enters its declaration list.
+    assert_eq!(analysis.indent_level(byte("\nclass")).unwrap().get(), 1);
+    // The method body sits inside the namespace, the class, and the method.
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n        return"))
+            .unwrap()
+            .get(),
+        3
+    );
+    // A line that starts with a closing delimiter loses one level again.
+    assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 2);
+    assert_eq!(analysis.indent_level(byte("};")).unwrap().get(), 1);
+}
+
+#[test]
+fn zig_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/main.zig", ZIG_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_zig_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("src/main.zig", ZIG_SOURCE);
+    let byte = |needle: &str| {
+        ZIG_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        ZIG_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A new line at the end of the signature line enters the function block.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    // A new line inside the nested block gains the second level.
+    assert_eq!(
+        analysis.indent_level(byte("\n        var")).unwrap().get(),
+        2
+    );
+    // A line that starts with a closing delimiter loses one level again.
+    assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}\n")).unwrap().get(), 0);
+}
+
+#[test]
+fn go_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("cmd/main.go", GO_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 6).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_go_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("cmd/main.go", GO_SOURCE);
+    let byte = |needle: &str| {
+        GO_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        GO_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A new line at the end of the signature line enters the function block.
+    assert_eq!(analysis.indent_level(byte("\n\tswitch")).unwrap().get(), 1);
+    // A case label keeps the level of its switch, because the switch itself
+    // holds no indent scope.
+    assert_eq!(analysis.indent_level(byte("\n\tcase")).unwrap().get(), 1);
+    // The statements of one case take one more level.
+    assert_eq!(
+        analysis.indent_level(byte("\n\t\tprintln")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(last("}\n")).unwrap().get(), 0);
+}
+
+#[test]
+fn asm_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("boot.s", ASM_SOURCE);
+
+    // The grammar marks a comment twice, so this row also proves that a
+    // decoration capture never takes the place of a role.
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Statement));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Function));
+}
+
+#[test]
+fn the_asm_indent_level_stays_flat() {
+    let analysis = analyze_path("boot.s", ASM_SOURCE);
+    let byte = |needle: &str| {
+        ASM_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Assembly nests through no bracketed node, so every position of the source
+    // takes the same level and the user owns the layout.
+    assert_eq!(analysis.indent_level(byte("\n_start")).unwrap().get(), 0);
+    assert_eq!(analysis.indent_level(byte("\n    mov")).unwrap().get(), 0);
+    assert_eq!(analysis.indent_level(byte("    mov")).unwrap().get(), 0);
+}
+
+#[test]
+fn glsl_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("shaders/light.frag", GLSL_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Type));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_glsl_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("shaders/light.frag", GLSL_SOURCE);
+    let byte = |needle: &str| {
+        GLSL_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        GLSL_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A new line at the end of the signature line enters the function block.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    // A new line inside the nested block gains the second level.
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n        float"))
+            .unwrap()
+            .get(),
+        2
+    );
+    // A line that starts with a closing delimiter loses one level again.
+    assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}\n")).unwrap().get(), 0);
 }
 
 #[test]
@@ -701,12 +962,18 @@ fn an_external_formatter_takes_precedence_over_a_formatting_server() {
 fn every_registered_adapter_declares_the_formatter_of_its_language() {
     let registry = LanguageRegistry::first_release();
 
-    for (path, program) in [
-        ("Cargo.toml", Some("taplo")),
-        ("flake.nix", Some("nixfmt")),
-        ("package.json", Some("prettier")),
-        ("README.md", Some("prettier")),
-        ("src/main.rs", None),
+    for (path, program, formats) in [
+        ("boot.s", None, false),
+        ("Cargo.toml", Some("taplo"), true),
+        ("cmd/main.go", Some("goimports"), true),
+        ("flake.nix", Some("nixfmt"), true),
+        ("include/api.h", Some("clang-format"), true),
+        ("package.json", Some("prettier"), true),
+        ("README.md", Some("prettier"), true),
+        ("shaders/light.frag", None, true),
+        ("src/main.cpp", Some("clang-format"), true),
+        ("src/main.rs", None, true),
+        ("src/main.zig", None, true),
     ] {
         let adapter = registry
             .adapter(Path::new(path))
@@ -721,9 +988,10 @@ fn every_registered_adapter_declares_the_formatter_of_its_language() {
             declaration.is_none_or(declaration_is_valid),
             "{path} names a program and at most {FORMATTER_ARGS_MAX} arguments",
         );
-        assert!(
+        assert_eq!(
             adapter.formatter().is_some(),
-            "{path} formats through one of the two paths",
+            formats,
+            "{path} formats through one of the two paths, or through neither",
         );
     }
 }

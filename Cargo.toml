@@ -45,12 +45,18 @@ serde_json = { version = "1.0", features = ["raw_value"] }
 
 # Language analysis
 tree-sitter = "0.25"
+tree-sitter-asm = "0.24"
+tree-sitter-c = "0.24"
+tree-sitter-cpp = "0.23"
+tree-sitter-glsl = "0.2"
+tree-sitter-go = "0.25"
 tree-sitter-highlight = "0.25"
 tree-sitter-json = "0.24"
 tree-sitter-md = "0.5"
 tree-sitter-nix = "0.3"
 tree-sitter-rust = "0.24"
 tree-sitter-toml-ng = "0.7"
+tree-sitter-zig = "1.1"
 
 # Terminal
 crossterm = { version = "0.28", features = ["event-stream"] }
