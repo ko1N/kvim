@@ -11,9 +11,16 @@
 //! that proves missing or that stops therefore leaves every other server of the
 //! same language running.
 //!
-//! A language without a server declaration, and a language whose servers are
-//! not installed, leave the editor fully usable with no diagnostics. The state
-//! is reported once and never becomes an error path.
+//! A declaration names the workspace root markers that prove that the workspace
+//! uses its server. The constructor reads the root once and records the markers
+//! that it holds, so a later session start reads that record and never the
+//! filesystem. A server without a marker in the root starts no process and
+//! holds no session budget.
+//!
+//! A language without a server declaration, a language whose servers this
+//! workspace does not use, and a language whose servers are not installed leave
+//! the editor fully usable with no diagnostics. The state is reported once and
+//! never becomes an error path.
 
 use std::collections::HashMap;
 use std::ffi::OsString;
@@ -26,7 +33,9 @@ use tokio_util::sync::CancellationToken;
 use kvim_settings::EditorSettings;
 
 use super::protocol::{LspBound, LspError, WorkspaceRoot};
-use super::server::{LanguageServerDeclaration, LanguageServerId, declarations_are_valid};
+use super::server::{
+    LanguageServerDeclaration, LanguageServerId, RootMarkers, ServerGate, declarations_are_valid,
+};
 use super::session::{
     LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
     TransportFactory, start,
@@ -62,6 +71,7 @@ enum LanguageService {
 pub struct LanguageServices {
     registry: LanguageRegistry,
     root: WorkspaceRoot,
+    markers: RootMarkers,
     settings: EditorSettings,
     services: HashMap<LanguageServerId, LanguageService>,
     events: mpsc::Sender<LanguageEvent>,
@@ -74,6 +84,11 @@ impl LanguageServices {
     ///
     /// The caller resolves the root before it calls this constructor, because
     /// the language module performs no filesystem lookup on the event loop.
+    ///
+    /// The constructor reads the workspace root once, and it records every
+    /// declared root marker that the root holds. The editor calls it at start,
+    /// before the terminal event loop runs, so the gate of a later session
+    /// start reads the recorded markers alone. See `docs/language-services.md`.
     ///
     /// # Errors
     ///
@@ -102,9 +117,12 @@ impl LanguageServices {
         settings: EditorSettings,
     ) -> Result<Self, LspError> {
         let (events, results) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
+        let root = WorkspaceRoot::new(root)?;
+        let markers = RootMarkers::probe(root.path(), registry);
         Ok(Self {
             registry,
-            root: WorkspaceRoot::new(root)?,
+            root,
+            markers,
             settings,
             services: HashMap::new(),
             events,
@@ -119,6 +137,17 @@ impl LanguageServices {
         self.root.path()
     }
 
+    /// Returns the number of sessions that this workspace holds.
+    ///
+    /// The count is the quantity that [`LSP_SESSIONS_MAX`] bounds. A gated
+    /// server enters no session, so it never raises this count. The accessor
+    /// exists for the tests that prove that rule.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn session_count(&self) -> usize {
+        self.services.len()
+    }
+
     /// Returns the running sessions of one path, and starts them on first use.
     ///
     /// The answer holds the handles in declaration order, so every caller reads
@@ -130,12 +159,17 @@ impl LanguageServices {
     /// The sessions of one adapter start together, so a workspace that reaches
     /// [`LSP_SESSIONS_MAX`] starts no session at all for a further language.
     ///
+    /// A server whose root markers the workspace does not hold never starts, so
+    /// it never appears in the answer and never holds a session budget slot.
+    ///
     /// # Errors
     ///
     /// Returns [`LspError::UnsupportedPath`] when no adapter owns the path,
     /// [`LspError::NoServerDeclared`] when the adapter declares no server,
-    /// [`LspError::NotInstalled`] after every declared server proved missing,
-    /// and [`LspError::Bounds`] when the session limit refuses a new language.
+    /// [`LspError::UnusedInWorkspace`] when the workspace holds no root marker
+    /// of any declared server, [`LspError::NotInstalled`] after every declared
+    /// server proved missing, and [`LspError::Bounds`] when the session limit
+    /// refuses a new language.
     pub fn sessions(&mut self, path: &Path) -> Result<Vec<&LanguageServerHandle>, LspError> {
         // An unsupported path and an ambiguous path both mean that no one
         // adapter owns the path, so neither starts a session.
@@ -152,15 +186,27 @@ impl LanguageServices {
         if declarations.is_empty() {
             return Err(LspError::NoServerDeclared);
         }
-        let ids: Vec<LanguageServerId> = declarations
+        // The position of a declaration in its own table is its declaration
+        // order, so the gate below removes a server without renumbering the
+        // servers that stay.
+        let used: Vec<(LanguageServerId, &LanguageServerDeclaration)> = declarations
             .iter()
             .enumerate()
-            .map(|(order, declaration)| LanguageServerId::new(adapter.id(), order, declaration.id))
+            .filter(|(_, declaration)| self.markers.gate(declaration) == ServerGate::Used)
+            .map(|(order, declaration)| {
+                (
+                    LanguageServerId::new(adapter.id(), order, declaration.id),
+                    declaration,
+                )
+            })
             .collect();
-        self.start_missing(&ids, declarations)?;
-        let running: Vec<&LanguageServerHandle> = ids
+        if used.is_empty() {
+            return Err(LspError::UnusedInWorkspace);
+        }
+        self.start_missing(&used)?;
+        let running: Vec<&LanguageServerHandle> = used
             .iter()
-            .filter_map(|id| match self.services.get(id) {
+            .filter_map(|(id, _)| match self.services.get(id) {
                 Some(LanguageService::Running { handle, .. }) => Some(handle),
                 Some(LanguageService::Unavailable) | None => None,
             })
@@ -175,20 +221,15 @@ impl LanguageServices {
     ///
     /// The step is atomic: it checks the session budget for the complete table
     /// before it starts the first server, so a refused language leaves no half
-    /// of its sessions behind.
+    /// of its sessions behind. The caller passes the servers that this
+    /// workspace uses, so a gated server never counts against that budget.
     fn start_missing(
         &mut self,
-        ids: &[LanguageServerId],
-        declarations: &[LanguageServerDeclaration],
+        used: &[(LanguageServerId, &LanguageServerDeclaration)],
     ) -> Result<(), LspError> {
-        debug_assert_eq!(
-            ids.len(),
-            declarations.len(),
-            "one identity names one declaration of the adapter table"
-        );
-        let missing = ids
+        let missing = used
             .iter()
-            .filter(|id| !self.services.contains_key(id))
+            .filter(|(id, _)| !self.services.contains_key(id))
             .count();
         let wanted = self.services.len() + missing;
         if wanted > LSP_SESSIONS_MAX {
@@ -198,7 +239,7 @@ impl LanguageServices {
                 actual: wanted,
             });
         }
-        for (id, declaration) in ids.iter().zip(declarations) {
+        for (id, declaration) in used {
             if self.services.contains_key(id) {
                 continue;
             }

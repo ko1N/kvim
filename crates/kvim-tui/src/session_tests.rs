@@ -541,6 +541,17 @@ fn asks_a_question(session: &mut Session) -> bool {
     asked
 }
 
+/// Refuses every queued language request with one typed language state.
+///
+/// The editor reports each normal state once, so a test that proves the report
+/// hands the same state to every queued request.
+fn refuse_language_requests_with(session: &mut Session, state: impl Fn() -> LspError) {
+    while let Some(request) = session.take_language_request() {
+        let kind = request.kind();
+        let _ = session.apply_language_dispatch(kind, Err(state()));
+    }
+}
+
 /// Runs the queued file request, like the event loop and the worker service.
 fn run_file_request(session: &mut Session) {
     refuse_language_requests(session);
@@ -1260,6 +1271,36 @@ fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
     press(&mut session, 'i');
     type_keys(&mut session, "text");
     assert_eq!(session.buffer().to_string(), "text\n");
+}
+
+#[test]
+fn a_server_that_the_workspace_does_not_use_is_reported_once_and_editing_continues() {
+    let directory = TempDir::new("session-unused-server");
+    let path = directory.write("main.rs", "fn main() {}\n");
+    let mut session = file_session();
+
+    session.open_path(path);
+    run_file_request(&mut session);
+    // The load queues one open. This workspace uses no declared server of the
+    // buffer, which is a normal state and not a failure.
+    refuse_language_requests_with(&mut session, || LspError::UnusedInWorkspace);
+    assert_eq!(
+        message(&session),
+        "this workspace uses no language server for this buffer; editing continues",
+        "an unused server names its own state, not a missing installation"
+    );
+
+    // The state reaches the message line once, so a later question repeats it
+    // never.
+    type_keys(&mut session, " k");
+    refuse_language_requests_with(&mut session, || LspError::UnusedInWorkspace);
+    assert_eq!(message(&session), "");
+
+    // The editor stays fully usable without the server.
+    press(&mut session, 'i');
+    type_keys(&mut session, "// ");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "// fn main() {}\n");
 }
 
 #[test]

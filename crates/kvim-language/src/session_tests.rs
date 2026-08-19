@@ -1103,6 +1103,7 @@ static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
         args: &[],
         language_id: "two",
         formatting: ServerFormatting::Enabled,
+        root_markers: &[],
         initialization_options: no_options,
     },
     LanguageServerDeclaration {
@@ -1111,6 +1112,7 @@ static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
         args: &[],
         language_id: "two",
         formatting: ServerFormatting::Disabled,
+        root_markers: &[],
         initialization_options: no_options,
     },
 ];
@@ -1215,6 +1217,205 @@ async fn next_unavailable(services: &mut LanguageServices) -> LanguageServerId {
             return event.server;
         }
     }
+}
+
+/// The workspace root of the root-marker tests.
+///
+/// The directory of this crate is a real workspace root. Every build of this
+/// test holds its `Cargo.toml` file and its `src` directory, so one root proves
+/// the file shape and the directory shape of a marker.
+const MARKER_ROOT: &str = env!("CARGO_MANIFEST_DIR");
+
+/// One marker name that no workspace root of this repository holds.
+const ABSENT_MARKER: &str = "kvim-absent-root-marker";
+
+/// The adapter that covers every root-marker case in one table.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct GatedAdapter;
+
+/// The four servers of [`GatedAdapter`], in declaration order.
+static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
+    LanguageServerDeclaration {
+        id: "file_marker",
+        program: "kvim-absent-language-server-file",
+        args: &[],
+        language_id: "gate",
+        formatting: ServerFormatting::Enabled,
+        root_markers: &["Cargo.toml"],
+        initialization_options: no_options,
+    },
+    LanguageServerDeclaration {
+        id: "absent_marker",
+        program: "kvim-absent-language-server-absent",
+        args: &[],
+        language_id: "gate",
+        formatting: ServerFormatting::Disabled,
+        root_markers: &[ABSENT_MARKER],
+        initialization_options: no_options,
+    },
+    LanguageServerDeclaration {
+        id: "directory_marker",
+        program: "kvim-absent-language-server-directory",
+        args: &[],
+        language_id: "gate",
+        formatting: ServerFormatting::Disabled,
+        root_markers: &["src"],
+        initialization_options: no_options,
+    },
+    LanguageServerDeclaration {
+        id: "no_marker",
+        program: "kvim-absent-language-server-none",
+        args: &[],
+        language_id: "gate",
+        formatting: ServerFormatting::Disabled,
+        root_markers: &[],
+        initialization_options: no_options,
+    },
+];
+
+impl LanguageAdapter for GatedAdapter {
+    fn id(&self) -> &'static str {
+        "gate"
+    }
+
+    fn version(&self) -> &'static str {
+        "1"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["gate"]
+    }
+
+    fn comment(&self) -> CommentStyle {
+        CommentStyle::new(Some("#"), None)
+    }
+
+    fn grammar(&self) -> Grammar {
+        RustAdapter::new().grammar()
+    }
+
+    fn indent_rule(&self) -> IndentRule {
+        IndentRule {
+            scopes: &["block"],
+            closing_delimiters: &['}'],
+        }
+    }
+
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &GATED_SERVERS
+    }
+}
+
+static GATED: GatedAdapter = GatedAdapter;
+
+/// One registry whose only language mixes gated and ungated servers.
+static GATED_REGISTRY: [&dyn LanguageAdapter; 1] = [&GATED];
+
+/// The adapter whose one server no workspace of this repository uses.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct UnusedAdapter;
+
+/// The one server of [`UnusedAdapter`], which every workspace gates off.
+static UNUSED_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    id: "unused",
+    program: "kvim-absent-language-server-unused",
+    args: &[],
+    language_id: "unused",
+    formatting: ServerFormatting::Enabled,
+    root_markers: &[ABSENT_MARKER],
+    initialization_options: no_options,
+}];
+
+impl LanguageAdapter for UnusedAdapter {
+    fn id(&self) -> &'static str {
+        "unused"
+    }
+
+    fn version(&self) -> &'static str {
+        "1"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["unused"]
+    }
+
+    fn comment(&self) -> CommentStyle {
+        CommentStyle::new(Some("#"), None)
+    }
+
+    fn grammar(&self) -> Grammar {
+        RustAdapter::new().grammar()
+    }
+
+    fn indent_rule(&self) -> IndentRule {
+        IndentRule {
+            scopes: &["block"],
+            closing_delimiters: &['}'],
+        }
+    }
+
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &UNUSED_SERVERS
+    }
+}
+
+static UNUSED: UnusedAdapter = UnusedAdapter;
+
+/// One registry whose only language declares one gated server.
+static UNUSED_REGISTRY: [&dyn LanguageAdapter; 1] = [&UNUSED];
+
+#[tokio::test]
+async fn a_server_starts_only_when_the_workspace_holds_one_of_its_root_markers() {
+    let root = PathBuf::from(MARKER_ROOT);
+    let mut services = LanguageServices::new(
+        LanguageRegistry::new(&GATED_REGISTRY),
+        root.clone(),
+        EditorSettings::default(),
+    )
+    .expect("the root is absolute");
+
+    let ids: Vec<LanguageServerId> = services
+        .sessions(&root.join("notes.gate"))
+        .expect("the workspace uses three of the four declared servers")
+        .iter()
+        .map(|handle| handle.id())
+        .collect();
+
+    // A file marker, a directory marker, and an empty marker table each start
+    // their server. The one server whose marker the root does not hold never
+    // starts, and every server that starts keeps its own declaration order.
+    assert_eq!(
+        ids,
+        [
+            LanguageServerId::new("gate", 0, "file_marker"),
+            LanguageServerId::new("gate", 2, "directory_marker"),
+            LanguageServerId::new("gate", 3, "no_marker"),
+        ]
+    );
+
+    // The gated server holds no session, so it takes no part of the session
+    // budget that `LSP_SESSIONS_MAX` bounds.
+    assert_eq!(services.session_count(), 3);
+}
+
+#[test]
+fn a_workspace_without_the_root_marker_starts_no_server_of_its_language() {
+    let root = PathBuf::from(MARKER_ROOT);
+    let mut services = LanguageServices::new(
+        LanguageRegistry::new(&UNUSED_REGISTRY),
+        root.clone(),
+        EditorSettings::default(),
+    )
+    .expect("the root is absolute");
+
+    // The workspace uses the one declared server of this language nowhere, so
+    // the path starts no process and reports a normal state.
+    assert!(matches!(
+        services.sessions(&root.join("notes.unused")),
+        Err(LspError::UnusedInWorkspace)
+    ));
+    assert_eq!(services.session_count(), 0);
+    assert!(services.try_recv().is_none());
 }
 
 #[test]

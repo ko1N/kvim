@@ -56,6 +56,9 @@ const NIX_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     args: &[],
     language_id: "nix",
     formatting: ServerFormatting::Enabled,
+    // The server fits every workspace that holds a Nix file, so no marker
+    // gates its start.
+    root_markers: &[],
     initialization_options: nil_options,
 }];
 

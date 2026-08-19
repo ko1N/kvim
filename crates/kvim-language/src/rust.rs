@@ -51,6 +51,8 @@ const RUST_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     args: &[],
     language_id: "rust",
     formatting: ServerFormatting::Enabled,
+    // The server fits every Rust workspace, so no marker gates its start.
+    root_markers: &[],
     initialization_options: rust_analyzer_options,
 }];
 

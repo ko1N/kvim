@@ -9,9 +9,14 @@
 //! that table is its declaration order, and every merge of two answers reads
 //! that order. See `docs/language-services.md`.
 
+use std::collections::HashSet;
+use std::path::{self, Path};
+
 use serde_json::Value;
 
 use kvim_settings::LanguageSettings;
+
+use super::LanguageRegistry;
 
 /// The largest number of servers that one language adapter declares.
 ///
@@ -19,6 +24,13 @@ use kvim_settings::LanguageSettings;
 /// tools. Four declarations cover that practice and still bound the merged
 /// answer of one buffer.
 pub const LANGUAGE_SERVERS_MAX: usize = 4;
+
+/// The largest number of workspace root markers that one declaration names.
+///
+/// One linter names every file name that can hold its configuration. The
+/// reference `eslint` configuration names twelve of them, so sixteen covers
+/// that practice and still bounds the probe of one workspace.
+pub const LANGUAGE_ROOT_MARKERS_MAX: usize = 16;
 
 /// Whether one declared server receives the document-formatting requests.
 ///
@@ -125,6 +137,14 @@ pub struct LanguageServerDeclaration {
     pub language_id: &'static str,
     /// Whether this server formats the documents of its adapter.
     pub formatting: ServerFormatting,
+    /// The workspace root markers that prove that the workspace uses this
+    /// server.
+    ///
+    /// A marker names one file or one directory of the workspace root, and it
+    /// carries no directory of its own. The session starts the server only
+    /// when the root holds one of these names. An empty table names no marker,
+    /// so the server always starts. See `docs/language-services.md`.
+    pub root_markers: &'static [&'static str],
     /// Maps the language-neutral settings onto the options of this server.
     ///
     /// The function is pure. It is the one place that may name a setting of one
@@ -140,12 +160,102 @@ impl LanguageServerDeclaration {
     }
 }
 
+/// Whether the workspace uses one declared language server.
+///
+/// The answer is a normal state of the workspace, never a failure. A server
+/// that the workspace does not use starts no child process. See
+/// `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ServerGate {
+    /// The workspace uses this server, so its session may start.
+    Used,
+    /// The workspace holds no marker of this server, so it never starts.
+    Unused,
+}
+
+/// The declared root markers that one workspace root holds.
+///
+/// The value is the complete filesystem knowledge of the server gate. One
+/// probe fills it before the terminal event loop runs, and every later gate
+/// decision reads it alone, so no gate reaches the filesystem on that loop.
+pub(super) struct RootMarkers {
+    /// The declared marker names that the workspace root holds.
+    present: HashSet<&'static str>,
+}
+
+impl RootMarkers {
+    /// Reads one workspace root and records every declared marker that it
+    /// holds.
+    ///
+    /// The probe asks the filesystem for one path for each distinct marker of
+    /// the registry, so its cost follows the adapter data and never the size of
+    /// the workspace. A marker matches a file of the root, and it matches a
+    /// directory of the root.
+    ///
+    /// The caller runs this probe once, when it creates the language services
+    /// and before the terminal event loop runs. The workspace root does not
+    /// change while the editor runs, so one probe answers for every buffer.
+    ///
+    /// A root that the process cannot read records no marker. Every gated
+    /// server then stays off, and every server without a marker still starts.
+    pub(super) fn probe(root: &Path, registry: LanguageRegistry) -> Self {
+        let mut declared: HashSet<&'static str> = HashSet::new();
+        for adapter in registry.adapters() {
+            let declarations = adapter.language_servers();
+            debug_assert!(
+                declarations_are_valid(declarations),
+                "an adapter declares at most LANGUAGE_ROOT_MARKERS_MAX root markers for one \
+                 server, and each marker names one entry of the workspace root"
+            );
+            for declaration in declarations {
+                declared.extend(declaration.root_markers);
+            }
+        }
+        let present = declared
+            .into_iter()
+            .filter(|marker| root.join(marker).try_exists().unwrap_or(false))
+            .collect();
+        Self { present }
+    }
+
+    /// Reports whether the workspace uses the server of one declaration.
+    ///
+    /// The answer is pure: it reads the recorded markers and the declaration
+    /// alone. A declaration that names no marker always answers
+    /// [`ServerGate::Used`].
+    pub(super) fn gate(&self, declaration: &LanguageServerDeclaration) -> ServerGate {
+        if declaration.root_markers.is_empty() {
+            return ServerGate::Used;
+        }
+        let used = declaration
+            .root_markers
+            .iter()
+            .any(|marker| self.present.contains(marker));
+        if used {
+            ServerGate::Used
+        } else {
+            ServerGate::Unused
+        }
+    }
+}
+
+/// Reports whether one root marker names one entry of a workspace root.
+///
+/// A marker carries no directory component, so the probe joins it to the root
+/// without leaving that root.
+#[must_use]
+fn marker_is_valid(marker: &str) -> bool {
+    !marker.is_empty() && marker != "." && marker != ".." && !marker.contains(path::is_separator)
+}
+
 /// Reports whether one adapter declares a valid server table.
 ///
 /// The table holds at most [`LANGUAGE_SERVERS_MAX`] declarations, every
 /// identifier is unique inside the adapter, and at most one declaration
-/// formats. The rules belong to `docs/language-services.md`, and a debug
-/// assertion of the services checks them once for each adapter table.
+/// formats. Each declaration names at most [`LANGUAGE_ROOT_MARKERS_MAX`] root
+/// markers, and each marker names one entry of the workspace root. The rules
+/// belong to `docs/language-services.md`, and a debug assertion of the services
+/// checks them once for each adapter table.
 #[must_use]
 pub(super) fn declarations_are_valid(declarations: &[LanguageServerDeclaration]) -> bool {
     if declarations.len() > LANGUAGE_SERVERS_MAX {
@@ -159,8 +269,13 @@ pub(super) fn declarations_are_valid(declarations: &[LanguageServerDeclaration])
         return false;
     }
     declarations.iter().enumerate().all(|(index, declaration)| {
-        declarations[..index]
-            .iter()
-            .all(|earlier| earlier.id != declaration.id)
+        declaration.root_markers.len() <= LANGUAGE_ROOT_MARKERS_MAX
+            && declaration
+                .root_markers
+                .iter()
+                .all(|marker| marker_is_valid(marker))
+            && declarations[..index]
+                .iter()
+                .all(|earlier| earlier.id != declaration.id)
     })
 }

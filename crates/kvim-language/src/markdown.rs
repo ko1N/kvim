@@ -40,6 +40,9 @@ const MARKDOWN_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclarat
     args: &["server"],
     language_id: "markdown",
     formatting: ServerFormatting::Enabled,
+    // The server fits every workspace that holds a Markdown file, so no marker
+    // gates its start.
+    root_markers: &[],
     initialization_options: marksman_options,
 }];
 

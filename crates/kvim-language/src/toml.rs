@@ -45,6 +45,9 @@ const TOML_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     args: &["lsp", "stdio"],
     language_id: "toml",
     formatting: ServerFormatting::Enabled,
+    // The server fits every workspace that holds a TOML file, so no marker
+    // gates its start.
+    root_markers: &[],
     initialization_options: taplo_options,
 }];
 
