@@ -467,20 +467,50 @@ fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     type_keys(&mut session, "q");
     assert!(!completing(&session), "the typed text opens no completion");
 
-    // The first cycle writes the first candidate and opens the list. The
-    // completion offers the full name, so `q` reaches `quit`.
+    // The completion offers the full name, so `q` reaches `quit`. The text
+    // holds no `!`, so `quit` is the whole offer and needs no list.
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "quit");
-    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Completed);
+    press_code(&mut session, KeyCode::Esc);
+    press_code(&mut session, KeyCode::Esc);
 
+    // An empty line names every command, so the first cycle writes the first
+    // candidate and opens the list.
+    press(&mut session, ':');
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "quit!");
+    assert_eq!(prompt_text(&session), "edit");
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+    for expected in ["quit", "wq", "write"] {
+        press_code(&mut session, KeyCode::Tab);
+        assert_eq!(prompt_text(&session), expected);
+    }
 
     // The candidates stay anchored to the typed text, so the cycle wraps
     // instead of narrowing the list to the written candidate.
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "quit");
+    assert_eq!(prompt_text(&session), "edit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
+}
+
+#[test]
+fn no_completion_cycle_writes_a_force_variant_that_the_user_did_not_type() {
+    let mut session = modified_session();
+    press(&mut session, ':');
+    type_keys(&mut session, "q");
+
+    // `quit!` discards the unsaved changes and asks nothing, so no cycle of a
+    // text without a `!` writes it.
+    for _ in 0..4 {
+        press_code(&mut session, KeyCode::Tab);
+        assert_eq!(prompt_text(&session), "quit");
+    }
+
+    // The completed line runs `:quit`, which still asks before it discards.
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(session.run_state(), RunState::Running);
+    assert_eq!(question(&session), QUIT_QUESTION);
+    answer(&mut session, "n");
 }
 
 #[test]
@@ -535,20 +565,20 @@ fn the_command_line_completion_answers_the_size_of_its_candidate_set() {
 fn the_command_line_completion_cycles_backward_and_restores_the_typed_text() {
     let mut session = session(60, 12);
     press(&mut session, ':');
-    type_keys(&mut session, "e");
+    type_keys(&mut session, "w");
 
     // A backward cycle from the typed text wraps to the last candidate.
     press_code(&mut session, KeyCode::BackTab);
-    assert_eq!(prompt_text(&session), "edit!");
+    assert_eq!(prompt_text(&session), "write");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
     press_code(&mut session, KeyCode::BackTab);
-    assert_eq!(prompt_text(&session), "edit");
+    assert_eq!(prompt_text(&session), "wq");
     press_code(&mut session, KeyCode::BackTab);
-    assert_eq!(prompt_text(&session), "edit!");
+    assert_eq!(prompt_text(&session), "write");
 
     // The first cancel restores the typed text and closes the list.
     press_code(&mut session, KeyCode::Esc);
-    assert_eq!(prompt_text(&session), "e");
+    assert_eq!(prompt_text(&session), "w");
     assert!(!completing(&session));
     assert!(
         session.visible().prompt.is_some(),
@@ -565,7 +595,6 @@ fn the_command_line_completion_cycles_backward_and_restores_the_typed_text() {
 fn one_typed_key_after_a_cycle_closes_the_list_and_reads_the_new_line() {
     let mut session = session(60, 12);
     press(&mut session, ':');
-    type_keys(&mut session, "e");
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "edit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
@@ -589,21 +618,19 @@ fn one_typed_key_after_a_cycle_closes_the_list_and_reads_the_new_line() {
     assert!(!completing(&session));
     assert_eq!(prompt_text(&session), "edit");
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
-    press_code(&mut session, KeyCode::Tab);
     assert_eq!(
         prompt_text(&session),
-        "edit!",
-        "the list holds `edit` and `edit!`"
+        "edit",
+        "the new line holds no `!`, so it offers `edit` alone"
     );
+    assert_eq!(completion_outcome(&session), CompletionOutcome::Completed);
 }
 
 #[test]
 fn enter_runs_the_command_that_the_completion_wrote_into_the_line() {
     let mut session = modified_session();
     press(&mut session, ':');
-    type_keys(&mut session, "q");
-    press_code(&mut session, KeyCode::Tab);
+    type_keys(&mut session, "qu!");
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "quit!");
 

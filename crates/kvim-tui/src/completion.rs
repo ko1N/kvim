@@ -10,10 +10,10 @@
 //! mechanism.
 //!
 //! The command names match by prefix, and not by the fuzzy score of the picker.
-//! The command line names the exact sets: `q` offers `quit` and `quit!` alone,
-//! while a subsequence match would add `wq` as well. The path source of `:e`
-//! ranks with the scorer of the picker instead, so one fuzzy rule serves the
-//! picker and the paths.
+//! The command line names the exact sets: `q` offers `quit` alone, while a
+//! subsequence match would add `wq` as well. The path source of `:e` ranks with
+//! the scorer of the picker instead, so one fuzzy rule serves the picker and the
+//! paths.
 //!
 //! See `docs/input-actions.md`.
 

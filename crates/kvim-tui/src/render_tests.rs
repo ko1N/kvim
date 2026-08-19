@@ -1681,7 +1681,10 @@ const POPUP_SELECTION: Color = Color::Rgb(0x34, 0x3a, 0x55);
 const SURFACE: Color = Color::Rgb(0x16, 0x1a, 0x20);
 
 /// The candidate names that an empty command line offers, in their list order.
-const COMMAND_CANDIDATES: [&str; 6] = ["edit", "edit!", "quit", "quit!", "wq", "write"];
+///
+/// The line holds no `!`, so the list holds no `!` variant. See
+/// `docs/input-actions.md`.
+const COMMAND_CANDIDATES: [&str; 4] = ["edit", "quit", "wq", "write"];
 
 /// Opens the command line of one session and offers its candidates.
 fn open_completion(session: &mut Session) {
@@ -1739,7 +1742,7 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     assert_eq!(style_at(&session, 0, first + 1).bg, Some(SURFACE));
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(selected_row(&session), Some(first + 1));
-    assert_eq!(row(&session, 23), ":edit!");
+    assert_eq!(row(&session, 23), ":quit");
     press_code(&mut session, KeyCode::BackTab);
     assert_eq!(selected_row(&session), Some(first));
     assert_eq!(row(&session, 23), ":edit");
@@ -1762,12 +1765,12 @@ fn one_candidate_completes_the_command_line_without_a_list() {
 
 #[test]
 fn the_candidate_list_reports_the_candidates_that_it_hides() {
-    // The body band of this terminal holds five rows, and the completion offers
-    // six candidates, so the list spends its last row on the note.
-    let mut session = session(40, 7);
+    // The body band of this terminal holds three rows, and the completion
+    // offers four candidates, so the list spends its last row on the note.
+    let mut session = session(40, 5);
     open_completion(&mut session);
 
-    for (offset, candidate) in COMMAND_CANDIDATES.iter().take(4).enumerate() {
+    for (offset, candidate) in COMMAND_CANDIDATES.iter().take(2).enumerate() {
         let y = u16::try_from(offset).expect("the list is short");
         // The list is a panel of its own width, so the winbar row that it
         // reaches keeps the scroll position beside it.
@@ -1778,16 +1781,16 @@ fn the_candidate_list_reports_the_candidates_that_it_hides() {
         );
     }
     assert_eq!(
-        row(&session, 4),
+        row(&session, 2),
         " ...",
         "the last row reports the hidden candidates: {}",
-        row(&session, 4)
+        row(&session, 2)
     );
     assert_eq!(
-        row(&session, 5),
+        row(&session, 3),
         statusline_without_state(40, "Normal", "1:1")
     );
-    assert_eq!(row(&session, 6), ":edit");
+    assert_eq!(row(&session, 4), ":edit");
 }
 
 #[test]
@@ -1828,5 +1831,5 @@ fn a_narrow_terminal_keeps_the_command_line_readable() {
             "row {y} stays inside the terminal"
         );
     }
-    assert_eq!(row(&session, 2), " edit");
+    assert_eq!(row(&session, 4), " edit");
 }
