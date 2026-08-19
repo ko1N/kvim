@@ -20,13 +20,15 @@ use kvim_runtime::{FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchEvent, W
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
-    GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusSnapshot, TREE_PENDING_READS_MAX,
-    temp::TempDir,
+    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusSnapshot, TREE_PENDING_READS_MAX,
+    TakenDestination, temp::TempDir,
 };
 
 use super::session::{FileRequestFailure, Redraw, Session};
 use super::theme::{Theme, ThemeRole};
-use super::tree::{GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, root_label};
+use super::tree::{
+    GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
+};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -440,6 +442,11 @@ fn a_rename_applies_the_buffer_path_and_the_tree_as_one_transition() {
         dir.join("GUIDE.md").exists() && !dir.join("README.md").exists(),
         "the workspace holds the renamed entry alone"
     );
+    assert_eq!(
+        message_line(&session),
+        "",
+        "a free destination destroys nothing, so it asks nothing"
+    );
 }
 
 #[test]
@@ -602,6 +609,227 @@ fn a_delete_question_names_one_entry_or_the_count_of_several() {
         PathBuf::from("/workspace/docs"),
     ];
     assert_eq!(delete_question(&several), "Delete 3 entries");
+}
+
+#[test]
+fn an_overwrite_question_names_one_entry_or_the_count_of_several() {
+    let one = [taken("/workspace/docs/README.md")];
+    assert_eq!(overwrite_question(&one), "Overwrite README.md");
+
+    let several = [
+        taken("/workspace/docs/README.md"),
+        taken("/workspace/src/main.rs"),
+        taken("/workspace/notes.txt"),
+    ];
+    assert_eq!(overwrite_question(&several), "Overwrite 3 entries");
+}
+
+/// Returns one taken destination that holds a file.
+fn taken(path: &str) -> TakenDestination {
+    TakenDestination {
+        path: PathBuf::from(path),
+        kind: EntryKind::File,
+    }
+}
+
+/// Adds one file to the workspace and reads the tree again.
+fn add_file(dir: &TempDir, session: &mut Session, name: &str, text: &str) -> PathBuf {
+    let path = dir.file(name, text);
+    press(session, 'R');
+    drain(session);
+    path
+}
+
+/// Selects `NOTES.md`, which is the third row of the workspace root.
+///
+/// The first move reaches the first row, because a reveal over an open file
+/// selects that file instead of the first entry.
+fn select_notes(session: &mut Session) {
+    type_keys(session, "gg");
+    press(session, 'j');
+    press(session, 'j');
+    assert!(
+        selected(session).ends_with("NOTES.md"),
+        "the sidebar selects the source of the rename"
+    );
+}
+
+/// Renames `NOTES.md` onto `README.md`, which opens the overwrite question.
+///
+/// The worker refuses the taken destination first, so the question follows the
+/// result of the mutation that the user asked for.
+fn ask_to_overwrite_readme(session: &mut Session) {
+    select_notes(session);
+    press(session, 'r');
+    type_keys(session, "README.md");
+    press_code(session, KeyCode::Enter);
+    drain(session);
+    assert_eq!(
+        message_line(session),
+        "Overwrite README.md? [y/N]:",
+        "the question names the destination"
+    );
+}
+
+#[test]
+fn a_confirmed_overwrite_replaces_the_destination() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    let notes = add_file(&dir, &mut session, "NOTES.md", "notes\n");
+    ask_to_overwrite_readme(&mut session);
+
+    // The question changed nothing yet.
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).expect("the file exists"),
+        "kvim\n"
+    );
+
+    press(&mut session, 'y');
+    drain(&mut session);
+
+    let content = fs::read_to_string(dir.join("README.md")).expect("the file exists");
+    println!("destination content: {content}");
+    assert_eq!(content, "notes\n", "the answer replaced the destination");
+    assert!(!notes.exists(), "the rename leaves no source");
+}
+
+#[test]
+fn a_cancelled_overwrite_leaves_both_entries_unchanged() {
+    // `n` names the default of the question, `Esc` cancels every prompt, and
+    // `Y` and `w` stand for every remaining key.
+    for value in ['n', 'Y', 'w'] {
+        let (dir, mut session) = workspace();
+        reveal(&mut session);
+        let notes = add_file(&dir, &mut session, "NOTES.md", "notes\n");
+        ask_to_overwrite_readme(&mut session);
+
+        press(&mut session, value);
+
+        assert_eq!(
+            fs::read_to_string(dir.join("README.md")).expect("the file exists"),
+            "kvim\n",
+            "{value} keeps the destination"
+        );
+        assert_eq!(
+            fs::read_to_string(&notes).expect("the file exists"),
+            "notes\n",
+            "{value} keeps the source"
+        );
+        assert!(
+            session.take_workspace_request().is_none(),
+            "{value} reaches no worker"
+        );
+        assert_eq!(message_line(&session), "", "{value} leaves no trace");
+    }
+
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    let notes = add_file(&dir, &mut session, "NOTES.md", "notes\n");
+    ask_to_overwrite_readme(&mut session);
+    press_code(&mut session, KeyCode::Esc);
+    assert!(notes.is_file(), "Esc keeps the source");
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).expect("the file exists"),
+        "kvim\n"
+    );
+    assert!(session.take_workspace_request().is_none());
+}
+
+#[test]
+fn a_confirmed_paste_replaces_the_entry_of_the_destination() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    add_file(&dir, &mut session, "docs/README.md", "old\n");
+
+    // Hold the file of the workspace root, then paste it into `docs`, which
+    // holds one entry of that name already.
+    type_keys(&mut session, "gg");
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'y');
+    type_keys(&mut session, "gg");
+    press(&mut session, 'p');
+    drain(&mut session);
+
+    assert_eq!(
+        message_line(&session),
+        "Overwrite README.md? [y/N]:",
+        "a transfer onto a taken name asks before it replaces the entry"
+    );
+    press(&mut session, 'y');
+    drain(&mut session);
+
+    let content = fs::read_to_string(dir.join("docs/README.md")).expect("the file exists");
+    println!("destination content: {content}");
+    assert_eq!(content, "kvim\n");
+    assert!(
+        dir.join("README.md").is_file(),
+        "a copy leaves the source in place"
+    );
+}
+
+#[test]
+fn an_overwrite_of_a_destination_that_changed_reports_the_refusal() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    add_file(&dir, &mut session, "NOTES.md", "notes\n");
+    ask_to_overwrite_readme(&mut session);
+
+    // A directory took the place of the file while the question waited, so the
+    // answer names another entry than the question did.
+    let destination = dir.join("README.md");
+    fs::remove_file(&destination).expect("the file exists");
+    fs::create_dir(&destination).expect("the name is free");
+    fs::write(destination.join("inner.md"), "inner").expect("the directory is writable");
+
+    press(&mut session, 'y');
+    drain(&mut session);
+
+    let report = message(&session);
+    println!("report: {report}");
+    assert_eq!(
+        report,
+        format!(
+            "{} changed while the question waited",
+            destination.display()
+        )
+    );
+    assert_eq!(
+        fs::read_to_string(destination.join("inner.md")).expect("the directory survived"),
+        "inner",
+        "the answer destroys no entry that the question never named"
+    );
+    assert!(dir.join("NOTES.md").is_file(), "the source stays in place");
+}
+
+#[test]
+fn an_overwrite_of_a_buffer_with_unsaved_changes_asks_nothing() {
+    let (dir, mut session) = workspace();
+    session.open_path(dir.join("README.md"));
+    drain_file(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+
+    reveal(&mut session);
+    add_file(&dir, &mut session, "NOTES.md", "notes\n");
+    select_notes(&mut session);
+    press(&mut session, 'r');
+    type_keys(&mut session, "README.md");
+    press_code(&mut session, KeyCode::Enter);
+    drain(&mut session);
+
+    let report = message(&session);
+    println!("report: {report}");
+    assert_eq!(
+        report,
+        format!("{} holds unsaved changes", dir.join("README.md").display()),
+        "a destination with unsaved changes refuses the mutation without a question"
+    );
+    assert_eq!(
+        fs::read_to_string(dir.join("README.md")).expect("the file exists"),
+        "kvim\n"
+    );
 }
 
 #[test]

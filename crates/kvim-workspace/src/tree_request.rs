@@ -8,7 +8,9 @@
 
 use std::path::PathBuf;
 
-use super::mutation::{FileOperation, MutationError, MutationOutcome, MutationPlan, OpenBuffer};
+use super::mutation::{
+    FileOperation, MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite,
+};
 use super::tree::{self, DirectoryListing, ReadError};
 
 /// One workspace mutation with the state that its validation needs.
@@ -20,6 +22,11 @@ pub struct MutateRequest {
     pub root: PathBuf,
     /// The loaded buffers that the mutation can affect.
     pub buffers: Vec<OpenBuffer>,
+    /// The destinations that one confirmed answer approved.
+    ///
+    /// Every request of a user command refuses a taken destination. Only the
+    /// answer of the overwrite question names one. See `docs/files.md`.
+    pub overwrite: Overwrite,
 }
 
 /// One blocking workspace operation.
@@ -63,8 +70,13 @@ impl WorkspaceRequest {
                 path,
             },
             Self::Mutate(request) => WorkspaceResult::Mutated {
-                outcome: MutationPlan::stage(&request.operation, &request.root, &request.buffers)
-                    .and_then(MutationPlan::apply),
+                outcome: MutationPlan::stage_with(
+                    &request.operation,
+                    &request.root,
+                    &request.buffers,
+                    &request.overwrite,
+                )
+                .and_then(MutationPlan::apply),
             },
         }
     }

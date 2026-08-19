@@ -546,7 +546,9 @@ directories. Kvim validates the complete mutation before it changes anything on
 disk. Validation checks:
 
 - that the source exists and is a supported kind,
-- that the destination does not collide with an existing entry,
+- that the destination holds no entry, or that the user approved the overwrite
+  of exactly that entry,
+- that the source and the destination name two entries,
 - that two sources of one mutation do not claim one destination name,
 - that the destination stays inside the workspace and holds no parent-directory
   component,
@@ -571,6 +573,40 @@ arrives, not when the question opens, so an entry that disappeared meanwhile
 reaches no worker. [`input-actions.md`](input-actions.md) owns the keys of the
 question.
 
+### Overwrite
+
+An overwrite destroys the entry that holds the destination, so Kvim asks the
+user before it replaces one. A rename or a transfer onto a free destination
+asks nothing.
+
+A taken destination refuses the mutation first, exactly as it did before this
+capability. The refusal carries every taken destination and its kind back to the
+editor, and the editor then asks one question. The question names the entry, or
+the number of entries. `y` replaces the named destinations. Every other key
+leaves every source and every destination unchanged.
+
+The existence check runs on the bounded worker service with the rest of the
+staging, so the terminal event loop reads no filesystem state. The question
+therefore follows the result of the operation that the user asked for, not a
+key alone. [`input-actions.md`](input-actions.md) owns that rule.
+
+The answer carries the destinations that the question named, with the kind that
+the first staging observed. Kvim stages the operation again and replaces exactly
+those destinations. The world can change while the question waits, so the second
+staging decides again:
+
+- a destination that became free needs no overwrite and takes the free path,
+- a destination that changed its kind refuses the mutation, so no answer
+  destroys a directory that took the place of a file,
+- a destination that the question did not name refuses the mutation, as every
+  taken destination does.
+
+Kvim refuses to overwrite a destination whose buffer holds unsaved changes, as
+it refuses to remove such an entry. That refusal reaches the user before the
+question, so the user never approves a mutation that the second staging rejects.
+A buffer of an overwritten file without unsaved changes reloads through the
+workspace watch above.
+
 ### Staged Application
 
 A copy or a move writes every entry under a temporary name beside its
@@ -584,6 +620,14 @@ A removal renames every entry to a temporary name beside itself, which is the
 visible removal, and then removes the temporary names. A failed rename restores
 every renamed entry. A failed removal after the commit leaves one hidden
 temporary entry, which the default visibility rule keeps out of the tree.
+
+An overwrite adds one step to the commit. The commit renames the entry that
+holds an approved destination to a temporary name beside itself, which parks it,
+and it then gives that destination to the staged entry. A failure of any later
+step puts every parked entry back under its own name, so a failed overwrite
+leaves the destination unchanged. The commit removes the parked entries only
+after every destination holds its new entry. An overwrite therefore never
+destroys the destination before the replacement is complete.
 
 Kvim moves an entry with one rename. It performs no copy across a filesystem
 boundary in the first release, and it reports the refusal of the platform
