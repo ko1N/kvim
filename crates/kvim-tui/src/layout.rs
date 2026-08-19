@@ -200,6 +200,23 @@ pub(super) fn compute_layout(
     layout
 }
 
+/// Returns the rectangle that the window tree occupies.
+///
+/// The calculation removes the width of every visible sidebar in the same
+/// deterministic order that [`compute_layout`] uses, so both agree on the
+/// extent that the tree divides.
+pub(super) fn editor_area(
+    left: Option<Sidebar>,
+    right: Option<Sidebar>,
+    terminal: Rect,
+    settings: &WindowSettings,
+) -> Rect {
+    let mut editor = terminal;
+    let _ = carve_sidebar(&mut editor, left, settings);
+    let _ = carve_sidebar(&mut editor, right, settings);
+    editor
+}
+
 /// Removes the width of one visible sidebar from the editor rectangle.
 ///
 /// The sidebar stays hidden while the remaining width would fall below the

@@ -421,6 +421,156 @@ fn a_row_resize_moves_one_border_and_keeps_every_other_pane() {
 }
 
 #[test]
+fn a_row_resize_from_the_middle_window_keeps_the_far_border() {
+    // The reported case: three panes side by side with the focus in the middle
+    // one. Both commands move the border that the middle window shares with the
+    // right window, so the left border never moves.
+    let mut tree = windows(120, 40);
+    let (left, middle, right) = row_of_three(&mut tree);
+    tree.focus_region(middle);
+
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 60, "the far border stays in place");
+    assert_eq!(area(&tree, middle).width, 36);
+    assert_eq!(area(&tree, right).width, 24);
+    assert_tiles(&tree);
+
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 60, "the far border stays in place");
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(area(&tree, right).width, 30);
+    assert_tiles(&tree);
+
+    // The opposite command reproduces the exact cell sizes, so no step drifts.
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(area(&tree, right).width, 30);
+}
+
+/// Creates one sidebar of 40 cells and three panes of 60, 30, and 30 cells.
+fn row_beside_a_sidebar(
+    tree: &mut Windows,
+    side: SidebarSide,
+) -> (WindowId, WindowId, WindowId, WindowId) {
+    let sidebar = tree.open_sidebar(side, 40);
+    let (left, middle, right) = row_of_three(tree);
+    (sidebar, left, middle, right)
+}
+
+#[test]
+fn a_sidebar_resize_moves_one_border_and_keeps_every_other_pane() {
+    // Three panes beside the file tree. The command moves the inner border of
+    // the sidebar, so only the pane at that border changes its width.
+    let mut tree = windows(160, 40);
+    let (sidebar, left, middle, right) = row_beside_a_sidebar(&mut tree, SidebarSide::Right);
+    tree.focus_region(right);
+
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 34);
+    assert_eq!(area(&tree, right).width, 36);
+    assert_eq!(
+        area(&tree, left).width,
+        60,
+        "the pane keeps its exact cells"
+    );
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_tiles(&tree);
+
+    // The opposite command restores the exact cell sizes, so no step drifts.
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 40);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(area(&tree, right).width, 30);
+    assert_tiles(&tree);
+}
+
+#[test]
+fn a_sidebar_resize_from_the_tree_moves_the_same_border() {
+    // The focused sidebar answers the resize command itself, and it moves the
+    // same border as a command from the neighboring editor window.
+    let mut tree = windows(160, 40);
+    let (sidebar, left, middle, right) = row_beside_a_sidebar(&mut tree, SidebarSide::Right);
+    assert_eq!(tree.focus_region(sidebar), LayoutChange::Changed);
+
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 46);
+    assert_eq!(area(&tree, right).width, 24);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(
+        tree.focused_region(),
+        sidebar,
+        "the focus stays in the tree"
+    );
+    assert_tiles(&tree);
+
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 40);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(area(&tree, right).width, 30);
+    assert_tiles(&tree);
+}
+
+#[test]
+fn a_left_sidebar_resize_moves_the_pane_at_its_border() {
+    // The left sidebar shares its border with the leftmost pane, so that pane
+    // absorbs the cells and the two panes to its right keep their exact width.
+    let mut tree = windows(160, 40);
+    let (sidebar, left, middle, right) = row_beside_a_sidebar(&mut tree, SidebarSide::Left);
+    assert_eq!(tree.focus_region(sidebar), LayoutChange::Changed);
+
+    assert_eq!(tree.resize(Direction::Right), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 46);
+    assert_eq!(area(&tree, left).width, 54);
+    assert_eq!(
+        area(&tree, middle).width,
+        30,
+        "the other panes keep their cells"
+    );
+    assert_eq!(area(&tree, right).width, 30);
+    assert_tiles(&tree);
+
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 40);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(area(&tree, right).width, 30);
+    assert_tiles(&tree);
+}
+
+#[test]
+fn a_sidebar_resize_cascades_past_a_pane_that_reaches_its_minimum() {
+    let mut tree = windows(160, 40);
+    let (sidebar, left, middle, right) = row_beside_a_sidebar(&mut tree, SidebarSide::Right);
+    tree.focus_region(right);
+
+    // The right pane gives the first six cells alone.
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, right).width, 24);
+
+    // It reaches the minimum width of 20 cells after four more cells, so the
+    // middle pane gives the remaining two.
+    assert_eq!(tree.resize(Direction::Left), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 52);
+    assert_eq!(area(&tree, left).width, 60);
+    assert_eq!(area(&tree, middle).width, 28);
+    assert_eq!(area(&tree, right).width, 20);
+    assert_tiles(&tree);
+
+    // The three panes need 60 cells, so the sidebar stops where they reach it.
+    while tree.resize(Direction::Left) == LayoutChange::Changed {}
+    assert_eq!(area(&tree, sidebar).width, 100);
+    assert_eq!(area(&tree, left).width, 20);
+    assert_eq!(area(&tree, middle).width, 20);
+    assert_eq!(area(&tree, right).width, 20);
+    assert_tiles(&tree);
+}
+
+#[test]
 fn a_stacked_resize_moves_one_border_and_keeps_every_other_pane() {
     // Three stacked windows of 30, 15, and 15 rows.
     let mut tree = windows(120, 60);

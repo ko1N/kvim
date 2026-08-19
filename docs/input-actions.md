@@ -495,6 +495,7 @@ behind them.
 | `Ctrl-E` | Close the file tree |
 | `Ctrl-Q` | Close the file tree |
 | `Ctrl-H/J/K/L` | Focus the window in that direction |
+| `Ctrl-Alt-H/J/K/L` | Move the inner border of the file tree in that direction |
 | `Ctrl-S` | Save the active buffer |
 
 Every navigation key accepts a count, and every move stops at the first and the

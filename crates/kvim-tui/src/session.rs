@@ -2233,15 +2233,23 @@ impl Session {
             | Command::FocusWindowLeft
             | Command::FocusWindowDown
             | Command::FocusWindowUp
-            | Command::FocusWindowRight => return self.leave_sidebar(command),
+            | Command::FocusWindowRight
+            | Command::ResizeWindowLeft
+            | Command::ResizeWindowDown
+            | Command::ResizeWindowUp
+            | Command::ResizeWindowRight => return self.sidebar_window_command(command),
             // The sidebar table holds no other command.
             _ => return Redraw::Skipped,
         }
         Redraw::Needed
     }
 
-    /// Moves the focus out of the sidebar, or closes the sidebar.
-    fn leave_sidebar(&mut self, command: Command) -> Redraw {
+    /// Applies one window command that the focused sidebar answers.
+    ///
+    /// The focus keys leave the sidebar and the close key hides it. The resize
+    /// keys move the inner border of the sidebar and keep the focus on it, so
+    /// the user widens the file tree without leaving it first.
+    fn sidebar_window_command(&mut self, command: Command) -> Redraw {
         match self.windows.apply(command) {
             WindowOutcome::Changed => {
                 self.follow_focused_window();

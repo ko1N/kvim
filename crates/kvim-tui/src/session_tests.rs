@@ -22,7 +22,7 @@ use kvim_workspace::temp::TempDir;
 use super::clipboard::SessionClipboard;
 use super::language::{LanguageRequest, LanguageRequestKind};
 use super::session::{MessageLevel, Redraw, RunState, Session};
-use super::window::WindowId;
+use super::window::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -179,6 +179,34 @@ fn a_window_command_changes_the_tree_and_the_last_close_ends_the_session() {
         RunState::Finished,
         "closing the last window ends the editor"
     );
+}
+
+#[test]
+fn the_focused_file_tree_answers_the_resize_keys() {
+    // The sidebar owns its own binding scope, so the resize keys must live in
+    // that scope as well as in the Normal scope.
+    let mut session = session(120, 20);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
+    let width = |session: &Session| {
+        session
+            .windows()
+            .sidebar(SidebarSide::Right)
+            .expect("`Ctrl-E` opens the file tree")
+            .width_cells()
+    };
+    let opened = width(&session);
+
+    assert_eq!(
+        session.handle_event(TerminalEvent::Key(Key::ctrl_alt(KeyCode::Char('h'))), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(width(&session), opened + 6, "the inner border moves left");
+
+    assert_eq!(
+        session.handle_event(TerminalEvent::Key(Key::ctrl_alt(KeyCode::Char('l'))), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(width(&session), opened, "the inner border moves back");
 }
 
 #[test]
