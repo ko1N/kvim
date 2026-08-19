@@ -5,7 +5,7 @@
 //! the event loop does.
 
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::Terminal;
@@ -26,7 +26,7 @@ use kvim_workspace::{
 
 use super::session::{FileRequestFailure, Redraw, Session};
 use super::theme::{Theme, ThemeRole};
-use super::tree::{GENERATED_NAMES, TREE_TITLE_ROWS, root_label};
+use super::tree::{GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, root_label};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -470,18 +470,138 @@ fn a_copy_and_a_paste_move_the_entry_into_the_selected_directory() {
     );
 }
 
+/// Reports whether the sidebar still shows a row of `README.md`.
+///
+/// The selection mark sits at the left edge of the selected row, so the test
+/// reads the end of each row instead of the complete row.
+fn shows_readme(session: &Session) -> bool {
+    sidebar_rows(session)
+        .iter()
+        .any(|row| row.ends_with("README.md"))
+}
+
+/// Selects `README.md` and presses the delete key, which opens the question.
+fn ask_to_delete_readme(session: &mut Session) {
+    press(session, 'j');
+    press(session, 'j');
+    press(session, 'd');
+    assert_eq!(
+        message_line(session),
+        "Delete README.md? [y/N]:",
+        "the question names the entry"
+    );
+}
+
 #[test]
-fn a_delete_removes_the_selected_entry() {
+fn a_confirmed_delete_removes_the_selected_entry() {
     let (dir, mut session) = workspace();
     reveal(&mut session);
+    ask_to_delete_readme(&mut session);
+    assert!(
+        session.take_workspace_request().is_none(),
+        "the open question reaches no worker before the answer"
+    );
 
-    press(&mut session, 'j');
-    press(&mut session, 'j');
-    press(&mut session, 'd');
+    press(&mut session, 'y');
     drain(&mut session);
 
     assert!(!dir.join("README.md").exists());
-    assert!(!sidebar_rows(&session).contains(&"     README.md".to_owned()));
+    assert!(!shows_readme(&session));
+    // The answer returns the keys to the sidebar, so `i` opens no insert mode.
+    press(&mut session, 'i');
+    assert_eq!(session.mode(), Mode::Normal);
+}
+
+#[test]
+fn a_cancelled_delete_leaves_every_entry_in_place() {
+    // `n` names the default of the question, `Esc` cancels every prompt, and
+    // `Y` and `w` stand for every remaining key.
+    for value in ['n', 'Y', 'w'] {
+        let (dir, mut session) = workspace();
+        reveal(&mut session);
+        ask_to_delete_readme(&mut session);
+
+        press(&mut session, value);
+
+        assert!(dir.join("README.md").exists(), "{value} removes no entry");
+        assert!(
+            session.take_workspace_request().is_none(),
+            "{value} reaches no worker"
+        );
+        assert_eq!(message_line(&session), "", "{value} leaves no trace");
+        assert!(shows_readme(&session), "{value} keeps the row");
+    }
+
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    ask_to_delete_readme(&mut session);
+    press_code(&mut session, KeyCode::Esc);
+    assert!(dir.join("README.md").exists(), "Esc removes no entry");
+    assert!(session.take_workspace_request().is_none());
+}
+
+#[test]
+fn a_delete_without_a_selection_reports_the_refusal_and_asks_nothing() {
+    let dir = TempDir::new("tree-empty");
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    drain(&mut session);
+    reveal(&mut session);
+
+    press(&mut session, 'd');
+
+    assert_eq!(
+        message_line(&session),
+        "the file tree shows no selected entry",
+        "a refused delete reports the refusal instead of a question"
+    );
+    assert!(session.take_workspace_request().is_none());
+}
+
+#[test]
+fn a_delete_of_an_entry_that_disappeared_reports_it_and_removes_nothing() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    ask_to_delete_readme(&mut session);
+
+    // Another program removes the entry while the question waits. The tree
+    // follows the change, which proves that the editor stays usable.
+    let removed = dir.join("README.md");
+    fs::remove_file(&removed).expect("the temporary directory is writable");
+    let _ = session.apply_watch_batch(&watch_batch(&removed, WatchKind::Removed));
+    drain(&mut session);
+    assert!(!shows_readme(&session), "the tree followed the removal");
+
+    press(&mut session, 'y');
+
+    assert_eq!(
+        message_line(&session),
+        "the file tree no longer shows the entry",
+        "the answer stages the removal again and refuses the lost entry"
+    );
+    assert!(
+        session.take_workspace_request().is_none(),
+        "the lost entry reaches no worker"
+    );
+    assert!(
+        dir.join("src/main.rs").exists(),
+        "the answer removes no other entry"
+    );
+}
+
+#[test]
+fn a_delete_question_names_one_entry_or_the_count_of_several() {
+    let one = [PathBuf::from("/workspace/docs/README.md")];
+    assert_eq!(delete_question(&one), "Delete README.md");
+
+    let several = [
+        PathBuf::from("/workspace/docs/README.md"),
+        PathBuf::from("/workspace/src/main.rs"),
+        PathBuf::from("/workspace/docs"),
+    ];
+    assert_eq!(delete_question(&several), "Delete 3 entries");
 }
 
 #[test]

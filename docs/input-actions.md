@@ -516,7 +516,7 @@ behind them.
 | `R` | Read the workspace directories again |
 | `a` | Add one file |
 | `A` | Add one directory |
-| `d` | Delete the selected entry |
+| `d` | Delete the selected entry, after a confirmation |
 | `r` | Rename the selected entry |
 | `y` | Copy the selected entry |
 | `x` | Cut the selected entry |
@@ -543,6 +543,11 @@ selected row keeps the same scroll margin that a buffer window keeps.
 `a`, `A`, `r`, and `/` read one line through the prompt of the message line, not
 through a second input mechanism. The prompt returns the keys to the sidebar
 when it closes. `Esc` and `Ctrl-C` cancel the prompt.
+
+`d` destroys data, so it asks before it deletes. The question names the entry,
+and it names the count of several entries. `y` performs the removal, and every
+other key leaves every entry in place. The answer returns the keys to the
+sidebar. See the Confirmation section above and [`files.md`](files.md).
 
 The tree search keeps every row. It marks each matching name, and `n` and `N`
 move the selection between the marks. The search opens a closed directory that

@@ -244,6 +244,8 @@ pub(super) enum TreeRefusal {
     NameTooLong,
     /// The file-operation clipboard holds no entry.
     ClipboardEmpty,
+    /// The tree lost the entry between the question and the answer.
+    EntryGone,
     /// One workspace operation is already running.
     Busy,
 }
@@ -257,6 +259,7 @@ impl TreeRefusal {
             Self::NameHasPath => "the name must hold one entry name, not a path",
             Self::NameTooLong => "the name is too long",
             Self::ClipboardEmpty => "the file clipboard holds no entry",
+            Self::EntryGone => "the file tree no longer shows the entry",
             Self::Busy => "one workspace operation is already running",
         }
     }
@@ -655,15 +658,40 @@ impl TreeSidebar {
         self.clipboard.clear();
     }
 
-    /// Returns the removal of the selected entry.
+    /// Returns the entries that a removal of the selection destroys.
+    ///
+    /// The caller names these entries in its question, and it stages the
+    /// removal of exactly these entries when the user confirms. See
+    /// `docs/files.md`.
     ///
     /// # Errors
     ///
     /// Returns [`TreeRefusal::NoSelection`] while the tree shows no entry.
-    pub(super) fn stage_delete(&self) -> Result<FileOperation, TreeRefusal> {
-        Ok(FileOperation::Delete {
-            paths: vec![self.selected_entry()?],
-        })
+    pub(super) fn delete_selection(&self) -> Result<Vec<PathBuf>, TreeRefusal> {
+        Ok(vec![self.selected_entry()?])
+    }
+
+    /// Returns the removal of the named entries.
+    ///
+    /// The tree reads its rows again here, because a watcher event can drop an
+    /// entry while the question waits for its answer. The removal of an entry
+    /// that the tree no longer shows therefore reaches no worker, and the
+    /// answer never removes the entry that took its place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TreeRefusal::EntryGone`] when the tree shows no row of one
+    /// named entry.
+    pub(super) fn stage_delete(&self, paths: Vec<PathBuf>) -> Result<FileOperation, TreeRefusal> {
+        let rows = self.tree.rows();
+        let shown = paths.iter().all(|path| {
+            rows.iter()
+                .any(|row| row.is_selectable() && row.path == *path)
+        });
+        if !shown {
+            return Err(TreeRefusal::EntryGone);
+        }
+        Ok(FileOperation::Delete { paths })
     }
 
     /// Returns the creation of one entry inside the destination directory.
@@ -811,6 +839,25 @@ fn check_name(name: &str) -> Result<&str, TreeRefusal> {
         return Err(TreeRefusal::NameHasPath);
     }
     Ok(name)
+}
+
+/// Returns the question that a removal of the named entries asks.
+///
+/// One entry appears by its name, which is the name that its row shows. Several
+/// entries appear as a count, so the user knows the size of the removal before
+/// the answer. The question holds no answer hint, because the message line adds
+/// one. See `docs/files.md`.
+pub(super) fn delete_question(paths: &[PathBuf]) -> String {
+    let [path] = paths else {
+        return format!("Delete {} entries", paths.len());
+    };
+    // Every selectable row carries an entry name, so the complete path only
+    // answers for a root that holds no row.
+    let name = path.file_name().map_or_else(
+        || path.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    format!("Delete {name}")
 }
 
 /// Returns the workspace root as the header row shows it.
