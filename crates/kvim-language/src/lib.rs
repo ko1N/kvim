@@ -77,18 +77,22 @@ use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextCh
 
 mod analysis;
 mod asm;
+mod bash;
 mod c;
 mod cpp;
 mod document;
 mod encoding;
+mod fish;
 mod formatter;
 mod glsl;
 mod go;
 mod json;
+mod lua;
 mod markdown;
 mod nix;
 mod progress;
 mod protocol;
+mod python;
 mod rust;
 mod server;
 mod services;
@@ -104,12 +108,14 @@ mod session_tests;
 mod tests;
 
 pub use asm::AsmAdapter;
+pub use bash::BashAdapter;
 pub use c::CAdapter;
 pub use cpp::CppAdapter;
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
     TextEdit,
 };
+pub use fish::FishAdapter;
 pub use formatter::{
     FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
     FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, LanguageFormatter,
@@ -117,6 +123,7 @@ pub use formatter::{
 pub use glsl::GlslAdapter;
 pub use go::GoAdapter;
 pub use json::JsonAdapter;
+pub use lua::LuaAdapter;
 pub use markdown::MarkdownAdapter;
 pub use nix::NixAdapter;
 pub use progress::{
@@ -128,6 +135,7 @@ pub use protocol::{
     LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError, SourceSpan,
     WorkspaceRoot,
 };
+pub use python::PythonAdapter;
 pub use rust::RustAdapter;
 pub use server::{
     LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId,
@@ -701,11 +709,17 @@ pub struct LanguageRegistry {
 /// The assembly adapter of this build.
 static ASM: AsmAdapter = AsmAdapter::new();
 
+/// The Bash adapter of this build.
+static BASH: BashAdapter = BashAdapter::new();
+
 /// The C adapter of this build.
 static C: CAdapter = CAdapter::new();
 
 /// The C++ adapter of this build.
 static CPP: CppAdapter = CppAdapter::new();
+
+/// The fish adapter of this build.
+static FISH: FishAdapter = FishAdapter::new();
 
 /// The GLSL adapter of this build.
 static GLSL: GlslAdapter = GlslAdapter::new();
@@ -716,11 +730,17 @@ static GO: GoAdapter = GoAdapter::new();
 /// The JSON adapter of this build.
 static JSON: JsonAdapter = JsonAdapter::new();
 
+/// The Lua adapter of this build.
+static LUA: LuaAdapter = LuaAdapter::new();
+
 /// The Markdown adapter of this build.
 static MARKDOWN: MarkdownAdapter = MarkdownAdapter::new();
 
 /// The Nix adapter of this build.
 static NIX: NixAdapter = NixAdapter::new();
+
+/// The Python adapter of this build.
+static PYTHON: PythonAdapter = PythonAdapter::new();
 
 /// The Rust adapter of this build.
 static RUST: RustAdapter = RustAdapter::new();
@@ -740,17 +760,19 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 /// Exactly one adapter owns each extension and each file name. Two owners make
 /// every path of that key an ambiguous failure, which leaves the buffer without
 /// highlighting, without a server, and without a formatter.
-static ADAPTERS: [&dyn LanguageAdapter; 11] = [
-    &ASM, &C, &CPP, &GLSL, &GO, &JSON, &MARKDOWN, &NIX, &RUST, &TOML, &ZIG,
+static ADAPTERS: [&dyn LanguageAdapter; 15] = [
+    &ASM, &BASH, &C, &CPP, &FISH, &GLSL, &GO, &JSON, &LUA, &MARKDOWN, &NIX, &PYTHON, &RUST, &TOML,
+    &ZIG,
 ];
 
 impl LanguageRegistry {
     /// Returns the registry of this build.
     ///
-    /// The table holds one adapter for assembly, C, C++, GLSL, Go, JSON,
-    /// Markdown, Nix, Rust, TOML, and Zig. A later release adds a language by
-    /// registering one more adapter in the table that this constructor names,
-    /// or by building a registry with [`LanguageRegistry::new`].
+    /// The table holds one adapter for assembly, Bash, C, C++, fish, GLSL, Go,
+    /// JSON, Lua, Markdown, Nix, Python, Rust, TOML, and Zig. A later release
+    /// adds a language by registering one more adapter in the table that this
+    /// constructor names, or by building a registry with
+    /// [`LanguageRegistry::new`].
     #[must_use]
     pub const fn first_release() -> Self {
         Self::new(&ADAPTERS)

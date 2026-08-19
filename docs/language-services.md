@@ -46,11 +46,13 @@ The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
-The registry contains one adapter for each of assembly, C, C++, GLSL, Go, JSON,
-Markdown, Nix, Rust, TOML, and Zig. Every match is case-sensitive. Each of the
-eleven adapters declares one language server: `asm-lsp` for assembly, `clangd`
-for C and for C++, `glsl_analyzer` for GLSL, `gopls` for Go,
-`vscode-json-language-server` for JSON, `marksman` for Markdown, `nil` for Nix,
+The registry contains one adapter for each of assembly, Bash, C, C++, fish,
+GLSL, Go, JSON, Lua, Markdown, Nix, Python, Rust, TOML, and Zig. Every match is
+case-sensitive. Each of the fifteen adapters declares one language server:
+`asm-lsp` for assembly, `bash-language-server` for Bash, `clangd` for C and for
+C++, `fish-lsp` for fish, `glsl_analyzer` for GLSL, `gopls` for Go,
+`vscode-json-language-server` for JSON, `lua-language-server` for Lua,
+`marksman` for Markdown, `nil` for Nix, `pyright-langserver` for Python,
 `rust-analyzer` for Rust, `taplo` for TOML, and `zls` for Zig. A later release
 adds an adapter for another language and for its language server, because the
 Language Server Protocol is language independent.
@@ -61,26 +63,39 @@ highlighting, without a server, and without a formatter. C therefore owns `c`
 and `h`, and C++ owns `cc`, `cpp`, `cxx`, `hh`, `hpp`, and `hxx`. A plain
 header carries C far more often than C++, so the plain extension belongs to C.
 Assembly owns `s` and `S` as two separate names, because the match is
-case-sensitive and the C preprocessor runs over the uppercase name alone.
+case-sensitive and the C preprocessor runs over the uppercase name alone. Bash
+owns `bash` and `sh`, because one grammar reads the POSIX shell language and the
+Bash extensions of it. Python owns `py` and `pyi`, because one grammar reads the
+source and the stub of a module.
+
+Bash also owns the file names `.bash_logout`, `.bash_profile`, `.bashrc`, and
+`.profile`. Each name is a startup script of an interactive or a login shell,
+and each one carries no extension, so the file-name key is the only key that
+selects it.
 
 One adapter declares a table of servers, not one server. A language whose tools
 split the work therefore runs every declared server together. The order of the
 table is the declaration order, and the merge rules below read that order, so
 the merged answer never depends on which server answers first.
 
-Seven of the eleven adapters also declare an external formatter: `clang-format`
-for C and for C++, `goimports` for Go, `nixfmt` for Nix, `prettier` for JSON and
-for Markdown, and `taplo` for TOML. GLSL, Rust, and Zig declare none, so
+Ten of the fifteen adapters also declare an external formatter: `black` for
+Python, `clang-format` for C and for C++, `goimports` for Go, `lua-format` for
+Lua, `nixfmt` for Nix, `prettier` for JSON and for Markdown, `shfmt` for Bash,
+and `taplo` for TOML. fish, GLSL, Rust, and Zig declare none, so `fish-lsp`,
 `glsl_analyzer`, `rust-analyzer`, and `zls` format a buffer of their language.
 Assembly declares neither, because `asm-lsp` supplies no document formatting, so
-an assembly buffer shows no format-on-save state. The formatting section below
-owns the precedence between the two paths.
+an assembly buffer shows no format-on-save state. `pyright-langserver` supplies
+no document formatting either, so `black` is the only formatter of a Python
+buffer. The formatting section below owns the precedence between the two paths.
 
-TOML, Nix, and assembly carry `#` as their line comment, and the C family, Go,
-GLSL, Rust, and Zig carry `//`. The assembly grammar reads `#`, `//`, and `;`,
-because it serves several assembler dialects. The adapter writes `#`, because
-the GNU assembler reads the file on macOS and on Linux. Zig defines no block
-comment, so its metadata carries the line token alone. JSON and Markdown define
+TOML, Nix, assembly, Bash, fish, and Python carry `#` as their line comment, the
+C family, Go, GLSL, Rust, and Zig carry `//`, and Lua carries `--`. The assembly
+grammar reads `#`, `//`, and `;`, because it serves several assembler dialects.
+The adapter writes `#`, because the GNU assembler reads the file on macOS and on
+Linux. Lua opens a long comment with `--[[` and closes it with `]]`. Zig, Bash,
+fish, and Python define no block comment, so the metadata of each one carries
+the line token alone. A triple-quoted Python text is a string expression, not a
+comment, so it stays out of that metadata. JSON and Markdown define
 no comment of their own, so their comment metadata carries no token, and the
 comment toggle stays disabled and reports the reason. That is the same path
 that a file without an adapter takes.
@@ -133,6 +148,28 @@ terminal event loop. When the parse result for that version is not yet available
 the editor uses the fallback rule in [`text-model.md`](text-model.md) instead of
 waiting. A late result never rewrites a line that the user already typed.
 
+The rule fits a language whose block carries an opening and a closing token,
+because one node then spans the complete block. A C brace, a Bash `fi`, a fish
+`end`, and a Lua `end` each close their node that way. The rule names the node
+that spans the whole construct, and never the inner statement list, because two
+entries would count one level twice.
+
+Python is the one registered language that closes a block with indentation
+alone. Its `block` node starts at the first token of the suite and ends at the
+last one, so no node spans the header line and the body together. The Python
+adapter therefore names the compound statement that owns each suite, and one
+statement supplies the level of its own body. Two limits follow from that model,
+and the user corrects each affected line:
+
+- The last line of a suite reports one level too few, because the compound
+  statement ends on that line and no token follows it.
+- A compound statement whose header spans several lines reports one level too
+  many, because the statement already supplies the level of its own body.
+
+A bracketed Python expression carries its own opening and closing character, so
+a list, a call, and a parameter list each behave exactly as the equivalent node
+of a brace language.
+
 ## Analysis Limits
 
 Analysis enforces explicit limits on buffer bytes, buffer lines, syntax nodes,
@@ -174,7 +211,10 @@ grammar whose query uses a name of the shared vocabulary that the mapping does
 not yet cover therefore extends the mapping, never the role set. The `text`
 family of the prose grammars is mapped that way: a title takes the type role, a
 literal and a uniform resource identifier take the string role, and a reference
-takes the constant role.
+takes the constant role. The older words of the same vocabulary are mapped that
+way too: a conditional and a repeat take the keyword role, a field takes the
+property role, a method takes the function role, and a parameter takes the
+parameter role.
 
 A query may also mark one node with a name that carries no role at all, for
 example the spell-check marker of another editor. The highlighter reads the last
@@ -289,8 +329,8 @@ of the `initialize` result.
 
 Most installed servers name no encoding. `clangd`, `rust-analyzer`, and `zls`
 confirm UTF-8. `gopls`, `nil`, `taplo`, `marksman`, and the servers of JSON,
-Python, TypeScript, Bash, YAML, and Lua all omit the field. A gate that demands
-UTF-8 therefore refuses almost every declared server.
+Python, TypeScript, Bash, fish, YAML, and Lua all omit the field. A gate that
+demands UTF-8 therefore refuses almost every declared server.
 
 A UTF-16 column indexes the line that its position names, so the conversion
 needs the exact text of that line. A UTF-16 session mirrors the text of every

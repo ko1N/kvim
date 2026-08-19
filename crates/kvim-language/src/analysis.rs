@@ -224,6 +224,9 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
         // string role.
         "character" => Some(SyntaxRole::String),
         "comment" => Some(SyntaxRole::Comment),
+        // The Lua query names the branch keywords and the loop keywords with
+        // the older words of the same shared vocabulary.
+        "conditional" | "repeat" => Some(SyntaxRole::Keyword),
         "constant" if bytes.first().is_some_and(u8::is_ascii_digit) => Some(SyntaxRole::Number),
         "constant" => Some(SyntaxRole::Constant),
         "constructor" => Some(SyntaxRole::Constructor),
@@ -231,15 +234,22 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
         // other grammars name the same characters `punctuation.delimiter`.
         "delimiter" => Some(SyntaxRole::Delimiter),
         "escape" | "string" => Some(SyntaxRole::String),
+        // A table field of the Lua query is the property of its table.
+        "field" => Some(SyntaxRole::Property),
         "function" if name.split('.').any(|part| part == "macro") => Some(SyntaxRole::Macro),
         "function" => Some(SyntaxRole::Function),
         "keyword" => Some(SyntaxRole::Keyword),
         "label" => Some(SyntaxRole::Statement),
+        // A method is a function of one value, so it takes the function role.
+        "method" => Some(SyntaxRole::Function),
         // A module name names a namespace of declarations, so it takes the type
         // role of that namespace.
         "module" => Some(SyntaxRole::Type),
         "number" => Some(SyntaxRole::Number),
         "operator" => Some(SyntaxRole::Operator),
+        // The Lua query names a function parameter with the older word of the
+        // same shared vocabulary.
+        "parameter" => Some(SyntaxRole::Parameter),
         "preproc" => Some(SyntaxRole::Preprocessor),
         "property" => Some(SyntaxRole::Property),
         "punctuation" => match parts.next() {

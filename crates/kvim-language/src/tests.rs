@@ -477,6 +477,13 @@ fn every_registered_extension_selects_its_adapter() {
         ("boot.s", "asm"),
         ("Cargo.toml", "toml"),
         ("cmd/main.go", "go"),
+        ("home/.bashrc", "bash"),
+        ("functions/greet.fish", "fish"),
+        ("plugin/init.lua", "lua"),
+        ("scripts/build.bash", "bash"),
+        ("scripts/build.sh", "bash"),
+        ("src/api.pyi", "python"),
+        ("src/main.py", "python"),
         ("docs/notes.markdown", "markdown"),
         ("flake.nix", "nix"),
         ("include/api.h", "c"),
@@ -603,7 +610,15 @@ fn every_registered_language_produces_terminal_independent_roles() {
 fn each_language_reports_its_own_comment_token() {
     let registry = LanguageRegistry::first_release();
 
-    for (path, token) in [("Cargo.toml", "#"), ("flake.nix", "#"), ("main.rs", "//")] {
+    for (path, token) in [
+        ("Cargo.toml", "#"),
+        ("build.sh", "#"),
+        ("flake.nix", "#"),
+        ("greet.fish", "#"),
+        ("init.lua", "--"),
+        ("main.py", "#"),
+        ("main.rs", "//"),
+    ] {
         assert_eq!(
             registry
                 .adapter(Path::new(path))
@@ -637,6 +652,24 @@ const ASM_SOURCE: &str = "# note\n_start:\n    mov $1, %rax\n";
 /// One GLSL source that carries a comment, a nested block, and a literal.
 const GLSL_SOURCE: &str =
     "// note\nvoid main() {\n    if (true) {\n        float value = 1.0;\n    }\n}\n";
+
+/// One Python source that carries a comment, a nested suite, and a literal.
+const PYTHON_SOURCE: &str = "# note\ndef main():\n    if True:\n        value = 1\n    return 0\n";
+
+/// One Python source whose list spans several lines.
+const PYTHON_LIST_SOURCE: &str = "values = [\n    1,\n]\n";
+
+/// One Bash source that carries a comment, a nested block, and a literal.
+const BASH_SOURCE: &str =
+    "# note\nmain() {\n    if [ -n \"$1\" ]; then\n        echo 1\n    fi\n}\n";
+
+/// One fish source that carries a comment, a nested block, and a literal.
+const FISH_SOURCE: &str =
+    "# note\nfunction main\n    if test -n \"$argv\"\n        echo 1\n    end\nend\n";
+
+/// One Lua source that carries a comment, a nested block, and a table.
+const LUA_SOURCE: &str = "-- note\nlocal function main()\n    if true then\n        local value = \
+                          1\n    end\n    return { a = 1 }\nend\n";
 
 #[test]
 fn c_source_produces_terminal_independent_roles() {
@@ -842,6 +875,184 @@ fn the_glsl_indent_level_follows_the_syntax_tree() {
     // A line that starts with a closing delimiter loses one level again.
     assert_eq!(analysis.indent_level(byte("    }")).unwrap().get(), 1);
     assert_eq!(analysis.indent_level(last("}\n")).unwrap().get(), 0);
+}
+
+#[test]
+fn python_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("src/main.py", PYTHON_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Function));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_python_indent_level_follows_the_compound_statements() {
+    let analysis = analyze_path("src/main.py", PYTHON_SOURCE);
+    let byte = |needle: &str| {
+        PYTHON_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A line that opens a suite gains one level, because the compound statement
+    // that owns the suite already encloses the end of its own header line.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n        value"))
+            .unwrap()
+            .get(),
+        2
+    );
+    // Python closes a suite with no delimiter, so the compound statement ends at
+    // the last line of its suite. Both rows below therefore report one level too
+    // few, which is the documented limit of the Python indent rule.
+    assert_eq!(
+        analysis.indent_level(byte("\n    return")).unwrap().get(),
+        1
+    );
+    assert_eq!(
+        analysis
+            .indent_level(PYTHON_SOURCE.len() - 1)
+            .unwrap()
+            .get(),
+        0
+    );
+}
+
+#[test]
+fn a_bracketed_python_expression_indents_like_a_brace_language() {
+    let analysis = analyze_path("src/main.py", PYTHON_LIST_SOURCE);
+    let byte = |needle: &str| {
+        PYTHON_LIST_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+
+    // A bracket carries its own opening and closing character, so the list
+    // behaves exactly as the equivalent node of a brace language.
+    assert_eq!(analysis.indent_level(byte("\n    1,")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(byte("]")).unwrap().get(), 0);
+}
+
+#[test]
+fn bash_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("scripts/build.sh", BASH_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 2).contains(&SyntaxRole::String));
+    // The Bash query names every command word a function and captures no
+    // numeric literal, so the argument of `echo` carries the function role.
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Function));
+}
+
+#[test]
+fn the_bash_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("scripts/build.sh", BASH_SOURCE);
+    let byte = |needle: &str| {
+        BASH_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        BASH_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every compound statement of the shell carries its own terminator, so each
+    // one spans its complete body and every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("\n        echo")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("\n    fi")).unwrap().get(), 2);
+    assert_eq!(analysis.indent_level(byte("\n}")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("}")).unwrap().get(), 0);
+}
+
+#[test]
+fn fish_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("functions/main.fish", FISH_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
+}
+
+#[test]
+fn the_fish_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("functions/main.fish", FISH_SOURCE);
+    let byte = |needle: &str| {
+        FISH_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        FISH_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every compound statement of fish ends with the `end` keyword, so each one
+    // spans its complete body and every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    assert_eq!(
+        analysis.indent_level(byte("\n        echo")).unwrap().get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("\n    end")).unwrap().get(), 2);
+    assert_eq!(analysis.indent_level(byte("\nend")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("end") + 3).unwrap().get(), 0);
+}
+
+#[test]
+fn lua_source_produces_terminal_independent_roles() {
+    let analysis = analyze_path("plugin/init.lua", LUA_SOURCE);
+
+    assert_eq!(roles(&analysis, 0), vec![SyntaxRole::Comment]);
+    assert!(roles(&analysis, 1).contains(&SyntaxRole::Keyword));
+    assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
+    // The query names a table field with the older word of the shared
+    // vocabulary, so this row also proves the extended role mapping.
+    assert!(roles(&analysis, 5).contains(&SyntaxRole::Property));
+}
+
+#[test]
+fn the_lua_indent_level_follows_the_syntax_tree() {
+    let analysis = analyze_path("plugin/init.lua", LUA_SOURCE);
+    let byte = |needle: &str| {
+        LUA_SOURCE
+            .find(needle)
+            .expect("the test source holds the text")
+    };
+    let last = |needle: &str| {
+        LUA_SOURCE
+            .rfind(needle)
+            .expect("the test source holds the text")
+    };
+
+    // Every compound statement of Lua ends with the `end` keyword, so each one
+    // spans its complete body and every row below is exact.
+    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
+    assert_eq!(
+        analysis
+            .indent_level(byte("\n        local"))
+            .unwrap()
+            .get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(byte("\n    end")).unwrap().get(), 2);
+    assert_eq!(
+        analysis.indent_level(byte("\n    return")).unwrap().get(),
+        1
+    );
+    assert_eq!(analysis.indent_level(byte("\nend")).unwrap().get(), 1);
+    assert_eq!(analysis.indent_level(last("end") + 3).unwrap().get(), 0);
 }
 
 #[test]
