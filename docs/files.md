@@ -555,6 +555,13 @@ A buffer of a moved or renamed entry follows that entry and keeps its identity.
 A buffer of a removed entry stays loaded, so the user keeps the content. Kvim
 refuses to remove an entry whose buffer holds unsaved changes.
 
+A removal destroys data, so Kvim asks the user before it removes an entry. The
+question names the entry, or the number of entries. A cancelled question removes
+nothing and changes no workspace state. Kvim stages the removal when the answer
+arrives, not when the question opens, so an entry that disappeared meanwhile
+reaches no worker. [`input-actions.md`](input-actions.md) owns the keys of the
+question.
+
 ### Staged Application
 
 A copy or a move writes every entry under a temporary name beside its

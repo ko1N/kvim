@@ -80,7 +80,7 @@ use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_are
 use super::theme::Theme;
 use super::tree::{
     GitPublication, TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
-    TreeRefusal, TreeSidebar,
+    TreeRefusal, TreeSidebar, delete_question,
 };
 use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
 
@@ -516,14 +516,21 @@ impl PromptLine {
 /// The action that one confirmed question performs.
 ///
 /// The editor holds one variant for each action that asks before it destroys
-/// data. A build without a test holds no variant, because no editor action asks
-/// yet, so no confirmation opens there.
+/// data. A variant names what the action destroys, never the staged operation,
+/// because the world can change while the question waits. The confirmed arm
+/// stages the operation again. See `docs/files.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ConfirmedAction {
+    /// Remove the named workspace entries.
+    DeleteEntries {
+        /// The entries that the question named.
+        paths: Vec<PathBuf>,
+    },
     /// Report one message on the message line.
     ///
-    /// The confirmation tests read that message, so they need no editor action
-    /// that destroys data. The variant is a test seam, never editor behavior.
+    /// The tests of the confirmation itself read that message, so they need no
+    /// workspace and no destructive action. The variant is a test seam, never
+    /// editor behavior.
     #[cfg(test)]
     Report,
 }
@@ -541,13 +548,6 @@ pub(super) struct Confirmation {
 }
 
 /// The outcome of one request to open a confirmation.
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "no editor action asks yet, so only a test opens a confirmation"
-    )
-)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ConfirmationRequest {
     /// The confirmation opened and waits for one key.
@@ -1427,13 +1427,6 @@ impl Session {
     /// prompt does, so a question of the file-tree sidebar returns the keys to
     /// the sidebar. At most one question waits, so a request while another one
     /// waits opens nothing and changes nothing.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "no editor action asks yet, so only a test opens a confirmation"
-        )
-    )]
     pub(super) fn open_confirmation(
         &mut self,
         question: impl Into<String>,
@@ -1475,6 +1468,12 @@ impl Session {
     /// Performs the action that one confirmed question named.
     fn perform_confirmed(&mut self, action: ConfirmedAction) -> Redraw {
         match action {
+            // The tree stages the removal here, not when the question opened,
+            // so a watcher event that dropped the entry meanwhile refuses it.
+            ConfirmedAction::DeleteEntries { paths } => {
+                let staged = self.tree.stage_delete(paths);
+                self.start_tree_mutation(staged)
+            }
             #[cfg(test)]
             ConfirmedAction::Report => {
                 self.set_message("the confirmation reached its action", MessageLevel::Info);
@@ -2506,10 +2505,7 @@ impl Session {
             Command::TreeRename => return self.open_prompt(PromptKind::Tree(TreePrompt::Rename)),
             Command::TreeCopyEntry => return self.hold_entry(TransferMode::Copy),
             Command::TreeCutEntry => return self.hold_entry(TransferMode::Move),
-            Command::TreeDelete => {
-                let staged = self.tree.stage_delete();
-                return self.start_tree_mutation(staged);
-            }
+            Command::TreeDelete => return self.confirm_tree_delete(),
             Command::TreePasteEntries => {
                 let staged = self.tree.stage_paste();
                 return self.start_tree_mutation(staged);
@@ -2593,6 +2589,37 @@ impl Session {
                 );
             }
             Err(refusal) => self.set_message(refusal.message(), MessageLevel::Warning),
+        }
+        Redraw::Needed
+    }
+
+    /// Asks the user before the editor removes the selected entries.
+    ///
+    /// The tree reads its selection first, so a refusal reaches the user with
+    /// no question. Only a delete that would proceed asks. The answer stages
+    /// the removal, so the entries reach the worker at answer time. See
+    /// `docs/files.md`.
+    fn confirm_tree_delete(&mut self) -> Redraw {
+        let paths = match self.tree.delete_selection() {
+            Ok(paths) => paths,
+            Err(refusal) => {
+                self.set_message(refusal.message(), MessageLevel::Warning);
+                return Redraw::Needed;
+            }
+        };
+        debug_assert!(
+            !paths.is_empty(),
+            "a selection that names no entry refuses instead"
+        );
+        let question = delete_question(&paths);
+        match self.open_confirmation(question, ConfirmedAction::DeleteEntries { paths }) {
+            ConfirmationRequest::Opened => {}
+            // An open question owns every key, so no delete key can reach this
+            // point while another question waits. A refusal destroys nothing.
+            ConfirmationRequest::Refused => debug_assert!(
+                false,
+                "the resolver hands every key to the open confirmation"
+            ),
         }
         Redraw::Needed
     }
