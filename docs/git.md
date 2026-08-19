@@ -123,9 +123,10 @@ adds, so the reader can still tell which rule spoke.
 
 ## Refresh
 
-Kvim reads the repository state after a save, after a workspace mutation, and on
-the tree refresh command. It uses no timer, because the renderer draws only
-after a visible state change and runs no unconditional frame loop.
+Kvim reads the repository state after a save, after a workspace mutation, after
+a workspace-watch burst, and on the tree refresh command. It uses no timer,
+because the renderer draws only after a visible state change and runs no
+unconditional frame loop.
 
 One read runs at a time. The sidebar holds one queued request, so a newer
 trigger replaces the request that it supersedes. The publication gate cancels

@@ -1,10 +1,12 @@
 # Kvim
 
 Kvim is a modal terminal editor for Rust projects. It provides Vim-style
-editing, a dynamic window tree, a file tree sidebar, fuzzy pickers, Rust
-Tree-sitter highlighting, and `rust-analyzer` services in one executable. Kvim
-runs on macOS and on Linux. This release reads no configuration file, so every
-setting keeps the default that this document records.
+editing, a dynamic window tree, a file tree sidebar that marks the repository
+state, fuzzy pickers, a workspace file watcher, Tree-sitter highlighting for
+JSON, Markdown, Nix, Rust, and TOML, and `rust-analyzer` services in one
+executable. Kvim runs on macOS and on Linux. This release reads no
+configuration file, so every setting keeps the default that this document
+records.
 
 ## Install
 
@@ -30,8 +32,8 @@ Build the executable from a checkout:
 nix build
 ```
 
-The package wraps the executable and puts `rg` and `rust-analyzer` on its
-search path, so a Nix installation provides every external command.
+The package wraps the executable and puts `git`, `rg`, and `rust-analyzer` on
+its search path, so a Nix installation provides every external command.
 
 To work on Kvim itself, enter the development shell:
 
@@ -39,7 +41,7 @@ To work on Kvim itself, enter the development shell:
 nix develop
 ```
 
-The shell supplies Cargo, Rust, `rustfmt`, Clippy, `nixfmt`, `rg`, and
+The shell supplies Cargo, Rust, `rustfmt`, Clippy, `nixfmt`, `git`, `rg`, and
 `rust-analyzer`.
 
 ### With Cargo
@@ -66,8 +68,13 @@ pickers, and the language server all work inside that root.
 
 Space is the leader key. `Space ff` opens the file picker, `Space f/` opens the
 search picker, `Space o` lists the loaded buffers, and `gd` goes to a
-definition. Press the leader key and wait half a second. The which-key overlay
-then lists the keys that can follow.
+definition. `Ctrl-e` opens the file tree sidebar at the active file, and a
+second `Ctrl-e` closes it. Press the leader key and wait half a second. The
+which-key overlay then lists the keys that can follow.
+
+Kvim reports its own work on the message line at the bottom of the terminal. The
+overlay in the bottom-right corner reports language-server progress, and nothing
+else.
 
 Run `kvim --help` for the command forms, and `kvim --version` for the version.
 
@@ -80,22 +87,24 @@ kvim --diagnostics
 ```
 
 The command prints a plain-text report and exits. The report names the version,
-the workspace root, the state of every external command, the clipboard commands
-of this host, and the resource limits. It writes no escape sequence, so you can
-redirect it to a file or paste it into a bug report.
+the workspace root, the state of `rg` and `rust-analyzer`, the clipboard
+commands of this host, and the resource limits. It writes no escape sequence, so
+you can redirect it to a file or paste it into a bug report.
 
 ## External Commands
 
-Kvim runs three kinds of external command. Each one is optional. Kvim reports a
+Kvim runs four kinds of external command. Each one is optional. Kvim reports a
 missing command once and stays fully usable without it.
 
 | Command | Enables | Without it |
 |---|---|---|
+| `git` | The repository marks of the file tree | The file tree still lists every entry and stays fully usable. It shows no repository state. Kvim never writes the repository. |
 | `rg` | The search picker on `Space f/` | The search picker returns no result. Kvim reports the missing command once. Every other picker still works. |
 | `rust-analyzer` | Diagnostics, go-to-definition, hover, and formatting | The buffer stays fully editable. Kvim shows no diagnostics and answers no definition or hover request. Tree-sitter highlighting and the comment toggle still work, because they need no server. |
 | A clipboard command | The system clipboard | The editor registers still hold every yank and every paste. Only the exchange with other applications stops. |
 
-Put `rg` and `rust-analyzer` on `PATH`. A Nix installation does this for you.
+Put `git`, `rg`, and `rust-analyzer` on `PATH`. A Nix installation does this for
+you.
 
 ## Clipboard
 
@@ -167,6 +176,14 @@ size. No buffer changes.
 the modification time before it overwrites a file. When either differs from the
 recorded value, Kvim reports the conflict and writes nothing. The buffer stays
 dirty and usable. Reload the file with `:e`, then apply your change again.
+
+**Another program changes an open file.** Kvim watches the workspace. A buffer
+without an unsaved change reloads by itself and keeps the cursor. A buffer that
+holds an unsaved change never reloads: Kvim reports the change once and marks
+the buffer `[!]` in its window bar. Reload it with `:e` after you save your
+work, or discard your work and reload with `:e!`. A file that disappeared, that
+grew past the size limit, or that is no longer text keeps its buffer, so the
+text in memory stays the only copy until you save it.
 
 **A save fails.** Kvim writes to a temporary file in the target directory and
 renames it over the target, so a reader never sees a partial file. A failure at

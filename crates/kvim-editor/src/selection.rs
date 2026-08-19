@@ -160,8 +160,8 @@ impl ModeState {
 
 /// The text that the active Visual mode selects.
 ///
-/// Slice 6 builds the edit transactions from these values. This slice produces
-/// them only.
+/// The operators build their edit transactions from these values. The mode
+/// state produces them only.
 ///
 /// # Examples
 ///

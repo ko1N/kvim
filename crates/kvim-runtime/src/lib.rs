@@ -3,7 +3,7 @@
 //!
 //! The crate owns the worker service, the external-process service, request
 //! identity, and result delivery. It stays generic. It knows nothing about
-//! buffers, modes, pickers, or language servers. A later slice defines one
+//! buffers, modes, pickers, or language servers. The caller defines one
 //! [`RequestSlot`] for each of those operations.
 //!
 //! Submission never waits. A submission reserves the result slot first, then
@@ -167,7 +167,7 @@ impl RequestId {
 /// A stable operation slot whose newest request may publish.
 ///
 /// One slot names one operation, such as the file picker or the active buffer
-/// analysis. Later slices assign the concrete slot values.
+/// analysis. The caller assigns the concrete slot values.
 ///
 /// # Examples
 ///

@@ -175,13 +175,8 @@ value cannot exist.
 The first release does not parse a configuration file. `EditorSettings` uses its
 defaults for every field.
 
-A later slice adds a loader that overrides these fields. The loader parses,
+A later release adds a loader that overrides these fields. The loader parses,
 validates, and realizes user values, then constructs the same typed
 `EditorSettings` value. Every field in this document must stay overridable by
 that loader. Do not add a value that only a loader could set, and do not add a
 value outside `EditorSettings`.
-
-## Deferred Decisions
-
-- Slice 7 must confirm the minimum window dimensions against the implemented
-  layout.

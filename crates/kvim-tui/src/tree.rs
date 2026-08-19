@@ -349,9 +349,10 @@ impl TreeSidebar {
 
     /// Asks for a new read of the repository state.
     ///
-    /// The sidebar queues one read. A save, a workspace mutation, and the
-    /// refresh command each reach this entry point, and no timer does, because
-    /// the renderer runs no unconditional frame loop. See `docs/git.md`.
+    /// The sidebar queues one read. A save, a workspace mutation, a
+    /// workspace-watch burst, and the refresh command each reach this entry
+    /// point, and no timer does, because the renderer runs no unconditional
+    /// frame loop. See `docs/git.md`.
     pub(super) fn request_git_status(&mut self) {
         self.git_outbox = Some(GitStatusRequest::new(self.tree.root().to_path_buf()));
     }

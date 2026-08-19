@@ -3558,5 +3558,3 @@ const HOVER_TITLE: &str = " Hover ";
 
 /// The title band of the diagnostic float.
 const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
-const _BUILD_PROBE_1: u32 = 1;
-const _BUILD_PROBE_2: u32 = 2;
