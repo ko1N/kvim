@@ -4,9 +4,12 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use serde_json::{Value, json};
 use tree_sitter::Language;
 
-use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter};
+use kvim_settings::LanguageSettings;
+
+use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration};
 
 /// The file extensions that the TOML adapter owns.
 const TOML_EXTENSIONS: [&str; 1] = ["toml"];
@@ -23,6 +26,14 @@ const TOML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
 /// Returns the TOML grammar of the bundled parser.
 fn toml_language() -> Language {
     tree_sitter_toml_ng::LANGUAGE.into()
+}
+
+/// Returns the initialization options of `taplo`.
+///
+/// `taplo` needs no option from the language-neutral settings, so the
+/// function returns the empty object and reads nothing from `settings`.
+fn taplo_options(_settings: LanguageSettings) -> Value {
+    json!({})
 }
 
 /// The language adapter for TOML documents.
@@ -83,5 +94,14 @@ impl LanguageAdapter for TomlAdapter {
             scopes: &TOML_INDENT_SCOPES,
             closing_delimiters: &TOML_CLOSING_DELIMITERS,
         }
+    }
+
+    fn language_server(&self) -> Option<LanguageServerDeclaration> {
+        Some(LanguageServerDeclaration {
+            program: "taplo",
+            args: &["lsp", "stdio"],
+            language_id: "toml",
+            initialization_options: taplo_options,
+        })
     }
 }

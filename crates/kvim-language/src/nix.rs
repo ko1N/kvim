@@ -4,9 +4,14 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use serde_json::{Value, json};
 use tree_sitter::Language;
 
-use super::{BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter};
+use kvim_settings::LanguageSettings;
+
+use super::{
+    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
+};
 
 /// The file extensions that the Nix adapter owns.
 const NIX_EXTENSIONS: [&str; 1] = ["nix"];
@@ -33,6 +38,14 @@ const NIX_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 /// Returns the Nix grammar of the bundled parser.
 fn nix_language() -> Language {
     tree_sitter_nix::LANGUAGE.into()
+}
+
+/// Returns the initialization options of `nil`.
+///
+/// `nil` needs no option from the language-neutral settings, so the function
+/// returns the empty object and reads nothing from `settings`.
+fn nil_options(_settings: LanguageSettings) -> Value {
+    json!({})
 }
 
 /// The language adapter for Nix expressions.
@@ -92,5 +105,14 @@ impl LanguageAdapter for NixAdapter {
             scopes: &NIX_INDENT_SCOPES,
             closing_delimiters: &NIX_CLOSING_DELIMITERS,
         }
+    }
+
+    fn language_server(&self) -> Option<LanguageServerDeclaration> {
+        Some(LanguageServerDeclaration {
+            program: "nil",
+            args: &[],
+            language_id: "nix",
+            initialization_options: nil_options,
+        })
     }
 }

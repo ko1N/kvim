@@ -4,9 +4,12 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use serde_json::{Value, json};
 use tree_sitter::Language;
 
-use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter};
+use kvim_settings::LanguageSettings;
+
+use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration};
 
 /// The file extensions that the Markdown adapter owns.
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
@@ -18,6 +21,14 @@ const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
 /// analysis, and it carries every structural highlight of a document.
 fn markdown_language() -> Language {
     tree_sitter_md::LANGUAGE.into()
+}
+
+/// Returns the initialization options of `marksman`.
+///
+/// `marksman` needs no option from the language-neutral settings, so the
+/// function returns the empty object and reads nothing from `settings`.
+fn marksman_options(_settings: LanguageSettings) -> Value {
+    json!({})
 }
 
 /// The language adapter for Markdown documents.
@@ -83,5 +94,14 @@ impl LanguageAdapter for MarkdownAdapter {
             scopes: &[],
             closing_delimiters: &[],
         }
+    }
+
+    fn language_server(&self) -> Option<LanguageServerDeclaration> {
+        Some(LanguageServerDeclaration {
+            program: "marksman",
+            args: &["server"],
+            language_id: "markdown",
+            initialization_options: marksman_options,
+        })
     }
 }
