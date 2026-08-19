@@ -737,10 +737,15 @@ configuration, because it starts no Git process.
 ### The Walk Of The Command Line
 
 The command-line completion of the path argument of `:e[dit]` reads the same
-walk and the same ranking. One open command line asks for exactly one walk, and
-the completion filters the result while the user types. A walk for each typed
-character would repeat the cost of the start, so the completion never starts
-one.
+walk and the same ranking. The line asks for the walk when it first holds a path
+argument. `:w`, `:q`, and a line number therefore start no walk. The parser owns
+the rule that names the command that takes a path, so the parser and the
+completion can never disagree about it.
+
+One open command line asks for exactly one walk, and the completion filters the
+result while the user types. Every later character of that line asks for no
+second walk. A walk for each typed character would repeat the cost of the start,
+so the completion never starts one.
 
 The walk runs on the bounded worker service, and the event loop never waits for
 it. The completion holds no file until the result arrives, so it offers no path

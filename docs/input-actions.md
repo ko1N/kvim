@@ -172,13 +172,15 @@ picker query `src/ma`. See [`files.md`](files.md).
 A candidate keeps the command name that the user typed, so `:e src/ma` completes
 to `:e src/main.rs` and `:edit src/ma` completes to `:edit src/main.rs`.
 
-The workspace walk that finds the files runs on the bounded worker service, and
-one open command line starts exactly one walk. The command line therefore never
-waits for the filesystem, and the user keeps typing while the walk runs. `Tab`
-before the result arrives offers no candidate, changes nothing, and reports
-nothing, exactly as a text that names no command. A cancelled or timed out walk
-leaves the command line in that same state. The next `Tab` after the result
-arrives offers the files.
+The workspace walk that finds the files runs on the bounded worker service. The
+line asks for that walk when it first holds a path argument, so a line without
+one asks for nothing. One open command line then starts exactly one walk, and
+every later character of that line starts no second walk. The command line
+therefore never waits for the filesystem, and the user keeps typing while the
+walk runs. `Tab` before the result arrives offers no candidate, changes nothing,
+and reports nothing, exactly as a text that names no command. A cancelled or
+timed out walk leaves the command line in that same state. The next `Tab` after
+the result arrives offers the files.
 
 Every candidate comes from a walk that starts at the workspace root, so no
 candidate reaches outside that root.

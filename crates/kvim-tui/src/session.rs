@@ -26,6 +26,7 @@
 //! passes it in, which keeps every transition deterministic and testable.
 
 use std::collections::BTreeMap;
+use std::mem;
 use std::num::NonZeroU16;
 use std::num::NonZeroU32;
 use std::path::{Path, PathBuf};
@@ -720,6 +721,51 @@ impl Visible<'_> {
     }
 }
 
+/// The workspace walk that completes the path argument of one command line.
+///
+/// The state records whether the open command line already asked for its walk,
+/// so a later character of the same line asks for no second walk. A line that
+/// holds no path argument asks for nothing, and a closed line returns to
+/// [`CompletionWalk::Unasked`]. See `docs/files.md`.
+enum CompletionWalk {
+    /// The line asked for no walk, because it holds no path argument.
+    Unasked,
+    /// The line asked for the walk, and the request waits for the event loop.
+    Queued(PickerRequest),
+    /// The event loop took the request of the line.
+    ///
+    /// The files stay empty while the walk runs, and after a cancelled or timed
+    /// out walk, so the completion then offers no path and the command line
+    /// stays usable.
+    Taken(Vec<Candidate>),
+}
+
+impl CompletionWalk {
+    /// Returns the workspace files that the finished walk collected.
+    fn files(&self) -> &[Candidate] {
+        match self {
+            Self::Unasked | Self::Queued(_) => &[],
+            Self::Taken(files) => files,
+        }
+    }
+
+    /// Takes the queued request and records that the line asked for its walk.
+    ///
+    /// The recorded state outlives the request, so the next character of the
+    /// same line queues no second walk.
+    fn take_request(&mut self) -> Option<PickerRequest> {
+        match mem::replace(self, Self::Taken(Vec::new())) {
+            Self::Queued(request) => Some(request),
+            // The line asked for no walk, or the event loop already took the
+            // request, so the state stays as it was.
+            unchanged @ (Self::Unasked | Self::Taken(_)) => {
+                *self = unchanged;
+                None
+            }
+        }
+    }
+}
+
 /// The visible editor state of one terminal.
 ///
 /// # Examples
@@ -822,19 +868,14 @@ pub struct Session {
     /// At most one question waits, so a second request opens none. See
     /// `docs/input-actions.md`.
     confirmation: Option<Confirmation>,
-    /// The workspace walk that the open command line asked for.
+    /// The workspace walk that completes the path argument of `:e`.
     ///
+    /// The command line asks for the walk when it first holds a path argument,
+    /// so one open line asks for exactly one walk and most lines ask for none.
     /// The session walks no directory, so the event loop hands the request to
-    /// the bounded worker service. See `docs/responsiveness.md`.
-    completion_outbox: Option<PickerRequest>,
-    /// The workspace files that complete the path argument of `:e`.
-    ///
-    /// One open command line asks for exactly one walk, and the completion
-    /// filters the result while the user types. The list stays empty while that
-    /// walk runs, and after a cancelled or timed out walk, so the completion
-    /// then offers no path and the command line stays usable. See
-    /// `docs/files.md`.
-    completion_files: Vec<Candidate>,
+    /// the bounded worker service. The completion then filters the collected
+    /// files while the user types. See `docs/files.md`.
+    completion_walk: CompletionWalk,
     message: Option<Message>,
     /// The open floating overlay of the language services.
     float: Option<Float>,
@@ -893,8 +934,7 @@ impl Session {
             search: None,
             prompt: None,
             confirmation: None,
-            completion_outbox: None,
-            completion_files: Vec::new(),
+            completion_walk: CompletionWalk::Unasked,
             message: None,
             float: None,
             which_key: None,
@@ -1511,15 +1551,9 @@ impl Session {
             text: String::new(),
             completion: None,
         });
-        if kind == PromptKind::CommandLine {
-            // The path argument of `:e` completes from the workspace files, so
-            // one open command line asks for exactly one walk. A walk for each
-            // typed character would repeat the cost of the start.
-            self.completion_files = Vec::new();
-            self.completion_outbox = Some(PickerRequest::Files {
-                root: self.tree.tree().root().to_path_buf(),
-            });
-        }
+        // The new line asks for its own walk, and it asks when it first holds a
+        // path argument.
+        self.completion_walk = CompletionWalk::Unasked;
         self.sync_context();
         Redraw::Needed
     }
@@ -1711,6 +1745,31 @@ impl Session {
         picker.set_query(&query);
     }
 
+    /// Asks for the workspace walk when the line first holds a path argument.
+    ///
+    /// Most command lines take no path, so `:w`, `:q`, and a line number ask
+    /// for no walk of the workspace at all. The parser owns the rule that names
+    /// the command that takes a path, so the parser and the completion can
+    /// never disagree about it.
+    ///
+    /// The state of the walk records the request of the line, so every later
+    /// character of that line asks for no second walk. See `docs/files.md`.
+    fn sync_completion_walk(&mut self) {
+        if !matches!(self.completion_walk, CompletionWalk::Unasked) {
+            return;
+        }
+        let takes_path = self.prompt.as_ref().is_some_and(|prompt| {
+            prompt.kind == PromptKind::CommandLine
+                && CommandLineCommand::path_argument(&prompt.text).is_some()
+        });
+        if !takes_path {
+            return;
+        }
+        self.completion_walk = CompletionWalk::Queued(PickerRequest::Files {
+            root: self.tree.tree().root().to_path_buf(),
+        });
+    }
+
     /// Takes the picker request that the event loop must submit.
     ///
     /// The session never walks the workspace, never runs `rg`, and never reads
@@ -1740,7 +1799,7 @@ impl Session {
     /// the bounded worker service. The command line keeps every key while the
     /// walk runs. See `docs/responsiveness.md`.
     pub fn take_completion_request(&mut self) -> Option<PickerRequest> {
-        self.completion_outbox.take()
+        self.completion_walk.take_request()
     }
 
     /// Applies the finished workspace walk of the command-line completion.
@@ -1749,7 +1808,8 @@ impl Session {
     /// visible state and requests no frame.
     ///
     /// A result that reaches a closed command line changes nothing, because the
-    /// user already left the line that asked for it.
+    /// user already left the line that asked for it. A line that asked for no
+    /// walk holds no result either.
     #[must_use]
     pub fn apply_completion_result(&mut self, result: PickerResult) -> Redraw {
         let PickerResult::Candidates { candidates, .. } = result else {
@@ -1759,14 +1819,14 @@ impl Session {
             );
             return Redraw::Skipped;
         };
-        let open = self
-            .prompt
-            .as_ref()
-            .is_some_and(|prompt| prompt.kind == PromptKind::CommandLine);
-        if !open {
+        debug_assert!(
+            self.prompt.is_some() || matches!(self.completion_walk, CompletionWalk::Unasked),
+            "the closed prompt drops the walk of the line that asked for it"
+        );
+        let CompletionWalk::Taken(files) = &mut self.completion_walk else {
             return Redraw::Skipped;
-        }
-        self.completion_files = candidates;
+        };
+        *files = candidates;
         Redraw::Skipped
     }
 
@@ -1816,6 +1876,7 @@ impl Session {
                 prompt.completion = None;
                 prompt.text.push(value);
                 self.sync_picker_query();
+                self.sync_completion_walk();
                 Redraw::Needed
             }
             PromptEdit::DeleteBackward => {
@@ -1826,6 +1887,7 @@ impl Session {
                     return Redraw::Needed;
                 }
                 self.sync_picker_query();
+                self.sync_completion_walk();
                 Redraw::Needed
             }
             PromptEdit::CompleteNext => self.complete_prompt(CompletionCycle::Next),
@@ -1856,7 +1918,7 @@ impl Session {
     fn complete_prompt(&mut self, cycle: CompletionCycle) -> Redraw {
         let Self {
             prompt,
-            completion_files,
+            completion_walk,
             ..
         } = self;
         let Some(prompt) = prompt.as_mut() else {
@@ -1870,7 +1932,7 @@ impl Session {
             return Redraw::Skipped;
         }
         let outcome = prompt.complete(
-            |line| command_line_candidates(line, completion_files),
+            |line| command_line_candidates(line, completion_walk.files()),
             cycle,
         );
         match outcome {
@@ -4104,8 +4166,7 @@ impl Session {
         self.picker = None;
         // The completion belongs to the command line, so its walk and its files
         // leave the session with it and fill no list of a later line.
-        self.completion_outbox = None;
-        self.completion_files = Vec::new();
+        self.completion_walk = CompletionWalk::Unasked;
         self.sync_context();
     }
 
