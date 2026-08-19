@@ -135,7 +135,8 @@ that produced its input. See [`text-model.md`](text-model.md).
 A publication gate stores only the newest request identity for each slot. The
 event loop checks the gate before it applies a result. The gate does not mutate
 visible state. The gate rejects an obsolete picker result, preview result,
-analysis result, formatting result, or language-server result.
+completion result, analysis result, formatting result, or language-server
+result.
 
 Obsolete work may finish its cleanup. Its result must not change visible state
 and must not populate a cache for a newer request.

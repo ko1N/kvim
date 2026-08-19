@@ -115,7 +115,8 @@ save keeps every change. See the Confirmation section below and
 
 ### Command Line Completion
 
-The command line completes a command name. It reads these keys:
+The command line completes a command name and the path argument of `:e[dit]`. It
+reads these keys:
 
 | Keys | Effect |
 |---|---|
@@ -154,6 +155,33 @@ candidate.
 
 `crates/kvim-input/src/command_line.rs` holds the name table beside the parser,
 so one new command needs one new row and no new completion code.
+
+#### The Path Argument
+
+A blank after the command name ends the name and opens its argument, so a line
+with a blank completes a path instead of a name. Only `:e[dit]` takes a path
+today, so every other line with a blank offers no candidate. `:e!` reloads the
+buffer and takes no path either. The parser owns this rule beside the name
+table, so the parser and the completion can never disagree.
+
+The candidates are the workspace files that the file picker offers. The
+completion ranks them with the scorer of the picker, so one fuzzy rule serves
+both. `:e src/ma` therefore offers the same files in the same order as the
+picker query `src/ma`. See [`files.md`](files.md).
+
+A candidate keeps the command name that the user typed, so `:e src/ma` completes
+to `:e src/main.rs` and `:edit src/ma` completes to `:edit src/main.rs`.
+
+The workspace walk that finds the files runs on the bounded worker service, and
+one open command line starts exactly one walk. The command line therefore never
+waits for the filesystem, and the user keeps typing while the walk runs. `Tab`
+before the result arrives offers no candidate, changes nothing, and reports
+nothing, exactly as a text that names no command. A cancelled or timed out walk
+leaves the command line in that same state. The next `Tab` after the result
+arrives offers the files.
+
+Every candidate comes from a walk that starts at the workspace root, so no
+candidate reaches outside that root.
 
 ## Confirmation
 

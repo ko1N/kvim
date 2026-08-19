@@ -205,6 +205,28 @@ impl Candidate {
         &self.directory
     }
 
+    /// Returns the path of the row, relative to the workspace root.
+    ///
+    /// The row splits one relative path into its directory and its filename,
+    /// and this function joins the two again. A row of a buffer without a file
+    /// therefore returns its buffer name alone.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// use kvim_workspace::Candidate;
+    ///
+    /// let root = Path::new("/workspace");
+    /// let candidate = Candidate::file(root, PathBuf::from("/workspace/src/main.rs"));
+    /// assert_eq!(candidate.relative_path(), Path::new("src").join("main.rs"));
+    /// ```
+    #[must_use]
+    pub fn relative_path(&self) -> PathBuf {
+        Path::new(&self.directory).join(&self.name)
+    }
+
     /// Returns what the accepted row opens.
     #[must_use]
     pub const fn target(&self) -> &CandidateTarget {
@@ -471,15 +493,6 @@ impl Picker {
 
     /// Ranks every candidate against the query and keeps the selection.
     ///
-    /// The order is total, so two equal queries always produce one order:
-    ///
-    /// 1. the higher score first,
-    /// 2. then the shorter row,
-    /// 3. then the earlier candidate of the source.
-    ///
-    /// An empty query keeps the order of the source, because every candidate
-    /// then holds the same score.
-    ///
     /// The search picker sends its query to `rg`, so its rows already answer
     /// that query. A second filter over the filenames would drop every matched
     /// line whose filename does not hold the pattern.
@@ -488,22 +501,7 @@ impl Picker {
             PickerKind::Search => "",
             PickerKind::Files | PickerKind::Buffers => self.query.as_str(),
         };
-        let mut scored: Vec<(usize, i32)> = self
-            .candidates
-            .iter()
-            .enumerate()
-            .filter_map(|(index, candidate)| {
-                let score = score_candidate(query, &candidate.name, &candidate.directory)?;
-                Some((index, score))
-            })
-            .collect();
-        if !query.is_empty() {
-            scored.sort_by_key(|(index, score)| {
-                let width = self.candidates[*index].width();
-                (Reverse(*score), width, *index)
-            });
-        }
-        self.matches = scored.into_iter().map(|(index, _)| index).collect();
+        self.matches = rank_candidates(query, &self.candidates);
         // The selection follows its candidate while the query still keeps it,
         // so a further character never moves the reader to another row.
         if !self
@@ -513,6 +511,59 @@ impl Picker {
             self.selected = self.matches.first().copied();
         }
     }
+}
+
+/// Returns the indexes of the candidates that `query` keeps, with the best
+/// first.
+///
+/// The function is pure, so one query and one candidate list always produce one
+/// order. The picker ranks its rows with it, and the command-line completion
+/// ranks the path argument of `:e` with it, so one ranking rule serves both.
+/// See `docs/files.md`.
+///
+/// The order is total, so two equal queries always produce one order:
+///
+/// 1. the higher score first,
+/// 2. then the shorter row,
+/// 3. then the earlier candidate of the source.
+///
+/// An empty query keeps every candidate and the order of the source, because
+/// every candidate then holds the same score. The query stops at
+/// [`PICKER_QUERY_CHARS_MAX`] characters.
+///
+/// # Examples
+///
+/// ```
+/// use std::path::{Path, PathBuf};
+///
+/// use kvim_workspace::{Candidate, rank_candidates};
+///
+/// let root = Path::new("/workspace");
+/// let candidates = [
+///     Candidate::file(root, PathBuf::from("/workspace/src/session.rs")),
+///     Candidate::file(root, PathBuf::from("/workspace/src/main.rs")),
+/// ];
+/// assert_eq!(rank_candidates("main", &candidates), [1]);
+/// assert_eq!(rank_candidates("", &candidates), [0, 1]);
+/// ```
+#[must_use]
+pub fn rank_candidates(query: &str, candidates: &[Candidate]) -> Vec<usize> {
+    let query = clip(query, PICKER_QUERY_CHARS_MAX);
+    let mut scored: Vec<(usize, i32)> = candidates
+        .iter()
+        .enumerate()
+        .filter_map(|(index, candidate)| {
+            let score = score_candidate(&query, &candidate.name, &candidate.directory)?;
+            Some((index, score))
+        })
+        .collect();
+    if !query.is_empty() {
+        scored.sort_by_key(|(index, score)| {
+            let width = candidates[*index].width();
+            (Reverse(*score), width, *index)
+        });
+    }
+    scored.into_iter().map(|(index, _)| index).collect()
 }
 
 #[cfg(test)]

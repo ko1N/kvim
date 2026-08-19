@@ -304,8 +304,12 @@ shown candidates always hold the selected one, so a cycle moves the shown
 candidates instead of hiding the selection.
 
 The list is at most 48 cells wide, and never wider than the body band. A
-candidate that is wider than the list clips at the right edge of the list. The
-clip counts terminal cells, so it never splits a wide character.
+candidate that is wider than the list loses its start, and a `<` marks the cut.
+The winbar cuts a long path the same way, and for the same reason: the file name
+at the end of a path names the file that the user looks for. Every row of one
+path list also starts with the same command name, so the cut hides no text that
+separates two rows. The clip counts terminal cells, so it never splits a wide
+character.
 
 The text of a row starts one cell inside the list, so a candidate stands above
 the text of the command line, which follows the `:` prefix. The selected row

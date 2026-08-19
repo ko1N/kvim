@@ -32,7 +32,7 @@ use kvim_input::WhichKeyRow;
 use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
 
-use super::cells::{text_cells, wrap_cells};
+use super::cells::{text_cells, truncate_cells_left, wrap_cells};
 use super::completion::{CompletionOutcome, LineCompletion};
 use super::icons::{ICON_CELLS, Icon};
 use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, FloatRow};
@@ -658,8 +658,11 @@ pub(super) fn render_completion(
         return;
     };
     let area = Rect::new(body.x, body.bottom() - height, width, height);
-    // A row that is wider than the list clips at this budget. The budget counts
-    // terminal cells, so the clip never splits a wide character.
+    // A row that is wider than the list loses its start at this budget. The
+    // file name at the end of a path names the file that the user looks for,
+    // and every row of one path list starts with the same command name. The
+    // budget counts terminal cells, so the clip never splits a wide character.
+    // See `docs/windows.md`.
     let budget = usize::from(width.saturating_sub(COMPLETION_PADDING_TOTAL));
     let x = area.x.saturating_add(COMPLETION_PADDING_CELLS);
     let surface = theme.style(ThemeRole::Surface);
@@ -680,7 +683,8 @@ pub(super) fn render_completion(
         } else {
             surface
         };
-        target.set_stringn(x, y, candidate, budget, style);
+        let row = truncate_cells_left(candidate, budget);
+        target.set_stringn(x, y, row, budget, style);
     }
     if !hidden {
         return;
@@ -1013,17 +1017,18 @@ mod tests {
     }
 
     #[test]
-    fn the_candidate_list_clips_a_wide_candidate_without_splitting_it() {
+    fn the_candidate_list_clips_the_start_of_a_wide_candidate_without_splitting_it() {
         // The list keeps one cell beside its text, so a body of seven cells
-        // leaves five for the candidate. Two wide characters occupy four of
-        // them, and the third one no longer fits.
+        // leaves five for the candidate. The marker takes one of those cells,
+        // and the wide character no longer fits in the four that remain.
         let body = Rect::new(0, 0, 7, 4);
-        let target = draw_completion(body, &completion(&["\u{6e2c}\u{8a66}\u{4e00}", "ab"]));
+        let target = draw_completion(body, &completion(&["\u{6e2c}\u{8a66}abc", "ab"]));
         let row = row_of(&target, body.bottom() - 2);
         println!("clipped: {row:?}");
-        assert_eq!(row, " \u{6e2c}\u{8a66}");
-        // The last text cell holds a blank, so the clip leaves no half of a wide
-        // character behind.
+        // The end of the candidate always survives, because the file name at
+        // the end of a path names the file that the user looks for.
+        assert_eq!(row, " <abc");
+        // The cell that the wide character would have split stays blank.
         let cell = target
             .cell((5, body.bottom() - 2))
             .expect("the cell is inside");
