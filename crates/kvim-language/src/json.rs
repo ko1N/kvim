@@ -9,7 +9,9 @@ use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
-use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration};
+use super::{
+    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+};
 
 /// The file extensions that the JSON adapter owns.
 const JSON_EXTENSIONS: [&str; 1] = ["json"];
@@ -39,6 +41,16 @@ fn json_language() -> Language {
 fn vscode_json_language_server_options(_settings: LanguageSettings) -> Value {
     json!({})
 }
+
+/// The language servers that the JSON adapter declares, in declaration order.
+const JSON_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    id: "jsonls",
+    program: "vscode-json-language-server",
+    args: &["--stdio"],
+    language_id: "json",
+    formatting: ServerFormatting::Enabled,
+    initialization_options: vscode_json_language_server_options,
+}];
 
 /// The language adapter for JSON documents.
 ///
@@ -107,12 +119,7 @@ impl LanguageAdapter for JsonAdapter {
         }
     }
 
-    fn language_server(&self) -> Option<LanguageServerDeclaration> {
-        Some(LanguageServerDeclaration {
-            program: "vscode-json-language-server",
-            args: &["--stdio"],
-            language_id: "json",
-            initialization_options: vscode_json_language_server_options,
-        })
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &JSON_SERVERS
     }
 }

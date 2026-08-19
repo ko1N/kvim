@@ -50,7 +50,7 @@ use kvim_input::{
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
     DocumentPosition, FormatEdits, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageOutcome,
-    LanguageRegistry, LanguageRequestId, LspError, Publication, SourceLocation, SyntaxTree,
+    LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, SyntaxTree,
 };
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch};
 use kvim_settings::EditorSettings;
@@ -69,9 +69,9 @@ use super::buffer_view::{WINBAR_ROWS, gutter_cells};
 use super::chrome::shell_areas;
 use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
 use super::language::{
-    AfterSave, DiagnosticJump, Float, FormatOnSave, LanguageNotice, LanguageQuery, LanguageRequest,
-    LanguageRequestKind, LanguageState, PendingJump, PendingQuery, QueryPurpose, has_formatter,
-    jump_target,
+    AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
+    LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
+    QueryPurpose, QueryState, has_formatter, jump_target,
 };
 use super::layout::RegionKind;
 use super::notify::NotificationBoard;
@@ -1671,19 +1671,21 @@ impl Session {
     pub fn apply_language_dispatch(
         &mut self,
         kind: LanguageRequestKind,
-        result: Result<Option<LanguageRequestId>, LspError>,
+        result: Result<Vec<AcceptedQuery>, LspError>,
     ) -> Redraw {
         match result {
-            Ok(id) => {
-                if kind == LanguageRequestKind::Query
-                    && let Some(pending) = self.language.pending.as_mut()
-                {
-                    debug_assert!(
-                        id.is_some(),
-                        "the language services name the identity of every accepted question"
-                    );
-                    pending.id = id;
+            Ok(accepted) => {
+                if kind != LanguageRequestKind::Query {
+                    return Redraw::Skipped;
                 }
+                let Some(pending) = self.language.pending.as_mut() else {
+                    return Redraw::Skipped;
+                };
+                debug_assert!(
+                    !accepted.is_empty(),
+                    "the language services name the identity of every accepted question"
+                );
+                pending.accept(accepted);
                 Redraw::Skipped
             }
             Err(error) => {
@@ -1702,42 +1704,47 @@ impl Session {
     /// state, so an obsolete answer never reaches the screen.
     #[must_use]
     pub fn apply_language_event(&mut self, event: LanguageEvent) -> Redraw {
+        let server = event.server;
         match event.outcome {
-            LanguageOutcome::Diagnostics(set) => self.publish_diagnostics(set),
-            LanguageOutcome::Progress(report) => self.notifications.report(
-                event.adapter,
-                &report,
-                self.clock,
-                self.settings.notifications,
-            ),
+            LanguageOutcome::Diagnostics(set) => self.publish_diagnostics(server, set),
+            LanguageOutcome::Progress(report) => {
+                self.notifications
+                    .report(server, &report, self.clock, self.settings.notifications)
+            }
             LanguageOutcome::Definition {
                 request,
                 version,
                 locations,
-            } => self.publish_definition(request, version, &locations),
+            } => self.answer_query(request, Some(version), Answer::Definition(locations)),
             LanguageOutcome::Hover {
                 request,
                 version,
                 text,
-            } => self.publish_hover(request, version, text.as_deref()),
+            } => self.answer_query(
+                request,
+                Some(version),
+                Answer::Hover(text.unwrap_or_default()),
+            ),
             LanguageOutcome::Formatting { request, edits } => {
-                self.publish_formatting(request, &edits)
+                self.answer_query(request, None, Answer::Formatting(edits))
             }
             LanguageOutcome::Failed { request, error } => {
                 let redraw = match request {
-                    Some(request) if self.matches_pending(request) => self.abandon_query(),
-                    Some(_) | None => Redraw::Skipped,
+                    Some(request) => self.answer_query(request, None, Answer::Empty),
+                    // A session failure carries no request, so every question
+                    // that the failed server took loses its answer.
+                    None => self.abandon_server(server),
                 };
                 self.report_language_error(&error).or(redraw)
             }
             LanguageOutcome::Unavailable => {
                 let redraw = self.report_language_notice(LanguageNotice::NotInstalled);
-                self.abandon_query().or(redraw)
+                self.abandon_server(server).or(redraw)
             }
             LanguageOutcome::Restarted => self.reopen_documents(),
             LanguageOutcome::Stopped => {
                 let redraw = self.report_language_notice(LanguageNotice::Stopped);
-                self.abandon_query().or(redraw)
+                self.abandon_server(server).or(redraw)
             }
         }
     }
@@ -1810,14 +1817,6 @@ impl Session {
         }
     }
 
-    /// Reports whether one answer belongs to the question that the editor asked.
-    fn matches_pending(&self, request: LanguageRequestId) -> bool {
-        self.language
-            .pending
-            .as_ref()
-            .is_some_and(|pending| pending.id == Some(request))
-    }
-
     /// Releases the waiting question and completes a save that waited for it.
     ///
     /// A save must never depend on a language server, so a lost formatter
@@ -1826,18 +1825,83 @@ impl Session {
         let Some(pending) = self.language.pending.take() else {
             return Redraw::Skipped;
         };
+        self.release_query(&pending)
+    }
+
+    /// Releases one question without applying an answer.
+    fn release_query(&mut self, pending: &PendingQuery) -> Redraw {
         match pending.purpose {
             QueryPurpose::FormatBeforeSave(then) => self.start_save(then),
             QueryPurpose::Definition | QueryPurpose::Hover => Redraw::Skipped,
         }
     }
 
-    /// Takes the question that one answer completes.
-    fn take_pending(&mut self, request: LanguageRequestId) -> Option<PendingQuery> {
-        if !self.matches_pending(request) {
-            return None;
+    /// Records one answer of one server for the question that the editor asked.
+    ///
+    /// The merge runs as soon as every server that took the question answered.
+    /// An answer of an obsolete buffer version releases the complete question,
+    /// because the buffer that every server described no longer exists.
+    fn answer_query(
+        &mut self,
+        request: LanguageRequestId,
+        version: Option<BufferVersion>,
+        answer: Answer,
+    ) -> Redraw {
+        let Some(mut pending) = self.language.pending.take() else {
+            return Redraw::Skipped;
+        };
+        if !pending.owns(request) {
+            // The answer belongs to a question that the editor already
+            // released, so it changes nothing.
+            self.language.pending = Some(pending);
+            return Redraw::Skipped;
         }
-        self.language.pending.take()
+        if version.is_some_and(|version| !self.answers_current_buffer(&pending, version)) {
+            return self.release_query(&pending);
+        }
+        let state = pending.resolve(request, answer);
+        self.settle_query(pending, state)
+    }
+
+    /// Releases every answer that one server still owes.
+    ///
+    /// A missing server, a stopped session, and a session failure carry no
+    /// request identity. The question therefore continues with the servers that
+    /// still run, and it never waits for a server that no longer answers.
+    fn abandon_server(&mut self, server: LanguageServerId) -> Redraw {
+        let Some(mut pending) = self.language.pending.take() else {
+            return Redraw::Skipped;
+        };
+        let state = pending.abandon(server);
+        self.settle_query(pending, state)
+    }
+
+    /// Applies one question whose servers all answered, or keeps it waiting.
+    fn settle_query(&mut self, pending: PendingQuery, state: QueryState) -> Redraw {
+        match state {
+            QueryState::Waiting => {
+                self.language.pending = Some(pending);
+                Redraw::Skipped
+            }
+            QueryState::Complete => self.complete_query(&pending),
+        }
+    }
+
+    /// Applies the merged answer of one completed question.
+    fn complete_query(&mut self, pending: &PendingQuery) -> Redraw {
+        match pending.purpose {
+            QueryPurpose::Definition => self.follow_definition(pending),
+            QueryPurpose::Hover => self.show_hover(pending),
+            QueryPurpose::FormatBeforeSave(then) => {
+                let redraw = match pending.formatting() {
+                    Some(edits) => self.apply_format_edits(pending.buffer, edits),
+                    // A save must never depend on a language server, so a lost
+                    // formatter answer still writes the buffer content.
+                    None => Redraw::Skipped,
+                };
+                self.start_save(then).or(redraw)
+            }
+        }
     }
 
     /// Asks one question about the symbol under the cursor.
@@ -1868,12 +1932,7 @@ impl Session {
                 return Redraw::Skipped;
             }
         };
-        self.language.pending = Some(PendingQuery {
-            buffer,
-            version,
-            purpose,
-            id: None,
-        });
+        self.language.pending = Some(PendingQuery::new(buffer, version, purpose));
         self.queue_language(LanguageRequest::Query {
             buffer,
             path,
@@ -1886,8 +1945,10 @@ impl Session {
     /// Publishes one diagnostic set behind the buffer-version gate.
     ///
     /// Diagnostics are decoration. They change no buffer text, no line mapping,
-    /// and no cursor position, and an obsolete set changes nothing at all.
-    fn publish_diagnostics(&mut self, set: DiagnosticSet) -> Redraw {
+    /// and no cursor position, and an obsolete set changes nothing at all. The
+    /// set replaces the previous set of its own server alone, so a second
+    /// server of the same language keeps the diagnostics that it reported.
+    fn publish_diagnostics(&mut self, server: LanguageServerId, set: DiagnosticSet) -> Redraw {
         let Some(buffer) = self.buffers.find_path(set.path()) else {
             // The server may describe a file that no buffer holds.
             return Redraw::Skipped;
@@ -1899,24 +1960,17 @@ impl Session {
         if !set.is_current(file.text().version()) {
             return Redraw::Skipped;
         }
-        self.language.publish(buffer, set);
+        self.language.publish(buffer, server, set);
         Redraw::Needed
     }
 
     /// Moves the cursor to one definition target, in this buffer or another.
-    fn publish_definition(
-        &mut self,
-        request: LanguageRequestId,
-        version: BufferVersion,
-        locations: &[SourceLocation],
-    ) -> Redraw {
-        let Some(pending) = self.take_pending(request) else {
-            return Redraw::Skipped;
-        };
-        if !self.answers_current_buffer(&pending, version) {
-            return Redraw::Skipped;
-        }
-        let Some(location) = locations.first() else {
+    ///
+    /// The merge takes the first non-empty answer in declaration order, so a
+    /// second server of the same language answers only while the first one
+    /// finds nothing. See `docs/language-services.md`.
+    fn follow_definition(&mut self, pending: &PendingQuery) -> Redraw {
+        let Some(location) = pending.definition().first() else {
             self.set_message("no definition found", MessageLevel::Warning);
             return Redraw::Needed;
         };
@@ -1942,38 +1996,19 @@ impl Session {
         self.follow_jump().or(redraw)
     }
 
-    /// Shows one hover answer as a float.
-    fn publish_hover(
-        &mut self,
-        request: LanguageRequestId,
-        version: BufferVersion,
-        text: Option<&str>,
-    ) -> Redraw {
-        let Some(pending) = self.take_pending(request) else {
-            return Redraw::Skipped;
-        };
-        if !self.answers_current_buffer(&pending, version) {
-            return Redraw::Skipped;
-        }
-        let Some(text) = text else {
+    /// Shows the merged hover answer as a float.
+    ///
+    /// The merge joins the non-empty answers in declaration order, and one
+    /// blank row separates the answers of two servers. See
+    /// `docs/language-services.md`.
+    fn show_hover(&mut self, pending: &PendingQuery) -> Redraw {
+        let answers = pending.hover();
+        if answers.is_empty() {
             self.set_message("no hover information", MessageLevel::Info);
             return Redraw::Needed;
-        };
-        self.float = Some(Float::text(HOVER_TITLE, text));
+        }
+        self.float = Some(Float::text(HOVER_TITLE, &answers.join("\n\n")));
         Redraw::Needed
-    }
-
-    /// Applies one formatter answer and writes the buffer afterwards.
-    fn publish_formatting(&mut self, request: LanguageRequestId, edits: &FormatEdits) -> Redraw {
-        let Some(pending) = self.take_pending(request) else {
-            return Redraw::Skipped;
-        };
-        let QueryPurpose::FormatBeforeSave(then) = pending.purpose else {
-            debug_assert!(false, "only a save asks for formatting edits");
-            return Redraw::Skipped;
-        };
-        let redraw = self.apply_format_edits(pending.buffer, edits);
-        self.start_save(then).or(redraw)
     }
 
     /// Applies the accepted formatter edits as one undoable transaction.
@@ -2079,7 +2114,12 @@ impl Session {
             self.set_message(NO_DIAGNOSTIC_AT_CURSOR_NOTE, MessageLevel::Info);
             return Redraw::Needed;
         }
-        self.float = Some(Float::diagnostics(DIAGNOSTIC_TITLE, &found));
+        // The float names the producer of each diagnostic only while this
+        // buffer carries more than one producer name. The state reads the
+        // complete buffer, so a name never appears or disappears as the cursor
+        // moves between two positions.
+        let naming = self.language.diagnostic_naming(self.active);
+        self.float = Some(Float::diagnostics(DIAGNOSTIC_TITLE, &found, naming));
         Redraw::Needed
     }
 
@@ -2940,12 +2980,11 @@ impl Session {
             return self.start_save(then);
         };
         let version = file.text().version();
-        self.language.pending = Some(PendingQuery {
+        self.language.pending = Some(PendingQuery::new(
             buffer,
             version,
-            purpose: QueryPurpose::FormatBeforeSave(then),
-            id: None,
-        });
+            QueryPurpose::FormatBeforeSave(then),
+        ));
         self.queue_language(LanguageRequest::Query {
             buffer,
             path,

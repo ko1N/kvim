@@ -9,7 +9,9 @@ use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
-use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration};
+use super::{
+    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+};
 
 /// The file extensions that the Markdown adapter owns.
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
@@ -30,6 +32,16 @@ fn markdown_language() -> Language {
 fn marksman_options(_settings: LanguageSettings) -> Value {
     json!({})
 }
+
+/// The language servers that the Markdown adapter declares, in declaration order.
+const MARKDOWN_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    id: "marksman",
+    program: "marksman",
+    args: &["server"],
+    language_id: "markdown",
+    formatting: ServerFormatting::Enabled,
+    initialization_options: marksman_options,
+}];
 
 /// The language adapter for Markdown documents.
 ///
@@ -96,12 +108,7 @@ impl LanguageAdapter for MarkdownAdapter {
         }
     }
 
-    fn language_server(&self) -> Option<LanguageServerDeclaration> {
-        Some(LanguageServerDeclaration {
-            program: "marksman",
-            args: &["server"],
-            language_id: "markdown",
-            initialization_options: marksman_options,
-        })
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &MARKDOWN_SERVERS
     }
 }

@@ -13,8 +13,8 @@ use ratatui::style::{Color, Modifier, Style};
 
 use kvim_clipboard::ClipboardFailure;
 use kvim_language::{
-    LanguageEvent, LanguageOutcome, LspError, ProgressPercentage, ProgressReport, ProgressStage,
-    ProgressToken, SessionGeneration,
+    LanguageEvent, LanguageOutcome, LanguageServerId, LspError, ProgressPercentage, ProgressReport,
+    ProgressStage, ProgressToken, SessionGeneration,
 };
 use kvim_settings::{EditorSettings, FileTreeIcons, NotificationSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
@@ -1184,10 +1184,13 @@ const SPINNER_FRAME: Duration = Duration::from_millis(100);
 /// The server name that titles the notification group of the tests.
 const SERVER: &str = "rust-analyzer";
 
+/// The server whose session produces every progress event of the tests.
+const SERVER_ID: LanguageServerId = LanguageServerId::new("rust", 0, "rust_analyzer");
+
 /// Builds one progress event of one session attempt.
 fn progress(generation: SessionGeneration, token: &str, stage: ProgressStage) -> LanguageEvent {
     LanguageEvent {
-        adapter: "rust",
+        server: SERVER_ID,
         outcome: LanguageOutcome::Progress(ProgressReport {
             generation,
             server: SERVER,

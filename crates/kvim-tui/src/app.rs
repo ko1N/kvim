@@ -456,9 +456,11 @@ fn submit_language_work(
         };
         let kind = request.kind();
         let result = match language.as_deref_mut() {
+            // One language can run several servers, so the request reaches
+            // every running session of its path.
             Some(language) => language
-                .session(request.path())
-                .and_then(|handle| send_request(handle, request)),
+                .sessions(request.path())
+                .and_then(|handles| send_request(&handles, &request)),
             // A workspace root that the services refused leaves the editor
             // usable with no language service at all.
             None => Err(LspError::NoServerDeclared),

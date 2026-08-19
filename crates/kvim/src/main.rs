@@ -220,7 +220,8 @@ fn probe_host() -> HostFacts {
         Err(reason) => WorkspaceReport::Unresolved { reason },
     };
     let server = RustAdapter::new()
-        .language_server()
+        .language_servers()
+        .first()
         .expect("the Rust adapter of the first release declares a language server");
     HostFacts {
         workspace,

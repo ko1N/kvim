@@ -1247,7 +1247,7 @@ mod tests {
             ),
             severity,
             message: "the test message".to_owned(),
-            source: None,
+            source: "test-server".to_owned(),
         }
     }
 
@@ -1314,7 +1314,7 @@ mod tests {
             span,
             severity: DiagnosticSeverity::Error,
             message: "the test message".to_owned(),
-            source: None,
+            source: "test-server".to_owned(),
         };
         let target = draw_marked("one\n", &[stale], AREA.width);
 

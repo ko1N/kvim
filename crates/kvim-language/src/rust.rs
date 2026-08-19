@@ -12,6 +12,7 @@ use kvim_settings::{CheckDepth, LanguageSettings};
 
 use super::{
     BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
+    ServerFormatting,
 };
 
 /// The file extensions that the Rust adapter owns.
@@ -42,6 +43,16 @@ const RUST_INDENT_SCOPES: [&str; 16] = [
 
 /// The characters that close a Rust indent scope.
 const RUST_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
+
+/// The language servers that the Rust adapter declares, in declaration order.
+const RUST_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    id: "rust_analyzer",
+    program: "rust-analyzer",
+    args: &[],
+    language_id: "rust",
+    formatting: ServerFormatting::Enabled,
+    initialization_options: rust_analyzer_options,
+}];
 
 /// Returns the Rust grammar of the bundled parser.
 fn rust_language() -> Language {
@@ -120,12 +131,7 @@ impl LanguageAdapter for RustAdapter {
         }
     }
 
-    fn language_server(&self) -> Option<LanguageServerDeclaration> {
-        Some(LanguageServerDeclaration {
-            program: "rust-analyzer",
-            args: &[],
-            language_id: "rust",
-            initialization_options: rust_analyzer_options,
-        })
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &RUST_SERVERS
     }
 }

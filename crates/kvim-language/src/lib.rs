@@ -23,11 +23,12 @@
 //! the cache. See `docs/language-services.md` and `docs/responsiveness.md`.
 //!
 //! The crate also owns the Language Server Protocol client. [`LanguageServices`]
-//! holds one persistent session for each language that declares a server, and
-//! it delivers every result as a [`LanguageEvent`]. The client speaks the
-//! protocol only. An adapter declares its server through
-//! [`LanguageAdapter::language_server`], so no code above the adapter boundary
-//! names a server product.
+//! holds one persistent session for each declared server of the workspace, and
+//! it delivers every result as a [`LanguageEvent`] that names its server. The
+//! client speaks the protocol only. An adapter declares its servers through
+//! [`LanguageAdapter::language_servers`], so no code above the adapter boundary
+//! names a server product. One adapter may declare several servers, and
+//! `docs/language-services.md` owns the rules that merge their answers.
 //!
 //! [`LanguageAdapter`] stays object-safe, so the registry holds one adapter for
 //! each language. A later asynchronous method must return a boxed future
@@ -106,8 +107,10 @@ pub use protocol::{
     POSITION_ENCODING, SourceSpan, WorkspaceRoot,
 };
 pub use rust::RustAdapter;
-pub use server::LanguageServerDeclaration;
-pub use services::LanguageServices;
+pub use server::{
+    LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId, ServerFormatting,
+};
+pub use services::{LSP_SESSIONS_MAX, LanguageServices};
 pub use session::{
     LSP_CONTENT_CHANGES_MAX, LSP_DIAGNOSTICS_MAX, LSP_EVENT_QUEUE_CAPACITY, LSP_FORMAT_DEADLINE,
     LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_INITIALIZE_DEADLINE, LSP_LOCATIONS_MAX,
@@ -565,17 +568,31 @@ pub trait LanguageAdapter: Send + Sync {
     /// Returns the indent rule of the language.
     fn indent_rule(&self) -> IndentRule;
 
-    /// Returns the language server of this language, when it declares one.
+    /// Returns the language servers of this language, in declaration order.
     ///
-    /// The declaration is data: the program, its arguments, the protocol
-    /// language identifier, and the initialization options. The session sends
-    /// what the declaration names, so a new language server needs only this
-    /// method and no change above the adapter boundary.
+    /// A declaration is data: the identifier, the program, its arguments, the
+    /// protocol language identifier, the formatting role, and the
+    /// initialization options. The session sends what the declaration names, so
+    /// a new language server needs only this method and no change above the
+    /// adapter boundary.
     ///
-    /// The default answer is `None`. A language without a server stays a
-    /// normal, fully editable buffer without diagnostics.
-    fn language_server(&self) -> Option<LanguageServerDeclaration> {
-        None
+    /// The table holds at most [`LANGUAGE_SERVERS_MAX`] declarations, every
+    /// identifier is unique inside the adapter, and at most one declaration
+    /// formats. The default answer is the empty table. A language without a
+    /// server stays a normal, fully editable buffer without diagnostics.
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &[]
+    }
+
+    /// Returns the declared server that formats the documents of this language.
+    ///
+    /// At most one declaration of one adapter formats, so the answer names one
+    /// server or none. [`crate::LanguageServices`] routes every formatting
+    /// request to that server alone.
+    fn formatter(&self) -> Option<&'static LanguageServerDeclaration> {
+        self.language_servers()
+            .iter()
+            .find(|declaration| declaration.formatting == ServerFormatting::Enabled)
     }
 
     /// Reports whether this adapter owns one path.

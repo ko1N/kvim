@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 use kvim_settings::IndentSettings;
 
 use super::protocol::{LSP_OUTPUT_BYTES_MAX, WorkspaceRoot, read_frame};
+use super::server::{LanguageServerId, ServerFormatting};
 use super::session::{
     LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
     TransportFactory, start,
@@ -134,7 +135,7 @@ impl Harness {
         self.next_event().await.outcome
     }
 
-    /// Waits for the next result with the adapter that produced it.
+    /// Waits for the next result with the server that produced it.
     pub async fn next_event(&mut self) -> LanguageEvent {
         time::timeout(TEST_DEADLINE, self.events.recv())
             .await
@@ -162,12 +163,24 @@ pub fn pipe() -> (Transport, MockServer) {
     )
 }
 
+/// The identity of the first mock server of the one mock adapter.
+pub const SERVER: LanguageServerId = LanguageServerId::new("mock", 0, "mock");
+
+/// The identity of the second mock server of the same mock adapter.
+///
+/// A test that drives two servers on one buffer names this identity for the
+/// second session. The two servers share one adapter, so the merge rules of
+/// `docs/language-services.md` apply to their answers, and this later
+/// declaration loses every duplicate.
+pub const OTHER_SERVER: LanguageServerId = LanguageServerId::new("mock", 1, "other");
+
 /// Creates the stable configuration of one session under test.
-fn config(root: PathBuf, diagnostics_enabled: bool) -> SessionConfig {
+fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> SessionConfig {
     SessionConfig {
-        adapter: "mock",
+        id,
         language_id: "mock",
         server: "mock-server",
+        formatting: ServerFormatting::Enabled,
         root: WorkspaceRoot::new(root).expect("the root is absolute"),
         options: json!({}),
         indent: IndentSettings::default(),
@@ -185,10 +198,23 @@ pub fn session(transports: Vec<Transport>, diagnostics_enabled: bool) -> Harness
 /// An editor test needs a root that holds real files, so it names its own
 /// temporary directory instead of the fixed protocol root.
 pub fn session_at(root: PathBuf, transports: Vec<Transport>, diagnostics_enabled: bool) -> Harness {
+    named_session_at(SERVER, root, transports, diagnostics_enabled)
+}
+
+/// Starts one named session over prepared transports and one workspace root.
+///
+/// The name is the declaration identifier of the server, so a test that drives
+/// two servers of one language gives each session its own identity.
+pub fn named_session_at(
+    server: LanguageServerId,
+    root: PathBuf,
+    transports: Vec<Transport>,
+    diagnostics_enabled: bool,
+) -> Harness {
     let (events, receiver) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
     let (handle, task) = start(
         TransportFactory::Prepared(transports),
-        config(root, diagnostics_enabled),
+        config(server, root, diagnostics_enabled),
         events,
         CancellationToken::new(),
     );

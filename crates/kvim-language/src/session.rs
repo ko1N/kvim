@@ -43,6 +43,7 @@ use super::protocol::{
     ProtocolWriter, RpcEnvelope, RpcId, SourceSpan, WorkspaceRoot, deserialize_bounded_array,
     enforce,
 };
+use super::server::{LanguageServerId, ServerFormatting};
 
 /// The documents that one session holds open at the same time.
 pub const LSP_OPEN_DOCUMENTS_MAX: usize = 64;
@@ -164,11 +165,15 @@ pub enum LanguageOutcome {
     Stopped,
 }
 
-/// One typed result and the adapter whose session produced it.
+/// One typed result and the server whose session produced it.
 #[derive(Debug)]
 pub struct LanguageEvent {
-    /// The identifier of the adapter that owns the session.
-    pub adapter: &'static str,
+    /// The server that owns the session.
+    ///
+    /// One language can run several servers, so every caller that records a
+    /// state, or that merges an answer, reads this identity and never the
+    /// adapter identifier alone.
+    pub server: LanguageServerId,
     /// The typed result.
     pub outcome: LanguageOutcome,
 }
@@ -239,17 +244,28 @@ enum SessionRequest {
 /// caller keeps its previous visible state.
 #[derive(Debug)]
 pub struct LanguageServerHandle {
-    adapter: &'static str,
+    id: LanguageServerId,
+    formatting: ServerFormatting,
     requests: mpsc::Sender<SessionRequest>,
     next_id: AtomicU64,
     cancellation: CancellationToken,
 }
 
 impl LanguageServerHandle {
-    /// Returns the identifier of the adapter that owns the session.
+    /// Returns the server that owns the session.
     #[must_use]
-    pub const fn adapter(&self) -> &'static str {
-        self.adapter
+    pub const fn id(&self) -> LanguageServerId {
+        self.id
+    }
+
+    /// Reports whether this server formats the documents of its language.
+    ///
+    /// Exactly one declared server of one adapter formats, so a caller sends
+    /// every formatting request to the one handle that answers
+    /// [`ServerFormatting::Enabled`].
+    #[must_use]
+    pub const fn formatting(&self) -> ServerFormatting {
+        self.formatting
     }
 
     /// Opens one document with the exact text of one buffer version.
@@ -378,12 +394,14 @@ impl LanguageServerHandle {
 
 /// The stable data of one session, which every restart reuses.
 pub(super) struct SessionConfig {
-    /// The identifier of the adapter that owns the session.
-    pub(super) adapter: &'static str,
+    /// The server that owns the session.
+    pub(super) id: LanguageServerId,
     /// The protocol language identifier of every document of this session.
     pub(super) language_id: &'static str,
     /// The program that runs the server, which titles one overlay group.
     pub(super) server: &'static str,
+    /// Whether this server formats the documents of its language.
+    pub(super) formatting: ServerFormatting,
     /// The containment boundary of every path and every `file` URI.
     pub(super) root: WorkspaceRoot,
     /// The initialization options that the adapter declared.
@@ -535,7 +553,8 @@ pub(super) fn start(
 ) -> (LanguageServerHandle, tokio::task::JoinHandle<()>) {
     let (sender, receiver) = mpsc::channel(LSP_REQUEST_QUEUE_CAPACITY);
     let handle = LanguageServerHandle {
-        adapter: config.adapter,
+        id: config.id,
+        formatting: config.formatting,
         requests: sender,
         next_id: AtomicU64::new(0),
         cancellation: cancellation.clone(),
@@ -567,13 +586,13 @@ async fn supervise(
         match outcome {
             AttemptOutcome::Stopped => break,
             AttemptOutcome::NotInstalled => {
-                emit(&events, config.adapter, LanguageOutcome::Unavailable).await;
+                emit(&events, config.id, LanguageOutcome::Unavailable).await;
                 return;
             }
             AttemptOutcome::Failed(error) => {
                 emit(
                     &events,
-                    config.adapter,
+                    config.id,
                     LanguageOutcome::Failed {
                         request: None,
                         error,
@@ -590,11 +609,11 @@ async fn supervise(
                 generation = generation.next();
                 // The new server holds no document, so the caller must open its
                 // buffers again before it queries them.
-                emit(&events, config.adapter, LanguageOutcome::Restarted).await;
+                emit(&events, config.id, LanguageOutcome::Restarted).await;
             }
         }
     }
-    emit(&events, config.adapter, LanguageOutcome::Stopped).await;
+    emit(&events, config.id, LanguageOutcome::Stopped).await;
 }
 
 /// Runs one server process from the handshake to its end.
@@ -665,10 +684,10 @@ async fn terminate(child: &mut Child) {
 /// Sends one result to the editor.
 async fn emit(
     events: &mpsc::Sender<LanguageEvent>,
-    adapter: &'static str,
+    server: LanguageServerId,
     outcome: LanguageOutcome,
 ) {
-    let _ = events.send(LanguageEvent { adapter, outcome }).await;
+    let _ = events.send(LanguageEvent { server, outcome }).await;
 }
 
 /// The live state of one server attempt.
@@ -891,9 +910,11 @@ impl Session<'_> {
             LspBound::Diagnostics,
             &mut budget,
         )?;
+        // Every diagnostic records its producer, so a buffer that several
+        // servers describe can name the server that found each problem.
         let diagnostics = raw
             .into_iter()
-            .map(RawDiagnostic::into_diagnostic)
+            .map(|diagnostic| diagnostic.into_diagnostic(self.config.id.server()))
             .collect();
         let set = DiagnosticSet::new(path, document.version, diagnostics);
         Ok(Some(LanguageOutcome::Diagnostics(set)))
@@ -1208,7 +1229,7 @@ impl Session<'_> {
     async fn publish(&mut self, outcome: LanguageOutcome) -> Result<(), LspError> {
         self.events
             .send(LanguageEvent {
-                adapter: self.config.adapter,
+                server: self.config.id,
                 outcome,
             })
             .await

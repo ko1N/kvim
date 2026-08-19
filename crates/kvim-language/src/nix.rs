@@ -11,6 +11,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
+    ServerFormatting,
 };
 
 /// The file extensions that the Nix adapter owns.
@@ -47,6 +48,16 @@ fn nix_language() -> Language {
 fn nil_options(_settings: LanguageSettings) -> Value {
     json!({})
 }
+
+/// The language servers that the Nix adapter declares, in declaration order.
+const NIX_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    id: "nil_ls",
+    program: "nil",
+    args: &[],
+    language_id: "nix",
+    formatting: ServerFormatting::Enabled,
+    initialization_options: nil_options,
+}];
 
 /// The language adapter for Nix expressions.
 ///
@@ -107,12 +118,7 @@ impl LanguageAdapter for NixAdapter {
         }
     }
 
-    fn language_server(&self) -> Option<LanguageServerDeclaration> {
-        Some(LanguageServerDeclaration {
-            program: "nil",
-            args: &[],
-            language_id: "nix",
-            initialization_options: nil_options,
-        })
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &NIX_SERVERS
     }
 }

@@ -39,18 +39,23 @@ An adapter supplies data, not behavior:
 | Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
-| Language server | The optional server declaration: the program, its arguments, the protocol language identifier, and the initialization options. |
+| Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, and the initialization options. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
 The registry contains one adapter for each of JSON, Markdown, Nix, Rust, and
-TOML. Every match is case-sensitive. Each of the five adapters declares a
+TOML. Every match is case-sensitive. Each of the five adapters declares one
 language server: `vscode-json-language-server` for JSON, `marksman` for
 Markdown, `nil` for Nix, `rust-analyzer` for Rust, and `taplo` for TOML. A
 later release adds an adapter for another language and for its language
 server, because the Language Server Protocol is language independent.
+
+One adapter declares a table of servers, not one server. A language whose tools
+split the work therefore runs every declared server together. The order of the
+table is the declaration order, and the merge rules below read that order, so
+the merged answer never depends on which server answers first.
 
 TOML and Nix carry `#` as their line comment. JSON and Markdown define no
 comment of their own, so their comment metadata carries no token, and the
@@ -151,15 +156,26 @@ takes the constant role.
 ## The Language Server Session
 
 Kvim is a general Language Server Protocol (LSP) client. It runs one persistent
-session for each language of the workspace that declares a server. The session
+session for each server that an adapter of the workspace declares. The session
 speaks the protocol over JSON-RPC and knows no server product. rust-analyzer is
 the first configuration of that client, not a special case inside it.
 
-The adapter declares its server as data: the program, its arguments, the
-protocol language identifier, and the initialization options. The session sends
-what the declaration names. Adding a language server therefore means adding one
-declaration to one adapter. No code above the adapter boundary changes, and no
-name, type, or assumption of one server appears there.
+The adapter declares each server as data: the identifier, the program, its
+arguments, the protocol language identifier, the formatting role, and the
+initialization options. The session sends what the declaration names. Adding a
+language server therefore means adding one declaration to one adapter. No code
+above the adapter boundary changes, and no name, type, or assumption of one
+server appears there.
+
+One session identity is the pair of the adapter identifier and the declaration
+identifier. The identity also carries the position of the declaration in the
+table of its adapter, so every merge reads the servers in declaration order.
+The identifier is unique inside one adapter. Two adapters may declare the same
+program, which starts one session for each adapter.
+
+Every result of a session carries that identity. One server that is missing,
+that fails, or that stops therefore disables only its own session. Every other
+server of the same language keeps serving the buffer.
 
 The session owns:
 
@@ -223,6 +239,45 @@ document, so Kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
 
+## Merging The Answers Of Several Servers
+
+One buffer reaches every running server of its adapter. Each server answers on
+its own, so the editor merges the answers before it changes visible state. The
+rules below read the declaration order, never the arrival order, so one buffer
+always shows the same result.
+
+| Answer | Rule |
+|---|---|
+| Diagnostics | The editor keeps the newest set of each server and merges every set. Two diagnostics describe the same problem when their range and their message text are both identical, and the merge keeps the diagnostic of the earlier declaration. The merged list ascends by position. |
+| Hover | The editor joins the non-empty answers in declaration order. One blank row separates two answers. |
+| Definition | The editor takes the first non-empty answer in declaration order. |
+| Formatting | Exactly one declaration of one adapter formats. Only that server receives a formatting request. |
+
+The editor always records the producer of a diagnostic. It keeps the `source`
+field of the protocol when the server sends one, and it names the declaration
+identifier otherwise. The record is data, and it never depends on what the
+screen shows.
+
+The float shows that name before the message only while the merged diagnostics
+of the buffer carry more than one producer name. One name alone needs no
+prefix, because the prefix would then repeat on every row without telling the
+reader anything.
+
+The count reads the names, not the servers. One server reports under more than
+one name when it separates its own tools: rust-analyzer names `rustc` for a
+compiler diagnostic and `clippy` for a lint of the same buffer. The reader needs
+both names, although one server sent them. A name that is empty names nothing,
+so it never turns the other names on.
+
+The rule reads the complete buffer, not the cursor position. Every diagnostic of
+one buffer therefore names its producer, or none of them does, and one
+diagnostic keeps its name while the cursor moves.
+
+The editor waits for every server that accepted one question before it merges.
+A server that fails, that times out, or that stops answers nothing, and the
+merge continues with the remaining answers. A question therefore never waits for
+a server that no longer runs.
+
 ## Protocol Limits And Deadlines
 
 The `language` module names each bound as one constant. The constant and the row
@@ -230,6 +285,8 @@ below must always agree.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
+| Servers of one adapter | `LANGUAGE_SERVERS_MAX` | 4 servers | One language splits its work over a type checker, a linter, and few other tools. Four declarations cover that practice and still bound the merge of one buffer. |
+| Sessions of one workspace | `LSP_SESSIONS_MAX` | 16 sessions | One workspace mixes few languages, and a session starts only when the user opens a buffer of its language. Sixteen exceeds normal practice and still bounds the child processes of one editor. |
 | Frame header | `LSP_HEADER_BYTES_MAX` | 256 B | One `Content-Length` header and one optional `Content-Type` header fit far below this value, so a header that never ends stops early. |
 | Frame body | `LSP_MESSAGE_BYTES_MAX` | 8 MiB | One `didOpen` carries a complete file. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for JSON escaping. |
 | Session input | `LSP_INPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session writes. A day of editing stays far below this value, and an unbounded write loop stops. |
@@ -241,7 +298,7 @@ below must always agree.
 | Request queue | `LSP_REQUEST_QUEUE_CAPACITY` | 64 requests | The queue absorbs one burst of editor requests. A full queue returns a saturated result instead of waiting on the event loop. |
 | Result queue | `LSP_EVENT_QUEUE_CAPACITY` | 256 results | The queue matches the runtime result queue of [`responsiveness.md`](responsiveness.md), so one slow frame does not stall a session. |
 | Content changes | `LSP_CONTENT_CHANGES_MAX` | 4,096 changes | The transaction bound of [`text-model.md`](text-model.md). Every transaction that the buffer accepts can therefore synchronize. |
-| Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
+| Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | The bound counts the diagnostics that one server publishes for one document. One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
 | Definition locations | `LSP_LOCATIONS_MAX` | 128 locations | One definition query answers with one target, or with few candidates. A larger list means a wrong or hostile answer. |
 | Formatting edits | `LSP_FORMAT_EDITS_MAX` | 4,096 edits | The transaction bound of [`text-model.md`](text-model.md), so every accepted formatter answer becomes exactly one undoable transaction. |
 | Progress string | `LSP_PROGRESS_CHARS_MAX` | 128 characters | One progress token, title, or message names one operation. A longer string cannot fit on the overlay row, so the session clips it and drops a token above it. |
@@ -256,6 +313,17 @@ A received list that passes its bound produces a typed failure. Kvim publishes
 no partial result. Nested lists of one answer share one element budget, so a
 server cannot allocate without limit by splitting many elements over many short
 lists.
+
+Every bound above applies to one session. The merged diagnostics of one buffer
+therefore hold at most `LANGUAGE_SERVERS_MAX` times `LSP_DIAGNOSTICS_MAX`
+entries, because only the servers of one adapter describe one buffer. The merge
+removes the duplicates, so the visible list is normally far shorter.
+
+A language-server session owns a long-lived child process that no bounded
+process service starts. `LSP_SESSIONS_MAX` therefore bounds those children on
+its own, and the `PROCESS_CONCURRENCY_LIMIT` of
+[`responsiveness.md`](responsiveness.md) keeps its whole capacity for the short
+external commands of the editor.
 
 ## Work-Done Progress
 
@@ -321,6 +389,11 @@ The diagnostic float shows every diagnostic of the cursor position, not the
 first one alone. One blank row separates two diagnostics, so a reader sees where
 one message ends and the next one starts.
 
+Kvim holds the newest set of each server of one buffer, and it merges the sets
+into the ordered list that the float and the navigation read. A new set of one
+server replaces the previous set of that server alone. The section above owns
+the merge rule and the producer name.
+
 [`input-actions.md`](input-actions.md) owns the diagnostic keys.
 
 ## The language float
@@ -368,14 +441,15 @@ current state on the message line after each toggle. The statusline also shows
 the state of the focused buffer, so a window focus change reports the state of
 the buffer that the new window shows. See [`windows.md`](windows.md).
 
-Formatting reaches the document-formatting request of a language server, so a
-buffer formats only while its language adapter declares one. A buffer without a
-file name, a path that no adapter owns, and an adapter without a declaration
-therefore have no formatter. Kvim shows no format-on-save state for such a
-buffer, and the toggle reports the missing formatter instead of changing a
-state that no save can act on. The per-buffer state itself stays unchanged, so a
-buffer keeps the state that the user chose if a later release declares a server
-for its language.
+Formatting reaches the document-formatting request of one language server, so a
+buffer formats only while its language adapter declares a formatting server.
+Exactly one declaration of one adapter carries that role, so two servers of one
+language never format the same buffer. A buffer without a file name, a path that
+no adapter owns, and an adapter without a formatting declaration therefore have
+no formatter. Kvim shows no format-on-save state for such a buffer, and the
+toggle reports the missing formatter instead of changing a state that no save
+can act on. The per-buffer state itself stays unchanged, so a buffer keeps the
+state that the user chose if a later release declares a server for its language.
 
 The rule reads adapter data alone. An installed, missing, or stopped server is a
 runtime state that the reports of the section above own, so a buffer whose

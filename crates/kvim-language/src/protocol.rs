@@ -77,6 +77,8 @@ pub enum LspBound {
     FormatEdits,
     /// The size of one hover text, in bytes.
     HoverBytes,
+    /// The language-server sessions that one workspace runs together.
+    Sessions,
 }
 
 /// A typed language-server transport, protocol, containment, or bounds failure.

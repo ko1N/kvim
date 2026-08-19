@@ -12,7 +12,8 @@
 use std::time::Duration;
 
 use kvim_language::{
-    ProgressPercentage, ProgressReport, ProgressStage, ProgressToken, SessionGeneration,
+    LanguageServerId, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
+    SessionGeneration,
 };
 use kvim_settings::NotificationSettings;
 
@@ -95,8 +96,12 @@ impl NotificationItem {
 /// One group of the board: everything that one language server reports.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct NotificationGroup {
-    /// The identifier of the adapter that owns the session.
-    adapter: &'static str,
+    /// The server that owns the session.
+    ///
+    /// One language can run several servers, so the group key is the server
+    /// and never the adapter alone. Each server therefore keeps its own title
+    /// row, its own items, and its own session generation.
+    server: LanguageServerId,
     /// The title row of the group.
     title: &'static str,
     /// The newest session attempt whose reports the group accepts.
@@ -222,7 +227,7 @@ impl NotificationBoard {
     /// board free of state that no server owns.
     pub(super) fn report(
         &mut self,
-        adapter: &'static str,
+        server: LanguageServerId,
         report: &ProgressReport,
         now: Duration,
         settings: NotificationSettings,
@@ -230,11 +235,7 @@ impl NotificationBoard {
         // A generation raise drops every row of the attempt that failed, which
         // is a visible change even when the report itself addresses no item.
         let mut invalidated = Redraw::Skipped;
-        let index = match self
-            .groups
-            .iter()
-            .position(|group| group.adapter == adapter)
-        {
+        let index = match self.groups.iter().position(|group| group.server == server) {
             Some(index) => {
                 let group = &mut self.groups[index];
                 if report.generation < group.generation {
@@ -255,7 +256,7 @@ impl NotificationBoard {
             }
             None => {
                 self.groups.push(NotificationGroup {
-                    adapter,
+                    server,
                     title: report.server,
                     generation: report.generation,
                     items: Vec::new(),

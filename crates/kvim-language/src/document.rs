@@ -57,8 +57,14 @@ pub struct Diagnostic {
     pub severity: DiagnosticSeverity,
     /// The message of the diagnostic.
     pub message: String,
-    /// The producer of the diagnostic, when the server names one.
-    pub source: Option<String>,
+    /// The producer of the diagnostic.
+    ///
+    /// The value is the `source` field of the protocol when the server sends
+    /// one, and the declaration identifier of that server otherwise. One buffer
+    /// can merge the diagnostics of several servers, so every diagnostic
+    /// records its origin. The editor decides on its own whether it shows that
+    /// name. See `docs/language-services.md`.
+    pub source: String,
 }
 
 /// The wire shape of one diagnostic.
@@ -75,12 +81,20 @@ pub(super) struct RawDiagnostic {
 
 impl RawDiagnostic {
     /// Converts one received diagnostic into its editor value.
-    pub(super) fn into_diagnostic(self) -> Diagnostic {
+    ///
+    /// `server` is the declaration identifier of the session that received the
+    /// diagnostic. It names the producer when the server sends no `source`
+    /// field, so every merged diagnostic of one buffer names its origin.
+    pub(super) fn into_diagnostic(self, server: &'static str) -> Diagnostic {
+        let source = self
+            .source
+            .filter(|source| !source.is_empty())
+            .unwrap_or_else(|| server.to_owned());
         Diagnostic {
             span: self.range,
             severity: DiagnosticSeverity::from_code(self.severity),
             message: self.message,
-            source: self.source,
+            source,
         }
     }
 }

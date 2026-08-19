@@ -9,7 +9,9 @@ use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
-use super::{CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration};
+use super::{
+    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+};
 
 /// The file extensions that the TOML adapter owns.
 const TOML_EXTENSIONS: [&str; 1] = ["toml"];
@@ -35,6 +37,16 @@ fn toml_language() -> Language {
 fn taplo_options(_settings: LanguageSettings) -> Value {
     json!({})
 }
+
+/// The language servers that the TOML adapter declares, in declaration order.
+const TOML_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    id: "taplo",
+    program: "taplo",
+    args: &["lsp", "stdio"],
+    language_id: "toml",
+    formatting: ServerFormatting::Enabled,
+    initialization_options: taplo_options,
+}];
 
 /// The language adapter for TOML documents.
 ///
@@ -96,12 +108,7 @@ impl LanguageAdapter for TomlAdapter {
         }
     }
 
-    fn language_server(&self) -> Option<LanguageServerDeclaration> {
-        Some(LanguageServerDeclaration {
-            program: "taplo",
-            args: &["lsp", "stdio"],
-            language_id: "toml",
-            initialization_options: taplo_options,
-        })
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &TOML_SERVERS
     }
 }
