@@ -236,10 +236,22 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
         "escape" | "string" => Some(SyntaxRole::String),
         // A table field of the Lua query is the property of its table.
         "field" => Some(SyntaxRole::Property),
+        // The SQL query names a floating-point literal with the older word of
+        // the same shared vocabulary.
+        "float" => Some(SyntaxRole::Number),
         "function" if name.split('.').any(|part| part == "macro") => Some(SyntaxRole::Macro),
         "function" => Some(SyntaxRole::Function),
         "keyword" => Some(SyntaxRole::Keyword),
         "label" => Some(SyntaxRole::Statement),
+        // The `markup` family is the newer name of the `text` family below, so
+        // each name takes the role of the older word that carries the same
+        // meaning. A bare `markup` marks the plain text of a document, which
+        // no role names, so that capture stays off and its text stays plain.
+        "markup" => match parts.next() {
+            Some("heading") => Some(SyntaxRole::Type),
+            Some("link" | "raw") => Some(SyntaxRole::String),
+            _ => None,
+        },
         // A method is a function of one value, so it takes the function role.
         "method" => Some(SyntaxRole::Function),
         // A module name names a namespace of declarations, so it takes the type
@@ -257,6 +269,10 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
             Some("delimiter") => Some(SyntaxRole::Delimiter),
             _ => Some(SyntaxRole::Operator),
         },
+        // A storage class names how a database keeps an object, so the SQL
+        // query marks a keyword with the older word of the same shared
+        // vocabulary.
+        "storageclass" => Some(SyntaxRole::Keyword),
         // A tag names the kind of an element, exactly as a type name names the
         // kind of a value, so the markup grammars take the type role. The
         // deeper names of the same family, for example the erroneous end tag of
@@ -273,6 +289,9 @@ fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
         },
         "type" => Some(SyntaxRole::Type),
         "variable" => match parts.next() {
+            // A member of a value is the property of that value, so the newer
+            // word takes the role of `field` above.
+            Some("member") => Some(SyntaxRole::Property),
             Some("parameter") => Some(SyntaxRole::Parameter),
             _ => Some(SyntaxRole::Variable),
         },
