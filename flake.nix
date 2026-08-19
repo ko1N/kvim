@@ -1,10 +1,20 @@
 {
   description = "Kvim terminal editor";
 
-  inputs.nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+  inputs = {
+    nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
+  };
 
   outputs =
-    { nixpkgs, self }:
+    {
+      nixpkgs,
+      rust-overlay,
+      self,
+    }:
     let
       cargoToml = nixpkgs.lib.importTOML ./Cargo.toml;
       systems = [
@@ -13,24 +23,36 @@
         "x86_64-linux"
       ];
       forAllSystems = nixpkgs.lib.genAttrs systems;
+
+      # `legacyPackages` carries no overlay. Every output imports `nixpkgs`
+      # through this function, so `rust-bin` stays available everywhere.
+      pkgsFor =
+        system:
+        import nixpkgs {
+          inherit system;
+          overlays = [ rust-overlay.overlays.default ];
+        };
+
+      # Single source of truth: the pinned toolchain lives in
+      # rust-toolchain.toml, not hardcoded here.
+      toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
     in
     {
       devShells = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
+          pkgs = pkgsFor system;
+          rustToolchain = toolchainFor pkgs;
         in
         {
           default = pkgs.mkShellNoCC {
             packages = [
-              pkgs.cargo
-              pkgs.clippy
               pkgs.git
               pkgs.nixfmt
               pkgs.ripgrep
-              pkgs.rust-analyzer
-              pkgs.rustc
-              pkgs.rustfmt
+              # The toolchain supplies Cargo, Rust, rustfmt, Clippy, and
+              # `rust-analyzer` at the pinned version.
+              rustToolchain
             ];
           };
         }
@@ -39,8 +61,25 @@
       packages = forAllSystems (
         system:
         let
-          pkgs = nixpkgs.legacyPackages.${system};
-          kvim = pkgs.rustPlatform.buildRustPackage {
+          pkgs = pkgsFor system;
+          rustToolchain = toolchainFor pkgs;
+
+          # `pkgs.rustPlatform` builds with the Rust of nixpkgs. This platform
+          # builds with the pinned toolchain instead.
+          rustPlatform = pkgs.makeRustPlatform {
+            cargo = rustToolchain;
+            rustc = rustToolchain;
+          };
+
+          # The wrapper needs one directory that holds `rust-analyzer` alone.
+          # The whole toolchain would also put its Cargo and its Rust in front
+          # of the commands that the user chose for the edited project.
+          rustAnalyzer = pkgs.runCommand "kvim-rust-analyzer" { } ''
+            mkdir -p "$out/bin"
+            ln -s "${rustToolchain}/bin/rust-analyzer" "$out/bin/rust-analyzer"
+          '';
+
+          kvim = rustPlatform.buildRustPackage {
             pname = "kvim";
             version = cargoToml.workspace.package.version;
             src = nixpkgs.lib.cleanSource self;
@@ -59,7 +98,7 @@
                   nixpkgs.lib.makeBinPath [
                     pkgs.git
                     pkgs.ripgrep
-                    pkgs.rust-analyzer
+                    rustAnalyzer
                   ]
                 }
             '';
@@ -91,6 +130,6 @@
         };
       });
 
-      formatter = forAllSystems (system: nixpkgs.legacyPackages.${system}.nixfmt);
+      formatter = forAllSystems (system: (pkgsFor system).nixfmt);
     };
 }
