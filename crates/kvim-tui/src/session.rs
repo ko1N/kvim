@@ -150,6 +150,8 @@ enum PendingFile {
         buffer: BufferId,
         /// The step that follows the save.
         then: AfterSave,
+        /// The format state that the save report names.
+        format: FormatBeforeSave,
     },
     /// Loaded buffers are checked against their files.
     Reload {
@@ -158,6 +160,64 @@ enum PendingFile {
         /// Who asked for the check.
         origin: ReloadOrigin,
     },
+}
+
+/// What the save report names about the format that ran before it.
+///
+/// The save writes the message line after the format, so a format that writes
+/// its own message loses it to the save report. The format therefore hands its
+/// state to the save, and the save names that state beside its own result. The
+/// note qualifies a message that every save writes, so it adds no message and
+/// repeats none. See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum FormatBeforeSave {
+    /// The save reports its own result alone.
+    ///
+    /// The formatter produced the content that the save writes, the buffer
+    /// already matched its formatter, or no format ran before this save.
+    Silent,
+    /// The host holds no such program, which is a normal state.
+    NotInstalled,
+    /// The formatter produced no usable document.
+    Failed,
+}
+
+impl FormatBeforeSave {
+    /// Returns the state that one failed run of an external formatter leaves.
+    ///
+    /// An obsolete answer stays silent. The user typed while the formatter ran,
+    /// and the save writes exactly the content that the user typed.
+    #[must_use]
+    const fn of(failure: FormatterFailure) -> Self {
+        match failure {
+            FormatterFailure::NotInstalled => Self::NotInstalled,
+            FormatterFailure::Unavailable => Self::Failed,
+            FormatterFailure::Obsolete => Self::Silent,
+        }
+    }
+
+    /// Returns the reason that the save report names after its own result.
+    #[must_use]
+    const fn reason(self) -> Option<&'static str> {
+        match self {
+            Self::Silent => None,
+            Self::NotInstalled => Some(FORMATTER_MISSING_NOTE),
+            Self::Failed => Some(FORMATTER_FAILED_NOTE),
+        }
+    }
+
+    /// Returns the level of the save report that carries this state.
+    ///
+    /// A formatter that the host does not hold is a normal state, so the save
+    /// keeps the level of an ordinary report. A formatter that refused the
+    /// document needs attention.
+    #[must_use]
+    const fn level(self) -> MessageLevel {
+        match self {
+            Self::Silent | Self::NotInstalled => MessageLevel::Info,
+            Self::Failed => MessageLevel::Warning,
+        }
+    }
 }
 
 /// Who asked for one reload check.
@@ -1830,9 +1890,13 @@ impl Session {
     }
 
     /// Releases one question without applying an answer.
+    ///
+    /// A released format question describes a buffer version that the user
+    /// already left, or a server that reported its own state once. The save
+    /// therefore reports its own result alone.
     fn release_query(&mut self, pending: &PendingQuery) -> Redraw {
         match pending.purpose {
-            QueryPurpose::FormatBeforeSave(then) => self.start_save(then),
+            QueryPurpose::FormatBeforeSave(then) => self.start_save(then, FormatBeforeSave::Silent),
             QueryPurpose::Definition | QueryPurpose::Hover => Redraw::Skipped,
         }
     }
@@ -1894,13 +1958,17 @@ impl Session {
             QueryPurpose::Definition => self.follow_definition(pending),
             QueryPurpose::Hover => self.show_hover(pending),
             QueryPurpose::FormatBeforeSave(then) => {
-                let redraw = match pending.formatting() {
-                    Some(edits) => self.apply_format_edits(pending.buffer, edits),
+                let (redraw, format) = match pending.formatting() {
+                    Some(edits) => (
+                        self.apply_format_edits(pending.buffer, edits),
+                        FormatBeforeSave::Silent,
+                    ),
                     // A save must never depend on a language server, so a lost
-                    // formatter answer still writes the buffer content.
-                    None => Redraw::Skipped,
+                    // formatter answer still writes the buffer content. The
+                    // save report names that the file holds that content.
+                    None => (Redraw::Skipped, FormatBeforeSave::Failed),
                 };
-                self.start_save(then).or(redraw)
+                self.start_save(then, format).or(redraw)
             }
         }
     }
@@ -2057,29 +2125,22 @@ impl Session {
         let cursor = self.cursor().position(file.text());
         let transaction = match document.transaction(file.text(), cursor) {
             Ok(transaction) => transaction,
-            Err(failure) => return self.report_formatter_failure(failure),
+            // The user typed while the formatter ran, so its answer describes
+            // content that the buffer no longer holds.
+            Err(FormatterFailure::Obsolete) => return Redraw::Skipped,
+            Err(FormatterFailure::NotInstalled | FormatterFailure::Unavailable) => {
+                debug_assert!(
+                    false,
+                    "a transaction of one document fails only for an obsolete buffer version"
+                );
+                return Redraw::Skipped;
+            }
         };
         let outcome = self.edit(|editing, context, window| {
             editing.apply_transaction(context, window, transaction)
         });
         self.sync_context();
         self.report(outcome)
-    }
-
-    /// Reports one formatter state that changed no buffer content.
-    fn report_formatter_failure(&mut self, failure: FormatterFailure) -> Redraw {
-        match failure {
-            FormatterFailure::NotInstalled => {
-                self.report_language_notice(LanguageNotice::FormatterMissing)
-            }
-            FormatterFailure::Unavailable => {
-                self.set_message(FORMATTER_FAILED_NOTE, MessageLevel::Warning);
-                Redraw::Needed
-            }
-            // The user typed while the formatter ran, so its answer describes
-            // content that the buffer no longer holds.
-            FormatterFailure::Obsolete => Redraw::Skipped,
-        }
     }
 
     /// Reports whether one answer still describes the current buffer version.
@@ -2508,6 +2569,8 @@ impl Session {
     /// A refused submission and a failed program both reach this entry point as
     /// a typed failure. The save that waited for the formatter follows every
     /// path, so no formatter state ever loses the content that the user typed.
+    /// The save report names the failure, because the save writes the message
+    /// line after this transition.
     #[must_use]
     pub fn apply_format_result(
         &mut self,
@@ -2517,13 +2580,16 @@ impl Session {
             // No save waits for this answer, so it changes nothing.
             return Redraw::Skipped;
         };
-        let formatted = match result {
-            Ok(Some(document)) => self.commit_format(pending.buffer, &document),
+        let (formatted, format) = match result {
+            Ok(Some(document)) => (
+                self.commit_format(pending.buffer, &document),
+                FormatBeforeSave::Silent,
+            ),
             // The buffer already matches its formatter.
-            Ok(None) => Redraw::Skipped,
-            Err(failure) => self.report_formatter_failure(failure),
+            Ok(None) => (Redraw::Skipped, FormatBeforeSave::Silent),
+            Err(failure) => (Redraw::Skipped, FormatBeforeSave::of(failure)),
         };
-        self.start_save(pending.then).or(formatted)
+        self.start_save(pending.then, format).or(formatted)
     }
 
     /// Applies one coalesced burst of workspace filesystem changes.
@@ -2679,11 +2745,13 @@ impl Session {
                 requested,
                 outcome,
             } => {
-                let then = match pending {
-                    Some(PendingFile::Save { then, .. }) => then,
-                    Some(PendingFile::Open | PendingFile::Reload { .. }) | None => AfterSave::Stay,
+                let (then, format) = match pending {
+                    Some(PendingFile::Save { then, format, .. }) => (then, format),
+                    Some(PendingFile::Open | PendingFile::Reload { .. }) | None => {
+                        (AfterSave::Stay, FormatBeforeSave::Silent)
+                    }
                 };
-                self.publish_save(buffer, &requested, outcome, then)
+                self.publish_save(buffer, &requested, outcome, then, format)
             }
             FileResult::Reloaded { buffers } => {
                 let Some(PendingFile::Reload { targets, origin }) = pending else {
@@ -3008,7 +3076,7 @@ impl Session {
         if self.formats_before_save() {
             return self.request_format(then);
         }
-        self.start_save(then)
+        self.start_save(then, FormatBeforeSave::Silent)
     }
 
     /// Reports whether a save already waits for its formatter answer.
@@ -3054,7 +3122,7 @@ impl Session {
                 false,
                 "the caller checked that the buffer holds a file name"
             );
-            return self.start_save(then);
+            return self.start_save(then, FormatBeforeSave::Silent);
         };
         let version = file.text().version();
         if let Some(LanguageFormatter::External(declaration)) =
@@ -3082,7 +3150,10 @@ impl Session {
     }
 
     /// Writes the active buffer and runs the step that follows the save.
-    fn start_save(&mut self, then: AfterSave) -> Redraw {
+    ///
+    /// `format` names what a format before this save produced, and the save
+    /// report names that state beside its own result.
+    fn start_save(&mut self, then: AfterSave, format: FormatBeforeSave) -> Redraw {
         let buffer = self.active;
         // Build the complete request before the operation starts, so a rejected
         // save never changes the buffer.
@@ -3103,7 +3174,11 @@ impl Session {
         };
         self.start_file_request(
             FileRequest::Save(request),
-            PendingFile::Save { buffer, then },
+            PendingFile::Save {
+                buffer,
+                then,
+                format,
+            },
         )
     }
 
@@ -3334,12 +3409,18 @@ impl Session {
     }
 
     /// Publishes one completed save.
+    ///
+    /// The save writes the message line last, so its report also names a
+    /// format that produced no document. A user therefore always reads whether
+    /// the written file holds formatted content. See
+    /// `docs/language-services.md`.
     fn publish_save(
         &mut self,
         buffer: BufferId,
         requested: &Path,
         outcome: Result<SavedBuffer, SaveError>,
         then: AfterSave,
+        format: FormatBeforeSave,
     ) -> Redraw {
         let saved = match outcome {
             Ok(saved) => saved,
@@ -3364,10 +3445,15 @@ impl Session {
         // The saved file changed the working tree, so the recorded state of the
         // workspace changed with it.
         self.tree.request_git_status();
-        self.set_message(
-            format!("\"{name}\" {lines}L, {bytes}B written"),
-            MessageLevel::Info,
-        );
+        let written = format!("\"{name}\" {lines}L, {bytes}B written");
+        // The message line clips at the terminal width, and a path is the one
+        // unbounded part of the report. The reason therefore leads, so a narrow
+        // terminal clips the path and never the state of the written file.
+        let report = match format.reason() {
+            Some(reason) => format!("{reason}; {written}"),
+            None => written,
+        };
+        self.set_message(report, format.level());
         match then {
             AfterSave::Stay => Redraw::Needed,
             AfterSave::CloseWindow => self
@@ -3677,8 +3763,12 @@ const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to
 /// shows.
 const NO_FORMATTER_NOTE: &str = "no formatter serves this buffer";
 
-/// The message that a formatter run without a usable document shows.
-const FORMATTER_FAILED_NOTE: &str = "the formatter failed; the save continues without it";
+/// The reason that the save report of a failed formatter run names.
+const FORMATTER_FAILED_NOTE: &str = "the formatter failed, so the file holds unformatted content";
+
+/// The reason that the save report of a formatter that is absent names.
+const FORMATTER_MISSING_NOTE: &str =
+    "the formatter is not installed, so the file holds unformatted content";
 
 /// The message that a comment toggle without a line-comment token shows.
 const NO_COMMENT_TOKEN_NOTE: &str =

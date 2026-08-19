@@ -533,11 +533,6 @@ pub(super) enum LanguageNotice {
     UnusedInWorkspace,
     /// The declared server is not installed on this system.
     NotInstalled,
-    /// The declared external formatter is not installed on this system.
-    ///
-    /// The state never fails a save. The editor writes the content that the
-    /// user typed and continues without a format.
-    FormatterMissing,
     /// The session stopped and accepts no further request.
     Stopped,
 }
@@ -564,9 +559,6 @@ impl LanguageNotice {
                 "this workspace uses no language server for this buffer; editing continues"
             }
             Self::NotInstalled => "no language server is installed; editing continues without one",
-            Self::FormatterMissing => {
-                "the formatter is not installed; the save continues without it"
-            }
             Self::Stopped => "the language server stopped; editing continues without it",
         }
     }
