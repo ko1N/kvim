@@ -9,13 +9,15 @@ use std::sync::Arc;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, duplex};
+use tokio::time;
 
 use kvim_core::{BufferVersion, CharRange, EditTransaction, TextBuffer, TextChange};
 use kvim_settings::{EditorSettings, FileSettings};
 
 use super::document::ContentChange;
 use super::mock::{
-    DOCUMENT, DOCUMENT_URI, Harness, MockServer, PIPE_BYTES, ROOT, connected, pipe, session,
+    self, DOCUMENT, DOCUMENT_URI, Harness, MockServer, PIPE_BYTES, ROOT, TEST_DEADLINE, connected,
+    pipe, session,
 };
 use super::progress::{ProgressPercentage, ProgressReport, ProgressStage, SessionGeneration};
 use super::protocol::{
@@ -30,7 +32,8 @@ use super::session::{
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
-    LanguageAdapter, LanguageRegistry, LanguageServices, RustAdapter,
+    LanguageAdapter, LanguageRegistry, LanguageServerDeclaration, LanguageServerId,
+    LanguageServices, RustAdapter, ServerFormatting,
 };
 
 /// Returns a buffer with the exact test document content.
@@ -303,8 +306,11 @@ async fn publishes_diagnostics_in_position_order() {
         .collect();
     assert_eq!(messages, ["early", "late"]);
     assert_eq!(set.diagnostics()[0].severity, DiagnosticSeverity::Error);
-    assert_eq!(set.diagnostics()[0].source.as_deref(), Some("mock"));
+    assert_eq!(set.diagnostics()[0].source, "mock");
     assert_eq!(set.diagnostics()[1].severity, DiagnosticSeverity::Warning);
+    // The second diagnostic carries no `source` field, so the declaration
+    // identifier of its session names the producer.
+    assert_eq!(set.diagnostics()[1].source, mock::SERVER.server());
 }
 
 #[tokio::test]
@@ -1071,14 +1077,144 @@ fn a_language_without_a_server_leaves_the_editor_usable() {
 
     // Neither path starts a process, and neither failure stops the editor.
     assert!(matches!(
-        services.session(Path::new("/workspace/notes.kv")),
+        services.sessions(Path::new("/workspace/notes.kv")),
         Err(LspError::NoServerDeclared)
     ));
     assert!(matches!(
-        services.session(Path::new("/workspace/notes.txt")),
+        services.sessions(Path::new("/workspace/notes.txt")),
         Err(LspError::UnsupportedPath)
     ));
     assert!(services.try_recv().is_none());
+}
+
+/// The adapter that declares two servers, neither of which is installed.
+///
+/// The two programs carry a name that no host provides, so every start reports
+/// [`LanguageOutcome::Unavailable`] without running a program of the host
+/// system.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+struct TwoServerAdapter;
+
+/// The two servers of [`TwoServerAdapter`], in declaration order.
+static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
+    LanguageServerDeclaration {
+        id: "first",
+        program: "kvim-absent-language-server-first",
+        args: &[],
+        language_id: "two",
+        formatting: ServerFormatting::Enabled,
+        initialization_options: no_options,
+    },
+    LanguageServerDeclaration {
+        id: "second",
+        program: "kvim-absent-language-server-second",
+        args: &[],
+        language_id: "two",
+        formatting: ServerFormatting::Disabled,
+        initialization_options: no_options,
+    },
+];
+
+/// Returns the empty initialization options of a test declaration.
+fn no_options(_settings: kvim_settings::LanguageSettings) -> Value {
+    json!({})
+}
+
+impl LanguageAdapter for TwoServerAdapter {
+    fn id(&self) -> &'static str {
+        "two"
+    }
+
+    fn version(&self) -> &'static str {
+        "1"
+    }
+
+    fn extensions(&self) -> &'static [&'static str] {
+        &["two"]
+    }
+
+    fn comment(&self) -> CommentStyle {
+        CommentStyle::new(Some("#"), None)
+    }
+
+    fn grammar(&self) -> Grammar {
+        RustAdapter::new().grammar()
+    }
+
+    fn indent_rule(&self) -> IndentRule {
+        IndentRule {
+            scopes: &["block"],
+            closing_delimiters: &['}'],
+        }
+    }
+
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        &TWO_SERVERS
+    }
+}
+
+static TWO_SERVER: TwoServerAdapter = TwoServerAdapter;
+
+/// One registry whose only language declares two servers.
+static TWO_SERVER_REGISTRY: [&dyn LanguageAdapter; 1] = [&TWO_SERVER];
+
+#[tokio::test]
+async fn one_failing_server_leaves_the_other_server_of_the_language_running() {
+    let mut services = LanguageServices::new(
+        LanguageRegistry::new(&TWO_SERVER_REGISTRY),
+        PathBuf::from(ROOT),
+        EditorSettings::default(),
+    )
+    .expect("the root is absolute");
+    let path = Path::new("/workspace/notes.two");
+
+    // One path starts one session for each declaration, in declaration order.
+    let ids: Vec<LanguageServerId> = services
+        .sessions(path)
+        .expect("both sessions start")
+        .iter()
+        .map(|handle| handle.id())
+        .collect();
+    assert_eq!(
+        ids,
+        [
+            LanguageServerId::new("two", 0, "first"),
+            LanguageServerId::new("two", 1, "second"),
+        ]
+    );
+
+    // The first server proves missing. Only its own session becomes
+    // unavailable, so the language keeps the second server.
+    let first = next_unavailable(&mut services).await;
+    let running: Vec<LanguageServerId> = services
+        .sessions(path)
+        .expect("the second session still serves the path")
+        .iter()
+        .map(|handle| handle.id())
+        .collect();
+    assert_eq!(running.len(), 1);
+    assert_ne!(running[0], first);
+
+    // Only after every server proves missing does the language lose its
+    // service, and no restart of the recorded servers follows.
+    next_unavailable(&mut services).await;
+    assert!(matches!(
+        services.sessions(path),
+        Err(LspError::NotInstalled)
+    ));
+}
+
+/// Waits for the next server that reports that it is not installed.
+async fn next_unavailable(services: &mut LanguageServices) -> LanguageServerId {
+    loop {
+        let event = time::timeout(TEST_DEADLINE, services.recv())
+            .await
+            .expect("a missing server reports its state before the test deadline")
+            .expect("the result queue stays open");
+        if matches!(event.outcome, LanguageOutcome::Unavailable) {
+            return event.server;
+        }
+    }
 }
 
 #[test]

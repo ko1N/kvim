@@ -19,8 +19,9 @@ use std::sync::Arc;
 
 use kvim_core::BufferVersion;
 use kvim_language::{
-    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition,
-    LanguageRegistry, LanguageRequestId, LanguageServerHandle, LspError,
+    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition, FormatEdits,
+    LANGUAGE_SERVERS_MAX, LanguageRegistry, LanguageRequestId, LanguageServerHandle,
+    LanguageServerId, LspError, ServerFormatting, SourceLocation,
 };
 use kvim_workspace::BufferId;
 
@@ -150,19 +151,88 @@ pub enum LanguageQuery {
     Format,
 }
 
-/// Sends one request to the session that serves its document.
+/// One question that one server accepted.
+///
+/// The dispatch produces one value for each server that took the question, in
+/// declaration order. The answer of that server later carries the same request
+/// identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AcceptedQuery {
+    /// The server that the question reached.
+    pub server: LanguageServerId,
+    /// The identity that the session assigned.
+    pub request: LanguageRequestId,
+}
+
+/// Sends one request to every session that serves its document.
 ///
 /// The call returns at once, so the terminal event loop never reads, writes, or
-/// waits for a server. A query answers with the identity that its later result
-/// carries.
+/// waits for a server. One language can run several servers, so a question
+/// reaches each of them and answers with one identity for each. A formatting
+/// request reaches the one declared server that formats.
+///
+/// One server that refuses the request leaves the remaining servers serving.
+/// The call fails only when no server took the request at all.
 ///
 /// # Errors
 ///
-/// Returns [`LspError::Saturated`] when the request queue of the session is
-/// full, and [`LspError::Stopped`] after the session stopped.
+/// Returns [`LspError::NoServerDeclared`] when no running server serves this
+/// request, [`LspError::Saturated`] when every request queue is full, and
+/// [`LspError::Stopped`] after every session stopped.
 pub(super) fn send_request(
+    handles: &[&LanguageServerHandle],
+    request: &LanguageRequest,
+) -> Result<Vec<AcceptedQuery>, LspError> {
+    let mut accepted = Vec::with_capacity(handles.len());
+    let mut served = 0_usize;
+    let mut refused = None;
+    for handle in handles {
+        if !serves(handle, request) {
+            continue;
+        }
+        match send_one(handle, request) {
+            Ok(Some(id)) => {
+                served += 1;
+                accepted.push(AcceptedQuery {
+                    server: handle.id(),
+                    request: id,
+                });
+            }
+            Ok(None) => served += 1,
+            // The first refusal names the state that the message line reports,
+            // because a later refusal describes the same lost request.
+            Err(error) => refused = refused.or(Some(error)),
+        }
+    }
+    if served > 0 {
+        return Ok(accepted);
+    }
+    // No server took the request. A refusal names its typed reason, and no
+    // refusal at all means that no running server serves this request.
+    Err(refused.unwrap_or(LspError::NoServerDeclared))
+}
+
+/// Reports whether one server receives one request.
+///
+/// Exactly one declared server of one adapter formats, so a formatting request
+/// reaches that server alone. Every other request reaches every running server.
+fn serves(handle: &LanguageServerHandle, request: &LanguageRequest) -> bool {
+    match request {
+        LanguageRequest::Query {
+            query: LanguageQuery::Format,
+            ..
+        } => handle.formatting() == ServerFormatting::Enabled,
+        LanguageRequest::Open { .. }
+        | LanguageRequest::Change { .. }
+        | LanguageRequest::Close { .. }
+        | LanguageRequest::Query { .. } => true,
+    }
+}
+
+/// Sends one request to one session.
+fn send_one(
     handle: &LanguageServerHandle,
-    request: LanguageRequest,
+    request: &LanguageRequest,
 ) -> Result<Option<LanguageRequestId>, LspError> {
     match request {
         LanguageRequest::Open {
@@ -170,25 +240,27 @@ pub(super) fn send_request(
             version,
             text,
             ..
-        } => handle.open(&path, version, text).map(|()| None),
+        } => handle.open(path, *version, Arc::clone(text)).map(|()| None),
         LanguageRequest::Change {
             path,
             version,
             changes,
             ..
-        } => handle.change(&path, version, changes).map(|()| None),
-        LanguageRequest::Close { path } => handle.close(&path).map(|()| None),
+        } => handle
+            .change(path, *version, changes.clone())
+            .map(|()| None),
+        LanguageRequest::Close { path } => handle.close(path).map(|()| None),
         LanguageRequest::Query {
             path,
             version,
             query,
             ..
-        } => match query {
+        } => match *query {
             LanguageQuery::Definition(position) => {
-                handle.definition(&path, version, position).map(Some)
+                handle.definition(path, *version, position).map(Some)
             }
-            LanguageQuery::Hover(position) => handle.hover(&path, version, position).map(Some),
-            LanguageQuery::Format => handle.format(&path, version).map(Some),
+            LanguageQuery::Hover(position) => handle.hover(path, *version, position).map(Some),
+            LanguageQuery::Format => handle.format(path, *version).map(Some),
         },
     }
 }
@@ -225,10 +297,59 @@ pub(super) enum QueryPurpose {
     FormatBeforeSave(AfterSave),
 }
 
+/// The answer that one server gave to one question.
+#[derive(Debug)]
+pub(super) enum Answer {
+    /// The definition targets inside the workspace root, in answer order.
+    Definition(Vec<SourceLocation>),
+    /// The hover text of the symbol under the cursor.
+    Hover(String),
+    /// The accepted formatting edits of one buffer version.
+    Formatting(FormatEdits),
+    /// The server produced no value for this question.
+    ///
+    /// A failure, a timeout, a missing server, and a stopped session all reach
+    /// this state, so no question waits for a server that answers nothing.
+    Empty,
+}
+
+/// One server that a question reached, and the answer that it gave.
+#[derive(Debug)]
+struct AnswerSlot {
+    /// The server that the question reached.
+    server: LanguageServerId,
+    /// The identity that the session assigned.
+    request: LanguageRequestId,
+    /// The answer, or `None` while the server still owes one.
+    answer: Option<Answer>,
+}
+
+/// The servers that one question reached.
+#[derive(Debug)]
+enum QueryDispatch {
+    /// The editor queued the question, and the event loop has not sent it yet.
+    Queued,
+    /// The dispatch named every server that accepted the question, in
+    /// declaration order.
+    Accepted(Vec<AnswerSlot>),
+}
+
+/// Whether one question still waits for an answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum QueryState {
+    /// At least one server still owes an answer.
+    Waiting,
+    /// Every server answered, so the merged answer is ready.
+    Complete,
+}
+
 /// The question that the editor waits for.
 ///
 /// One question runs at a time, so no answer can reach a buffer state that a
-/// newer question already replaced.
+/// newer question already replaced. The question reaches every running server
+/// of its language, and it holds one slot for each of them. The merge rules of
+/// `docs/language-services.md` read the slots in declaration order, so the
+/// merged answer never depends on which server answers first.
 #[derive(Debug)]
 pub(super) struct PendingQuery {
     /// The buffer that the question asks about.
@@ -237,8 +358,128 @@ pub(super) struct PendingQuery {
     pub(super) version: BufferVersion,
     /// Why the editor asked.
     pub(super) purpose: QueryPurpose,
-    /// The identity that the services assigned, once they accepted it.
-    pub(super) id: Option<LanguageRequestId>,
+    /// The servers that the question reached.
+    dispatch: QueryDispatch,
+}
+
+impl PendingQuery {
+    /// Creates one question that waits for its dispatch.
+    pub(super) const fn new(
+        buffer: BufferId,
+        version: BufferVersion,
+        purpose: QueryPurpose,
+    ) -> Self {
+        Self {
+            buffer,
+            version,
+            purpose,
+            dispatch: QueryDispatch::Queued,
+        }
+    }
+
+    /// Records the servers that accepted the question.
+    pub(super) fn accept(&mut self, accepted: Vec<AcceptedQuery>) {
+        debug_assert!(
+            matches!(self.dispatch, QueryDispatch::Queued),
+            "the event loop dispatches one question exactly once"
+        );
+        self.dispatch = QueryDispatch::Accepted(
+            accepted
+                .into_iter()
+                .map(|query| AnswerSlot {
+                    server: query.server,
+                    request: query.request,
+                    answer: None,
+                })
+                .collect(),
+        );
+    }
+
+    /// Reports whether one answer belongs to this question.
+    pub(super) fn owns(&self, request: LanguageRequestId) -> bool {
+        self.slots()
+            .is_some_and(|slots| slots.iter().any(|slot| slot.request == request))
+    }
+
+    /// Records one answer, and reports whether every server answered.
+    pub(super) fn resolve(&mut self, request: LanguageRequestId, answer: Answer) -> QueryState {
+        if let QueryDispatch::Accepted(slots) = &mut self.dispatch
+            && let Some(slot) = slots.iter_mut().find(|slot| slot.request == request)
+            && slot.answer.is_none()
+        {
+            slot.answer = Some(answer);
+        }
+        self.state()
+    }
+
+    /// Records that one server answers nothing further.
+    ///
+    /// A missing server, a stopped session, and a session failure carry no
+    /// request identity, so they release every slot of that server at once.
+    pub(super) fn abandon(&mut self, server: LanguageServerId) -> QueryState {
+        if let QueryDispatch::Accepted(slots) = &mut self.dispatch {
+            for slot in slots.iter_mut().filter(|slot| slot.server == server) {
+                slot.answer.get_or_insert(Answer::Empty);
+            }
+        }
+        self.state()
+    }
+
+    /// Returns the merged definition targets of the first server that found
+    /// one.
+    pub(super) fn definition(&self) -> &[SourceLocation] {
+        self.answers()
+            .find_map(|answer| match answer {
+                Answer::Definition(locations) if !locations.is_empty() => Some(&locations[..]),
+                _ => None,
+            })
+            .unwrap_or_default()
+    }
+
+    /// Returns the hover answers of every server, in declaration order.
+    ///
+    /// The caller joins the answers, and an empty list means that no server
+    /// described the symbol.
+    pub(super) fn hover(&self) -> Vec<&str> {
+        self.answers()
+            .filter_map(|answer| match answer {
+                Answer::Hover(text) if !text.is_empty() => Some(text.as_str()),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Returns the formatting edits of the one server that formats.
+    pub(super) fn formatting(&self) -> Option<&FormatEdits> {
+        self.answers().find_map(|answer| match answer {
+            Answer::Formatting(edits) => Some(edits),
+            _ => None,
+        })
+    }
+
+    /// Returns the slots, or `None` while the question waits for its dispatch.
+    const fn slots(&self) -> Option<&Vec<AnswerSlot>> {
+        match &self.dispatch {
+            QueryDispatch::Queued => None,
+            QueryDispatch::Accepted(slots) => Some(slots),
+        }
+    }
+
+    /// Returns the answers that arrived, in declaration order.
+    fn answers(&self) -> impl Iterator<Item = &Answer> {
+        self.slots()
+            .into_iter()
+            .flatten()
+            .filter_map(|slot| slot.answer.as_ref())
+    }
+
+    /// Reports whether every server that took the question answered.
+    fn state(&self) -> QueryState {
+        match self.slots() {
+            Some(slots) if slots.iter().all(|slot| slot.answer.is_some()) => QueryState::Complete,
+            Some(_) | None => QueryState::Waiting,
+        }
+    }
 }
 
 /// The definition target that waits for its document to load.
@@ -289,11 +530,11 @@ impl LanguageNotice {
 
 /// Reports whether a formatter can format one document.
 ///
-/// Formatting reaches the document-formatting request of a language server, so
-/// a buffer without a file name, a path that no adapter owns, and an adapter
-/// that declares no server all have no formatter. The answer is adapter data
-/// alone, and every caller derives it again instead of storing it, because a
-/// stored copy could disagree with the adapter table.
+/// Formatting reaches the document-formatting request of one language server,
+/// so a buffer without a file name, a path that no adapter owns, and an adapter
+/// that declares no formatting server all have no formatter. The answer is
+/// adapter data alone, and every caller derives it again instead of storing it,
+/// because a stored copy could disagree with the adapter table.
 ///
 /// Whether a declared server is installed, running, or stopped is a separate
 /// runtime state that [`LanguageNotice`] reports.
@@ -301,7 +542,7 @@ pub(super) fn has_formatter(languages: LanguageRegistry, path: Option<&Path>) ->
     path.is_some_and(|path| {
         languages
             .adapter(path)
-            .is_ok_and(|adapter| adapter.language_server().is_some())
+            .is_ok_and(|adapter| adapter.formatter().is_some())
     })
 }
 
@@ -435,18 +676,29 @@ impl Float {
     /// One position can carry several diagnostics, and the float shows every
     /// one of them. A blank row separates two diagnostics, so a reader sees
     /// where one message ends and the next one starts.
+    ///
+    /// `source` decides whether each message names the server that reported it.
+    /// The caller reads that state from the buffer, so one diagnostic never
+    /// gains or loses its name while the cursor moves.
     #[must_use]
-    pub(super) fn diagnostics(title: &'static str, diagnostics: &[&Diagnostic]) -> Self {
+    pub(super) fn diagnostics(
+        title: &'static str,
+        diagnostics: &[&Diagnostic],
+        source: DiagnosticSource,
+    ) -> Self {
         let rows = diagnostics
             .iter()
             .enumerate()
             .flat_map(|(position, diagnostic)| {
                 let severity = diagnostic.severity;
-                let source = diagnostic.source.as_deref().unwrap_or_default();
-                let prefix = if source.is_empty() {
+                let name = match source {
+                    DiagnosticSource::Shown => diagnostic.source.as_str(),
+                    DiagnosticSource::Hidden => "",
+                };
+                let prefix = if name.is_empty() {
                     String::new()
                 } else {
-                    format!("{source}: ")
+                    format!("{name}: ")
                 };
                 let separator = (position > 0).then(|| FloatRow {
                     text: String::new(),
@@ -479,11 +731,111 @@ fn clip(line: &str) -> String {
     line.chars().take(FLOAT_SOURCE_CHARS_MAX).collect()
 }
 
+/// Whether the diagnostic float names the producer of each diagnostic.
+///
+/// The state belongs to one buffer, never to one cursor position. Every
+/// diagnostic of one buffer therefore names its producer, or none of them does.
+/// See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum DiagnosticSource {
+    /// The buffer carries more than one producer name, so each message names
+    /// the producer that reported it.
+    Shown,
+    /// The buffer carries one producer name, so a name would repeat on every
+    /// row without telling the reader anything.
+    #[default]
+    Hidden,
+}
+
+/// The diagnostics of one buffer, from every server that describes it.
+///
+/// The map holds the newest accepted set of each server, and the merged list is
+/// the view that the float, the markers, and the navigation read. Only the
+/// servers of one adapter describe one buffer, so the map holds at most
+/// [`LANGUAGE_SERVERS_MAX`] sets.
+#[derive(Debug, Default)]
+struct BufferDiagnostics {
+    /// The newest accepted set of each server, in declaration order.
+    servers: BTreeMap<LanguageServerId, DiagnosticSet>,
+    /// The merged list, in ascending position order.
+    merged: Vec<Diagnostic>,
+}
+
+impl BufferDiagnostics {
+    /// Replaces the set of one server and merges the sets again.
+    fn publish(&mut self, server: LanguageServerId, set: DiagnosticSet) {
+        self.servers.insert(server, set);
+        debug_assert!(
+            self.servers.len() <= LANGUAGE_SERVERS_MAX,
+            "only the servers of one adapter describe one buffer"
+        );
+        self.merged = merge(&self.servers);
+    }
+
+    /// Reports whether the float names the producer of each diagnostic.
+    ///
+    /// The count reads the producer names of the merged list, not the servers
+    /// that reported them. One server reports under more than one name when it
+    /// separates its own tools, and the reader then needs each name.
+    ///
+    /// A name that is empty names nothing, so it never turns the other names
+    /// on. The protocol parser substitutes the declaration identifier for an
+    /// absent or empty `source` field, so only a diagnostic that another
+    /// producer builds can carry one.
+    fn naming(&self) -> DiagnosticSource {
+        let mut first: Option<&str> = None;
+        for name in self
+            .merged
+            .iter()
+            .map(|diagnostic| diagnostic.source.as_str())
+            .filter(|name| !name.is_empty())
+        {
+            match first {
+                None => first = Some(name),
+                Some(seen) if seen == name => {}
+                Some(_) => return DiagnosticSource::Shown,
+            }
+        }
+        DiagnosticSource::Hidden
+    }
+}
+
+/// Merges the diagnostics of every server of one buffer.
+///
+/// Two diagnostics describe the same problem when their range and their message
+/// text are both identical. The map orders the servers by declaration, so the
+/// merge keeps the diagnostic of the earlier declaration and drops the later
+/// duplicate. The result ascends by position, which keeps diagnostic navigation
+/// deterministic. See `docs/language-services.md`.
+fn merge(servers: &BTreeMap<LanguageServerId, DiagnosticSet>) -> Vec<Diagnostic> {
+    let mut seen = BTreeSet::new();
+    let mut merged: Vec<Diagnostic> = servers
+        .values()
+        .flat_map(DiagnosticSet::diagnostics)
+        .filter(|diagnostic| {
+            seen.insert((
+                diagnostic.span.start,
+                diagnostic.span.end,
+                diagnostic.message.as_str(),
+            ))
+        })
+        .cloned()
+        .collect();
+    // The sort is stable, so two diagnostics that share the complete key keep
+    // the declaration order of their servers.
+    merged.sort_by(|left, right| {
+        (left.span.start, left.span.end, left.severity)
+            .cmp(&(right.span.start, right.span.end, right.severity))
+            .then_with(|| left.message.cmp(&right.message))
+    });
+    merged
+}
+
 /// The language-service state that the session owns.
 ///
 /// The state holds only bounded collections: the outbox, the buffers that need
-/// a fresh open, the newest diagnostics of every buffer, and the per-buffer
-/// format-on-save overrides. The buffer list bounds every map.
+/// a fresh open, the newest diagnostics of every buffer and server, and the
+/// per-buffer format-on-save overrides. The buffer list bounds every map.
 #[derive(Debug, Default)]
 pub(super) struct LanguageState {
     /// The requests that wait for the event loop.
@@ -494,8 +846,8 @@ pub(super) struct LanguageState {
     pub(super) pending: Option<PendingQuery>,
     /// The normal states that the editor already reported.
     reported: BTreeSet<LanguageNotice>,
-    /// The newest accepted diagnostics of every buffer.
-    diagnostics: BTreeMap<BufferId, DiagnosticSet>,
+    /// The newest accepted diagnostics of every buffer and server.
+    diagnostics: BTreeMap<BufferId, BufferDiagnostics>,
     /// The buffers whose format-on-save state differs from the settings.
     format_on_save: BTreeMap<BufferId, FormatOnSave>,
     /// The definition target that waits for its document to load.
@@ -562,9 +914,20 @@ impl LanguageState {
         self.reported.insert(notice)
     }
 
-    /// Publishes the diagnostics of one buffer.
-    pub(super) fn publish(&mut self, buffer: BufferId, set: DiagnosticSet) {
-        self.diagnostics.insert(buffer, set);
+    /// Publishes the diagnostics that one server reported for one buffer.
+    ///
+    /// The set replaces the previous set of that server alone, so a second
+    /// server of the same language keeps the diagnostics that it reported.
+    pub(super) fn publish(
+        &mut self,
+        buffer: BufferId,
+        server: LanguageServerId,
+        set: DiagnosticSet,
+    ) {
+        self.diagnostics
+            .entry(buffer)
+            .or_default()
+            .publish(server, set);
     }
 
     /// Drops every published diagnostic.
@@ -572,7 +935,7 @@ impl LanguageState {
         self.diagnostics.clear();
     }
 
-    /// Drops the published diagnostics of one buffer.
+    /// Drops the published diagnostics of every server of one buffer.
     ///
     /// A reload replaces the buffer text, so every published diagnostic of that
     /// buffer describes text that no longer exists.
@@ -580,12 +943,25 @@ impl LanguageState {
         self.diagnostics.remove(&buffer);
     }
 
-    /// Returns the diagnostics of one buffer, in ascending position order.
+    /// Returns the merged diagnostics of one buffer, in ascending position
+    /// order.
     #[must_use]
     pub(super) fn diagnostics(&self, buffer: BufferId) -> &[Diagnostic] {
         self.diagnostics
             .get(&buffer)
-            .map_or(&[][..], DiagnosticSet::diagnostics)
+            .map_or(&[][..], |published| &published.merged)
+    }
+
+    /// Reports whether the float names the producer of each diagnostic of one
+    /// buffer.
+    ///
+    /// The answer reads the complete buffer, not the cursor position, so one
+    /// diagnostic keeps its name while the cursor moves over the buffer.
+    #[must_use]
+    pub(super) fn diagnostic_naming(&self, buffer: BufferId) -> DiagnosticSource {
+        self.diagnostics
+            .get(&buffer)
+            .map_or(DiagnosticSource::Hidden, BufferDiagnostics::naming)
     }
 
     /// Returns the format-on-save state of one buffer.

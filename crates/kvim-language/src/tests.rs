@@ -9,11 +9,12 @@ use kvim_core::{EditTransaction, TextBuffer, TextChange};
 use kvim_runtime::{PublicationGate, RequestSlot, Runtime, RuntimeLimits};
 use kvim_settings::FileSettings;
 
+use super::server::declarations_are_valid;
 use super::{
     ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_SOURCE_BYTES_MAX, ANALYSIS_SOURCE_LINES_MAX,
     Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax, CommentStyle, Grammar,
-    IndentRule, LanguageAdapter, LanguageRegistry, Publication, RustAdapter, SyntaxRole,
-    SyntaxTree,
+    IndentRule, LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageRegistry, Publication, RustAdapter,
+    SyntaxRole, SyntaxTree,
 };
 
 /// A second adapter that proves the multi-language seam.
@@ -481,6 +482,33 @@ fn every_registered_extension_selects_its_adapter() {
                 .ok(),
             Some(id),
             "{path} belongs to the {id} adapter"
+        );
+    }
+}
+
+#[test]
+fn every_registered_adapter_declares_a_valid_server_table() {
+    let registry = LanguageRegistry::first_release();
+
+    for path in [
+        "Cargo.toml",
+        "flake.nix",
+        "package.json",
+        "README.md",
+        "src/main.rs",
+    ] {
+        let adapter = registry
+            .adapter(Path::new(path))
+            .expect("the path belongs to one adapter");
+        assert!(
+            declarations_are_valid(adapter.language_servers()),
+            "{path} declares at most {LANGUAGE_SERVERS_MAX} servers, names each identifier \
+             once, and carries at most one formatting server",
+        );
+        assert_eq!(
+            adapter.formatter().is_some(),
+            !adapter.language_servers().is_empty(),
+            "{path} formats through the one server that carries the formatting role",
         );
     }
 }

@@ -17,7 +17,10 @@ use ratatui::backend::TestBackend;
 use ratatui::layout::Rect;
 use serde_json::{Value, json};
 
-use kvim_language::mock::{Harness, MockServer, pipe, session_at};
+use kvim_language::LanguageServerHandle;
+use kvim_language::mock::{
+    self, Harness, MockServer, OTHER_SERVER, named_session_at, pipe, session_at,
+};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
@@ -43,6 +46,13 @@ struct Editor {
     server: MockServer,
     /// The server that the session reaches after the running one fails.
     spare: Option<MockServer>,
+    /// The second session of the same language, when the test drives two.
+    ///
+    /// Both sessions serve one adapter, so the merge rules of
+    /// `docs/language-services.md` apply to their answers.
+    second: Option<Harness>,
+    /// The mock server behind that second session.
+    other: Option<MockServer>,
     /// The workspace that holds every test file. Its drop removes the files.
     directory: TempDir,
     root: PathBuf,
@@ -56,11 +66,40 @@ impl Editor {
         Self::start_with_attempts(label, files, 1).await
     }
 
+    /// Starts one editor whose one language runs two servers.
+    ///
+    /// The second session carries its own server identity, so every result
+    /// names the server that produced it. Both sessions run before the editor
+    /// opens its buffer, so each of them holds the document.
+    async fn start_with_two_servers(label: &str, files: &[(&str, &str)]) -> Self {
+        let mut editor = Self::prepare(label, files, 1).await;
+        let (transport, mut other) = pipe();
+        let second = named_session_at(OTHER_SERVER, editor.root.clone(), vec![transport], true);
+        other.handshake().await;
+        editor.second = Some(second);
+        editor.other = Some(other);
+        editor.open_first(files).await;
+        editor
+    }
+
     /// Starts one editor whose session may run over more than one server.
     ///
     /// A restart test needs a second server, because the session creates one
     /// transport for each attempt.
     async fn start_with_attempts(label: &str, files: &[(&str, &str)], attempts: usize) -> Self {
+        let mut editor = Self::prepare(label, files, attempts).await;
+        editor.open_first(files).await;
+        editor
+    }
+
+    /// Opens the first workspace file, which every test edits.
+    async fn open_first(&mut self, files: &[(&str, &str)]) {
+        let first = files.first().expect("one test file exists").0;
+        self.open(first).await;
+    }
+
+    /// Prepares the editor and its sessions without opening a buffer.
+    async fn prepare(label: &str, files: &[(&str, &str)], attempts: usize) -> Self {
         assert!(
             (1..=2).contains(&attempts),
             "the harness prepares one server for each attempt"
@@ -86,17 +125,16 @@ impl Editor {
 
         let mut settings = EditorSettings::default();
         settings.files.undo_file = false;
-        let mut editor = Self {
+        Self {
             session: Session::new(AREA, settings, PathBuf::from("/workspace")),
             harness,
             server,
             spare,
+            second: None,
+            other: None,
             directory,
             root,
-        };
-        let first = files.first().expect("one test file exists").0;
-        editor.open(first).await;
-        editor
+        }
     }
 
     /// Drops the running server, so the session restarts over the spare one.
@@ -111,12 +149,15 @@ impl Editor {
         self.server = spare;
     }
 
-    /// Opens one workspace file and synchronizes it with the server.
+    /// Opens one workspace file and synchronizes it with every server.
     async fn open(&mut self, name: &str) {
         self.session.open_path(self.root.join(name));
         self.run_file_request();
         self.pump();
         self.server.expect("textDocument/didOpen").await;
+        if let Some(other) = self.other.as_mut() {
+            other.expect("textDocument/didOpen").await;
+        }
     }
 
     /// Runs the queued file request, like the event loop and the worker service.
@@ -128,11 +169,18 @@ impl Editor {
         let _ = self.session.apply_file_result(request.run());
     }
 
+    /// Returns the running sessions of the editor, in declaration order.
+    fn handles(&self) -> Vec<&LanguageServerHandle> {
+        let mut handles = vec![self.harness.handle()];
+        handles.extend(self.second.as_ref().map(Harness::handle));
+        handles
+    }
+
     /// Sends every queued language request, like the terminal event loop.
     fn pump(&mut self) {
         while let Some(request) = self.session.take_language_request() {
             let kind = request.kind();
-            let result = send_request(self.harness.handle(), request);
+            let result = send_request(&self.handles(), &request);
             let _ = self.session.apply_language_dispatch(kind, result);
         }
     }
@@ -140,6 +188,17 @@ impl Editor {
     /// Applies the next result of the language services.
     async fn publish(&mut self) {
         let event = self.harness.next_event().await;
+        let _ = self.session.apply_language_event(event);
+    }
+
+    /// Applies the next result of the second session.
+    async fn publish_other(&mut self) {
+        let event = self
+            .second
+            .as_mut()
+            .expect("the test started the second server")
+            .next_event()
+            .await;
         let _ = self.session.apply_language_event(event);
     }
 
@@ -266,6 +325,16 @@ impl Editor {
             .collect()
     }
 
+    /// Returns the producer of each diagnostic of the active buffer, in order.
+    fn diagnostic_sources(&self) -> Vec<String> {
+        let visible = self.session.visible();
+        visible
+            .diagnostics(visible.active)
+            .iter()
+            .map(|diagnostic| diagnostic.source.clone())
+            .collect()
+    }
+
     /// Returns the current content of one workspace file.
     fn file(&self, name: &str) -> String {
         std::fs::read_to_string(self.directory.join(name)).expect("the test file exists")
@@ -287,6 +356,215 @@ fn diagnostics_notification(uri: &str, entries: Value) -> Value {
         "method": "textDocument/publishDiagnostics",
         "params": { "uri": uri, "diagnostics": entries },
     })
+}
+
+#[tokio::test]
+async fn two_servers_of_one_language_merge_their_diagnostics() {
+    let mut editor = Editor::start_with_two_servers(
+        "language-two-servers",
+        &[("main.rs", "fn main() {}\nlet x = 1;\nlet y = 2;\n")],
+    )
+    .await;
+    let uri = editor.uri("main.rs");
+
+    // The earlier declaration reports one problem of its own and one that both
+    // servers find.
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([
+                { "range": span(2, 0, 3), "severity": 2, "message": "shared" },
+                { "range": span(0, 0, 2), "severity": 1, "message": "from the first server" },
+            ]),
+        ))
+        .await;
+    editor.publish().await;
+    assert_eq!(
+        editor.diagnostics(),
+        vec!["from the first server".to_owned(), "shared".to_owned()],
+    );
+
+    // The later declaration reports the same problem and one of its own. The
+    // set of the first server stays, so both servers describe the buffer.
+    editor
+        .other
+        .as_mut()
+        .expect("the test started the second server")
+        .send(&diagnostics_notification(
+            &uri,
+            json!([
+                { "range": span(1, 0, 3), "severity": 1, "message": "from the second server" },
+                { "range": span(2, 0, 3), "severity": 2, "message": "shared" },
+            ]),
+        ))
+        .await;
+    editor.publish_other().await;
+    assert_eq!(
+        editor.diagnostics(),
+        vec![
+            "from the first server".to_owned(),
+            "from the second server".to_owned(),
+            // The identical range and message of both servers describe one
+            // problem, so the merged list holds it exactly once.
+            "shared".to_owned(),
+        ],
+        "the merge holds every diagnostic once, in ascending position order"
+    );
+    assert_eq!(
+        editor.diagnostic_sources(),
+        vec![
+            mock::SERVER.server().to_owned(),
+            mock::OTHER_SERVER.server().to_owned(),
+            // The earlier declaration wins the duplicate, so its identifier
+            // names the producer.
+            mock::SERVER.server().to_owned(),
+        ],
+        "a server that sends no source field is named by its declaration"
+    );
+
+    // The second server stops. Only its own diagnostics leave, and the first
+    // server keeps serving the buffer.
+    editor
+        .second
+        .as_mut()
+        .expect("the test started the second server")
+        .stop();
+    editor.publish_other().await;
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([{ "range": span(0, 0, 2), "severity": 1, "message": "still serving" }]),
+        ))
+        .await;
+    editor.publish().await;
+    assert_eq!(
+        editor.diagnostics(),
+        vec![
+            "still serving".to_owned(),
+            "from the second server".to_owned(),
+            "shared".to_owned(),
+        ],
+        "one stopped server never removes the diagnostics of the other server"
+    );
+    assert_eq!(
+        editor.diagnostic_sources(),
+        vec![
+            mock::SERVER.server().to_owned(),
+            mock::OTHER_SERVER.server().to_owned(),
+            // The new set of the first server no longer holds the shared
+            // problem, so the second server now owns it alone.
+            mock::OTHER_SERVER.server().to_owned(),
+        ],
+        "a new set replaces the previous set of its own server alone"
+    );
+}
+
+#[tokio::test]
+async fn the_float_names_the_producer_only_while_the_buffer_carries_several_names() {
+    let mut editor = Editor::start_with_two_servers(
+        "language-source-if-many",
+        &[("main.rs", "let x = 1;\nlet y = 2;\n")],
+    )
+    .await;
+    let uri = editor.uri("main.rs");
+
+    // The second server runs, but it reports nothing yet. The buffer therefore
+    // carries one producer name, and the float shows the message alone.
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([{ "range": span(0, 0, 5), "severity": 1, "message": "from the first server" }]),
+        ))
+        .await;
+    editor.publish().await;
+    editor.press(" e");
+    assert_eq!(
+        editor.float_rows(),
+        vec!["from the first server".to_owned()],
+        "a server that reports nothing never adds a second producer name"
+    );
+
+    // The second server reports as well, so the buffer carries two names and
+    // every diagnostic of it names the producer that found it.
+    editor
+        .other
+        .as_mut()
+        .expect("the test started the second server")
+        .send(&diagnostics_notification(
+            &uri,
+            json!([{ "range": span(1, 0, 5), "severity": 1, "message": "from the second server" }]),
+        ))
+        .await;
+    editor.publish_other().await;
+
+    editor.press("j e");
+    assert_eq!(
+        editor.float_rows(),
+        vec![format!(
+            "{}: from the second server",
+            mock::OTHER_SERVER.server()
+        )],
+    );
+
+    // The first line carries one producer name of its own, and it names that
+    // producer too, because the rule reads the complete buffer and not the
+    // cursor position.
+    editor.press("k e");
+    assert_eq!(
+        editor.float_rows(),
+        vec![format!("{}: from the first server", mock::SERVER.server())],
+        "one diagnostic never loses its name while the cursor moves"
+    );
+}
+
+#[tokio::test]
+async fn one_server_that_reports_under_two_names_shows_both_of_them() {
+    // rust-analyzer is one server, and it separates its compiler diagnostics
+    // from its lints through the `source` field. The reader needs both names,
+    // so the count reads the producer names and never the server count.
+    let mut editor = Editor::start(
+        "language-two-sources",
+        &[("main.rs", "let x = 1;\nlet y = 2;\n")],
+    )
+    .await;
+    let uri = editor.uri("main.rs");
+
+    editor
+        .server
+        .send(&diagnostics_notification(
+            &uri,
+            json!([
+                {
+                    "range": span(0, 0, 5),
+                    "severity": 1,
+                    "source": "rustc",
+                    "message": "unused variable",
+                },
+                {
+                    "range": span(1, 0, 5),
+                    "severity": 2,
+                    "source": "clippy",
+                    "message": "needless late initialization",
+                },
+            ]),
+        ))
+        .await;
+    editor.publish().await;
+
+    editor.press(" e");
+    assert_eq!(
+        editor.float_rows(),
+        vec!["rustc: unused variable".to_owned()],
+    );
+    editor.press("j e");
+    assert_eq!(
+        editor.float_rows(),
+        vec!["clippy: needless late initialization".to_owned()],
+        "one server that reports under two names keeps both of them visible"
+    );
 }
 
 #[tokio::test]
@@ -402,7 +680,9 @@ async fn the_diagnostic_float_shows_the_diagnostics_at_the_cursor() {
     assert!(editor.float_rows().is_empty());
 
     editor.press("llll e");
-    assert_eq!(editor.float_rows(), vec!["check: unused value".to_owned()]);
+    // The buffer carries one producer name, so the float shows the message
+    // alone. A name on every row would tell the reader nothing.
+    assert_eq!(editor.float_rows(), vec!["unused value".to_owned()]);
     // The next key closes the float, which changes no buffer text.
     editor.press("l");
     assert!(editor.float_rows().is_empty());
