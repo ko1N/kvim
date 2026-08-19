@@ -40,10 +40,32 @@ pub enum PromptEdit {
     Cancel,
 }
 
-/// The answer to one open confirmation.
+/// One edit of the answer of an open confirmation.
 ///
 /// The resolver translates the raw key, so the editor never compares a key
-/// value. See `docs/input-actions.md`.
+/// value. The confirmation completes nothing, so this enumeration holds no
+/// completion edit. See `docs/input-actions.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConfirmEdit {
+    /// Append one character to the answer.
+    Insert(char),
+    /// Remove the character before the cursor.
+    DeleteBackward,
+    /// Read the answer and close the question.
+    Accept,
+    /// Cancel the action and close the question.
+    Cancel,
+    /// Change nothing and keep the question open.
+    ///
+    /// An open confirmation owns every key, so a key that it does not read
+    /// reaches no other owner and inserts no buffer text.
+    Ignore,
+}
+
+/// The answer to one open confirmation.
+///
+/// The resolver reads the keys, and this value reads the typed word, so one
+/// keypress never performs the action. See `docs/input-actions.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfirmAnswer {
     /// Perform the action that waits for the answer.
@@ -53,27 +75,27 @@ pub enum ConfirmAnswer {
 }
 
 impl ConfirmAnswer {
-    /// Returns the answer that one key gives.
+    /// Returns the answer that one typed text gives.
     ///
-    /// Only a plain `y` confirms. The capital `N` of the question names the
-    /// default, so `n`, `Esc`, and every other key cancel.
+    /// The text `y` and the text `yes` confirm, in any letter case. The capital
+    /// `N` of the question names the default, so every other text cancels, and
+    /// an empty text cancels as well.
     ///
     /// ```
     /// use kvim_input::ConfirmAnswer;
-    /// use kvim_terminal::{Key, KeyCode};
     ///
-    /// let yes = Key::plain(KeyCode::Char('y'));
-    /// let other = Key::plain(KeyCode::Esc);
-    /// assert_eq!(ConfirmAnswer::from_key(yes), ConfirmAnswer::Yes);
-    /// assert_eq!(ConfirmAnswer::from_key(other), ConfirmAnswer::No);
+    /// assert_eq!(ConfirmAnswer::from_text("y"), ConfirmAnswer::Yes);
+    /// assert_eq!(ConfirmAnswer::from_text("YES"), ConfirmAnswer::Yes);
+    /// assert_eq!(ConfirmAnswer::from_text("no"), ConfirmAnswer::No);
+    /// assert_eq!(ConfirmAnswer::from_text(""), ConfirmAnswer::No);
     /// ```
     #[inline]
     #[must_use]
-    pub const fn from_key(key: Key) -> Self {
-        match (key.chord(), key.code()) {
-            (Chord::Plain, KeyCode::Char('y')) => Self::Yes,
-            _ => Self::No,
+    pub fn from_text(text: &str) -> Self {
+        if text.eq_ignore_ascii_case("y") || text.eq_ignore_ascii_case("yes") {
+            return Self::Yes;
         }
+        Self::No
     }
 }
 
@@ -89,8 +111,8 @@ pub enum Resolution {
     },
     /// An open prompt owns input and the key edits its line.
     Prompt(PromptEdit),
-    /// An open confirmation owns input and the key answers it.
-    Confirmation(ConfirmAnswer),
+    /// An open confirmation owns input and the key edits its answer.
+    Confirmation(ConfirmEdit),
     /// The sequence is a valid prefix of at least one longer sequence.
     Pending,
     /// `Esc` or `Ctrl-C` cancelled the pending sequence and the pending count.
@@ -334,20 +356,22 @@ impl Resolver {
 
     /// Resolves one key at the elapsed time `now`.
     ///
-    /// An open confirmation answers first, because it reads one key. The
+    /// An open confirmation answers first, because it owns every key. The
     /// function then cancels pending input on `Esc` or `Ctrl-C`, accumulates a
     /// decimal count in a mode that holds one, and extends the pending
     /// sequence. The elapsed time only arms the which-key overlay.
     pub fn resolve(&mut self, key: Key, now: Duration) -> Resolution {
-        // A confirmation reads one key and reaches no table, so it answers
-        // before every other branch. Only this context produces an answer, so
-        // no key reaches a closed confirmation.
+        // A confirmation reads its own answer and reaches no table, so it takes
+        // the key before every other branch. `Enter` therefore reaches the
+        // confirmation alone, never the prompt below it. Only this context
+        // produces a confirmation edit, so no key reaches a closed
+        // confirmation.
         if matches!(self.context, InputContext::Confirmation { .. }) {
             debug_assert!(
                 matches!(self.pending, PendingInput::Idle),
                 "a context change resets pending input, so a confirmation holds none"
             );
-            return Resolution::Confirmation(ConfirmAnswer::from_key(key));
+            return Resolution::Confirmation(confirm_edit(key));
         }
         if self.context.prompt().is_some() {
             debug_assert!(
@@ -548,6 +572,24 @@ fn prompt_edit(key: Key) -> Option<PromptEdit> {
     }
 }
 
+/// Translates one key into an edit of the confirmation answer.
+///
+/// The confirmation reads its own small table, so it completes nothing: `Tab`
+/// and `Shift-Tab` change nothing. The function answers for every key, so an
+/// open confirmation owns every key and none of them reaches the buffer below
+/// it. See `docs/input-actions.md`.
+fn confirm_edit(key: Key) -> ConfirmEdit {
+    if is_cancel_key(key) {
+        return ConfirmEdit::Cancel;
+    }
+    match (key.chord(), key.code()) {
+        (Chord::Plain, KeyCode::Char(value)) => ConfirmEdit::Insert(value),
+        (Chord::Plain, KeyCode::Backspace) => ConfirmEdit::DeleteBackward,
+        (Chord::Plain, KeyCode::Enter) => ConfirmEdit::Accept,
+        _ => ConfirmEdit::Ignore,
+    }
+}
+
 /// Adds a bound to the elapsed time without overflow.
 fn saturating_deadline(now: Duration, bound: Duration) -> Duration {
     now.checked_add(bound).unwrap_or(Duration::MAX)
@@ -562,7 +604,7 @@ mod tests {
     use kvim_settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
     use kvim_terminal::{Key, KeyCode};
 
-    use super::{ConfirmAnswer, PromptEdit, Resolution, Resolver};
+    use super::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};
 
     const NOW: Duration = Duration::ZERO;
 
@@ -1151,26 +1193,55 @@ mod tests {
     }
 
     #[test]
-    fn a_confirmation_context_answers_every_key() {
+    fn a_confirmation_context_takes_every_key_as_an_answer_edit() {
         let cases = [
-            (ch('y'), ConfirmAnswer::Yes),
-            (ch('n'), ConfirmAnswer::No),
-            (Key::plain(KeyCode::Esc), ConfirmAnswer::No),
-            (Key::ctrl(KeyCode::Char('c')), ConfirmAnswer::No),
-            (Key::plain(KeyCode::Enter), ConfirmAnswer::No),
-            // The capital `N` of the question names the default, so the
-            // capital `Y` cancels with every other key.
-            (ch('Y'), ConfirmAnswer::No),
-            (ch('q'), ConfirmAnswer::No),
-            (Key::ctrl(KeyCode::Char('y')), ConfirmAnswer::No),
+            (ch('y'), ConfirmEdit::Insert('y')),
+            // The capital letters reach the answer as well, because the answer
+            // compares them without case.
+            (ch('Y'), ConfirmEdit::Insert('Y')),
+            (ch('n'), ConfirmEdit::Insert('n')),
+            (Key::plain(KeyCode::Backspace), ConfirmEdit::DeleteBackward),
+            (Key::plain(KeyCode::Enter), ConfirmEdit::Accept),
+            (Key::plain(KeyCode::Esc), ConfirmEdit::Cancel),
+            (Key::ctrl(KeyCode::Char('c')), ConfirmEdit::Cancel),
+            // The confirmation completes nothing, so both completion keys
+            // change nothing.
+            (Key::plain(KeyCode::Tab), ConfirmEdit::Ignore),
+            (Key::plain(KeyCode::BackTab), ConfirmEdit::Ignore),
+            (Key::ctrl(KeyCode::Char('y')), ConfirmEdit::Ignore),
         ];
-        for (key, answer) in cases {
+        for (key, edit) in cases {
             let mut resolver = resolver();
             resolver.set_context(InputContext::NORMAL.open_confirmation());
             assert_eq!(
                 resolver.resolve(key, NOW),
-                Resolution::Confirmation(answer),
+                Resolution::Confirmation(edit),
                 "{key:?} in a confirmation"
+            );
+        }
+    }
+
+    #[test]
+    fn the_accepted_answers_are_y_and_yes_in_every_letter_case() {
+        for text in ["y", "Y", "yes", "Yes", "YES", "yEs"] {
+            assert_eq!(
+                ConfirmAnswer::from_text(text),
+                ConfirmAnswer::Yes,
+                "{text} performs the action"
+            );
+        }
+    }
+
+    #[test]
+    fn every_other_answer_cancels_the_action() {
+        // The empty text is the default that the capital `N` of the question
+        // names. The blank cases prove that the answer takes the text exactly
+        // as the user typed it.
+        for text in ["", "n", "N", "no", "ya", "yess", " y", "y ", "yes!"] {
+            assert_eq!(
+                ConfirmAnswer::from_text(text),
+                ConfirmAnswer::No,
+                "{text:?} cancels the action"
             );
         }
     }

@@ -83,8 +83,8 @@ pub use language::{
 pub use layout::{Region, RegionKind, WindowLayout};
 pub use picker::PickerFailure;
 pub use session::{
-    AnalysisRequest, AnalysisResult, FileRequestFailure, MESSAGE_CHARS_MAX, Message, MessageLevel,
-    Redraw, RunState, Session,
+    AnalysisRequest, AnalysisResult, CONFIRM_ANSWER_CHARS_MAX, FileRequestFailure,
+    MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
 };
 pub use theme::{IconRole, Theme, ThemeRole};
 pub use window::{

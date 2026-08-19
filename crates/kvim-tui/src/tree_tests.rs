@@ -115,6 +115,15 @@ fn type_keys(session: &mut Session, keys: &str) {
     }
 }
 
+/// Answers the open question with one typed text and `Enter`.
+///
+/// The question reads the text only when `Enter` closes it, so one keypress
+/// performs no action. See `docs/input-actions.md`.
+fn answer(session: &mut Session, text: &str) {
+    type_keys(session, text);
+    press_code(session, KeyCode::Enter);
+}
+
 /// Renders one session and returns the terminal cell buffer.
 fn draw(session: &Session) -> CellBuffer {
     let backend = TestBackend::new(WIDTH, HEIGHT);
@@ -509,7 +518,20 @@ fn a_confirmed_delete_removes_the_selected_entry() {
         "the open question reaches no worker before the answer"
     );
 
+    // A lone `y` reaches the answer, so it removes nothing.
     press(&mut session, 'y');
+    drain(&mut session);
+    assert!(
+        dir.join("README.md").exists(),
+        "one keypress removes no entry"
+    );
+    assert_eq!(
+        message_line(&session),
+        "Delete README.md? [y/N]:y",
+        "the row shows the typed answer"
+    );
+
+    press_code(&mut session, KeyCode::Enter);
     drain(&mut session);
 
     assert!(!dir.join("README.md").exists());
@@ -521,29 +543,32 @@ fn a_confirmed_delete_removes_the_selected_entry() {
 
 #[test]
 fn a_cancelled_delete_leaves_every_entry_in_place() {
-    // `n` names the default of the question, `Esc` cancels every prompt, and
-    // `Y` and `w` stand for every remaining key.
-    for value in ['n', 'Y', 'w'] {
+    // `n` names the default of the question, the empty text names it as well,
+    // and `no` and `ya` stand for every remaining answer.
+    for value in ["n", "", "no", "ya"] {
         let (dir, mut session) = workspace();
         reveal(&mut session);
         ask_to_delete_readme(&mut session);
 
-        press(&mut session, value);
+        answer(&mut session, value);
 
-        assert!(dir.join("README.md").exists(), "{value} removes no entry");
+        assert!(dir.join("README.md").exists(), "{value:?} removes no entry");
         assert!(
             session.take_workspace_request().is_none(),
-            "{value} reaches no worker"
+            "{value:?} reaches no worker"
         );
-        assert_eq!(message_line(&session), "", "{value} leaves no trace");
-        assert!(shows_readme(&session), "{value} keeps the row");
+        assert_eq!(message_line(&session), "", "{value:?} leaves no trace");
+        assert!(shows_readme(&session), "{value:?} keeps the row");
     }
 
     let (dir, mut session) = workspace();
     reveal(&mut session);
     ask_to_delete_readme(&mut session);
+    // `Esc` cancels at any time, so it cancels the typed `y` as well.
+    press(&mut session, 'y');
     press_code(&mut session, KeyCode::Esc);
     assert!(dir.join("README.md").exists(), "Esc removes no entry");
+    assert_eq!(message_line(&session), "", "Esc leaves no trace");
     assert!(session.take_workspace_request().is_none());
 }
 
@@ -581,7 +606,7 @@ fn a_delete_of_an_entry_that_disappeared_reports_it_and_removes_nothing() {
     drain(&mut session);
     assert!(!shows_readme(&session), "the tree followed the removal");
 
-    press(&mut session, 'y');
+    answer(&mut session, "y");
 
     assert_eq!(
         message_line(&session),
@@ -684,7 +709,7 @@ fn a_confirmed_overwrite_replaces_the_destination() {
         "kvim\n"
     );
 
-    press(&mut session, 'y');
+    answer(&mut session, "y");
     drain(&mut session);
 
     let content = fs::read_to_string(dir.join("README.md")).expect("the file exists");
@@ -694,31 +719,31 @@ fn a_confirmed_overwrite_replaces_the_destination() {
 
 #[test]
 fn a_cancelled_overwrite_leaves_both_entries_unchanged() {
-    // `n` names the default of the question, `Esc` cancels every prompt, and
-    // `Y` and `w` stand for every remaining key.
-    for value in ['n', 'Y', 'w'] {
+    // `n` names the default of the question, the empty text names it as well,
+    // and `no` and `ya` stand for every remaining answer.
+    for value in ["n", "", "no", "ya"] {
         let (dir, mut session) = workspace();
         reveal(&mut session);
         let notes = add_file(&dir, &mut session, "NOTES.md", "notes\n");
         ask_to_overwrite_readme(&mut session);
 
-        press(&mut session, value);
+        answer(&mut session, value);
 
         assert_eq!(
             fs::read_to_string(dir.join("README.md")).expect("the file exists"),
             "kvim\n",
-            "{value} keeps the destination"
+            "{value:?} keeps the destination"
         );
         assert_eq!(
             fs::read_to_string(&notes).expect("the file exists"),
             "notes\n",
-            "{value} keeps the source"
+            "{value:?} keeps the source"
         );
         assert!(
             session.take_workspace_request().is_none(),
-            "{value} reaches no worker"
+            "{value:?} reaches no worker"
         );
-        assert_eq!(message_line(&session), "", "{value} leaves no trace");
+        assert_eq!(message_line(&session), "", "{value:?} leaves no trace");
     }
 
     let (dir, mut session) = workspace();
@@ -755,7 +780,7 @@ fn a_confirmed_paste_replaces_the_entry_of_the_destination() {
         "Overwrite README.md? [y/N]:",
         "a transfer onto a taken name asks before it replaces the entry"
     );
-    press(&mut session, 'y');
+    answer(&mut session, "y");
     drain(&mut session);
 
     let content = fs::read_to_string(dir.join("docs/README.md")).expect("the file exists");
@@ -780,7 +805,7 @@ fn an_overwrite_of_a_destination_that_changed_reports_the_refusal() {
     fs::create_dir(&destination).expect("the name is free");
     fs::write(destination.join("inner.md"), "inner").expect("the directory is writable");
 
-    press(&mut session, 'y');
+    answer(&mut session, "y");
     drain(&mut session);
 
     let report = message(&session);
