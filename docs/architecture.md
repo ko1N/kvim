@@ -37,7 +37,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
 | `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. |
-| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, and the language-server session. Rust, TOML, Markdown, Nix, and JSON are the adapters of the first release, and Rust is the only one with a language server. |
+| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, the language-server session, and the external formatter. The registry holds 25 adapters. Every adapter declares at least one language server, and 20 of them also declare an external formatter. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
@@ -251,19 +251,38 @@ These dependencies run only on the bounded worker service.
   - Replaces: a local Rust grammar and local highlight queries.
   - May run: on the bounded worker service, inside `kvim-language`.
   - Cost: generated C code and compile time.
-- `tree-sitter-json`, `tree-sitter-md`, `tree-sitter-nix`, `tree-sitter-toml-ng`
-  - Replaces: a local grammar and local highlight queries for each of JSON,
-    Markdown, Nix, and TOML, which are the other file kinds of this repository.
+- The other 23 grammar crates: `tree-sitter-asm`, `tree-sitter-bash`,
+  `tree-sitter-c`, `tree-sitter-cpp`, `tree-sitter-css`, `tree-sitter-fish`,
+  `tree-sitter-glsl`, `tree-sitter-go`, `tree-sitter-hcl`, `tree-sitter-html`,
+  `tree-sitter-javascript`, `tree-sitter-json`, `tree-sitter-lua`,
+  `tree-sitter-md`, `tree-sitter-nix`, `tree-sitter-python`, `tree-sitter-scss`,
+  `tree-sitter-sequel`, `tree-sitter-toml-ng`, `tree-sitter-typescript`,
+  `tree-sitter-xml`, `tree-sitter-yaml`, and `tree-sitter-zig`
+  - Replaces: a local grammar and local highlight queries for each registered
+    language. [`language-services.md`](language-services.md) owns the language
+    table.
   - May run: on the bounded worker service, inside `kvim-language`. Each crate
     is adapter data. No crate name reaches code above the adapter boundary.
-  - Cost: generated C code and compile time for each grammar.
+  - Cost: generated C code and compile time for each grammar. Kvim links every
+    grammar into the executable, so a user installs no parser file. One host and
+    one toolchain measured the whole set: the release executable grew from
+    5,402,048 bytes to 19,872,288 bytes, and the cold release build grew from
+    22.2 s to 29.5 s. The user accepted that cost, so the complete language
+    table works in a normal build. A later release can move each language behind
+    a Cargo feature.
   - Version reason: every one of these crates carries its parser through
-    `tree-sitter-language`, not through the `tree-sitter` runtime, so all four
-    link against the single pinned `tree-sitter` version. `tree-sitter-md`
+    `tree-sitter-language`, not through the `tree-sitter` runtime, so all of
+    them link against the single pinned `tree-sitter` version. `tree-sitter-md`
     keeps its `tree-sitter` dependency behind an optional feature that Kvim
     leaves off, which is what keeps a second runtime version out of the build.
     `tree-sitter-toml-ng` replaces the unmaintained `tree-sitter-toml` crate,
     which still requires the 0.20 runtime line.
+  - Irregular shapes: `tree-sitter-fish` and `tree-sitter-scss` supply the older
+    `language()` accessor instead of a `LANGUAGE` constant.
+    `tree-sitter-typescript` and `tree-sitter-xml` each hold more than one
+    grammar. `tree-sitter-hcl` ships no highlight query, so
+    [`language-services.md`](language-services.md) records the vendored query
+    and its license.
 
 ### The Language-Server Task
 
@@ -326,14 +345,18 @@ supplies Cargo, Rust, rustfmt, Clippy, nixfmt, `git`, ripgrep, and
 The package output builds the `kvim` executable from `Cargo.lock`. The package
 version comes from `Cargo.toml`. Package metadata declares the MIT license.
 
-Kvim calls external commands for the read-only Git status, ripgrep search,
-`rust-analyzer`, and the system clipboard. The package output wraps the
-executable and supplies `git`, ripgrep, and `rust-analyzer`. The package check
-also needs `git` inside the build sandbox, because the Git status tests run one
-real repository. The clipboard command comes from the host platform, because it
-differs between macOS and each Linux display server. A direct Cargo installation
-requires all of these commands on the caller's `PATH`. Kvim reports a missing
-command as a typed unavailable state and stays usable.
+Kvim calls external commands for the read-only Git status, ripgrep search, the
+language servers, the external formatters, and the system clipboard. The
+package output wraps the executable and supplies `git`, ripgrep, and
+`rust-analyzer`. It supplies no other language server and no formatter. The
+registry declares 22 server programs and 12 formatter programs, and one
+workspace uses few of them, so each of those programs comes from the host
+`PATH`. The package check also needs `git` inside the build sandbox, because
+the Git status tests run one real repository. The clipboard command comes from
+the host platform, because it differs between macOS and each Linux display
+server. A direct Cargo installation requires all of these commands on the
+caller's `PATH`. Kvim reports a missing command as a typed unavailable state
+and stays usable.
 
 Continuous integration verifies macOS and Linux together. Windows verification
 stays outside the first release.
@@ -351,7 +374,8 @@ stays outside the first release.
 - [`files.md`](files.md) owns buffers, saving, external-change conflicts,
   persistent undo files, workspace mutations, and picker limits.
 - [`language-services.md`](language-services.md) owns the language adapter
-  boundary, Tree-sitter analysis, and the rust-analyzer session.
+  boundary, Tree-sitter analysis, the language-server session, the position
+  encoding, and the formatter.
 - [`git.md`](git.md) owns the read-only Git status boundary, the recorded entry
   states, the directory roll-up, and the ignored-entry strategy.
 - [`clipboard.md`](clipboard.md) owns the system clipboard boundary, the

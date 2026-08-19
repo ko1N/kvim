@@ -2,11 +2,15 @@
 
 Kvim is a modal terminal editor for Rust projects. It provides Vim-style
 editing, a dynamic window tree, a file tree sidebar that marks the repository
-state, fuzzy pickers, a workspace file watcher, Tree-sitter highlighting for
-JSON, Markdown, Nix, Rust, and TOML, and `rust-analyzer` services in one
-executable. Kvim runs on macOS and on Linux. This release reads no
-configuration file, so every setting keeps the default that this document
-records.
+state, fuzzy pickers, a workspace file watcher, Tree-sitter highlighting for 25
+languages, language-server services, and format-on-save in one executable. Kvim
+runs on macOS and on Linux. Every grammar is compiled in, so you install no
+parser file. This release reads no configuration file, so every setting keeps
+the default that this document records.
+
+The 25 languages are assembly, Bash, C, C++, CSS, fish, GLSL, Go, HTML,
+JavaScript, JSON, Lua, Markdown, Nix, Python, Rust, SCSS, SQL, Terraform, TOML,
+TSX, TypeScript, XML, YAML, and Zig.
 
 ## Install
 
@@ -33,7 +37,9 @@ nix build
 ```
 
 The package wraps the executable and puts `git`, `rg`, and `rust-analyzer` on
-its search path, so a Nix installation provides every external command.
+its search path. It supplies no other language server and no formatter, so
+install the tools of the other languages yourself. Kvim reports a missing tool
+once and stays fully usable without it.
 
 To work on Kvim itself, enter the development shell:
 
@@ -93,18 +99,26 @@ you can redirect it to a file or paste it into a bug report.
 
 ## External Commands
 
-Kvim runs four kinds of external command. Each one is optional. Kvim reports a
+Kvim runs five kinds of external command. Each one is optional. Kvim reports a
 missing command once and stays fully usable without it.
 
 | Command | Enables | Without it |
 |---|---|---|
 | `git` | The repository marks of the file tree | The file tree still lists every entry and stays fully usable. It shows no repository state. Kvim never writes the repository. |
 | `rg` | The search picker on `Space f/` | The search picker returns no result. Kvim reports the missing command once. Every other picker still works. |
-| `rust-analyzer` | Diagnostics, go-to-definition, hover, and formatting | The buffer stays fully editable. Kvim shows no diagnostics and answers no definition or hover request. Tree-sitter highlighting and the comment toggle still work, because they need no server. |
+| A language server | Diagnostics, go-to-definition, hover, and formatting | The buffer stays fully editable. Kvim shows no diagnostics and answers no definition or hover request. Tree-sitter highlighting and the comment toggle still work, because they need no server. |
+| A formatter | Format-on-save for the languages that name an external program | The save writes the unformatted content. Kvim reports the missing program once. |
 | A clipboard command | The system clipboard | The editor registers still hold every yank and every paste. Only the exchange with other applications stops. |
 
-Put `git`, `rg`, and `rust-analyzer` on `PATH`. A Nix installation does this for
-you.
+Put `git` and `rg` on `PATH`, with the language server and the formatter of each
+language that you edit. A Nix installation supplies `git`, `rg`, and
+`rust-analyzer`.
+
+Each language names its own tools. Rust uses `rust-analyzer`, Python uses
+`pyright-langserver` and `black`, C and C++ use `clangd` and `clang-format`, and
+the web languages use `vscode-eslint-language-server`,
+`typescript-language-server`, and `prettier`. `docs/language-services.md` names
+the complete table.
 
 ## Clipboard
 

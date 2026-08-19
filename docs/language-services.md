@@ -3,8 +3,9 @@
 ## Ownership
 
 The `language` module owns the language adapter registry, the Tree-sitter
-analysis, and the language-server session. All language work runs off the
-terminal event loop through bounded runtime services. See
+analysis, the language-server session, the position encoding of that session,
+and the external formatter. All language work runs off the terminal event loop
+through bounded runtime services. See
 [`responsiveness.md`](responsiveness.md).
 
 ## Language Adapter Boundary
@@ -260,13 +261,30 @@ agree.
 |---|---|---|---|
 | Source bytes | `ANALYSIS_SOURCE_BYTES_MAX` | 4 MiB | The maximum file size of [`text-model.md`](text-model.md). Every buffer that Kvim loads is therefore analyzable, and no larger text reaches the parser. |
 | Source lines | `ANALYSIS_SOURCE_LINES_MAX` | 100000 lines | A source file of this length already exceeds normal practice. The check runs before the parse, so a generated one-line-per-byte file fails early. |
-| Syntax nodes | `ANALYSIS_NODES_MAX` | 1000000 nodes | About one node for each four source bytes at the byte limit. A larger tree means a pathological grammar result, not source that a reader edits. |
-| Traversal depth | `ANALYSIS_DEPTH_MAX` | 128 levels | The indent query walks ancestors, and the highlight walk stacks captures. Readable code nests far below 128 levels, so the bound stops only a damaged or hostile file. |
-| Highlight spans | `ANALYSIS_HIGHLIGHT_SPANS_MAX` | 100000 spans | One span for each visible token of a large file. The renderer reads the spans of the visible lines only, so a larger list would cost memory without improving the frame. |
+| Syntax nodes | `ANALYSIS_NODES_MAX` | 1000000 nodes | The densest measured source produces one node for each 5.6 bytes, so the byte limit produces about 750000 nodes. A larger tree means a pathological grammar result, not source that a reader edits. |
+| Traversal depth | `ANALYSIS_DEPTH_MAX` | 128 levels | The indent query walks ancestors, and the highlight walk stacks captures. The bound measures syntax-tree depth, not source indentation, and a generated header reaches far more levels than a reader expects. |
+| Highlight spans | `ANALYSIS_HIGHLIGHT_SPANS_MAX` | 100000 spans | The renderer reads the spans of the visible lines only, so a larger list would cost memory without improving the frame. A real file above 1.6 MiB of a heavy grammar passes the bound and renders plain text, which the section below records. |
 | Analysis deadline | `ANALYSIS_DEADLINE` | 2 s | An incremental reparse and a highlight of a bounded file finish far below this value. Two seconds reports a runaway job, and highlighting is optional decoration, so a shorter deadline than the general worker deadline is safe. |
 
 The deadline belongs to the request, and the bounded worker service enforces it.
 See [`responsiveness.md`](responsiveness.md) for the worker bounds.
+
+The bounds above were sized for five small grammars. A measurement over large
+real files of the heavy grammars confirms two of them and corrects one.
+
+The node bound and the depth bound hold. The densest measured file is a 7.97
+MiB C++ header with one node for each 5.6 bytes, so the source-byte limit
+produces about 750000 nodes. That same header reaches 119 levels of tree depth,
+and a 574 KiB TypeScript declaration file reaches 91 levels. Both stay below
+128 levels, but the margin is small, and a deeper real file would lose its
+indent answer for one line.
+
+The highlight-span bound is the one bound that a real file exceeds. A 1.7 MiB
+C++ header and a 1.8 MiB TypeScript declaration file each produce more than
+100000 spans. Each one therefore renders plain text. A 1.6 MiB C++ header
+produces 96319 spans and still highlights. The behavior is the documented
+oversized-analysis path below, and every such buffer stays fully editable. A
+later release measures a larger bound against the renderer memory.
 
 Highlighting is optional decoration. Unsupported, malformed, cancelled, timed
 out, or oversized analysis renders plain text. It never changes buffer content,
