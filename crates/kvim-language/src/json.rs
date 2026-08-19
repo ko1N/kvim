@@ -49,6 +49,9 @@ const JSON_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     args: &["--stdio"],
     language_id: "json",
     formatting: ServerFormatting::Enabled,
+    // The server fits every workspace that holds a JSON file, so no marker
+    // gates its start.
+    root_markers: &[],
     initialization_options: vscode_json_language_server_options,
 }];
 

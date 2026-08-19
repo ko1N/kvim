@@ -93,6 +93,12 @@ pub enum LspError {
     /// The adapter declares no language server.
     #[error("the language adapter declares no language server")]
     NoServerDeclared,
+    /// The workspace holds no root marker of any declared server.
+    ///
+    /// The state is normal. The server was never meant to run in this
+    /// workspace, so it starts no process and holds no session budget.
+    #[error("this workspace uses no declared language server for the path")]
+    UnusedInWorkspace,
     /// The declared server is not installed on this system.
     #[error("the language server executable is not installed")]
     NotInstalled,

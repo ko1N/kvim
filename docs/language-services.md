@@ -39,7 +39,7 @@ An adapter supplies data, not behavior:
 | Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
-| Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, and the initialization options. |
+| Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, and the initialization options. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
@@ -161,11 +161,11 @@ speaks the protocol over JSON-RPC and knows no server product. rust-analyzer is
 the first configuration of that client, not a special case inside it.
 
 The adapter declares each server as data: the identifier, the program, its
-arguments, the protocol language identifier, the formatting role, and the
-initialization options. The session sends what the declaration names. Adding a
-language server therefore means adding one declaration to one adapter. No code
-above the adapter boundary changes, and no name, type, or assumption of one
-server appears there.
+arguments, the protocol language identifier, the formatting role, the workspace
+root markers, and the initialization options. The session sends what the
+declaration names. Adding a language server therefore means adding one
+declaration to one adapter. No code above the adapter boundary changes, and no
+name, type, or assumption of one server appears there.
 
 One session identity is the pair of the adapter identifier and the declaration
 identifier. The identity also carries the position of the declaration in the
@@ -222,10 +222,11 @@ default check depth runs `clippy`. That mapping function is the one place in
 Kvim that names a setting of one concrete server. See
 [`settings.md`](settings.md).
 
-A language without a server declaration, and a language whose declared
-executable is not installed, leave the editor fully usable with no diagnostics.
-Kvim reports the state once and starts no further server for that language. A
-missing server is never an error path that degrades editing.
+A language without a server declaration, a language whose servers the workspace
+does not use, and a language whose declared executable is not installed leave
+the editor fully usable with no diagnostics. Kvim reports the state once and
+starts no further server for that language. A missing server is never an error
+path that degrades editing.
 
 A reload replaces the whole text of one buffer, and the reloaded buffer counts
 its versions from the start. Kvim therefore synchronizes a reload as one fresh
@@ -238,6 +239,50 @@ A crashed server restarts a bounded number of times. The new server holds no
 document, so Kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
+
+## Workspace Root Markers
+
+One language server serves a workspace only when the workspace uses its tool. A
+linter that needs a project configuration reports a failure for every buffer of
+a workspace that holds no such configuration. That report is noise, because the
+workspace never asked for the tool.
+
+Each declaration therefore names its workspace root markers: the file names and
+the directory names that prove that the workspace uses this server. A marker
+matches a file of the workspace root. It also matches a directory of that root,
+because a project proves a tool with both shapes.
+
+The lookup reads the workspace root alone. It never walks to a parent
+directory. Kvim resolves one workspace root for the complete editor session.
+Workspace containment rejects every path outside that root. A parent directory
+is therefore outside the workspace, and it decides nothing.
+
+An empty marker table names no marker, so its server always starts. Every
+adapter of the registry declares an empty table today, so every present server
+keeps its behavior.
+
+The language services read the workspace root once, when the editor creates
+them and before the terminal event loop runs. The probe asks the filesystem for
+one path for each distinct marker of the registry. Its cost therefore follows
+the adapter data, and never the size of the workspace. The answer is the set of
+markers that the root holds. Every later gate decision reads that set alone, so
+no gate performs a filesystem lookup on the terminal event loop. The workspace
+root does not change while the editor runs, so one probe answers for every
+buffer of the session.
+
+A root that the process cannot read records no marker. Every gated server then
+stays off, and every server without a marker still starts.
+
+A gated server starts no child process, so it never enters the session map and
+never counts against `LSP_SESSIONS_MAX`. That bound counts the child processes
+of one editor, and a gated server owns none.
+
+A gated server is a normal state, not a failure. The editor stays fully usable,
+Kvim reports the state once, and no request starts that server again. The state
+stays distinct from a server that is not installed. A gated server was never
+meant to run in this workspace. A server that is not installed was meant to run
+and could not. A gated formatting server keeps the format-on-save state of its
+buffer, as a server that is not installed does.
 
 ## Merging The Answers Of Several Servers
 
@@ -286,6 +331,7 @@ below must always agree.
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
 | Servers of one adapter | `LANGUAGE_SERVERS_MAX` | 4 servers | One language splits its work over a type checker, a linter, and few other tools. Four declarations cover that practice and still bound the merge of one buffer. |
+| Root markers of one server | `LANGUAGE_ROOT_MARKERS_MAX` | 16 markers | One linter names every file name that can hold its configuration. The reference `eslint` configuration names twelve of them, so sixteen covers that practice and still bounds the probe of one workspace. |
 | Sessions of one workspace | `LSP_SESSIONS_MAX` | 16 sessions | One workspace mixes few languages, and a session starts only when the user opens a buffer of its language. Sixteen exceeds normal practice and still bounds the child processes of one editor. |
 | Frame header | `LSP_HEADER_BYTES_MAX` | 256 B | One `Content-Length` header and one optional `Content-Type` header fit far below this value, so a header that never ends stops early. |
 | Frame body | `LSP_MESSAGE_BYTES_MAX` | 8 MiB | One `didOpen` carries a complete file. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for JSON escaping. |

@@ -108,7 +108,8 @@ pub use protocol::{
 };
 pub use rust::RustAdapter;
 pub use server::{
-    LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId, ServerFormatting,
+    LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId,
+    ServerFormatting,
 };
 pub use services::{LSP_SESSIONS_MAX, LanguageServices};
 pub use session::{
@@ -571,15 +572,16 @@ pub trait LanguageAdapter: Send + Sync {
     /// Returns the language servers of this language, in declaration order.
     ///
     /// A declaration is data: the identifier, the program, its arguments, the
-    /// protocol language identifier, the formatting role, and the
-    /// initialization options. The session sends what the declaration names, so
-    /// a new language server needs only this method and no change above the
-    /// adapter boundary.
+    /// protocol language identifier, the formatting role, the workspace root
+    /// markers, and the initialization options. The session sends what the
+    /// declaration names, so a new language server needs only this method and
+    /// no change above the adapter boundary.
     ///
     /// The table holds at most [`LANGUAGE_SERVERS_MAX`] declarations, every
     /// identifier is unique inside the adapter, and at most one declaration
-    /// formats. The default answer is the empty table. A language without a
-    /// server stays a normal, fully editable buffer without diagnostics.
+    /// formats. Each declaration names at most [`LANGUAGE_ROOT_MARKERS_MAX`]
+    /// root markers. The default answer is the empty table. A language without
+    /// a server stays a normal, fully editable buffer without diagnostics.
     fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
         &[]
     }
@@ -696,6 +698,15 @@ impl LanguageRegistry {
     #[must_use]
     pub const fn new(adapters: &'static [&'static dyn LanguageAdapter]) -> Self {
         Self { adapters }
+    }
+
+    /// Returns the adapter table of this registry.
+    ///
+    /// The workspace-root probe of [`LanguageServices`] reads the declared
+    /// root markers of every adapter once, so it needs the complete table.
+    #[must_use]
+    pub const fn adapters(&self) -> &'static [&'static dyn LanguageAdapter] {
+        self.adapters
     }
 
     /// Returns the adapter that owns one path.

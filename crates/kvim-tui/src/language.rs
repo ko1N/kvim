@@ -499,6 +499,11 @@ pub(super) struct PendingJump {
 pub(super) enum LanguageNotice {
     /// No adapter serves the path, or the adapter declares no server.
     NoServer,
+    /// This workspace uses no declared server of the path.
+    ///
+    /// The state differs from [`LanguageNotice::NotInstalled`]. The server was
+    /// never meant to run in this workspace, and it therefore never started.
+    UnusedInWorkspace,
     /// The declared server is not installed on this system.
     NotInstalled,
     /// The session stopped and accepts no further request.
@@ -511,6 +516,7 @@ impl LanguageNotice {
     pub(super) const fn of(error: &LspError) -> Option<Self> {
         match error {
             LspError::UnsupportedPath | LspError::NoServerDeclared => Some(Self::NoServer),
+            LspError::UnusedInWorkspace => Some(Self::UnusedInWorkspace),
             LspError::NotInstalled => Some(Self::NotInstalled),
             LspError::Stopped => Some(Self::Stopped),
             _ => None,
@@ -522,6 +528,9 @@ impl LanguageNotice {
     pub(super) const fn message(self) -> &'static str {
         match self {
             Self::NoServer => "no language server serves this buffer",
+            Self::UnusedInWorkspace => {
+                "this workspace uses no language server for this buffer; editing continues"
+            }
             Self::NotInstalled => "no language server is installed; editing continues without one",
             Self::Stopped => "the language server stopped; editing continues without it",
         }

@@ -13,8 +13,8 @@ use super::server::declarations_are_valid;
 use super::{
     ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_SOURCE_BYTES_MAX, ANALYSIS_SOURCE_LINES_MAX,
     Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax, CommentStyle, Grammar,
-    IndentRule, LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageRegistry, Publication, RustAdapter,
-    SyntaxRole, SyntaxTree,
+    IndentRule, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageRegistry,
+    Publication, RustAdapter, SyntaxRole, SyntaxTree,
 };
 
 /// A second adapter that proves the multi-language seam.
@@ -503,7 +503,8 @@ fn every_registered_adapter_declares_a_valid_server_table() {
         assert!(
             declarations_are_valid(adapter.language_servers()),
             "{path} declares at most {LANGUAGE_SERVERS_MAX} servers, names each identifier \
-             once, and carries at most one formatting server",
+             once, carries at most one formatting server, and names at most \
+             {LANGUAGE_ROOT_MARKERS_MAX} valid root markers for each server",
         );
         assert_eq!(
             adapter.formatter().is_some(),
