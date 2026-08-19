@@ -338,9 +338,26 @@ unsafe optimization flags.
 ## Nix And Packaging
 
 The Nix flake pins `nixpkgs` through `flake.lock`. Development, package, check,
-and application outputs support Linux and Darwin systems. The development shell
-supplies Cargo, Rust, rustfmt, Clippy, nixfmt, `git`, ripgrep, and
-`rust-analyzer`.
+and application outputs support Linux and Darwin systems.
+
+The `rust-toolchain.toml` file at the repository root names the exact Rust
+version. It is the single source of truth for that version. The flake reads it
+through the `rust-overlay` input, so the toolchain never drifts with `nixpkgs`.
+The `legacyPackages` attribute set carries no overlay, so every output imports
+`nixpkgs` with the overlay applied instead.
+
+The development shell supplies Cargo, Rust, rustfmt, Clippy, and
+`rust-analyzer` from that one pinned toolchain. It also supplies nixfmt, `git`,
+and ripgrep from `nixpkgs`.
+
+The package output builds with the pinned toolchain too. It builds a Rust
+platform from the toolchain with `makeRustPlatform`, because the
+`rustPlatform` attribute set of `nixpkgs` builds with the Rust of `nixpkgs`.
+
+Continuous integration keeps its own toolchain. It verifies the minimum
+supported version from `Cargo.toml`, not the pinned development version. The
+workflow sets `RUSTUP_TOOLCHAIN`, because rustup reads `rust-toolchain.toml`
+and that file would otherwise override the version of the job.
 
 The package output builds the `kvim` executable from `Cargo.lock`. The package
 version comes from `Cargo.toml`. Package metadata declares the MIT license.
@@ -348,7 +365,11 @@ version comes from `Cargo.toml`. Package metadata declares the MIT license.
 Kvim calls external commands for the read-only Git status, ripgrep search, the
 language servers, the external formatters, and the system clipboard. The
 package output wraps the executable and supplies `git`, ripgrep, and
-`rust-analyzer`. It supplies no other language server and no formatter. The
+`rust-analyzer`. The wrapper takes `rust-analyzer` from the pinned toolchain,
+so the server version matches the compiler that the flake pins. The wrapper
+supplies that one program alone. The whole toolchain would also put its Cargo
+and its Rust in front of the commands that the user chose for the edited
+project. It supplies no other language server and no formatter. The
 registry declares 22 server programs and 12 formatter programs, and one
 workspace uses few of them, so each of those programs comes from the host
 `PATH`. The package check also needs `git` inside the build sandbox, because

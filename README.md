@@ -48,7 +48,8 @@ nix develop
 ```
 
 The shell supplies Cargo, Rust, `rustfmt`, Clippy, `nixfmt`, `git`, `rg`, and
-`rust-analyzer`.
+`rust-analyzer`. The `rust-toolchain.toml` file at the repository root names
+the exact Rust version, and the shell supplies that version.
 
 ### With Cargo
 

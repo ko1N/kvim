@@ -27,6 +27,13 @@ jobs:
         with:
           components: clippy, rustfmt
 
+      # The repository holds a rust-toolchain.toml that pins the development
+      # toolchain for the Nix shell. Rustup reads that file and it overrides
+      # the toolchain of this job. The variable keeps this job on the minimum
+      # supported version.
+      - name: Keep the job on the minimum supported Rust version
+        run: echo "RUSTUP_TOOLCHAIN=1.85.0" >> "$GITHUB_ENV"
+
       - name: Check formatting
         run: cargo fmt --all -- --check
 

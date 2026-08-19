@@ -10,6 +10,7 @@
 - Binding architecture documents live under `docs/`.
 - Plans live under `plans/` and remain local workflow artifacts. Do not commit them.
 - The project provides a Nix development shell. Run project commands through `nix develop -c <command>`.
+- `rust-toolchain.toml` at the repository root pins the Rust version. It is the single source of truth. The flake reads it through the `rust-overlay` input. Continuous integration keeps its own minimum supported version.
 - Commit subjects use imperative sentence case without a prefix.
 
 ## Architecture Rules
