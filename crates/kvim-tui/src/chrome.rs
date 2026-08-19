@@ -84,13 +84,16 @@ pub(super) fn shell_areas(area: Rect) -> ShellAreas {
 /// A band that cannot hold every part drops them in a fixed order: the
 /// format-on-save state first, then the cursor position. The mode always
 /// survives, because the mode decides what the next key does.
+///
+/// A buffer that no formatter can format reports no state at all, so `format`
+/// is `None` there and the band shows the mode and the position alone.
 pub(super) fn render_statusline(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
     mode: Mode,
     cursor: Cursor,
-    format: FormatOnSave,
+    format: Option<FormatOnSave>,
 ) {
     if area.is_empty() {
         return;
@@ -109,11 +112,9 @@ pub(super) fn render_statusline(
     );
 
     let position = format!("{}:{} ", cursor.line().get() + 1, cursor.column().get() + 1);
-    let state = format!("{} ", format.label());
     let width = usize::from(area.width);
     let mode_cells = text_cells(&mode_text);
     let position_cells = text_cells(&position);
-    let state_cells = text_cells(&state);
     if width < mode_cells + position_cells {
         return;
     }
@@ -129,6 +130,10 @@ pub(super) fn render_statusline(
         style,
     );
 
+    let Some(state) = format.map(|state| format!("{} ", state.label())) else {
+        return;
+    };
+    let state_cells = text_cells(&state);
     if width < mode_cells + state_cells + position_cells + STATUSLINE_GAP_CELLS {
         return;
     }

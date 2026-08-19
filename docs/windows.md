@@ -225,7 +225,10 @@ The terminal holds three bands. The window tree receives the body band only.
 - The body band holds the window tree and every overlay.
 - The statusline band holds one statusline for the whole terminal. It shows the
   active mode at the left. At the right it shows the format-on-save state of the
-  focused buffer, and then the cursor position. A band that cannot hold every
+  focused buffer, and then the cursor position. The statusline shows that state
+  only while a formatter can format the focused buffer, so it never promises a
+  format that no save performs. See
+  [`language-services.md`](language-services.md). A band that cannot hold every
   part drops the format-on-save state first, then the cursor position. The mode
   always survives, because the mode decides what the next key does.
 - The message line is the last row. It shows the last message, and the command
