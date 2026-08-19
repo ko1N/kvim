@@ -75,11 +75,11 @@ this fixed set only:
 | Command | Effect |
 |---|---|
 | `:w` | Save the active buffer |
-| `:q` | Close the focused window |
+| `:q` | Close the focused window, after a confirmation |
 | `:q!` | Close the focused window and discard unsaved changes |
 | `:wq` | Save the active buffer, then close the focused window |
 | `:e <path>` | Open one file in the focused window |
-| `:e` | Read the file of the focused window again |
+| `:e` | Read the file of the focused window again, after a confirmation |
 | `:e!` | Discard the unsaved changes of that buffer and read its file |
 | `:<number>` | Move the cursor to that line |
 
@@ -89,6 +89,12 @@ guess a command from a prefix.
 `Esc` cancels the command line and restores the previous mode. The command line
 holds a bounded query length. `:w` and `:e` use the same save and open path as
 their bound keys. See [`files.md`](files.md).
+
+`:q` and `:e` destroy data only while the buffer holds unsaved changes, so each
+one asks only then. The question names the buffer. `y` performs the action, and
+every other key keeps the buffer and its unsaved changes. `:q!` and `:e!` ask
+nothing, and `:wq` asks nothing, because the save keeps every change. See the
+Confirmation section below and [`files.md`](files.md).
 
 ## Confirmation
 
@@ -608,6 +614,9 @@ reader accepts one row.
 | `Ctrl-\` | Split the window with the inverse adaptive rule | Normal |
 | `Space q` | Close the focused window | Normal |
 | `Ctrl-Q` | Close the focused window | Every mode |
+
+`Space q` and `Ctrl-Q` reach the same path as `:q`, so both ask before the last
+window discards unsaved changes.
 
 The terminal requests enhanced keyboard reporting so `Ctrl-Alt`, `Ctrl-Enter`,
 and `Ctrl-\` chords stay distinct. A terminal that cannot report one chord leaves

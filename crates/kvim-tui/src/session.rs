@@ -127,12 +127,15 @@ pub enum RunState {
     Finished,
 }
 
-/// Whether a close command may discard unsaved changes.
+/// Whether one typed command asks before it discards unsaved changes.
+///
+/// `:q` and `:e` ask, and `:q!` and `:e!` discard at once, because only the
+/// user can decide to lose work. See `docs/files.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum UnsavedChanges {
-    /// Refuse the close while the active buffer holds unsaved changes.
-    Refuse,
-    /// Close the window and discard the unsaved changes.
+    /// Ask before the command discards the unsaved changes of the buffer.
+    Ask,
+    /// Discard the unsaved changes without a question.
     Discard,
 }
 
@@ -525,6 +528,16 @@ pub(super) enum ConfirmedAction {
     DeleteEntries {
         /// The entries that the question named.
         paths: Vec<PathBuf>,
+    },
+    /// Close the focused window and lose the changes of the named buffer.
+    DiscardOnQuit {
+        /// The buffer that the question named.
+        buffer: BufferId,
+    },
+    /// Read the file of the named buffer again and lose its changes.
+    DiscardOnReload {
+        /// The buffer that the question named.
+        buffer: BufferId,
     },
     /// Report one message on the message line.
     ///
@@ -1049,7 +1062,7 @@ impl Session {
             Command::SaveBuffer => return self.save_active(AfterSave::Stay).or(cleared),
             Command::UnloadBuffer => return self.unload_active().or(cleared),
             Command::CloseWindow => {
-                return self.close_window(UnsavedChanges::Refuse).or(cleared);
+                return self.close_window(UnsavedChanges::Ask).or(cleared);
             }
             Command::ToggleComment => return self.toggle_comment().or(cleared),
             // A paste reads the system clipboard first, so the unnamed register
@@ -1465,6 +1478,22 @@ impl Session {
         }
     }
 
+    /// Opens one question of an action that destroys data.
+    ///
+    /// Every question follows a key that the user pressed, and an open question
+    /// owns every key, so no second question can reach this point. A refusal
+    /// therefore names a defect, and it destroys nothing.
+    fn ask_confirmation(&mut self, question: String, action: ConfirmedAction) -> Redraw {
+        match self.open_confirmation(question, action) {
+            ConfirmationRequest::Opened => {}
+            ConfirmationRequest::Refused => debug_assert!(
+                false,
+                "the resolver hands every key to the open confirmation"
+            ),
+        }
+        Redraw::Needed
+    }
+
     /// Performs the action that one confirmed question named.
     fn perform_confirmed(&mut self, action: ConfirmedAction) -> Redraw {
         match action {
@@ -1473,6 +1502,14 @@ impl Session {
             ConfirmedAction::DeleteEntries { paths } => {
                 let staged = self.tree.stage_delete(paths);
                 self.start_tree_mutation(staged)
+            }
+            // The quit reads the focused window again here, so an open that
+            // completed meanwhile keeps the unsaved changes of its own buffer.
+            ConfirmedAction::DiscardOnQuit { buffer } => self.confirmed_quit(buffer),
+            // The reload names its buffer, so it reads the file of the buffer
+            // that the question named, never of the focused window.
+            ConfirmedAction::DiscardOnReload { buffer } => {
+                self.reload_buffer(buffer, UnsavedText::Discard)
             }
             #[cfg(test)]
             ConfirmedAction::Report => {
@@ -1691,11 +1728,11 @@ impl Session {
             CommandLineCommand::Write => return self.save_active(AfterSave::Stay),
             CommandLineCommand::WriteQuit => return self.save_active(AfterSave::CloseWindow),
             CommandLineCommand::Edit(path) => return self.open_path(path),
-            CommandLineCommand::Reload => return self.reload_active(UnsavedText::Keep),
+            CommandLineCommand::Reload => return self.reload_active(UnsavedChanges::Ask),
             CommandLineCommand::ReloadDiscard => {
-                return self.reload_active(UnsavedText::Discard);
+                return self.reload_active(UnsavedChanges::Discard);
             }
-            CommandLineCommand::Quit => return self.close_window(UnsavedChanges::Refuse),
+            CommandLineCommand::Quit => return self.close_window(UnsavedChanges::Ask),
             CommandLineCommand::QuitDiscard => {
                 return self.close_window(UnsavedChanges::Discard);
             }
@@ -2612,16 +2649,7 @@ impl Session {
             "a selection that names no entry refuses instead"
         );
         let question = delete_question(&paths);
-        match self.open_confirmation(question, ConfirmedAction::DeleteEntries { paths }) {
-            ConfirmationRequest::Opened => {}
-            // An open question owns every key, so no delete key can reach this
-            // point while another question waits. A refusal destroys nothing.
-            ConfirmationRequest::Refused => debug_assert!(
-                false,
-                "the resolver hands every key to the open confirmation"
-            ),
-        }
-        Redraw::Needed
+        self.ask_confirmation(question, ConfirmedAction::DeleteEntries { paths })
     }
 
     /// Queues one staged workspace mutation, or reports the refusal.
@@ -3115,24 +3143,52 @@ impl Session {
 
     /// Reads the file of the focused window again.
     ///
-    /// `:e` reaches this entry point with [`UnsavedText::Keep`], and `:e!` with
-    /// [`UnsavedText::Discard`]. A buffer that holds unsaved changes reloads
-    /// only through the second form, because the buffer text is then the only
-    /// copy of that work. See `docs/files.md`.
-    fn reload_active(&mut self, unsaved: UnsavedText) -> Redraw {
+    /// `:e` reaches this entry point with [`UnsavedChanges::Ask`], and `:e!`
+    /// with [`UnsavedChanges::Discard`]. A buffer that holds unsaved changes
+    /// asks first, because the buffer text is then the only copy of that work.
+    /// See `docs/files.md`.
+    fn reload_active(&mut self, unsaved: UnsavedChanges) -> Redraw {
         let buffer = self.active;
         let Some(file) = self.buffers.get(buffer) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
+            return Redraw::Skipped;
+        };
+        if file.path().is_none() {
+            self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
+            return Redraw::Needed;
+        }
+        if unsaved == UnsavedChanges::Discard {
+            return self.reload_buffer(buffer, UnsavedText::Discard);
+        }
+        if !file.is_modified() {
+            return self.reload_buffer(buffer, UnsavedText::Keep);
+        }
+        // The question names the buffer, so the user reads which file the
+        // reload replaces before the answer.
+        let question = format!("Reload {} and discard the unsaved changes", file.name());
+        self.ask_confirmation(question, ConfirmedAction::DiscardOnReload { buffer })
+    }
+
+    /// Reads the file of one named buffer again.
+    ///
+    /// The caller names the buffer, so a confirmed reload reads the file of the
+    /// buffer that its question named. An open that completes while the
+    /// question waits makes another buffer active, and that buffer keeps its
+    /// own text. See `docs/files.md`.
+    fn reload_buffer(&mut self, buffer: BufferId, unsaved: UnsavedText) -> Redraw {
+        let Some(file) = self.buffers.get(buffer) else {
+            // Only an unload removes a buffer, and no key reaches the editor
+            // while a question waits, so the buffer is always loaded here.
+            debug_assert!(
+                false,
+                "the buffer list holds every buffer that a question named"
+            );
             return Redraw::Skipped;
         };
         let Some(path) = file.path().map(Path::to_path_buf) else {
             self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
             return Redraw::Needed;
         };
-        if unsaved == UnsavedText::Keep && file.is_modified() {
-            self.set_message(UNSAVED_RELOAD_NOTE, MessageLevel::Error);
-            return Redraw::Needed;
-        }
         let version = file.text().version();
         self.start_file_request(
             FileRequest::Reload(ReloadRequest {
@@ -3616,11 +3672,18 @@ impl Session {
     }
 
     /// Closes the focused window and ends the editor after the last window.
+    ///
+    /// The close destroys data only while the last window shows a buffer that
+    /// holds unsaved changes, so only that close asks. See `docs/files.md`.
     fn close_window(&mut self, unsaved: UnsavedChanges) -> Redraw {
         let last_window = self.windows.window_count() == 1;
-        if last_window && unsaved == UnsavedChanges::Refuse && self.active_buffer().is_modified() {
-            self.set_message(UNSAVED_QUIT_NOTE, MessageLevel::Error);
-            return Redraw::Needed;
+        if last_window && unsaved == UnsavedChanges::Ask && self.active_buffer().is_modified() {
+            let buffer = self.active;
+            let question = format!(
+                "Quit and discard the unsaved changes of {}",
+                self.active_buffer().name()
+            );
+            return self.ask_confirmation(question, ConfirmedAction::DiscardOnQuit { buffer });
         }
         match self.windows.apply(Command::CloseWindow) {
             WindowOutcome::LastWindow => {
@@ -3630,6 +3693,20 @@ impl Session {
             WindowOutcome::Changed => Redraw::Needed,
             WindowOutcome::Ignored | WindowOutcome::Unchanged => Redraw::Skipped,
         }
+    }
+
+    /// Closes the focused window after the user confirmed the lost changes.
+    ///
+    /// The answer names the buffer that the question named. An open that
+    /// completes while the question waits makes another buffer active, and the
+    /// user approved no loss of that buffer, so the quit stops there. See
+    /// `docs/files.md`.
+    fn confirmed_quit(&mut self, buffer: BufferId) -> Redraw {
+        if self.active != buffer {
+            self.set_message(QUIT_BUFFER_CHANGED_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        }
+        self.close_window(UnsavedChanges::Discard)
     }
 
     /// Removes the active buffer from the buffer list.
@@ -3902,15 +3979,12 @@ impl Session {
     }
 }
 
-/// The message that a refused quit shows.
-const UNSAVED_QUIT_NOTE: &str = "the buffer holds unsaved changes; use :q! to discard them";
+/// The message that a confirmed quit shows after the focus moved.
+const QUIT_BUFFER_CHANGED_NOTE: &str =
+    "the focused window shows another buffer now, so the editor kept running";
 
 /// The message that a refused unload shows.
 const UNSAVED_UNLOAD_NOTE: &str = "the buffer holds unsaved changes; save it before the unload";
-
-/// The message that a refused reload shows.
-const UNSAVED_RELOAD_NOTE: &str =
-    "the buffer holds unsaved changes; use :e! to discard them and reload the file";
 
 /// The message that a save without a file name shows.
 const NO_FILE_NAME_NOTE: &str = "the buffer holds no file name; use :e <path> to name one";
