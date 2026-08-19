@@ -643,7 +643,7 @@ impl Session {
         let mut session = Self {
             area,
             settings,
-            theme: Theme::new(settings.theme),
+            theme: Theme::new(),
             buffers,
             active,
             file_outbox: None,

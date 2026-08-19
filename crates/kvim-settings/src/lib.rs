@@ -49,22 +49,6 @@ pub const NOTIFICATION_SPINNER_PERIOD_DEFAULT: Duration = Duration::from_secs(1)
 /// The reference `fidget.nvim` configuration names the same value.
 pub const NOTIFICATION_DONE_TTL_DEFAULT: Duration = Duration::from_secs(2);
 
-/// One 24-bit terminal color.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct Rgb {
-    pub red: u8,
-    pub green: u8,
-    pub blue: u8,
-}
-
-impl Rgb {
-    /// Creates a color from its red, green, and blue components.
-    #[must_use]
-    pub const fn new(red: u8, green: u8, blue: u8) -> Self {
-        Self { red, green, blue }
-    }
-}
-
 /// The rule that reserves the sign column beside the line numbers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum SignColumn {
@@ -405,27 +389,6 @@ impl Default for LanguageSettings {
     }
 }
 
-/// The two background colors that Kvim overrides on top of tokyonight night.
-///
-/// Slice 8 owns the complete palette and the semantic theme roles. Do not add
-/// further palette values here before that slice defines the roles.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct ThemeSettings {
-    /// The darkened editor background.
-    pub base: Rgb,
-    /// The darkened surface background of panes and overlays.
-    pub surface: Rgb,
-}
-
-impl Default for ThemeSettings {
-    fn default() -> Self {
-        Self {
-            base: Rgb::new(0x11, 0x13, 0x17),
-            surface: Rgb::new(0x16, 0x1a, 0x20),
-        }
-    }
-}
-
 /// Every adjustable editor behavior in one structure.
 ///
 /// The defaults match the reference Neovim configuration. A caller reads a
@@ -460,8 +423,6 @@ pub struct EditorSettings {
     pub notifications: NotificationSettings,
     /// The search behavior of the editor.
     pub search: SearchSettings,
-    /// The two background colors that Kvim overrides.
-    pub theme: ThemeSettings,
     /// The split, focus, and resize behavior of the window tree.
     pub windows: WindowSettings,
 }

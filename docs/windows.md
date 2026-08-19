@@ -258,9 +258,29 @@ window title, status text, or a syntax role. Call sites never name a raw color.
 Only the theme holds color values.
 
 The palette is tokyonight night with a darkened base color `#111317` and a
-surface color `#161a20`. Both values belong to `EditorSettings`. See
-[`settings.md`](settings.md). Every other palette value comes from the
-tokyonight night palette. This document does not restate those values.
+surface color `#161a20`. Every other palette value comes from the tokyonight
+night palette. This document does not restate those values.
+
+### Recoloring The Editor
+
+`crates/kvim-tui/src/theme.rs` is the one file in the workspace that holds a
+color value. To recolor the editor, edit the palette constants at the top of
+that file and rebuild with `nix develop -c cargo build --release`.
+
+A constant names a color of the palette, for example `BASE`, `TEXT`, or
+`WARNING`. A role names what the editor marks with it, for example
+`ThemeRole::SearchMatch`. Change a constant to recolor every role that uses it,
+and change a role arm in `Theme::style` to move one part of the interface onto
+another color. Neither change reaches a call site, because a call site names a
+role and never a color.
+
+The test `only_the_theme_module_names_a_color` reads the sources of the crate
+and fails when a color reaches any other module. It exempts `theme.rs`, and it
+exempts `render_tests.rs` and `picker_tests.rs`, which name colors to assert
+them. It reads code lines only, so a color inside a comment is not a failure.
+
+The first release reads no configuration file, so the palette is compiled in.
+[`settings.md`](settings.md) records that decision.
 
 ### Interface Roles
 

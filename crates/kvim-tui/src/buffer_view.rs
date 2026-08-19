@@ -1013,7 +1013,7 @@ mod tests {
             tab_width: usize::from(settings.indent.tab_width.get()),
         };
         let mut target = CellBuffer::empty(AREA);
-        render_window(&mut target, AREA, Theme::new(settings.theme), &view);
+        render_window(&mut target, AREA, Theme::new(), &view);
         target
     }
 
@@ -1072,7 +1072,7 @@ mod tests {
             tab_width: usize::from(settings.indent.tab_width.get()),
         };
         let mut target = CellBuffer::empty(area);
-        render_window(&mut target, area, Theme::new(settings.theme), &view);
+        render_window(&mut target, area, Theme::new(), &view);
         row_of(&target, area.y)
     }
 
@@ -1205,9 +1205,7 @@ mod tests {
     }
 
     fn syntax_color(role: SyntaxRole) -> Option<Color> {
-        Theme::new(EditorSettings::default().theme)
-            .style(ThemeRole::Syntax(role))
-            .fg
+        Theme::new().style(ThemeRole::Syntax(role)).fg
     }
 
     /// Renders one buffer with diagnostics into a window of a chosen width.
@@ -1236,7 +1234,7 @@ mod tests {
         };
         let area = Rect { width, ..AREA };
         let mut target = CellBuffer::empty(area);
-        render_window(&mut target, area, Theme::new(settings.theme), &view);
+        render_window(&mut target, area, Theme::new(), &view);
         target
     }
 
@@ -1267,7 +1265,7 @@ mod tests {
         // behind the first text row marks the end of the buffer. The marker
         // sits left of the number column.
         let target = draw_marked("only\n", &[], AREA.width);
-        let theme = Theme::new(EditorSettings::default().theme);
+        let theme = Theme::new();
         let marker = theme.style(ThemeRole::EndOfBuffer);
 
         for y in super::WINBAR_ROWS + 1..AREA.height {
@@ -1286,7 +1284,7 @@ mod tests {
 
     #[test]
     fn a_warning_and_an_error_take_the_sign_column_in_their_own_colors() {
-        let theme = Theme::new(EditorSettings::default().theme);
+        let theme = Theme::new();
         let cases = [
             (DiagnosticSeverity::Warning, "H", ThemeRole::Warning),
             (DiagnosticSeverity::Error, "E", ThemeRole::Error),
@@ -1374,9 +1372,7 @@ mod tests {
         }
         assert_eq!(
             foreground(&target, gutter + 3),
-            Theme::new(EditorSettings::default().theme)
-                .style(ThemeRole::Text)
-                .fg,
+            Theme::new().style(ThemeRole::Text).fg,
             "the span ends at its last column"
         );
     }
@@ -1408,9 +1404,7 @@ mod tests {
         }
         assert_eq!(
             foreground(&target, gutter + 16),
-            Theme::new(EditorSettings::default().theme)
-                .style(ThemeRole::Text)
-                .fg,
+            Theme::new().style(ThemeRole::Text).fg,
             "the semicolon stays plain text"
         );
     }
@@ -1482,9 +1476,7 @@ mod tests {
     #[test]
     fn an_empty_span_list_renders_plain_text() {
         let target = draw("let value = 1;\n", &[]);
-        let plain = Theme::new(EditorSettings::default().theme)
-            .style(ThemeRole::Text)
-            .fg;
+        let plain = Theme::new().style(ThemeRole::Text).fg;
 
         for x in 0..AREA.width {
             let color = foreground(&target, x);
