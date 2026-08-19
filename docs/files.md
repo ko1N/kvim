@@ -96,21 +96,89 @@ save. The file identity holds two values:
 - the file size, in bytes,
 - the modification time that the platform reports.
 
-Kvim compares the recorded identity with the current identity before it
-overwrites a file. Kvim reads no file content for this comparison, so the check
-stays cheap for a large file.
+One comparison of the recorded identity with the current identity answers both
+directions: the save asks it before it overwrites a file, and the reload asks it
+before it replaces a buffer. The comparison has three typed results:
 
-These cases are conflicts:
+| Result | Recorded state | Current state |
+|---|---|---|
+| unchanged | a file, or no file | the same file, or still no file |
+| changed | a file | another file, or the same file with another identity |
+| changed | no file | a file |
+| missing | a file | no file |
 
-- the current identity differs from the recorded identity,
-- the path held no file at load time, and a file exists now.
+Kvim reads no file content for this comparison, so the check stays cheap for a
+large file.
 
-A missing file is not a conflict. The file holds no content to lose, so the save
-writes it again.
+A save refuses a changed file. The refusal is a typed conflict, not an error
+message string. Kvim reports the conflict and does not overwrite the file. The
+buffer stays dirty and usable.
 
-A conflict is a typed result, not an error message string. Kvim reports the
-conflict and does not overwrite the file. The buffer stays dirty and usable. The
-user then reloads the file with `:e` and applies the change again.
+A save writes a missing file again, because that file holds no content to lose.
+
+## Reload
+
+Kvim keeps every open buffer current with its file. The workspace watch above
+publishes one coalesced burst for each window of change. Every burst starts one
+bounded check of every loaded buffer against its file, because a content change
+names no path and a removed entry names only its directory. The check is one
+file operation on the bounded worker service, like an open and a save, so the
+terminal event loop reads no file.
+
+The check reads a file only when it must:
+
+- a buffer without unsaved changes whose file changed reloads,
+- a buffer with unsaved changes is compared and never read,
+- a file that still holds the recorded identity is not read at all.
+
+A buffer that no window shows reloads with every other buffer, so a background
+buffer is current when the user reaches it.
+
+**Kvim never reloads a buffer that holds an unsaved change.** That buffer is
+marked instead, and the editor reports the external change once. The mark is one
+of two states, and the winbar shows `[!]` for both:
+
+- *changed*: the file changed, and the buffer keeps its unsaved changes,
+- *missing*: the file is gone from its path.
+
+A deleted file and a renamed file reach the same missing state, because the path
+of the buffer names no file in either case. The buffer keeps its text and stays
+fully editable, because that text is then the only copy that Kvim can write. A
+save writes the file again. A save and a successful reload both clear the mark.
+
+A reload takes the same path as an ordinary open: the same size limit, the same
+UTF-8 rule, and the same restore of the persistent undo file. A file that grew
+past the size limit therefore reloads no buffer. Kvim reports that, marks the
+buffer as changed, and keeps its text.
+
+Every window that shows a reloaded buffer keeps its own cursor and its own first
+visible row. Both clamp to the new text, so a file that became shorter leaves no
+cursor and no viewport beyond its end.
+
+A reload replaces the whole buffer, so the reloaded buffer restarts its undo
+history and counts its versions from the start, as a fresh open does. The
+persistent undo file is not part of the reload: Kvim writes it at save time, and
+its content check rejects a record that no longer describes the file. Everything
+that one buffer version guards restarts with the buffer: the accepted analysis,
+the reuse tree, the published diagnostics, and the matches of the active search.
+
+A reload publishes only while the buffer still holds the version that the check
+compared. A buffer that the user changed while the check ran rejects the
+outcome, so no obsolete text reaches a buffer.
+
+The language server receives the reloaded text as one document synchronization
+that carries the reloaded buffer version, and Kvim drops every queued
+incremental change of that buffer, so no obsolete version reaches the server.
+See [`language-services.md`](language-services.md).
+
+A background check reports nothing when it finds nothing that the editor cannot
+follow, and a refused or failed background check reports nothing at all, because
+the user never asked for it. The next burst asks again.
+
+`:e` without a path is the manual form of the same operation for the buffer of
+the focused window. It reads the file whatever its identity holds. `:e` refuses
+a buffer that holds an unsaved change and names `:e!`, which discards that
+change and reloads. `:e <path>` keeps its own meaning and opens another file.
 
 ## Persistent Undo Files
 
@@ -413,6 +481,9 @@ triggers.
 The tree reads only the directories that the burst named. Every read takes the
 ordinary refresh path, so the expansion, the selection, and the first visible row
 all survive.
+
+Every burst also starts one bounded check of the open buffers against their
+files. The Reload section above owns that rule.
 
 The watcher ignores the generated directory names of the row-state list above:
 `.direnv`, `.git`, `__pycache__`, `node_modules`, and `target`. One list answers

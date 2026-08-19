@@ -1,8 +1,8 @@
 //! The command line parser for the fixed first-release command set.
 //!
 //! Kvim implements no Ex grammar. The parser accepts `:w`, `:q`, `:q!`, `:wq`,
-//! `:e <path>`, and `:<number>` only, and rejects every other line. It never
-//! guesses a command from a prefix.
+//! `:e`, `:e!`, `:e <path>`, and `:<number>` only, and rejects every other
+//! line. It never guesses a command from a prefix.
 
 use std::num::NonZeroU32;
 use std::path::PathBuf;
@@ -28,6 +28,10 @@ pub enum CommandLineCommand {
     WriteQuit,
     /// `:e <path>` opens one file in the focused window.
     Edit(PathBuf),
+    /// `:e` reads the file of the focused window again.
+    Reload,
+    /// `:e!` discards the unsaved changes of that buffer and reads its file.
+    ReloadDiscard,
     /// `:<number>` moves the cursor to that line.
     GoToLine(NonZeroU32),
 }
@@ -46,9 +50,6 @@ pub enum CommandLineError {
         /// The accepted maximum.
         chars_max: usize,
     },
-    /// `:e` arrived without a file path.
-    #[error("`:e` needs one file path")]
-    EditWithoutPath,
     /// The line number was zero, or it did not fit an unsigned 32-bit value.
     #[error("the line number must be between 1 and {max}")]
     LineNumberOutOfRange {
@@ -56,7 +57,7 @@ pub enum CommandLineError {
         max: u32,
     },
     /// The line matched no accepted command.
-    #[error("the command line accepts :w, :q, :q!, :wq, :e <path>, and :<number> only")]
+    #[error("the command line accepts :w, :q, :q!, :wq, :e, :e!, :e <path>, and :<number> only")]
     Unknown,
 }
 
@@ -69,8 +70,8 @@ impl CommandLineCommand {
     /// # Errors
     ///
     /// Returns [`CommandLineError`] for an empty line, a line above
-    /// [`COMMAND_LINE_CHARS_MAX`], `:e` without a path, a line number outside
-    /// its range, and every line that matches no accepted command.
+    /// [`COMMAND_LINE_CHARS_MAX`], a line number outside its range, and every
+    /// line that matches no accepted command.
     ///
     /// ```
     /// use std::num::NonZeroU32;
@@ -83,6 +84,9 @@ impl CommandLineCommand {
     ///     CommandLineCommand::parse("e src/main.rs"),
     ///     Ok(CommandLineCommand::Edit(PathBuf::from("src/main.rs")))
     /// );
+    /// // `:e` without a path reads the file of the focused window again.
+    /// assert_eq!(CommandLineCommand::parse("e"), Ok(CommandLineCommand::Reload));
+    /// assert_eq!(CommandLineCommand::parse("e!"), Ok(CommandLineCommand::ReloadDiscard));
     /// assert_eq!(
     ///     CommandLineCommand::parse("42"),
     ///     Ok(CommandLineCommand::GoToLine(NonZeroU32::new(42).unwrap()))
@@ -110,15 +114,20 @@ impl CommandLineCommand {
             "q" => return Ok(Self::Quit),
             "q!" => return Ok(Self::QuitDiscard),
             "wq" => return Ok(Self::WriteQuit),
+            // `:e` reads the file of the focused window again, and `:e!` does
+            // the same after it discards the unsaved changes of that buffer.
+            "e" => return Ok(Self::Reload),
+            "e!" => return Ok(Self::ReloadDiscard),
             _ => {}
         }
         if let Some(rest) = trimmed.strip_prefix('e') {
             // `:e` needs a separator, so `:edit` stays an unknown command.
-            if rest.is_empty() || rest.starts_with(char::is_whitespace) {
+            if rest.starts_with(char::is_whitespace) {
                 let path = rest.trim();
-                if path.is_empty() {
-                    return Err(CommandLineError::EditWithoutPath);
-                }
+                debug_assert!(
+                    !path.is_empty(),
+                    "the trimmed line ends with no whitespace, so a separator carries a path"
+                );
                 return Ok(Self::Edit(PathBuf::from(path)));
             }
             return Err(CommandLineError::Unknown);
@@ -158,6 +167,9 @@ mod tests {
                 "e src/main.rs",
                 CommandLineCommand::Edit(PathBuf::from("src/main.rs")),
             ),
+            ("e", CommandLineCommand::Reload),
+            ("  e  ", CommandLineCommand::Reload),
+            ("e!", CommandLineCommand::ReloadDiscard),
             (
                 "e  a path/with space.rs ",
                 CommandLineCommand::Edit(PathBuf::from("a path/with space.rs")),
@@ -188,8 +200,6 @@ mod tests {
                     chars_max: COMMAND_LINE_CHARS_MAX,
                 },
             ),
-            ("e", CommandLineError::EditWithoutPath),
-            ("e   ", CommandLineError::EditWithoutPath),
             (
                 "0",
                 CommandLineError::LineNumberOutOfRange { max: u32::MAX },
@@ -199,6 +209,8 @@ mod tests {
                 CommandLineError::LineNumberOutOfRange { max: u32::MAX },
             ),
             ("edit foo", CommandLineError::Unknown),
+            ("e! src/main.rs", CommandLineError::Unknown),
+            ("e!!", CommandLineError::Unknown),
             ("wqa", CommandLineError::Unknown),
             ("q!!", CommandLineError::Unknown),
             ("W", CommandLineError::Unknown),

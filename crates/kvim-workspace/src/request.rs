@@ -10,8 +10,8 @@ use std::path::{Path, PathBuf};
 use kvim_core::{LoadError, TextBuffer};
 use kvim_settings::FileSettings;
 
-use super::buffer::BufferId;
-use super::file::{self, FileIdentity, OpenError, SaveError};
+use super::buffer::{BUFFERS_MAX, BufferId};
+use super::file::{self, FileChange, FileIdentity, OpenError, SaveError};
 use super::undo_file::{self, UndoRecord};
 
 /// One file to load into a new buffer.
@@ -40,6 +40,51 @@ pub struct SaveRequest {
     pub files: FileSettings,
 }
 
+/// The largest number of buffers that one reload request checks.
+///
+/// One request checks every loaded buffer, so the buffer list is the bound.
+pub const RELOAD_TARGETS_MAX: usize = BUFFERS_MAX;
+
+/// What one reload target asks the worker to do with its file.
+///
+/// The event loop owns the unsaved state of a buffer, so it selects the trigger
+/// before the request leaves. A buffer with unsaved changes can therefore never
+/// reach the reading variants at all. See `docs/files.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReloadTrigger {
+    /// Read the file only when it differs from this recorded identity.
+    ///
+    /// The buffer holds no unsaved change, so the new text may replace it.
+    Refresh(Option<FileIdentity>),
+    /// Compare the file with this recorded identity and read no content.
+    ///
+    /// The buffer holds unsaved changes, which no reload may replace, so the
+    /// editor reports the external change instead.
+    Compare(Option<FileIdentity>),
+    /// Read the file whatever its identity holds, because the user asked.
+    Read,
+}
+
+/// One buffer that a reload request checks against its file.
+#[derive(Clone, Debug)]
+pub struct ReloadTarget {
+    /// The buffer that the outcome belongs to.
+    pub buffer: BufferId,
+    /// The path that the buffer holds.
+    pub path: PathBuf,
+    /// What the worker does with the file.
+    pub trigger: ReloadTrigger,
+}
+
+/// The buffers to check against their files.
+#[derive(Debug)]
+pub struct ReloadRequest {
+    /// The buffers to check, bounded by [`RELOAD_TARGETS_MAX`].
+    pub targets: Vec<ReloadTarget>,
+    /// The load and save policy of this editor.
+    pub files: FileSettings,
+}
+
 /// One blocking file operation.
 #[derive(Debug)]
 pub enum FileRequest {
@@ -47,6 +92,8 @@ pub enum FileRequest {
     Open(OpenRequest),
     /// Write one buffer over its file.
     Save(SaveRequest),
+    /// Check loaded buffers against their files and read the changed ones.
+    Reload(ReloadRequest),
 }
 
 /// One buffer that the worker loaded.
@@ -60,6 +107,32 @@ pub struct OpenedFile {
     pub identity: Option<FileIdentity>,
 }
 
+/// What one reload target found on disk.
+#[derive(Debug)]
+pub enum ReloadOutcome {
+    /// The file still holds the recorded state, so the buffer is current.
+    Unchanged,
+    /// The file changed, and the worker read its new text.
+    Loaded(OpenedFile),
+    /// The file changed while the buffer held unsaved changes.
+    ///
+    /// The worker read no content, because no reload may replace those changes.
+    Conflict,
+    /// The file no longer lies at the path of the buffer.
+    Missing,
+}
+
+/// The completed check of one reload target.
+#[derive(Debug)]
+pub struct ReloadedBuffer {
+    /// The buffer that the outcome belongs to.
+    pub buffer: BufferId,
+    /// The path that the worker checked.
+    pub path: PathBuf,
+    /// What the worker found, or the reason that it read no text.
+    pub outcome: Result<ReloadOutcome, OpenError>,
+}
+
 /// The completed result of one file operation.
 #[derive(Debug)]
 pub enum FileResult {
@@ -69,6 +142,11 @@ pub enum FileResult {
         requested: PathBuf,
         /// The loaded buffer, or the reason that Kvim rejected the file.
         outcome: Result<OpenedFile, OpenError>,
+    },
+    /// One reload check finished, with one outcome for each target.
+    Reloaded {
+        /// The outcome of every checked buffer, in target order.
+        buffers: Vec<ReloadedBuffer>,
     },
     /// One save finished.
     Saved {
@@ -108,6 +186,60 @@ impl FileRequest {
                 outcome: write(&request),
                 requested: request.path,
             },
+            Self::Reload(request) => FileResult::Reloaded {
+                buffers: reload(&request),
+            },
+        }
+    }
+}
+
+/// Checks every target of one reload request against its file.
+fn reload(request: &ReloadRequest) -> Vec<ReloadedBuffer> {
+    debug_assert!(
+        request.targets.len() <= RELOAD_TARGETS_MAX,
+        "the editor holds at most BUFFERS_MAX buffers, so it names at most that many targets"
+    );
+    request
+        .targets
+        .iter()
+        .take(RELOAD_TARGETS_MAX)
+        .map(|target| ReloadedBuffer {
+            buffer: target.buffer,
+            outcome: check(target, &request.files),
+            path: target.path.clone(),
+        })
+        .collect()
+}
+
+/// Checks one buffer against its file and reads the file when it must.
+///
+/// The read takes the same path as an ordinary open, so a reloaded buffer holds
+/// exactly what an open of that file would hold, including its restored
+/// persistent undo history.
+fn check(target: &ReloadTarget, files: &FileSettings) -> Result<ReloadOutcome, OpenError> {
+    let current = file::identity(&target.path)?;
+    if current.is_none() {
+        // A file that no longer exists carries no text to read. The buffer holds
+        // the only remaining copy, so it keeps its text and stays editable.
+        return Ok(ReloadOutcome::Missing);
+    }
+    let change = match target.trigger {
+        // The user asked for the read, so no comparison decides it.
+        ReloadTrigger::Read => FileChange::Changed,
+        ReloadTrigger::Refresh(recorded) | ReloadTrigger::Compare(recorded) => {
+            FileIdentity::compare(recorded, current)
+        }
+    };
+    match (change, target.trigger) {
+        (FileChange::Unchanged, _) => Ok(ReloadOutcome::Unchanged),
+        (FileChange::Missing, _) => Ok(ReloadOutcome::Missing),
+        (FileChange::Changed, ReloadTrigger::Compare(_)) => Ok(ReloadOutcome::Conflict),
+        (FileChange::Changed, ReloadTrigger::Refresh(_) | ReloadTrigger::Read) => {
+            open(&OpenRequest {
+                path: target.path.clone(),
+                files: *files,
+            })
+            .map(ReloadOutcome::Loaded)
         }
     }
 }

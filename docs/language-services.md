@@ -212,6 +212,13 @@ executable is not installed, leave the editor fully usable with no diagnostics.
 Kvim reports the state once and starts no further server for that language. A
 missing server is never an error path that degrades editing.
 
+A reload replaces the whole text of one buffer, and the reloaded buffer counts
+its versions from the start. Kvim therefore synchronizes a reload as one fresh
+document open that carries the reloaded text and the reloaded buffer version,
+and it drops every queued incremental change of that buffer. No obsolete
+version reaches the server, and the server copy replaces the old copy in one
+step. See [`files.md`](files.md).
+
 A crashed server restarts a bounded number of times. The new server holds no
 document, so Kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown

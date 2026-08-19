@@ -13,13 +13,14 @@ use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
 use kvim_input::Mode;
 use kvim_language::LspError;
-use kvim_runtime::ProcessOutput;
+use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{FocusChange, Key, KeyCode, TerminalEvent};
+use kvim_workspace::ExternalChange;
 use kvim_workspace::temp::TempDir;
 
 use super::clipboard::SessionClipboard;
-use super::language::LanguageRequestKind;
+use super::language::{LanguageRequest, LanguageRequestKind};
 use super::session::{MessageLevel, Redraw, RunState, Session};
 use super::window::WindowId;
 
@@ -713,6 +714,331 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
         Some(session.active()),
         "every window follows the unload"
     );
+}
+
+/// Reports one workspace change, like the coalesced burst of the watcher.
+///
+/// A content change names no path at all, so one burst asks the session to
+/// check every loaded buffer against its file.
+fn report_watch_change(session: &mut Session) -> Redraw {
+    let mut batch = WatchBatch::default();
+    batch.push(&WatchEvent {
+        path: workspace_root().join("changed"),
+        kind: WatchKind::Modified,
+    });
+    session.apply_watch_batch(&batch)
+}
+
+/// Runs the reload check that one workspace change queued.
+fn run_watch_reload(session: &mut Session) {
+    let _ = report_watch_change(session);
+    let request = session
+        .take_file_request()
+        .expect("the burst queued one reload check");
+    let _ = session.apply_file_result(request.run());
+}
+
+/// Returns the external-change marker of the active buffer.
+fn external(session: &Session) -> Option<ExternalChange> {
+    session.active_buffer().external_change()
+}
+
+/// Opens one file in a session that keeps no persistent undo file.
+fn opened_file(label: &str, name: &str, text: &str) -> (TempDir, PathBuf, Session) {
+    let directory = TempDir::new(label);
+    let path = directory.write(name, text);
+    let mut session = file_session();
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    (directory, path, session)
+}
+
+#[test]
+fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
+    let (_directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "edited ");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(session.buffer().is_modified());
+
+    std::fs::write(&path, "another program wrote a much longer line\n")
+        .expect("the file is writable");
+    run_watch_reload(&mut session);
+
+    assert_eq!(
+        session.buffer().to_string(),
+        "edited one\n",
+        "a buffer with unsaved changes never reloads"
+    );
+    assert!(session.buffer().is_modified());
+    assert_eq!(external(&session), Some(ExternalChange::Changed));
+    assert_eq!(
+        message(&session),
+        "main.rs changed on disk; the buffer keeps its unsaved changes"
+    );
+
+    // The editor reports one external change once, so a workspace that changes
+    // often never fills the message line.
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(message(&session), "");
+    run_watch_reload(&mut session);
+    assert_eq!(message(&session), "");
+    assert_eq!(session.buffer().to_string(), "edited one\n");
+}
+
+#[test]
+fn a_clean_buffer_reloads_after_an_external_change() {
+    let (_directory, path, mut session) = opened_file("session-reload-clean", "main.rs", "one\n");
+
+    // A file that keeps its length reports no change, so the test changes it.
+    std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(message(&session), "", "the open message is cleared");
+    run_watch_reload(&mut session);
+
+    assert_eq!(session.buffer().to_string(), "one\ntwo\n");
+    assert!(!session.buffer().is_modified());
+    assert_eq!(external(&session), None);
+    assert_eq!(message(&session), "", "a background reload reports nothing");
+
+    // The reload recorded the new file state, so the next save is no conflict.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    assert!(!session.buffer().is_modified());
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "one\ntwo\n"
+    );
+}
+
+#[test]
+fn a_buffer_that_no_window_shows_reloads_in_the_background() {
+    let directory = TempDir::new("session-reload-background");
+    let first = directory.write("first.rs", "first\n");
+    let second = directory.write("second.rs", "second\n");
+    let mut session = file_session();
+
+    session.open_path(second.clone());
+    run_file_request(&mut session);
+    let background = session.active();
+    session.open_path(first);
+    run_file_request(&mut session);
+    assert_ne!(session.active(), background);
+
+    std::fs::write(&second, "second, and changed\n").expect("the file is writable");
+    run_watch_reload(&mut session);
+
+    let reloaded = session
+        .buffers()
+        .get(background)
+        .expect("the background buffer stays loaded");
+    assert_eq!(reloaded.text().to_string(), "second, and changed\n");
+    assert!(!reloaded.text().is_modified());
+}
+
+#[test]
+fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
+    let (_directory, path, mut session) = opened_file(
+        "session-reload-cursor",
+        "main.rs",
+        "one\ntwo\nthree\nfour\nfive\n",
+    );
+
+    type_keys(&mut session, "jj");
+    assert_eq!(session.cursor().line().get(), 2);
+
+    // A file that keeps the cursor line keeps the cursor.
+    std::fs::write(&path, "one\ntwo\nthree, longer\nfour\nfive\n").expect("the file is writable");
+    run_watch_reload(&mut session);
+    assert_eq!(session.cursor().line().get(), 2);
+
+    // A file that became shorter clamps the cursor and the viewport.
+    std::fs::write(&path, "one\n").expect("the file is writable");
+    run_watch_reload(&mut session);
+    assert_eq!(session.buffer().to_string(), "one\n");
+    assert_eq!(session.cursor().line().get(), 0);
+    assert_eq!(
+        session
+            .windows()
+            .state(session.windows().focused_window())
+            .expect("the focused window is a leaf")
+            .first_line(),
+        0
+    );
+}
+
+#[test]
+fn a_deleted_file_keeps_its_buffer_editable_and_reports_it() {
+    let (_directory, path, mut session) = opened_file("session-reload-deleted", "main.rs", "one\n");
+
+    std::fs::remove_file(&path).expect("the file exists");
+    run_watch_reload(&mut session);
+
+    assert_eq!(
+        session.buffer().to_string(),
+        "one\n",
+        "the buffer holds the only remaining copy"
+    );
+    assert_eq!(external(&session), Some(ExternalChange::Missing));
+    assert_eq!(
+        message(&session),
+        "main.rs is gone from disk; the buffer keeps the only copy"
+    );
+
+    // The buffer stays editable, and a save writes the file again.
+    press(&mut session, 'i');
+    type_keys(&mut session, "kept ");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "kept one\n");
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the save wrote the file again"),
+        "kept one\n"
+    );
+    assert_eq!(external(&session), None, "the save cleared the marker");
+}
+
+#[test]
+fn a_renamed_file_reaches_the_same_missing_state() {
+    let (directory, path, mut session) = opened_file("session-reload-renamed", "main.rs", "one\n");
+
+    std::fs::rename(&path, directory.join("other.rs")).expect("the file exists");
+    run_watch_reload(&mut session);
+
+    assert_eq!(session.buffer().to_string(), "one\n");
+    assert_eq!(external(&session), Some(ExternalChange::Missing));
+    assert!(!session.buffer().is_modified());
+}
+
+#[test]
+fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
+    let (_directory, path, mut session) =
+        opened_file("session-reload-language", "main.rs", "fn main() {}\n");
+
+    std::fs::write(&path, "fn main() { println!(); }\n").expect("the file is writable");
+    let _ = report_watch_change(&mut session);
+    let request = session
+        .take_file_request()
+        .expect("the burst queued one reload check");
+    refuse_language_requests(&mut session);
+    let _ = session.apply_file_result(request.run());
+
+    let synchronization = session
+        .take_language_request()
+        .expect("the reload synchronizes the document");
+    match synchronization {
+        LanguageRequest::Open { version, text, .. } => {
+            assert_eq!(&*text, "fn main() { println!(); }\n");
+            assert_eq!(
+                version,
+                session.buffer().version(),
+                "the server copy carries the version of the reloaded text"
+            );
+        }
+        other => panic!("a reload opens the document again, not {other:?}"),
+    }
+}
+
+#[test]
+fn an_obsolete_reload_result_never_replaces_the_buffer() {
+    let (_directory, path, mut session) =
+        opened_file("session-reload-obsolete", "main.rs", "one\n");
+
+    std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+    let _ = report_watch_change(&mut session);
+    let request = session
+        .take_file_request()
+        .expect("the burst queued one reload check");
+    let result = request.run();
+
+    // The user edits the buffer while the check runs, so its outcome describes
+    // a buffer state that the editor already left.
+    press(&mut session, 'i');
+    type_keys(&mut session, "typed ");
+    press_code(&mut session, KeyCode::Esc);
+    let _ = session.apply_file_result(result);
+
+    assert_eq!(session.buffer().to_string(), "typed one\n");
+    assert!(session.buffer().is_modified());
+}
+
+#[test]
+fn a_file_that_grew_past_the_size_limit_keeps_its_buffer() {
+    let directory = TempDir::new("session-reload-limit");
+    let path = directory.write("main.rs", "one\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    settings.files.max_file_bytes = 8;
+    let mut session = Session::new(Rect::new(0, 0, 80, 24), settings, workspace_root());
+
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    assert_eq!(session.buffer().to_string(), "one\n");
+
+    std::fs::write(&path, "far above the limit\n").expect("the file is writable");
+    run_watch_reload(&mut session);
+
+    assert_eq!(session.buffer().to_string(), "one\n");
+    assert_eq!(external(&session), Some(ExternalChange::Changed));
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+}
+
+#[test]
+fn the_edit_command_reloads_a_clean_buffer_and_refuses_a_dirty_one() {
+    let (_directory, path, mut session) = opened_file("session-reload-command", "main.rs", "one\n");
+
+    std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+    press(&mut session, ':');
+    type_keys(&mut session, "e");
+    press_code(&mut session, KeyCode::Enter);
+    run_file_request(&mut session);
+    assert_eq!(session.buffer().to_string(), "one\ntwo\n");
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Info)
+    );
+
+    // A buffer with unsaved changes refuses the reload and names the form that
+    // discards them.
+    press(&mut session, 'i');
+    type_keys(&mut session, "typed ");
+    press_code(&mut session, KeyCode::Esc);
+    press(&mut session, ':');
+    type_keys(&mut session, "e");
+    press_code(&mut session, KeyCode::Enter);
+    assert!(
+        session.take_file_request().is_none(),
+        "a refused reload reads no file"
+    );
+    assert_eq!(
+        message(&session),
+        "the buffer holds unsaved changes; use :e! to discard them and reload the file"
+    );
+    assert_eq!(session.buffer().to_string(), "typed one\ntwo\n");
+}
+
+#[test]
+fn the_forced_edit_command_discards_the_unsaved_changes_and_reloads() {
+    let (_directory, path, mut session) = opened_file("session-reload-forced", "main.rs", "one\n");
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "typed ");
+    press_code(&mut session, KeyCode::Esc);
+    std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+
+    press(&mut session, ':');
+    type_keys(&mut session, "e!");
+    press_code(&mut session, KeyCode::Enter);
+    run_file_request(&mut session);
+
+    assert_eq!(session.buffer().to_string(), "one\ntwo\n");
+    assert!(!session.buffer().is_modified());
+    assert_eq!(external(&session), None);
 }
 
 /// Returns the highlight spans that the frame reads for the active buffer.
