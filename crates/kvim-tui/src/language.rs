@@ -131,6 +131,21 @@ impl LanguageRequest {
         }
     }
 
+    /// Returns the buffer that the request describes.
+    ///
+    /// A close names one path alone, because the editor no longer holds that
+    /// document at that path. No fresh open can therefore repair the copy of a
+    /// refused close. See `docs/language-services.md`.
+    #[must_use]
+    pub(super) const fn buffer(&self) -> Option<BufferId> {
+        match self {
+            Self::Open { buffer, .. }
+            | Self::Change { buffer, .. }
+            | Self::Query { buffer, .. } => Some(*buffer),
+            Self::Close { .. } => None,
+        }
+    }
+
     /// Reports whether this request synchronizes one buffer incrementally.
     ///
     /// A fresh open carries the complete text, so it supersedes every such
@@ -560,6 +575,34 @@ impl LanguageNotice {
             }
             Self::NotInstalled => "no language server is installed; editing continues without one",
             Self::Stopped => "the language server stopped; editing continues without it",
+        }
+    }
+}
+
+/// What one refused language request leaves behind.
+///
+/// A running session holds a copy of every document that it opened. A refusal
+/// of such a session therefore leaves that copy behind the buffer, and the
+/// editor must open the document again. See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Refusal {
+    /// A running session dropped the request, so its copy is behind the buffer.
+    CopyDrifted,
+    /// No running session took the request, so no session holds a copy.
+    NoCopyHeld,
+}
+
+impl Refusal {
+    /// Returns what one refusal of one dispatched request leaves behind.
+    ///
+    /// A full request queue is the one refusal that a running session produces.
+    /// Every other state names a path that no session serves, a process that
+    /// never started, or a session that stopped.
+    #[must_use]
+    pub(super) const fn of(error: &LspError) -> Self {
+        match error {
+            LspError::Saturated => Self::CopyDrifted,
+            _ => Self::NoCopyHeld,
         }
     }
 }

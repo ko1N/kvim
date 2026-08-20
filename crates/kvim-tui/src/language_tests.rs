@@ -20,14 +20,14 @@ use serde_json::{Value, json};
 use kvim_language::mock::{
     self, Harness, MockServer, OTHER_SERVER, named_session_at, pipe, session_at,
 };
-use kvim_language::{FormatterFailure, LanguageOutcome, LanguageServerHandle};
+use kvim_language::{FormatterFailure, LanguageOutcome, LanguageServerHandle, LspError};
 use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
-use super::language::{FLOAT_ROWS_MAX, send_request};
-use super::session::{MessageLevel, Session};
+use super::language::{FLOAT_ROWS_MAX, LanguageRequestKind, send_request};
+use super::session::{MessageLevel, Redraw, Session};
 
 /// The elapsed time of every transition. The session reads no clock.
 const NOW: Duration = Duration::ZERO;
@@ -201,9 +201,8 @@ impl Editor {
     /// Sends every queued language request, like the terminal event loop.
     fn pump(&mut self) {
         while let Some(request) = self.session.take_language_request() {
-            let kind = request.kind();
             let result = send_request(&self.handles(), &request);
-            let _ = self.session.apply_language_dispatch(kind, result);
+            let _ = self.session.apply_language_dispatch(&request, result);
         }
     }
 
@@ -1187,6 +1186,59 @@ async fn a_restart_opens_every_document_again() {
         "fn main() {}\n",
         "a restart never changes the buffer text"
     );
+}
+
+#[tokio::test]
+async fn a_refused_change_opens_the_document_again_with_the_current_text() {
+    let mut editor =
+        Editor::start("language-refused-change", &[("main.rs", "fn main() {}\n")]).await;
+    let uri = editor.uri("main.rs");
+
+    // The edit produces one incremental change of the open document.
+    editor.press("ix");
+    editor.press_code(KeyCode::Esc);
+    let change = editor
+        .session
+        .take_language_request()
+        .expect("the edit queued one synchronization");
+    assert_eq!(change.kind(), LanguageRequestKind::Synchronization);
+
+    // A full request queue drops that change, so the copy of the running
+    // session stays behind the buffer.
+    let redraw = editor
+        .session
+        .apply_language_dispatch(&change, Err(LspError::Saturated));
+    assert_eq!(redraw, Redraw::Needed);
+    assert_eq!(
+        editor.message(),
+        "the language server queue is full; the editor opens the buffer again"
+    );
+
+    // The next pass repairs the copy. The old document closes, and the fresh
+    // open carries the text that the buffer holds now.
+    editor.pump();
+    let closed = editor.server.expect("textDocument/didClose").await;
+    assert_eq!(closed["params"]["textDocument"]["uri"], uri);
+    let reopened = editor.server.expect("textDocument/didOpen").await;
+    assert_eq!(reopened["params"]["textDocument"]["uri"], uri);
+    assert_eq!(
+        reopened["params"]["textDocument"]["text"], "xfn main() {}\n",
+        "the fresh open carries the exact text of the current buffer version"
+    );
+    assert_eq!(
+        editor.session.buffer().to_string(),
+        "xfn main() {}\n",
+        "a repair never changes the buffer text"
+    );
+
+    // The editor stays usable, and the next edit synchronizes against the copy
+    // that the server holds now.
+    editor.press("iy");
+    editor.press_code(KeyCode::Esc);
+    editor.pump();
+    let changed = editor.server.expect("textDocument/didChange").await;
+    assert_eq!(changed["params"]["contentChanges"][0]["text"], "y");
+    assert_eq!(editor.session.buffer().to_string(), "xyfn main() {}\n");
 }
 
 #[tokio::test]

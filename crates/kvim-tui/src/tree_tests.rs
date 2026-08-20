@@ -2162,8 +2162,7 @@ fn the_refresh_command_asks_for_the_repository_state_again() {
 /// file request reaches the worker. See `docs/language-services.md`.
 fn refuse_language_requests(session: &mut Session) {
     while let Some(request) = session.take_language_request() {
-        let kind = request.kind();
-        let _ = session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+        let _ = session.apply_language_dispatch(&request, Err(LspError::NoServerDeclared));
     }
 }
 

@@ -78,7 +78,7 @@ use super::completion::{
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
     LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
-    QueryPurpose, QueryState, formatter, has_formatter, jump_target,
+    QueryPurpose, QueryState, Refusal, formatter, has_formatter, jump_target,
 };
 use super::layout::RegionKind;
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
@@ -2281,16 +2281,18 @@ impl Session {
     /// Reports how the language services answered one dispatched request.
     ///
     /// The services assign the identity of a query, and the session records it
-    /// so a later answer reaches the question that asked for it.
+    /// so a later answer reaches the question that asked for it. A refused
+    /// synchronization can leave one server copy behind the buffer, so the
+    /// answer names the request that it belongs to.
     #[must_use]
     pub fn apply_language_dispatch(
         &mut self,
-        kind: LanguageRequestKind,
+        request: &LanguageRequest,
         result: Result<Vec<AcceptedQuery>, LspError>,
     ) -> Redraw {
         match result {
             Ok(accepted) => {
-                if kind != LanguageRequestKind::Query {
+                if request.kind() != LanguageRequestKind::Query {
                     return Redraw::Skipped;
                 }
                 let Some(pending) = self.language.pending.as_mut() else {
@@ -2305,12 +2307,43 @@ impl Session {
             }
             Err(error) => {
                 let redraw = self.report_language_error(&error);
-                match kind {
+                match request.kind() {
                     LanguageRequestKind::Query => self.abandon_query().or(redraw),
-                    LanguageRequestKind::Synchronization => redraw,
+                    LanguageRequestKind::Synchronization => {
+                        self.repair_document(request, &error).or(redraw)
+                    }
                 }
             }
         }
+    }
+
+    /// Opens one document again after a running session dropped its request.
+    ///
+    /// The session holds a copy of that document, and the dropped request
+    /// leaves that copy behind the buffer. A drifted copy answers with
+    /// diagnostics on the wrong lines, and it computes an edit against text
+    /// that the buffer no longer holds. The fresh open carries the complete
+    /// text of the current buffer version, and it supersedes every queued
+    /// change of that buffer.
+    ///
+    /// Every other refusal names a state where no session holds a copy, so
+    /// nothing drifted and nothing opens again. See
+    /// `docs/language-services.md`.
+    fn repair_document(&mut self, request: &LanguageRequest, error: &LspError) -> Redraw {
+        if Refusal::of(error) == Refusal::NoCopyHeld {
+            return Redraw::Skipped;
+        }
+        let Some(buffer) = request.buffer() else {
+            // A close names one path that no buffer holds any longer, so no
+            // fresh open repairs that copy.
+            return Redraw::Skipped;
+        };
+        self.language.mark_resync(buffer);
+        self.set_message(
+            "the language server queue is full; the editor opens the buffer again",
+            MessageLevel::Warning,
+        );
+        Redraw::Needed
     }
 
     /// Applies one typed result of the language services.
