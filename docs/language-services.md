@@ -261,7 +261,7 @@ agree.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
-| Source bytes | `ANALYSIS_SOURCE_BYTES_MAX` | 4 MiB | The maximum file size of [`text-model.md`](text-model.md). Every buffer that kvim loads is therefore analyzable, and no larger text reaches the parser. |
+| Source bytes | `ANALYSIS_SOURCE_BYTES_MAX` | 4 MiB | The maximum file size of [`text-model.md`](text-model.md), so no larger text reaches the parser. A buffer that kvim loads must also hold the line bound of the row below, and two real files exceed that bound. |
 | Source lines | `ANALYSIS_SOURCE_LINES_MAX` | 100000 lines | A source file of this length already exceeds normal practice. The check runs before the parse, so a generated one-line-per-byte file fails early. |
 | Syntax nodes | `ANALYSIS_NODES_MAX` | 1000000 nodes | The densest measured source produces one node for each 5.6 bytes, so the byte limit produces about 750000 nodes. A larger tree means a pathological grammar result, not source that a reader edits. |
 | Traversal depth | `ANALYSIS_DEPTH_MAX` | 128 levels | The indent query walks ancestors, and the highlight walk stacks captures. The bound measures syntax-tree depth, not source indentation, and a generated header reaches far more levels than a reader expects. |
@@ -281,6 +281,13 @@ produces about 750000 nodes. That same header reaches 119 levels of tree depth,
 and a 574 KiB TypeScript declaration file reaches 91 levels. Both stay below
 128 levels, but the margin is small, and a deeper real file would lose its
 indent answer for one line.
+
+The line bound rejects two real files that the byte bound admits. `data.rs` of
+`encoding_rs` at 2.5 MiB and `parser.c` of `tree-sitter-c` at 3.87 MiB each hold
+more than 100000 lines. The check runs before the parse, so neither file reaches
+the parser, and each one renders plain text. A generated table of one value for
+each line is the shape that reaches this bound. The bound keeps its present
+value, because a change of it is behavior and not reconciliation.
 
 The first highlight-span bound of 100000 spans was too small. Three real files
 above 1.6 MiB exceeded it and rendered plain text. The measurement below counts
@@ -1263,9 +1270,12 @@ neither an external formatter nor a formatting server therefore have no
 formatter. kvim shows no format-on-save state for such a buffer, and the toggle
 reports the missing formatter instead of changing a state that no save can act
 on. A save of such a buffer also starts no format request, because no formatter
-can answer one. The per-buffer state itself stays unchanged, so a buffer keeps
-the state that the user chose if a later release declares a formatter for its
-language.
+can answer one.
+
+The absent request and the remembered state are two different things. The save
+sends no request, and it changes no state. The per-buffer state itself stays
+unchanged, so a buffer keeps the state that the user chose if a later release
+declares a formatter for its language.
 
 The rule reads adapter data alone. An installed, missing, gated, or stopped
 server is a runtime state that the reports of the sections above own, and a
