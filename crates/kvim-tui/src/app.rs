@@ -285,7 +285,8 @@ async fn drive<C: TerminalControl>(
         LanguageServices::new(LanguageRegistry::first_release(), root.clone(), settings).ok();
     // The watcher runs its platform callback and its coalescing task beside this
     // loop, so no filesystem event ever reaches it directly. It ignores the
-    // generated directory names of the file tree, so one build writes no event.
+    // generated directory names of the file tree, so it watches no build output
+    // directory and one build writes no event.
     // A host that refuses the watch leaves the editor fully usable with the
     // refresh command. See `docs/files.md`.
     let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
