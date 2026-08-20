@@ -13,13 +13,13 @@ use kvim_settings::FileSettings;
 use super::formatter::declaration_is_valid;
 use super::server::declarations_are_valid;
 use super::{
-    ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_SOURCE_BYTES_MAX, ANALYSIS_SOURCE_LINES_MAX,
-    Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax, CommentStyle,
-    FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
-    FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, Grammar,
-    IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageAdapter,
-    LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter, Publication, RustAdapter,
-    ServerFormatting, SyntaxRole, SyntaxTree,
+    ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_SOURCE_BYTES_MAX,
+    ANALYSIS_SOURCE_LINES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax,
+    CommentStyle, FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX,
+    FormattedDocument, FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest,
+    Grammar, IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX,
+    LanguageAdapter, LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter, Publication,
+    RustAdapter, ServerFormatting, SyntaxRole, SyntaxTree,
 };
 
 /// A second adapter that proves the multi-language seam.
@@ -320,19 +320,41 @@ fn a_source_with_too_many_lines_is_rejected_before_the_parse() {
     ));
 }
 
+/// Returns a dense literal list of one element count.
+///
+/// The Rust query captures the literal and the delimiter of each element, so
+/// one element produces two spans. That result is the densest measured density
+/// of one span for each source byte, so the source stays far below the byte
+/// bound, the line bound, and the node bound.
+fn dense_list(elements: usize) -> String {
+    format!("static VALUES: [u8; 1] = [{}];\n", "1,".repeat(elements))
+}
+
 #[test]
 fn a_source_with_too_many_spans_is_rejected_as_a_complete_result() {
-    // Each line produces several spans, so the repetition passes the span bound
-    // long before it reaches the byte bound or the line bound.
-    let source = "let alpha = beta(1, gamma);\n".repeat(20_000);
+    let source = dense_list(ANALYSIS_HIGHLIGHT_SPANS_MAX / 2 + 1024);
 
     assert!(matches!(
         analysis_error(&source),
         AnalysisError::Bounds {
             measure: BoundMeasure::HighlightSpans,
+            limit: ANALYSIS_HIGHLIGHT_SPANS_MAX,
             ..
         }
     ));
+}
+
+#[test]
+fn a_source_above_the_first_span_bound_keeps_its_highlighting() {
+    // The first bound of 100000 spans made three real files above 1.6 MiB
+    // render plain text. A denser result now returns a complete analysis.
+    let first_bound = 100_000;
+    let analysis = analyze(&buffer(&dense_list(first_bound)));
+
+    assert!(
+        analysis.highlights().len() > first_bound,
+        "the analysis publishes more spans than the first bound allowed"
+    );
 }
 
 #[test]

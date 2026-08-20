@@ -200,7 +200,11 @@ pub const ANALYSIS_NODES_MAX: usize = 1_000_000;
 pub const ANALYSIS_DEPTH_MAX: usize = 128;
 
 /// The largest number of highlight spans that one analysis publishes.
-pub const ANALYSIS_HIGHLIGHT_SPANS_MAX: usize = 100_000;
+///
+/// The densest measured real source produces one span for each 5.8 bytes, so
+/// [`ANALYSIS_SOURCE_BYTES_MAX`] produces about 727000 spans. One span holds 16
+/// bytes, so this bound retains 12 MB for one buffer.
+pub const ANALYSIS_HIGHLIGHT_SPANS_MAX: usize = 750_000;
 
 /// The deadline of one analysis on the bounded worker service.
 pub const ANALYSIS_DEADLINE: Duration = Duration::from_secs(2);

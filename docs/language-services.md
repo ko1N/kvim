@@ -265,14 +265,15 @@ agree.
 | Source lines | `ANALYSIS_SOURCE_LINES_MAX` | 100000 lines | A source file of this length already exceeds normal practice. The check runs before the parse, so a generated one-line-per-byte file fails early. |
 | Syntax nodes | `ANALYSIS_NODES_MAX` | 1000000 nodes | The densest measured source produces one node for each 5.6 bytes, so the byte limit produces about 750000 nodes. A larger tree means a pathological grammar result, not source that a reader edits. |
 | Traversal depth | `ANALYSIS_DEPTH_MAX` | 128 levels | The indent query walks ancestors, and the highlight walk stacks captures. The bound measures syntax-tree depth, not source indentation, and a generated header reaches far more levels than a reader expects. |
-| Highlight spans | `ANALYSIS_HIGHLIGHT_SPANS_MAX` | 100000 spans | The renderer reads the spans of the visible lines only, so a larger list would cost memory without improving the frame. A real file above 1.6 MiB of a heavy grammar passes the bound and renders plain text, which the section below records. |
+| Highlight spans | `ANALYSIS_HIGHLIGHT_SPANS_MAX` | 750000 spans | The densest measured real source produces one span for each 5.8 bytes, so the byte limit produces about 727000 spans. One span holds 16 bytes, so the bound retains 12 MB for one buffer, and the syntax tree of that source costs more. |
 | Analysis deadline | `ANALYSIS_DEADLINE` | 2 s | An incremental reparse and a highlight of a bounded file finish far below this value. Two seconds reports a runaway job, and highlighting is optional decoration, so a shorter deadline than the general worker deadline is safe. |
 
 The deadline belongs to the request, and the bounded worker service enforces it.
 See [`responsiveness.md`](responsiveness.md) for the worker bounds.
 
 The bounds above were sized for five small grammars. A measurement over large
-real files of the heavy grammars confirms two of them and corrects one.
+real files of the heavy grammars confirms two of them, and a second measurement
+raised the highlight-span bound.
 
 The node bound and the depth bound hold. The densest measured file is a 7.97
 MiB C++ header with one node for each 5.6 bytes, so the source-byte limit
@@ -281,16 +282,43 @@ and a 574 KiB TypeScript declaration file reaches 91 levels. Both stay below
 128 levels, but the margin is small, and a deeper real file would lose its
 indent answer for one line.
 
-The highlight-span bound is the one bound that a real file exceeds. A 1.7 MiB
-C++ header and a 1.8 MiB TypeScript declaration file each produce more than
-100000 spans. Each one therefore renders plain text. A 1.6 MiB C++ header
-produces 96319 spans and still highlights. The behavior is the documented
-oversized-analysis path below, and every such buffer stays fully editable. A
-later release measures a larger bound against the renderer memory.
+The first highlight-span bound of 100000 spans was too small. Three real files
+above 1.6 MiB exceeded it and rendered plain text. The measurement below counts
+the spans of large real files of nine grammars, and it sets the present bound.
+
+| File | Adapter | Bytes | Highlight spans | Bytes for each span |
+|---|---|---|---|---|
+| `vulkan_funcs.hpp` | cpp | 2300965 | 155076 | 14.84 |
+| `lib.dom.d.ts` | typescript | 1874901 | 116081 | 16.15 |
+| `vulkan_raii.hpp` | cpp | 1773393 | 102991 | 17.22 |
+| `vulkan_handles.hpp` | cpp | 1668256 | 96319 | 17.32 |
+| `parser.c` of tree-sitter-go | c | 1572685 | 147659 | 10.65 |
+| `tables.rs` of unicode-width | rust | 1484709 | 257191 | 5.77 |
+| `typeEvaluator.ts` of pyright | typescript | 1244484 | 130405 | 9.54 |
+| `vulkan.hpp` | cpp | 1103199 | 64379 | 17.14 |
+| `pnpm-lock.yaml` | yaml | 993669 | 74977 | 13.25 |
+
+Three results decide the value of 750000 spans.
+
+- A generated Rust table is the densest real source. It produces one span for
+  each 5.77 bytes, so a source of that density produces about 727000 spans at
+  the 4 MiB byte limit. The bound therefore holds every measured real file at
+  the largest size that kvim loads.
+- One `HighlightSpan` holds 16 bytes, so the bound retains 12 MB for one
+  buffer. The syntax tree of the same source costs more, and the session
+  already retains that tree beside the spans.
+- Every span comes from one captured node, and a line break splits one range
+  into at most one more span for each line, so the node bound already caps the
+  count. The densest source of any kind produces one span for each byte, and it
+  reaches 980011 spans before the node bound rejects it.
+
+The renderer reads the spans of the visible lines only. It finds the first span
+of one line with a binary search, so a longer list costs no frame time.
 
 Highlighting is optional decoration. Unsupported, malformed, cancelled, timed
 out, or oversized analysis renders plain text. It never changes buffer content,
-line mappings, or the cursor position.
+line mappings, or the cursor position. Every such outcome reaches the editor log
+under the `JOB` source, so a user reads why one file carries no highlighting.
 
 ## Highlight Roles
 
