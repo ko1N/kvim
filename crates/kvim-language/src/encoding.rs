@@ -102,11 +102,7 @@ impl DocumentMapping {
     /// A UTF-16 session always mirrors the text, because every conversion reads
     /// the line that its column indexes. A UTF-8 session mirrors the text only
     /// when `mirroring` asks for it.
-    pub(crate) fn new(
-        encoding: PositionEncoding,
-        mirroring: TextMirroring,
-        text: &str,
-    ) -> Self {
+    pub(crate) fn new(encoding: PositionEncoding, mirroring: TextMirroring, text: &str) -> Self {
         match (encoding, mirroring) {
             (PositionEncoding::Utf8, TextMirroring::Absent) => Self::Direct,
             (PositionEncoding::Utf8, TextMirroring::Present) => {

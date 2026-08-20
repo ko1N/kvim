@@ -383,11 +383,9 @@ escape, and a traversal component. A definition target outside the root is
 rejected and never offered. kvim validates every server-supplied range against
 the exact source bytes before it uses that range.
 
-The session sends `didOpen`, incremental `didChange`, and `didClose` for the
-buffers that it queries. It derives the changes of one `didChange` from one
-applied edit transaction, and it sends them in descending order, because the
-protocol applies them one after the other. It sends `didChange` only after an
-edit transaction completes.
+The session sends `didOpen`, `didChange`, and `didClose` for the buffers that
+it queries. It sends `didChange` only after an edit transaction completes. The
+section below owns what one `didChange` carries.
 
 The session supports diagnostics, definition, hover, and document formatting in
 the first release. It does not support completion, code actions, or symbol
@@ -416,6 +414,57 @@ A crashed server restarts a bounded number of times. The new server holds no
 document, so kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
+
+### The Document Synchronization
+
+Each server chooses what one change notification carries. The session reads the
+`textDocumentSync` capability of the `initialize` result and sends the mode that
+the server asked for. The mode belongs to one server attempt, so a restart reads
+the capability again.
+
+The capability carries one number, or one object that names that number in its
+`change` member.
+
+| Capability | Mode | What one `didChange` carries |
+|---|---|---|
+| The number 1, or the object member `change` 1 | Full | The complete text of the document, and no range. |
+| The number 2, or the object member `change` 2 | Incremental | One range and one replacement for each change. |
+| The number 0, or the object member `change` 0 | None | Nothing. The session sends no `didChange`. |
+| An object without a `change` member | None | Nothing. |
+| No capability | None | Nothing. |
+| Another number, or another type | None | Nothing. |
+
+The protocol defines the mode `None` for a result that omits the capability, and
+for an object that omits its `change` member. kvim follows both definitions,
+because a server that reads a change notification declares the mode of that
+notification. The protocol reserves no number above 2, so kvim sends nothing for
+one. A wrong number must never send a change that the server reads as another
+shape.
+
+kvim sends `didOpen` and `didClose` in every mode, because each request of the
+session names one open document. A server that asks for no synchronization
+therefore holds the text of the open. The session keeps the recorded buffer
+version on that text, so every later request of that document reports a stale
+version. No answer of that server then describes text that the buffer does not
+hold.
+
+An incremental session derives the changes of one `didChange` from one applied
+edit transaction, and it sends them in descending order, because the protocol
+applies them one after the other.
+
+A full session sends one change that carries the complete text and no range. It
+builds that text from the mirror of the document, which holds the text that the
+server still holds. It sends the text first, and it moves the mirror after the
+notification reached the server. The section on the position encoding owns the
+mirror.
+
+`sqls` answers the number 1, so its session sends the complete text of every
+change.
+
+One full change carries the text of the document, exactly as one `didOpen` does,
+so `LSP_MESSAGE_BYTES_MAX` bounds both by the same rule. A full session spends
+the cumulative `LSP_INPUT_BYTES_MAX` budget in proportion to the size of the
+document, because each change carries that text again.
 
 ### The Standard Error Of One Server
 
@@ -602,6 +651,10 @@ document that it holds open. The mirror holds the exact text that the session
 sent to the server, and each `didChange` updates it before the next conversion
 reads it. A UTF-8 session mirrors no text and pays no conversion cost.
 
+A full session mirrors the text in both encodings, because it builds the
+complete text of every change from that mirror. A UTF-8 session of such a server
+therefore holds the mirror and still converts no column.
+
 A change that the mirror cannot apply proves that the session and the server
 hold different text. The session drops that document, so no later answer of it
 carries a converted column. The editor opens the document again on the next
@@ -612,7 +665,7 @@ its line and never a walk over the document. One list of diagnostics therefore
 stays linear in the text that it marks. Each open document stays below the
 maximum file size of [`text-model.md`](text-model.md), and
 `LSP_OPEN_DOCUMENTS_MAX` bounds the documents, so the mirrors of one session
-stay bounded.
+stay bounded. The same two bounds hold for the mirror of a full session.
 
 The conversion covers both directions.
 
@@ -739,8 +792,8 @@ below must always agree.
 | Root markers of one server | `LANGUAGE_ROOT_MARKERS_MAX` | 16 markers | One linter names every file name that can hold its configuration. The reference `eslint` configuration names twelve of them, so sixteen covers that practice and still bounds the probe of one workspace. |
 | Sessions of one workspace | `LSP_SESSIONS_MAX` | 16 sessions | One workspace mixes few languages, and a session starts only when the user opens a buffer of its language. Sixteen exceeds normal practice and still bounds the child processes of one editor. |
 | Frame header | `LSP_HEADER_BYTES_MAX` | 256 B | One `Content-Length` header and one optional `Content-Type` header fit far below this value, so a header that never ends stops early. |
-| Frame body | `LSP_MESSAGE_BYTES_MAX` | 8 MiB | One `didOpen` carries a complete file. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for JSON escaping. |
-| Session input | `LSP_INPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session writes. A day of editing stays far below this value, and an unbounded write loop stops. |
+| Frame body | `LSP_MESSAGE_BYTES_MAX` | 8 MiB | One `didOpen` carries a complete file, and one full `didChange` carries the same text. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for JSON escaping. |
+| Session input | `LSP_INPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session writes. A day of editing stays far below this value for an incremental server, and an unbounded write loop stops. A full server receives the text of the document in every change, so its session spends this budget in proportion to that size. |
 | Session output | `LSP_OUTPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session reads. The value matches the input budget, so neither direction can grow without limit. |
 | Session requests | `LSP_REQUESTS_MAX` | 1,000,000 requests | One keystroke starts at most one request, so this budget covers a long session and still bounds a request loop. |
 | Session messages | `LSP_MESSAGES_MAX` | 4,000,000 messages | A server sends progress and diagnostics without a request, so the message budget is larger than the request budget. |
