@@ -37,7 +37,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
 | `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. |
-| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, the language-server session, the markup document of one server answer, and the external formatter. The registry holds 25 adapters. Every adapter declares at least one language server, and 20 of them also declare an external formatter. [`language-services.md`](language-services.md) owns the table. |
+| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, the language-server session, the markup document of one server answer with the highlighted code of its fences, and the external formatter. The registry holds 25 adapters. Every adapter declares at least one language server, and 20 of them also declare an external formatter. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
@@ -305,7 +305,12 @@ These dependencies run only in the bounded language-server task.
     closes.
   - May run: in the markup module of `kvim-language` only. No type of the crate
     leaves that module, so the dependency stays at one boundary. The parse is
-    pure and bounded, so the terminal event loop may run it.
+    pure and bounded, so the terminal event loop may run it. The parse of one
+    hover answer still runs off that loop, because the code of a fence takes
+    the Tree-sitter highlight of its language, and only a crate below
+    `kvim-tui` may hold a grammar and select by a language name. The document
+    is complete when it leaves `kvim-language`, and `kvim-tui` paints it. See
+    [`language-services.md`](language-services.md).
   - Cost: compile time, and one further crate in the build, `unicase`. Every
     other dependency of the crate already stands in the lock file. One parse
     reads at most `MARKUP_SOURCE_BYTES_MAX` bytes, so it costs one pass over a

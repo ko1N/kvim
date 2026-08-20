@@ -7,7 +7,9 @@ analysis, the language-server session, the position encoding of that session,
 the markup document of one server answer, and the external formatter. All
 language work runs off the terminal event loop through bounded runtime
 services. The markup parse is the one exception: it reads a bounded text, it
-touches no process and no file, so the event loop may run it. See
+touches no process and no file, so the event loop may run it. The exception
+covers the markdown parse alone. The highlight of one fence is Tree-sitter
+work, so it runs off the loop like every other analysis. See
 [`responsiveness.md`](responsiveness.md).
 
 ## Language Adapter Boundary
@@ -538,7 +540,7 @@ parse also measures no terminal cell, because `unicode-width` runs in
 `kvim-tui` only. The document therefore holds text, roles, and structure, and
 the renderer holds every glyph, every width, and every color. The fence of a
 code block names a language as well, and only a language adapter may select a
-path by language, so a later highlighter of a fence stays inside this crate. The
+path by language, so the highlighter of a fence stays inside this crate. The
 language name key of the registry answers that name.
 
 The parse is pure. It reads no clock, no environment, and no file, so one text
@@ -553,7 +555,7 @@ and the content inside it.
 |---|---|---|
 | Prose | One styled text | One paragraph or one list item wraps at the width that the renderer gives it. |
 | Heading | One level and one styled text | The level names the rank of the heading. The renderer chooses the marker and the style of that rank. |
-| Code | One info string and the source lines | A code line must not wrap, because a wrap moves the rest of the line under its own indentation. The info string names the language of the fence. |
+| Code | One info string, the source lines, and the highlight spans of those lines | A code line must not wrap, because a wrap moves the rest of the line under its own indentation. The info string names the language of the fence, and the spans name the syntax roles of its code. |
 | Rule | Nothing | A thematic break separates two parts of an answer. The renderer draws it, because a glyph and a width are presentation. |
 
 One styled text is one string and a sequence of runs that partition it. A run
@@ -606,6 +608,55 @@ A fence that opens and never closes is already a code block, because CommonMark
 closes it at the end of the text. A hover answer arrives complete, so the parse
 needs no further rule for an incomplete document.
 
+#### The Highlight Of One Fence
+
+A fence names its language, so the code of a fence carries the syntax roles that
+the same code carries in a buffer. One text therefore reads the same in a hover
+answer and in an open file.
+
+The document holds the spans of each fence beside its lines. One span addresses
+the line by its index inside the fence and the range by its bytes inside that
+line, exactly as one span of a buffer does, so the renderer paints a fence
+through the mapping that already paints a buffer. `kvim-tui` keeps every color.
+
+The highlight reads the language name of the info string, selects the adapter of
+that name, and collects the spans of the one highlighter that also serves a
+buffer. kvim holds one highlighter, so a fence needs no second one. The reader
+of the fence extracts the name, because no code above the adapter boundary may
+match a language name.
+
+A fence that names no language, a fence that names a language that no adapter
+declares, and a fence that passes one bound all keep every line and carry no
+span. None of these is a failure. A server may write any info string, and a
+fence without a span reads as plain code, which is the state that every fence
+had before this work.
+
+The highlight is Tree-sitter work, so the terminal event loop must never run it.
+Two shapes serve that rule. The editor can highlight the answer where it
+arrives, off the loop, and let the float paint a finished value. The editor can
+also ask for the highlight as a bounded worker job, paint the fence plain until
+the job answers, and repaint once.
+
+kvim highlights the answer where it arrives. The measurement decides it: one
+real rust-analyzer hover answer of two fences costs about 68 microseconds of
+highlight work in a release build, and one fence at the source bound costs about
+1.4 milliseconds. The answer already travels the language-server task, which is
+off the loop, so that task absorbs the work and the reader sees one finished
+float. A worker job would add one queue, one identity, one deadline, and one
+repaint for work that costs less than a tenth of one frame.
+
+The first fence of one language compiles the highlight query of its grammar,
+which costs about 13 milliseconds. That cost falls once for each grammar of the
+build, the analysis of a buffer shares the compiled result, and it also falls
+off the loop.
+
+The markdown parse of one hover answer therefore moves down beside the analysis,
+into `kvim-language`. `kvim-tui` is the layer above, and it renders on the
+terminal event loop, so a document that it parses itself could carry no span.
+[`architecture.md`](architecture.md) owns the layer table, and the direction
+stays one-way: the answer arrives in `kvim-language`, the document is complete
+when it leaves, and `kvim-tui` paints it.
+
 #### The Bounds Of One Document
 
 | Bound | Constant | Value | Rationale |
@@ -614,11 +665,19 @@ needs no further rule for an incomplete document.
 | Blocks of one document | `MARKUP_BLOCKS_MAX` | 256 blocks | One block needs at least one character of its own, so a source of the bound above holds far more blocks than a float shows. The float shows at most `FLOAT_ROWS_MAX` rows, so 256 blocks exceed one float many times. |
 | Pieces of one document | `MARKUP_PIECES_MAX` | 2,048 pieces | One piece is one stretch of text that the parse appends in one role, and one line of a code block counts as one piece. The parse tests the count before each event, so the bound stops it between two events. The lines of one code block join the count when that block closes, so they stop the parse after it and never inside it. `MARKUP_SOURCE_BYTES_MAX` bounds the lines of one such block. |
 | Containers of one block | `MARKUP_NESTING_DEPTH_MAX` | 8 containers | A quote inside a quote inside a list indents the text of a block, and a server can nest without a limit. A container below this depth adds no further prefix, so the text still reaches the screen and the prefix cannot consume the whole width. |
+| Source of one highlighted fence | `MARKUP_FENCE_SOURCE_BYTES_MAX` | 4 KiB | The float shows at most `FLOAT_ROWS_MAX` rows of `FLOAT_COLUMNS_MAX` cells, which is about 1536 bytes of source, so this bound holds every fence that a reader can see more than twice over. One fence of this size costs about 1.4 milliseconds of highlight work in a release build. |
+| Spans of one fence | `MARKUP_FENCE_SPANS_MAX` | 2,048 spans | A dense measured fence of 4061 bytes produces 918 spans, which is one span for each 4.4 bytes. The bound holds one span for each two bytes of the source bound above, so no real fence reaches it. One span holds 16 bytes, so the bound retains 32 KiB for one fence. |
+| Highlighted fences of one document | `MARKUP_FENCES_MAX` | 16 fences | `MARKUP_SOURCE_BYTES_MAX` already bounds the text of every fence together, and this bound holds the setup cost of one highlight, which the source bound does not hold. That cost measures about 1.4 microseconds for a fence that holds no line. A fence occupies at least one row of the float, and one blank row stands above it, so a float of 16 rows shows at most 8 fences. |
 
 The parse stops at the first bound that it reaches, and the document then
 reports that it is clipped. The rest of the source does not reach the value,
 because the float shows at most `FLOAT_ROWS_MAX` rows and already reports that
 it hides content.
+
+The three fence bounds degrade one fence and never the document. A fence above
+one of them keeps every line and carries no span, so it reads as plain code and
+the document reports no clip for it. A fence that reaches the span bound carries
+no span at all, because kvim publishes no partial result.
 
 ### The Document Synchronization
 
