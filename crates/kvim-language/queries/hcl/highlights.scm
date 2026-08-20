@@ -1,10 +1,10 @@
-; The highlight query of the HCL grammar, which Kvim uses for Terraform.
+; The highlight query of the HCL grammar, which kvim uses for Terraform.
 ;
 ; Origin: nvim-treesitter, runtime/queries/hcl/highlights.scm.
 ; Upstream: https://github.com/nvim-treesitter/nvim-treesitter
 ; License: Apache License 2.0.
 ;
-; The `tree-sitter-hcl` crate ships no query file, so Kvim vendors this text.
+; The `tree-sitter-hcl` crate ships no query file, so kvim vendors this text.
 ; Every pattern below is the upstream text without a change.
 ;
 ; highlights.scm
