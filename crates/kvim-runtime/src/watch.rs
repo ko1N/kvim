@@ -159,7 +159,8 @@ pub const fn watch_limit_setting() -> Option<&'static str> {
 ///
 /// The two causes need two different actions. The host refuses a watch at a
 /// limit of the host, which the user raises. A bound of this module stops the
-/// walk of a very large tree, which the user cannot raise and reads by hand.
+/// walk of a very large tree, of a very deep tree, and of a very large
+/// directory, which the user cannot raise and reads by hand.
 ///
 /// # Examples
 ///
@@ -352,11 +353,12 @@ struct WalkOutcome {
     /// Every kept directory that the walk reached, in the order that it read
     /// them.
     directories: Vec<PathBuf>,
-    /// Whether the directory bound or the depth bound left a kept directory
-    /// out of the walk.
+    /// Whether a bound of this module left a kept directory out of the walk.
     ///
-    /// The scan bound of one directory read leaves no report. A directory above
-    /// [`WATCH_DIRECTORY_SCAN_MAX`] entries loses the entries after that count.
+    /// The directory bound, the depth bound, and the scan bound of one
+    /// directory read all report here. A directory above
+    /// [`WATCH_DIRECTORY_SCAN_MAX`] entries loses the entries after that count,
+    /// so that loss is the same gap and needs the same manual refresh.
     truncated: bool,
 }
 
@@ -377,16 +379,17 @@ struct WalkOutcome {
 /// no link builds a cycle and no tree is watched twice.
 ///
 /// The walk returns at most `limit` directories, it reaches at most
-/// [`WATCH_DEPTH_MAX`] levels below the root, and it reads at most
+/// [`WATCH_DEPTH_MAX`] levels below the root, and it keeps at most
 /// [`WATCH_DIRECTORY_SCAN_MAX`] entries of one directory, so a very large tree
 /// costs bounded time.
 ///
-/// The directory bound and the depth bound both report
+/// The directory bound, the depth bound, and the scan bound all report
 /// [`WalkOutcome::truncated`] when they leave one kept directory out. The walk
 /// reads a directory at the depth bound to answer that question, and it stops
 /// that read at the first kept directory below the bound, so an exactly deep
-/// tree reports no gap of its own. The scan bound of one directory read reports
-/// nothing, so a directory above that many entries loses the rest in silence.
+/// tree reports no gap of its own. The walk reads one entry past the scan bound
+/// for the same reason, so a directory of exactly that many entries reports no
+/// gap either.
 ///
 /// A `start` outside `root` returns no directory. The platform names the
 /// watched root itself when that root disappears, and the burst then names the
@@ -423,7 +426,21 @@ fn unregistered_directories(
             // its parent still reports every change of the directory itself.
             continue;
         };
-        for entry in listing.take(WATCH_DIRECTORY_SCAN_MAX).flatten() {
+        // The count holds every entry that the read returned, so an unreadable
+        // entry costs the same bound as a readable one.
+        let mut scanned = 0_usize;
+        for entry in listing {
+            if scanned >= WATCH_DIRECTORY_SCAN_MAX {
+                // The scan bound ends this read, so every entry after it
+                // carries no watch. The user raises no bound of this module,
+                // so the gap needs the same manual refresh as the other two.
+                outcome.truncated = true;
+                break;
+            }
+            scanned = scanned.saturating_add(1);
+            let Ok(entry) = entry else {
+                continue;
+            };
             if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
@@ -1610,6 +1627,37 @@ mod tests {
         assert!(
             walk.truncated,
             "the directory bound left one directory without a watch"
+        );
+    }
+
+    #[test]
+    fn a_walk_of_a_directory_above_the_scan_bound_reports_the_gap() {
+        let tree = TempTree::new("wide-directory");
+        let wide = tree.dir("wide");
+        for index in 0..WATCH_DIRECTORY_SCAN_MAX {
+            fs::write(wide.join(index.to_string()), "")
+                .expect("the temporary directory is writable");
+        }
+
+        // One read returns every entry of a directory at exactly the bound, so
+        // that directory loses nothing and reports no gap.
+        assert!(
+            !tree.walk(&BTreeSet::new()).truncated,
+            "a directory of exactly the scan bound keeps every entry"
+        );
+
+        fs::write(wide.join(WATCH_DIRECTORY_SCAN_MAX.to_string()), "")
+            .expect("the temporary directory is writable");
+        let walk = tree.walk(&BTreeSet::new());
+
+        assert!(
+            walk.truncated,
+            "the scan bound left the entries after the bound out of the walk"
+        );
+        assert_eq!(
+            walk.directories.len(),
+            2,
+            "the walk keeps the root and the wide directory below it"
         );
     }
 
