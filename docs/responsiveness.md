@@ -141,6 +141,13 @@ it opens its stream, which asks the sidebar to read every expanded directory
 again. A change inside the window reaches the editor through that read, so the
 deferred registration loses no change. [`files.md`](files.md) owns the rule.
 
+That opening burst also carries the coverage of the registration. A registration
+that covers a part of the workspace therefore reports itself with the first
+published value, and the editor shows that report on the next frame. The report
+needs no second mechanism and no second frame. Every later batch reports its own
+coverage with the burst of the same window. [`files.md`](files.md) owns the
+rule and the once-for-each-session limit of that report.
+
 The watcher performs one further read for each burst. A watch covers one
 directory alone, so a directory that appeared after the last walk needs its own
 watch. The coalescing task reads every directory that the burst names, walks

@@ -292,7 +292,9 @@ async fn drive<C: TerminalControl>(
     // frame. That task then reports the window that no watch covered, and the
     // burst that reports it reads the workspace again.
     // A host that refuses the watch leaves the editor fully usable with the
-    // refresh command. See `docs/files.md` and `docs/responsiveness.md`.
+    // refresh command. A registration that covers a part of the workspace
+    // reports that state with the burst that opens the stream.
+    // See `docs/files.md` and `docs/responsiveness.md`.
     let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
     if watcher.is_none() {
         let _ = editor.report_watch_unavailable();

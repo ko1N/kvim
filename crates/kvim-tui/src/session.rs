@@ -54,7 +54,7 @@ use kvim_language::{
     HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
     LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, SyntaxTree,
 };
-use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch};
+use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
@@ -855,10 +855,13 @@ pub struct Session {
     /// A missing command is a normal state, so the editor reports it once and
     /// stays usable without the repository state. See `docs/git.md`.
     git_reported: bool,
-    /// Reports whether the editor already named the missing workspace watcher.
+    /// Reports whether the editor already named the state of the watcher.
     ///
     /// A host that refuses the watch is a normal state, so the editor reports
-    /// it once and stays usable with the manual refresh. See `docs/files.md`.
+    /// it once and stays usable with the manual refresh. The missing watcher
+    /// and the workspace that carries a watch in part share this flag, so one
+    /// session shows one watch report and a later burst adds no noise. See
+    /// `docs/files.md`.
     watch_reported: bool,
     editing: EditingState,
     registers: Registers,
@@ -3123,12 +3126,15 @@ impl Session {
     /// its file, because a content change names no path and a removed file
     /// names only its directory. The buffers change when that check returns.
     /// See `docs/files.md`.
+    ///
+    /// The burst carries the part of the workspace that carries no watch, so
+    /// this call also reports a registration that covers the workspace in part.
     #[must_use]
     pub fn apply_watch_batch(&mut self, batch: &WatchBatch) -> Redraw {
         self.tree.apply_watch(batch);
         self.reconcile_tree();
         self.start_watch_reload();
-        Redraw::Skipped
+        self.report_watch_coverage(batch.coverage())
     }
 
     /// Reports that no watcher observes the workspace, once for each session.
@@ -3142,6 +3148,30 @@ impl Session {
         }
         self.watch_reported = true;
         self.set_message(WATCH_MISSING_NOTE, MessageLevel::Warning);
+        Redraw::Needed
+    }
+
+    /// Reports a workspace that carries a watch in part, once for each session.
+    ///
+    /// A registration that covers the whole workspace reports nothing. Every
+    /// other registration names its cause, because the watch limit of the host
+    /// and the bound of the editor need two different actions. The editor stays
+    /// fully usable in both cases, and the refresh command reads the workspace
+    /// again by hand.
+    ///
+    /// The report shares the flag of the missing watcher, so one session shows
+    /// one watch report and every later burst stays quiet. See
+    /// `docs/files.md`.
+    #[must_use]
+    fn report_watch_coverage(&mut self, coverage: WatchCoverage) -> Redraw {
+        if coverage.is_complete() || self.watch_reported {
+            return Redraw::Skipped;
+        }
+        self.watch_reported = true;
+        self.set_message(
+            watch_coverage_note(coverage, watch_limit_setting()),
+            MessageLevel::Warning,
+        );
         Redraw::Needed
     }
 
@@ -4414,6 +4444,39 @@ const GIT_MISSING_NOTE: &str =
 /// The message that a refused workspace watch shows once for each session.
 const WATCH_MISSING_NOTE: &str =
     "the workspace watcher could not start; the file tree updates on a refresh";
+
+/// The action that a workspace without a complete watch always offers.
+const WATCH_REFRESH_ACTION: &str = "the file tree updates on a refresh";
+
+/// Returns the report of a workspace that carries a watch in part.
+///
+/// The note names the cause first, because the message line shows the start of
+/// a long report. The host refuses a watch at a limit that `setting` names, and
+/// the user raises that limit. A bound of the editor needs no setting, because
+/// the refresh command reads the workspace by hand.
+///
+/// A platform that publishes no name of its watch limit still reports the
+/// refusal and its cause. See `docs/files.md`.
+pub(super) fn watch_coverage_note(coverage: WatchCoverage, setting: Option<&str>) -> String {
+    debug_assert!(
+        !coverage.is_complete(),
+        "a complete registration reports nothing"
+    );
+    let mut causes: Vec<String> = Vec::new();
+    if coverage.refused > 0 {
+        let refused = coverage.refused;
+        causes.push(format!("the host refused {refused} workspace watches"));
+    }
+    if coverage.truncated {
+        causes.push("the workspace passes the watch bounds of the editor".to_owned());
+    }
+    let action = match (coverage.at_limit, setting) {
+        (true, Some(setting)) => format!("raise `{setting}`"),
+        (true, None) => "raise the watch limit of the host".to_owned(),
+        (false, _) => WATCH_REFRESH_ACTION.to_owned(),
+    };
+    format!("{}; {action}", causes.join(" and "))
+}
 
 /// The title band of the hover float.
 const HOVER_TITLE: &str = " Hover ";

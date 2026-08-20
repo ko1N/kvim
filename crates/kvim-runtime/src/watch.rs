@@ -19,17 +19,24 @@
 //! [`FileWatcher::start`], so the consumer draws its first frame before the
 //! first watch exists. No watch covers that window, so the first published
 //! burst reports [`WatchFidelity::Dropped`] as a full queue does.
+//!
+//! One registration can leave a part of the workspace without a watch. The
+//! platform refuses a watch at a limit of the host, and a bound of this module
+//! stops the walk of a very large tree. Every burst therefore carries one
+//! [`WatchCoverage`], which names the gap and its cause, so the consumer keeps
+//! every feature and still knows what the watch does not cover.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use notify::event::{EventKind, ModifyKind};
-use notify::{Config, RecommendedWatcher, RecursiveMode, Watcher};
+use notify::{Config, ErrorKind, RecommendedWatcher, RecursiveMode, Watcher};
 use thiserror::Error;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -123,6 +130,75 @@ pub enum WatchFidelity {
     Dropped,
 }
 
+/// Returns the name of the host setting that bounds the number of watches.
+///
+/// A host that refuses a watch needs an action of the user, so the report of
+/// that refusal names the setting that holds the limit. This module is the one
+/// portable boundary of the watcher, so the name never reaches a consumer as a
+/// platform branch. A platform that publishes no such name returns `None`, and
+/// the report then names the limit alone.
+///
+/// See `docs/files.md`.
+#[must_use]
+pub const fn watch_limit_setting() -> Option<&'static str> {
+    #[cfg(target_os = "linux")]
+    {
+        Some("fs.inotify.max_user_watches")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
+/// The part of the workspace that carries no watch.
+///
+/// The default value names no gap, so a registration that covers the whole
+/// workspace reports nothing. Every burst carries the coverage of the
+/// registration that ran before it.
+///
+/// The two causes need two different actions. The host refuses a watch at a
+/// limit of the host, which the user raises. A bound of this module stops the
+/// walk of a very large tree, which the user cannot raise and reads by hand.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_runtime::WatchCoverage;
+///
+/// assert!(WatchCoverage::default().is_complete());
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WatchCoverage {
+    /// The number of directories that the platform refused to watch.
+    ///
+    /// A directory that another program removed between the walk and the watch
+    /// call counts nothing. That directory holds no entry to watch, and its
+    /// parent still reports the removal.
+    pub refused: usize,
+    /// Whether the watch limit of the host caused at least one refusal.
+    ///
+    /// [`watch_limit_setting`] names the setting that holds that limit.
+    pub at_limit: bool,
+    /// Whether a bound of this module stopped the walk of the workspace.
+    pub truncated: bool,
+}
+
+impl WatchCoverage {
+    /// Reports whether every directory of the workspace carries one watch.
+    #[must_use]
+    pub const fn is_complete(self) -> bool {
+        self.refused == 0 && !self.truncated
+    }
+
+    /// Adds every gap of `other` to the gaps of this value.
+    const fn merge(&mut self, other: Self) {
+        self.refused = self.refused.saturating_add(other.refused);
+        self.at_limit |= other.at_limit;
+        self.truncated |= other.truncated;
+    }
+}
+
 /// The coalesced filesystem changes of one window.
 ///
 /// The value is the whole result of one burst: the directories whose listing may
@@ -155,6 +231,7 @@ pub struct WatchBatch {
     directories: BTreeSet<PathBuf>,
     content_changed: bool,
     fidelity: WatchFidelity,
+    coverage: WatchCoverage,
 }
 
 impl WatchBatch {
@@ -189,6 +266,20 @@ impl WatchBatch {
     /// Records that a bound dropped at least one event of this burst.
     pub const fn drop_events(&mut self) {
         self.fidelity = WatchFidelity::Dropped;
+    }
+
+    /// Records the part of the workspace that carries no watch.
+    ///
+    /// The registration that ran before this burst produces the value, so the
+    /// burst that opens the stream carries the coverage of the first walk.
+    pub const fn set_coverage(&mut self, coverage: WatchCoverage) {
+        self.coverage = coverage;
+    }
+
+    /// Returns the part of the workspace that carries no watch.
+    #[must_use]
+    pub const fn coverage(&self) -> WatchCoverage {
+        self.coverage
     }
 
     /// Returns the directories whose listing may have changed, in path order.
@@ -256,6 +347,15 @@ pub fn is_ignored(root: &Path, path: &Path, ignored: &[&str]) -> bool {
     })
 }
 
+/// The directories of one walk, and whether a bound stopped that walk.
+struct WalkOutcome {
+    /// Every kept directory that the walk reached, in the order that it read
+    /// them.
+    directories: Vec<PathBuf>,
+    /// Whether a bound of this module left a kept directory out of the walk.
+    truncated: bool,
+}
+
 /// Returns `start` and every kept directory below it that `registered` misses.
 ///
 /// The walk always reads `start`, so a directory that already carries a watch
@@ -277,6 +377,11 @@ pub fn is_ignored(root: &Path, path: &Path, ignored: &[&str]) -> bool {
 /// [`WATCH_DIRECTORY_SCAN_MAX`] entries of one directory, so a very large tree
 /// costs bounded time.
 ///
+/// A bound that leaves one kept directory out reports
+/// [`WalkOutcome::truncated`]. The walk reads a directory at the depth bound to
+/// answer that question, and it stops that read at the first kept directory
+/// below the bound, so an exactly deep tree reports no gap of its own.
+///
 /// A `start` outside `root` returns no directory. The platform names the
 /// watched root itself when that root disappears, and the burst then names the
 /// directory above the root, which no workspace watch covers.
@@ -286,25 +391,27 @@ fn unregistered_directories(
     ignored: &[&str],
     registered: &BTreeSet<PathBuf>,
     limit: usize,
-) -> Vec<PathBuf> {
-    let mut directories = Vec::new();
+) -> WalkOutcome {
+    let mut outcome = WalkOutcome {
+        directories: Vec::new(),
+        truncated: false,
+    };
     let Ok(relative) = start.strip_prefix(root) else {
         // A start outside the watched root belongs to no workspace directory.
-        return directories;
+        return outcome;
     };
     let start_depth = relative.components().count();
     if start_depth > WATCH_DEPTH_MAX || limit == 0 {
-        return directories;
+        // A bound of this module stops the walk before it reads one directory.
+        outcome.truncated = true;
+        return outcome;
     }
     if !registered.contains(start) && !is_ignored(root, start, ignored) {
-        directories.push(start.to_path_buf());
+        outcome.directories.push(start.to_path_buf());
     }
     let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
     queue.push_back((start.to_path_buf(), start_depth));
     while let Some((directory, depth)) = queue.pop_front() {
-        if depth >= WATCH_DEPTH_MAX {
-            continue;
-        }
         let Ok(listing) = fs::read_dir(&directory) else {
             // An unreadable directory reports no change of its own entries, and
             // its parent still reports every change of the directory itself.
@@ -323,14 +430,48 @@ fn unregistered_directories(
             if registered.contains(&path) {
                 continue;
             }
-            if directories.len() >= limit {
-                return directories;
+            if depth >= WATCH_DEPTH_MAX {
+                // The depth bound stops the walk here, and this directory names
+                // the part of the tree that carries no watch.
+                outcome.truncated = true;
+                break;
             }
-            directories.push(path.clone());
+            if outcome.directories.len() >= limit {
+                outcome.truncated = true;
+                return outcome;
+            }
+            outcome.directories.push(path.clone());
             queue.push_back((path, depth.saturating_add(1)));
         }
     }
-    directories
+    outcome
+}
+
+/// Returns the gap that one refused directory adds to the registration.
+///
+/// A path that no longer exists adds no gap. Another program may remove one
+/// directory between the walk and the watch call, and the parent of that
+/// directory still reports the removal.
+///
+/// The watch limit of the host is the one cause that the user raises, so the
+/// value keeps that cause apart from every other refusal.
+fn refusal(error: &notify::Error) -> WatchCoverage {
+    match &error.kind {
+        ErrorKind::PathNotFound => WatchCoverage::default(),
+        ErrorKind::Io(failure) if failure.kind() == io::ErrorKind::NotFound => {
+            WatchCoverage::default()
+        }
+        ErrorKind::MaxFilesWatch => WatchCoverage {
+            refused: 1,
+            at_limit: true,
+            truncated: false,
+        },
+        _ => WatchCoverage {
+            refused: 1,
+            at_limit: false,
+            truncated: false,
+        },
+    }
 }
 
 /// The values that one registration needs, before that registration runs.
@@ -372,6 +513,9 @@ impl Registration {
     /// Every watch covers one directory alone, so the platform adds no watch of
     /// its own below an ignored name.
     ///
+    /// Returns the registration and the part of the workspace that carries no
+    /// watch, so the burst that follows the registration names every gap.
+    ///
     /// # Errors
     ///
     /// Returns [`WatchError::Start`] when the platform refuses the root or the
@@ -382,8 +526,8 @@ impl Registration {
         watcher: RecommendedWatcher,
         root: PathBuf,
         ignored: &'static [&'static str],
-    ) -> Result<Self, WatchError> {
-        let directories = unregistered_directories(
+    ) -> Result<(Self, WatchCoverage), WatchError> {
+        let walk = unregistered_directories(
             &root,
             &root,
             ignored,
@@ -396,8 +540,11 @@ impl Registration {
             directories: BTreeSet::new(),
             watcher,
         };
-        registration.add(&directories).map_err(WatchError::Start)?;
-        Ok(registration)
+        let mut coverage = registration
+            .add(&walk.directories)
+            .map_err(WatchError::Start)?;
+        coverage.truncated |= walk.truncated;
+        Ok((registration, coverage))
     }
 
     /// Adds one watch for each kept directory that appeared below `changed`.
@@ -414,25 +561,39 @@ impl Registration {
     ///
     /// A directory that disappeared between the burst and the batch produces no
     /// entry, because its read fails and its parent still reports its removal.
-    fn extend(&mut self, changed: &[PathBuf]) {
+    ///
+    /// Returns the part of this batch that carries no watch, so the burst of
+    /// the same window names every gap that the batch left.
+    fn extend(&mut self, changed: &[PathBuf]) -> WatchCoverage {
+        let mut coverage = WatchCoverage::default();
         let mut additions: Vec<PathBuf> = Vec::new();
         for directory in changed {
             let held = self.directories.len().saturating_add(additions.len());
             let limit = WATCH_DIRECTORIES_MAX.saturating_sub(held);
             if limit == 0 {
+                coverage.truncated = true;
                 break;
             }
-            additions.extend(unregistered_directories(
+            let walk = unregistered_directories(
                 &self.root,
                 directory,
                 self.ignored,
                 &self.directories,
                 limit,
-            ));
+            );
+            coverage.truncated |= walk.truncated;
+            additions.extend(walk.directories);
         }
         // A failed batch adds no directory to the set, so the next burst that
         // names the same parent tries again.
-        let _ = self.add(&additions);
+        let Ok(refused) = self.add(&additions) else {
+            // The platform refused the whole batch, so every directory of this
+            // batch stays without a watch.
+            coverage.refused = coverage.refused.saturating_add(additions.len());
+            return coverage;
+        };
+        coverage.merge(refused);
+        coverage
     }
 
     /// Applies one batch of watches and records the directories that it covers.
@@ -440,9 +601,19 @@ impl Registration {
     /// The call adds every path in one batch and applies the batch once, because
     /// a platform that keeps one event stream stops that stream while the batch
     /// is open and rebuilds it on the apply. An empty batch opens no stream.
-    fn add(&mut self, directories: &[PathBuf]) -> Result<(), notify::Error> {
+    ///
+    /// Returns the directories that the platform refused, and whether the watch
+    /// limit of the host caused one of those refusals. A directory that
+    /// disappeared between the walk and this call names no gap.
+    ///
+    /// # Errors
+    ///
+    /// Returns the error of the root, because a root without a watch reports no
+    /// change at all, and the error of the applied batch.
+    fn add(&mut self, directories: &[PathBuf]) -> Result<WatchCoverage, notify::Error> {
+        let mut coverage = WatchCoverage::default();
         if directories.is_empty() {
-            return Ok(());
+            return Ok(coverage);
         }
         let mut paths = self.watcher.paths_mut();
         for directory in directories {
@@ -454,11 +625,12 @@ impl Registration {
             }
             // Another program may remove one directory between the walk and
             // this call. The parent of that directory still reports the
-            // removal.
+            // removal, so that directory names no gap.
+            coverage.merge(refusal(&error));
         }
         paths.commit()?;
         self.directories.extend(directories.iter().cloned());
-        Ok(())
+        Ok(coverage)
     }
 }
 
@@ -526,6 +698,12 @@ impl FileWatcher {
     /// registration. The task publishes one burst of [`WatchFidelity::Dropped`]
     /// as it opens the stream, so the consumer reads the whole workspace again
     /// and a change inside the window reaches it through that read.
+    ///
+    /// That burst also carries the [`WatchCoverage`] of the registration. A
+    /// host that refuses a watch, and a workspace above the bounds of this
+    /// module, both leave a part of the tree without a watch. The consumer
+    /// reads the gap and its cause from the first published value, and it stays
+    /// fully usable in both cases.
     ///
     /// `ignored` names the directory names that produce no event, such as a
     /// build output directory. The table limits the registration and the
@@ -645,6 +823,12 @@ impl FileWatcher {
 /// it reaches a watch, and a change inside the window reaches the consumer
 /// through that read.
 ///
+/// The opening burst also carries the [`WatchCoverage`] of the registration,
+/// so a registration that covers a part of the workspace reaches the consumer
+/// with the first published value, before any change of the user. Every later
+/// burst carries the coverage of its own batch, so a later registration reports
+/// its gap as well.
+///
 /// A registration that the platform refuses ends the task, which closes the
 /// published stream. The consumer then reports that no watcher runs.
 async fn watch(
@@ -654,7 +838,7 @@ async fn watch(
     cancellation: CancellationToken,
     pending: PendingRegistration,
 ) {
-    let Some(registration) = register(&cancellation, pending).await else {
+    let Some((registration, coverage)) = register(&cancellation, pending).await else {
         // The registration dropped the platform watcher, which ends its
         // callback thread. This task then drops the publisher, so the consumer
         // reads the end of the stream after that thread ended.
@@ -662,6 +846,7 @@ async fn watch(
     };
     let mut opening = WatchBatch::default();
     opening.drop_events();
+    opening.set_coverage(coverage);
     if publisher.try_send(opening).is_err() {
         // The queue is empty here, so only a gone consumer refuses the burst.
         return;
@@ -675,6 +860,9 @@ async fn watch(
 /// The terminal event loop performs neither, and the caller of
 /// [`FileWatcher::start`] waits for neither.
 ///
+/// Returns the registration and the part of the workspace that carries no
+/// watch, so the burst that opens the stream names every gap of the first walk.
+///
 /// Returns `None` when the platform refuses the root, when the blocking thread
 /// ends without a value, and after a cancellation. Every path drops the platform
 /// watcher, which ends its callback thread.
@@ -685,7 +873,7 @@ async fn watch(
 async fn register(
     cancellation: &CancellationToken,
     pending: PendingRegistration,
-) -> Option<Registration> {
+) -> Option<(Registration, WatchCoverage)> {
     let PendingRegistration {
         watcher,
         root,
@@ -697,13 +885,13 @@ async fn register(
         // watcher, so no event can reach any queue.
         return None;
     };
-    let registration = outcome.ok()?;
+    let (registration, coverage) = outcome.ok()?;
     if cancellation.is_cancelled() {
         // The caller stopped the watch while the registration ran, so the
         // registration drops here and its watches end with it.
         return None;
     }
-    Some(registration)
+    Some((registration, coverage))
 }
 
 /// Collects the platform events of one window into one published burst.
@@ -715,7 +903,8 @@ async fn register(
 /// that appeared after the start. It adds them before it publishes the burst
 /// that named the parent of that directory. The consumer then reads the parent
 /// while the new watch already runs, so no change escapes both the read and the
-/// watch.
+/// watch. The burst carries the coverage of that batch, so a later registration
+/// that the host refuses reaches the consumer as the first one does.
 async fn coalesce(
     mut raw: mpsc::Receiver<WatchEvent>,
     dropped: Arc<AtomicUsize>,
@@ -763,9 +952,9 @@ async fn coalesce(
         if !changed.is_empty() {
             // The walk and the platform call both block, so they run on a
             // blocking thread. The terminal event loop performs neither.
-            let Ok(next) = tokio::task::spawn_blocking(move || {
-                registration.extend(&changed);
-                registration
+            let Ok((next, coverage)) = tokio::task::spawn_blocking(move || {
+                let coverage = registration.extend(&changed);
+                (registration, coverage)
             })
             .await
             else {
@@ -774,6 +963,7 @@ async fn coalesce(
                 return;
             };
             registration = next;
+            batch.set_coverage(coverage);
         }
 
         if publisher.try_send(batch).is_err() {
@@ -856,26 +1046,33 @@ mod tests {
             self.unregistered(&BTreeSet::new())
         }
 
-        /// Returns the directories that one walk of the root would still add.
-        ///
-        /// The names are relative to the root, and the root itself carries the
-        /// empty name, so a caller reads the whole addition from one list.
-        fn unregistered(&self, registered: &BTreeSet<PathBuf>) -> Vec<String> {
-            let mut names: Vec<String> = unregistered_directories(
+        /// Returns one complete walk of the root, with its truncation.
+        fn walk(&self, registered: &BTreeSet<PathBuf>) -> WalkOutcome {
+            unregistered_directories(
                 &self.path,
                 &self.path,
                 &IGNORED,
                 registered,
                 WATCH_DIRECTORIES_MAX,
             )
-            .iter()
-            .map(|path| {
-                path.strip_prefix(&self.path)
-                    .expect("every watched directory lies below the root")
-                    .to_string_lossy()
-                    .replace('\\', "/")
-            })
-            .collect();
+        }
+
+        /// Returns the directories that one walk of the root would still add.
+        ///
+        /// The names are relative to the root, and the root itself carries the
+        /// empty name, so a caller reads the whole addition from one list.
+        fn unregistered(&self, registered: &BTreeSet<PathBuf>) -> Vec<String> {
+            let mut names: Vec<String> = self
+                .walk(registered)
+                .directories
+                .iter()
+                .map(|path| {
+                    path.strip_prefix(&self.path)
+                        .expect("every watched directory lies below the root")
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect();
             names.sort();
             names
         }
@@ -894,6 +1091,17 @@ mod tests {
     /// the window that no watch covered. The wait also proves that every watch
     /// stands before the caller changes one file.
     async fn started(root: &Path) -> FileWatcher {
+        let (watcher, _) = opened(root).await;
+        watcher
+    }
+
+    /// Starts one watcher and returns it with the burst that opens its stream.
+    ///
+    /// The registration runs after the start, so the first burst always reports
+    /// the window that no watch covered and the coverage of that registration.
+    /// The wait also proves that every watch stands before the caller changes
+    /// one file.
+    async fn opened(root: &Path) -> (FileWatcher, WatchBatch) {
         let mut watcher = FileWatcher::start(root.to_path_buf(), &IGNORED)
             .expect("the start accepts an absolute root");
         let opening = timeout(EVENT_WAIT, watcher.recv())
@@ -909,7 +1117,16 @@ mod tests {
             opening.directories().is_empty(),
             "the opening burst names no directory, so the consumer reads every one of them"
         );
-        watcher
+        (watcher, opening)
+    }
+
+    /// Returns one chain of `levels` directories, each below the one before it.
+    fn chain(levels: usize) -> String {
+        let mut name = String::from("d0");
+        for level in 1..levels {
+            name.push_str(&format!("/d{level}"));
+        }
+        name
     }
 
     fn event(path: &str, kind: WatchKind) -> WatchEvent {
@@ -1077,11 +1294,7 @@ mod tests {
     #[test]
     fn the_registration_stops_at_the_depth_bound() {
         let tree = TempTree::new("deep");
-        let mut name = String::from("d0");
-        for level in 1..WATCH_DEPTH_MAX + 4 {
-            name.push_str(&format!("/d{level}"));
-        }
-        tree.dir(&name);
+        tree.dir(&chain(WATCH_DEPTH_MAX + 4));
 
         let watched = tree.watched();
         let deepest = watched
@@ -1132,6 +1345,7 @@ mod tests {
                 &BTreeSet::new(),
                 WATCH_DIRECTORIES_MAX,
             )
+            .directories
             .is_empty(),
             "a removed root names the directory above it, which no watch covers"
         );
@@ -1144,8 +1358,13 @@ mod tests {
         let watcher =
             RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
                 .expect("the platform builds one watcher");
-        let mut registration = Registration::start(watcher, tree.path.clone(), &IGNORED)
-            .expect("the platform watches a readable root");
+        let (mut registration, coverage) =
+            Registration::start(watcher, tree.path.clone(), &IGNORED)
+                .expect("the platform watches a readable root");
+        assert!(
+            coverage.is_complete(),
+            "the platform watches every directory of a small readable tree"
+        );
         let registered = registration.directories.clone();
         assert_eq!(
             registered.len(),
@@ -1153,8 +1372,12 @@ mod tests {
             "the root and `src` carry one watch each"
         );
 
-        registration.extend(std::slice::from_ref(&tree.path));
+        let coverage = registration.extend(std::slice::from_ref(&tree.path));
 
+        assert!(
+            coverage.is_complete(),
+            "the batch stays empty, so it refuses nothing"
+        );
         assert_eq!(
             registration.directories, registered,
             "the set holds every watched directory, so the batch stays empty and no stream rebuilds"
@@ -1354,6 +1577,166 @@ mod tests {
             "the burst reports the window that no watch covered"
         );
         runtime.block_on(watcher.shutdown());
+    }
+
+    #[test]
+    fn a_complete_walk_reports_no_gap() {
+        let tree = TempTree::new("covered");
+        tree.dir("src/tui");
+        tree.dir("target/debug");
+        tree.dir(&chain(WATCH_DEPTH_MAX));
+
+        let walk = tree.walk(&BTreeSet::new());
+
+        assert!(
+            !walk.truncated,
+            "every kept directory of the tree carries one watch"
+        );
+    }
+
+    #[test]
+    fn a_walk_below_the_depth_bound_reports_the_gap() {
+        let tree = TempTree::new("deep-gap");
+        tree.dir(&chain(WATCH_DEPTH_MAX + 1));
+
+        let walk = tree.walk(&BTreeSet::new());
+
+        assert_eq!(
+            walk.directories.len(),
+            WATCH_DEPTH_MAX + 1,
+            "the walk keeps the root and every level down to the bound"
+        );
+        assert!(
+            walk.truncated,
+            "the depth bound left the deepest directory without a watch"
+        );
+    }
+
+    #[test]
+    fn a_walk_above_the_directory_bound_reports_the_gap() {
+        let tree = TempTree::new("wide-gap");
+        tree.dir("one");
+        tree.dir("two");
+
+        let walk = unregistered_directories(&tree.path, &tree.path, &IGNORED, &BTreeSet::new(), 2);
+
+        assert_eq!(walk.directories.len(), 2, "the walk stops at its limit");
+        assert!(
+            walk.truncated,
+            "the directory bound left one directory without a watch"
+        );
+    }
+
+    #[test]
+    fn a_directory_that_disappeared_before_the_batch_reports_no_gap() {
+        let tree = TempTree::new("disappeared");
+        let watcher =
+            RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
+                .expect("the platform builds one watcher");
+        let (mut registration, coverage) =
+            Registration::start(watcher, tree.path.clone(), &IGNORED)
+                .expect("the platform watches a readable root");
+        assert!(coverage.is_complete());
+
+        // The walk found this directory, and another program removed it before
+        // the batch. The root still reports that removal.
+        let gone = tree.path.join("gone");
+        let coverage = registration
+            .add(std::slice::from_ref(&gone))
+            .expect("a refused directory below the root keeps the registration");
+
+        assert!(
+            coverage.is_complete(),
+            "a directory that no longer exists holds no entry to watch"
+        );
+    }
+
+    #[test]
+    fn the_watch_limit_of_the_host_names_its_own_cause() {
+        let limit = refusal(&notify::Error::new(ErrorKind::MaxFilesWatch));
+        assert_eq!(
+            limit,
+            WatchCoverage {
+                refused: 1,
+                at_limit: true,
+                truncated: false,
+            },
+            "the host limit is the one refusal that the user raises"
+        );
+
+        let other = refusal(&notify::Error::io(io::Error::from(
+            io::ErrorKind::PermissionDenied,
+        )));
+        assert_eq!(
+            other,
+            WatchCoverage {
+                refused: 1,
+                at_limit: false,
+                truncated: false,
+            },
+            "another refusal still leaves the directory without a watch"
+        );
+
+        assert!(
+            refusal(&notify::Error::path_not_found()).is_complete(),
+            "a directory that no longer exists names no gap"
+        );
+        assert!(
+            refusal(&notify::Error::io(io::Error::from(io::ErrorKind::NotFound))).is_complete(),
+            "the platform names the same removal as one input failure"
+        );
+    }
+
+    #[test]
+    fn one_setting_of_the_host_names_the_watch_limit() {
+        // The name is a platform detail, so only this module holds it. A
+        // platform that publishes no name still reports the refusal itself.
+        #[cfg(target_os = "linux")]
+        assert_eq!(watch_limit_setting(), Some("fs.inotify.max_user_watches"));
+        #[cfg(not(target_os = "linux"))]
+        assert_eq!(watch_limit_setting(), None);
+    }
+
+    #[tokio::test]
+    async fn the_opening_burst_of_a_complete_registration_reports_no_gap() {
+        let tree = TempTree::new("covered-burst");
+        tree.dir("src/tui");
+
+        let (watcher, opening) = opened(&tree.path).await;
+
+        assert!(
+            opening.coverage().is_complete(),
+            "every directory of the workspace carries one watch"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn the_opening_burst_of_a_truncated_registration_reports_the_gap() {
+        let tree = TempTree::new("truncated-burst");
+        tree.dir(&chain(WATCH_DEPTH_MAX + 2));
+
+        let (mut watcher, opening) = opened(&tree.path).await;
+
+        assert!(
+            opening.coverage().truncated,
+            "the depth bound left a part of the workspace without a watch"
+        );
+        assert_eq!(
+            opening.coverage().refused,
+            0,
+            "the bound of this module is no refusal of the host"
+        );
+
+        // The registration reported its gap, and the watch of every covered
+        // directory still reports the changes of that directory.
+        tree.file("d0/main.rs", "\n");
+        let batch = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the change of one watched file")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(batch.directories(), [tree.path.join("d0")]);
+        watcher.shutdown().await;
     }
 
     #[tokio::test]
