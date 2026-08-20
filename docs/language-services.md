@@ -10,7 +10,7 @@ through bounded runtime services. See
 
 ## Language Adapter Boundary
 
-The adapter boundary is the multi-language extension point of Kvim. Kvim is
+The adapter boundary is the multi-language extension point of kvim. kvim is
 language agnostic above that boundary. Rust is the primary target, because it
 is the language that the editor is built for, but no code above the boundary
 knows that.
@@ -94,7 +94,7 @@ The data and configuration languages split their keys the same way. YAML owns
 `.clang-tidy`, because each one holds YAML and carries no extension. XML owns
 `svg`, `xml`, `xsd`, `xsl`, and `xslt`, which are the extensions that `lemminx`
 serves, and each one carries an XML document. The XML grammar crate ships a
-second grammar for a standalone document type definition, and Kvim compiles the
+second grammar for a standalone document type definition, and kvim compiles the
 document grammar alone, because no registered extension names such a file. SQL
 owns `sql`. Terraform owns `tf` and `tfvars`, and it leaves `hcl` unclaimed,
 because a plain HCL file carries another tool that `tofu-ls` does not serve.
@@ -156,14 +156,14 @@ Parsing and highlighting run only on the bounded worker service. They never run
 on the terminal event loop.
 
 A grammar crate sometimes ships the patterns of its own dialect alone, because
-the upstream query inherits the patterns of a base language. Kvim resolves no
+the upstream query inherits the patterns of a base language. kvim resolves no
 query inheritance, so such an adapter joins the texts once and keeps the base
 text first. C++ joins the C patterns, SCSS joins the CSS patterns, and
 TypeScript and TSX join the JavaScript patterns. JavaScript joins the JSX
 patterns of its own crate, because one grammar reads both dialects.
 
 The HCL grammar crate ships no query at all, so Terraform would highlight
-nothing. Kvim therefore keeps one vendored query file beside the adapter
+nothing. kvim therefore keeps one vendored query file beside the adapter
 sources, at `crates/kvim-language/queries/hcl/highlights.scm`. The file carries
 the origin, the upstream project, and the Apache 2.0 license of its text in its
 own header, and the Terraform module document repeats them. The adapter
@@ -252,14 +252,14 @@ the user indents a continuation of that list.
 ## Analysis Limits
 
 Analysis enforces explicit limits on buffer bytes, buffer lines, syntax nodes,
-traversal depth, and highlight spans. Kvim rejects a complete result that
+traversal depth, and highlight spans. kvim rejects a complete result that
 exceeds a limit. It never publishes a truncated result. The `language` module
 names each bound as one constant. The constant and the row below must always
 agree.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
-| Source bytes | `ANALYSIS_SOURCE_BYTES_MAX` | 4 MiB | The maximum file size of [`text-model.md`](text-model.md). Every buffer that Kvim loads is therefore analyzable, and no larger text reaches the parser. |
+| Source bytes | `ANALYSIS_SOURCE_BYTES_MAX` | 4 MiB | The maximum file size of [`text-model.md`](text-model.md). Every buffer that kvim loads is therefore analyzable, and no larger text reaches the parser. |
 | Source lines | `ANALYSIS_SOURCE_LINES_MAX` | 100000 lines | A source file of this length already exceeds normal practice. The check runs before the parse, so a generated one-line-per-byte file fails early. |
 | Syntax nodes | `ANALYSIS_NODES_MAX` | 1000000 nodes | The densest measured source produces one node for each 5.6 bytes, so the byte limit produces about 750000 nodes. A larger tree means a pathological grammar result, not source that a reader edits. |
 | Traversal depth | `ANALYSIS_DEPTH_MAX` | 128 levels | The indent query walks ancestors, and the highlight walk stacks captures. The bound measures syntax-tree depth, not source indentation, and a generated header reaches far more levels than a reader expects. |
@@ -324,12 +324,12 @@ property role.
 A query may also mark one node with a name that carries no role at all, for
 example the spell-check marker of another editor. The highlighter reads the last
 capture of one node, so such a marker would take the place of the role and leave
-the node plain. Kvim therefore turns off every capture that carries no role
+the node plain. kvim therefore turns off every capture that carries no role
 before it highlights, and the role of the node survives.
 
 ## The Language Server Session
 
-Kvim is a general Language Server Protocol (LSP) client. It runs one persistent
+kvim is a general Language Server Protocol (LSP) client. It runs one persistent
 session for each server that an adapter of the workspace declares. The session
 speaks the protocol over JSON-RPC and knows no server product. rust-analyzer is
 the first configuration of that client, not a special case inside it.
@@ -371,14 +371,14 @@ reads, writes, or waits for a server. A full request queue returns a typed
 saturated result at once, and the caller keeps its previous visible state.
 
 The handshake offers the UTF-8 position encoding first and the UTF-16 position
-encoding second. The section below owns the negotiation and the conversion. Kvim
+encoding second. The section below owns the negotiation and the conversion. kvim
 also answers every unsolicited server request, so an unimplemented request
 cannot stall the server.
 
 Workspace containment rejects a path outside the workspace root with a typed
 result. The session decodes a `file` URI and rejects another scheme, a malformed
 escape, and a traversal component. A definition target outside the root is
-rejected and never offered. Kvim validates every server-supplied range against
+rejected and never offered. kvim validates every server-supplied range against
 the exact source bytes before it uses that range.
 
 The session sends `didOpen`, incremental `didChange`, and `didClose` for the
@@ -394,30 +394,30 @@ rename.
 The Rust adapter declares `rust-analyzer` and maps the language-neutral check
 depth of `EditorSettings` onto the `check.command` option of that server. The
 default check depth runs `clippy`. A declaration function of this kind is the
-only place in Kvim that names a setting of one concrete server. See
+only place in kvim that names a setting of one concrete server. See
 [`settings.md`](settings.md).
 
 A language without a server declaration, a language whose servers the workspace
 does not use, and a language whose declared executable is not installed leave
-the editor fully usable with no diagnostics. Kvim reports the state once and
+the editor fully usable with no diagnostics. kvim reports the state once and
 starts no further server for that language. A missing server is never an error
 path that degrades editing.
 
 A reload replaces the whole text of one buffer, and the reloaded buffer counts
-its versions from the start. Kvim therefore synchronizes a reload as one fresh
+its versions from the start. kvim therefore synchronizes a reload as one fresh
 document open that carries the reloaded text and the reloaded buffer version,
 and it drops every queued incremental change of that buffer. No obsolete
 version reaches the server, and the server copy replaces the old copy in one
 step. See [`files.md`](files.md).
 
 A crashed server restarts a bounded number of times. The new server holds no
-document, so Kvim reports the restart and opens its buffers again. The session
+document, so kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
 
 ### The Two Diagnostic Models
 
-The protocol carries diagnostics in two models, and Kvim serves both.
+The protocol carries diagnostics in two models, and kvim serves both.
 
 | Model | Message | Direction |
 |---|---|---|
@@ -435,7 +435,7 @@ diagnostic set through the same path, so nothing above the session knows which
 model produced a set. A pull session still accepts a published notification,
 because the protocol lets one server send both.
 
-Kvim declares no `textDocument.diagnostic` client capability in this release. A
+kvim declares no `textDocument.diagnostic` client capability in this release. A
 server that reads that capability therefore keeps the push model, and no
 declared server of the registry changes its model.
 `vscode-eslint-language-server` advertises `diagnosticProvider` without the
@@ -476,7 +476,7 @@ identifier for each open document. The same bound measures the provider
 identifier of the capability, which every request repeats.
 
 A report may also carry a `relatedDocuments` member, which describes other
-documents. The session ignores that member and never parses it. Kvim pulls each
+documents. The session ignores that member and never parses it. kvim pulls each
 open document on its own, so a related report would repeat a set that the
 session already asks for, and an ignored member allocates nothing.
 
@@ -485,9 +485,9 @@ version publishes nothing. Diagnostics are decoration, so a lost pull leaves the
 previous set and never reports a request failure to the editor. A transport
 failure still ends the session attempt, as every other fatal failure does.
 
-The server asks Kvim to pull again with `workspace/diagnostic/refresh`. The
+The server asks kvim to pull again with `workspace/diagnostic/refresh`. The
 session accepts that request and schedules one pull for each open document of
-that session. Kvim answers every unsolicited server request, so no request of a
+that session. kvim answers every unsolicited server request, so no request of a
 server can stall it.
 
 ### The Settings Channel
@@ -529,8 +529,8 @@ one:
 |---|---|---|
 | `validate` | `"on"` | The server returns an empty report for every other value. |
 | `nodePath` | null | The server reads this member without a default, and an absent member ends the request with a type failure. |
-| `problems.shortenToSingleLine` | false | The server reads this member without a default, and Kvim wraps a long message in its own float. |
-| `rulesCustomizations` | The empty list | The server walks this list without a default, and Kvim changes no rule severity. |
+| `problems.shortenToSingleLine` | false | The server reads this member without a default, and kvim wraps a long message in its own float. |
+| `rulesCustomizations` | The empty list | The server walks this list without a default, and kvim changes no rule severity. |
 
 `sqls` reports a problem only after a database connection reaches it through a
 configuration. That declaration names no settings, so an SQL buffer stays fully
@@ -538,7 +538,7 @@ editable and shows no diagnostic in this release.
 
 ## The Position Encoding
 
-Kvim measures every column in UTF-8 bytes. The protocol measures a column in
+kvim measures every column in UTF-8 bytes. The protocol measures a column in
 UTF-16 code units unless the server confirms another encoding. The session
 negotiates the encoding, records the answer, and converts every column at its
 own boundary. No code above the session reads a protocol column.
@@ -585,14 +585,14 @@ The conversion covers both directions.
 | Received | The range of a diagnostic, of a definition target, and of a formatting edit. |
 | Sent | The range of every `didChange` change, and the position of a definition or a hover request. |
 
-Kvim reads no range of a hover answer, so that answer carries no column to
+kvim reads no range of a hover answer, so that answer carries no column to
 convert.
 
 Two rules bound a column that its line does not hold. A column above the end of
 its line becomes the end of that line, which is the rule that the protocol
 defines. A column inside a character is a typed failure, because an edit at such
 a column would split that character and corrupt the buffer. A line index that
-the document does not hold is the same typed failure. Kvim publishes no partial
+the document does not hold is the same typed failure. kvim publishes no partial
 result, so one rejected position rejects the complete answer that carries it.
 
 A definition target can name a document that the session does not hold open. No
@@ -615,7 +615,7 @@ matches a file of the workspace root. It also matches a directory of that root,
 because a project proves a tool with both shapes.
 
 The lookup reads the workspace root alone. It never walks to a parent
-directory. Kvim resolves one workspace root for the complete editor session.
+directory. kvim resolves one workspace root for the complete editor session.
 Workspace containment rejects every path outside that root. A parent directory
 is therefore outside the workspace, and it decides nothing.
 
@@ -647,7 +647,7 @@ never counts against `LSP_SESSIONS_MAX`. That bound counts the child processes
 of one editor, and a gated server owns none.
 
 A gated server is a normal state, not a failure. The editor stays fully usable,
-Kvim reports the state once, and no request starts that server again. The state
+kvim reports the state once, and no request starts that server again. The state
 stays distinct from a server that is not installed. A gated server was never
 meant to run in this workspace. A server that is not installed was meant to run
 and could not. A gated formatting server keeps the format-on-save state of its
@@ -728,7 +728,7 @@ below must always agree.
 | Diagnostic pull delay | `LSP_DIAGNOSTIC_PULL_DELAY` | 300 ms | The delay after which a change settles and the session pulls again. A typist produces keystrokes far below this interval, so one burst of edits starts one pull. A reader still sees a new report shortly after the last keystroke. |
 | Shutdown deadline | `LSP_SHUTDOWN_DEADLINE` | 250 ms | Editor exit must stay immediate. A server that does not answer `shutdown` in 250 ms is killed instead. |
 
-A received list that passes its bound produces a typed failure. Kvim publishes
+A received list that passes its bound produces a typed failure. kvim publishes
 no partial result. Nested lists of one answer share one element budget, so a
 server cannot allocate without limit by splitting many elements over many short
 lists.
@@ -746,7 +746,7 @@ external commands of the editor.
 
 ## Work-Done Progress
 
-Kvim declares the `window.workDoneProgress` client capability, so a server may
+kvim declares the `window.workDoneProgress` client capability, so a server may
 report the state of a long operation. The session accepts the
 `window/workDoneProgress/create` request and parses the `$/progress`
 notification. It publishes one typed report through the same event path that
@@ -780,7 +780,7 @@ The overlay carries language server progress alone. Every other report of the
 editor, such as a completed save, a clipboard notice, or a failed file
 operation, stays on the message line and the statusline. The reference
 `fidget.nvim` configuration also routes the editor notifications onto its
-surface, and Kvim does not: a second surface for those reports repeats what the
+surface, and kvim does not: a second surface for those reports repeats what the
 message line already shows. An editor with no server activity therefore paints
 no overlay and reports no deadline for one.
 
@@ -800,15 +800,15 @@ visible state change and runs no frame loop.
 ## Diagnostics
 
 Diagnostics are decoration. They never change source text, line mappings, or the
-cursor position. A diagnostic carries the buffer version that produced it. Kvim
+cursor position. A diagnostic carries the buffer version that produced it. kvim
 discards a diagnostic for an obsolete buffer version.
 
-Kvim orders diagnostics by position, so diagnostic navigation is deterministic.
+kvim orders diagnostics by position, so diagnostic navigation is deterministic.
 The diagnostic float shows every diagnostic of the cursor position, not the
 first one alone. One blank row separates two diagnostics, so a reader sees where
 one message ends and the next one starts.
 
-Kvim holds the newest set of each server of one buffer, and it merges the sets
+kvim holds the newest set of each server of one buffer, and it merges the sets
 into the ordered list that the float and the navigation read. A new set of one
 server replaces the previous set of that server alone. The section above owns
 the merge rule and the producer name.
@@ -843,10 +843,10 @@ the overlay layering.
 
 ## Formatting
 
-Kvim formats one buffer through one formatter. An adapter declares an external
+kvim formats one buffer through one formatter. An adapter declares an external
 formatter, a formatting server, or neither of them.
 
-An external formatter takes precedence. Kvim runs the declared program when the
+An external formatter takes precedence. kvim runs the declared program when the
 adapter names one. It sends a document-formatting request only when the adapter
 names no program. `ServerFormatting::Enabled` therefore names the fallback
 formatter of its adapter: the server that formats while the adapter declares no
@@ -857,7 +857,7 @@ The rule follows the reference `conform.nvim` configuration. That configuration
 formats with its own table of programs, and it keeps the language server as the
 fallback.
 
-Kvim applies the accepted answer of either formatter as one edit transaction, so
+kvim applies the accepted answer of either formatter as one edit transaction, so
 one undo reverses a complete format. It rejects an answer whose buffer version
 is obsolete, and it never applies a change that was computed against different
 content.
@@ -883,10 +883,10 @@ therefore names the format itself, and it keeps the document path beside that
 name for the configuration of the project. The JSON adapter shows the rule: it
 owns `flake.lock`, so it names `--parser json` beside `--stdin-filepath`.
 
-Kvim writes the exact buffer text to the standard input of the program, and it
+kvim writes the exact buffer text to the standard input of the program, and it
 reads the formatted document from the standard output. The program runs on the
 bounded process service of [`responsiveness.md`](responsiveness.md), so it never
-runs on the terminal event loop. Every buffer that Kvim loads stays below
+runs on the terminal event loop. Every buffer that kvim loads stays below
 `PROCESS_INPUT_BYTES_MAX`, so no buffer is too large for that service.
 
 The answer replaces the complete document as one edit transaction. A formatted
@@ -902,11 +902,11 @@ the row must always agree.
 | Captured output | `FORMATTER_OUTPUT_BYTES_MAX` | 8 MiB | The limit counts standard output and standard error together. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB holds the formatted document beside the warnings of the program. |
 | Deadline of one run | `FORMATTER_DEADLINE` | 10 s | A cold formatter reads its configuration before it formats. The value matches `LSP_FORMAT_DEADLINE` and the process deadline of [`responsiveness.md`](responsiveness.md). |
 
-Kvim also rejects a formatted document above the maximum file size of
+kvim also rejects a formatted document above the maximum file size of
 [`text-model.md`](text-model.md), because that document would build a buffer
-that Kvim refuses to load.
+that kvim refuses to load.
 
-Kvim rejects the answer of a program that reports a non-zero exit code, that
+kvim rejects the answer of a program that reports a non-zero exit code, that
 writes no text although the buffer holds text, or that writes bytes that are not
 UTF-8. No branch reads the message text of the standard error.
 
@@ -914,7 +914,7 @@ UTF-8. No branch reads the message text of the standard error.
 
 Format-on-save is enabled for each new buffer. The default belongs to
 `EditorSettings`. The toggle is per buffer, so a change affects only the active
-buffer and does not change the default for other buffers. Kvim reports the
+buffer and does not change the default for other buffers. kvim reports the
 current state on the message line after each toggle. The statusline also shows
 the state of the focused buffer, so a window focus change reports the state of
 the buffer that the new window shows. See [`windows.md`](windows.md).
@@ -922,7 +922,7 @@ the buffer that the new window shows. See [`windows.md`](windows.md).
 A buffer formats only while its language adapter declares a formatter. A buffer
 without a file name, a path that no adapter owns, and an adapter that declares
 neither an external formatter nor a formatting server therefore have no
-formatter. Kvim shows no format-on-save state for such a buffer, and the toggle
+formatter. kvim shows no format-on-save state for such a buffer, and the toggle
 reports the missing formatter instead of changing a state that no save can act
 on. The per-buffer state itself stays unchanged, so a buffer keeps the state
 that the user chose if a later release declares a formatter for its language.
@@ -933,7 +933,7 @@ formatter program that the host does not hold is the same kind of state. A
 buffer whose adapter declares a formatter therefore keeps its format-on-save
 state while that formatter is absent.
 
-A format-on-save failure or timeout does not cancel the save. Kvim saves the
+A format-on-save failure or timeout does not cancel the save. kvim saves the
 unformatted buffer content.
 
 The save report names that state. The save writes the message line after the
@@ -955,7 +955,7 @@ clips the path and never the state of the written file.
 
 A buffer whose adapter declares no formatter belongs to the first row. The
 statusline shows no format-on-save state for such a buffer, so its save report
-promises no format that Kvim never runs.
+promises no format that kvim never runs.
 
 The note qualifies a message that every save writes. It adds no message and
 repeats none, so a formatter that fails on every save fills no message line.

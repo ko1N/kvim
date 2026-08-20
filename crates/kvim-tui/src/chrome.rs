@@ -2,7 +2,7 @@
 //! line.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! Kvim shows one statusline and one message line for the whole terminal, and
+//! kvim shows one statusline and one message line for the whole terminal, and
 //! one winbar for each window. Regions carry no divider glyph: the surface band
 //! of the winbar and of the statusline separates them by color, as ReviewGraph
 //! does. See `docs/windows.md`.

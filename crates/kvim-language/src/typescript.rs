@@ -64,7 +64,7 @@ fn typescript_language() -> Language {
 /// The joined highlight query of the TypeScript adapter.
 ///
 /// The crate ships the type patterns alone, because the upstream query inherits
-/// the JavaScript patterns. Kvim resolves no query inheritance, so the adapter
+/// the JavaScript patterns. kvim resolves no query inheritance, so the adapter
 /// joins the two texts once. The JavaScript patterns come first, so a
 /// TypeScript pattern of the same node takes precedence. The TypeScript grammar
 /// is a superset of the JavaScript grammar, so every JavaScript pattern names a

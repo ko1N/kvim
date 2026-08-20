@@ -43,7 +43,7 @@ fn scss_language() -> Language {
 /// The joined highlight query of the SCSS adapter.
 ///
 /// The crate ships the SCSS patterns alone, because the upstream query inherits
-/// the CSS patterns. Kvim resolves no query inheritance, so the adapter joins
+/// the CSS patterns. kvim resolves no query inheritance, so the adapter joins
 /// the two texts once. The CSS patterns come first, so an SCSS pattern of the
 /// same node takes precedence. The SCSS grammar is a superset of the CSS
 /// grammar, so every CSS pattern names a node kind that the SCSS grammar holds.

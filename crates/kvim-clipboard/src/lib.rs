@@ -26,7 +26,7 @@
 //! assert_eq!(absent.copy(value), Some(ClipboardNotice::NoCommand));
 //! assert_eq!(absent.copy(value), None);
 //!
-//! // A working clipboard keeps the shape that Kvim recorded.
+//! // A working clipboard keeps the shape that kvim recorded.
 //! let mut clipboard = Clipboard::new(Box::new(MemoryClipboard::default()));
 //! let lines = ClipboardValue { text: "one\n", shape: ClipboardShape::Linewise };
 //! assert_eq!(clipboard.copy(lines), None);
@@ -49,7 +49,7 @@ pub use system::{
     SystemClipboard, detect_system_clipboard, program_on_path, select_linux_tool,
 };
 
-/// The largest text that Kvim moves across the system clipboard, in bytes.
+/// The largest text that kvim moves across the system clipboard, in bytes.
 ///
 /// A larger register value stays inside the editor. The bound also limits the
 /// output that one clipboard read accepts.
@@ -91,7 +91,7 @@ pub struct OwnedClipboardValue {
 /// What one [`ClipboardFailure`] proves about the transfer.
 ///
 /// A clipboard command that ran to its end reports whether the transfer
-/// happened. A command that Kvim stopped waiting for reports nothing, and Kvim
+/// happened. A command that kvim stopped waiting for reports nothing, and kvim
 /// must not turn that silence into a failure report.
 ///
 /// The Linux write commands make this distinction load-bearing. `wl-copy` and
@@ -103,7 +103,7 @@ pub struct OwnedClipboardValue {
 pub enum ClipboardEvidence {
     /// The transfer did not happen.
     Failure,
-    /// Kvim never learned whether the transfer happened.
+    /// kvim never learned whether the transfer happened.
     Unknown,
 }
 
@@ -215,7 +215,7 @@ enum MissingReport {
     Delivered,
 }
 
-/// The text and the shape that Kvim wrote to the clipboard last.
+/// The text and the shape that kvim wrote to the clipboard last.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct WrittenValue {
     text: String,
@@ -224,7 +224,7 @@ struct WrittenValue {
 
 /// The clipboard rules of one editor session.
 ///
-/// The value owns the selected [`SystemClipboard`] and the text that Kvim wrote
+/// The value owns the selected [`SystemClipboard`] and the text that kvim wrote
 /// last. It holds no register value.
 #[derive(Debug)]
 pub struct Clipboard {
@@ -286,7 +286,7 @@ impl Clipboard {
 
     /// Reads the system clipboard and decides the shape of the text.
     ///
-    /// Text that equals the last Kvim write keeps the recorded shape. Any other
+    /// Text that equals the last kvim write keeps the recorded shape. Any other
     /// text comes from another application, so it is characterwise, or linewise
     /// when it ends with a line ending. A failed read falls back to the internal
     /// register of the caller.
@@ -311,7 +311,7 @@ impl Clipboard {
     ///
     /// A missing command is reported once for each session. Bytes that are not
     /// text name themselves. Every other report follows
-    /// [`ClipboardFailure::evidence`], so a failure that Kvim never observed
+    /// [`ClipboardFailure::evidence`], so a failure that kvim never observed
     /// stays silent and only a proven failure reaches the user.
     fn notice_for(&mut self, failure: ClipboardFailure) -> Option<ClipboardNotice> {
         match failure {

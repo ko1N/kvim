@@ -23,7 +23,7 @@ use crossterm::terminal::{
 
 use super::TerminalError;
 
-/// The enhanced keyboard reporting flags that Kvim requests.
+/// The enhanced keyboard reporting flags that kvim requests.
 ///
 /// The flags keep the `Ctrl-Alt`, `Ctrl-Enter`, `Ctrl-\`, and modified arrow
 /// chords distinct from their unmodified keys.

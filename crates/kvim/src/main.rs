@@ -1,4 +1,4 @@
-//! The Kvim executable entry point.
+//! The kvim executable entry point.
 //!
 //! The file keeps argument parsing pure and testable. It performs input and
 //! output only after the parser returns one action.
@@ -149,7 +149,7 @@ impl ProgramState {
 /// One external program of the report, and whether this host provides it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct ProgramReport {
-    /// The program that Kvim runs.
+    /// The program that kvim runs.
     program: &'static str,
     /// Whether the executable search path holds the program.
     state: ProgramState,

@@ -17,7 +17,7 @@ use kvim_settings::LanguageSettings;
 /// `nvim-lspconfig` configuration, and it holds twelve of the
 /// `LANGUAGE_ROOT_MARKERS_MAX` markers of one declaration.
 ///
-/// The reference walks from the buffer to a parent directory. Kvim reads the
+/// The reference walks from the buffer to a parent directory. kvim reads the
 /// workspace root alone, so the table names each file directly.
 pub(super) const ESLINT_ROOT_MARKERS: [&str; 12] = [
     ".eslintrc",
@@ -56,10 +56,10 @@ pub(super) fn eslint_options(_settings: LanguageSettings) -> Value {
 ///   reads the member without a default, so an absent member ends the request
 ///   with a type failure. The null value keeps the search of the server.
 /// - `problems.shortenToSingleLine` selects a one-line message. The server
-///   reads the member without a default, and Kvim wraps a long message in its
+///   reads the member without a default, and kvim wraps a long message in its
 ///   own float.
 /// - `rulesCustomizations` overrides the severity of a rule. The server walks
-///   the list without a default, and Kvim changes no severity.
+///   the list without a default, and kvim changes no severity.
 ///
 /// The server needs no member from the language-neutral settings, so the
 /// function reads nothing from `settings`. See `docs/language-services.md`.

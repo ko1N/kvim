@@ -10,7 +10,7 @@ use thiserror::Error;
 use kvim_core::{CharPosition, TextBuffer};
 use kvim_settings::{CaseSensitivity, SearchSettings};
 
-/// The largest search query that Kvim accepts, in characters.
+/// The largest search query that kvim accepts, in characters.
 ///
 /// The bound keeps one prompt line usable and keeps the match scan short.
 pub const SEARCH_QUERY_CHARS_MAX: usize = 256;

@@ -10,7 +10,7 @@ name = "kvim"
 path = "src/main.rs"
 
 [dependencies]
-# Kvim crates
+# kvim crates
 kvim-clipboard.workspace = true
 kvim-language.workspace = true
 kvim-settings.workspace = true

@@ -6,7 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-# Kvim crates
+# kvim crates
 kvim-runtime.workspace = true
 
 # Basics

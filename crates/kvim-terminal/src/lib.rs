@@ -4,7 +4,7 @@
 //!
 //! The crate is the only place that uses crossterm. It converts raw terminal
 //! events into the terminal-independent [`Key`] and [`TerminalEvent`] values that
-//! the rest of Kvim consumes. It holds no editor concept: modes, mappings, and
+//! the rest of kvim consumes. It holds no editor concept: modes, mappings, and
 //! commands belong to `kvim-input`.
 //!
 //! [`TerminalSession`] owns the setup steps and restores them on every exit path,

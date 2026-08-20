@@ -46,7 +46,7 @@ const MODIFIED_MARKER: &str = " [+]";
 /// The marker that follows the name of a buffer whose file changed or is gone.
 ///
 /// The state hides the modified marker, because it is the state that the reader
-/// must act on: Kvim could not make the buffer current. See `docs/files.md`.
+/// must act on: kvim could not make the buffer current. See `docs/files.md`.
 const EXTERNAL_MARKER: &str = " [!]";
 
 /// The number of cells that the winbar keeps for the scroll position.
@@ -95,12 +95,12 @@ pub(super) struct WindowView<'a> {
     pub(super) name: &'a str,
     /// The file of the buffer, or `None` for a buffer that holds no file.
     pub(super) path: Option<&'a Path>,
-    /// What another program did to the file that Kvim could not follow.
+    /// What another program did to the file that kvim could not follow.
     ///
     /// The value is `None` while the buffer and its file agree, which every
     /// buffer that reloaded or saved does. See `docs/files.md`.
     pub(super) external: Option<ExternalChange>,
-    /// The directory that Kvim started in.
+    /// The directory that kvim started in.
     ///
     /// The winbar strips this prefix from the path of the buffer, so a window
     /// names the file the way the user opened it. See `docs/windows.md`.
@@ -309,7 +309,7 @@ pub(super) fn render_window(
 
 /// Where the visible rows of one window sit inside its buffer.
 ///
-/// Kvim follows the Vim convention: the percentage reports the share of the
+/// kvim follows the Vim convention: the percentage reports the share of the
 /// buffer above the first visible line, and the three named outcomes take
 /// precedence over a number. See `docs/windows.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

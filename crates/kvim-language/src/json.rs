@@ -123,7 +123,7 @@ impl LanguageAdapter for JsonAdapter {
 
     fn comment(&self) -> CommentStyle {
         // The JSON grammar accepts a comment, but the format defines none, so
-        // Kvim writes none.
+        // kvim writes none.
         CommentStyle::none()
     }
 

@@ -60,7 +60,7 @@ enum LanguageService {
         /// The task that owns the server process.
         task: JoinHandle<()>,
     },
-    /// The server has no service, and Kvim reported the state once.
+    /// The server has no service, and kvim reported the state once.
     Unavailable,
 }
 

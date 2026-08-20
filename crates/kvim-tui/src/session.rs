@@ -105,7 +105,7 @@ pub const CONFIRM_ANSWER_CHARS_MAX: usize = 32;
 
 /// Whether the visible state changed and the terminal needs a new frame.
 ///
-/// Kvim renders only after a visible state change. It runs no unconditional
+/// kvim renders only after a visible state change. It runs no unconditional
 /// frame loop. See `docs/responsiveness.md`.
 ///
 /// Every publication path of the session marks its answer `#[must_use]`. A
@@ -3510,7 +3510,7 @@ impl Session {
     /// Applies one paste over the register value that the read resolved.
     ///
     /// A value from the system clipboard becomes the unnamed register first, so
-    /// an external copy pastes exactly like a Kvim yank.
+    /// an external copy pastes exactly like a kvim yank.
     fn publish_paste(
         &mut self,
         command: Command,
@@ -3988,7 +3988,7 @@ impl Session {
     /// Records what another program did to the file of one buffer.
     ///
     /// The buffer keeps its text and stays editable, because that text is the
-    /// only copy that Kvim can still write. The answer names whether the editor
+    /// only copy that kvim can still write. The answer names whether the editor
     /// must report the state: a background check reports one state once, so a
     /// workspace that changes often never fills the message line.
     fn mark_external(

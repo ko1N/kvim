@@ -189,7 +189,7 @@ async fn a_utf16_session_rejects_a_range_that_splits_a_character() {
         }))
         .await;
 
-    // Kvim publishes no partial result, so one rejected position rejects the
+    // kvim publishes no partial result, so one rejected position rejects the
     // complete set.
     assert!(matches!(
         harness.next().await,
@@ -899,7 +899,7 @@ async fn answers_an_unsolicited_server_request() {
         .await;
 
     // An unanswered server request stalls the server, so the session always
-    // answers. Kvim implements no such request, so it reports the method as
+    // answers. kvim implements no such request, so it reports the method as
     // unknown.
     let answer = server.read_message().await;
     assert_eq!(answer["id"], 91);

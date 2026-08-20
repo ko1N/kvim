@@ -862,7 +862,7 @@ impl Session<'_> {
     /// Declares the client capabilities and negotiates the position encoding.
     async fn initialize(&mut self, envelopes: &mut Envelopes) -> Result<(), LspError> {
         let root_uri = self.config.root.root_uri()?;
-        // Kvim declares the configuration capability only while its declaration
+        // kvim declares the configuration capability only while its declaration
         // names settings, because a session without settings still reports the
         // request of a server as an unknown method.
         let configuration = self.config.workspace_settings.is_some();
@@ -913,7 +913,7 @@ impl Session<'_> {
         let result = self.await_response(envelopes, id).await?;
         let capabilities: Value =
             serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
-        // Kvim measures every column in UTF-8 bytes, and the protocol measures
+        // kvim measures every column in UTF-8 bytes, and the protocol measures
         // one column in UTF-16 code units unless the server confirms UTF-8. The
         // session records the answer and converts every column against it.
         self.encoding = PositionEncoding::from_result(
@@ -980,7 +980,7 @@ impl Session<'_> {
     async fn dispatch(&mut self, envelope: RpcEnvelope) -> Result<(), LspError> {
         if let Some(method) = envelope.method {
             if let Some(id) = envelope.id {
-                // An unanswered server request stalls the server, so Kvim always
+                // An unanswered server request stalls the server, so kvim always
                 // answers. It accepts the creation of one progress token,
                 // because the overlay shows the reports of that token. It asks
                 // for every open document again after a refresh request, and it
