@@ -9,9 +9,10 @@
 //! build registers 25 adapters, which `docs/language-services.md` names.
 //!
 //! Only an adapter can select a path by language, by file extension, or by file
-//! name. Generic `kvim-core`, `kvim-editor`, `kvim-runtime`, `kvim-terminal`,
-//! `kvim-tui`, and `kvim-workspace` code passes a path and exact buffer
-//! content, and never inspects either key.
+//! name, and only an adapter answers to the name of a language. Generic
+//! `kvim-core`, `kvim-editor`, `kvim-runtime`, `kvim-terminal`, `kvim-tui`, and
+//! `kvim-workspace` code passes a path and exact buffer content, and never
+//! inspects a lookup key.
 //!
 //! One analysis reads the exact text of one buffer version. It returns bounded
 //! highlight spans, the syntax tree of that version, and the indent level for a
@@ -630,6 +631,19 @@ pub trait LanguageAdapter: Send + Sync {
         &[]
     }
 
+    /// Returns the names of the language that this adapter answers to.
+    ///
+    /// A language name is the third lookup key of the adapter, and it needs no
+    /// path. A markdown fence names its language in an info string, so a fence
+    /// reaches its adapter through this key alone. The table holds the name of
+    /// the language and the aliases that an author or a server writes for it,
+    /// for example `rs` beside `rust`. Every name stands in lower case, and
+    /// exactly one adapter of the registry owns each name. The default answer
+    /// is the empty table. See `docs/language-services.md`.
+    fn language_names(&self) -> &'static [&'static str] {
+        &[]
+    }
+
     /// Returns the comment tokens of the language.
     fn comment(&self) -> CommentStyle;
 
@@ -697,6 +711,23 @@ pub trait LanguageAdapter: Send + Sync {
                 .is_some_and(|name| owns(self.file_names(), name))
     }
 
+    /// Reports whether this adapter answers to one language name.
+    ///
+    /// The rule reads the third lookup key, which carries no path. The match
+    /// folds ASCII case, because the name is prose that a server writes, and a
+    /// path is a filesystem entity where the case names a different file. A
+    /// name that no adapter declares matches nothing, which is no failure.
+    ///
+    /// The caller passes one complete name. A CommonMark info string may carry
+    /// an attribute after the name, and the reader of the fence extracts the
+    /// name. A longer text therefore matches nothing, because every comparison
+    /// rejects a length that no declared name holds.
+    fn supports_language(&self, language: &str) -> bool {
+        self.language_names()
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(language))
+    }
+
     /// Parses the source and collects bounded highlight spans.
     ///
     /// The job runs on the bounded worker service. It checks the cancellation
@@ -739,6 +770,11 @@ pub trait LanguageAdapter: Send + Sync {
 ///     registry.adapter(Path::new("LIB.RS")).err(),
 ///     Some(AnalysisError::UnsupportedPath),
 /// );
+/// // A language name selects an adapter without a path, and that match folds
+/// // ASCII case.
+/// assert_eq!(registry.adapter_of_language("Rust").unwrap().id(), "rust");
+/// // A name that no adapter declares selects nothing, which is no failure.
+/// assert!(registry.adapter_of_language("console").is_none());
 /// ```
 #[derive(Clone, Copy)]
 pub struct LanguageRegistry {
@@ -828,7 +864,8 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 ///
 /// Exactly one adapter owns each extension and each file name. Two owners make
 /// every path of that key an ambiguous failure, which leaves the buffer without
-/// highlighting, without a server, and without a formatter.
+/// highlighting, without a server, and without a formatter. Exactly one adapter
+/// owns each language name for the same reason.
 static ADAPTERS: [&dyn LanguageAdapter; 25] = [
     &ASM,
     &BASH,
@@ -906,6 +943,31 @@ impl LanguageRegistry {
             found = Some(*adapter);
         }
         found.ok_or(AnalysisError::UnsupportedPath)
+    }
+
+    /// Returns the adapter that answers to one language name.
+    ///
+    /// The lookup reads the third key of the selection, so it needs no path. A
+    /// markdown fence names its language in an info string, and the caller
+    /// passes that name alone. The match folds ASCII case.
+    ///
+    /// A name that no adapter declares selects nothing. That answer is no
+    /// failure, because a fence may name any language of the world, and such a
+    /// fence renders as plain code. See `docs/language-services.md`.
+    #[must_use]
+    pub fn adapter_of_language(&self, language: &str) -> Option<&'static dyn LanguageAdapter> {
+        let mut found = None;
+        for adapter in self.adapters {
+            if !adapter.supports_language(language) {
+                continue;
+            }
+            debug_assert!(
+                found.is_none(),
+                "the registry table gives each language name one adapter, and the registry test proves it"
+            );
+            found = Some(*adapter);
+        }
+        found
     }
 }
 

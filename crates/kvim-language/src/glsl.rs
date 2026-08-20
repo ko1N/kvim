@@ -22,6 +22,9 @@ use super::{
 /// rendering pipeline.
 const GLSL_EXTENSIONS: [&str; 7] = ["comp", "frag", "geom", "glsl", "tesc", "tese", "vert"];
 
+/// The language names that the GLSL adapter answers to.
+const GLSL_LANGUAGE_NAMES: [&str; 1] = ["glsl"];
+
 /// The node kinds whose content takes one more indent level in GLSL.
 ///
 /// The GLSL grammar extends the C grammar, so the node kinds are the node kinds
@@ -104,6 +107,10 @@ impl LanguageAdapter for GlslAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &GLSL_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &GLSL_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

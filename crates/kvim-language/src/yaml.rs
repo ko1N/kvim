@@ -24,6 +24,11 @@ const YAML_EXTENSIONS: [&str; 2] = ["yaml", "yml"];
 /// so the file-name key is the only key that selects it.
 const YAML_FILE_NAMES: [&str; 2] = [".clang-format", ".clang-tidy"];
 
+/// The language names that the YAML adapter answers to.
+///
+/// `yml` is the short form that a fence carries beside `yaml`.
+const YAML_LANGUAGE_NAMES: [&str; 2] = ["yaml", "yml"];
+
 /// The node kinds whose content takes one more indent level in YAML.
 ///
 /// YAML closes a block collection with indentation alone, so no node spans the
@@ -124,6 +129,10 @@ impl LanguageAdapter for YamlAdapter {
 
     fn file_names(&self) -> &'static [&'static str] {
         &YAML_FILE_NAMES
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &YAML_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

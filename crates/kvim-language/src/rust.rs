@@ -21,6 +21,11 @@ use super::{
 /// extension.
 const RUST_EXTENSIONS: [&str; 1] = ["rs"];
 
+/// The language names that the Rust adapter answers to.
+///
+/// `rs` is the short form that a fence carries beside `rust`.
+const RUST_LANGUAGE_NAMES: [&str; 2] = ["rs", "rust"];
+
 /// The node kinds whose content takes one more indent level in Rust.
 const RUST_INDENT_SCOPES: [&str; 16] = [
     "arguments",
@@ -111,6 +116,10 @@ impl LanguageAdapter for RustAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &RUST_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &RUST_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

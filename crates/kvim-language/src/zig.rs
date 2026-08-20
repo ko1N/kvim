@@ -17,6 +17,9 @@ use super::{
 /// The file extensions that the Zig adapter owns.
 const ZIG_EXTENSIONS: [&str; 1] = ["zig"];
 
+/// The language names that the Zig adapter answers to.
+const ZIG_LANGUAGE_NAMES: [&str; 1] = ["zig"];
+
 /// The node kinds whose content takes one more indent level in Zig.
 ///
 /// `block` holds the statements of a function, of a loop, and of a condition.
@@ -106,6 +109,10 @@ impl LanguageAdapter for ZigAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &ZIG_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &ZIG_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

@@ -27,6 +27,12 @@ use super::{
 /// adapter leaves that extension unclaimed.
 const TERRAFORM_EXTENSIONS: [&str; 2] = ["tf", "tfvars"];
 
+/// The language names that the Terraform adapter answers to.
+///
+/// The adapter leaves `hcl` unclaimed, exactly as it leaves that extension
+/// unclaimed, because a plain HCL file carries another tool.
+const TERRAFORM_LANGUAGE_NAMES: [&str; 2] = ["terraform", "tf"];
+
 /// The highlight query of the Terraform adapter.
 ///
 /// The `tree-sitter-hcl` crate ships no query, so this crate vendors the
@@ -123,6 +129,10 @@ impl LanguageAdapter for TerraformAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &TERRAFORM_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &TERRAFORM_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

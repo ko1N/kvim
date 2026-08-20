@@ -17,6 +17,9 @@ use super::{
 /// The file extensions that the TOML adapter owns.
 const TOML_EXTENSIONS: [&str; 1] = ["toml"];
 
+/// The language names that the TOML adapter answers to.
+const TOML_LANGUAGE_NAMES: [&str; 1] = ["toml"];
+
 /// The node kinds whose content takes one more indent level in TOML.
 ///
 /// A table header starts at the left margin, so only the two bracketed values
@@ -102,6 +105,10 @@ impl LanguageAdapter for TomlAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &TOML_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &TOML_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

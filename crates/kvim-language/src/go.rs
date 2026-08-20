@@ -18,6 +18,12 @@ use super::{
 /// The file extensions that the Go adapter owns.
 const GO_EXTENSIONS: [&str; 1] = ["go"];
 
+/// The language names that the Go adapter answers to.
+///
+/// `golang` is the name of the toolchain, and a fence carries it for the
+/// language.
+const GO_LANGUAGE_NAMES: [&str; 2] = ["go", "golang"];
+
 /// The node kinds whose content takes one more indent level in Go.
 ///
 /// `block` is the braced body of a function, of a loop, and of a condition. The
@@ -120,6 +126,10 @@ impl LanguageAdapter for GoAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &GO_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &GO_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

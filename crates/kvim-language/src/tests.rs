@@ -582,7 +582,128 @@ fn no_two_adapters_of_the_registry_claim_one_lookup_key() {
                 "the {id} adapter owns the {name} file name alone",
             );
         }
+        for name in adapter.language_names() {
+            assert_eq!(
+                *name,
+                name.to_ascii_lowercase(),
+                "the {id} adapter declares every language name in lower case, which the folding match assumes",
+            );
+            assert_eq!(
+                registry.adapter_of_language(name).map(LanguageAdapter::id),
+                Some(id),
+                "the {id} adapter owns the {name} language name alone",
+            );
+            assert_eq!(
+                registry
+                    .adapter_of_language(&name.to_ascii_uppercase())
+                    .map(LanguageAdapter::id),
+                Some(id),
+                "the {name} language name reaches the {id} adapter through the case fold",
+            );
+        }
     }
+}
+
+#[test]
+fn every_adapter_of_the_registry_answers_to_its_own_identifier() {
+    let registry = LanguageRegistry::first_release();
+
+    // A fence names a language, and the identifier of an adapter is the name of
+    // that language. An adapter that dropped the name would leave every fence
+    // of its language plain.
+    for adapter in registry.adapters() {
+        let id = adapter.id();
+        assert!(
+            adapter.language_names().contains(&id),
+            "the {id} adapter answers to its own identifier",
+        );
+    }
+}
+
+#[test]
+fn a_language_name_selects_the_adapter_of_that_language() {
+    let registry = LanguageRegistry::first_release();
+
+    assert_eq!(
+        registry
+            .adapter_of_language("rust")
+            .map(LanguageAdapter::id),
+        Some("rust")
+    );
+    // A declared alias reaches the same adapter as the name of the language.
+    assert_eq!(
+        registry.adapter_of_language("rs").map(LanguageAdapter::id),
+        Some("rust")
+    );
+    assert_eq!(
+        registry.adapter_of_language("c++").map(LanguageAdapter::id),
+        Some("cpp")
+    );
+    // The match folds ASCII case, because the name is server text.
+    assert_eq!(
+        registry
+            .adapter_of_language("Rust")
+            .map(LanguageAdapter::id),
+        Some("rust")
+    );
+    // Two grammars read the JSX syntax, so the two names reach two adapters.
+    assert_eq!(
+        registry.adapter_of_language("jsx").map(LanguageAdapter::id),
+        Some("javascript")
+    );
+    assert_eq!(
+        registry.adapter_of_language("tsx").map(LanguageAdapter::id),
+        Some("tsx")
+    );
+}
+
+#[test]
+fn an_unknown_language_name_selects_nothing() {
+    let registry = LanguageRegistry::first_release();
+
+    // A fence may name any language of the world, so an unknown name is no
+    // failure. It selects nothing, and the fence stays plain.
+    assert!(registry.adapter_of_language("console").is_none());
+    assert!(registry.adapter_of_language("text").is_none());
+    assert!(registry.adapter_of_language("klingon").is_none());
+    assert!(registry.adapter_of_language("").is_none());
+    // The registry reads one complete name. A CommonMark info string may carry
+    // an attribute after the name, and the reader of the fence extracts it.
+    assert!(registry.adapter_of_language("rust,ignore").is_none());
+    assert!(registry.adapter_of_language("rust title=\"x\"").is_none());
+    // A long name selects nothing, because no declared name holds its length.
+    let hostile = "rust".repeat(4096);
+    assert!(registry.adapter_of_language(&hostile).is_none());
+}
+
+#[test]
+fn a_language_name_selects_no_path() {
+    let registry = LanguageRegistry::first_release();
+
+    // The name key carries no path, so a file that is named after a language
+    // reaches no adapter, and the two path keys keep their own answers.
+    assert_eq!(
+        registry.adapter(Path::new("rust")).err(),
+        Some(AnalysisError::UnsupportedPath)
+    );
+    assert_eq!(
+        registry.adapter(Path::new("python")).err(),
+        Some(AnalysisError::UnsupportedPath)
+    );
+    assert_eq!(
+        registry
+            .adapter(Path::new("src/main.rs"))
+            .map(LanguageAdapter::id)
+            .ok(),
+        Some("rust")
+    );
+    assert_eq!(
+        registry
+            .adapter(Path::new("flake.lock"))
+            .map(LanguageAdapter::id)
+            .ok(),
+        Some("json")
+    );
 }
 
 #[test]

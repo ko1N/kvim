@@ -32,6 +32,27 @@ complete file name. Both keys are adapter data, so one selection path serves
 both. The file name key serves a file whose extension names its tool instead of
 its format, for example the JSON lock file `flake.lock`.
 
+A third lookup key selects an adapter without a path: the name of a language. A
+markdown fence names its language in an info string, and that name is no path.
+The key is adapter data, as the two path keys are. The registry answers one name
+with one adapter, or with nothing. A fence may name any language of the world,
+so an unknown name is no failure. It selects nothing, and the fence stays plain.
+
+The name match folds ASCII case, and the two path keys stay case-sensitive. A
+path is a filesystem entity, where `s` and `S` name two different assembler
+files. A language name is prose that a server writes, so `Rust` and `rust` name
+one language. Every adapter declares its names in lower case, and the fold reads
+ASCII alone, so one name always reaches at most one adapter.
+
+An adapter declares the name of its language, and the aliases that an author or
+a server writes for it. The identifier of the adapter is always one of its
+names. Exactly one adapter owns each name, as exactly one adapter owns each
+extension.
+
+The registry reads one complete name. It normalizes no info string, because a
+CommonMark info string may carry an attribute after the name. The reader of the
+fence extracts the name and passes it alone.
+
 An adapter supplies data, not behavior:
 
 | Item | Meaning |
@@ -39,6 +60,7 @@ An adapter supplies data, not behavior:
 | Identifier and version | The stable name of the adapter and of its analysis implementation. |
 | File extensions | The case-sensitive extensions that the adapter owns. |
 | File names | The case-sensitive complete file names that the adapter owns, for a file whose extension does not name its format. |
+| Language names | The names of the language that the adapter answers to, in lower case. The match folds ASCII case, and it needs no path. |
 | Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
@@ -100,6 +122,19 @@ second grammar for a standalone document type definition, and kvim compiles the
 document grammar alone, because no registered extension names such a file. SQL
 owns `sql`. Terraform owns `tf` and `tfvars`, and it leaves `hcl` unclaimed,
 because a plain HCL file carries another tool that `tofu-ls` does not serve.
+
+The language names follow the same rule. Every adapter names its language, and
+it names the aliases that a fence carries beside that name: `assembly`
+beside `asm`, `sh` and `shell` beside `bash`, `c++` and `cxx` beside `cpp`,
+`golang` beside `go`, `js` and `jsx` beside `javascript`, `md` beside
+`markdown`, `py` beside `python`, `rs` beside `rust`, `tf` beside `terraform`,
+`ts` beside `typescript`, and `yml` beside `yaml`. `jsx` names the JavaScript
+adapter, because one grammar reads the module syntax and the JSX syntax of it.
+`tsx` names the TSX adapter, because the plain TypeScript grammar rejects that
+syntax. No adapter claims `console`, `text`, or `hcl`. A terminal transcript is
+no language of this registry, and a plain text is none either. A plain HCL file
+carries another tool. Each of those three names therefore selects nothing, and
+the fence stays plain.
 
 One adapter declares a table of servers, not one server. A language whose tools
 split the work therefore runs every declared server together. The order of the
@@ -503,7 +538,8 @@ parse also measures no terminal cell, because `unicode-width` runs in
 `kvim-tui` only. The document therefore holds text, roles, and structure, and
 the renderer holds every glyph, every width, and every color. The fence of a
 code block names a language as well, and only a language adapter may select a
-path by language, so a later highlighter of a fence stays inside this crate.
+path by language, so a later highlighter of a fence stays inside this crate. The
+language name key of the registry answers that name.
 
 The parse is pure. It reads no clock, no environment, and no file, so one text
 always produces one document.

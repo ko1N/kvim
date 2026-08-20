@@ -27,6 +27,12 @@ const BASH_EXTENSIONS: [&str; 2] = ["bash", "sh"];
 /// carries no extension, so the file-name key is the only key that selects it.
 const BASH_FILE_NAMES: [&str; 4] = [".bash_logout", ".bash_profile", ".bashrc", ".profile"];
 
+/// The language names that the Bash adapter answers to.
+///
+/// One grammar reads the POSIX shell language and the Bash extensions of it,
+/// so the adapter answers to the plain name of the shell as well.
+const BASH_LANGUAGE_NAMES: [&str; 3] = ["bash", "sh", "shell"];
+
 /// The node kinds whose content takes one more indent level in Bash.
 ///
 /// Every compound statement of the shell carries its own terminator: `fi` ends
@@ -138,6 +144,10 @@ impl LanguageAdapter for BashAdapter {
 
     fn file_names(&self) -> &'static [&'static str] {
         &BASH_FILE_NAMES
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &BASH_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

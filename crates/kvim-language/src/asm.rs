@@ -22,6 +22,11 @@ use super::{
 /// so the adapter names both.
 const ASM_EXTENSIONS: [&str; 3] = ["S", "asm", "s"];
 
+/// The language names that the assembly adapter answers to.
+///
+/// `assembly` is the long form of the same name.
+const ASM_LANGUAGE_NAMES: [&str; 2] = ["asm", "assembly"];
+
 /// Returns the assembly grammar of the bundled parser.
 fn asm_language() -> Language {
     tree_sitter_asm::LANGUAGE.into()
@@ -92,6 +97,10 @@ impl LanguageAdapter for AsmAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &ASM_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &ASM_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

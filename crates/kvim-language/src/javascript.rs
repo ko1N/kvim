@@ -21,6 +21,12 @@ use super::{
 /// needs no grammar of its own and stands beside the three module extensions.
 const JAVASCRIPT_EXTENSIONS: [&str; 4] = ["cjs", "js", "jsx", "mjs"];
 
+/// The language names that the JavaScript adapter answers to.
+///
+/// One grammar reads the module syntax and the JSX syntax of the language, so
+/// the adapter answers to `jsx` as well.
+const JAVASCRIPT_LANGUAGE_NAMES: [&str; 3] = ["javascript", "js", "jsx"];
+
 /// The node kinds whose content takes one more indent level in JavaScript.
 ///
 /// Every entry carries its own opening and closing character, so each one
@@ -163,6 +169,10 @@ impl LanguageAdapter for JavascriptAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &JAVASCRIPT_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &JAVASCRIPT_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

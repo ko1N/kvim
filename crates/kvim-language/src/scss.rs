@@ -20,6 +20,9 @@ use super::{
 /// The file extensions that the SCSS adapter owns.
 const SCSS_EXTENSIONS: [&str; 1] = ["scss"];
 
+/// The language names that the SCSS adapter answers to.
+const SCSS_LANGUAGE_NAMES: [&str; 1] = ["scss"];
+
 /// The node kinds whose content takes one more indent level in SCSS.
 ///
 /// SCSS adds the `parameters` node of a mixin and of a function to the two
@@ -138,6 +141,10 @@ impl LanguageAdapter for ScssAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &SCSS_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &SCSS_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

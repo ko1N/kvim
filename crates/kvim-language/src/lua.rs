@@ -18,6 +18,9 @@ use super::{
 /// The file extensions that the Lua adapter owns.
 const LUA_EXTENSIONS: [&str; 1] = ["lua"];
 
+/// The language names that the Lua adapter answers to.
+const LUA_LANGUAGE_NAMES: [&str; 1] = ["lua"];
+
 /// The node kinds whose content takes one more indent level in Lua.
 ///
 /// Every compound statement of Lua ends with the `end` keyword, and a repeat
@@ -125,6 +128,10 @@ impl LanguageAdapter for LuaAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &LUA_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &LUA_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

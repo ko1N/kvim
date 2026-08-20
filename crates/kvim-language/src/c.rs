@@ -23,6 +23,9 @@ use super::{
 /// two owners make every path of that extension an ambiguous failure.
 const C_EXTENSIONS: [&str; 2] = ["c", "h"];
 
+/// The language names that the C adapter answers to.
+const C_LANGUAGE_NAMES: [&str; 1] = ["c"];
+
 /// The node kinds whose content takes one more indent level in C.
 ///
 /// `compound_statement` is the braced block of a function, of a loop, and of a
@@ -118,6 +121,10 @@ impl LanguageAdapter for CAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &C_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &C_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

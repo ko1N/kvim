@@ -17,6 +17,11 @@ use super::{
 /// The file extensions that the Markdown adapter owns.
 const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
 
+/// The language names that the Markdown adapter answers to.
+///
+/// `md` is the short form that a fence carries beside `markdown`.
+const MARKDOWN_LANGUAGE_NAMES: [&str; 2] = ["markdown", "md"];
+
 /// Returns the Markdown block grammar of the bundled parser.
 ///
 /// The parser splits Markdown into a block grammar and an inline grammar. kvim
@@ -98,6 +103,10 @@ impl LanguageAdapter for MarkdownAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &MARKDOWN_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &MARKDOWN_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

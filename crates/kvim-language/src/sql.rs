@@ -18,6 +18,9 @@ use super::{
 /// The file extensions that the SQL adapter owns.
 const SQL_EXTENSIONS: [&str; 1] = ["sql"];
 
+/// The language names that the SQL adapter answers to.
+const SQL_LANGUAGE_NAMES: [&str; 1] = ["sql"];
+
 /// The node kinds whose content takes one more indent level in SQL.
 ///
 /// Each name spans a parenthesized construct: the column list of a table, a
@@ -108,6 +111,10 @@ impl LanguageAdapter for SqlAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &SQL_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &SQL_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

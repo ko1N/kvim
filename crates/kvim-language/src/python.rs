@@ -21,6 +21,11 @@ use super::{
 /// owns both extensions.
 const PYTHON_EXTENSIONS: [&str; 2] = ["py", "pyi"];
 
+/// The language names that the Python adapter answers to.
+///
+/// `py` is the short form that a fence carries beside `python`.
+const PYTHON_LANGUAGE_NAMES: [&str; 2] = ["py", "python"];
+
 /// The node kinds whose content takes one more indent level in Python.
 ///
 /// Python closes a suite with indentation alone, so the grammar has no node
@@ -158,6 +163,10 @@ impl LanguageAdapter for PythonAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &PYTHON_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &PYTHON_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

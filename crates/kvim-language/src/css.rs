@@ -18,6 +18,9 @@ use super::{
 /// The file extensions that the CSS adapter owns.
 const CSS_EXTENSIONS: [&str; 1] = ["css"];
 
+/// The language names that the CSS adapter answers to.
+const CSS_LANGUAGE_NAMES: [&str; 1] = ["css"];
+
 /// The node kinds whose content takes one more indent level in CSS.
 ///
 /// A `block` node spans the braces of a rule set and of an at-rule, and an
@@ -106,6 +109,10 @@ impl LanguageAdapter for CssAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &CSS_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &CSS_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

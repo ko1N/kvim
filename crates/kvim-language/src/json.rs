@@ -24,6 +24,9 @@ const JSON_EXTENSIONS: [&str; 1] = ["json"];
 /// `flake.lock` is the lock file of this repository.
 const JSON_FILE_NAMES: [&str; 1] = ["flake.lock"];
 
+/// The language names that the JSON adapter answers to.
+const JSON_LANGUAGE_NAMES: [&str; 1] = ["json"];
+
 /// The node kinds whose content takes one more indent level in JSON.
 const JSON_INDENT_SCOPES: [&str; 2] = ["array", "object"];
 
@@ -119,6 +122,10 @@ impl LanguageAdapter for JsonAdapter {
 
     fn file_names(&self) -> &'static [&'static str] {
         &JSON_FILE_NAMES
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &JSON_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {
