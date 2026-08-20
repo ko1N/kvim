@@ -35,6 +35,12 @@
 //! a formatting server, so [`LanguageAdapter::formatter`] names the one path
 //! that a format-on-save runs. See `docs/language-services.md`.
 //!
+//! A server answer may carry markdown. [`MarkupDocument`] reads that text into
+//! blocks of styled text, and it answers a [`MarkupRole`] for each stretch of
+//! it. The parse is pure, and it names no color, no glyph, and no terminal
+//! cell, because `kvim-tui` owns every one of them. See
+//! `docs/language-services.md`.
+//!
 //! [`LanguageAdapter`] stays object-safe, so the registry holds one adapter for
 //! each language. A later asynchronous method must return a boxed future
 //! instead of using `async fn`, which would break object safety.
@@ -93,6 +99,7 @@ mod javascript;
 mod json;
 mod lua;
 mod markdown;
+mod markup;
 mod nix;
 mod progress;
 mod protocol;
@@ -139,6 +146,11 @@ pub use javascript::JavascriptAdapter;
 pub use json::JsonAdapter;
 pub use lua::LuaAdapter;
 pub use markdown::MarkdownAdapter;
+pub use markup::{
+    MARKUP_BLOCKS_MAX, MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX,
+    MarkupBlock, MarkupBody, MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole,
+    StyledMarkup,
+};
 pub use nix::NixAdapter;
 pub use progress::{
     LSP_PROGRESS_CHARS_MAX, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
