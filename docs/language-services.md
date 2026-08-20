@@ -466,6 +466,42 @@ so `LSP_MESSAGE_BYTES_MAX` bounds both by the same rule. A full session spends
 the cumulative `LSP_INPUT_BYTES_MAX` budget in proportion to the size of the
 document, because each change carries that text again.
 
+### The Refused Synchronization
+
+The dispatch of one synchronization can fail before the request reaches a
+server. The typed state of that failure decides whether a server copy drifted.
+
+A full request queue answers `Saturated`. That session runs, it holds a copy of
+each open document, and it drops the request. kvim therefore opens that document
+again. The fresh open carries the complete text of the current buffer version,
+and it supersedes every queued change of that buffer. The dispatch of that pass
+stops, because the same session refuses every further request of the pass. The
+next pass sends the open to a queue that drained.
+
+Every other refusal names a state where no session holds a copy:
+
+- No adapter serves the path.
+- The adapter declares no language server.
+- The workspace uses no declared server of the path.
+- The declared executable is not installed.
+- The server process did not start.
+- Every session of the path stopped.
+
+kvim opens no document again for those states, because no copy can drift. A
+stopped server that restarts opens every document again on its own.
+
+A refused close names no buffer, so kvim opens no document again. That server
+keeps one document that the editor no longer holds at that path, and the next
+open of that path replaces the copy.
+
+The synchronization mode never refuses a change. A server that asks for no
+synchronization accepts the change and sends nothing, so its document needs no
+repair.
+
+kvim reports the repair on the message line, and the log records that report.
+The reader therefore knows that the editor repaired the copy, and not only that
+one request failed. See [`windows.md`](windows.md).
+
 ### The Standard Error Of One Server
 
 A server writes its own log to its standard error. That text names the cause of

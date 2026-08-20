@@ -1522,9 +1522,8 @@ fn refuse_language_requests(session: &mut Session) {
 fn asks_a_question(session: &mut Session) -> bool {
     let mut asked = false;
     while let Some(request) = session.take_language_request() {
-        let kind = request.kind();
-        asked |= kind == LanguageRequestKind::Query;
-        let _ = session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+        asked |= request.kind() == LanguageRequestKind::Query;
+        let _ = session.apply_language_dispatch(&request, Err(LspError::NoServerDeclared));
     }
     asked
 }
@@ -1535,8 +1534,7 @@ fn asks_a_question(session: &mut Session) -> bool {
 /// hands the same state to every queued request.
 fn refuse_language_requests_with(session: &mut Session, state: impl Fn() -> LspError) {
     while let Some(request) = session.take_language_request() {
-        let kind = request.kind();
-        let _ = session.apply_language_dispatch(kind, Err(state()));
+        let _ = session.apply_language_dispatch(&request, Err(state()));
     }
 }
 
@@ -2495,6 +2493,53 @@ fn a_missing_language_server_is_reported_once_and_editing_continues() {
     type_keys(&mut session, "// ");
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(session.buffer().to_string(), "// fn main() {}\n");
+}
+
+#[test]
+fn a_refusal_opens_no_document_again_without_a_lost_copy() {
+    let directory = TempDir::new("session-refused-request");
+    let path = directory.write("main.rs", "fn main() {}\n");
+    let mut session = file_session();
+
+    session.open_path(path);
+    run_file_request(&mut session);
+    refuse_language_requests(&mut session);
+
+    // The edit queues one incremental change of the document.
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    let change = session
+        .take_language_request()
+        .expect("the edit queued one synchronization");
+    assert_eq!(change.kind(), LanguageRequestKind::Synchronization);
+
+    // No running session took the change, so no copy of that document exists
+    // and no fresh open can repair one.
+    let _ = session.apply_language_dispatch(&change, Err(LspError::NoServerDeclared));
+    assert!(
+        session.take_language_request().is_none(),
+        "a refusal that names no running session opens no document again"
+    );
+
+    // A question carries no text, so its refusal leaves no copy behind. The
+    // editor releases the question and opens no document again.
+    type_keys(&mut session, "gd");
+    let query = session
+        .take_language_request()
+        .expect("the keys asked one question");
+    assert_eq!(query.kind(), LanguageRequestKind::Query);
+    let _ = session.apply_language_dispatch(&query, Err(LspError::Saturated));
+    assert!(
+        session.take_language_request().is_none(),
+        "a refused question opens no document again"
+    );
+
+    // The editor stays fully usable after both refusals.
+    press(&mut session, 'i');
+    type_keys(&mut session, "y");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "xyfn main() {}\n");
 }
 
 #[test]

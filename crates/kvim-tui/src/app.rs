@@ -37,7 +37,7 @@ use kvim_workspace::{
 };
 
 use super::clipboard::{SessionClipboard, command_failure, refused_submission};
-use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
+use super::language::{LANGUAGE_OUTBOX_MAX, Refusal, send_request};
 use super::picker::PickerFailure;
 use super::session::{
     AnalysisResult, FileRequestFailure, JOB_ANALYSIS, JOB_OBSOLETE, JOB_REFUSED, JOB_WALK,
@@ -490,6 +490,11 @@ fn publish(editor: &mut Session, event: LanguageEvent, now: Duration) -> Step {
 /// state on the message line and completes a save that waited for a formatter.
 /// The returned value carries that visible change to the caller, so the frame
 /// follows the dispatch and not the next key.
+///
+/// A running session that refuses a request holds a copy of every document that
+/// it opened, so the session opens the refused document again. The pass then
+/// ends, because that session refuses every further request of the same pass.
+/// See `docs/language-services.md`.
 fn submit_language_work(
     editor: &mut Session,
     mut language: Option<&mut LanguageServices>,
@@ -499,7 +504,6 @@ fn submit_language_work(
         let Some(request) = editor.take_language_request() else {
             return redraw;
         };
-        let kind = request.kind();
         let result = match language.as_deref_mut() {
             // One language can run several servers, so the request reaches
             // every running session of its path.
@@ -510,7 +514,15 @@ fn submit_language_work(
             // usable with no language service at all.
             None => Err(LspError::NoServerDeclared),
         };
-        redraw = redraw.or(editor.apply_language_dispatch(kind, result));
+        let refusal = result.as_ref().err().map(Refusal::of);
+        redraw = redraw.or(editor.apply_language_dispatch(&request, result));
+        if refusal == Some(Refusal::CopyDrifted) {
+            // The queue of that session stays full until the session drains it,
+            // so every further request of this pass meets the same refusal. The
+            // editor marked the refused document for a fresh open, and the next
+            // pass sends that open.
+            return redraw;
+        }
     }
     debug_assert!(
         editor.take_language_request().is_none(),

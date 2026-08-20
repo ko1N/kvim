@@ -1564,8 +1564,7 @@ fn save_session(width: u16, height: u16) -> Session {
 /// continues instead of stalling.
 fn refuse_language_requests(session: &mut Session) {
     while let Some(request) = session.take_language_request() {
-        let kind = request.kind();
-        let _ = session.apply_language_dispatch(kind, Err(LspError::NoServerDeclared));
+        let _ = session.apply_language_dispatch(&request, Err(LspError::NoServerDeclared));
     }
 }
 
