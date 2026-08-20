@@ -508,10 +508,10 @@ Every burst also starts one bounded check of the open buffers against their
 files. The Reload section above owns that rule.
 
 The watcher ignores the generated directory names of the row-state list above:
-`.direnv`, `.git`, `__pycache__`, `node_modules`, and `target`. One list answers
-both questions, so the two rules can never disagree about one entry. A workspace
-whose own root carries such a name still reports every change inside it, because
-the comparison starts below the root.
+`.direnv`, `.git`, `__pycache__`, `node_modules`, and `target`. The file tree and
+the watcher read one list, so a hidden row and an unwatched directory can never
+name two different sets. A workspace whose own root carries such a name still
+reports every change inside it, because the comparison starts below the root.
 
 The list limits the registration first. The watcher walks the workspace once,
 after the first frame, and adds one watch for each directory that stays. It
@@ -539,8 +539,10 @@ and a platform that also refuses the watch of that directory loses its entries.
 Its parent still reports every change of the directory itself, so one refused
 directory never stops the watch. A symbolic link adds no watch, because the
 entry type names the link itself, so no link watches one tree twice and no link
-builds a cycle. A tree above the bounds below keeps the directories that the
-walk reached, and it reports the part that carries no watch.
+builds a cycle. The directory bound and the depth bound below both keep the
+directories that the walk reached and report the part that carries no watch. The
+bound of one directory read reports no gap. A directory above that many entries
+loses the directories after it without a report.
 
 A watch covers one directory alone, so a directory that appears after the walk
 carries no watch of its own. The watcher closes that gap on the next burst. The
@@ -575,7 +577,8 @@ queue ever grows without a limit.
 
 A host that refuses the watch leaves the editor fully usable. The editor names
 that state once for each session and the refresh command reads the workspace by
-hand.
+hand. That report shares one flag with the coverage report below, so one session
+shows one watch report.
 
 The registration runs after the first frame, so a host that refuses the root
 refuses it there. The coalescing task then ends and closes its published stream.
@@ -614,8 +617,11 @@ one portable boundary of the watcher. Linux names that setting
 the refusal and its count alone.
 
 The editor shows one watch report for each session. The missing watcher and the
-partial registration share one flag, so the first report wins and every later
-burst stays quiet.
+partial registration share one flag, so the first report of a session wins. A
+session that reported a partial registration shows no later missing-watcher note.
+A session that reported the missing watcher shows no later coverage note. The
+editor accepts that trade for a quiet message line, because the two reports name
+the same loss and offer the same manual refresh.
 
 ### Watch Bounds
 
@@ -626,9 +632,9 @@ burst stays quiet.
 | Waiting bursts | `WATCH_BATCH_QUEUE_MAX` | 16 | The event loop reads one burst per window, so a queue of 16 covers a loop that is briefly busy. |
 | Directories of one burst | `WATCH_BATCH_DIRECTORIES_MAX` | 64 | The value matches `TREE_PENDING_READS_MAX`, so one burst never names more reads than the tree queues. |
 | Events of one burst | `WATCH_BURST_EVENTS_MAX` | 4096 | The bound ends one window even while a program writes without pause, so the consumer always receives its burst. |
-| Directories of one registration | `WATCH_DIRECTORIES_MAX` | 4096 | The value matches `WALK_DIRECTORIES_MAX` of the picker walk, so one workspace answers both walks with one size. |
-| Depth of one registration | `WATCH_DEPTH_MAX` | 16 | The value matches `WALK_DEPTH_MAX` of the picker walk. A source tree below 16 levels holds no edited file. |
-| Entries of one registration read | `WATCH_DIRECTORY_SCAN_MAX` | 4096 | The value matches `TREE_DIRECTORY_SCAN_MAX`, so one very large directory costs the registration bounded time. |
+| Directories of one registration | `WATCH_DIRECTORIES_MAX` | 4096 | Linux counts one watch against a limit of the user, not of the process, so every program of that user shares one budget. The bound keeps the editor a considerate user of that budget, and it tells a later reader that a larger value takes watches from the other programs of the user. A normal workspace stays far below it: after the walk skips the ignored names, this repository registers 31 directories. A workspace above the bound keeps the watches that the walk placed, and the burst reports the gap. |
+| Depth of one registration | `WATCH_DEPTH_MAX` | 16 | The value matches `WALK_DEPTH_MAX` of the picker walk. A source tree below 16 levels holds no edited file. A deeper tree carries no watch below the bound, and the burst reports the gap. |
+| Entries of one registration read | `WATCH_DIRECTORY_SCAN_MAX` | 4096 | The value matches `TREE_DIRECTORY_SCAN_MAX`, so one very large directory costs the registration bounded time. This bound reports no gap. |
 
 ### Tree Bounds
 
