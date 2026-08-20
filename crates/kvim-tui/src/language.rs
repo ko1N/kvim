@@ -21,7 +21,7 @@ use kvim_core::BufferVersion;
 use kvim_language::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition, FormatEdits,
     FormatterRequest, LANGUAGE_SERVERS_MAX, LanguageFormatter, LanguageRegistry, LanguageRequestId,
-    LanguageServerHandle, LanguageServerId, LspError, ServerFormatting, SourceLocation,
+    LanguageServerHandle, LanguageServerId, LspError, MarkupText, ServerFormatting, SourceLocation,
 };
 use kvim_workspace::BufferId;
 
@@ -318,8 +318,8 @@ pub(super) enum QueryPurpose {
 pub(super) enum Answer {
     /// The definition targets inside the workspace root, in answer order.
     Definition(Vec<SourceLocation>),
-    /// The hover text of the symbol under the cursor.
-    Hover(String),
+    /// The hover text of the symbol under the cursor, and its markup.
+    Hover(MarkupText),
     /// The accepted formatting edits of one buffer version.
     Formatting(FormatEdits),
     /// The server produced no value for this question.
@@ -454,12 +454,13 @@ impl PendingQuery {
 
     /// Returns the hover answers of every server, in declaration order.
     ///
-    /// The caller joins the answers, and an empty list means that no server
-    /// described the symbol.
-    pub(super) fn hover(&self) -> Vec<&str> {
+    /// Each answer carries its own markup kind, because two servers of one
+    /// language answer on their own. The caller joins the answers, and an empty
+    /// list means that no server described the symbol.
+    pub(super) fn hover(&self) -> Vec<&MarkupText> {
         self.answers()
             .filter_map(|answer| match answer {
-                Answer::Hover(text) if !text.is_empty() => Some(text.as_str()),
+                Answer::Hover(markup) => Some(markup),
                 _ => None,
             })
             .collect()

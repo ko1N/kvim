@@ -24,7 +24,7 @@ use std::time::Duration;
 
 use serde::Deserialize;
 use serde_json::value::RawValue;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
@@ -35,7 +35,8 @@ use kvim_core::BufferVersion;
 use kvim_settings::IndentSettings;
 
 use super::document::{
-    ContentChange, DiagnosticSet, FormatEdits, RawDiagnostic, RawTextEdit, SourceLocation, TextEdit,
+    ContentChange, DiagnosticSet, FormatEdits, MarkupKind, MarkupText, RawDiagnostic, RawTextEdit,
+    SourceLocation, TextEdit,
 };
 use super::encoding::{DocumentMapping, PositionEncoding, TextMirroring};
 use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
@@ -210,8 +211,9 @@ pub enum LanguageOutcome {
         request: LanguageRequestId,
         /// The buffer version that produced the answer.
         version: BufferVersion,
-        /// The hover text, or `None` when the server has nothing to say.
-        text: Option<String>,
+        /// The text and its markup, or `None` when the server has nothing to
+        /// say.
+        markup: Option<MarkupText>,
     },
     /// The server answered one formatting request.
     Formatting {
@@ -1627,7 +1629,7 @@ impl Session<'_> {
             Query::Hover(_) => Ok(LanguageOutcome::Hover {
                 request,
                 version: pending.version,
-                text: hover_text(result)?,
+                markup: hover_markup(result)?,
             }),
             Query::Diagnostics => {
                 debug_assert!(
@@ -2128,61 +2130,119 @@ impl RawLocation {
     }
 }
 
-/// Returns the bounded plain text of one hover answer.
-fn hover_text(result: &RawValue) -> Result<Option<String>, LspError> {
+/// Returns the bounded text of one hover answer and the markup that covers it.
+fn hover_markup(result: &RawValue) -> Result<Option<MarkupText>, LspError> {
     let value: Value =
         serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
     let Some(contents) = value.get("contents") else {
         return Ok(None);
     };
-    let mut text = String::new();
-    append_hover_text(contents, &mut text);
-    enforce(text.len(), LSP_HOVER_BYTES_MAX, LspBound::HoverBytes)?;
-    let text = text.trim().to_owned();
-    if text.is_empty() {
-        return Ok(None);
-    }
-    Ok(Some(text))
+    hover_contents(contents)
 }
 
-/// Collects the text of one hover content value.
+/// Returns the bounded answer of one hover `contents` value.
 ///
 /// The protocol allows a string, a marked block, a markup block, or an array of
-/// those. One reader serves every shape.
-fn append_hover_text(contents: &Value, text: &mut String) {
-    match contents {
-        Value::String(value) => push_hover_part(text, value),
-        Value::Object(object) => {
-            if let Some(Value::String(value)) = object.get("value") {
-                push_hover_part(text, value);
+/// those. One reader serves every shape and answers the one kind that covers
+/// the complete text. See `docs/language-services.md`.
+fn hover_contents(contents: &Value) -> Result<Option<MarkupText>, LspError> {
+    let mut answer = HoverAnswer::default();
+    answer.append(contents);
+    enforce(answer.text.len(), LSP_HOVER_BYTES_MAX, LspBound::HoverBytes)?;
+    Ok(answer.finish())
+}
+
+/// The collected parts of one hover answer and the kind that covers them.
+#[derive(Debug, Default)]
+struct HoverAnswer {
+    /// The parts, one part on each line.
+    text: String,
+    /// The kind of the parts so far, or `None` while no part arrived.
+    kind: Option<MarkupKind>,
+}
+
+impl HoverAnswer {
+    /// Appends every part of one hover content value.
+    fn append(&mut self, contents: &Value) {
+        match contents {
+            // A bare string is the deprecated `MarkedString`, which the
+            // protocol defines as markdown.
+            Value::String(value) => self.push(value, MarkupKind::Markdown),
+            Value::Object(object) => {
+                if let Some(Value::String(value)) = object.get("value") {
+                    self.push(value, hover_part_kind(object));
+                }
             }
-        }
-        Value::Array(values) => {
-            for value in values {
-                append_hover_text(value, text);
+            Value::Array(values) => {
+                for value in values {
+                    self.append(value);
+                }
             }
+            _ => {}
         }
-        _ => {}
+    }
+
+    /// Appends one part and keeps the parts on separate lines.
+    fn push(&mut self, part: &str, kind: MarkupKind) {
+        if !self.text.is_empty() {
+            self.text.push('\n');
+        }
+        self.text.push_str(part);
+        self.kind = Some(match self.kind {
+            Some(seen) => seen.merged(kind),
+            None => kind,
+        });
+    }
+
+    /// Returns the trimmed answer, or `None` when no part carried text.
+    fn finish(self) -> Option<MarkupText> {
+        let text = self.text.trim().to_owned();
+        if text.is_empty() {
+            return None;
+        }
+        debug_assert!(
+            self.kind.is_some(),
+            "a text of this answer arrived with one part, and every part names its kind"
+        );
+        let kind = self.kind.unwrap_or(MarkupKind::PlainText);
+        Some(MarkupText { kind, text })
     }
 }
 
-/// Appends one hover part and keeps the parts on separate lines.
-fn push_hover_part(text: &mut String, part: &str) {
-    if !text.is_empty() {
-        text.push('\n');
+/// Returns the markup kind of one hover object part.
+///
+/// `MarkupContent` names its kind. The deprecated object form of
+/// `MarkedString` names a `language` instead, and the protocol defines that
+/// form as one fenced markdown code block. An object that names neither is no
+/// shape of the protocol, so it takes plain text, which loses no character.
+fn hover_part_kind(object: &Map<String, Value>) -> MarkupKind {
+    if let Some(Value::String(name)) = object.get("kind")
+        && let Some(kind) = MarkupKind::from_protocol(name)
+    {
+        return kind;
     }
-    text.push_str(part);
+    if matches!(object.get("language"), Some(Value::String(_))) {
+        return MarkupKind::Markdown;
+    }
+    MarkupKind::PlainText
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
 
-    use super::{SynchronizationMode, synchronization_mode};
+    use super::{
+        MarkupKind, MarkupText, SynchronizationMode, hover_contents, synchronization_mode,
+    };
 
     /// Returns the mode of one `textDocumentSync` capability value.
     fn mode(capability: &Value) -> SynchronizationMode {
         synchronization_mode(capability.pointer("/capabilities/textDocumentSync"))
+    }
+
+    /// Returns the answer of one hover `contents` value.
+    fn answer(contents: &Value) -> Option<MarkupText> {
+        hover_contents(contents).expect("the text stays under the bound")
     }
 
     #[test]
@@ -2247,5 +2307,74 @@ mod tests {
             mode(&json!({ "capabilities": { "textDocumentSync": "full" } })),
             SynchronizationMode::None
         );
+    }
+
+    #[test]
+    fn a_markup_block_carries_the_kind_that_it_names() {
+        let markdown = answer(&json!({ "kind": "markdown", "value": "`fn main()`" }))
+            .expect("the block carries text");
+        assert_eq!(markdown.kind, MarkupKind::Markdown);
+        assert_eq!(markdown.text, "`fn main()`");
+
+        let plain = answer(&json!({ "kind": "plaintext", "value": "a * b" }))
+            .expect("the block carries text");
+        assert_eq!(plain.kind, MarkupKind::PlainText);
+        assert_eq!(plain.text, "a * b");
+    }
+
+    #[test]
+    fn every_deprecated_marked_string_carries_markdown() {
+        // The protocol defines a bare string as markdown, and it defines the
+        // pair of a language and a value as one fenced markdown code block.
+        let bare = answer(&json!("*emphasis*")).expect("the string carries text");
+        assert_eq!(bare.kind, MarkupKind::Markdown);
+
+        let fenced = answer(&json!({ "language": "rust", "value": "fn main()" }))
+            .expect("the block carries text");
+        assert_eq!(fenced.kind, MarkupKind::Markdown);
+        assert_eq!(
+            fenced.text, "fn main()",
+            "the reader keeps the value, and the fence of the language is still open work"
+        );
+
+        let array = answer(&json!([
+            { "language": "rust", "value": "fn main()" },
+            "*emphasis*",
+        ]))
+        .expect("the array carries text");
+        assert_eq!(array.kind, MarkupKind::Markdown);
+        assert_eq!(array.text, "fn main()\n*emphasis*");
+    }
+
+    #[test]
+    fn one_part_of_plain_text_makes_the_whole_answer_plain_text() {
+        // A parser that reads plain text as markdown loses the characters that
+        // mark up a document, so the safe kind covers the joined text.
+        let mixed = answer(&json!([
+            "*emphasis*",
+            { "kind": "plaintext", "value": "a * b" },
+        ]))
+        .expect("the array carries text");
+        assert_eq!(mixed.kind, MarkupKind::PlainText);
+        assert_eq!(mixed.text, "*emphasis*\na * b");
+    }
+
+    #[test]
+    fn a_kind_that_the_protocol_defines_nowhere_takes_plain_text() {
+        // An object that names no kind and no language is no shape of the
+        // protocol, and neither is an unknown kind name.
+        let nameless = answer(&json!({ "value": "a * b" })).expect("the object carries text");
+        assert_eq!(nameless.kind, MarkupKind::PlainText);
+
+        let unknown =
+            answer(&json!({ "kind": "html", "value": "a * b" })).expect("the object carries text");
+        assert_eq!(unknown.kind, MarkupKind::PlainText);
+    }
+
+    #[test]
+    fn an_answer_without_text_names_no_markup() {
+        assert!(answer(&json!("   ")).is_none());
+        assert!(answer(&json!([])).is_none());
+        assert!(answer(&json!({ "kind": "markdown" })).is_none());
     }
 }

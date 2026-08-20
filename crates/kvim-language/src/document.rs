@@ -180,6 +180,57 @@ pub struct SourceLocation {
     pub span: SourceSpan,
 }
 
+/// The markup language that a server declared for one text.
+///
+/// The protocol names exactly two kinds. A reader that shows markdown as it
+/// stands keeps every character. A reader that parses plain text as markdown
+/// removes the characters that mark up a document, so the two kinds must stay
+/// apart. See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MarkupKind {
+    /// The text carries no markup, and a reader shows it unchanged.
+    PlainText,
+    /// The text carries CommonMark markup.
+    Markdown,
+}
+
+impl MarkupKind {
+    /// Returns the kind of one protocol name.
+    ///
+    /// The protocol defines `plaintext` and `markdown` only. An unknown name
+    /// answers `None`, so the caller chooses the kind that loses no character.
+    #[must_use]
+    pub(super) fn from_protocol(name: &str) -> Option<Self> {
+        match name {
+            "plaintext" => Some(Self::PlainText),
+            "markdown" => Some(Self::Markdown),
+            _ => None,
+        }
+    }
+
+    /// Returns the one kind that covers this kind and `other`.
+    ///
+    /// Plain text decides the pair. Markdown that a reader shows unchanged
+    /// keeps every character, and plain text that a parser reads as markdown
+    /// loses characters, so the pair takes the safe kind.
+    #[must_use]
+    pub(super) const fn merged(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::Markdown, Self::Markdown) => Self::Markdown,
+            _ => Self::PlainText,
+        }
+    }
+}
+
+/// One text and the markup that covers it.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MarkupText {
+    /// The markup language of the text.
+    pub kind: MarkupKind,
+    /// The text, exactly as the server wrote it.
+    pub text: String,
+}
+
 /// One replacement that a formatter computed for one document version.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TextEdit {
