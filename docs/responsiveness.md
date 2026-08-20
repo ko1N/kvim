@@ -130,6 +130,14 @@ no repository database. The walk is bounded by directories, by depth, and by the
 entries of one directory, so a very large workspace costs bounded time before
 the first frame. [`files.md`](files.md) owns that rule and its bounds.
 
+The watcher performs one further read for each burst. A watch covers one
+directory alone, so a directory that appeared after the last walk needs its own
+watch. The coalescing task reads every directory that the burst names, walks
+each new subtree, and adds the new watches in one batch. It performs that work
+beside the event loop, on a blocking thread, and the event loop performs no
+watch call. The read obeys the same bounds as the walk at start, and the task
+skips a directory that already carries a watch, so one burst costs bounded time.
+
 ## Request Identity And Publication
 
 Every background request has an explicit identity. A newer request for the same
@@ -175,9 +183,11 @@ Shutdown runs in this order:
 4. Wait for accepted tasks to finish cleanup.
 
 The watcher, the language services, and the runtime each end through one
-consuming operation, so no caller can submit after it. The watcher drops its
-platform watcher first, which ends the platform callback thread, and then waits
-for its coalescing task.
+consuming operation, so no caller can submit after it. The coalescing task of
+the watcher owns the platform watcher, so the shutdown cancels that task and
+waits for it. The task drops the platform watcher as it ends, which ends the
+platform callback thread. The shutdown therefore returns only after no further
+event can reach any queue.
 
 Dropping a process future kills its child process. Dropping the runtime remains
 a best-effort safety net. Normal editor shutdown must use the explicit consuming
