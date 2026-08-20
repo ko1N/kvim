@@ -2686,6 +2686,54 @@ fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
     assert_eq!(message(&session), "format-on-save is on for this buffer");
 }
 
+#[test]
+fn a_save_starts_no_format_that_no_formatter_can_answer() {
+    let directory = TempDir::new("session-format-absent");
+    let plain = directory.write("notes.txt", "plain\n");
+    let code = directory.write("code.rs", "fn code() {}\n");
+    let mut session = file_session();
+
+    // The scratch buffer holds no file name, so no adapter serves it and its
+    // save asks nothing.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert!(
+        !asks_a_question(&mut session),
+        "a buffer without a file name starts no format query"
+    );
+
+    session.open_path(plain);
+    run_file_request(&mut session);
+
+    // No adapter owns the plain-text path, so no formatter can answer a
+    // question about it.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert!(
+        !asks_a_question(&mut session),
+        "a buffer that no formatter serves starts no format query"
+    );
+    run_file_request(&mut session);
+    assert!(
+        message(&session).ends_with("written"),
+        "the save reports its own result alone, and got {}",
+        message(&session)
+    );
+
+    // The save changed no remembered state, so the toggle still reports the
+    // missing formatter instead of a state.
+    type_keys(&mut session, " cf");
+    assert_eq!(message(&session), "no formatter serves this buffer");
+
+    // A buffer that one formatter serves keeps the question of its save.
+    session.open_path(code);
+    run_file_request(&mut session);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    assert!(
+        asks_a_question(&mut session),
+        "a buffer that one formatter serves still formats before its save"
+    );
+    run_file_request(&mut session);
+}
+
 /// Returns the first visible line of one window.
 fn first_line(session: &Session, window: WindowId) -> usize {
     session

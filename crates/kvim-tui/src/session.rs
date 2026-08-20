@@ -4023,17 +4023,21 @@ impl Session {
 
     /// Reports whether the active buffer formats before its next save.
     ///
-    /// A buffer without a file name, and a buffer whose question would replace
-    /// another running question, saves without a format instead.
+    /// A buffer that no formatter serves, and a buffer whose question would
+    /// replace another running question, saves without a format instead. The
+    /// formatter test covers a buffer without a file name and a path that no
+    /// adapter owns, so neither one starts a question that no formatter can
+    /// answer. The per-buffer state stays unchanged in every case. See
+    /// `docs/language-services.md`.
     fn formats_before_save(&self) -> bool {
         if self.language.pending.is_some() || self.language.formats() {
             return false;
         }
-        let named = self
-            .buffers
-            .get(self.active)
-            .is_some_and(|file| file.path().is_some());
-        named && self.format_on_save(self.active) == FormatOnSave::Enabled
+        let path = self.buffers.get(self.active).and_then(FileBuffer::path);
+        if !has_formatter(self.languages, path) {
+            return false;
+        }
+        self.format_on_save(self.active) == FormatOnSave::Enabled
     }
 
     /// Formats the active buffer before its save.

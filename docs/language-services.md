@@ -1262,8 +1262,10 @@ without a file name, a path that no adapter owns, and an adapter that declares
 neither an external formatter nor a formatting server therefore have no
 formatter. kvim shows no format-on-save state for such a buffer, and the toggle
 reports the missing formatter instead of changing a state that no save can act
-on. The per-buffer state itself stays unchanged, so a buffer keeps the state
-that the user chose if a later release declares a formatter for its language.
+on. A save of such a buffer also starts no format request, because no formatter
+can answer one. The per-buffer state itself stays unchanged, so a buffer keeps
+the state that the user chose if a later release declares a formatter for its
+language.
 
 The rule reads adapter data alone. An installed, missing, gated, or stopped
 server is a runtime state that the reports of the sections above own, and a
