@@ -27,6 +27,10 @@ pub(super) const LOG_ENTRIES_MAX: usize = 256;
 /// The bound keeps one long report from filling the log. The message line clips
 /// at the same number of characters, so an entry of that source loses no
 /// character that the message line showed.
+///
+/// The bound counts the text of the entry alone. [`LogEntry::row`] adds the
+/// time, the severity, the source, and the count, so one rendered row can be
+/// longer than this number. See `docs/windows.md`.
 pub(super) const LOG_ENTRY_CHARS_MAX: usize = MESSAGE_CHARS_MAX;
 
 /// The name of the buffer that holds one snapshot of the log.
@@ -124,6 +128,10 @@ impl LogEntry {
     }
 
     /// Returns the entry as one row of the log buffer.
+    ///
+    /// The row holds the fields around the text and a count above one, so it
+    /// can be longer than [`LOG_ENTRY_CHARS_MAX`]. That bound holds the text
+    /// alone.
     fn row(&self) -> String {
         debug_assert!(self.count >= 1, "every entry holds at least one report");
         let seconds = self.at.as_secs();
