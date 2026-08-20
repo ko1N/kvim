@@ -40,8 +40,8 @@ use super::clipboard::{SessionClipboard, command_failure, refused_submission};
 use super::language::{LANGUAGE_OUTBOX_MAX, Refusal, send_request};
 use super::picker::PickerFailure;
 use super::session::{
-    AnalysisResult, FileRequestFailure, JOB_ANALYSIS, JOB_OBSOLETE, JOB_REFUSED, JOB_WALK,
-    MessageLevel, Redraw, RunState, Session,
+    AnalysisResult, FileRequestFailure, HostProbeFailure, JOB_ANALYSIS, JOB_OBSOLETE, JOB_REFUSED,
+    JOB_WALK, MessageLevel, Redraw, RunState, Session,
 };
 use super::tree::GENERATED_NAMES;
 
@@ -109,6 +109,12 @@ const FORMAT_SLOT: RequestSlot = RequestSlot::new(8);
 /// See `docs/files.md`.
 const COMPLETION_SLOT: RequestSlot = RequestSlot::new(9);
 
+/// The publication slot of the host probe of the `:diagnostics` command.
+///
+/// One command starts one probe, and the session starts no second probe while
+/// one runs, so one slot holds every host report. See `docs/architecture.md`.
+const DIAGNOSTICS_SLOT: RequestSlot = RequestSlot::new(10);
+
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -164,6 +170,8 @@ enum WorkResult {
     Git(Result<GitStatusSnapshot, GitStatusFailure>),
     /// One run of the external formatter of one buffer finished.
     Format(Result<Option<FormattedDocument>, FormatterFailure>),
+    /// One host probe finished and produced the report as plain text.
+    HostReport(String),
 }
 
 /// A failure that ends the editor.
@@ -568,6 +576,7 @@ fn submit_background_work(
         .or(submit_clipboard_work(editor, runtime, gate))
         .or(submit_git_work(editor, runtime, gate))
         .or(submit_format_work(editor, runtime, gate))
+        .or(submit_host_work(editor, runtime, gate))
 }
 
 /// Hands the queued formatter run to the bounded process service.
@@ -724,6 +733,48 @@ fn submit_completion_work(
         WorkResult::Completion(request.run(&cancellation))
     });
     Redraw::Skipped
+}
+
+/// Hands the queued host probe to the bounded worker service.
+///
+/// The probe reads the executable search path once for each declared program,
+/// so it never runs on this loop. A refused submission reaches the session as a
+/// typed failure, because the user asked for the report and must learn that it
+/// failed. See `docs/architecture.md`.
+fn submit_host_work(
+    editor: &mut Session,
+    runtime: &Runtime<WorkResult>,
+    gate: &PublicationGate,
+) -> Redraw {
+    let Some(request) = editor.take_host_request() else {
+        return Redraw::Skipped;
+    };
+    let handle = gate.begin(DIAGNOSTICS_SLOT, &runtime.cancellation_root());
+    let submitted = runtime.submit_worker(handle, WORKER_DEADLINE_DEFAULT, move |_cancellation| {
+        WorkResult::HostReport(request.run())
+    });
+    if let Err(error) = submitted {
+        return editor.abandon_host_request(match error {
+            SubmitError::Saturated(_) => HostProbeFailure::Saturated,
+            SubmitError::InvalidLimits | SubmitError::ProcessBounds | SubmitError::ShuttingDown => {
+                HostProbeFailure::Cancelled
+            }
+        });
+    }
+    Redraw::Skipped
+}
+
+/// Returns the typed host-probe failure of one runtime failure.
+const fn host_failure(error: &RuntimeError) -> HostProbeFailure {
+    match error {
+        RuntimeError::Timeout => HostProbeFailure::Timeout,
+        RuntimeError::Cancelled
+        | RuntimeError::WorkerFailure(_)
+        | RuntimeError::ProcessSpawn(_)
+        | RuntimeError::ProcessRead(_)
+        | RuntimeError::ProcessWrite(_)
+        | RuntimeError::OutputLimit { .. } => HostProbeFailure::Cancelled,
+    }
 }
 
 /// Returns the publication slot of one picker operation.
@@ -891,6 +942,7 @@ fn complete(
     let git = event.request.slot() == GIT_SLOT;
     let format = event.request.slot() == FORMAT_SLOT;
     let completion = event.request.slot() == COMPLETION_SLOT;
+    let host = event.request.slot() == DIAGNOSTICS_SLOT;
     let picker = if event.request.slot() == PICKER_SLOT {
         Some(PickerSlot::Candidates)
     } else if event.request.slot() == PREVIEW_SLOT {
@@ -918,6 +970,7 @@ fn complete(
         (_, Ok(WorkResult::Clipboard(output))) => editor.apply_clipboard_result(Ok(output)),
         (_, Ok(WorkResult::Git(result))) => editor.apply_git_result(result),
         (_, Ok(WorkResult::Format(result))) => editor.apply_format_result(result),
+        (_, Ok(WorkResult::HostReport(report))) => editor.apply_host_report(&report),
         (Some(slot), Err(error)) => editor.abandon_picker_request(slot, picker_failure(&error)),
         // A clipboard command that fails, times out, or is cancelled keeps the
         // unnamed register, so the yank or the paste still holds its value.
@@ -940,6 +993,9 @@ fn complete(
         (None, Err(error)) if format => {
             editor.apply_format_result(Err(FormatterFailure::of(&error)))
         }
+        // The user asked for the host report, so a probe that fails, times out,
+        // or is cancelled opens no buffer and reports the outcome.
+        (None, Err(error)) if host => editor.abandon_host_request(host_failure(&error)),
         // A walk that fails, times out, or is cancelled leaves the command line
         // without a path list. The user still types the path in full, so the
         // editor keeps nothing to clear and reports nothing. The log names the

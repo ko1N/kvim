@@ -75,6 +75,7 @@ use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
 use super::completion::{
     CompletionCycle, CompletionOutcome, LineCompletion, command_line_candidates,
 };
+use super::diagnostics::{HOST_BUFFER_NAME, HostReportRequest, HostWorkspace};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
     LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
@@ -125,6 +126,14 @@ pub(super) const JOB_OBSOLETE: &str = "rejected: the buffer changed";
 
 /// The outcome of one analysis that the bounded worker service refused.
 pub(super) const JOB_REFUSED: &str = "refused: the worker service accepted no job";
+
+/// The report that the message line shows while one host probe runs.
+///
+/// The probe reads the executable search path for every declared program, so
+/// the command answers later than a command that reads editor state alone. The
+/// message names that wait, and the editor stays fully usable during it. See
+/// `docs/architecture.md`.
+const HOST_REPORT_RUNNING: &str = "the host report is running; its buffer opens when it answers";
 
 /// Whether the visible state changed and the terminal needs a new frame.
 ///
@@ -412,6 +421,31 @@ impl FileRequestFailure {
             Self::Saturated => "the editor is busy; try the file operation again",
             Self::Cancelled => "the file operation was cancelled",
             Self::Timeout => "the file operation passed its deadline",
+        }
+    }
+}
+
+/// The reason that one host probe produced no report.
+///
+/// The event loop maps every runtime failure onto one of these values, so the
+/// session never reads an error message text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum HostProbeFailure {
+    /// The bounded runtime held no free permit or result slot.
+    Saturated,
+    /// A newer request or the shutdown cancelled this probe.
+    Cancelled,
+    /// The probe passed its deadline.
+    Timeout,
+}
+
+impl HostProbeFailure {
+    /// Returns the message that the message line shows.
+    const fn message(self) -> &'static str {
+        match self {
+            Self::Saturated => "the editor is busy; run the host report again",
+            Self::Cancelled => "the host report was cancelled",
+            Self::Timeout => "the host report passed its deadline",
         }
     }
 }
@@ -818,6 +852,41 @@ impl CompletionWalk {
     }
 }
 
+/// The host probe that the `:diagnostics` command asked for.
+///
+/// The state records whether one probe already runs, so a second command starts
+/// no second probe and the buffer opens once for each request. The probe reads
+/// the executable search path, which is filesystem work, so the event loop
+/// hands the request to the bounded worker service. See
+/// `docs/architecture.md`.
+enum HostProbe {
+    /// No command asked for a host report.
+    Unasked,
+    /// One command asked for the report, and the request waits for the event
+    /// loop.
+    Queued(HostReportRequest),
+    /// The event loop took the request, and the buffer opens when it answers.
+    Running,
+}
+
+impl HostProbe {
+    /// Takes the queued request and records that the probe runs.
+    ///
+    /// The recorded state outlives the request, so a second command queues no
+    /// second probe.
+    fn take_request(&mut self) -> Option<HostReportRequest> {
+        match mem::replace(self, Self::Running) {
+            Self::Queued(request) => Some(request),
+            // No command asked for a report, or the event loop already took the
+            // request, so the state stays as it was.
+            unchanged @ (Self::Unasked | Self::Running) => {
+                *self = unchanged;
+                None
+            }
+        }
+    }
+}
+
 /// The visible editor state of one terminal.
 ///
 /// # Examples
@@ -931,6 +1000,12 @@ pub struct Session {
     /// the bounded worker service. The completion then filters the collected
     /// files while the user types. See `docs/files.md`.
     completion_walk: CompletionWalk,
+    /// The host probe that `:diagnostics` asked for.
+    ///
+    /// The session reads no executable search path, so the event loop hands the
+    /// request to the bounded worker service and the buffer opens when the
+    /// probe answers. See `docs/architecture.md`.
+    host_probe: HostProbe,
     message: Option<Message>,
     /// The bounded history of every report that the editor made.
     ///
@@ -996,6 +1071,7 @@ impl Session {
             prompt: None,
             confirmation: None,
             completion_walk: CompletionWalk::Unasked,
+            host_probe: HostProbe::Unasked,
             message: None,
             log: EditorLog::default(),
             float: None,
@@ -2082,6 +2158,7 @@ impl Session {
                 return self.reload_active(UnsavedChanges::Discard);
             }
             CommandLineCommand::Log => return self.open_log(),
+            CommandLineCommand::Diagnostics => return self.open_diagnostics(),
             CommandLineCommand::Quit => return self.close_window(UnsavedChanges::Ask),
             CommandLineCommand::QuitDiscard => {
                 return self.close_window(UnsavedChanges::Discard);
@@ -2103,19 +2180,83 @@ impl Session {
     /// `docs/windows.md`.
     fn open_log(&mut self) -> Redraw {
         let snapshot = self.log.snapshot();
-        let text = match TextBuffer::from_text(&snapshot, &self.settings.files) {
+        self.open_generated(LOG_BUFFER_NAME, &snapshot)
+    }
+
+    /// Opens one generated text in a new buffer of the focused window.
+    ///
+    /// The buffer is an ordinary scratch buffer that carries no path, so the
+    /// reader edits it, searches it, and closes it as any other buffer. The
+    /// caller owns the text, so this step performs no filesystem work. See
+    /// `docs/windows.md`.
+    fn open_generated(&mut self, name: &str, snapshot: &str) -> Redraw {
+        let text = match TextBuffer::from_text(snapshot, &self.settings.files) {
             Ok(text) => text,
             Err(error) => {
                 self.set_message(error.to_string(), MessageLevel::Error);
                 return Redraw::Needed;
             }
         };
-        let buffer = FileBuffer::generated(LOG_BUFFER_NAME, text);
+        let buffer = FileBuffer::generated(name, text);
         let Some(id) = self.buffers.insert(buffer) else {
             self.report_buffer_limit();
             return Redraw::Needed;
         };
         self.switch_to(id).or(Redraw::Needed)
+    }
+
+    /// Opens the host report of this machine in a new buffer.
+    ///
+    /// The report names every external program that kvim runs, so the probe
+    /// reads the executable search path. The event loop reads no path, so the
+    /// command queues one bounded job and the buffer opens when the job
+    /// answers. The message line reports that the probe runs, and the editor
+    /// stays fully usable while it runs. A second command reports the same
+    /// state and starts no second probe. See `docs/architecture.md`.
+    fn open_diagnostics(&mut self) -> Redraw {
+        if matches!(self.host_probe, HostProbe::Unasked) {
+            let root = self.tree.tree().root().to_path_buf();
+            self.host_probe = HostProbe::Queued(HostReportRequest::new(
+                self.languages,
+                HostWorkspace::Resolved { root },
+            ));
+        }
+        self.set_message(HOST_REPORT_RUNNING, MessageLevel::Info);
+        Redraw::Needed
+    }
+
+    /// Takes the host probe that the `:diagnostics` command asked for.
+    ///
+    /// The session reads no executable search path, so the event loop hands the
+    /// request to the bounded worker service. See `docs/responsiveness.md`.
+    pub fn take_host_request(&mut self) -> Option<HostReportRequest> {
+        self.host_probe.take_request()
+    }
+
+    /// Opens the finished host report in a new buffer.
+    ///
+    /// A report that reaches no running probe changes nothing, because the
+    /// session already abandoned the request that asked for it.
+    #[must_use]
+    pub fn apply_host_report(&mut self, report: &str) -> Redraw {
+        if !matches!(self.host_probe, HostProbe::Running) {
+            return Redraw::Skipped;
+        }
+        self.host_probe = HostProbe::Unasked;
+        // The probe answered, so the note that named the wait is stale.
+        let cleared = self.clear_message();
+        self.open_generated(HOST_BUFFER_NAME, report).or(cleared)
+    }
+
+    /// Reports that one host probe produced no report.
+    ///
+    /// The user asked for the report, so the failure reaches the message line
+    /// and the next `:diagnostics` starts a fresh probe.
+    #[must_use]
+    pub fn abandon_host_request(&mut self, failure: HostProbeFailure) -> Redraw {
+        self.host_probe = HostProbe::Unasked;
+        self.set_message(failure.message(), MessageLevel::Error);
+        Redraw::Needed
     }
 
     /// Reports that the buffer list holds no room for another buffer.

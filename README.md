@@ -94,9 +94,13 @@ kvim --diagnostics
 ```
 
 The command prints a plain-text report and exits. The report names the version,
-the workspace root, the state of `rg` and `rust-analyzer`, the clipboard
-commands of this host, and the resource limits. It writes no escape sequence, so
-you can redirect it to a file or paste it into a bug report.
+the workspace root, the state of `git` and `rg`, every language server and every
+formatter that kvim declares, the clipboard commands of this host, and the
+resource limits. Each program row names the program, whether your `PATH` holds
+it, and the languages that use it. It writes no escape sequence, so you can
+redirect it to a file or paste it into a bug report.
+
+Run `:diagnostics` inside the editor for the same report in a buffer.
 
 ## External Commands
 

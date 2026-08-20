@@ -82,6 +82,7 @@ this fixed set only:
 | `:e[dit]` | Read the file of the focused window again, after a confirmation of unsaved changes |
 | `:e[dit]!` | Discard the unsaved changes of that buffer and read its file |
 | `:l[ogs]` | Open one snapshot of the editor log in a new buffer |
+| `:d[iagnostics]` | Open the host report of this machine in a new buffer |
 | `:<number>` | Move the cursor to that line |
 
 Each command declares one full name and the shortest abbreviation that names it.
@@ -126,6 +127,20 @@ entry, and a later report changes no open snapshot. A second `:logs` opens a
 second buffer that holds the log of that later moment. The command reads editor
 state only, so it performs no filesystem work. [`windows.md`](windows.md) owns
 the log, its bounds, and the shape of one entry.
+
+`:d[iagnostics]` opens the host report of this machine in a new buffer. The
+report names every external program that kvim runs and whether the host holds
+it. `kvim --diagnostics` prints the same report before the editor starts, and
+one builder serves both. That buffer is an ordinary scratch buffer, as the log
+buffer is.
+
+The report reads the executable search path, which is filesystem work, so the
+command starts one bounded background probe and the event loop reads no path.
+The message line reports that the probe runs, and the editor stays fully usable
+while it runs. The buffer opens when the probe answers. A second
+`:d[iagnostics]` starts no second probe while one runs, and a failed probe
+opens no buffer and reports the outcome. [`architecture.md`](architecture.md)
+owns the report and its bounds.
 
 ### Command Line Completion
 

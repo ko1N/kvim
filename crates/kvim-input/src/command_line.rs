@@ -1,8 +1,8 @@
 //! The command line parser for the fixed first-release command set.
 //!
 //! kvim implements no Ex grammar. The parser accepts `write`, `quit`, `wq`,
-//! `edit`, `edit <path>`, `log`, the `!` variant of `quit` and `edit`, and a
-//! line number only. It rejects every other line.
+//! `edit`, `edit <path>`, `logs`, `diagnostics`, the `!` variant of `quit` and
+//! `edit`, and a line number only. It rejects every other line.
 //!
 //! Each command declares one full name and the shortest abbreviation that names
 //! it, as Vim does. `quit` declares one character, so `q`, `qu`, `qui`, and
@@ -41,6 +41,8 @@ pub enum CommandLineCommand {
     ReloadDiscard,
     /// `:logs` opens one snapshot of the editor log in a new buffer.
     Log,
+    /// `:diagnostics` opens the host report of this machine in a new buffer.
+    Diagnostics,
     /// `:<number>` moves the cursor to that line.
     GoToLine(NonZeroU32),
 }
@@ -67,7 +69,7 @@ pub enum CommandLineError {
     },
     /// The line matched no accepted command.
     #[error(
-        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, :l[ogs], and :<number> only"
+        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, :l[ogs], :d[iagnostics], and :<number> only"
     )]
     Unknown,
 }
@@ -75,6 +77,8 @@ pub enum CommandLineError {
 /// The command that one declared name reaches, without its argument.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum NamedCommand {
+    /// The name of [`CommandLineCommand::Diagnostics`].
+    Diagnostics,
     /// The name of [`CommandLineCommand::Edit`], [`CommandLineCommand::Reload`],
     /// and [`CommandLineCommand::ReloadDiscard`].
     Edit,
@@ -131,7 +135,12 @@ struct CommandName {
 /// one new row here and no new completion code. The table holds no `:<number>`
 /// row, because a line number is no name. It holds no `:e <path>` row either,
 /// because the path is an argument of `edit`. See `docs/input-actions.md`.
-const NAMES: [CommandName; 5] = [
+const NAMES: [CommandName; 6] = [
+    CommandName {
+        command: NamedCommand::Diagnostics,
+        full: "diagnostics",
+        minimum: 1,
+    },
     CommandName {
         command: NamedCommand::Edit,
         full: "edit",
@@ -203,6 +212,8 @@ impl CommandLineCommand {
     /// assert_eq!(CommandLineCommand::names_matching("q!"), ["quit!"]);
     /// // `w` starts both names, and neither one is a `!` variant.
     /// assert_eq!(CommandLineCommand::names_matching("w"), ["wq", "write"]);
+    /// // One new row of the name table serves the parser and the completion.
+    /// assert_eq!(CommandLineCommand::names_matching("d"), ["diagnostics"]);
     /// // `write` has no `!` variant, and a line number is no name.
     /// assert!(CommandLineCommand::names_matching("w!").is_empty());
     /// assert!(CommandLineCommand::names_matching("42").is_empty());
@@ -322,6 +333,8 @@ impl CommandLineCommand {
     /// assert_eq!(CommandLineCommand::parse("edit!"), Ok(CommandLineCommand::ReloadDiscard));
     /// // `:l[ogs]` opens one snapshot of the editor log.
     /// assert_eq!(CommandLineCommand::parse("l"), Ok(CommandLineCommand::Log));
+    /// // `:d[iagnostics]` opens the host report of this machine.
+    /// assert_eq!(CommandLineCommand::parse("d"), Ok(CommandLineCommand::Diagnostics));
     /// assert_eq!(
     ///     CommandLineCommand::parse("42"),
     ///     Ok(CommandLineCommand::GoToLine(NonZeroU32::new(42).unwrap()))
@@ -378,6 +391,7 @@ impl CommandLineCommand {
             (NamedCommand::Edit, Bang::Present, None) => Self::ReloadDiscard,
             (NamedCommand::Edit, Bang::Absent, Some(path)) => Self::Edit(PathBuf::from(path)),
             (NamedCommand::Log, Bang::Absent, None) => Self::Log,
+            (NamedCommand::Diagnostics, Bang::Absent, None) => Self::Diagnostics,
             _ => return Err(CommandLineError::Unknown),
         };
         Ok(command)
@@ -422,6 +436,8 @@ mod tests {
             ("edit!", CommandLineCommand::ReloadDiscard),
             ("l", CommandLineCommand::Log),
             ("logs", CommandLineCommand::Log),
+            ("d", CommandLineCommand::Diagnostics),
+            ("diagnostics", CommandLineCommand::Diagnostics),
             (
                 "e  a path/with space.rs ",
                 CommandLineCommand::Edit(PathBuf::from("a path/with space.rs")),
@@ -517,10 +533,13 @@ mod tests {
 
     #[test]
     fn the_name_source_offers_a_full_name_that_the_parser_accepts() {
-        let cases: [(&str, &[&str]); 23] = [
+        let cases: [(&str, &[&str]); 25] = [
             // A text without a `!` offers no `!` variant, so no cycle of that
             // text writes a command that discards unsaved changes.
-            ("", &["edit", "logs", "quit", "wq", "write"]),
+            ("", &["diagnostics", "edit", "logs", "quit", "wq", "write"]),
+            ("d", &["diagnostics"]),
+            // `diagnostics` has no `!` variant, so a typed `!` offers nothing.
+            ("d!", &[]),
             ("e", &["edit"]),
             ("edit", &["edit"]),
             ("l", &["logs"]),
@@ -594,6 +613,8 @@ mod tests {
             ("quit foo", CommandLineError::Unknown),
             ("log foo", CommandLineError::Unknown),
             ("log!", CommandLineError::Unknown),
+            ("diagnostics foo", CommandLineError::Unknown),
+            ("diagnostics!", CommandLineError::Unknown),
             ("e! src/main.rs", CommandLineError::Unknown),
             ("edit! src/main.rs", CommandLineError::Unknown),
             ("w!", CommandLineError::Unknown),

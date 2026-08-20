@@ -346,11 +346,9 @@ dependencies = [
 name = "kvim"
 version = "0.1.0"
 dependencies = [
- "kvim-clipboard",
  "kvim-language",
  "kvim-settings",
  "kvim-tui",
- "kvim-workspace",
  "thiserror",
  "tokio",
 ]

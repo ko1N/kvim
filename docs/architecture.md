@@ -42,9 +42,9 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, normalized terminal events, and the process termination signals. |
-| `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. |
+| `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. Also builds the host report that the `--diagnostics` flag and the `:diagnostics` command show. |
 | `kvim-workspace` | Files, buffers, atomic save, the file tree, the read-only Git status, workspace mutations, and pickers. |
-| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, reports the host diagnostics, and starts the editor. |
+| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, prints the host report, and starts the editor. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
 and file code must not contain language-specific path rules. Only a language
@@ -121,16 +121,15 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-language` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
 | 4 | `kvim-tui` | every crate above |
-| 5 | `kvim` | `kvim-clipboard`, `kvim-language`, `kvim-settings`, `kvim-tui`, `kvim-workspace` |
+| 5 | `kvim` | `kvim-language`, `kvim-settings`, `kvim-tui` |
 
 `kvim-runtime` and `kvim-terminal` need no setting today. Add
 `kvim-settings` to either one when a setting reaches it.
 
-`kvim-clipboard` has two consumers. `kvim-tui` mirrors the unnamed register
-into the system clipboard. `kvim` reads the selected commands for the
-diagnostics report. Both reach the platform through the same selection, so no
-module above the crate names a clipboard command. See
-[`clipboard.md`](clipboard.md).
+`kvim-clipboard` has one consumer. `kvim-tui` mirrors the unnamed register into
+the system clipboard, and it reads the selected commands for the host report.
+Both reach the platform through the same selection, so no module above the
+crate names a clipboard command. See [`clipboard.md`](clipboard.md).
 
 The binary is the composition root. It constructs dependencies and starts the
 editor.
@@ -382,6 +381,45 @@ and stays usable.
 
 Continuous integration verifies macOS and Linux together. Windows verification
 stays outside the first release.
+
+## Host Report
+
+kvim answers one question about the host: does this machine hold the programs
+that the editor runs? Two entry points ask it, and one builder answers both.
+`kvim --diagnostics` prints the report and exits, before the editor starts.
+`:diagnostics` opens the same report in a buffer, while a user edits. One
+builder serves both, so the flag and the command can never disagree about what
+the host holds.
+
+The report names the version of the executable, the resolved workspace root and
+whether the language services attach to it, the search command of the picker,
+the Git command of the file tree, every language-server program and every
+formatter program of the registry, the clipboard commands of this host, and the
+resource limits. One program row names the program, whether the search path
+holds it, and the languages that declare it. Each heading of a program section
+counts the declared, the found, and the missing programs of that section, so a
+reader finds an incomplete host in one line. The report carries no escape
+sequence, so a redirected output and an editor buffer both stay readable.
+
+`crates/kvim-tui/src/diagnostics.rs` owns the builder. `kvim-tui` is the lowest
+crate that sees the language registry, the clipboard selection, the workspace
+limits, and the buffer that the command opens. The binary calls the same
+builder and prints what it returns.
+
+The probe reads the executable search path once for each distinct program. One
+adapter declares at most `LANGUAGE_SERVERS_MAX` servers and at most one
+formatter, so `HOST_PROGRAMS_MAX` bounds the lookups of one report. This build
+declares 22 server programs and 12 formatter programs, and the picker and the
+file tree add one program each.
+
+A search-path lookup is filesystem work, so the terminal event loop must never
+run it. `kvim --diagnostics` runs before that loop exists and probes directly.
+`:diagnostics` submits one bounded worker job instead. The message line reports
+that the probe runs, the editor stays fully usable, and the buffer opens when
+the job answers. A second `:diagnostics` starts no second probe while one runs.
+A cancelled, saturated, timed out, or failed probe opens no buffer and reports
+the outcome on the message line, because the user asked for the report and must
+learn that it failed. See [`responsiveness.md`](responsiveness.md).
 
 ## Binding Documents
 
