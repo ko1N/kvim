@@ -250,25 +250,51 @@ pub fn is_ignored(root: &Path, path: &Path, ignored: &[&str]) -> bool {
     })
 }
 
-/// Returns the directories that one registration watches, in walk order.
+/// Returns `start` and every kept directory below it that `registered` misses.
 ///
-/// The first value is always the root, so the watch always reports the entries
-/// of the workspace itself. The walk skips a directory whose name `ignored`
-/// holds, and it reads no directory below such a name.
+/// The walk always reads `start`, so a directory that already carries a watch
+/// still reports the directories that appeared inside it. It reports `start`
+/// itself only when `registered` does not hold it. It skips a directory whose
+/// name `ignored` holds, and it reads no directory below such a name.
+///
+/// The walk stops at a directory that `registered` already holds, because that
+/// directory reports its own new entries through its own watch. One walk
+/// therefore costs one directory read for each directory that a burst names.
 ///
 /// The walk skips a directory that it cannot read, because an unreadable
 /// subtree reports no change to any reader. It also skips a symbolic link,
 /// because the type comes from the directory read and names the link itself, so
 /// no link builds a cycle and no tree is watched twice.
 ///
-/// The walk stops at [`WATCH_DIRECTORIES_MAX`] directories, at
-/// [`WATCH_DEPTH_MAX`] levels below the root, and at
+/// The walk returns at most `limit` directories, it reaches at most
+/// [`WATCH_DEPTH_MAX`] levels below the root, and it reads at most
 /// [`WATCH_DIRECTORY_SCAN_MAX`] entries of one directory, so a very large tree
-/// costs bounded time at start.
-fn watched_directories(root: &Path, ignored: &[&str]) -> Vec<PathBuf> {
-    let mut directories = vec![root.to_path_buf()];
+/// costs bounded time.
+///
+/// A `start` outside `root` returns no directory. The platform names the
+/// watched root itself when that root disappears, and the burst then names the
+/// directory above the root, which no workspace watch covers.
+fn unregistered_directories(
+    root: &Path,
+    start: &Path,
+    ignored: &[&str],
+    registered: &BTreeSet<PathBuf>,
+    limit: usize,
+) -> Vec<PathBuf> {
+    let mut directories = Vec::new();
+    let Ok(relative) = start.strip_prefix(root) else {
+        // A start outside the watched root belongs to no workspace directory.
+        return directories;
+    };
+    let start_depth = relative.components().count();
+    if start_depth > WATCH_DEPTH_MAX || limit == 0 {
+        return directories;
+    }
+    if !registered.contains(start) && !is_ignored(root, start, ignored) {
+        directories.push(start.to_path_buf());
+    }
     let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
-    queue.push_back((root.to_path_buf(), 0));
+    queue.push_back((start.to_path_buf(), start_depth));
     while let Some((directory, depth)) = queue.pop_front() {
         if depth >= WATCH_DEPTH_MAX {
             continue;
@@ -288,7 +314,10 @@ fn watched_directories(root: &Path, ignored: &[&str]) -> Vec<PathBuf> {
             if is_ignored(root, &path, ignored) {
                 continue;
             }
-            if directories.len() >= WATCH_DIRECTORIES_MAX {
+            if registered.contains(&path) {
+                continue;
+            }
+            if directories.len() >= limit {
                 return directories;
             }
             directories.push(path.clone());
@@ -298,45 +327,129 @@ fn watched_directories(root: &Path, ignored: &[&str]) -> Vec<PathBuf> {
     directories
 }
 
-/// Adds one watch for the root and for every directory that stays.
+/// The platform watcher and the directories that its watches already cover.
 ///
-/// Every watch covers one directory alone, so the platform adds no watch of its
-/// own below an ignored name. The call adds every path in one batch and applies
-/// the batch once, because a platform that keeps one event stream rebuilds that
-/// stream for each applied change.
-///
-/// # Errors
-///
-/// Returns [`WatchError::Start`] when the platform refuses the root or the
-/// batch. A refused directory below the root loses the events of that
-/// directory alone, and its parent still reports every change of the directory
-/// itself.
-fn register(
-    watcher: &mut RecommendedWatcher,
-    root: &Path,
-    ignored: &[&str],
-) -> Result<(), WatchError> {
-    let directories = watched_directories(root, ignored);
-    let mut paths = watcher.paths_mut();
-    for directory in &directories {
-        let Err(error) = paths.add(directory, RecursiveMode::NonRecursive) else {
-            continue;
+/// The coalescing task owns the value, so every watch call runs beside the
+/// terminal event loop and never on it. The platform callback holds no part of
+/// the value, so it needs no lock and always returns at once.
+struct Registration {
+    /// The absolute workspace root of every watch.
+    root: PathBuf,
+    /// The directory names that carry no watch and produce no event.
+    ignored: &'static [&'static str],
+    /// Every directory that the registration covers.
+    ///
+    /// The set also holds a directory that the platform refused, so one refused
+    /// directory costs one attempt instead of one attempt for each burst.
+    directories: BTreeSet<PathBuf>,
+    /// The platform watcher. Dropping it ends its callback thread.
+    watcher: RecommendedWatcher,
+}
+
+impl Registration {
+    /// Adds one watch for the root and for every directory that stays.
+    ///
+    /// Every watch covers one directory alone, so the platform adds no watch of
+    /// its own below an ignored name.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WatchError::Start`] when the platform refuses the root or the
+    /// batch. A refused directory below the root loses the events of that
+    /// directory alone, and its parent still reports every change of the
+    /// directory itself.
+    fn start(
+        watcher: RecommendedWatcher,
+        root: PathBuf,
+        ignored: &'static [&'static str],
+    ) -> Result<Self, WatchError> {
+        let directories = unregistered_directories(
+            &root,
+            &root,
+            ignored,
+            &BTreeSet::new(),
+            WATCH_DIRECTORIES_MAX,
+        );
+        let mut registration = Self {
+            root,
+            ignored,
+            directories: BTreeSet::new(),
+            watcher,
         };
-        if directory.as_path() == root {
-            return Err(WatchError::Start(error));
-        }
-        // Another program may remove one directory between the walk and this
-        // call. The parent of that directory still reports the removal.
+        registration.add(&directories).map_err(WatchError::Start)?;
+        Ok(registration)
     }
-    paths.commit().map_err(WatchError::Start)
+
+    /// Adds one watch for each kept directory that appeared below `changed`.
+    ///
+    /// A watch covers one directory alone, so a directory that appeared after
+    /// the last walk carries no watch and reports no change inside it. The call
+    /// reads every directory that the burst named, walks each new subtree, and
+    /// adds every new directory in one batch.
+    ///
+    /// The registration stays at or below [`WATCH_DIRECTORIES_MAX`]
+    /// directories, and the walk reaches at most [`WATCH_DEPTH_MAX`] levels
+    /// under the root. A tree above either bound keeps the watches that it
+    /// already holds and receives no further watch.
+    ///
+    /// A directory that disappeared between the burst and the batch produces no
+    /// entry, because its read fails and its parent still reports its removal.
+    fn extend(&mut self, changed: &[PathBuf]) {
+        let mut additions: Vec<PathBuf> = Vec::new();
+        for directory in changed {
+            let held = self.directories.len().saturating_add(additions.len());
+            let limit = WATCH_DIRECTORIES_MAX.saturating_sub(held);
+            if limit == 0 {
+                break;
+            }
+            additions.extend(unregistered_directories(
+                &self.root,
+                directory,
+                self.ignored,
+                &self.directories,
+                limit,
+            ));
+        }
+        // A failed batch adds no directory to the set, so the next burst that
+        // names the same parent tries again.
+        let _ = self.add(&additions);
+    }
+
+    /// Applies one batch of watches and records the directories that it covers.
+    ///
+    /// The call adds every path in one batch and applies the batch once, because
+    /// a platform that keeps one event stream stops that stream while the batch
+    /// is open and rebuilds it on the apply. An empty batch opens no stream.
+    fn add(&mut self, directories: &[PathBuf]) -> Result<(), notify::Error> {
+        if directories.is_empty() {
+            return Ok(());
+        }
+        let mut paths = self.watcher.paths_mut();
+        for directory in directories {
+            let Err(error) = paths.add(directory, RecursiveMode::NonRecursive) else {
+                continue;
+            };
+            if directory.as_path() == self.root {
+                return Err(error);
+            }
+            // Another program may remove one directory between the walk and
+            // this call. The parent of that directory still reports the
+            // removal.
+        }
+        paths.commit()?;
+        self.directories.extend(directories.iter().cloned());
+        Ok(())
+    }
 }
 
 /// Watches one directory tree and publishes coalesced bursts of its changes.
 ///
 /// The value owns the platform watcher, its callback thread, and one bounded
-/// coalescing task. It reads the tree once, at start, to place its watches.
-/// After that it performs no filesystem read of its own: it names the
-/// directories that changed and leaves every read to the caller.
+/// coalescing task. It reads the tree once, at start, to place its watches. It
+/// then reads every directory that one burst names, inside the coalescing task,
+/// to place the watches of a directory that appeared after the start. The
+/// service performs no other filesystem read: it names the directories that
+/// changed and leaves every read to the caller.
 ///
 /// # Examples
 ///
@@ -365,9 +478,8 @@ fn register(
 pub struct FileWatcher {
     batches: mpsc::Receiver<WatchBatch>,
     cancellation: CancellationToken,
+    /// The coalescing task, which owns the platform watcher and its watches.
     task: JoinHandle<()>,
-    /// The platform watcher. Dropping it ends its callback thread.
-    watcher: RecommendedWatcher,
 }
 
 impl fmt::Debug for FileWatcher {
@@ -387,9 +499,10 @@ impl FileWatcher {
     /// events. The call walks the tree once, skips a directory whose name the
     /// table holds, and adds one watch for each directory that stays, so the
     /// platform reads no ignored subtree and holds no watch inside it. The
-    /// filter also runs inside the platform callback, before any queue, so a
-    /// directory that appears after the walk costs no queue space and no later
-    /// work.
+    /// coalescing task adds the watches of a directory that appears after that
+    /// walk, so the table also limits every later registration. The filter runs
+    /// inside the platform callback as well, before any queue, so an ignored
+    /// subtree costs no queue space and no later work.
     ///
     /// # Errors
     ///
@@ -408,7 +521,7 @@ impl FileWatcher {
         let dropped = Arc::new(AtomicUsize::new(0));
         let callback_root = root.clone();
         let callback_dropped = Arc::clone(&dropped);
-        let mut watcher = RecommendedWatcher::new(
+        let watcher = RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| {
                 let Ok(event) = result else {
                     // A failed platform read loses changes that the watch never
@@ -433,16 +546,21 @@ impl FileWatcher {
             Config::default(),
         )
         .map_err(WatchError::Start)?;
-        register(&mut watcher, &root, ignored)?;
+        let registration = Registration::start(watcher, root, ignored)?;
 
         let (publisher, batches) = mpsc::channel(WATCH_BATCH_QUEUE_MAX);
         let cancellation = CancellationToken::new();
-        let task = tokio::spawn(coalesce(raw, dropped, publisher, cancellation.clone()));
+        let task = tokio::spawn(coalesce(
+            raw,
+            dropped,
+            publisher,
+            cancellation.clone(),
+            registration,
+        ));
         Ok(Self {
             batches,
             cancellation,
             task,
-            watcher,
         })
     }
 
@@ -457,17 +575,14 @@ impl FileWatcher {
 
     /// Stops the watch and waits for the coalescing task to finish.
     ///
-    /// The operation consumes the value, so no caller can read after it.
+    /// The operation consumes the value, so no caller can read after it. The
+    /// coalescing task owns the platform watcher and drops it as it ends, which
+    /// ends the platform callback thread. The call therefore returns only after
+    /// no further event can reach any queue.
     pub async fn shutdown(self) {
         let Self {
-            cancellation,
-            task,
-            watcher,
-            ..
+            cancellation, task, ..
         } = self;
-        // The platform watcher ends its callback thread on drop, so no further
-        // event reaches the queue while the task finishes.
-        drop(watcher);
         cancellation.cancel();
         let _ = task.await;
     }
@@ -477,11 +592,18 @@ impl FileWatcher {
 ///
 /// The task owns every event between the platform callback and the consumer, so
 /// a consumer that cancels its wait loses no collected event.
+///
+/// The task also owns the registration, so it adds the watches of a directory
+/// that appeared after the start. It adds them before it publishes the burst
+/// that named the parent of that directory. The consumer then reads the parent
+/// while the new watch already runs, so no change escapes both the read and the
+/// watch.
 async fn coalesce(
     mut raw: mpsc::Receiver<WatchEvent>,
     dropped: Arc<AtomicUsize>,
     publisher: mpsc::Sender<WatchBatch>,
     cancellation: CancellationToken,
+    mut registration: Registration,
 ) {
     // A drop that a full publication queue caused belongs to the next burst,
     // because the burst that it displaced never reached the consumer.
@@ -518,6 +640,24 @@ async fn coalesce(
         if dropped.swap(0, Ordering::Relaxed) > 0 {
             batch.drop_events();
         }
+
+        let changed = batch.directories();
+        if !changed.is_empty() {
+            // The walk and the platform call both block, so they run on a
+            // blocking thread. The terminal event loop performs neither.
+            let Ok(next) = tokio::task::spawn_blocking(move || {
+                registration.extend(&changed);
+                registration
+            })
+            .await
+            else {
+                // The blocking thread ended without a value, which drops the
+                // platform watcher, so no further event can reach this task.
+                return;
+            };
+            registration = next;
+        }
+
         if publisher.try_send(batch).is_err() {
             // The consumer is behind, or gone. A displaced burst loses the
             // directories that it named, so the next burst reports the loss.
@@ -595,15 +735,29 @@ mod tests {
         /// The root itself carries the empty name, so a caller reads the whole
         /// registration from one list.
         fn watched(&self) -> Vec<String> {
-            let mut names: Vec<String> = watched_directories(&self.path, &IGNORED)
-                .iter()
-                .map(|path| {
-                    path.strip_prefix(&self.path)
-                        .expect("every watched directory lies below the root")
-                        .to_string_lossy()
-                        .replace('\\', "/")
-                })
-                .collect();
+            self.unregistered(&BTreeSet::new())
+        }
+
+        /// Returns the directories that one walk of the root would still add.
+        ///
+        /// The names are relative to the root, and the root itself carries the
+        /// empty name, so a caller reads the whole addition from one list.
+        fn unregistered(&self, registered: &BTreeSet<PathBuf>) -> Vec<String> {
+            let mut names: Vec<String> = unregistered_directories(
+                &self.path,
+                &self.path,
+                &IGNORED,
+                registered,
+                WATCH_DIRECTORIES_MAX,
+            )
+            .iter()
+            .map(|path| {
+                path.strip_prefix(&self.path)
+                    .expect("every watched directory lies below the root")
+                    .to_string_lossy()
+                    .replace('\\', "/")
+            })
+            .collect();
             names.sort();
             names
         }
@@ -800,6 +954,72 @@ mod tests {
     }
 
     #[test]
+    fn a_later_walk_adds_only_the_directories_that_the_registration_misses() {
+        let tree = TempTree::new("registered");
+        tree.dir("src/tui/render");
+        tree.dir("target/debug");
+        tree.dir("docs");
+        let registered: BTreeSet<PathBuf> = [
+            tree.path.clone(),
+            tree.path.join("src"),
+            tree.path.join("src/tui"),
+        ]
+        .into_iter()
+        .collect();
+
+        assert_eq!(
+            tree.unregistered(&registered),
+            vec!["docs"],
+            "a registered directory reports its own new entries, and an ignored name reports none"
+        );
+    }
+
+    #[test]
+    fn a_walk_that_starts_above_the_root_adds_no_watch() {
+        let tree = TempTree::new("above-root");
+        let above = tree
+            .path
+            .parent()
+            .expect("the tree lies below the temporary directory");
+
+        assert!(
+            unregistered_directories(
+                &tree.path,
+                above,
+                &IGNORED,
+                &BTreeSet::new(),
+                WATCH_DIRECTORIES_MAX,
+            )
+            .is_empty(),
+            "a removed root names the directory above it, which no watch covers"
+        );
+    }
+
+    #[test]
+    fn a_repeated_addition_of_one_directory_changes_no_watch() {
+        let tree = TempTree::new("repeat");
+        tree.dir("src");
+        let watcher =
+            RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
+                .expect("the platform builds one watcher");
+        let mut registration = Registration::start(watcher, tree.path.clone(), &IGNORED)
+            .expect("the platform watches a readable root");
+        let registered = registration.directories.clone();
+        assert_eq!(
+            registered.len(),
+            2,
+            "the root and `src` carry one watch each"
+        );
+
+        registration.extend(std::slice::from_ref(&tree.path));
+
+        assert_eq!(
+            registration.directories, registered,
+            "the set holds every watched directory, so the batch stays empty and no stream rebuilds"
+        );
+    }
+
+    #[test]
     #[cfg(unix)]
     fn an_unreadable_directory_keeps_the_rest_of_the_registration() {
         use std::os::unix::fs::PermissionsExt;
@@ -887,6 +1107,65 @@ mod tests {
             batch.directories(),
             [tree.path.join("src")],
             "the parent of the new directory reports its creation"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_directory_that_appears_after_the_walk_reports_a_change_inside_it() {
+        let tree = TempTree::new("new-directory-events");
+        tree.dir("src");
+        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the platform watches a readable root");
+
+        tree.dir("src/tui");
+        let created = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the new directory")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(created.directories(), [tree.path.join("src")]);
+
+        tree.file("src/tui/render.rs", "\n");
+
+        let batch = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the change inside the new directory")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(
+            batch.directories(),
+            [tree.path.join("src/tui")],
+            "the directory that appeared after the walk carries its own watch"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn an_ignored_directory_that_appears_after_the_walk_still_carries_no_watch() {
+        let tree = TempTree::new("new-ignored");
+        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the platform watches a readable root");
+
+        // The creation of the ignored directory reaches no queue, so the kept
+        // directory produces the burst that adds the later watches.
+        tree.dir("target/debug");
+        tree.dir("docs");
+        let created = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the new directory")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(created.directories(), std::slice::from_ref(&tree.path));
+
+        tree.file("target/debug/kvim", "\n");
+        tree.file("docs/files.md", "\n");
+
+        let batch = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the change of the kept directory")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(
+            batch.directories(),
+            [tree.path.join("docs")],
+            "the kept directory carries a watch and the ignored directory carries none"
         );
         watcher.shutdown().await;
     }

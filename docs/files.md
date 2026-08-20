@@ -517,9 +517,9 @@ each applied change. One measured tree of 1112 directories costs 105 ms as one
 batch, and 71 s as one call for each directory.
 
 The filter of the same list also runs inside the platform callback, before every
-queue, so an ignored subtree costs no queue space and no later work. The filter
-stays beside the registration, because a directory that appears after the walk
-carries no watch of its own and still reports through its parent.
+queue, so an ignored subtree costs no queue space and no later work. One list
+answers the registration and the callback, so the two rules can never disagree
+about one directory.
 
 The walk is bounded. A directory that the process cannot read loses its subtree,
 and a platform that also refuses the watch of that directory loses its entries.
@@ -529,11 +529,30 @@ entry type names the link itself, so no link watches one tree twice and no link
 builds a cycle. A tree above the bounds below keeps the directories that the
 walk reached.
 
-A directory that appears after the walk carries no watch, so the watcher reports
-the creation of that directory and no later change inside it. The tree still
-learns that the directory exists, because the parent reports the creation, and a
-read of that directory shows current entries. A reader who needs the changes
-inside such a directory uses the refresh command.
+A watch covers one directory alone, so a directory that appears after the walk
+carries no watch of its own. The watcher closes that gap on the next burst. The
+coalescing task owns the registration, so it adds every later watch beside the
+event loop and the event loop performs no watch call.
+
+The task reads every directory that the burst names, and it walks each
+directory below them that the registration misses. It stops at a directory that
+the registration already holds, because that directory reports its own new
+entries through its own watch. One burst therefore costs one directory read for
+each directory that it names, and one full walk of each new subtree.
+
+The task adds the new watches in one batch, and it adds them before it publishes
+the burst. The consumer then reads the named directory while the new watch
+already runs, so no change escapes both the read and the watch. The task also
+holds the set of watched directories, so a burst that names an unchanged
+directory adds no path, opens no batch, and rebuilds no event stream.
+
+The later registration obeys the same bounds as the walk at start. A batch adds
+nothing above the directory bound, and a walk reaches nothing below the depth
+bound. A tree above either bound keeps the watches that it already holds. The
+set also records a directory that the platform refused, so one refused directory
+costs one attempt instead of one attempt for each burst. A directory that
+disappeared between the burst and the batch produces no entry, because its read
+fails and its parent still reports its removal.
 
 Every queue is bounded. A full queue, a burst above the directory bound, and a
 failed platform read all drop events. A burst that lost events reports
