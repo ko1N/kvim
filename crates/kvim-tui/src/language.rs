@@ -146,10 +146,11 @@ impl LanguageRequest {
         }
     }
 
-    /// Reports whether this request synchronizes one buffer incrementally.
+    /// Reports whether this request carries a change of one buffer.
     ///
     /// A fresh open carries the complete text, so it supersedes every such
-    /// request of the same buffer.
+    /// request of the same buffer. The mode of the server decides what one
+    /// change notification carries, and the editor reads no mode.
     fn changes_buffer(&self, buffer: BufferId) -> bool {
         matches!(self, Self::Change { buffer: owner, .. } if *owner == buffer)
     }
@@ -967,7 +968,7 @@ impl LanguageState {
         self.outbox.pop_front()
     }
 
-    /// Opens one buffer again and drops its queued incremental changes.
+    /// Opens one buffer again and drops its queued changes.
     ///
     /// The open carries the complete buffer text, so every queued change of
     /// that buffer describes text that the server never receives.

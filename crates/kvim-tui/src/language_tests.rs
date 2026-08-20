@@ -1398,7 +1398,7 @@ const SHIM_LINE: &str = "info: `rust-analyzer` is unavailable for the active too
 
 /// Opens the editor log and returns the rows of the new buffer.
 fn open_log(session: &mut Session) -> Vec<String> {
-    for key in ":log".chars() {
+    for key in ":logs".chars() {
         session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(key))), NOW);
     }
     session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Enter)), NOW);

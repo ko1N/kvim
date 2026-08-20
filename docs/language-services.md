@@ -373,9 +373,9 @@ reads, writes, or waits for a server. A full request queue returns a typed
 saturated result at once, and the caller keeps its previous visible state.
 
 The handshake offers the UTF-8 position encoding first and the UTF-16 position
-encoding second. The section below owns the negotiation and the conversion. kvim
-also answers every unsolicited server request, so an unimplemented request
-cannot stall the server.
+encoding second. The Position Encoding section owns the negotiation and the
+conversion. kvim also answers every unsolicited server request, so an
+unimplemented request cannot stall the server.
 
 Workspace containment rejects a path outside the workspace root with a typed
 result. The session decodes a `file` URI and rejects another scheme, a malformed
@@ -385,7 +385,7 @@ the exact source bytes before it uses that range.
 
 The session sends `didOpen`, `didChange`, and `didClose` for the buffers that
 it queries. It sends `didChange` only after an edit transaction completes. The
-section below owns what one `didChange` carries.
+Document Synchronization section owns what one `didChange` carries.
 
 The session supports diagnostics, definition, hover, and document formatting in
 the first release. It does not support completion, code actions, or symbol
@@ -406,9 +406,9 @@ path that degrades editing.
 A reload replaces the whole text of one buffer, and the reloaded buffer counts
 its versions from the start. kvim therefore synchronizes a reload as one fresh
 document open that carries the reloaded text and the reloaded buffer version,
-and it drops every queued incremental change of that buffer. No obsolete
-version reaches the server, and the server copy replaces the old copy in one
-step. See [`files.md`](files.md).
+and it drops every queued change of that buffer. No obsolete version reaches the
+server, and the server copy replaces the old copy in one step. See
+[`files.md`](files.md).
 
 A crashed server restarts a bounded number of times. The new server holds no
 document, so kvim reports the restart and opens its buffers again. The session
@@ -455,11 +455,17 @@ applies them one after the other.
 A full session sends one change that carries the complete text and no range. It
 builds that text from the mirror of the document, which holds the text that the
 server still holds. It sends the text first, and it moves the mirror after the
-notification reached the server. The section on the position encoding owns the
-mirror.
+notification reached the server. The Position Encoding section owns the mirror.
 
-`sqls` answers the number 1, so its session sends the complete text of every
-change.
+A probe of all 22 declared servers found four that ask for a full
+synchronization: `bash-language-server`, `marksman`, `sqls`, and `taplo`. The
+other eighteen ask for an incremental synchronization. Eleven declared servers
+name the mode in the object form, and eleven name it as one number, so kvim must
+read both forms. `marksman` names a full synchronization in the object form.
+
+No declared server of this build omits the capability, so the `None` mode serves
+no server today. kvim implements the mode because the protocol defines it, and
+because a later release can declare a server that uses it.
 
 One full change carries the text of the document, exactly as one `didOpen` does,
 so `LSP_MESSAGE_BYTES_MAX` bounds both by the same rule. A full session spends
@@ -495,8 +501,10 @@ keeps one document that the editor no longer holds at that path, and the next
 open of that path replaces the copy.
 
 The synchronization mode never refuses a change. A server that asks for no
-synchronization accepts the change and sends nothing, so its document needs no
-repair.
+synchronization accepts the change and sends nothing, so no copy of that server
+drifts. The editor reads no mode, so a refused request of such a server still
+opens the document again. That open carries the text that the server already
+holds, so the repair changes nothing.
 
 kvim reports the repair on the message line, and the log records that report.
 The reader therefore knows that the editor repaired the copy, and not only that
@@ -708,7 +716,7 @@ The conversion covers both directions.
 | Direction | Values |
 |---|---|
 | Received | The range of a diagnostic, of a definition target, and of a formatting edit. |
-| Sent | The range of every `didChange` change, and the position of a definition or a hover request. |
+| Sent | The range of every incremental `didChange` change, and the position of a definition or a hover request. |
 
 kvim reads no range of a hover answer, so that answer carries no column to
 convert.

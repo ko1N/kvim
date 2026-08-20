@@ -37,9 +37,10 @@ pub(super) const HOST_BUFFER_NAME: &str = "[Diagnostics]";
 /// file tree, every distinct language-server program of the registry, and every
 /// distinct formatter program of it. One adapter declares at most
 /// [`LANGUAGE_SERVERS_MAX`] servers and at most one formatter, so a registry of
-/// 25 adapters names at most 125 programs and this bound holds every one of
-/// them. This build declares 22 server programs and 12 formatter programs. One
-/// probe is one search-path lookup.
+/// 25 adapters names at most 125 programs. The picker and the file tree add one
+/// program each, so one report probes at most 127 programs and this bound holds
+/// every one of them. This build declares 22 server programs and 12 formatter
+/// programs. One probe is one search-path lookup.
 pub const HOST_PROGRAMS_MAX: usize = 128;
 
 /// The width of the label column of one report row, in characters.
@@ -288,7 +289,8 @@ impl HostReportRequest {
         assert!(
             probed <= HOST_PROGRAMS_MAX,
             "one adapter declares at most {LANGUAGE_SERVERS_MAX} servers and one formatter, \
-             so {} adapters name at most {HOST_PROGRAMS_MAX} programs; see docs/architecture.md",
+             so {} adapters name {probed} programs, above the {HOST_PROGRAMS_MAX} of this bound; \
+             the adapter table and the bound drifted apart, see docs/architecture.md",
             self.registry.adapters().len()
         );
         let facts = HostFacts {
