@@ -46,9 +46,11 @@ pub const MARKUP_BLOCKS_MAX: usize = 256;
 /// The styled pieces that one document holds, over every block of it.
 ///
 /// One piece is one stretch of text that the parse appends in one role, and one
-/// line of a code block counts as one piece. The bound covers a text of
-/// alternating roles and a code block of many lines, so it bounds the pieces of
-/// one block as well. The parse degrades at this bound exactly as it does at
+/// line of a code block counts as one piece. The walk tests the count before
+/// each event, so the bound stops the parse between two events. The lines of one
+/// code block join the count when that block closes, so they stop the parse
+/// after it and never inside it. [`MARKUP_SOURCE_BYTES_MAX`] bounds the lines of
+/// one such block. The parse degrades at this bound exactly as it does at
 /// [`MARKUP_BLOCKS_MAX`].
 pub const MARKUP_PIECES_MAX: usize = 2048;
 
@@ -931,21 +933,33 @@ mod tests {
     }
 
     #[test]
-    fn the_piece_bound_holds_over_one_code_block_of_many_lines() {
-        let source = format!("```\n{}```", "x\n".repeat(MARKUP_PIECES_MAX * 2));
+    fn the_piece_bound_holds_over_one_text_of_many_pieces() {
+        // Each emphasis and each blank between two of them is one piece. The
+        // source stays far below the source bound, so the piece bound is the
+        // one that stops this parse.
+        let source = "*a* ".repeat(MARKUP_PIECES_MAX);
+        assert!(source.len() < MARKUP_SOURCE_BYTES_MAX);
+
         let document = MarkupDocument::parse(&source);
 
-        let lines: usize = document
+        assert!(
+            document.is_clipped(),
+            "the parse stopped at the piece bound"
+        );
+        let pieces: usize = document
             .blocks()
             .iter()
             .map(|block| match block.body() {
+                MarkupBody::Prose(styled) | MarkupBody::Heading { text: styled, .. } => {
+                    styled.pieces().len()
+                }
                 MarkupBody::Code { lines, .. } => lines.len(),
-                MarkupBody::Prose(_) | MarkupBody::Heading { .. } | MarkupBody::Rule => 0,
+                MarkupBody::Rule => 1,
             })
             .sum();
         assert!(
-            lines <= MARKUP_PIECES_MAX * 2,
-            "the walk stops at the piece bound rather than reading the whole text: {lines}"
+            pieces <= MARKUP_PIECES_MAX,
+            "the value holds no more pieces than the bound: {pieces}"
         );
     }
 

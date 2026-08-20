@@ -491,10 +491,11 @@ and a role survives a wrap point on both sides of it.
 
 Each block also carries the containers around it, outermost first. A quote
 container rails every row of the block. A list container indents every row, and
-it names the marker of the item when the block opens that item. The renderer
-builds the prefix from the containers, because a marker and the blanks that
-replace it must occupy one terminal width, and only the renderer measures a
-terminal cell.
+it names the marker of the item when the block opens that item. The marker of an
+ordered item counts up from the start value of its list, as CommonMark defines.
+A source that jumps numbers therefore reads in order. The renderer builds the
+prefix from the containers, because a marker and the blanks that replace it must
+occupy one terminal width, and only the renderer measures a terminal cell.
 
 A block reports whether one blank row stands above it. The blocks of one list
 follow one another without a blank row, so a list reads as one list and not as
@@ -540,7 +541,7 @@ needs no further rule for an incomplete document.
 |---|---|---|---|
 | Markup source | `MARKUP_SOURCE_BYTES_MAX` | 16 KiB | The value of `LSP_HOVER_BYTES_MAX`, which bounds the largest markup that the editor reads today. One constant holds both, so the two cannot drift. A longer text stops at the last character boundary below the bound. |
 | Blocks of one document | `MARKUP_BLOCKS_MAX` | 256 blocks | One block needs at least one character of its own, so a source of the bound above holds far more blocks than a float shows. The float shows at most `FLOAT_ROWS_MAX` rows, so 256 blocks exceed one float many times. |
-| Pieces of one document | `MARKUP_PIECES_MAX` | 2,048 pieces | One piece is one stretch of text that the parse appends in one role, and one line of a code block counts as one piece. The bound covers a text of alternating roles and a code block of many lines, so it bounds the pieces of one block as well. |
+| Pieces of one document | `MARKUP_PIECES_MAX` | 2,048 pieces | One piece is one stretch of text that the parse appends in one role, and one line of a code block counts as one piece. The parse tests the count before each event, so the bound stops it between two events. The lines of one code block join the count when that block closes, so they stop the parse after it and never inside it. `MARKUP_SOURCE_BYTES_MAX` bounds the lines of one such block. |
 | Containers of one block | `MARKUP_NESTING_DEPTH_MAX` | 8 containers | A quote inside a quote inside a list indents the text of a block, and a server can nest without a limit. A container below this depth adds no further prefix, so the text still reaches the screen and the prefix cannot consume the whole width. |
 
 The parse stops at the first bound that it reaches, and the document then
