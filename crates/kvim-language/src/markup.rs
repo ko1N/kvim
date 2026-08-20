@@ -1266,15 +1266,21 @@ mod tests {
         // Tree-sitter work, so only the highlight pass produces one span.
         let document = MarkupDocument::parse(RUST_ANALYZER_HOVER);
 
+        let mut fences = 0;
         for (index, block) in document.blocks().iter().enumerate() {
             let MarkupBody::Code { highlights, .. } = block.body() else {
                 continue;
             };
+            fences += 1;
             assert!(
                 highlights.is_empty(),
                 "block {index} carries a span that no highlight pass produced"
             );
         }
+        assert_eq!(
+            fences, 2,
+            "the answer holds the two fences that this test reads"
+        );
     }
 
     #[test]
