@@ -81,7 +81,7 @@ impl EditPlan {
 /// The automatic indent of one new line.
 ///
 /// A language adapter answers with a level count, and the editor multiplies
-/// that count by the shift width, so `EditorSettings` keeps the tab width. Kvim
+/// that count by the shift width, so `EditorSettings` keeps the tab width. kvim
 /// uses [`AutoIndent::PreviousLine`] when no adapter serves the buffer, or when
 /// the parse result for the current buffer version is not yet available. The
 /// editor never waits for a parse result. See `docs/text-model.md`.

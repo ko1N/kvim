@@ -20,7 +20,7 @@ The editor depends on the trait only. It never names a platform, a command, or a
 selection. This keeps one rule: a new clipboard implementation needs no editor
 change.
 
-Kvim supplies these implementations:
+kvim supplies these implementations:
 
 - one macOS implementation,
 - one Linux implementation, which selects the Wayland or X11 commands,
@@ -72,9 +72,9 @@ never wait for a result that no longer arrives.
 A register value is characterwise, linewise, or blockwise. A system clipboard
 carries text only. It carries no shape.
 
-Kvim keeps the shape with its own register value. On a paste, Kvim compares the
+kvim keeps the shape with its own register value. On a paste, kvim compares the
 clipboard text with the text it wrote last. Equal text means the clipboard still
-holds the Kvim value, so the paste uses the recorded shape. Different text means
+holds the kvim value, so the paste uses the recorded shape. Different text means
 another application wrote the clipboard, so the paste treats the text as
 characterwise, unless the text ends with a line ending, which makes it linewise.
 
@@ -83,7 +83,7 @@ usable.
 
 ## Platform Commands
 
-Kvim selects the command at startup and records the selection. It never guesses
+kvim selects the command at startup and records the selection. It never guesses
 per operation.
 
 | Platform | Write | Read |
@@ -93,7 +93,7 @@ per operation.
 | Linux, X11 | `xclip -selection clipboard` | `xclip -selection clipboard -o` |
 | Linux, X11 fallback | `xsel --clipboard --input` | `xsel --clipboard --output` |
 
-On Linux, Kvim prefers the Wayland commands when the session is a Wayland
+On Linux, kvim prefers the Wayland commands when the session is a Wayland
 session. It falls back through the X11 commands in the order above. It selects
 the first command that exists on `PATH`.
 
@@ -103,22 +103,22 @@ A missing command, a failed command, a timeout, and a cancelled command are all
 expected runtime states. None of them may lose editor data.
 
 - A failed clipboard write keeps the internal register value. The yank succeeded.
-  Kvim reports the clipboard failure once and continues.
+  kvim reports the clipboard failure once and continues.
 - A failed clipboard read falls back to the internal register value.
-- Kvim reports a missing clipboard command once for each session, not once for
+- kvim reports a missing clipboard command once for each session, not once for
   each operation.
 
-Kvim reports only a proven failure. Each failure states whether the transfer
-provably did not happen, or whether Kvim never learned the outcome.
+kvim reports only a proven failure. Each failure states whether the transfer
+provably did not happen, or whether kvim never learned the outcome.
 
 | Outcome | Report |
 |---|---|
-| The command reported a non-zero status, or a signal ended it | Kvim reports the failure |
-| The command did not start | Kvim reports the failure |
-| The bounded process service refused the command | Kvim reports the failure |
-| The clipboard holds bytes that are not text | Kvim reports the bytes |
-| The command passed its deadline | Kvim reports nothing |
-| A newer operation or the shutdown cancelled the command | Kvim reports nothing |
+| The command reported a non-zero status, or a signal ended it | kvim reports the failure |
+| The command did not start | kvim reports the failure |
+| The bounded process service refused the command | kvim reports the failure |
+| The clipboard holds bytes that are not text | kvim reports the bytes |
+| The command passed its deadline | kvim reports nothing |
+| A newer operation or the shutdown cancelled the command | kvim reports nothing |
 
 The deadline row is not a convenience. The Linux write commands own the
 selection through a background process, and that process inherits the captured
@@ -129,7 +129,7 @@ end of a successful `wl-copy` or `xclip` write, so it must never reach the
 message line. A write that truly fails exits with a status before it owns any
 selection, which keeps the report for the case that needs it.
 
-Kvim keeps the register value on every one of these paths, so a silent outcome
+kvim keeps the register value on every one of these paths, so a silent outcome
 still loses nothing.
 
 The editor stays fully usable without any clipboard command. A remote terminal
@@ -138,6 +138,6 @@ without a clipboard tool is a supported environment.
 ## Bounds
 
 The clipboard command runs through the bounded process service with the process
-deadline from [`responsiveness.md`](responsiveness.md). Kvim bounds the transfer
-at 1 MiB. A larger register value stays internal, and Kvim reports that the
+deadline from [`responsiveness.md`](responsiveness.md). kvim bounds the transfer
+at 1 MiB. A larger register value stays internal, and kvim reports that the
 value was too large for the system clipboard.

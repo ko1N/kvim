@@ -80,7 +80,7 @@ impl ProcessExecutor for DeferredExecutor {
 
 /// The system clipboard boundary of one editor session.
 ///
-/// The value holds the platform implementation, the text that Kvim wrote last,
+/// The value holds the platform implementation, the text that kvim wrote last,
 /// and the one-time report for a missing command. It holds no register value,
 /// so no clipboard failure removes editor data.
 #[derive(Debug)]

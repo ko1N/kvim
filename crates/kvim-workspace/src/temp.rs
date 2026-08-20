@@ -100,13 +100,13 @@ const TEST_AUTHOR: [&str; 4] = [
     "-c",
     "user.email=tests@kvim.invalid",
     "-c",
-    "user.name=Kvim Tests",
+    "user.name=kvim Tests",
 ];
 
 /// One temporary Git repository for a test that runs the real command.
 ///
 /// The repository lives inside its own [`TempDir`] and disappears with the
-/// test, so no test reads or writes the repository that holds Kvim itself.
+/// test, so no test reads or writes the repository that holds kvim itself.
 ///
 /// Every invocation states its own author and reads no configuration of the
 /// host. The system file and the global file are both neutralized for the child

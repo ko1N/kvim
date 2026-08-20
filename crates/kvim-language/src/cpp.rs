@@ -60,7 +60,7 @@ fn cpp_language() -> Language {
 /// The joined highlight query of the C++ adapter.
 ///
 /// The crate ships the C++ patterns alone, because the upstream query inherits
-/// the C patterns. Kvim resolves no query inheritance, so the adapter joins the
+/// the C patterns. kvim resolves no query inheritance, so the adapter joins the
 /// two texts once. The C patterns come first, so a C++ pattern of the same node
 /// takes precedence. The C++ grammar is a superset of the C grammar, so every
 /// C pattern names a node kind that the C++ grammar holds.

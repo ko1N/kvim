@@ -73,7 +73,7 @@ fn tsx_language() -> Language {
 /// The joined highlight query of the TSX adapter.
 ///
 /// TSX reads three dialects at once, and the two crates ship one text for each
-/// of them. Kvim resolves no query inheritance, so the adapter joins the three
+/// of them. kvim resolves no query inheritance, so the adapter joins the three
 /// texts once. The JavaScript patterns come first, the JSX patterns follow
 /// them, and the type patterns come last, so a later pattern of the same node
 /// takes precedence.

@@ -2,7 +2,7 @@
 
 ## Repo Facts
 
-- This repository is the standalone Kvim terminal editor.
+- This repository is the standalone kvim terminal editor.
 - The project uses one Cargo workspace. Every module charter is one library crate under `crates/`: `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-language`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui`, and `kvim-workspace`. The `crates/kvim` binary crate produces the `kvim` executable.
 - The crate boundaries make the one-way dependency direction a compile error. `docs/architecture.md` owns the layer table.
 - Declare every dependency version in `[workspace.dependencies]` only. A member references it with `workspace = true`, grouped under the comment headers of that table.

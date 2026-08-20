@@ -139,7 +139,7 @@ fn spawn_listener(requests: mpsc::Sender<TerminationSignal>) {
 /// Reports no termination request.
 ///
 /// Only Unix defines the signals that end the editor, and macOS and Linux are
-/// the platforms that Kvim supports.
+/// the platforms that kvim supports.
 #[cfg(not(unix))]
 fn spawn_listener(_requests: mpsc::Sender<TerminationSignal>) {}
 

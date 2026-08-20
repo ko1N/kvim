@@ -44,21 +44,21 @@ Opening a path that holds no file starts an empty buffer. The first save writes
 a new file at that path.
 
 A buffer records its dirty state, its loaded line ending, the file end that the
-file held, and the file metadata that Kvim observed at load time or at the last
+file held, and the file metadata that kvim observed at load time or at the last
 successful save. The save writes the recorded file end, so a file without a
 final line ending never receives one. See [`text-model.md`](text-model.md).
 
 Unloading a buffer removes it from the buffer list. Every window that shows the
-buffer must first move to another buffer. Kvim stages that replacement buffer
+buffer must first move to another buffer. kvim stages that replacement buffer
 before the removal, and it creates one empty buffer when the list holds no other
-buffer. Kvim refuses to unload a buffer that holds unsaved changes.
+buffer. kvim refuses to unload a buffer that holds unsaved changes.
 
 The buffer list holds at most 128 buffers. The editor always keeps one loaded
 buffer, so a window always shows text.
 
 ## Saving
 
-Kvim saves through a staged atomic replacement where the platform supports it.
+kvim saves through a staged atomic replacement where the platform supports it.
 The save procedure is:
 
 1. Check the file for an external change.
@@ -70,7 +70,7 @@ The save procedure is:
 6. Clear the dirty state.
 
 The rename replaces the file in one step, so a reader never observes a partial
-file. Kvim preserves the existing file permissions and resolves a symlink to its
+file. kvim preserves the existing file permissions and resolves a symlink to its
 target before it replaces the file.
 
 A save failure at any step leaves the buffer dirty and usable. The user keeps
@@ -94,7 +94,7 @@ closes the window after the save succeeds. A failed save keeps the window open.
 
 ## External Change Detection
 
-Kvim records the file identity when it loads a file and after every successful
+kvim records the file identity when it loads a file and after every successful
 save. The file identity holds two values:
 
 - the file size, in bytes,
@@ -111,18 +111,18 @@ it before it replaces a buffer. The comparison has three typed results:
 | changed | no file | a file |
 | missing | a file | no file |
 
-Kvim reads no file content for this comparison, so the check stays cheap for a
+kvim reads no file content for this comparison, so the check stays cheap for a
 large file.
 
 A save refuses a changed file. The refusal is a typed conflict, not an error
-message string. Kvim reports the conflict and does not overwrite the file. The
+message string. kvim reports the conflict and does not overwrite the file. The
 buffer stays dirty and usable.
 
 A save writes a missing file again, because that file holds no content to lose.
 
 ## Reload
 
-Kvim keeps every open buffer current with its file. The workspace watch above
+kvim keeps every open buffer current with its file. The workspace watch above
 publishes one coalesced burst for each window of change. Every burst starts one
 bounded check of every loaded buffer against its file, because a content change
 names no path and a removed entry names only its directory. The check is one
@@ -147,12 +147,12 @@ mark is one of two states, and the winbar shows `[!]` for both:
 
 A deleted file and a renamed file reach the same missing state, because the path
 of the buffer names no file in either case. The buffer keeps its text and stays
-fully editable, because that text is then the only copy that Kvim can write. A
+fully editable, because that text is then the only copy that kvim can write. A
 save writes the file again. A save and a successful reload both clear the mark.
 
 A reload takes the same path as an ordinary open: the same size limit, the same
 UTF-8 rule, and the same restore of the persistent undo file. A file that grew
-past the size limit therefore reloads no buffer. Kvim reports that, marks the
+past the size limit therefore reloads no buffer. kvim reports that, marks the
 buffer as changed, and keeps its text.
 
 Every window that shows a reloaded buffer keeps its own cursor and its own first
@@ -161,7 +161,7 @@ cursor and no viewport beyond its end.
 
 A reload replaces the whole buffer, so the reloaded buffer restarts its undo
 history and counts its versions from the start, as a fresh open does. The
-persistent undo file is not part of the reload: Kvim writes it at save time, and
+persistent undo file is not part of the reload: kvim writes it at save time, and
 its content check rejects a record that no longer describes the file. Everything
 that one buffer version guards restarts with the buffer: the accepted analysis,
 the reuse tree, the published diagnostics, and the matches of the active search.
@@ -171,7 +171,7 @@ compared. A buffer that the user changed while the check ran rejects the
 outcome, so no obsolete text reaches a buffer.
 
 The language server receives the reloaded text as one document synchronization
-that carries the reloaded buffer version, and Kvim drops every queued
+that carries the reloaded buffer version, and kvim drops every queued
 incremental change of that buffer, so no obsolete version reaches the server.
 See [`language-services.md`](language-services.md).
 
@@ -191,7 +191,7 @@ its own meaning and opens another file.
 
 ## Persistent Undo Files
 
-Kvim writes a persistent undo file for each saved buffer, so undo history
+kvim writes a persistent undo file for each saved buffer, so undo history
 survives a restart.
 
 ### Location
@@ -208,7 +208,7 @@ every name inside the name limit of the filesystem, which a long encoded path
 would pass. A hash collision cannot corrupt a buffer, because the invalidation
 rule below rejects a record of another content.
 
-Kvim writes no undo file when the platform reports neither `XDG_STATE_HOME` nor
+kvim writes no undo file when the platform reports neither `XDG_STATE_HOME` nor
 `HOME`.
 
 ### Format
@@ -230,12 +230,12 @@ editing session.
 
 The current format version is 1. Every value is little-endian.
 
-The record holds no redo history above the saved state. Kvim writes the file at
+The record holds no redo history above the saved state. kvim writes the file at
 save time, and the saved state is then the newest state.
 
 ### Invalidation
 
-Kvim ignores an undo file when any of these is true:
+kvim ignores an undo file when any of these is true:
 
 - the magic value is not `KVIMUNDO`,
 - the format version is not the current version,
@@ -258,7 +258,7 @@ record that passed the header check.
 The remaining undo steps stay in memory for the running session. See
 [`text-model.md`](text-model.md) for the memory bounds of the history.
 
-An unreadable, unsupported, or invalidated undo file is not an error. Kvim
+An unreadable, unsupported, or invalidated undo file is not an error. kvim
 starts the buffer with empty undo history and continues. A failed undo file
 write is not an error either, because the saved file is already correct.
 
@@ -419,7 +419,7 @@ A directory that the user opens while the search runs therefore survives the
 end of that search. `Esc` and `Ctrl-C` both end the search, and an empty query
 ends it as well.
 
-Kvim reads no Git ignore rules for the tree in the first release. The dimmed
+kvim reads no Git ignore rules for the tree in the first release. The dimmed
 generated names above are a fixed presentation list, not a Git ignore rule.
 
 ### Sidebar Focus And Operations
@@ -439,7 +439,7 @@ event loop takes the next directory read after every completed operation, so the
 reads of one reveal or one refresh reach the worker in order. A cancelled,
 timed out, or refused operation changes no workspace state and no buffer.
 
-Kvim applies one completed mutation as one transition. The transition updates
+kvim applies one completed mutation as one transition. The transition updates
 the path of every affected buffer, refreshes only the changed directories, and
 reveals the new entry.
 
@@ -489,7 +489,7 @@ between the two.
 
 One logical change writes many platform events, and one compiler run writes
 thousands. The watcher therefore collects events for `WATCH_COALESCE_WINDOW` and
-publishes one burst for that window. Kvim coalesces itself instead of adding a
+publishes one burst for that window. kvim coalesces itself instead of adding a
 debouncer dependency, because the burst is a small pure accumulation over typed
 values and it tests without a filesystem.
 
@@ -656,7 +656,7 @@ directory without that report. An unreadable directory reports the same way.
 ## Workspace Mutations
 
 A workspace mutation creates, deletes, renames, copies, or moves files and
-directories. Kvim validates the complete mutation before it changes anything on
+directories. kvim validates the complete mutation before it changes anything on
 disk. Validation checks:
 
 - that the source exists and is a supported kind,
@@ -670,26 +670,26 @@ disk. Validation checks:
 - which loaded buffers the mutation affects,
 - whether an affected buffer is dirty.
 
-Kvim builds one staged transition that describes the filesystem operation and
+kvim builds one staged transition that describes the filesystem operation and
 every affected buffer path. It applies the filesystem operation first. It then
 applies the buffer path updates as one visible state change. A validation
 failure or a filesystem failure leaves both the workspace and the buffers
 unchanged.
 
 A buffer of a moved or renamed entry follows that entry and keeps its identity.
-A buffer of a removed entry stays loaded, so the user keeps the content. Kvim
+A buffer of a removed entry stays loaded, so the user keeps the content. kvim
 refuses to remove an entry whose buffer holds unsaved changes.
 
-A removal destroys data, so Kvim asks the user before it removes an entry. The
+A removal destroys data, so kvim asks the user before it removes an entry. The
 question names the entry, or the number of entries. A cancelled question removes
-nothing and changes no workspace state. Kvim stages the removal when the answer
+nothing and changes no workspace state. kvim stages the removal when the answer
 arrives, not when the question opens, so an entry that disappeared meanwhile
 reaches no worker. [`input-actions.md`](input-actions.md) owns the keys of the
 question.
 
 ### Overwrite
 
-An overwrite destroys the entry that holds the destination, so Kvim asks the
+An overwrite destroys the entry that holds the destination, so kvim asks the
 user before it replaces one. A rename or a transfer onto a free destination
 asks nothing.
 
@@ -705,7 +705,7 @@ therefore follows the result of the operation that the user asked for, not a
 key alone. [`input-actions.md`](input-actions.md) owns that rule.
 
 The answer carries the destinations that the question named, with the kind that
-the first staging observed. Kvim stages the operation again and replaces exactly
+the first staging observed. kvim stages the operation again and replaces exactly
 those destinations. The world can change while the question waits, so the second
 staging decides again:
 
@@ -715,7 +715,7 @@ staging decides again:
 - a destination that the question did not name refuses the mutation, as every
   taken destination does.
 
-Kvim refuses to overwrite a destination whose buffer holds unsaved changes, as
+kvim refuses to overwrite a destination whose buffer holds unsaved changes, as
 it refuses to remove such an entry. That refusal reaches the user before the
 question, so the user never approves a mutation that the second staging rejects.
 A buffer of an overwritten file without unsaved changes reloads through the
@@ -743,7 +743,7 @@ leaves the destination unchanged. The commit removes the parked entries only
 after every destination holds its new entry. An overwrite therefore never
 destroys the destination before the replacement is complete.
 
-Kvim moves an entry with one rename. It performs no copy across a filesystem
+kvim moves an entry with one rename. It performs no copy across a filesystem
 boundary in the first release, and it reports the refusal of the platform
 instead.
 
@@ -755,7 +755,7 @@ instead.
 | Entries of one recursive copy | `COPY_ENTRIES_MAX` | 4096 | The bound stops a copy of a build directory or of a looping link. |
 | Depth of one recursive copy | `COPY_DEPTH_MAX` | 32 | A copied source directory nests far less. |
 
-After completion, Kvim refreshes only the affected workspace state. It does not
+After completion, kvim refreshes only the affected workspace state. It does not
 rebuild the complete tree.
 
 ## File-Operation Clipboard
@@ -770,7 +770,7 @@ records the intent only and the paste builds the move. A cancelled paste leaves
 the source unchanged. The tree marks the row of every held entry, so the reader
 sees the pending operation.
 
-Kvim releases the held entries after one completed workspace mutation, so one
+kvim releases the held entries after one completed workspace mutation, so one
 cut never moves the same entry twice and no row reports an operation that
 already finished. `Esc` and `Ctrl-C` in the sidebar cancel the pending operation
 together with the tree search, which releases the held entries as well.
@@ -888,12 +888,12 @@ obsolete. The publication gate rejects the obsolete result, and the picker
 rejects it a second time from its visible state. See
 [`responsiveness.md`](responsiveness.md).
 
-A missing `rg` command is a normal state, not an error. Kvim reports it once and
+A missing `rg` command is a normal state, not an error. kvim reports it once and
 stays fully usable without the search picker.
 
 ### Picker Bounds
 
-Kvim stops at the first limit and reports the truncated state above the result
+kvim stops at the first limit and reports the truncated state above the result
 list.
 
 | Bound | Constant | Value | Rationale |
@@ -926,7 +926,7 @@ so it runs at most one search and one preview at a time.
 
 ## Supported Files
 
-Kvim loads regular UTF-8 files. It rejects a directory target, a device file, a
+kvim loads regular UTF-8 files. It rejects a directory target, a device file, a
 binary file, an unsupported encoding, and an oversized file with a typed result
 and a clear message. See [`text-model.md`](text-model.md) for the size limit and
 the encoding policy.

@@ -43,7 +43,7 @@ impl TerminalEvent {
     /// Normalizes one crossterm event.
     ///
     /// The function returns `None` for a mouse event, a paste event, a key
-    /// release, and any key that Kvim does not use.
+    /// release, and any key that kvim does not use.
     ///
     /// ```
     /// use crossterm::event::Event;

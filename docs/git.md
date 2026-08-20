@@ -1,11 +1,11 @@
 # Git
 
-This document owns the Git dependency of Kvim: what the editor reads, how it
+This document owns the Git dependency of kvim: what the editor reads, how it
 reads it, and how the file tree shows the result.
 
 ## Scope
 
-Kvim reads the repository. It never writes it. The first release holds no
+kvim reads the repository. It never writes it. The first release holds no
 stage, no unstage, no revert, no discard, and no hunk operation. Every function
 of `kvim-workspace/src/git.rs` is a read, and the one command that the editor
 runs gives up every optional lock, so a status read changes no file inside
@@ -48,7 +48,7 @@ inside the process service, never on the event loop. A workspace root below the
 top level of a repository is a normal case, and its marks resolve correctly.
 
 Git reports a directory outside a repository through its exit code. No branch of
-Kvim reads the message text of `git`, of any other command, or of any error.
+kvim reads the message text of `git`, of any other command, or of any error.
 
 ## The Recorded State
 
@@ -99,12 +99,12 @@ Git named no record for it.
 thousands of files under `target`, so that mode would cost a very large listing
 for one directory that the reader already knows about.
 
-Kvim uses `--ignored=traditional` instead. Git then names the ignored
-*directory* once, and Kvim inherits that state down the subtree. The cost of one
+kvim uses `--ignored=traditional` instead. Git then names the ignored
+*directory* once, and kvim inherits that state down the subtree. The cost of one
 ignored build directory is one record. An ignored file inside a directory that
 is not ignored still receives its own record, and that set is small.
 
-The limit of this choice: Kvim learns nothing about an ignored file below an
+The limit of this choice: kvim learns nothing about an ignored file below an
 ignored directory that Git did not name, and it does not need to, because the
 inherited state already answers every row.
 
@@ -123,7 +123,7 @@ adds, so the reader can still tell which rule spoke.
 
 ## Refresh
 
-Kvim reads the repository state after a save, after a workspace mutation, after
+kvim reads the repository state after a save, after a workspace mutation, after
 a workspace-watch burst, and on the tree refresh command. It uses no timer,
 because the renderer draws only after a visible state change and runs no
 unconditional frame loop.

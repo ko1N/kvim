@@ -249,7 +249,7 @@ One winbar row sits above the text of every window. It shows, from the left, one
 blank, the path of the buffer, and a marker for a modified buffer. It shows the
 scroll position at the right edge.
 
-The path is relative to the directory that Kvim started in, which is the
+The path is relative to the directory that kvim started in, which is the
 workspace root that the file tree shows. A file outside that root keeps its
 complete path, because no relative path reaches it. A buffer that holds no file
 shows its short name. A path that is too long for the row loses its start, and a
@@ -259,7 +259,7 @@ terminal cells, so it never splits a wide character and never overflows the row.
 The scroll position reports where the visible rows sit inside the buffer, in
 three cells: `ALL` while the complete buffer fits, `TOP` while the first line is
 visible, `BOT` while the last line is visible, and otherwise the share of the
-buffer above the first visible line, in percent. Kvim follows the Vim
+buffer above the first visible line, in percent. kvim follows the Vim
 convention, so the three named outcomes take precedence over a number.
 
 A winbar that cannot hold every part drops them in a fixed order: the scroll
@@ -272,7 +272,7 @@ because it reports why the terminal is too small.
 
 No region carries a divider glyph. The surface color of the winbar band and of
 the statusline band separates the regions, and the title color separates the
-focused window from the others. Kvim keeps the borderless ReviewGraph
+focused window from the others. kvim keeps the borderless ReviewGraph
 presentation. See [`reviewgraph-integration.md`](reviewgraph-integration.md).
 
 The which-key overlay covers the bottom of the body band. It lists the next keys
@@ -516,7 +516,7 @@ cell behind the last character of a line, in any of the three selection shapes.
 A selected line without a character therefore shows no highlighted cell, and a
 rectangular selection stops at the last character of a shorter line.
 
-Kvim shows absolute and relative line numbers together. The cursor line shows
+kvim shows absolute and relative line numbers together. The cursor line shows
 its absolute number. Every other line shows its distance from the cursor line.
 Both settings belong to `EditorSettings`.
 
@@ -534,7 +534,7 @@ its window. Rendering clips at the window edge deterministically.
 Rendering uses terminal-cell widths, not byte counts or character counts. See
 [`text-model.md`](text-model.md) for the coordinate rule.
 
-Kvim renders only after a visible state change. See
+kvim renders only after a visible state change. See
 [`responsiveness.md`](responsiveness.md).
 
 ## Sign Column

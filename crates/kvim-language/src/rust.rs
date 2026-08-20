@@ -64,7 +64,7 @@ fn rust_language() -> Language {
 
 /// Maps the language-neutral settings onto the rust-analyzer options.
 ///
-/// This function is the one place in Kvim that names a setting of one concrete
+/// This function is the one place in kvim that names a setting of one concrete
 /// server. Everything above the adapter boundary passes the returned value on
 /// without reading it.
 fn rust_analyzer_options(settings: LanguageSettings) -> Value {

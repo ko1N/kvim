@@ -19,7 +19,7 @@ const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
 
 /// Returns the Markdown block grammar of the bundled parser.
 ///
-/// The parser splits Markdown into a block grammar and an inline grammar. Kvim
+/// The parser splits Markdown into a block grammar and an inline grammar. kvim
 /// resolves no grammar injection yet, so the block grammar is the whole
 /// analysis, and it carries every structural highlight of a document.
 fn markdown_language() -> Language {

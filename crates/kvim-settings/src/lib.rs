@@ -7,7 +7,7 @@
 use std::num::NonZeroU8;
 use std::time::Duration;
 
-/// The largest file that Kvim loads into a buffer, in bytes.
+/// The largest file that kvim loads into a buffer, in bytes.
 ///
 /// The limit protects the editor against unbounded memory use. ReviewGraph uses
 /// the same bound for analysis sources.
@@ -304,7 +304,7 @@ pub struct FileSettings {
     pub format_on_save: bool,
     /// Replace a file through a staged atomic write where the platform supports it.
     pub atomic_save: bool,
-    /// The largest file that Kvim loads into a buffer, in bytes.
+    /// The largest file that kvim loads into a buffer, in bytes.
     pub max_file_bytes: u64,
 }
 

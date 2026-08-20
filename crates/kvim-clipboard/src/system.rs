@@ -103,7 +103,7 @@ pub enum ClipboardPlatform {
     MacOs,
     /// A Linux host, which provides one of the tools of [`LinuxTool`].
     Linux,
-    /// Any other host. Kvim serves it without a clipboard command.
+    /// Any other host. kvim serves it without a clipboard command.
     Other,
 }
 
@@ -450,7 +450,7 @@ impl<E: ProcessExecutor> SystemClipboard for LinuxClipboard<E> {
 /// The display session that selects the Linux tool order.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DisplaySession {
-    /// A Wayland session. Kvim prefers the Wayland tool.
+    /// A Wayland session. kvim prefers the Wayland tool.
     Wayland,
     /// An X11 session, or an unknown session.
     X11,
@@ -474,7 +474,7 @@ impl DisplaySession {
 /// Selects the Linux clipboard tool of one session.
 ///
 /// The function is pure: the caller reports the session and which programs
-/// exist. Kvim selects the tool once at startup and never guesses per
+/// exist. kvim selects the tool once at startup and never guesses per
 /// operation.
 ///
 /// # Examples

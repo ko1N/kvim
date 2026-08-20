@@ -25,7 +25,7 @@ static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// The observed state of one file.
 ///
-/// Kvim records the identity at load time and after every successful save. The
+/// kvim records the identity at load time and after every successful save. The
 /// save compares the recorded identity with the current identity before it
 /// replaces the file, so an external change becomes a typed conflict instead of
 /// a silent overwrite.
@@ -51,7 +51,7 @@ impl FileIdentity {
     ///
     /// The save asks this question before it overwrites a file, and the reload
     /// asks it before it replaces a buffer, so one rule answers both
-    /// directions. Kvim reads no file content for the comparison, so the check
+    /// directions. kvim reads no file content for the comparison, so the check
     /// stays cheap for a large file. See `docs/files.md`.
     ///
     /// # Examples
@@ -72,7 +72,7 @@ impl FileIdentity {
     pub fn compare(recorded: Option<Self>, current: Option<Self>) -> FileChange {
         match (recorded, current) {
             (Some(recorded), Some(current)) if recorded != current => FileChange::Changed,
-            // A file that appeared where Kvim observed none is another program's
+            // A file that appeared where kvim observed none is another program's
             // file, not the one that the buffer describes.
             (None, Some(_)) => FileChange::Changed,
             (Some(_), None) => FileChange::Missing,
@@ -81,10 +81,10 @@ impl FileIdentity {
     }
 }
 
-/// What happened to one file since Kvim recorded its state.
+/// What happened to one file since kvim recorded its state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileChange {
-    /// The file still holds the state that Kvim recorded.
+    /// The file still holds the state that kvim recorded.
     Unchanged,
     /// Another program changed, created, or replaced the file.
     Changed,
@@ -123,7 +123,7 @@ pub enum OpenError {
 /// A rejected file save.
 #[derive(Debug, Error)]
 pub enum SaveError {
-    /// The file changed after Kvim loaded or last saved it.
+    /// The file changed after kvim loaded or last saved it.
     #[error("the file changed on disk; the buffer keeps every unsaved change")]
     Conflict,
     /// The target path holds no parent directory.
@@ -233,7 +233,7 @@ pub struct SavedFile {
 
 /// Replaces one file with the buffer content.
 ///
-/// The `expected` identity is the state that Kvim observed at load time or
+/// The `expected` identity is the state that kvim observed at load time or
 /// after the last save. A different current state is a conflict, so the save
 /// changes nothing.
 ///
@@ -256,7 +256,7 @@ pub fn save(
     };
     let current = existing.as_ref().map(FileIdentity::from_metadata);
     match FileIdentity::compare(expected, current) {
-        // A file that another program changed, or that appeared after Kvim
+        // A file that another program changed, or that appeared after kvim
         // opened a path without a file, must not be overwritten.
         FileChange::Changed => return Err(SaveError::Conflict),
         // A file that another program removed carries no content to lose.

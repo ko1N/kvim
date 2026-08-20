@@ -12,7 +12,7 @@ State and view code must never compare raw keys. A raw key exists only inside
 
 ## Editor Modes
 
-Kvim has five modes:
+kvim has five modes:
 
 - Normal: motions, operators, and commands act on the buffer.
 - Insert: printable keys insert text through edit transactions.
@@ -69,7 +69,7 @@ printable key still reaches the query.
 ## Command Line
 
 `:` opens the command line from Normal mode. The command line reads one line of
-text and runs one command. Kvim does not implement the Ex grammar. It accepts
+text and runs one command. kvim does not implement the Ex grammar. It accepts
 this fixed set only:
 
 | Command | Effect |
@@ -508,7 +508,7 @@ no partner and report no match: a line that holds no bracket at or after the
 cursor, and a bracket without a partner inside that bound. The cursor then stays
 where it stands.
 
-`%` matches by text alone. Kvim holds no comment region and no string region at
+`%` matches by text alone. kvim holds no comment region and no string region at
 the cursor, so a bracket inside a comment or a string literal matches like every
 other bracket. A count repeats the jump, as it does for every other motion,
 instead of naming a percentage of the file.

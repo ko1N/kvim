@@ -101,8 +101,8 @@ below must always agree.
 | Process deadline default | `PROCESS_DEADLINE_DEFAULT` | 10 s | A cold formatter or a large search needs seconds. Ten seconds reports a stuck command before the user waits longer. |
 | Worker deadline default | `WORKER_DEADLINE_DEFAULT` | 5 s | A parse or a highlight of a bounded file finishes far below this value. Five seconds reports a runaway job. |
 
-Kvim uses a smaller process-output maximum than ReviewGraph, which allows
-129 MiB for large Git output. Kvim edits bounded files and never captures a
+kvim uses a smaller process-output maximum than ReviewGraph, which allows
+129 MiB for large Git output. kvim edits bounded files and never captures a
 repository-sized result.
 
 A caller may set its own output limit and its own deadline for one request,

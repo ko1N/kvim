@@ -1,11 +1,11 @@
 //! The persistent undo file.
 //!
-//! Kvim writes one undo file for each saved buffer, so undo history survives a
+//! kvim writes one undo file for each saved buffer, so undo history survives a
 //! restart. The file records the text states below the saved state as a base
 //! text and a chain of forward changes. Loading replays that chain, so the
 //! restored history uses the same transactions as a live editing session.
 //!
-//! The format holds no redo history above the saved state, because Kvim writes
+//! The format holds no redo history above the saved state, because kvim writes
 //! the file at save time and the saved state is then the newest state.
 //!
 //! `docs/files.md` owns the location, the version field, and the invalidation
@@ -24,12 +24,12 @@ const UNDO_FILE_MAGIC: [u8; 8] = *b"KVIMUNDO";
 
 /// The format version in the undo file header.
 ///
-/// A file with another version is not readable, so Kvim ignores it.
+/// A file with another version is not readable, so kvim ignores it.
 pub const UNDO_FILE_VERSION: u32 = 1;
 
 /// The largest number of undo steps that one undo file keeps.
 ///
-/// Each step costs one complete text comparison when Kvim writes the file, so
+/// Each step costs one complete text comparison when kvim writes the file, so
 /// the bound also bounds the save cost. The remaining steps stay in memory for
 /// the running session.
 pub const UNDO_FILE_STEPS_MAX: usize = 64;
@@ -37,7 +37,7 @@ pub const UNDO_FILE_STEPS_MAX: usize = 64;
 /// The largest amount of replacement text that one undo file keeps.
 pub const UNDO_FILE_CHANGE_BYTES_MAX: usize = 1024 * 1024;
 
-/// The largest undo file that Kvim reads or writes, in bytes.
+/// The largest undo file that kvim reads or writes, in bytes.
 ///
 /// The value holds one base text of the maximum file size and the bounded
 /// change chain above it.
@@ -343,7 +343,7 @@ fn content_hash(text: &str) -> u64 {
 
 /// Returns the FNV-1a 64-bit hash of one byte sequence.
 ///
-/// The hash identifies content and paths inside Kvim only. It is not a
+/// The hash identifies content and paths inside kvim only. It is not a
 /// cryptographic hash and it protects against no attacker.
 fn content_hash_bytes(bytes: &[u8]) -> u64 {
     const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;

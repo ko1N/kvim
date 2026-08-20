@@ -259,7 +259,7 @@ impl Theme {
             ThemeRole::Text => Style::new().fg(TEXT).bg(self.base),
             ThemeRole::NonText => Style::new().fg(NON_TEXT).bg(self.base),
             // The reference palette paints the marker in the background color
-            // and hides it. Kvim marks the rows that hold no text instead, so
+            // and hides it. kvim marks the rows that hold no text instead, so
             // the marker takes the color of a glyph that stands for absent
             // text and stays readable without drawing the reader's eye.
             ThemeRole::EndOfBuffer => Style::new().fg(NON_TEXT).bg(self.base),

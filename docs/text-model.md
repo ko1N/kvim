@@ -12,7 +12,7 @@ outside a transaction.
 
 ## Text Storage
 
-Kvim stores buffer text in a `ropey` 1.6 rope. The rope converts between byte
+kvim stores buffer text in a `ropey` 1.6 rope. The rope converts between byte
 offsets, character positions, and line indexes natively, so the five coordinate
 types below convert without a local index. It keeps insertion and deletion cost
 away from the buffer length, so one keystroke stays cheap in a large file.
@@ -24,7 +24,7 @@ reason, the cost, and the later move to the 2.0 line.
 
 ## Coordinates
 
-Kvim keeps five text positions as distinct types or validated boundaries:
+kvim keeps five text positions as distinct types or validated boundaries:
 
 - Byte offset: a position in the UTF-8 byte sequence of the buffer.
 - Character position: a count of Unicode scalar values.
@@ -106,7 +106,7 @@ transaction result. The `editor` module owns that description.
 
 ## UTF-8 And Line Endings
 
-Kvim loads regular UTF-8 files. It rejects other encodings with a typed result
+kvim loads regular UTF-8 files. It rejects other encodings with a typed result
 and a clear message. It does not guess an encoding and it does not transcode.
 
 Every buffer operation preserves UTF-8 boundaries. A transaction that would
@@ -119,7 +119,7 @@ boundaries only, because a grapheme cluster boundary needs a segmentation table
 that `core` does not hold. The `editor` module owns grapheme-aware cursor
 movement when a later release needs it.
 
-Kvim detects the line ending of the loaded file. It records that line ending
+kvim detects the line ending of the loaded file. It records that line ending
 with the buffer. It writes the same line ending on save. A file with mixed line
 endings uses the first detected line ending for new lines and keeps existing
 lines unchanged. The buffer model treats a line ending as a line terminator, not
@@ -150,7 +150,7 @@ buffer text without it would lose the last line of the file.
 
 ## Size Limits
 
-Kvim rejects an oversized file before it publishes a buffer. Rejection happens
+kvim rejects an oversized file before it publishes a buffer. Rejection happens
 before parsing, highlighting, or rendering. The maximum file size belongs to
 `EditorSettings`.
 
@@ -161,7 +161,7 @@ a buffer.
 
 ## Indent Policy
 
-The default indent policy uses four-space soft tabs. Kvim inserts spaces for the
+The default indent policy uses four-space soft tabs. kvim inserts spaces for the
 tab key. The tab width is four. The shift width follows the tab width, so one
 indent level and one tab render at equal width.
 
@@ -182,7 +182,7 @@ delimiter loses one level. The adapter names the node kinds and the delimiters
 of its language, so the rule holds for every language. See
 [`language-services.md`](language-services.md).
 
-Kvim uses a fallback rule when no adapter serves the buffer, or when the syntax
+kvim uses a fallback rule when no adapter serves the buffer, or when the syntax
 tree for the current buffer version is not yet available. The fallback copies the
 indent of the previous non-empty line. The fallback never blocks the terminal
 event loop while it waits for a parse result.

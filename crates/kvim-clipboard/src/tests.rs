@@ -300,7 +300,7 @@ fn a_failed_write_forgets_the_recorded_shape() {
         clipboard.copy(characterwise("cd")),
         Some(ClipboardNotice::CommandFailed)
     );
-    // The clipboard still holds "ab", but Kvim no longer claims it, so the text
+    // The clipboard still holds "ab", but kvim no longer claims it, so the text
     // decides the shape.
     assert_eq!(
         clipboard.paste(),
@@ -457,7 +457,7 @@ fn a_signal_that_ended_the_command_is_a_command_failure() {
 fn a_command_that_reported_no_outcome_reports_nothing() {
     // `wl-copy` and `xclip` own the selection through a background process that
     // holds the captured output streams open, so a write that succeeded reaches
-    // its deadline. Kvim never learned that a transfer failed, so it must show
+    // its deadline. kvim never learned that a transfer failed, so it must show
     // no failure. See `docs/clipboard.md`.
     for failure in [ClipboardFailure::Timeout, ClipboardFailure::Cancelled] {
         assert_eq!(

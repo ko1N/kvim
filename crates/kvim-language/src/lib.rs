@@ -1,7 +1,7 @@
 //! The language adapter registry and the language-neutral Tree-sitter analysis.
 //! Adapted from ReviewGraph (MIT), src/analysis.rs.
 //!
-//! The adapter boundary is the multi-language extension point of Kvim. An
+//! The adapter boundary is the multi-language extension point of kvim. An
 //! adapter supplies data: the paths of its language, the Tree-sitter grammar
 //! with its highlight query, the comment tokens, the indent rule, the language
 //! servers, and the external formatter. Nothing above the trait names a
@@ -228,7 +228,7 @@ pub enum AnalysisError {
     /// The request was cancelled or superseded.
     #[error("analysis was cancelled")]
     Cancelled,
-    /// The complete result exceeds one bound. Kvim publishes no partial result.
+    /// The complete result exceeds one bound. kvim publishes no partial result.
     #[error("analysis exceeded its {measure:?} limit of {limit}")]
     Bounds {
         /// The quantity that the bound measures.
@@ -582,7 +582,7 @@ fn owns(keys: &[&'static str], value: &OsStr) -> bool {
     keys.iter().any(|key| value == OsStr::new(key))
 }
 
-/// One language and everything that Kvim needs to serve it.
+/// One language and everything that kvim needs to serve it.
 ///
 /// An adapter supplies data: the paths that it owns, the Tree-sitter grammar
 /// with its highlight query, the comment tokens, and the indent rule. The

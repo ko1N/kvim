@@ -6,7 +6,7 @@
 //! adapter, and nothing above the adapter boundary changes.
 //!
 //! An external formatter takes precedence over a formatting language server.
-//! Kvim sends a document-formatting request only while its adapter declares no
+//! kvim sends a document-formatting request only while its adapter declares no
 //! program. See `docs/language-services.md`.
 //!
 //! The editor never runs the program itself. It builds one [`ProcessRequest`],
@@ -110,7 +110,7 @@ pub enum FormatterFailure {
     Unavailable,
     /// The buffer changed after the request.
     ///
-    /// The answer describes content that the buffer no longer holds, so Kvim
+    /// The answer describes content that the buffer no longer holds, so kvim
     /// discards it and keeps the content that the user typed.
     Obsolete,
 }
@@ -258,7 +258,7 @@ impl FormatterRequest {
         if formatted.is_empty() && !self.content.is_empty() {
             return Err(FormatterFailure::Unavailable);
         }
-        // A document above the file bound would build a buffer that Kvim
+        // A document above the file bound would build a buffer that kvim
         // refuses to load. See `docs/text-model.md`.
         if formatted.len() as u64 > FILE_BYTES_MAX {
             return Err(FormatterFailure::Unavailable);

@@ -96,7 +96,7 @@ impl LanguageAdapter for AsmAdapter {
 
     fn comment(&self) -> CommentStyle {
         // The grammar accepts `#`, `//`, and `;` as a line comment, because it
-        // serves several assembler dialects. Kvim targets macOS and Linux,
+        // serves several assembler dialects. kvim targets macOS and Linux,
         // where the GNU assembler reads the file, so the toggle writes the `#`
         // token of that assembler. The same assembler reads the C block
         // comment on every target.

@@ -1,6 +1,6 @@
 //! The command line parser for the fixed first-release command set.
 //!
-//! Kvim implements no Ex grammar. The parser accepts `write`, `quit`, `wq`,
+//! kvim implements no Ex grammar. The parser accepts `write`, `quit`, `wq`,
 //! `edit`, `edit <path>`, `log`, the `!` variant of `quit` and `edit`, and a
 //! line number only. It rejects every other line.
 //!
@@ -16,7 +16,7 @@ use std::path::PathBuf;
 
 use thiserror::Error;
 
-/// The largest command line that Kvim accepts, in characters.
+/// The largest command line that kvim accepts, in characters.
 ///
 /// The bound keeps one rejected paste from growing the prompt without limit. A
 /// path far below this length still fits every supported filesystem.

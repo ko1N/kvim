@@ -4,8 +4,8 @@ use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyEventKind, KeyM
 
 /// The modifier chord that a normalized key carries.
 ///
-/// Kvim accepts three chords only. Shift is already folded into the character
-/// value, and a plain `Alt` chord carries no Kvim binding. One chord value per
+/// kvim accepts three chords only. Shift is already folded into the character
+/// value, and a plain `Alt` chord carries no kvim binding. One chord value per
 /// key keeps an invalid modifier combination unrepresentable.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum Chord {
@@ -96,7 +96,7 @@ impl Key {
     /// Normalizes one crossterm key event.
     ///
     /// The function accepts a press event and a repeat event. It returns `None`
-    /// for a release event and for a key that Kvim does not use.
+    /// for a release event and for a key that kvim does not use.
     ///
     /// ```
     /// use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyModifiers};
@@ -146,7 +146,7 @@ impl Key {
     }
 }
 
-/// Folds the `Alt` keys that Kvim binds under another chord into that chord.
+/// Folds the `Alt` keys that kvim binds under another chord into that chord.
 ///
 /// Two sources produce an `Alt` chord that names a bound key. Several terminals
 /// and terminal multiplexers send `Ctrl-Alt-H`, `Ctrl-Alt-J`, `Ctrl-Alt-K`, and

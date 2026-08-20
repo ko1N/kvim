@@ -21,7 +21,7 @@ rust-version = "1.85"
 version = "0.1.0"
 
 [workspace.dependencies]
-# Kvim crates
+# kvim crates
 kvim-clipboard = { path = "crates/kvim-clipboard" }
 kvim-core = { path = "crates/kvim-core" }
 kvim-editor = { path = "crates/kvim-editor" }

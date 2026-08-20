@@ -1,5 +1,5 @@
 {
-  description = "Kvim terminal editor";
+  description = "kvim terminal editor";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

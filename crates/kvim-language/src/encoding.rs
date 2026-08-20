@@ -1,6 +1,6 @@
 //! The position encoding of one language-server session.
 //!
-//! Kvim measures every column in UTF-8 bytes. The Language Server Protocol
+//! kvim measures every column in UTF-8 bytes. The Language Server Protocol
 //! measures a column in UTF-16 code units unless the server confirms another
 //! encoding. The values below negotiate the encoding and convert every column
 //! at the session boundary, so no code above the session reads a protocol
@@ -47,7 +47,7 @@ impl PositionEncoding {
     ///
     /// # Errors
     ///
-    /// Returns [`LspError::UnsupportedEncoding`] for a name that Kvim never
+    /// Returns [`LspError::UnsupportedEncoding`] for a name that kvim never
     /// offered.
     pub(crate) fn from_result(answer: Option<&str>) -> Result<Self, LspError> {
         // The protocol defines UTF-16 for a result that names no encoding, so

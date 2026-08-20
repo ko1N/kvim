@@ -32,7 +32,7 @@ pub struct SaveRequest {
     pub path: PathBuf,
     /// The complete buffer text with the line ending of the buffer.
     pub content: String,
-    /// The file state that Kvim observed at load time or after the last save.
+    /// The file state that kvim observed at load time or after the last save.
     pub expected: Option<FileIdentity>,
     /// The buffer copy that produces the persistent undo file.
     pub snapshot: TextBuffer,
@@ -140,7 +140,7 @@ pub enum FileResult {
     Opened {
         /// The path that the user named.
         requested: PathBuf,
-        /// The loaded buffer, or the reason that Kvim rejected the file.
+        /// The loaded buffer, or the reason that kvim rejected the file.
         outcome: Result<OpenedFile, OpenError>,
     },
     /// One reload check finished, with one outcome for each target.

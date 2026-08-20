@@ -121,14 +121,14 @@ pub enum LspError {
     /// The message body is not the answer that the protocol requires.
     #[error("the language server response is malformed")]
     MalformedResponse,
-    /// The server confirmed a position encoding that Kvim never offered.
+    /// The server confirmed a position encoding that kvim never offered.
     #[error("the language server confirmed an unknown position encoding")]
     UnsupportedEncoding,
     /// One protocol position does not address a character boundary of its line.
     ///
     /// A column inside a character would build an edit that splits that
     /// character, and a line that the document does not hold addresses no text
-    /// at all. Kvim publishes no partial result, so the failure rejects the
+    /// at all. kvim publishes no partial result, so the failure rejects the
     /// complete answer that carries the position.
     #[error("the language server position does not address a character boundary")]
     InvalidPosition,
@@ -153,7 +153,7 @@ pub enum LspError {
     /// A Windows UNC path reached the URI conversion.
     #[error("UNC file paths are unsupported")]
     UnsupportedUncPath,
-    /// The operation passed one bound. Kvim publishes no partial result.
+    /// The operation passed one bound. kvim publishes no partial result.
     #[error("the language server exceeded its {measure:?} limit of {limit}")]
     Bounds {
         /// The quantity that the bound measures.
@@ -310,7 +310,7 @@ impl SourceSpan {
 
     /// Rejects a span that the exact source bytes do not hold.
     ///
-    /// The check runs before Kvim uses a server-supplied range, so a wrong or
+    /// The check runs before kvim uses a server-supplied range, so a wrong or
     /// hostile answer cannot address text outside the buffer.
     ///
     /// # Errors
@@ -345,7 +345,7 @@ fn validate_position(source: &str, position: DocumentPosition) -> Result<(), Lsp
 
 /// The absolute workspace root that contains every served document.
 ///
-/// The root is the containment boundary of the session. Kvim rejects a path or
+/// The root is the containment boundary of the session. kvim rejects a path or
 /// a `file` URI outside it, in both directions.
 ///
 /// # Examples
@@ -613,7 +613,7 @@ where
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum RpcId {
-    /// An unsigned number, which is the form that Kvim sends.
+    /// An unsigned number, which is the form that kvim sends.
     Unsigned(u64),
     /// A signed number, which a server may send.
     Signed(i64),
@@ -723,7 +723,7 @@ where
 
     /// Answers one unsolicited server request, so the server does not stall.
     ///
-    /// Kvim implements no server-to-client request, so it reports the method as
+    /// kvim implements no server-to-client request, so it reports the method as
     /// unknown instead of leaving the request unanswered.
     ///
     /// # Errors

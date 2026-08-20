@@ -2850,7 +2850,7 @@ fn a_kvim_yank_pastes_with_the_shape_that_it_recorded() {
 
     type_keys(&mut session, "p");
     let _ = clipboard_text(&mut session);
-    // The clipboard still holds the text that Kvim wrote, so the recorded
+    // The clipboard still holds the text that kvim wrote, so the recorded
     // linewise shape applies. See `docs/clipboard.md`.
     let _ = session.apply_clipboard_result(Ok(clipboard_output("alpha\n")));
     assert_eq!(session.buffer().to_string(), "alpha\nalpha\nbeta\n");
@@ -2865,7 +2865,7 @@ fn an_external_copy_pastes_characterwise() {
     assert_eq!(
         session.buffer().to_string(),
         "agammalpha\n",
-        "text that Kvim never wrote is characterwise"
+        "text that kvim never wrote is characterwise"
     );
 }
 

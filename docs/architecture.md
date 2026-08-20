@@ -3,10 +3,10 @@
 ## Purpose
 
 This document owns the workspace shape, the crate boundaries, the dependency
-direction, state ownership, and the dependency ledger for Kvim.
+direction, state ownership, and the dependency ledger for kvim.
 
-Kvim is a standalone terminal modal editor for Rust. It builds one executable
-named `kvim`. Kvim mutates text. macOS and Linux use one editor model. Platform
+kvim is a standalone terminal modal editor for Rust. It builds one executable
+named `kvim`. kvim mutates text. macOS and Linux use one editor model. Platform
 branches stay in terminal, process, filesystem, clipboard, and packaging
 boundaries.
 
@@ -263,7 +263,7 @@ These dependencies run only on the bounded worker service.
     table.
   - May run: on the bounded worker service, inside `kvim-language`. Each crate
     is adapter data. No crate name reaches code above the adapter boundary.
-  - Cost: generated C code and compile time for each grammar. Kvim links every
+  - Cost: generated C code and compile time for each grammar. kvim links every
     grammar into the executable, so a user installs no parser file. One host and
     one toolchain measured the whole set: the release executable grew from
     5,402,048 bytes to 19,872,288 bytes, and the cold release build grew from
@@ -273,7 +273,7 @@ These dependencies run only on the bounded worker service.
   - Version reason: every one of these crates carries its parser through
     `tree-sitter-language`, not through the `tree-sitter` runtime, so all of
     them link against the single pinned `tree-sitter` version. `tree-sitter-md`
-    keeps its `tree-sitter` dependency behind an optional feature that Kvim
+    keeps its `tree-sitter` dependency behind an optional feature that kvim
     leaves off, which is what keeps a second runtime version out of the build.
     `tree-sitter-toml-ng` replaces the unmaintained `tree-sitter-toml` crate,
     which still requires the 0.20 runtime line.
@@ -362,7 +362,7 @@ and that file would otherwise override the version of the job.
 The package output builds the `kvim` executable from `Cargo.lock`. The package
 version comes from `Cargo.toml`. Package metadata declares the MIT license.
 
-Kvim calls external commands for the read-only Git status, ripgrep search, the
+kvim calls external commands for the read-only Git status, ripgrep search, the
 language servers, the external formatters, and the system clipboard. The
 package output wraps the executable and supplies `git`, ripgrep, and
 `rust-analyzer`. The wrapper takes `rust-analyzer` from the pinned toolchain,
@@ -377,7 +377,7 @@ workspace uses few of them, so each of those programs comes from the host
 the Git status tests run one real repository. The clipboard command comes from
 the host platform, because it differs between macOS and each Linux display
 server. A direct Cargo installation requires all of these commands on the
-caller's `PATH`. Kvim reports a missing command as a typed unavailable state
+caller's `PATH`. kvim reports a missing command as a typed unavailable state
 and stays usable.
 
 Continuous integration verifies macOS and Linux together. Windows verification

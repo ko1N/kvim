@@ -6,7 +6,7 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
-# Kvim crates
+# kvim crates
 kvim-clipboard.workspace = true
 kvim-core.workspace = true
 kvim-editor.workspace = true
@@ -29,7 +29,7 @@ tokio.workspace = true
 tokio-util.workspace = true
 
 [dev-dependencies]
-# Kvim crates
+# kvim crates
 # The editor wiring tests drive the mock language server and the temporary
 # directory helper that these two crates publish behind `test-support`.
 kvim-language = { workspace = true, features = ["test-support"] }
