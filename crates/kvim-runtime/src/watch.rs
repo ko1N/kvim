@@ -356,9 +356,11 @@ struct WalkOutcome {
     /// Whether a bound of this module left a kept directory out of the walk.
     ///
     /// The directory bound, the depth bound, and the scan bound of one
-    /// directory read all report here. A directory above
-    /// [`WATCH_DIRECTORY_SCAN_MAX`] entries loses the entries after that count,
-    /// so that loss is the same gap and needs the same manual refresh.
+    /// directory read all report here. [`WATCH_DIRECTORY_SCAN_MAX`] reports a
+    /// possible gap, not a certain one. It counts every entry, so it stops a
+    /// read of many plain files as well, and the walk cannot then know whether
+    /// a directory stands after the bound. The report stays conservative,
+    /// because a silent loss costs the user more than one manual refresh.
     truncated: bool,
 }
 
@@ -431,9 +433,11 @@ fn unregistered_directories(
         let mut scanned = 0_usize;
         for entry in listing {
             if scanned >= WATCH_DIRECTORY_SCAN_MAX {
-                // The scan bound ends this read, so every entry after it
-                // carries no watch. The user raises no bound of this module,
-                // so the gap needs the same manual refresh as the other two.
+                // The scan bound ends this read. A directory after the bound
+                // gets no watch of its own, and the walk reads no entry type
+                // after the bound, so it reports a possible gap and not a
+                // certain one. The user raises no bound of this module, so the
+                // gap needs the same manual refresh as the other two.
                 outcome.truncated = true;
                 break;
             }
