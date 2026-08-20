@@ -1,8 +1,9 @@
 //! The rows that one language float paints, and the layout of one markup
 //! document.
 //!
-//! `kvim-language` answers one [`MarkupDocument`]: blocks, styled pieces, and
-//! roles. That value measures no terminal cell and names no glyph, because
+//! `kvim-language` answers one [`MarkupDocument`]: blocks, styled pieces,
+//! roles, and the highlight spans of each fence. That value measures no
+//! terminal cell and names no glyph, because
 //! `unicode-width` and the palette both live in this crate. This module is
 //! therefore the one place that turns the document into rows of one width. It
 //! chooses every glyph, it measures every cell, and it names one role for each
@@ -12,8 +13,8 @@
 //! the roles.
 
 use kvim_language::{
-    DiagnosticSeverity, MarkupBlock, MarkupBody, MarkupContainer, MarkupDocument, MarkupMarker,
-    MarkupRole, StyledMarkup,
+    DiagnosticSeverity, HighlightSpan, MarkupBlock, MarkupBody, MarkupContainer, MarkupDocument,
+    MarkupMarker, MarkupRole, StyledMarkup, SyntaxRole,
 };
 
 use super::cells::{clip_cells, text_cells, wrap_ranges};
@@ -53,6 +54,11 @@ pub(super) enum FloatStyle {
     Severity(DiagnosticSeverity),
     /// One stretch of a markup document, in the role of that stretch.
     Markup(MarkupRole),
+    /// One range of the code of one fence, in the syntax role of that range.
+    ///
+    /// The role is the one that the same code carries in a buffer, so one text
+    /// takes one color in a hover answer and in an open file.
+    Syntax(SyntaxRole),
     /// One glyph that this module draws itself, such as a thematic break.
     Structure,
 }
@@ -163,7 +169,11 @@ fn block_lines(
             let prefix = prefix.indented(usize::from(*level).saturating_sub(1));
             styled_lines(text, &prefix, cells, lines);
         }
-        MarkupBody::Code { lines: source, .. } => {
+        MarkupBody::Code {
+            lines: source,
+            highlights,
+            ..
+        } => {
             let width = body_width(prefix, cells);
             for (index, line) in source.iter().enumerate() {
                 if lines.len() > FLOAT_ROWS_MAX {
@@ -172,10 +182,8 @@ fn block_lines(
                 let mut row = prefix.row(index);
                 // A code line must not wrap, because a wrap would move its rest
                 // under its own indentation. It loses its end instead.
-                row.spans.push(FloatSpan::new(
-                    clip_cells(line, width),
-                    FloatStyle::Markup(MarkupRole::InlineCode),
-                ));
+                row.spans
+                    .extend(code_spans(clip_cells(line, width), highlights, index));
                 lines.push(row);
             }
         }
@@ -186,6 +194,63 @@ fn block_lines(
             lines.push(prefix.row(0));
         }
     }
+}
+
+/// Returns the pieces of one row of one code block.
+///
+/// `line` names the row inside its own block, and one span of that row
+/// addresses the text by its bytes, exactly as one span of a buffer line does.
+/// The pieces partition the text: a range that one span names takes the syntax
+/// role of that span, and every other range takes the code span role. A block
+/// without a span therefore paints in one role, as every fence did before the
+/// highlight.
+///
+/// The caller passes the text that the row paints, which the clip already
+/// shortened. A span behind that cut adds no piece, and a span across it ends
+/// at the cut, so the pieces stay aligned to what the row shows. The clip
+/// counts terminal cells and never splits a character, so every kept range
+/// still addresses a character boundary.
+fn code_spans(text: &str, highlights: &[HighlightSpan], line: usize) -> Vec<FloatSpan> {
+    let code = FloatStyle::Markup(MarkupRole::InlineCode);
+    let Ok(line) = u32::try_from(line) else {
+        debug_assert!(false, "one code block holds fewer lines than u32 counts");
+        return vec![FloatSpan::new(text, code)];
+    };
+
+    let first = highlights.partition_point(|span| span.line < line);
+    let mut spans: Vec<FloatSpan> = Vec::new();
+    let mut painted = 0;
+
+    for span in highlights[first..]
+        .iter()
+        .take_while(|span| span.line == line)
+    {
+        // A malformed span never breaks the partition: the range starts at the
+        // end of the piece before it and stops at the end of the text.
+        let start = (span.start_byte as usize).max(painted).min(text.len());
+        let end = (span.end_byte as usize).min(text.len());
+        if start >= end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
+            continue;
+        }
+        if painted < start {
+            spans.push(FloatSpan::new(&text[painted..start], code));
+        }
+        spans.push(FloatSpan::new(
+            &text[start..end],
+            FloatStyle::Syntax(span.role),
+        ));
+        painted = end;
+    }
+    if painted < text.len() {
+        spans.push(FloatSpan::new(&text[painted..], code));
+    }
+
+    debug_assert_eq!(
+        spans.iter().map(|span| span.text.len()).sum::<usize>(),
+        text.len(),
+        "the pieces of one row partition the text of that row"
+    );
+    spans
 }
 
 /// Appends the wrapped rows of one styled text.
@@ -383,9 +448,21 @@ impl Prefix {
 
 #[cfg(test)]
 mod tests {
-    use kvim_language::{MarkupDocument, MarkupRole};
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use tokio_util::sync::CancellationToken;
+
+    use kvim_core::TextBuffer;
+    use kvim_language::{
+        AnalysisInput, HighlightSpan, LanguageRegistry, MarkupDocument, MarkupRole, SyntaxRole,
+    };
+    use kvim_settings::FileSettings;
 
     use super::{FloatLine, FloatStyle, markup_lines};
+
+    /// The style of one part of a code line that no highlight span names.
+    const CODE: FloatStyle = FloatStyle::Markup(MarkupRole::InlineCode);
 
     /// The answer that rust-analyzer sends for one function of kvim.
     const RUST_ANALYZER_HOVER: &str = "\n```rust\nkvim_language::session\n```\n\n```rust\nfn \
@@ -394,8 +471,69 @@ mod tests {
                                        the bounded text of one hover answer.";
 
     /// Returns the rows of one text at one width.
+    ///
+    /// The language-server task names the code of each fence before the answer
+    /// reaches this crate, so the helper takes the document that the float
+    /// paints and never the parse alone.
     fn rows(source: &str, cells: usize) -> Vec<FloatLine> {
-        markup_lines(&MarkupDocument::parse(source), cells)
+        let document = MarkupDocument::parse(source).highlighted(LanguageRegistry::first_release());
+        markup_lines(&document, cells)
+    }
+
+    /// Returns the pieces of one row, as text and style.
+    fn pieces(row: &FloatLine) -> Vec<(String, FloatStyle)> {
+        row.spans
+            .iter()
+            .map(|span| (span.text.clone(), span.style))
+            .collect()
+    }
+
+    /// Returns the spans that one text carries as the buffer of a Rust file.
+    ///
+    /// The path selects the adapter, so the helper takes the selection that an
+    /// open file takes and never the one that a fence takes.
+    fn buffer_spans(source: &str) -> Vec<HighlightSpan> {
+        let version = TextBuffer::from_text("", &FileSettings::default())
+            .expect("the empty text is small")
+            .version();
+        LanguageRegistry::first_release()
+            .adapter(Path::new("hover.rs"))
+            .expect("the Rust adapter owns a .rs path")
+            .analyze(
+                &AnalysisInput::new(version, Arc::from(source)),
+                &CancellationToken::new(),
+            )
+            .expect("the test source stays inside every bound")
+            .highlights()
+            .to_vec()
+    }
+
+    /// Returns the pieces that one line of a Rust buffer paints.
+    ///
+    /// The helper states the painting rule of `docs/language-services.md`: the
+    /// range of each span takes the syntax role of that span, and every other
+    /// range takes the code span role.
+    fn buffer_pieces(source: &str) -> Vec<(String, FloatStyle)> {
+        let mut pieces = Vec::new();
+        let mut painted = 0;
+
+        for span in buffer_spans(source)
+            .iter()
+            .filter(|span| span.line == 0 && span.start_byte < span.end_byte)
+        {
+            let start = span.start_byte as usize;
+            let end = span.end_byte as usize;
+            if painted < start {
+                pieces.push((source[painted..start].to_owned(), CODE));
+            }
+            pieces.push((source[start..end].to_owned(), FloatStyle::Syntax(span.role)));
+            painted = end;
+        }
+        if painted < source.len() {
+            pieces.push((source[painted..].to_owned(), CODE));
+        }
+
+        pieces
     }
 
     /// Returns the text of every row of one text at one width.
@@ -431,15 +569,57 @@ mod tests {
         let painted = rows(RUST_ANALYZER_HOVER, 80);
 
         assert_eq!(
-            painted[0].spans[0].style,
-            FloatStyle::Markup(MarkupRole::InlineCode),
-            "a code block paints in the code role",
+            pieces(&painted[0]),
+            buffer_pieces("kvim_language::session"),
+            "a code block paints the roles that its code carries in a buffer",
         );
         assert_eq!(
             painted[4].spans[0].style,
             FloatStyle::Structure,
             "the float draws the thematic break itself",
         );
+    }
+
+    #[test]
+    fn a_rust_fence_paints_each_token_in_the_role_of_the_same_buffer() {
+        let source = "fn hover(&self) -> Vec<&MarkupText>";
+        let painted = rows(&format!("```rust\n{source}\n```"), 80);
+
+        assert_eq!(painted.len(), 1, "one source line paints one row");
+        assert_eq!(
+            pieces(&painted[0]),
+            buffer_pieces(source),
+            "one text takes one set of roles in a hover answer and in a buffer",
+        );
+        assert_eq!(
+            pieces(&painted[0])[0],
+            ("fn".to_owned(), FloatStyle::Syntax(SyntaxRole::Keyword)),
+            "the reader sees the keyword of the signature in the keyword role",
+        );
+        assert!(
+            pieces(&painted[0])
+                .iter()
+                .filter(|(_, style)| matches!(style, FloatStyle::Syntax(_)))
+                .count()
+                >= 3,
+            "the signature paints several roles and not one flat color: {:?}",
+            pieces(&painted[0]),
+        );
+    }
+
+    #[test]
+    fn a_fence_of_an_unknown_language_paints_one_flat_color() {
+        // A server may write any info string, and no adapter answers to these
+        // names, so the fence reads as plain code.
+        for info in ["", "console", "mermaid"] {
+            let painted = rows(&format!("```{info}\nfn main() {{}}\n```"), 80);
+
+            assert_eq!(
+                pieces(&painted[0]),
+                vec![("fn main() {}".to_owned(), CODE)],
+                "the fence of {info:?} paints one piece in the code role",
+            );
+        }
     }
 
     #[test]
@@ -551,5 +731,59 @@ mod tests {
         let painted = texts("```rust\nfn wide(argument: usize) -> usize\n```", 12);
 
         assert_eq!(painted, vec!["fn wide(argu".to_owned()]);
+    }
+
+    #[test]
+    fn a_clipped_code_line_keeps_the_spans_of_what_it_paints() {
+        let painted = rows("```rust\nfn wide(argument: usize) -> usize\n```", 12);
+        let row = &painted[0];
+
+        assert_eq!(row.text(), "fn wide(argu", "the row lost its end");
+        assert_eq!(
+            pieces(row),
+            vec![
+                ("fn".to_owned(), FloatStyle::Syntax(SyntaxRole::Keyword)),
+                (" ".to_owned(), CODE),
+                ("wide".to_owned(), FloatStyle::Syntax(SyntaxRole::Function)),
+                ("(".to_owned(), FloatStyle::Syntax(SyntaxRole::Bracket)),
+                ("argu".to_owned(), FloatStyle::Syntax(SyntaxRole::Parameter)),
+            ],
+            "the pieces of the row stay aligned to the text that it paints",
+        );
+
+        // The row that keeps its end holds the same pieces, and the piece that
+        // the cut crosses keeps the part that the narrow row paints.
+        let whole = pieces(&rows("```rust\nfn wide(argument: usize) -> usize\n```", 80)[0]);
+        let clipped = pieces(row);
+        assert_eq!(clipped[..4], whole[..4], "a piece before the cut survives");
+        assert_eq!(
+            clipped[4].1, whole[4].1,
+            "the piece across the cut keeps its role"
+        );
+        assert!(
+            whole[4].0.starts_with(&clipped[4].0),
+            "and it keeps the start of its text: {:?}",
+            whole[4].0
+        );
+    }
+
+    #[test]
+    fn a_clipped_code_line_splits_no_wide_character() {
+        // Each character of the literal occupies two cells, so a clip that
+        // counted bytes would cut one of them in half.
+        let painted = rows("```rust\nlet name = \"漢字漢字\";\n```", 14);
+        let row = &painted[0];
+
+        assert_eq!(
+            row.text(),
+            "let name = \"漢",
+            "the wide character stands whole"
+        );
+        assert!(row.cells() <= 14, "{row:?} fits the width");
+        assert_eq!(
+            pieces(row).last().expect("the row holds one piece").clone(),
+            ("\"漢".to_owned(), FloatStyle::Syntax(SyntaxRole::String)),
+            "the clipped literal keeps the role of a string",
+        );
     }
 }

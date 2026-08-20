@@ -584,6 +584,7 @@ fn span_style(theme: Theme, surface: Style, style: FloatStyle) -> Style {
         FloatStyle::Plain => surface,
         FloatStyle::Severity(severity) => surface.patch(theme.style(severity_role(severity))),
         FloatStyle::Markup(role) => surface.patch(theme.style(ThemeRole::Markup(role))),
+        FloatStyle::Syntax(role) => surface.patch(theme.style(ThemeRole::Syntax(role))),
         FloatStyle::Structure => surface.patch(theme.style(ThemeRole::MarkupStructure)),
     }
 }

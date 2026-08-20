@@ -20,14 +20,19 @@ use serde_json::{Value, json};
 use kvim_language::mock::{
     self, Harness, MockServer, OTHER_SERVER, named_session_at, pipe, session_at,
 };
-use kvim_language::{FormatterFailure, LanguageOutcome, LanguageServerHandle, LspError};
+use kvim_language::{
+    FormatterFailure, LanguageOutcome, LanguageRegistry, LanguageServerHandle, LspError,
+    MARKUP_SOURCE_BYTES_MAX, MarkupDocument, MarkupKind, MarkupRole, MarkupText, SyntaxRole,
+};
 use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
-use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, LanguageRequestKind, send_request};
-use super::markup::FloatLine;
+use super::language::{
+    FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, LanguageRequestKind, send_request,
+};
+use super::markup::{FloatLine, FloatStyle};
 use super::overlay::float_lines;
 use super::session::{MessageLevel, Redraw, Session};
 
@@ -288,6 +293,24 @@ impl Editor {
                 .iter()
                 .map(FloatLine::text)
                 .collect::<Vec<_>>()
+        })
+    }
+
+    /// Returns the pieces of every float row, as text and style.
+    ///
+    /// A row of a fence holds one piece for each highlight span, so the test
+    /// reads the roles that the float paints and never a color.
+    fn float_spans(&self) -> Vec<Vec<(String, FloatStyle)>> {
+        self.session.visible().float.map_or_else(Vec::new, |float| {
+            float_lines(float, FLOAT_COLUMNS_MAX)
+                .iter()
+                .map(|line| {
+                    line.spans
+                        .iter()
+                        .map(|span| (span.text.clone(), span.style))
+                        .collect()
+                })
+                .collect()
         })
     }
 
@@ -1095,6 +1118,142 @@ async fn the_hover_float_renders_the_markdown_that_the_server_wrote() {
             "Returns the hover answers of every server, in declaration order.".to_owned(),
         ],
         "no fence, no backtick, and no dash of the source reaches one row",
+    );
+}
+
+#[tokio::test]
+async fn the_hover_float_paints_the_code_of_a_fence_in_its_syntax_roles() {
+    let mut editor = Editor::start("hover-highlight", &[("main.rs", "fn main() {}\n")]).await;
+
+    open_hover(
+        &mut editor,
+        json!({ "kind": "markdown", "value": "```rust\nfn hover(&self) -> Vec<&MarkupText>\n```" }),
+    )
+    .await;
+
+    let painted = editor.float_spans();
+    assert_eq!(
+        painted[0][0],
+        ("fn".to_owned(), FloatStyle::Syntax(SyntaxRole::Keyword)),
+        "the signature opens with the keyword role of a buffer: {painted:?}",
+    );
+    assert!(
+        painted[0]
+            .iter()
+            .filter(|(_, style)| matches!(style, FloatStyle::Syntax(_)))
+            .count()
+            >= 3,
+        "the signature paints several roles and not one flat color: {painted:?}",
+    );
+}
+
+/// Returns the answer that one server gives for one hover request.
+///
+/// The language-server task names the document of a markdown answer where that
+/// answer arrives, so the helper builds the value that reaches the float.
+fn hover_answer(kind: MarkupKind, text: &str) -> MarkupText {
+    let document = match kind {
+        MarkupKind::Markdown => {
+            MarkupDocument::parse(text).highlighted(LanguageRegistry::first_release())
+        }
+        MarkupKind::PlainText => MarkupDocument::default(),
+    };
+    MarkupText {
+        kind,
+        text: text.to_owned(),
+        document,
+    }
+}
+
+/// Returns the pieces of every row of one float, as text and style.
+fn float_pieces(float: &Float) -> Vec<Vec<(String, FloatStyle)>> {
+    float_lines(float, FLOAT_COLUMNS_MAX)
+        .iter()
+        .map(|line| {
+            line.spans
+                .iter()
+                .map(|span| (span.text.clone(), span.style))
+                .collect()
+        })
+        .collect()
+}
+
+#[test]
+fn two_servers_join_their_hover_answers_into_one_document() {
+    // Each server answers on its own, so each answer carries its own document
+    // and the float joins documents.
+    let first = hover_answer(MarkupKind::Markdown, "```rust\nfn first()\n```");
+    let second = hover_answer(MarkupKind::Markdown, "The *second* server.");
+
+    let float = Float::hover(HOVER_TITLE, &[&first, &second]);
+
+    let painted = float_pieces(&float);
+    assert_eq!(
+        painted
+            .iter()
+            .map(|row| row.iter().map(|(text, _)| text.as_str()).collect())
+            .collect::<Vec<String>>(),
+        vec![
+            "fn first()".to_owned(),
+            String::new(),
+            "The second server.".to_owned(),
+        ],
+        "one blank row stands between the answers of two servers",
+    );
+    assert_eq!(
+        painted[0][0],
+        ("fn".to_owned(), FloatStyle::Syntax(SyntaxRole::Keyword)),
+        "the fence of the first answer keeps the roles of its code",
+    );
+    assert_eq!(
+        painted[2][1],
+        (
+            "second".to_owned(),
+            FloatStyle::Markup(MarkupRole::Emphasis)
+        ),
+        "the prose of the second answer keeps the roles of its markup",
+    );
+    assert!(!float.is_clipped(), "neither answer reached a bound");
+}
+
+#[test]
+fn one_clipped_hover_answer_reports_the_join_as_clipped() {
+    let complete = hover_answer(MarkupKind::Markdown, "a short answer");
+    let long = hover_answer(
+        MarkupKind::Markdown,
+        &"word ".repeat(MARKUP_SOURCE_BYTES_MAX),
+    );
+    assert!(
+        long.document.is_clipped(),
+        "the long answer reached a bound"
+    );
+
+    assert!(Float::hover(HOVER_TITLE, &[&complete, &long]).is_clipped());
+    assert!(Float::hover(HOVER_TITLE, &[&long, &complete]).is_clipped());
+}
+
+#[test]
+fn one_answer_of_plain_text_keeps_the_whole_join_as_text() {
+    // A markdown parse of the plain answer would drop every marker of it, so
+    // the answer of the other server stays text as well.
+    let markdown = hover_answer(MarkupKind::Markdown, "```rust\nfn first()\n```");
+    let plain = hover_answer(MarkupKind::PlainText, "*not emphasis* and `not code`");
+
+    let float = Float::hover(HOVER_TITLE, &[&markdown, &plain]);
+
+    assert_eq!(
+        float_pieces(&float)
+            .iter()
+            .map(|row| row.iter().map(|(text, _)| text.as_str()).collect())
+            .collect::<Vec<String>>(),
+        vec![
+            "```rust".to_owned(),
+            "fn first()".to_owned(),
+            "```".to_owned(),
+            String::new(),
+            "*not emphasis* and `not code`".to_owned(),
+        ],
+        "every character of both answers reaches one row",
     );
 }
 

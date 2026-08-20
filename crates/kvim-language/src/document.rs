@@ -17,6 +17,7 @@ use kvim_core::{
 };
 
 use super::encoding::DocumentMapping;
+use super::markup::MarkupDocument;
 use super::protocol::{DocumentPosition, LspBound, LspError, ProtocolSpan, SourceSpan, enforce};
 
 /// The severity that a language server reports for one diagnostic.
@@ -222,13 +223,23 @@ impl MarkupKind {
     }
 }
 
-/// One text and the markup that covers it.
+/// One text, the markup that covers it, and the document of that markup.
+///
+/// The session names the document where the answer of the server arrives,
+/// because the code of a fence takes the Tree-sitter highlight of its language
+/// and the terminal event loop must never run that work.
+///
+/// A text of plain text carries an empty document. A markdown parse of a plain
+/// text removes the characters that mark up a document, so no reader may parse
+/// such a text. See `docs/language-services.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MarkupText {
     /// The markup language of the text.
     pub kind: MarkupKind,
     /// The text, exactly as the server wrote it.
     pub text: String,
+    /// The blocks of the text, with the code of each fence named.
+    pub document: MarkupDocument,
 }
 
 /// One replacement that a formatter computed for one document version.

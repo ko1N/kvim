@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_settings::IndentSettings;
 
+use super::LanguageRegistry;
 use super::protocol::{LSP_OUTPUT_BYTES_MAX, WorkspaceRoot, read_frame};
 use super::server::{LanguageServerId, ServerFormatting};
 use super::session::{
@@ -285,6 +286,9 @@ fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> Ses
         workspace_settings: None,
         indent: IndentSettings::default(),
         diagnostics_enabled,
+        // A mock session answers for a real path of the workspace, so it names
+        // the code of a fence exactly as a declared server does.
+        registry: LanguageRegistry::first_release(),
     }
 }
 

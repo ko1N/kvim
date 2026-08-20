@@ -781,25 +781,39 @@ impl Float {
     /// Creates a bounded float from the hover answers of every server.
     ///
     /// The answers join in declaration order, and one blank row separates two
-    /// of them. The join reaches the markup parse only while every answer names
-    /// markdown, because one plain text that a markdown parse reads loses the
-    /// characters that mark up a document.
+    /// of them. Each answer of markdown carries its own document, because the
+    /// code of a fence takes the highlight of its language where the answer
+    /// arrives, so the float joins documents and never a markdown text.
+    ///
+    /// One answer of plain text makes the whole float plain text, because a
+    /// markdown parse of a plain text loses the characters that mark up a
+    /// document. The float then joins the texts of every answer.
+    ///
+    /// The float parses nothing. `kvim-language` names every block, every role,
+    /// and every highlight span before the answer reaches this layer, so the
+    /// terminal event loop paints a finished value.
     #[must_use]
     pub(super) fn hover(title: &'static str, answers: &[&MarkupText]) -> Self {
+        if answers
+            .iter()
+            .all(|answer| answer.kind == MarkupKind::Markdown)
+        {
+            let document = answers
+                .iter()
+                .fold(MarkupDocument::default(), |joined, answer| {
+                    joined.joined(&answer.document)
+                });
+            return Self {
+                title,
+                content: FloatContent::Markup(document),
+            };
+        }
+
         let joined = answers
             .iter()
             .map(|answer| answer.text.as_str())
             .collect::<Vec<_>>()
             .join("\n\n");
-        if answers
-            .iter()
-            .all(|answer| answer.kind == MarkupKind::Markdown)
-        {
-            return Self {
-                title,
-                content: FloatContent::Markup(MarkupDocument::parse(&joined)),
-            };
-        }
         Self::text(title, &joined)
     }
 

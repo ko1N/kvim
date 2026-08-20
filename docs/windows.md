@@ -560,6 +560,13 @@ The code span role takes the color of a string literal, because both hold source
 text. Every markup style holds a foreground color alone, so the surface band of
 the float stays behind the text.
 
+A code block of a document carries the highlight spans of its fence beside its
+lines. The float paints the range of each span in the syntax role of that span,
+through the mapping above that already paints a buffer. One code text therefore
+takes one color in a hover answer and in an open file, and the float adds no
+color of its own. The parts of a code line that no span names take the code span
+role, so a fence without a span paints in one color.
+
 The float draws two glyphs that no role of the document names: the thematic
 break and the marker of a list item. Both take the structure role, which is
 quiet, because they separate text instead of holding it.
