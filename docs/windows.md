@@ -555,8 +555,10 @@ the roles and the document that carries them.
 
 The heading role carries the bold modifier, the strong role carries it as well,
 the emphasis role carries the italic modifier, and the link role carries the
-underline. Every markup style holds a foreground color alone, so the surface
-band of the float stays behind the text.
+underline. The quote role carries the italic modifier and the quiet text color.
+The code span role takes the color of a string literal, because both hold source
+text. Every markup style holds a foreground color alone, so the surface band of
+the float stays behind the text.
 
 The float draws two glyphs that no role of the document names: the thematic
 break and the marker of a list item. Both take the structure role, which is
