@@ -467,9 +467,7 @@ async fn synchronized(
     let before = text.clone();
     let changes = ContentChange::from_transaction(&before, &transaction)
         .expect("the changes stay inside the bound");
-    let version = text
-        .apply(transaction)
-        .expect("the changes fit the buffer");
+    let version = text.apply(transaction).expect("the changes fit the buffer");
     harness
         .handle()
         .change(Path::new(DOCUMENT), version, changes)
@@ -639,9 +637,7 @@ async fn a_server_that_asks_for_no_synchronization_receives_no_change() {
     let before = text.clone();
     let changes = ContentChange::from_transaction(&before, &transaction)
         .expect("the changes stay inside the bound");
-    let version = text
-        .apply(transaction)
-        .expect("the changes fit the buffer");
+    let version = text.apply(transaction).expect("the changes fit the buffer");
     harness
         .handle()
         .change(Path::new(DOCUMENT), version, changes)
