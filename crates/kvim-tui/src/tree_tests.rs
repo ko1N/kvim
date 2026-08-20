@@ -17,7 +17,8 @@ use ratatui::style::{Modifier, Style};
 use kvim_input::Mode;
 use kvim_language::LspError;
 use kvim_runtime::{
-    FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchEvent, WatchFidelity, WatchKind,
+    FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchCoverage, WatchEvent, WatchFidelity,
+    WatchKind,
 };
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
@@ -26,7 +27,7 @@ use kvim_workspace::{
     TakenDestination, temp::TempDir,
 };
 
-use super::session::{FileRequestFailure, Redraw, Session};
+use super::session::{FileRequestFailure, Redraw, Session, watch_coverage_note};
 use super::theme::{Theme, ThemeRole};
 use super::tree::{
     GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
@@ -2444,6 +2445,112 @@ fn a_refused_workspace_watch_reports_once() {
         session.report_watch_unavailable(),
         Redraw::Skipped,
         "the editor names the refused watch once for each session"
+    );
+}
+
+/// Builds one burst that carries the named coverage and no change.
+fn coverage_batch(coverage: WatchCoverage) -> WatchBatch {
+    let mut batch = WatchBatch::default();
+    batch.set_coverage(coverage);
+    batch
+}
+
+#[test]
+fn a_complete_workspace_watch_reports_nothing() {
+    let (_dir, mut session) = workspace();
+
+    assert_eq!(
+        session.apply_watch_batch(&coverage_batch(WatchCoverage::default())),
+        Redraw::Skipped
+    );
+    assert_eq!(
+        message(&session),
+        "",
+        "a registration that watches every directory names no gap"
+    );
+}
+
+#[test]
+fn a_workspace_watch_that_the_host_refused_reports_its_cause_once() {
+    let (_dir, mut session) = workspace();
+
+    let refused = coverage_batch(WatchCoverage {
+        refused: 812,
+        at_limit: true,
+        truncated: false,
+    });
+    assert_eq!(session.apply_watch_batch(&refused), Redraw::Needed);
+    assert!(
+        message(&session).starts_with("the host refused 812 workspace watches"),
+        "the report names the directories that carry no watch: `{}`",
+        message(&session)
+    );
+
+    assert_eq!(
+        session.apply_watch_batch(&refused),
+        Redraw::Skipped,
+        "the editor names the state of the watch once for each session"
+    );
+    assert_eq!(
+        session.report_watch_unavailable(),
+        Redraw::Skipped,
+        "one flag holds every report of the watch, so a later report adds no noise"
+    );
+
+    reveal(&mut session);
+    assert!(
+        sidebar_rows(&session).len() > 1,
+        "the tree stays fully usable while the host watches a part of the workspace"
+    );
+}
+
+#[test]
+fn a_workspace_watch_that_the_bounds_truncated_names_the_editor() {
+    let (_dir, mut session) = workspace();
+
+    let truncated = coverage_batch(WatchCoverage {
+        refused: 0,
+        at_limit: false,
+        truncated: true,
+    });
+    assert_eq!(session.apply_watch_batch(&truncated), Redraw::Needed);
+    assert_eq!(
+        message(&session),
+        "the workspace passes the watch bounds of the editor; the file tree updates on a refresh",
+        "a bound of the editor is no refusal of the host, so the report names another action"
+    );
+}
+
+#[test]
+fn the_report_of_a_refused_watch_names_the_setting_that_holds_the_limit() {
+    let at_limit = WatchCoverage {
+        refused: 3,
+        at_limit: true,
+        truncated: false,
+    };
+
+    assert_eq!(
+        watch_coverage_note(at_limit, Some("fs.inotify.max_user_watches")),
+        "the host refused 3 workspace watches; raise `fs.inotify.max_user_watches`",
+        "the user raises the limit of the host, so the report names it"
+    );
+    assert_eq!(
+        watch_coverage_note(at_limit, None),
+        "the host refused 3 workspace watches; raise the watch limit of the host",
+        "a platform that publishes no name still reports the cause"
+    );
+    assert_eq!(
+        watch_coverage_note(
+            WatchCoverage {
+                refused: 3,
+                at_limit: false,
+                truncated: true,
+            },
+            None
+        ),
+        "the host refused 3 workspace watches and the workspace passes the watch bounds of the \
+         editor; the file tree updates on a refresh",
+        "one report names both causes"
     );
 }
 

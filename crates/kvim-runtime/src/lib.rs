@@ -38,8 +38,8 @@ mod tests;
 pub use watch::{
     FileWatcher, WATCH_BATCH_DIRECTORIES_MAX, WATCH_BATCH_QUEUE_MAX, WATCH_BURST_EVENTS_MAX,
     WATCH_COALESCE_WINDOW, WATCH_DEPTH_MAX, WATCH_DIRECTORIES_MAX, WATCH_DIRECTORY_SCAN_MAX,
-    WATCH_EVENT_QUEUE_MAX, WatchBatch, WatchError, WatchEvent, WatchFidelity, WatchKind,
-    is_ignored,
+    WATCH_EVENT_QUEUE_MAX, WatchBatch, WatchCoverage, WatchError, WatchEvent, WatchFidelity,
+    WatchKind, is_ignored, watch_limit_setting,
 };
 
 /// The number of results that the runtime holds for the event loop.

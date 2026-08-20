@@ -520,9 +520,9 @@ alone, so the platform adds no watch of its own inside an ignored subtree. One
 recursive watch over the root would read that subtree instead. Linux then adds
 one kernel watch for each directory below the root, so a repository with a large
 build output directory costs tens of thousands of system calls. Such a
-repository also reaches the watch limit of the host, which Linux names
-`fs.inotify.max_user_watches`, and a refused watch leaves the workspace with no
-watcher at all.
+repository also reaches the watch limit of the host. The registration then
+covers a part of the workspace, and the Watch Coverage section below owns that
+report.
 
 The registration adds every directory in one batch and applies the batch once.
 A platform that keeps one event stream, as macOS does, rebuilds that stream for
@@ -540,7 +540,7 @@ Its parent still reports every change of the directory itself, so one refused
 directory never stops the watch. A symbolic link adds no watch, because the
 entry type names the link itself, so no link watches one tree twice and no link
 builds a cycle. A tree above the bounds below keeps the directories that the
-walk reached.
+walk reached, and it reports the part that carries no watch.
 
 A watch covers one directory alone, so a directory that appears after the walk
 carries no watch of its own. The watcher closes that gap on the next burst. The
@@ -581,6 +581,41 @@ The registration runs after the first frame, so a host that refuses the root
 refuses it there. The coalescing task then ends and closes its published stream.
 The event loop reads that end as the report that no watcher observes the
 workspace, and it names the state once, as a refused start already does.
+
+### Watch Coverage
+
+One registration can cover a part of the workspace. The platform refuses one
+watch at the watch limit of the host. A bound of the walk stops at a very large
+or a very deep tree. Both leave a directory of the workspace without a watch,
+and both keep every other feature of the editor.
+
+Every burst carries that coverage. The value holds the number of refused
+directories and the cause of that refusal. It also holds whether a bound of the
+editor stopped the walk. A registration that covers the whole workspace names no
+gap, so a complete watch reports nothing.
+
+The burst that opens the stream carries the coverage of the first registration.
+The report therefore reaches the editor with the first published value, before
+the user changes one file. Every later batch carries its own coverage with the
+burst of the same window, so a directory that appears after the start reports
+its own gap as well.
+
+A directory that another program removed between the walk and the watch call is
+no gap. That directory holds no entry to watch, and its parent still reports the
+removal.
+
+The report names the cause, because the two causes need two different actions.
+The user raises the watch limit of the host. The bounds of the editor hold no
+setting of the host, so the refresh command reads the workspace by hand instead.
+
+The `runtime` module names the setting that holds the limit, because it is the
+one portable boundary of the watcher. Linux names that setting
+`fs.inotify.max_user_watches`. A platform that publishes no such name reports
+the refusal and its count alone.
+
+The editor shows one watch report for each session. The missing watcher and the
+partial registration share one flag, so the first report wins and every later
+burst stays quiet.
 
 ### Watch Bounds
 
