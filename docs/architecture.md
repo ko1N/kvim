@@ -408,9 +408,12 @@ builder and prints what it returns.
 
 The probe reads the executable search path once for each distinct program. One
 adapter declares at most `LANGUAGE_SERVERS_MAX` servers and at most one
-formatter, so `HOST_PROGRAMS_MAX` bounds the lookups of one report. This build
-declares 22 server programs and 12 formatter programs, and the picker and the
-file tree add one program each.
+formatter. The registry of this build holds 25 adapters, so it names at most
+125 programs. The picker and the file tree add one program each, so one report
+of this registry probes at most 127 programs. `HOST_PROGRAMS_MAX` holds 128
+lookups and covers every one of them. This build declares 22 server programs
+and 12 formatter programs. A registry that passes the bound fails the report
+loudly, because the adapter table and the bound then drifted apart.
 
 A search-path lookup is filesystem work, so the terminal event loop must never
 run it. `kvim --diagnostics` runs before that loop exists and probes directly.

@@ -171,9 +171,9 @@ compared. A buffer that the user changed while the check ran rejects the
 outcome, so no obsolete text reaches a buffer.
 
 The language server receives the reloaded text as one document synchronization
-that carries the reloaded buffer version, and kvim drops every queued
-incremental change of that buffer, so no obsolete version reaches the server.
-See [`language-services.md`](language-services.md).
+that carries the reloaded buffer version, and kvim drops every queued change of
+that buffer, so no obsolete version reaches the server. See
+[`language-services.md`](language-services.md).
 
 A background check reports nothing when it finds nothing that the editor cannot
 follow, and a refused or failed background check reports nothing at all, because

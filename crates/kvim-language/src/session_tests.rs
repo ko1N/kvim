@@ -578,6 +578,8 @@ async fn a_full_server_receives_the_complete_text_of_every_change() {
 #[tokio::test]
 async fn the_object_form_of_the_capability_selects_the_full_change() {
     let (harness, mut server) = connected();
+    // `marksman` names a full synchronization in this exact shape, so the shape
+    // is production traffic. See `docs/language-services.md`.
     server
         .handshake_capabilities(json!({
             "positionEncoding": "utf-8",
