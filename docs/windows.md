@@ -336,6 +336,8 @@ The `tui` module owns the log, because it owns the message line and every other
 visible editor state. The log is a history. It never replaces the message line,
 and the message line reports exactly what it reports without it.
 
+### The Shape Of One Entry
+
 One entry holds five values:
 
 - the elapsed time since the editor started,
@@ -357,13 +359,20 @@ component that fails and starts again, which is the case that a reader opens the
 log for. A smaller number loses the first report of such a group, which is the
 report that usually names the cause.
 
-One entry keeps at most as many characters as the message line keeps, so one
-long report never fills the log and a message-line entry loses no character that
-the message line showed. The log replaces every control character of the text
-with one blank. One entry is therefore one row of the log buffer, and a search
-reaches every entry.
+The text of one entry keeps at most as many characters as the message line
+keeps. One long report therefore never fills the log. A message-line entry also
+loses no character that the message line showed.
 
-One entry renders as four fields with one blank between them:
+That bound counts the text of the entry alone. It counts no other field. The
+time, the severity, the source, and the count each add characters to the
+rendered row, so one row can be longer than the text bound. Every field of a
+row is bounded, so the row stays bounded as well.
+
+The log replaces every control character of the text with one blank. One entry
+is therefore one row of the log buffer, and a search reaches every entry.
+
+One entry renders as four fields with one blank between them, and a count after
+the last field:
 
 ```
 00:12.345 ERROR MESSAGE the file does not exist
@@ -378,6 +387,39 @@ severity, and the third field is the source. Both are uppercase and padded to a
 fixed width, so the entries align and a search for `ERROR` or for `MESSAGE`
 reaches one severity or one source without reaching ordinary report text. The
 fourth field is the text of the report. A count above one follows the text.
+
+### The Sources Of One Entry
+
+The log holds the reports of three sources, and every source uses the one entry
+shape above. A later source adds one label. It adds no second store, no second
+entry shape, and no second rule.
+
+`MESSAGE` names every report that reached the message line. Without the log a
+user reads no report that a second report replaced.
+
+`SERVER` names the states of one language server: its start, its restart, its
+stop, its failure, and a program that the host does not hold. It also names the
+text that the server wrote to its standard error, and the moment when that text
+passed the bound of the editor. Every `SERVER` entry names the adapter and the
+server, so a reader knows which server made the report. Without the log a user
+reads no cause for a server that cannot start.
+
+The text of a server is not a failure by itself, because a healthy server writes
+notes while it runs. The log therefore records that text at the `Info` severity,
+and the lifecycle entry beside it carries the severity of the state. The
+`language` module bounds the text of one server before it reaches the log, so
+one server that writes without limit costs bounded memory. See
+[`language-services.md`](language-services.md).
+
+`JOB` names one background job that ended without a report on the message line.
+An analysis that passed a bound, a job that the worker service refused, and a
+result that a newer buffer version displaced are all such outcomes. Without the
+log a user reads no cause for a file that lost its highlighting.
+
+Every `JOB` entry names the job first and the outcome second. It names no
+buffer and no path, so every repeat of one outcome carries the same text and
+collapses into one entry. [`responsiveness.md`](responsiveness.md) owns the
+list of the recorded outcomes and the reason for each one.
 
 ### One Entry For One Repeated Report
 
@@ -400,32 +442,12 @@ A row shows a count above one as `(xN)` after the text of the report. A row of
 a single report shows no count. The rule holds for every source, so the log
 keeps one mechanism and one entry shape.
 
-The log holds the reports of more than one source. `MESSAGE` names every report
-that reached the message line. `SERVER` names one language server: its start,
-its restart, its stop, its failure, and the text that it wrote to its standard
-error. Every `SERVER` entry names the adapter and the server, so a reader knows
-which server made the report.
-
-`JOB` names one background job that ended without a report on the message line.
-An analysis that passed a bound, a job that the worker service refused, and a
-result that a newer buffer version displaced are all such outcomes. Without the
-log a user reads no cause for a file that lost its highlighting.
-
-Every `JOB` entry names the job first and the outcome second. It names no
-buffer and no path, so every repeat of one outcome carries the same text and
-collapses into one entry. [`responsiveness.md`](responsiveness.md) owns the
-list of the recorded outcomes and the reason for each one.
-
-The text of a server is not a failure by itself, because a healthy server writes
-notes while it runs. The log therefore records that text at the `Info` severity,
-and the lifecycle entry beside it carries the severity of the state. The
-`language` module bounds the text of one server before it reaches the log, so
-one server that writes without limit costs bounded memory. See
-[`language-services.md`](language-services.md).
+### Opening The Log
 
 `:l[og]` opens one snapshot of the log as a new buffer, newest entry last. The
 snapshot is a value, so the buffer never changes while it is open and an edit of
-that buffer changes no entry. See [`input-actions.md`](input-actions.md).
+that buffer changes no entry. A log that holds no entry opens an empty buffer,
+because the editor reported nothing. See [`input-actions.md`](input-actions.md).
 
 ## Theme
 

@@ -32,6 +32,11 @@ The elapsed time alone drives two state changes: the which-key overlay and the
 notification overlay. The session reports the earlier elapsed time of the two,
 and the loop wakes for it.
 
+The loop passes that same elapsed time into every entry point of the session,
+so the session reads no clock. The editor log stamps every entry with it, and
+the log drives no transition of its own. [`windows.md`](windows.md) owns the
+log.
+
 The notification overlay advances its spinner one frame for each frame
 interval, and it removes a finished item after its lifetime.
 [`language-services.md`](language-services.md) owns that overlay. It runs no
