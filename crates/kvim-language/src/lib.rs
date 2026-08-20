@@ -39,7 +39,9 @@
 //! A server answer may carry markdown. [`MarkupDocument`] reads that text into
 //! blocks of styled text, and it answers a [`MarkupRole`] for each stretch of
 //! it. The parse is pure, and it names no color, no glyph, and no terminal
-//! cell, because `kvim-tui` owns every one of them. See
+//! cell, because `kvim-tui` owns every one of them. The code of one fence
+//! carries the [`SyntaxRole`] values of the one highlighter, so one text
+//! carries one set of roles in a fence and in a buffer. See
 //! `docs/language-services.md`.
 //!
 //! [`LanguageAdapter`] stays object-safe, so the registry holds one adapter for
@@ -148,9 +150,9 @@ pub use json::JsonAdapter;
 pub use lua::LuaAdapter;
 pub use markdown::MarkdownAdapter;
 pub use markup::{
-    MARKUP_BLOCKS_MAX, MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX,
-    MarkupBlock, MarkupBody, MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole,
-    StyledMarkup,
+    MARKUP_BLOCKS_MAX, MARKUP_FENCE_SOURCE_BYTES_MAX, MARKUP_FENCE_SPANS_MAX, MARKUP_FENCES_MAX,
+    MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX, MarkupBlock, MarkupBody,
+    MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole, StyledMarkup,
 };
 pub use nix::NixAdapter;
 pub use progress::{

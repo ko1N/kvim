@@ -58,7 +58,8 @@ where
         BoundMeasure::Nodes,
     )?;
 
-    let highlights = collect_highlights(grammar, source, cancellation)?;
+    let highlights =
+        collect_highlights(grammar, source, ANALYSIS_HIGHLIGHT_SPANS_MAX, cancellation)?;
     Ok(analysis(input, tree, highlights, adapter.indent_rule()))
 }
 
@@ -159,9 +160,16 @@ fn disable_captures_without_a_role(configuration: &mut HighlightConfiguration) {
 ///
 /// The highlighter reports one flat, ordered sequence of ranges with an active
 /// capture stack, so the innermost capture decides the role of a range.
-fn collect_highlights(
+///
+/// This is the one highlighter of kvim. One buffer version reaches it through
+/// [`analyze`], and the code of one markdown fence reaches it through
+/// [`crate::markup`], so one source carries one set of roles wherever it
+/// stands. `spans_max` names the bound of the caller, because a buffer and a
+/// fence hold a different quantity of text.
+pub(super) fn collect_highlights(
     grammar: Grammar,
     source: &str,
+    spans_max: usize,
     cancellation: &CancellationToken,
 ) -> Result<Vec<HighlightSpan>, AnalysisError> {
     let configuration = highlight_configuration(grammar)?;
@@ -198,7 +206,7 @@ fn collect_highlights(
                 }) else {
                     continue;
                 };
-                push_spans(bytes, &mut lines, start, end, role, &mut spans)?;
+                push_spans(bytes, &mut lines, start, end, role, spans_max, &mut spans)?;
             }
         }
     }
@@ -339,6 +347,7 @@ fn push_spans(
     start: usize,
     end: usize,
     role: SyntaxRole,
+    spans_max: usize,
     spans: &mut Vec<HighlightSpan>,
 ) -> Result<(), AnalysisError> {
     lines.advance_to(source, start);
@@ -349,11 +358,7 @@ fn push_spans(
             .position(|byte| *byte == b'\n')
             .map_or(end, |offset| segment_start + offset);
         if segment_start < segment_end {
-            enforce_count(
-                spans.len() + 1,
-                ANALYSIS_HIGHLIGHT_SPANS_MAX,
-                BoundMeasure::HighlightSpans,
-            )?;
+            enforce_count(spans.len() + 1, spans_max, BoundMeasure::HighlightSpans)?;
             spans.push(HighlightSpan {
                 line: narrowed(lines.line)?,
                 start_byte: narrowed(segment_start - lines.line_start)?,

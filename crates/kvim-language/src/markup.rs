@@ -15,6 +15,20 @@
 //! The block model follows the markdown renderer of `keel`, the editor of the
 //! same author, which solved the same problem for the answer of a model.
 //!
+//! # The code of one fence carries the roles of the editor
+//!
+//! A fence names its language in an info string, and only an adapter may select
+//! by that name, so the highlight of a fence stays in this crate.
+//! [`MarkupDocument::highlighted`] reads the name of each fence, selects the
+//! adapter of that name, and collects the spans of the one highlighter that
+//! also serves a buffer. One text therefore carries one set of roles wherever
+//! it stands.
+//!
+//! The highlight is Tree-sitter work, which the terminal event loop must never
+//! run. The caller runs [`MarkupDocument::highlighted`] where the answer of the
+//! server arrives, off that loop, so the float paints a finished value. See
+//! `docs/language-services.md` and `docs/responsiveness.md`.
+//!
 //! # The value holds no glyph, no width, and no color
 //!
 //! `kvim-tui` owns the palette, and it owns the terminal cell as well, because
@@ -25,8 +39,10 @@
 //! replace it must occupy one terminal width. See `docs/language-services.md`.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+use tokio_util::sync::CancellationToken;
 
 use crate::session::LSP_HOVER_BYTES_MAX;
+use crate::{HighlightSpan, LanguageRegistry, analysis};
 
 /// The source bytes that one parse reads.
 ///
@@ -61,6 +77,36 @@ pub const MARKUP_PIECES_MAX: usize = 2048;
 /// further prefix, so the text of the block still reaches the screen and the
 /// prefix cannot consume the whole width.
 pub const MARKUP_NESTING_DEPTH_MAX: usize = 8;
+
+/// The source of one fence that the highlight reads, in bytes.
+///
+/// The float shows at most 16 rows of 96 terminal cells, which is about 1536
+/// bytes of source, so this bound holds every fence that a reader can see more
+/// than twice over. One fence of this size costs about 1.4 ms of highlight
+/// work in a release build, and one real hover answer of two fences costs
+/// about 68 us. A longer fence keeps every line and carries no span, so it
+/// reads as plain code and costs no highlight at all.
+pub const MARKUP_FENCE_SOURCE_BYTES_MAX: usize = 4 * 1024;
+
+/// The highlight spans that one fence produces.
+///
+/// A dense measured fence of 4061 bytes produces 918 spans, which is one span
+/// for each 4.4 bytes. This bound holds one span for each two bytes of
+/// [`MARKUP_FENCE_SOURCE_BYTES_MAX`], so no real fence reaches it. One span
+/// holds 16 bytes, so the bound retains 32 KiB for one fence. A fence that
+/// passes the bound carries no span at all, because kvim publishes no partial
+/// result.
+pub const MARKUP_FENCE_SPANS_MAX: usize = 2048;
+
+/// The fences of one document that the highlight reads.
+///
+/// [`MARKUP_SOURCE_BYTES_MAX`] already bounds the text of every fence
+/// together, and this bound holds the setup cost of one highlight, which the
+/// source bound does not hold. That cost measures about 1.4 us for a fence
+/// that holds no line. A fence occupies at least one row of the float, and one
+/// blank row stands above it, so a float of 16 rows shows at most 8 fences. A
+/// later fence keeps every line and carries no span.
+pub const MARKUP_FENCES_MAX: usize = 16;
 
 /// What one stretch of text of a document is.
 ///
@@ -245,6 +291,14 @@ pub enum MarkupBody {
         info: String,
         /// The lines of the block, in order, without their line feeds.
         lines: Vec<String>,
+        /// The syntax roles of the lines, or no span at all.
+        ///
+        /// One span addresses the line by its index in `lines` and the range
+        /// by its bytes inside that line, exactly as one span of a buffer
+        /// does. [`MarkupDocument::parse`] leaves the table empty, and
+        /// [`MarkupDocument::highlighted`] fills it for a fence that names a
+        /// registered language. An empty table therefore reads as plain code.
+        highlights: Vec<HighlightSpan>,
     },
     /// One thematic break, which separates two parts of an answer.
     Rule,
@@ -296,14 +350,22 @@ impl MarkupBlock {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{MarkupBody, MarkupDocument};
+/// use kvim_language::{LanguageRegistry, MarkupBody, MarkupDocument, SyntaxRole};
 ///
 /// let document = MarkupDocument::parse("```rust\nfn main() {}\n```");
-/// let MarkupBody::Code { info, lines } = document.blocks()[0].body() else {
+/// let MarkupBody::Code { info, lines, highlights } = document.blocks()[0].body() else {
 ///     panic!("the fence opens a code block");
 /// };
 /// assert_eq!(info, "rust");
 /// assert_eq!(lines, &["fn main() {}".to_owned()]);
+/// // The parse alone names no role, so the fence reads as plain code.
+/// assert!(highlights.is_empty());
+///
+/// let document = document.highlighted(LanguageRegistry::first_release());
+/// let MarkupBody::Code { highlights, .. } = document.blocks()[0].body() else {
+///     panic!("the fence stays a code block");
+/// };
+/// assert_eq!(highlights[0].role, SyntaxRole::Keyword);
 /// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct MarkupDocument {
@@ -347,6 +409,75 @@ impl MarkupDocument {
         }
     }
 
+    /// Names the syntax roles of the code of each fence.
+    ///
+    /// The pass reads the language name of each info string, selects the
+    /// adapter of that name, and collects the spans of the one highlighter
+    /// that also serves a buffer. A fence therefore carries the roles that its
+    /// code carries in a buffer of the same language.
+    ///
+    /// A fence that names no language, a fence that names a language of no
+    /// adapter, and a fence that passes one bound all keep every line and
+    /// carry no span. None of these is a failure, because a server may write
+    /// any info string, and a fence without a span reads as plain code.
+    ///
+    /// The pass reads at most [`MARKUP_FENCES_MAX`] fences. It reads at most
+    /// [`MARKUP_FENCE_SOURCE_BYTES_MAX`] bytes of one fence, and it keeps at
+    /// most [`MARKUP_FENCE_SPANS_MAX`] spans of one fence.
+    ///
+    /// The highlight is Tree-sitter work, so the caller must run this pass off
+    /// the terminal event loop. See `docs/responsiveness.md`.
+    #[must_use]
+    pub fn highlighted(mut self, registry: LanguageRegistry) -> Self {
+        // The bounds above hold this pass below one frame, and the caller runs
+        // it off the terminal event loop, so it needs no cancellation owner of
+        // its own. The shared highlighter takes one token, and this token
+        // stays uncancelled.
+        let cancellation = CancellationToken::new();
+        let mut fences = 0_usize;
+
+        for block in &mut self.blocks {
+            let MarkupBody::Code {
+                info,
+                lines,
+                highlights,
+            } = &mut block.body
+            else {
+                continue;
+            };
+            if fences >= MARKUP_FENCES_MAX {
+                break;
+            }
+            let Some(adapter) = registry.adapter_of_language(fence_language(info)) else {
+                continue;
+            };
+            let source = lines.join("\n");
+            if source.len() > MARKUP_FENCE_SOURCE_BYTES_MAX {
+                continue;
+            }
+
+            fences += 1;
+            // A failed parse, a malformed span, and a fence above the span
+            // bound all leave the fence plain, exactly as an unknown language
+            // does. kvim publishes no partial result.
+            if let Ok(spans) = analysis::collect_highlights(
+                adapter.grammar(),
+                &source,
+                MARKUP_FENCE_SPANS_MAX,
+                &cancellation,
+            ) {
+                *highlights = spans;
+            }
+
+            debug_assert!(
+                highlights.len() <= MARKUP_FENCE_SPANS_MAX,
+                "the highlighter stops at the bound that this pass gives it"
+            );
+        }
+
+        self
+    }
+
     /// Returns the blocks of the document, in order.
     #[must_use]
     pub fn blocks(&self) -> &[MarkupBlock] {
@@ -385,6 +516,23 @@ fn bounded_source(source: &str) -> &str {
     }
 
     &source[..end]
+}
+
+/// Returns the language name that one info string names.
+///
+/// CommonMark defines the first word of an info string as the language of the
+/// fence, and it leaves the rest of the string to the writer. `rust,ignore` and
+/// `rust title="one"` therefore both name Rust, so the reader stops at the
+/// first blank and at the first comma. An info string that names nothing
+/// answers the empty text, which no adapter declares.
+///
+/// The reader extracts the name here, because no code above the adapter
+/// boundary may match a language name. See `docs/language-services.md`.
+fn fence_language(info: &str) -> &str {
+    info.trim_start()
+        .split(|value: char| value.is_whitespace() || value == ',')
+        .next()
+        .unwrap_or_default()
 }
 
 /// Returns the rank of one heading, 1 through 6.
@@ -760,7 +908,11 @@ impl Walk {
                     "a split on the line feed answers with at least one piece"
                 );
                 self.pieces = self.pieces.saturating_add(lines.len());
-                MarkupBody::Code { info, lines }
+                MarkupBody::Code {
+                    info,
+                    lines,
+                    highlights: Vec::new(),
+                }
             }
         };
 
@@ -774,10 +926,20 @@ impl Walk {
 
 #[cfg(test)]
 mod tests {
+    use std::path::Path;
+    use std::sync::Arc;
+
+    use kvim_core::TextBuffer;
+    use kvim_settings::FileSettings;
+    use tokio_util::sync::CancellationToken;
+
     use super::{
-        MARKUP_BLOCKS_MAX, MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX,
+        MARKUP_BLOCKS_MAX, MARKUP_FENCE_SOURCE_BYTES_MAX, MARKUP_FENCE_SPANS_MAX,
+        MARKUP_FENCES_MAX, MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX,
         MarkupBlock, MarkupBody, MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole,
+        fence_language,
     };
+    use crate::{AnalysisInput, HighlightSpan, LanguageRegistry};
 
     /// The answer that rust-analyzer sends for one function of kvim.
     ///
@@ -812,6 +974,232 @@ mod tests {
         }
     }
 
+    /// Returns the document of one source with the code of each fence named.
+    fn highlighted(source: &str) -> MarkupDocument {
+        MarkupDocument::parse(source).highlighted(LanguageRegistry::first_release())
+    }
+
+    /// Returns the spans of the code block at one index.
+    fn spans(document: &MarkupDocument, index: usize) -> &[HighlightSpan] {
+        match document.blocks()[index].body() {
+            MarkupBody::Code { highlights, .. } => highlights,
+            other => panic!("block {index} is no code block: {other:?}"),
+        }
+    }
+
+    /// Returns the spans that one text carries as the buffer of a Rust file.
+    ///
+    /// The path selects the adapter, so this helper takes the selection that
+    /// an open file takes and never the one that a fence takes.
+    fn buffer_spans(source: &str) -> Vec<HighlightSpan> {
+        let version = TextBuffer::from_text("", &FileSettings::default())
+            .expect("the empty text is small")
+            .version();
+        LanguageRegistry::first_release()
+            .adapter(Path::new("hover.rs"))
+            .expect("the Rust adapter owns a .rs path")
+            .analyze(
+                &AnalysisInput::new(version, Arc::from(source)),
+                &CancellationToken::new(),
+            )
+            .expect("the test source stays inside every bound")
+            .highlights()
+            .to_vec()
+    }
+
+    #[test]
+    fn a_rust_fence_carries_the_roles_of_the_same_buffer() {
+        let path = "kvim_language::session";
+        let signature =
+            "fn hover_markup(result: &RawValue) -> Result<Option<MarkupText>, LspError>";
+        let document = highlighted(RUST_ANALYZER_HOVER);
+
+        assert!(
+            !spans(&document, 1).is_empty(),
+            "the signature of the answer carries roles"
+        );
+        assert_eq!(
+            spans(&document, 1),
+            buffer_spans(signature),
+            "one text carries one set of roles in a fence and in a buffer"
+        );
+        assert_eq!(
+            spans(&document, 0),
+            buffer_spans(path),
+            "the module path of the answer carries the roles of the same buffer text"
+        );
+    }
+
+    #[test]
+    fn a_fence_of_many_lines_addresses_the_lines_of_its_own_source() {
+        let source = "fn main() {\n    let value = 1;\n}";
+        let document = highlighted(&format!("```rust\n{source}\n```"));
+
+        assert_eq!(
+            spans(&document, 0),
+            buffer_spans(source),
+            "a span of a fence addresses the line and the byte as a span of a buffer does"
+        );
+        assert_eq!(
+            spans(&document, 0)
+                .iter()
+                .map(|span| span.line)
+                .max()
+                .expect("the fence carries roles"),
+            2,
+            "the last line of the fence is the third one"
+        );
+    }
+
+    #[test]
+    fn a_compound_info_string_selects_the_language_of_its_first_word() {
+        // A writer may add an attribute after the name, and rust-analyzer
+        // sends `rust` alone. The match folds ASCII case.
+        for info in ["rust", "rust,ignore", "rust title=\"one\"", "Rust", "RS"] {
+            let document = highlighted(&format!("```{info}\nfn main() {{}}\n```"));
+
+            assert_eq!(
+                spans(&document, 0),
+                buffer_spans("fn main() {}"),
+                "the info string {info:?} names Rust"
+            );
+        }
+
+        assert_eq!(fence_language("rust,ignore"), "rust");
+        assert_eq!(fence_language("rust title=\"one\""), "rust");
+        assert_eq!(fence_language(""), "");
+    }
+
+    #[test]
+    fn a_fence_of_an_unknown_language_carries_no_role() {
+        for info in ["console", "mermaid", "haskell"] {
+            let document = highlighted(&format!("```{info}\nfn main() {{}}\n```"));
+
+            assert!(
+                spans(&document, 0).is_empty(),
+                "no adapter answers to {info:?}, and that is no failure"
+            );
+            assert_eq!(
+                content(&document.blocks()[0]),
+                "fn main() {}",
+                "the fence keeps every line of {info:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_hostile_info_string_selects_no_language() {
+        // The info string is server text. The reader passes one complete name,
+        // and every comparison rejects a length that no declared name holds.
+        let info = "r".repeat(16 * 1024);
+        let document = highlighted(&format!("```{info}\nfn main() {{}}\n```"));
+
+        assert!(spans(&document, 0).is_empty());
+    }
+
+    #[test]
+    fn a_fence_that_names_no_language_carries_no_role() {
+        // The first source is a fence without an info string, and the second
+        // one is an indented code block, which names no language at all.
+        for source in ["```\nfn main() {}\n```", "    fn main() {}"] {
+            let document = highlighted(source);
+
+            assert!(
+                spans(&document, 0).is_empty(),
+                "{source:?} names no language"
+            );
+            assert_eq!(content(&document.blocks()[0]), "fn main() {}");
+        }
+    }
+
+    #[test]
+    fn a_fence_above_the_source_bound_carries_no_role() {
+        let line = "fn main() {}\n";
+        let lines = MARKUP_FENCE_SOURCE_BYTES_MAX / line.len();
+        let inside = line.repeat(lines);
+        let outside = line.repeat(lines + 1);
+        assert!(inside.len() <= MARKUP_FENCE_SOURCE_BYTES_MAX);
+        assert!(outside.len() > MARKUP_FENCE_SOURCE_BYTES_MAX);
+
+        let document = highlighted(&format!("```rust\n{inside}```"));
+        assert!(
+            !spans(&document, 0).is_empty(),
+            "a fence at the bound still carries roles"
+        );
+
+        let document = highlighted(&format!("```rust\n{outside}```"));
+        assert!(
+            spans(&document, 0).is_empty(),
+            "a fence above the bound costs no highlight"
+        );
+        assert_eq!(
+            document.blocks()[0].body(),
+            &MarkupBody::Code {
+                info: "rust".to_owned(),
+                lines: outside.lines().map(str::to_owned).collect(),
+                highlights: Vec::new(),
+            },
+            "the fence above the bound keeps every line"
+        );
+    }
+
+    #[test]
+    fn a_fence_above_the_span_bound_carries_no_role() {
+        // Each keyword, each name, and each bracket is one span, so this
+        // source produces about one span for each 1.5 bytes and reaches the
+        // span bound below the source bound.
+        let line = "fn a(){}\n";
+        let source = line.repeat(MARKUP_FENCE_SOURCE_BYTES_MAX / line.len());
+        assert!(source.len() <= MARKUP_FENCE_SOURCE_BYTES_MAX);
+        assert!(
+            buffer_spans(&source).len() > MARKUP_FENCE_SPANS_MAX,
+            "the same buffer text passes the fence span bound"
+        );
+
+        let document = highlighted(&format!("```rust\n{source}```"));
+
+        assert!(
+            spans(&document, 0).is_empty(),
+            "kvim publishes no partial result, so the fence carries no span at all"
+        );
+    }
+
+    #[test]
+    fn the_fence_bound_holds_over_a_document_of_many_fences() {
+        let document = highlighted(&"```rust\nfn main() {}\n```\n\n".repeat(MARKUP_FENCES_MAX * 2));
+
+        let named = document
+            .blocks()
+            .iter()
+            .filter(|block| !matches!(block.body(), MarkupBody::Code { highlights, .. } if highlights.is_empty()))
+            .count();
+        assert_eq!(named, MARKUP_FENCES_MAX, "the pass reads no further fence");
+        assert!(
+            document
+                .blocks()
+                .iter()
+                .all(|block| content(block) == "fn main() {}"),
+            "a fence above the bound keeps every line"
+        );
+    }
+
+    #[test]
+    fn the_parse_alone_names_no_role() {
+        // The terminal event loop may run the parse, and it must run no
+        // Tree-sitter work, so only the highlight pass produces one span.
+        let document = MarkupDocument::parse(RUST_ANALYZER_HOVER);
+
+        for (index, block) in document.blocks().iter().enumerate() {
+            let MarkupBody::Code { highlights, .. } = block.body() else {
+                continue;
+            };
+            assert!(
+                highlights.is_empty(),
+                "block {index} carries a span that no highlight pass produced"
+            );
+        }
+    }
+
     #[test]
     fn a_rust_analyzer_hover_parses_into_its_blocks() {
         let document = MarkupDocument::parse(RUST_ANALYZER_HOVER);
@@ -820,13 +1208,13 @@ mod tests {
         assert_eq!(blocks.len(), 4, "{blocks:?}");
         assert!(!document.is_clipped());
 
-        let MarkupBody::Code { info, lines } = blocks[0].body() else {
+        let MarkupBody::Code { info, lines, .. } = blocks[0].body() else {
             panic!("the module path stands in a fence: {:?}", blocks[0]);
         };
         assert_eq!(info, "rust", "the fence keeps its info string");
         assert_eq!(lines, &["kvim_language::session".to_owned()]);
 
-        let MarkupBody::Code { info, lines } = blocks[1].body() else {
+        let MarkupBody::Code { info, lines, .. } = blocks[1].body() else {
             panic!("the signature stands in a fence: {:?}", blocks[1]);
         };
         assert_eq!(info, "rust", "the second fence keeps its info string");
