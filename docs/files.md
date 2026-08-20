@@ -539,10 +539,10 @@ and a platform that also refuses the watch of that directory loses its entries.
 Its parent still reports every change of the directory itself, so one refused
 directory never stops the watch. A symbolic link adds no watch, because the
 entry type names the link itself, so no link watches one tree twice and no link
-builds a cycle. The directory bound and the depth bound below both keep the
-directories that the walk reached and report the part that carries no watch. The
-bound of one directory read reports no gap. A directory above that many entries
-loses the directories after it without a report.
+builds a cycle. The directory bound, the depth bound, and the bound of one
+directory read all keep the directories that the walk reached and report the
+part that carries no watch. A directory above the bound of one read loses the
+directories after that count, and it reports that loss as the same gap.
 
 A watch covers one directory alone, so a directory that appears after the walk
 carries no watch of its own. The watcher closes that gap on the next burst. The
@@ -589,8 +589,9 @@ workspace, and it names the state once, as a refused start already does.
 
 One registration can cover a part of the workspace. The platform refuses one
 watch at the watch limit of the host. A bound of the walk stops at a very large
-or a very deep tree. Both leave a directory of the workspace without a watch,
-and both keep every other feature of the editor.
+tree, at a very deep tree, and at a very large directory. Both causes leave a
+directory of the workspace without a watch, and both keep every other feature of
+the editor.
 
 Every burst carries that coverage. The value holds the number of refused
 directories and the cause of that refusal. It also holds whether a bound of the
@@ -634,7 +635,7 @@ the same loss and offer the same manual refresh.
 | Events of one burst | `WATCH_BURST_EVENTS_MAX` | 4096 | The bound ends one window even while a program writes without pause, so the consumer always receives its burst. |
 | Directories of one registration | `WATCH_DIRECTORIES_MAX` | 4096 | Linux counts one inotify watch against `fs.inotify.max_user_watches`, which is a limit of the user and not of the process. Every program of that user shares one budget, and hosts set it to 8192 on an older system and 524288 on a current one. The bound keeps the editor a considerate user of that budget. A larger value takes watches from the other programs of the same user. A normal workspace stays far below the bound. After the walk skips the ignored names, this repository registers 31 directories of 2345. One repository of 6828 directories registers 43. The bound is therefore a backstop for a very large monorepo, not a routine limit. A workspace above the bound keeps the watches that the walk placed, and the burst reports the gap. |
 | Depth of one registration | `WATCH_DEPTH_MAX` | 16 | The value matches `WALK_DEPTH_MAX` of the picker walk. A source tree below 16 levels holds no edited file. The bound also stops a generated path that nests far below any source tree. A deeper tree carries no watch below the bound, and the burst reports the gap. |
-| Entries of one registration read | `WATCH_DIRECTORY_SCAN_MAX` | 4096 | The value matches `TREE_DIRECTORY_SCAN_MAX`, so one very large directory costs the registration bounded time. This bound reports no gap. |
+| Entries of one registration read | `WATCH_DIRECTORY_SCAN_MAX` | 4096 | The value matches `TREE_DIRECTORY_SCAN_MAX`, so one very large directory costs the registration bounded time. A directory above the bound loses the entries after that count, and the burst reports the gap. |
 
 ### Tree Bounds
 
