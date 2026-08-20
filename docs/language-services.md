@@ -4,8 +4,10 @@
 
 The `language` module owns the language adapter registry, the Tree-sitter
 analysis, the language-server session, the position encoding of that session,
-and the external formatter. All language work runs off the terminal event loop
-through bounded runtime services. See
+the markup document of one server answer, and the external formatter. All
+language work runs off the terminal event loop through bounded runtime
+services. The markup parse is the one exception: it reads a bounded text, it
+touches no process and no file, so the event loop may run it. See
 [`responsiveness.md`](responsiveness.md).
 
 ## Language Adapter Boundary
@@ -441,11 +443,104 @@ unknown kind name names no shape either. Both take plain text for the same
 reason.
 
 The session reads no `language` of a deprecated pair yet, so that part reaches
-the float without its fence. The float shows the text of every answer and reads
-no kind yet.
+the float without its fence. The fence arrives with the renderer of the markup.
+A fence in front of a reader that shows raw text would add two rows of literal
+backticks, so the two changes belong together.
 
 The editor merges the answers of several servers after this reading. Each answer
 keeps its own kind, because each server declares the markup of its own text.
+
+### The Document Of One Markdown Answer
+
+A server answer that names markdown carries the source of a document, not the
+text of one. A reader that shows that source shows literal asterisks, literal
+backticks, and an unrendered fence. `kvim-language` therefore reads one markdown
+text into one document value, and `kvim-tui` paints it.
+
+`kvim-language` owns the value for the reason that it owns the highlight roles.
+A role is terminal-independent, and the palette lives in `kvim-tui` alone. The
+parse also measures no terminal cell, because `unicode-width` runs in
+`kvim-tui` only. The document therefore holds text, roles, and structure, and
+the renderer holds every glyph, every width, and every color. The fence of a
+code block names a language as well, and only a language adapter may select a
+path by language, so a later highlighter of a fence stays inside this crate.
+
+The parse is pure. It reads no clock, no environment, and no file, so one text
+always produces one document.
+
+#### The Blocks Of One Document
+
+A document is a sequence of blocks. Each block names the containers around it
+and the content inside it.
+
+| Block body | Holds | Reason |
+|---|---|---|
+| Prose | One styled text | One paragraph or one list item wraps at the width that the renderer gives it. |
+| Heading | One level and one styled text | The level names the rank of the heading. The renderer chooses the marker and the style of that rank. |
+| Code | One info string and the source lines | A code line must not wrap, because a wrap moves the rest of the line under its own indentation. The info string names the language of the fence. |
+| Rule | Nothing | A thematic break separates two parts of an answer. The renderer draws it, because a glyph and a width are presentation. |
+
+One styled text is one string and a sequence of runs that partition it. A run
+names one byte range and one role, so a wrapped line is a slice of that string
+and a role survives a wrap point on both sides of it.
+
+Each block also carries the containers around it, outermost first. A quote
+container rails every row of the block. A list container indents every row, and
+it names the marker of the item when the block opens that item. The renderer
+builds the prefix from the containers, because a marker and the blanks that
+replace it must occupy one terminal width, and only the renderer measures a
+terminal cell.
+
+A block reports whether one blank row stands above it. The blocks of one list
+follow one another without a blank row, so a list reads as one list and not as
+one paragraph for each item.
+
+#### The Markup Roles
+
+A markup role names what one stretch of text is, never how it looks. `kvim-tui`
+maps each role to one style and keeps every color, exactly as it maps a
+highlight role. See [`windows.md`](windows.md).
+
+| Role | Meaning |
+|---|---|
+| Text | The body text of one block |
+| Heading | The text of one heading |
+| Emphasis | Text between one pair of emphasis markers |
+| Strong | Text between one pair of strong markers |
+| InlineCode | One code span inside a text |
+| Link | The text of one link. The destination is markup, so it never paints. |
+| Quote | The text inside one block quote |
+
+A code block carries no role, because its body already names it as code.
+
+#### What The Parse Keeps As Text
+
+The parse enables no extension of the CommonMark grammar. A table, a footnote,
+and a task list marker therefore arrive as the text that the server wrote, and
+no character disappears. A table also needs the width of every column, and only
+the renderer measures a width, so a table has no place in this value.
+
+An image has no place on a terminal screen, so its alternative text takes the
+plain text role. kvim renders no markup, so an HTML block and an inline tag
+arrive as their own text as well.
+
+A fence that opens and never closes is already a code block, because CommonMark
+closes it at the end of the text. A hover answer arrives complete, so the parse
+needs no further rule for an incomplete document.
+
+#### The Bounds Of One Document
+
+| Bound | Constant | Value | Rationale |
+|---|---|---|---|
+| Markup source | `MARKUP_SOURCE_BYTES_MAX` | 16 KiB | The value of `LSP_HOVER_BYTES_MAX`, which bounds the largest markup that the editor reads today. One constant holds both, so the two cannot drift. A longer text stops at the last character boundary below the bound. |
+| Blocks of one document | `MARKUP_BLOCKS_MAX` | 256 blocks | One block needs at least one character of its own, so a source of the bound above holds far more blocks than a float shows. The float shows at most `FLOAT_ROWS_MAX` rows, so 256 blocks exceed one float many times. |
+| Pieces of one document | `MARKUP_PIECES_MAX` | 2,048 pieces | One piece is one stretch of text that the parse appends in one role, and one line of a code block counts as one piece. The bound covers a text of alternating roles and a code block of many lines, so it bounds the pieces of one block as well. |
+| Containers of one block | `MARKUP_NESTING_DEPTH_MAX` | 8 containers | A quote inside a quote inside a list indents the text of a block, and a server can nest without a limit. A container below this depth adds no further prefix, so the text still reaches the screen and the prefix cannot consume the whole width. |
+
+The parse stops at the first bound that it reaches, and the document then
+reports that it is clipped. The rest of the source does not reach the value,
+because the float shows at most `FLOAT_ROWS_MAX` rows and already reports that
+it hides content.
 
 ### The Document Synchronization
 

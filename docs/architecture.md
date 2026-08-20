@@ -37,7 +37,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
 | `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. |
-| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, the language-server session, and the external formatter. The registry holds 25 adapters. Every adapter declares at least one language server, and 20 of them also declare an external formatter. [`language-services.md`](language-services.md) owns the table. |
+| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, the language-server session, the markup document of one server answer, and the external formatter. The registry holds 25 adapters. Every adapter declares at least one language server, and 20 of them also declare an external formatter. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
@@ -295,6 +295,24 @@ These dependencies run only in the bounded language-server task.
   - Replaces: a local JSON parser and serializer.
   - May run: in the bounded language-server task, inside `kvim-language`.
   - Cost: compile time. Allocation stays inside the bounded task.
+
+### The Markup Of One Answer
+
+- `pulldown-cmark` 0.13, with no default feature
+  - Replaces: a local CommonMark reader. A local reader would have to answer
+    the edge cases of the grammar itself: an emphasis run, a link reference, a
+    lazy continuation line, a list item that continues, and a fence that never
+    closes.
+  - May run: in the markup module of `kvim-language` only. No type of the crate
+    leaves that module, so the dependency stays at one boundary. The parse is
+    pure and bounded, so the terminal event loop may run it.
+  - Cost: compile time, and one further crate in the build, `unicase`. Every
+    other dependency of the crate already stands in the lock file. One parse
+    reads at most `MARKUP_SOURCE_BYTES_MAX` bytes, so it costs one pass over a
+    bounded text and no more.
+  - Version reason: the 0.13 line is the current release line of the crate. The
+    default features carry an HTML renderer and an option parser, and the
+    module walks the event stream instead, so both stay off.
 
 ## Release Profile
 
