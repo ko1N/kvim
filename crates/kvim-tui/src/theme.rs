@@ -7,7 +7,7 @@
 //! palette is tokyonight night with a darkened base color and surface color.
 //! See `docs/windows.md`.
 
-use kvim_language::SyntaxRole;
+use kvim_language::{MarkupRole, SyntaxRole};
 use kvim_workspace::GitStatus;
 use ratatui::style::{Color, Modifier, Style};
 
@@ -201,6 +201,11 @@ pub enum ThemeRole {
     Hint,
     /// One icon of the file tree or of the which-key overlay.
     Icon(IconRole),
+    /// One markup role of one server answer.
+    Markup(MarkupRole),
+    /// One glyph that the float draws for a markup document, such as a
+    /// thematic break or the marker of a list item.
+    MarkupStructure,
     /// One syntax role of a language adapter.
     Syntax(SyntaxRole),
 }
@@ -334,6 +339,11 @@ impl Theme {
             // An icon decorates the row below it, so it carries a foreground
             // color only and keeps the row background and the selection.
             ThemeRole::Icon(role) => Style::new().fg(icon_color(role)),
+            // A markup role decorates the surface band of the float, so it
+            // carries a foreground color and a modifier only. A background of
+            // its own would cut a hole into that band. See `docs/windows.md`.
+            ThemeRole::Markup(role) => markup_style(role),
+            ThemeRole::MarkupStructure => Style::new().fg(NON_TEXT),
             ThemeRole::Error => Style::new().fg(ERROR),
             ThemeRole::Warning => Style::new().fg(WARNING),
             ThemeRole::Info => Style::new().fg(INFO),
@@ -368,6 +378,25 @@ fn syntax_style(role: SyntaxRole) -> Style {
     }
 }
 
+/// Returns the style of one markup role.
+///
+/// The heading and the strong role carry the bold modifier, the emphasis role
+/// carries the italic one, and the link role carries the underline, so a reader
+/// separates them without a color of their own. A code span takes the color of
+/// a string literal, because both hold source text. See `docs/windows.md`.
+fn markup_style(role: MarkupRole) -> Style {
+    let style = Style::new();
+    match role {
+        MarkupRole::Text => style.fg(TEXT),
+        MarkupRole::Heading => style.fg(TITLE).add_modifier(Modifier::BOLD),
+        MarkupRole::Emphasis => style.fg(TEXT).add_modifier(Modifier::ITALIC),
+        MarkupRole::Strong => style.fg(TEXT).add_modifier(Modifier::BOLD),
+        MarkupRole::InlineCode => style.fg(SYNTAX_STRING),
+        MarkupRole::Link => style.fg(INFO).add_modifier(Modifier::UNDERLINED),
+        MarkupRole::Quote => style.fg(TEXT_DIM).add_modifier(Modifier::ITALIC),
+    }
+}
+
 /// Returns the color of one file-tree icon role.
 ///
 /// Every value comes from the palette that the interface roles already use, so
@@ -397,7 +426,7 @@ mod tests {
     use std::fs;
     use std::path::Path;
 
-    use kvim_language::SyntaxRole;
+    use kvim_language::{MarkupRole, SyntaxRole};
     use ratatui::style::Modifier;
 
     use super::{BASE, SURFACE, Theme, ThemeRole};
@@ -447,6 +476,31 @@ mod tests {
             assert_eq!(theme.style(role).bg, None, "{role:?} paints no background");
         }
     }
+
+    #[test]
+    fn a_markup_role_decorates_the_surface_band_of_the_float() {
+        // The float paints one row over its own surface band, so a markup style
+        // that owned a background would cut a hole into that band.
+        let theme = theme();
+        for role in MARKUP_ROLES {
+            let style = theme.style(ThemeRole::Markup(role));
+            assert_eq!(style.bg, None, "{role:?} paints no background");
+            assert!(style.fg.is_some(), "{role:?} names its own foreground");
+        }
+        let structure = theme.style(ThemeRole::MarkupStructure);
+        assert_eq!(structure.bg, None, "a float glyph paints no background");
+    }
+
+    /// Every markup role, so a new role reaches the test above.
+    const MARKUP_ROLES: [MarkupRole; 7] = [
+        MarkupRole::Text,
+        MarkupRole::Heading,
+        MarkupRole::Emphasis,
+        MarkupRole::Strong,
+        MarkupRole::InlineCode,
+        MarkupRole::Link,
+        MarkupRole::Quote,
+    ];
 
     #[test]
     fn the_end_of_buffer_marker_stays_readable_over_the_editor_background() {

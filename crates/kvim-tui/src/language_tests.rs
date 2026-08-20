@@ -26,7 +26,9 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
-use super::language::{FLOAT_ROWS_MAX, LanguageRequestKind, send_request};
+use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, LanguageRequestKind, send_request};
+use super::markup::FloatLine;
+use super::overlay::float_lines;
 use super::session::{MessageLevel, Redraw, Session};
 
 /// The elapsed time of every transition. The session reads no clock.
@@ -277,12 +279,14 @@ impl Editor {
     }
 
     /// Returns the rows of the open float, or an empty list while none is open.
+    ///
+    /// The rows are the painted ones at the widest float, because a markup
+    /// answer holds no row of its own until a width renders it.
     fn float_rows(&self) -> Vec<String> {
         self.session.visible().float.map_or_else(Vec::new, |float| {
-            float
-                .rows
+            float_lines(float, FLOAT_COLUMNS_MAX)
                 .iter()
-                .map(|row| row.text.clone())
+                .map(FloatLine::text)
                 .collect::<Vec<_>>()
         })
     }
@@ -1046,6 +1050,83 @@ async fn hover_opens_a_float_and_an_empty_answer_reports_it() {
     editor.publish().await;
     assert_eq!(editor.message(), "no hover information");
     assert!(editor.float_rows().is_empty());
+}
+
+/// The answer that rust-analyzer sends for one function of kvim.
+///
+/// The shape is the common one: one fence that names the module path, one fence
+/// that holds the signature, one thematic break, and the document comment.
+const RUST_ANALYZER_HOVER: &str = "```rust\nkvim_tui::language\n```\n\n```rust\nfn hover(&self) -> \
+                                   Vec<&MarkupText>\n```\n\n---\n\nReturns the hover answers of \
+                                   every *server*, in declaration order.";
+
+/// Answers one hover request with `contents` and opens the float.
+async fn open_hover(editor: &mut Editor, contents: Value) {
+    editor.press(" k");
+    editor.pump();
+    let request = editor.expect_request("textDocument/hover").await;
+    editor
+        .server
+        .respond(&request["id"], json!({ "contents": contents }))
+        .await;
+    editor.publish().await;
+}
+
+#[tokio::test]
+async fn the_hover_float_renders_the_markdown_that_the_server_wrote() {
+    let mut editor = Editor::start("hover-markdown", &[("main.rs", "fn main() {}\n")]).await;
+
+    open_hover(
+        &mut editor,
+        json!({ "kind": "markdown", "value": RUST_ANALYZER_HOVER }),
+    )
+    .await;
+
+    let painted = editor.float_rows();
+    assert_eq!(
+        painted,
+        vec![
+            "kvim_tui::language".to_owned(),
+            String::new(),
+            "fn hover(&self) -> Vec<&MarkupText>".to_owned(),
+            String::new(),
+            "─".repeat(64),
+            String::new(),
+            "Returns the hover answers of every server, in declaration order.".to_owned(),
+        ],
+        "no fence, no backtick, and no dash of the source reaches one row",
+    );
+}
+
+#[tokio::test]
+async fn a_hover_answer_of_plain_text_keeps_every_character() {
+    let mut editor = Editor::start("hover-plain", &[("main.rs", "fn main() {}\n")]).await;
+    // A markdown parse of this text would drop every marker of it.
+    let message = "*not emphasis* and `not code` and a - b";
+
+    open_hover(
+        &mut editor,
+        json!({ "kind": "plaintext", "value": message }),
+    )
+    .await;
+
+    assert_eq!(editor.float_rows(), vec![message.to_owned()]);
+}
+
+#[tokio::test]
+async fn a_long_hover_answer_reports_the_rows_that_the_float_hides() {
+    let mut editor = editor_with_lines("hover-height", 8).await;
+    let value: String = (0..40).map(|index| format!("note{index}\n\n")).collect();
+
+    open_hover(&mut editor, json!({ "kind": "markdown", "value": value })).await;
+
+    let (rows, _, corner) = editor.float_frame(HOVER_TITLE);
+    assert_eq!(float_text(&rows, corner, 1), "note0");
+    assert_eq!(
+        float_text(&rows, corner, FLOAT_ROWS_MAX),
+        "...",
+        "the last row reports that the float hides rows",
+    );
 }
 
 #[tokio::test]

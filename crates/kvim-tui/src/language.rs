@@ -21,7 +21,8 @@ use kvim_core::BufferVersion;
 use kvim_language::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition, FormatEdits,
     FormatterRequest, LANGUAGE_SERVERS_MAX, LanguageFormatter, LanguageRegistry, LanguageRequestId,
-    LanguageServerHandle, LanguageServerId, LspError, MarkupText, ServerFormatting, SourceLocation,
+    LanguageServerHandle, LanguageServerId, LspError, MarkupDocument, MarkupKind, MarkupText,
+    ServerFormatting, SourceLocation,
 };
 use kvim_workspace::BufferId;
 
@@ -732,6 +733,20 @@ pub(super) struct FloatRow {
     pub(super) severity: Option<DiagnosticSeverity>,
 }
 
+/// What one floating overlay shows.
+///
+/// A markup document holds roles and structure, and a plain text holds neither.
+/// The two therefore stay apart until the overlay paints them, because a
+/// markdown parse of a plain text would remove the characters that mark up a
+/// document. See `docs/language-services.md`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum FloatContent {
+    /// Rows of plain text, which the overlay wraps at its own width.
+    Text(Vec<FloatRow>),
+    /// One markup document, which the overlay renders at its own width.
+    Markup(MarkupDocument),
+}
+
 /// One floating overlay of the language services.
 ///
 /// The float is decoration. It changes no buffer text, no line mapping, and no
@@ -740,8 +755,9 @@ pub(super) struct FloatRow {
 pub(super) struct Float {
     /// The title band of the overlay.
     pub(super) title: &'static str,
-    /// The rows of the overlay, bounded by [`FLOAT_ROWS_MAX`].
-    pub(super) rows: Vec<FloatRow>,
+    /// The content of the overlay, bounded by [`FLOAT_ROWS_MAX`] rows as soon
+    /// as the overlay knows its width.
+    pub(super) content: FloatContent,
 }
 
 impl Float {
@@ -756,7 +772,56 @@ impl Float {
                 severity: None,
             })
             .collect();
-        Self { title, rows }
+        Self {
+            title,
+            content: FloatContent::Text(rows),
+        }
+    }
+
+    /// Creates a bounded float from the hover answers of every server.
+    ///
+    /// The answers join in declaration order, and one blank row separates two
+    /// of them. The join reaches the markup parse only while every answer names
+    /// markdown, because one plain text that a markdown parse reads loses the
+    /// characters that mark up a document.
+    #[must_use]
+    pub(super) fn hover(title: &'static str, answers: &[&MarkupText]) -> Self {
+        let joined = answers
+            .iter()
+            .map(|answer| answer.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        if answers
+            .iter()
+            .all(|answer| answer.kind == MarkupKind::Markdown)
+        {
+            return Self {
+                title,
+                content: FloatContent::Markup(MarkupDocument::parse(&joined)),
+            };
+        }
+        Self::text(title, &joined)
+    }
+
+    /// Reports whether the float holds no content at all.
+    #[must_use]
+    pub(super) fn is_empty(&self) -> bool {
+        match &self.content {
+            FloatContent::Text(rows) => rows.is_empty(),
+            FloatContent::Markup(document) => document.is_empty(),
+        }
+    }
+
+    /// Reports whether one bound already dropped content of the float.
+    ///
+    /// The overlay ends such a float with its clip note, exactly as it ends one
+    /// that holds more rows than it shows.
+    #[must_use]
+    pub(super) fn is_clipped(&self) -> bool {
+        match &self.content {
+            FloatContent::Text(_) => false,
+            FloatContent::Markup(document) => document.is_clipped(),
+        }
     }
 
     /// Creates a bounded float from the diagnostics at one position.
@@ -810,7 +875,10 @@ impl Float {
             })
             .take(FLOAT_SOURCE_ROWS_MAX)
             .collect();
-        Self { title, rows }
+        Self {
+            title,
+            content: FloatContent::Text(rows),
+        }
     }
 }
 

@@ -9,6 +9,7 @@
 //! A long line scrolls horizontally and clips at the window edge.
 
 use std::borrow::Cow;
+use std::ops::Range;
 
 use unicode_width::UnicodeWidthChar;
 
@@ -131,56 +132,103 @@ pub(super) fn truncate_cells_left(text: &str, cells: usize) -> Cow<'_, str> {
     Cow::Owned(format!("{TRUNCATION_MARKER}{}", &text[start..]))
 }
 
-/// Breaks one text into rows of at most `cells` terminal cells each.
+/// Shortens one text on the right so that it occupies at most `cells` cells.
+///
+/// The start of the text always survives, because a code line reads from its
+/// start. The cut counts cells, so it never splits a wide character.
+pub(super) fn clip_cells(text: &str, cells: usize) -> &str {
+    let mut used = 0;
+    for (index, value) in text.char_indices() {
+        let width = char_cells(value);
+        if used + width > cells {
+            return &text[..index];
+        }
+        used += width;
+    }
+    text
+}
+
+/// Breaks one text into the byte ranges of rows of at most `cells` cells each.
 ///
 /// The break prefers the last space that fits, so a word survives one row
 /// whenever it can. A word that is wider than the whole row breaks inside
 /// itself, because no later break would ever fit it. The cut counts cells, so
-/// it never splits a wide character and no row overflows the available cells.
-/// An empty text produces one empty row, so a blank separator row survives.
+/// it never splits a wide character. An empty text produces one empty range, so
+/// a blank separator row survives.
+///
+/// Each range starts and ends at a character boundary, so a caller that holds
+/// styled ranges over the same text keeps them across a break. One character
+/// that is wider than a complete row takes one range of its own, and the
+/// renderer then clips it. [`wrap_cells`] drops such a character instead,
+/// because it answers text and a text row must fit its cells.
 ///
 /// The scan reads at most [`ROW_SCAN_CHARS_MAX`] characters, so one
 /// pathological text produces a finite number of rows.
-pub(super) fn wrap_cells(text: &str, cells: usize) -> Vec<String> {
+pub(super) fn wrap_ranges(text: &str, cells: usize) -> Vec<Range<usize>> {
     debug_assert!(cells >= 1, "the caller reserves at least one cell for text");
-    let mut rows: Vec<String> = Vec::new();
-    let mut row = String::new();
+    let mut rows: Vec<Range<usize>> = Vec::new();
+    let mut start = 0;
     let mut used = 0;
-    // The byte offset inside `row` that follows the last space, or `None` while
+    let mut scanned = 0;
+    // The byte offset that follows the last space of the row, or `None` while
     // the row holds no space that a break may use.
     let mut after_space: Option<usize> = None;
 
-    for value in text.chars().take(ROW_SCAN_CHARS_MAX) {
+    for (index, value) in text.char_indices().take(ROW_SCAN_CHARS_MAX) {
         let width = char_cells(value);
-        if width > cells {
-            // A character that is wider than a complete row fits no row at all,
-            // so the wrap drops it instead of overflowing one.
-            continue;
-        }
-        if used + width > cells {
+        if used + width > cells && index > start {
             // A break at the last space keeps the word whole, but only while it
             // leaves visible text behind. Leading indentation holds no word, so
             // the row breaks inside the word instead of emitting a blank row.
-            match after_space.filter(|at| !row[..*at].trim_end_matches(' ').is_empty()) {
-                Some(at) => {
-                    let rest = row.split_off(at);
-                    while row.ends_with(' ') {
-                        row.pop();
+            let (end, next) =
+                match after_space.filter(|at| !text[start..*at].trim_end_matches(' ').is_empty()) {
+                    Some(at) => {
+                        let mut end = at;
+                        while text[start..end].ends_with(' ') {
+                            end -= 1;
+                        }
+                        (end, at)
                     }
-                    rows.push(std::mem::replace(&mut row, rest));
-                }
-                None => rows.push(std::mem::take(&mut row)),
-            }
-            used = text_cells(&row);
+                    None => (index, index),
+                };
+            rows.push(start..end);
+            start = next;
+            used = text_cells(&text[start..index]);
             after_space = None;
         }
-        row.push(value);
         used += width;
+        scanned = index + value.len_utf8();
         if value == ' ' {
-            after_space = Some(row.len());
+            after_space = Some(scanned);
         }
     }
-    rows.push(row);
+    rows.push(start..scanned);
+
+    debug_assert!(
+        rows.iter()
+            .all(|row| text.is_char_boundary(row.start) && text.is_char_boundary(row.end)),
+        "every break stands between two characters, so a caller may slice the text"
+    );
+    rows
+}
+
+/// Breaks one text into rows of at most `cells` terminal cells each.
+///
+/// The rows follow [`wrap_ranges`], and no row overflows the available cells: a
+/// character that is wider than a complete row fits no row at all, so this wrap
+/// drops it.
+pub(super) fn wrap_cells(text: &str, cells: usize) -> Vec<String> {
+    let scan = text.chars().take(ROW_SCAN_CHARS_MAX);
+    let kept: Cow<'_, str> = if scan.clone().any(|value| char_cells(value) > cells) {
+        Cow::Owned(scan.filter(|value| char_cells(*value) <= cells).collect())
+    } else {
+        Cow::Borrowed(text)
+    };
+
+    let rows: Vec<String> = wrap_ranges(&kept, cells)
+        .into_iter()
+        .map(|row| kept[row].to_owned())
+        .collect();
     debug_assert!(
         rows.iter().all(|row| text_cells(row) <= cells),
         "every break stops before the row overflows the available cells"
