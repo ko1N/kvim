@@ -37,7 +37,7 @@ use kvim_settings::IndentSettings;
 use super::document::{
     ContentChange, DiagnosticSet, FormatEdits, RawDiagnostic, RawTextEdit, SourceLocation, TextEdit,
 };
-use super::encoding::{DocumentMapping, PositionEncoding};
+use super::encoding::{DocumentMapping, PositionEncoding, TextMirroring};
 use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
 use super::protocol::{
     ArrayBudget, DocumentPosition, LspBound, LspError, ProtocolReader, ProtocolSpan,
@@ -313,6 +313,52 @@ enum DiagnosticsModel {
         /// capability names one.
         identifier: Option<String>,
     },
+}
+
+/// The change notification that one session sends.
+///
+/// The handshake selects the mode from the `textDocumentSync` capability of the
+/// server. See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SynchronizationMode {
+    /// The server accepts no change notification.
+    None,
+    /// The server receives the complete text of the document.
+    Full,
+    /// The server receives one range for each change.
+    Incremental,
+}
+
+impl SynchronizationMode {
+    /// The capability value of a full synchronization.
+    const FULL: u64 = 1;
+
+    /// The capability value of an incremental synchronization.
+    const INCREMENTAL: u64 = 2;
+
+    /// Reads the mode that one capability value names.
+    ///
+    /// The protocol defines the value 0 as no synchronization, and it reserves
+    /// no further value, so every other number also sends no change. A wrong
+    /// number must never send a change that the server reads as another shape.
+    const fn from_kind(kind: u64) -> Self {
+        match kind {
+            Self::FULL => Self::Full,
+            Self::INCREMENTAL => Self::Incremental,
+            _ => Self::None,
+        }
+    }
+
+    /// Reports whether one document of this session mirrors its text.
+    ///
+    /// A full synchronization sends the complete text of every change, and the
+    /// session builds that text from the mirror.
+    const fn mirroring(self) -> TextMirroring {
+        match self {
+            Self::Full => TextMirroring::Present,
+            Self::None | Self::Incremental => TextMirroring::Absent,
+        }
+    }
 }
 
 /// One message from the editor to one session.
@@ -808,6 +854,7 @@ async fn attempt(
         config,
         generation,
         encoding: PositionEncoding::Utf16,
+        synchronization: SynchronizationMode::None,
         diagnostics: DiagnosticsModel::Push,
         events,
         writer: ProtocolWriter::new(input),
@@ -996,6 +1043,12 @@ struct Session<'a> {
     /// the value always names the encoding that the running server confirmed.
     /// UTF-16 is the encoding that the protocol defines until a server answers.
     encoding: PositionEncoding,
+    /// The change notification that the handshake selected.
+    ///
+    /// The mode belongs to one server attempt, so a restart reads the
+    /// capability again. No change notification for the value that the protocol
+    /// defines for an absent capability. See `docs/language-services.md`.
+    synchronization: SynchronizationMode,
     /// The diagnostic model that the handshake selected.
     ///
     /// The model belongs to one server attempt, so a restart reads the
@@ -1124,6 +1177,12 @@ impl Session<'_> {
                 .pointer("/capabilities/positionEncoding")
                 .and_then(Value::as_str),
         )?;
+        // The server decides what one change notification carries. kvim sends
+        // the complete text to a server that asks for a full synchronization,
+        // and one range for each change to a server that asks for an
+        // incremental one.
+        self.synchronization =
+            synchronization_mode(capabilities.pointer("/capabilities/textDocumentSync"));
         // A server that advertises a diagnostic provider answers the request of
         // the client instead of publishing a set on its own.
         self.diagnostics =
@@ -1383,7 +1442,11 @@ impl Session<'_> {
                 uri,
                 version,
                 revision: 1,
-                mapping: DocumentMapping::new(self.encoding, text),
+                mapping: DocumentMapping::new(
+                    self.encoding,
+                    self.synchronization.mirroring(),
+                    text,
+                ),
                 result_id: None,
                 pull_due,
                 pull_running: false,
@@ -1406,13 +1469,31 @@ impl Session<'_> {
         let pulls = self.pulls();
         let document = self.documents.get(path).ok_or(LspError::DocumentNotOpen)?;
         let revision = document.revision.saturating_add(1);
-        // Every change addresses the text that the server still holds, so every
-        // range converts against the mirror before the mirror moves on.
-        let mut content_changes = Vec::with_capacity(changes.len());
-        for change in changes {
-            let range = document.mapping.span_to_protocol(change.span)?;
-            content_changes.push(json!({ "range": range, "text": change.text }));
-        }
+        let content_changes = match self.synchronization {
+            // The server accepts no change notification, so the session sends
+            // none. Its copy keeps the text of the open, and the recorded
+            // version keeps that text, so every later request of this document
+            // reports a stale version instead of an answer that describes text
+            // the server does not hold.
+            SynchronizationMode::None => return Ok(()),
+            // A full synchronization carries no range. The mirror holds the
+            // text that the server still holds, so the projection of the
+            // changes is the text that the server must hold next.
+            SynchronizationMode::Full => {
+                vec![json!({ "text": document.mapping.projected(changes)? })]
+            }
+            // Every change addresses the text that the server still holds, so
+            // every range converts against the mirror before the mirror moves
+            // on.
+            SynchronizationMode::Incremental => {
+                let mut content_changes = Vec::with_capacity(changes.len());
+                for change in changes {
+                    let range = document.mapping.span_to_protocol(change.span)?;
+                    content_changes.push(json!({ "range": range, "text": change.text }));
+                }
+                content_changes
+            }
+        };
         let uri = document.uri.clone();
         self.writer
             .notify(
@@ -1927,6 +2008,24 @@ struct ConfigurationItem {
     section: Option<String>,
 }
 
+/// Selects the change notification from the capability of one server.
+///
+/// The protocol carries `textDocumentSync` as one number, or as one object that
+/// names that number in its `change` member. An absent capability, an absent
+/// `change` member, and every number that is not 1 or 2 all name no
+/// synchronization, which is the value that the protocol defines. See
+/// `docs/language-services.md`.
+fn synchronization_mode(capability: Option<&Value>) -> SynchronizationMode {
+    let Some(capability) = capability else {
+        return SynchronizationMode::None;
+    };
+    let kind = match capability {
+        Value::Object(options) => options.get("change").and_then(Value::as_u64),
+        other => other.as_u64(),
+    };
+    kind.map_or(SynchronizationMode::None, SynchronizationMode::from_kind)
+}
+
 /// Selects the diagnostic model from the capability of one server.
 ///
 /// A server that advertises a diagnostic provider answers the request of the
@@ -2073,4 +2172,80 @@ fn push_hover_part(text: &mut String, part: &str) {
         text.push('\n');
     }
     text.push_str(part);
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::{Value, json};
+
+    use super::{SynchronizationMode, synchronization_mode};
+
+    /// Returns the mode of one `textDocumentSync` capability value.
+    fn mode(capability: &Value) -> SynchronizationMode {
+        synchronization_mode(capability.pointer("/capabilities/textDocumentSync"))
+    }
+
+    #[test]
+    fn the_number_form_of_the_capability_names_the_mode() {
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": 1 } })),
+            SynchronizationMode::Full
+        );
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": 2 } })),
+            SynchronizationMode::Incremental
+        );
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": 0 } })),
+            SynchronizationMode::None
+        );
+    }
+
+    #[test]
+    fn the_object_form_of_the_capability_names_the_mode_in_its_change_member() {
+        assert_eq!(
+            mode(&json!({
+                "capabilities": {
+                    "textDocumentSync": { "openClose": true, "change": 1 }
+                }
+            })),
+            SynchronizationMode::Full
+        );
+        assert_eq!(
+            mode(&json!({
+                "capabilities": {
+                    "textDocumentSync": { "openClose": true, "change": 2 }
+                }
+            })),
+            SynchronizationMode::Incremental
+        );
+    }
+
+    #[test]
+    fn every_capability_that_names_no_mode_sends_no_change() {
+        // The protocol defines no synchronization for an absent capability, for
+        // an object without a `change` member, and for the value 0.
+        assert_eq!(
+            mode(&json!({ "capabilities": {} })),
+            SynchronizationMode::None
+        );
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": Value::Null } })),
+            SynchronizationMode::None
+        );
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": { "openClose": true } } })),
+            SynchronizationMode::None
+        );
+        // The protocol reserves no further number and no other type, so both
+        // send no change instead of a shape that the server misreads.
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": 3 } })),
+            SynchronizationMode::None
+        );
+        assert_eq!(
+            mode(&json!({ "capabilities": { "textDocumentSync": "full" } })),
+            SynchronizationMode::None
+        );
+    }
 }

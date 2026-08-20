@@ -106,8 +106,8 @@ impl FileBuffer {
     ///
     /// let files = FileSettings::default();
     /// let text = TextBuffer::from_text("one\n", &files).expect("the text is short");
-    /// let buffer = FileBuffer::generated("[Log]", text);
-    /// assert_eq!(buffer.name(), "[Log]");
+    /// let buffer = FileBuffer::generated("[Logs]", text);
+    /// assert_eq!(buffer.name(), "[Logs]");
     /// assert_eq!(buffer.path(), None);
     /// assert!(!buffer.is_modified());
     /// ```

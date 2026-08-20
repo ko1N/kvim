@@ -489,7 +489,7 @@ fn open_log(session: &mut Session, name: &str) -> Vec<String> {
     press(session, ':');
     type_keys(session, name);
     press_code(session, KeyCode::Enter);
-    assert_eq!(session.active_buffer().name(), "[Log]");
+    assert_eq!(session.active_buffer().name(), "[Logs]");
     session
         .buffer()
         .to_string()
@@ -503,7 +503,7 @@ fn the_log_command_opens_a_snapshot_that_holds_a_replaced_message() {
     let mut session = session(60, 12);
     let (replaced, newest) = report_two_messages(&mut session);
 
-    // `:l` is the declared abbreviation of `:log`.
+    // `:l` is the declared abbreviation of `:logs`.
     let rows = open_log(&mut session, "l");
     assert_eq!(rows.len(), 2, "the log holds both messages, not {rows:?}");
     assert!(
@@ -537,7 +537,7 @@ fn the_log_command_opens_a_snapshot_that_holds_a_replaced_message() {
 fn an_edit_of_the_log_buffer_changes_no_entry_and_a_second_log_builds_a_new_snapshot() {
     let mut session = session(60, 12);
     let (_, newest) = report_two_messages(&mut session);
-    let rows = open_log(&mut session, "log");
+    let rows = open_log(&mut session, "logs");
     let edited = session.buffers().ids();
 
     // The user edits the snapshot like any other buffer.
@@ -547,14 +547,14 @@ fn an_edit_of_the_log_buffer_changes_no_entry_and_a_second_log_builds_a_new_snap
     assert!(session.active_buffer().is_modified());
 
     // The edit changed no entry, so the next snapshot holds the same rows.
-    assert_eq!(open_log(&mut session, "log"), rows);
+    assert_eq!(open_log(&mut session, "logs"), rows);
 
     // The same report reaches the log again. The log collapses a repeated
     // report, so the next snapshot counts it instead of adding one row.
     press(&mut session, ':');
     type_keys(&mut session, "wqa");
     press_code(&mut session, KeyCode::Enter);
-    let grown = open_log(&mut session, "log");
+    let grown = open_log(&mut session, "logs");
     assert_eq!(grown.len(), 2, "a repeated report adds no row to {grown:?}");
     assert!(
         grown[1].ends_with(&format!("{newest} (x2)")),
@@ -595,7 +595,7 @@ fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "edit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
-    for expected in ["log", "quit", "wq", "write"] {
+    for expected in ["logs", "quit", "wq", "write"] {
         press_code(&mut session, KeyCode::Tab);
         assert_eq!(prompt_text(&session), expected);
     }
@@ -2283,7 +2283,7 @@ fn a_burst_of_obsolete_analyses_costs_one_log_entry_and_keeps_an_earlier_report(
         );
     }
 
-    let rows = open_log(&mut session, "log");
+    let rows = open_log(&mut session, "logs");
     let jobs: Vec<&String> = rows.iter().filter(|row| row.contains(" JOB ")).collect();
     assert_eq!(
         jobs.len(),

@@ -51,6 +51,19 @@ pub const DOCUMENT: &str = "/workspace/src/main.rs";
 /// The `file` URI of that document.
 pub const DOCUMENT_URI: &str = "file:///workspace/src/main.rs";
 
+/// The `textDocumentSync` capability of a full synchronization.
+///
+/// A server that answers this value receives the complete text of the document
+/// in every `didChange`. See `docs/language-services.md`.
+pub const FULL_SYNC: i64 = 1;
+
+/// The `textDocumentSync` capability of an incremental synchronization.
+///
+/// A server that answers this value receives one range for each change. Almost
+/// every installed server asks for this mode, so every handshake of this module
+/// answers it unless the test names another value.
+pub const INCREMENTAL_SYNC: i64 = 2;
+
 /// The mock server side of one session.
 pub struct MockServer {
     input: DuplexStream,
@@ -110,16 +123,27 @@ impl MockServer {
     ///
     /// `None` sends a result that names no encoding, which the protocol defines
     /// as UTF-16. The session then converts every column, so a test that drives
-    /// the conversion path names this shape. See `docs/language-services.md`.
+    /// the conversion path names this shape. The result asks for an incremental
+    /// synchronization. See `docs/language-services.md`.
     pub async fn handshake_with(&mut self, encoding: Option<&str>) {
+        let mut capabilities = match encoding {
+            Some(encoding) => json!({ "positionEncoding": encoding }),
+            None => json!({}),
+        };
+        capabilities["textDocumentSync"] = json!(INCREMENTAL_SYNC);
+        self.handshake_capabilities(capabilities).await;
+    }
+
+    /// Runs the handshake and answers the exact capabilities of one result.
+    ///
+    /// A test that drives the document synchronization names this constructor,
+    /// because the `textDocumentSync` capability decides what every `didChange`
+    /// carries. See `docs/language-services.md`.
+    pub async fn handshake_capabilities(&mut self, capabilities: Value) {
         let initialize = self.expect("initialize").await;
         let offered = &initialize["params"]["capabilities"]["general"]["positionEncodings"];
         assert_eq!(offered[0], "utf-8", "the client prefers UTF-8");
         assert_eq!(offered[1], "utf-16", "the client also offers UTF-16");
-        let capabilities = match encoding {
-            Some(encoding) => json!({ "positionEncoding": encoding }),
-            None => json!({}),
-        };
         self.respond(&initialize["id"], json!({ "capabilities": capabilities }))
             .await;
         self.expect("initialized").await;
@@ -137,6 +161,7 @@ impl MockServer {
             json!({
                 "capabilities": {
                     "positionEncoding": "utf-8",
+                    "textDocumentSync": INCREMENTAL_SYNC,
                     "diagnosticProvider": {
                         "identifier": identifier,
                         "interFileDependencies": false,

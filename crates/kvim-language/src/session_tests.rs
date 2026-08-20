@@ -16,8 +16,8 @@ use kvim_settings::{EditorSettings, FileSettings};
 
 use super::document::ContentChange;
 use super::mock::{
-    self, DOCUMENT, DOCUMENT_URI, Harness, MockServer, PIPE_BYTES, ROOT, TEST_DEADLINE, connected,
-    pipe, session,
+    self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, PIPE_BYTES,
+    ROOT, TEST_DEADLINE, connected, pipe, session,
 };
 use super::progress::{ProgressPercentage, ProgressReport, ProgressStage, SessionGeneration};
 use super::protocol::{
@@ -450,6 +450,209 @@ async fn synchronizes_open_change_and_close() {
         .handle()
         .close(Path::new(DOCUMENT))
         .expect("the queue is empty");
+    let notification = server.expect("textDocument/didClose").await;
+    assert_eq!(notification["params"]["textDocument"]["uri"], DOCUMENT_URI);
+}
+
+/// Applies one transaction to the buffer and synchronizes the new version.
+///
+/// The call returns the `didChange` notification that the session sent, so the
+/// caller reads what the server receives.
+async fn synchronized(
+    harness: &Harness,
+    server: &mut MockServer,
+    text: &mut TextBuffer,
+    transaction: EditTransaction,
+) -> Value {
+    let before = text.clone();
+    let changes = ContentChange::from_transaction(&before, &transaction)
+        .expect("the changes stay inside the bound");
+    let version = text
+        .apply(transaction)
+        .expect("the changes fit the buffer");
+    harness
+        .handle()
+        .change(Path::new(DOCUMENT), version, changes)
+        .expect("the queue is empty");
+    server.expect("textDocument/didChange").await
+}
+
+/// Applies one received full change to the copy that the mock server holds.
+///
+/// A full change carries the complete text of the document and no range, so the
+/// copy takes that text. The copy is then the exact text of the server, and the
+/// caller compares it with the buffer.
+fn applied_full_change(copy: &mut String, notification: &Value) {
+    let changes = notification["params"]["contentChanges"]
+        .as_array()
+        .expect("the notification carries a change list");
+    assert_eq!(changes.len(), 1, "one full change replaces the document");
+    let change = &changes[0];
+    assert!(
+        change.get("range").is_none(),
+        "a full change carries no range, but the session sent {change}"
+    );
+    *copy = change["text"]
+        .as_str()
+        .expect("the change carries the document text")
+        .to_owned();
+}
+
+/// Returns the transaction that replaces the first `name` with `replacement`.
+fn renaming(text: &TextBuffer, name: &str, replacement: &str) -> EditTransaction {
+    let source = text.to_string();
+    let offset = source.find(name).expect("the buffer holds the name");
+    // Every character before the name is one byte, so the byte offset is also
+    // the character offset.
+    let start = text.char_position(offset).expect("the position exists");
+    let end = text
+        .char_position(offset + name.len())
+        .expect("the position exists");
+    let range = CharRange::new(start, end).expect("the range ascends");
+    EditTransaction::single(start, TextChange::replace(range, replacement))
+}
+
+#[tokio::test]
+async fn a_full_server_receives_the_complete_text_of_every_change() {
+    let (harness, mut server) = connected();
+    server
+        .handshake_capabilities(json!({
+            "positionEncoding": "utf-8",
+            "textDocumentSync": FULL_SYNC,
+        }))
+        .await;
+    let mut text = opened(&harness, &mut server, "fn main() {}\nlet x = 1;\n").await;
+    // The mock applies every change that it receives, exactly as a server does,
+    // so the test compares the text of the server with the text of the buffer.
+    let mut copy = text.to_string();
+
+    // One insertion at the start of the document.
+    let start = text.char_position(0).expect("the position exists");
+    let notification = synchronized(
+        &harness,
+        &mut server,
+        &mut text,
+        EditTransaction::single(start, TextChange::insert(start, "// note\n")),
+    )
+    .await;
+    assert_eq!(notification["params"]["textDocument"]["version"], 2);
+    applied_full_change(&mut copy, &notification);
+    assert_eq!(copy, text.to_string(), "the copy holds the first edit");
+
+    // One replacement inside a line.
+    let transaction = renaming(&text, "main", "run");
+    let notification = synchronized(&harness, &mut server, &mut text, transaction).await;
+    assert_eq!(notification["params"]["textDocument"]["version"], 3);
+    applied_full_change(&mut copy, &notification);
+    assert_eq!(copy, text.to_string(), "the copy holds the replacement");
+
+    // Two changes of one transaction, which the session sends in descending
+    // order.
+    let first = text.char_position(0).expect("the position exists");
+    let second = text.char_position(3).expect("the position exists");
+    let transaction = EditTransaction::new(
+        first,
+        vec![
+            TextChange::insert(first, "> "),
+            TextChange::insert(second, "< "),
+        ],
+    )
+    .expect("the changes ascend");
+    let notification = synchronized(&harness, &mut server, &mut text, transaction).await;
+    applied_full_change(&mut copy, &notification);
+    assert_eq!(copy, text.to_string(), "the copy holds both changes");
+
+    // One insertion of text above the Basic Multilingual Plane, and one further
+    // insertion after it, so the copy proves that no offset drifts.
+    let start = text.char_position(0).expect("the position exists");
+    let transaction = EditTransaction::single(start, TextChange::insert(start, "// \u{1f600}\n"));
+    let notification = synchronized(&harness, &mut server, &mut text, transaction).await;
+    applied_full_change(&mut copy, &notification);
+    assert_eq!(copy, text.to_string(), "the copy holds the wide character");
+
+    let transaction = renaming(&text, "let x", "let y");
+    let notification = synchronized(&harness, &mut server, &mut text, transaction).await;
+    assert_eq!(notification["params"]["textDocument"]["version"], 6);
+    applied_full_change(&mut copy, &notification);
+    assert_eq!(copy, text.to_string(), "the copy holds the last edit");
+}
+
+#[tokio::test]
+async fn the_object_form_of_the_capability_selects_the_full_change() {
+    let (harness, mut server) = connected();
+    server
+        .handshake_capabilities(json!({
+            "positionEncoding": "utf-8",
+            "textDocumentSync": { "openClose": true, "change": FULL_SYNC },
+        }))
+        .await;
+    let mut text = opened(&harness, &mut server, "fn main() {}\n").await;
+
+    let transaction = renaming(&text, "main", "run");
+    let notification = synchronized(&harness, &mut server, &mut text, transaction).await;
+
+    assert_eq!(
+        notification["params"]["contentChanges"],
+        json!([{ "text": "fn run() {}\n" }])
+    );
+}
+
+#[tokio::test]
+async fn the_object_form_of_the_capability_selects_the_incremental_change() {
+    let (harness, mut server) = connected();
+    server
+        .handshake_capabilities(json!({
+            "positionEncoding": "utf-8",
+            "textDocumentSync": { "openClose": true, "change": INCREMENTAL_SYNC },
+        }))
+        .await;
+    let mut text = opened(&harness, &mut server, "fn main() {}\n").await;
+
+    let transaction = renaming(&text, "main", "run");
+    let notification = synchronized(&harness, &mut server, &mut text, transaction).await;
+
+    // The incremental notification carries the range of the change and nothing
+    // else, which is the exact shape that every incremental server receives.
+    assert_eq!(
+        notification["params"]["contentChanges"],
+        json!([{
+            "range": {
+                "start": { "line": 0, "character": 3 },
+                "end": { "line": 0, "character": 7 },
+            },
+            "text": "run",
+        }])
+    );
+}
+
+#[tokio::test]
+async fn a_server_that_asks_for_no_synchronization_receives_no_change() {
+    let (harness, mut server) = connected();
+    // The result names no `textDocumentSync` capability. The protocol defines
+    // that answer as no synchronization, so the session sends no `didChange`.
+    server
+        .handshake_capabilities(json!({ "positionEncoding": "utf-8" }))
+        .await;
+    let mut text = opened(&harness, &mut server, "fn main() {}\n").await;
+
+    let transaction = renaming(&text, "main", "run");
+    let before = text.clone();
+    let changes = ContentChange::from_transaction(&before, &transaction)
+        .expect("the changes stay inside the bound");
+    let version = text
+        .apply(transaction)
+        .expect("the changes fit the buffer");
+    harness
+        .handle()
+        .change(Path::new(DOCUMENT), version, changes)
+        .expect("the queue is empty");
+    harness
+        .handle()
+        .close(Path::new(DOCUMENT))
+        .expect("the queue is empty");
+
+    // The close follows the change, so the next message proves that the change
+    // sent nothing.
     let notification = server.expect("textDocument/didClose").await;
     assert_eq!(notification["params"]["textDocument"]["uri"], DOCUMENT_URI);
 }
