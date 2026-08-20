@@ -163,7 +163,8 @@ pub use session::{
     LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_INITIALIZE_DEADLINE, LSP_LOCATIONS_MAX,
     LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE,
     LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LSP_SHUTDOWN_DEADLINE,
-    LanguageEvent, LanguageOutcome, LanguageRequestId, LanguageServerHandle,
+    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LanguageEvent, LanguageOutcome,
+    LanguageRequestId, LanguageServerHandle, ServerReport,
 };
 pub use sql::SqlAdapter;
 pub use terraform::TerraformAdapter;

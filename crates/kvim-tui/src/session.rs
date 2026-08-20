@@ -53,7 +53,8 @@ use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
     DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure, FormatterRequest,
     HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
-    LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, SyntaxTree,
+    LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
+    SyntaxTree,
 };
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
@@ -2312,20 +2313,67 @@ impl Session {
                     Some(request) => self.answer_query(request, None, Answer::Empty),
                     // A session failure carries no request, so every question
                     // that the failed server took loses its answer.
-                    None => self.abandon_server(server),
+                    None => {
+                        self.record_server(
+                            server,
+                            MessageLevel::Error,
+                            &format!("failed: {error}"),
+                        );
+                        self.abandon_server(server)
+                    }
                 };
                 self.report_language_error(&error).or(redraw)
             }
             LanguageOutcome::Unavailable => {
+                self.record_server(server, MessageLevel::Info, "is not installed");
                 let redraw = self.report_language_notice(LanguageNotice::NotInstalled);
                 self.abandon_server(server).or(redraw)
             }
-            LanguageOutcome::Restarted => self.reopen_documents(),
+            LanguageOutcome::Restarted => {
+                self.record_server(server, MessageLevel::Warning, "restarted");
+                self.reopen_documents()
+            }
             LanguageOutcome::Stopped => {
+                self.record_server(server, MessageLevel::Info, "stopped");
                 let redraw = self.report_language_notice(LanguageNotice::Stopped);
                 self.abandon_server(server).or(redraw)
             }
+            LanguageOutcome::Reported(report) => self.record_server_report(server, &report),
         }
+    }
+
+    /// Records one report about the server process in the editor log.
+    ///
+    /// The report changes no visible state, so it needs no redraw. The message
+    /// line reports exactly what it reports without the log. See
+    /// `docs/windows.md`.
+    fn record_server_report(&mut self, server: LanguageServerId, report: &ServerReport) -> Redraw {
+        match report {
+            ServerReport::Started => self.record_server(server, MessageLevel::Info, "started"),
+            // A healthy server writes notes while it runs, so its text is no
+            // failure by itself. The lifecycle entry beside it carries the
+            // severity of the state.
+            ServerReport::Output(text) => self.record_server(server, MessageLevel::Info, text),
+            ServerReport::OutputBound => self.record_server(
+                server,
+                MessageLevel::Warning,
+                "wrote more than the editor records; the log holds no further output of this attempt",
+            ),
+        }
+        Redraw::Skipped
+    }
+
+    /// Records one language-server entry in the editor log.
+    ///
+    /// The entry names the adapter and the server, because one language runs
+    /// several servers and a reader must know which server made the report.
+    fn record_server(&mut self, server: LanguageServerId, level: MessageLevel, text: &str) {
+        self.log.record(
+            self.clock,
+            LogSource::LanguageServer,
+            level,
+            &format!("{}/{} {text}", server.adapter(), server.server()),
+        );
     }
 
     /// Returns the open request of one buffer, with its exact current text.

@@ -10,6 +10,7 @@
 //! crate always holds it, and the `test-support` feature publishes it for
 //! `kvim-tui`.
 
+use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -171,7 +172,21 @@ impl Harness {
     }
 
     /// Waits for the next result with the server that produced it.
+    ///
+    /// The call drops every server report, because a report carries no
+    /// protocol answer and a protocol test never waits for one. A test of the
+    /// reports names [`Harness::next_any`].
     pub async fn next_event(&mut self) -> LanguageEvent {
+        loop {
+            let event = self.next_any().await;
+            if !matches!(event.outcome, LanguageOutcome::Reported(_)) {
+                return event;
+            }
+        }
+    }
+
+    /// Waits for the next result of any kind, including a server report.
+    pub async fn next_any(&mut self) -> LanguageEvent {
         time::timeout(TEST_DEADLINE, self.events.recv())
             .await
             .expect("the session answers before the test deadline")
@@ -275,6 +290,31 @@ pub fn named_session_at(
     let (handle, task) = start(
         TransportFactory::Prepared(transports),
         config(server, root, diagnostics_enabled),
+        events,
+        CancellationToken::new(),
+    );
+    Harness {
+        handle: Some(handle),
+        events: receiver,
+        task,
+    }
+}
+
+/// Starts one session over one real child process.
+///
+/// The child is no language server. A test that drives the standard error of a
+/// server needs a real pipe and a real process. The prepared streams of this
+/// module cannot give them, so every other test uses the mock server. See
+/// `docs/language-services.md`.
+pub fn process_session(program: &str, args: &[&str], root: PathBuf) -> Harness {
+    let (events, receiver) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
+    let (handle, task) = start(
+        TransportFactory::Process {
+            program: OsString::from(program),
+            args: args.iter().map(OsString::from).collect(),
+            root: root.clone(),
+        },
+        config(SERVER, root, true),
         events,
         CancellationToken::new(),
     );

@@ -367,6 +367,7 @@ One entry renders as four fields with one blank between them:
 ```
 00:12.345 ERROR MESSAGE the file does not exist
 00:13.001 INFO  MESSAGE "main.rs" 42L, 900B
+00:13.400 INFO  SERVER  rust/rust-analyzer started
 ```
 
 The first field is the elapsed time as minutes, seconds, and milliseconds. The
@@ -375,6 +376,19 @@ severity, and the third field is the source. Both are uppercase and padded to a
 fixed width, so the entries align and a search for `ERROR` or for `MESSAGE`
 reaches one severity or one source without reaching ordinary report text. The
 fourth field is the text of the report.
+
+The log holds the reports of more than one source. `MESSAGE` names every report
+that reached the message line. `SERVER` names one language server: its start,
+its restart, its stop, its failure, and the text that it wrote to its standard
+error. Every `SERVER` entry names the adapter and the server, so a reader knows
+which server made the report.
+
+The text of a server is not a failure by itself, because a healthy server writes
+notes while it runs. The log therefore records that text at the `Info` severity,
+and the lifecycle entry beside it carries the severity of the state. The
+`language` module bounds the text of one server before it reaches the log, so
+one server that writes without limit costs bounded memory. See
+[`language-services.md`](language-services.md).
 
 `:l[og]` opens one snapshot of the log as a new buffer, newest entry last. The
 snapshot is a value, so the buffer never changes while it is open and an edit of
