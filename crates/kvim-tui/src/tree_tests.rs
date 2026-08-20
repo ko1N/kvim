@@ -16,7 +16,9 @@ use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
 use kvim_language::LspError;
-use kvim_runtime::{FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchEvent, WatchKind};
+use kvim_runtime::{
+    FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchEvent, WatchFidelity, WatchKind,
+};
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
@@ -2459,6 +2461,14 @@ fn a_created_file_reaches_the_editor_through_the_workspace_watcher() {
     let batch = tokio.block_on(async {
         let mut watcher =
             FileWatcher::start(root, &GENERATED_NAMES).expect("the root is a readable directory");
+        // The registration runs after the start, so the first burst reports the
+        // window that no watch covered. The write follows that burst, so every
+        // watch of the workspace already stands.
+        let opening = tokio::time::timeout(WATCH_COALESCE_WINDOW * 20, watcher.recv())
+            .await
+            .expect("the registration finishes inside the bound")
+            .expect("the task opens the stream with one burst");
+        assert_eq!(opening.fidelity(), WatchFidelity::Dropped);
         fs::write(&created, "fn added() {}\n").expect("the temporary directory is writable");
         // The window of one burst plus a generous margin, so a slow host still
         // reports before the bound ends the wait.

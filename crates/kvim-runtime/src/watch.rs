@@ -14,6 +14,11 @@
 //! Every queue is bounded. A full queue drops events and reports the drop as
 //! [`WatchFidelity::Dropped`], so the consumer knows that its knowledge of the
 //! change is incomplete and can read the complete state again.
+//!
+//! The registration runs inside the coalescing task, not inside
+//! [`FileWatcher::start`], so the consumer draws its first frame before the
+//! first watch exists. No watch covers that window, so the first published
+//! burst reports [`WatchFidelity::Dropped`] as a full queue does.
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
@@ -110,7 +115,8 @@ pub enum WatchFidelity {
     /// The burst holds every event that the window produced.
     #[default]
     Complete,
-    /// A bound dropped at least one event of the window.
+    /// A bound dropped at least one event of the window, or no watch observed
+    /// the window at all.
     ///
     /// The named directories are incomplete, so a consumer that needs the
     /// complete state must read every directory that it holds.
@@ -327,6 +333,20 @@ fn unregistered_directories(
     directories
 }
 
+/// The values that one registration needs, before that registration runs.
+///
+/// [`FileWatcher::start`] builds the value and hands it to the coalescing task,
+/// which places every watch beside the terminal event loop. The value therefore
+/// keeps the walk and the platform call off the path to the first frame.
+struct PendingRegistration {
+    /// The platform watcher, which holds no watch yet.
+    watcher: RecommendedWatcher,
+    /// The absolute workspace root of every watch.
+    root: PathBuf,
+    /// The directory names that carry no watch and produce no event.
+    ignored: &'static [&'static str],
+}
+
 /// The platform watcher and the directories that its watches already cover.
 ///
 /// The coalescing task owns the value, so every watch call runs beside the
@@ -445,11 +465,14 @@ impl Registration {
 /// Watches one directory tree and publishes coalesced bursts of its changes.
 ///
 /// The value owns the platform watcher, its callback thread, and one bounded
-/// coalescing task. It reads the tree once, at start, to place its watches. It
-/// then reads every directory that one burst names, inside the coalescing task,
-/// to place the watches of a directory that appeared after the start. The
-/// service performs no other filesystem read: it names the directories that
-/// changed and leaves every read to the caller.
+/// coalescing task. The task reads the tree once, to place its watches, and it
+/// reads every directory that one burst names, to place the watches of a
+/// directory that appeared after that walk. The service performs no other
+/// filesystem read: it names the directories that changed and leaves every read
+/// to the caller.
+///
+/// Every read runs inside that task, so [`FileWatcher::start`] returns before
+/// the first watch exists and the consumer draws its first frame at once.
 ///
 /// # Examples
 ///
@@ -494,12 +517,20 @@ impl fmt::Debug for FileWatcher {
 impl FileWatcher {
     /// Starts one watch over every directory of `root` that stays.
     ///
+    /// The call reads no directory and places no watch. It starts the
+    /// coalescing task, and that task walks the tree, skips a directory whose
+    /// name `ignored` holds, and adds one watch for each directory that stays.
+    /// The caller therefore reaches its first frame before the first watch.
+    ///
+    /// No watch covers the window between this call and the completed
+    /// registration. The task publishes one burst of [`WatchFidelity::Dropped`]
+    /// as it opens the stream, so the consumer reads the whole workspace again
+    /// and a change inside the window reaches it through that read.
+    ///
     /// `ignored` names the directory names that produce no event, such as a
     /// build output directory. The table limits the registration and the
-    /// events. The call walks the tree once, skips a directory whose name the
-    /// table holds, and adds one watch for each directory that stays, so the
-    /// platform reads no ignored subtree and holds no watch inside it. The
-    /// coalescing task adds the watches of a directory that appears after that
+    /// events. The platform reads no ignored subtree and holds no watch inside
+    /// it. The task adds the watches of a directory that appears after the
     /// walk, so the table also limits every later registration. The filter runs
     /// inside the platform callback as well, before any queue, so an ignored
     /// subtree costs no queue space and no later work.
@@ -507,7 +538,9 @@ impl FileWatcher {
     /// # Errors
     ///
     /// Returns [`WatchError::RelativeRoot`] for a root that is not absolute, and
-    /// [`WatchError::Start`] when the platform refuses the watch.
+    /// [`WatchError::Start`] when the platform builds no watcher at all. A
+    /// platform that refuses the registration itself ends the published stream,
+    /// so [`FileWatcher::recv`] then returns `None`.
     ///
     /// # Panics
     ///
@@ -546,16 +579,19 @@ impl FileWatcher {
             Config::default(),
         )
         .map_err(WatchError::Start)?;
-        let registration = Registration::start(watcher, root, ignored)?;
 
         let (publisher, batches) = mpsc::channel(WATCH_BATCH_QUEUE_MAX);
         let cancellation = CancellationToken::new();
-        let task = tokio::spawn(coalesce(
+        let task = tokio::spawn(watch(
             raw,
             dropped,
             publisher,
             cancellation.clone(),
-            registration,
+            PendingRegistration {
+                watcher,
+                root,
+                ignored,
+            },
         ));
         Ok(Self {
             batches,
@@ -567,8 +603,12 @@ impl FileWatcher {
     /// Waits for the next coalesced burst.
     ///
     /// The call is cancel safe, so the terminal event loop may use it inside its
-    /// own `select` beside the terminal event stream. Returns `None` after the
-    /// coalescing task ended.
+    /// own `select` beside the terminal event stream.
+    ///
+    /// Returns `None` after the coalescing task ended, which happens when the
+    /// platform refused the registration and after a shutdown. No further burst
+    /// can arrive, so a consumer that reads `None` while it runs must report
+    /// that no watcher observes the workspace.
     pub async fn recv(&mut self) -> Option<WatchBatch> {
         self.batches.recv().await
     }
@@ -579,6 +619,10 @@ impl FileWatcher {
     /// coalescing task owns the platform watcher and drops it as it ends, which
     /// ends the platform callback thread. The call therefore returns only after
     /// no further event can reach any queue.
+    ///
+    /// A shutdown during the registration waits for that registration, because
+    /// the blocking thread holds the platform watcher until it returns. The
+    /// registration is bounded, so the wait is bounded as well.
     pub async fn shutdown(self) {
         let Self {
             cancellation, task, ..
@@ -586,6 +630,80 @@ impl FileWatcher {
         cancellation.cancel();
         let _ = task.await;
     }
+}
+
+/// Places every watch of the workspace and then publishes its bursts.
+///
+/// The coalescing task performs the registration itself, so
+/// [`FileWatcher::start`] returns before the first watch exists and the consumer
+/// draws its first frame at once.
+///
+/// No watch covers the window between the start and the completed registration.
+/// The task therefore opens the stream with one burst of
+/// [`WatchFidelity::Dropped`], which asks the consumer to read the whole
+/// workspace again. The burst follows the registration, so every change after
+/// it reaches a watch, and a change inside the window reaches the consumer
+/// through that read.
+///
+/// A registration that the platform refuses ends the task, which closes the
+/// published stream. The consumer then reports that no watcher runs.
+async fn watch(
+    raw: mpsc::Receiver<WatchEvent>,
+    dropped: Arc<AtomicUsize>,
+    publisher: mpsc::Sender<WatchBatch>,
+    cancellation: CancellationToken,
+    pending: PendingRegistration,
+) {
+    let Some(registration) = register(&cancellation, pending).await else {
+        // The registration dropped the platform watcher, which ends its
+        // callback thread. This task then drops the publisher, so the consumer
+        // reads the end of the stream after that thread ended.
+        return;
+    };
+    let mut opening = WatchBatch::default();
+    opening.drop_events();
+    if publisher.try_send(opening).is_err() {
+        // The queue is empty here, so only a gone consumer refuses the burst.
+        return;
+    }
+    coalesce(raw, dropped, publisher, cancellation, registration).await;
+}
+
+/// Walks the workspace once and places the watch of every directory that stays.
+///
+/// The walk and the platform call both block, so they run on a blocking thread.
+/// The terminal event loop performs neither, and the caller of
+/// [`FileWatcher::start`] waits for neither.
+///
+/// Returns `None` when the platform refuses the root, when the blocking thread
+/// ends without a value, and after a cancellation. Every path drops the platform
+/// watcher, which ends its callback thread.
+///
+/// The call waits for the blocking thread even after a cancellation, because
+/// that thread holds the platform watcher until it returns. A shutdown during
+/// the registration therefore still ends the callback thread.
+async fn register(
+    cancellation: &CancellationToken,
+    pending: PendingRegistration,
+) -> Option<Registration> {
+    let PendingRegistration {
+        watcher,
+        root,
+        ignored,
+    } = pending;
+    let started = tokio::task::spawn_blocking(move || Registration::start(watcher, root, ignored));
+    let Ok(outcome) = started.await else {
+        // The blocking thread ended without a value, which drops the platform
+        // watcher, so no event can reach any queue.
+        return None;
+    };
+    let registration = outcome.ok()?;
+    if cancellation.is_cancelled() {
+        // The caller stopped the watch while the registration ran, so the
+        // registration drops here and its watches end with it.
+        return None;
+    }
+    Some(registration)
 }
 
 /// Collects the platform events of one window into one published burst.
@@ -768,6 +886,30 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.path);
         }
+    }
+
+    /// Starts one watcher and waits for the burst that opens its stream.
+    ///
+    /// The registration runs after the start, so the first burst always reports
+    /// the window that no watch covered. The wait also proves that every watch
+    /// stands before the caller changes one file.
+    async fn started(root: &Path) -> FileWatcher {
+        let mut watcher = FileWatcher::start(root.to_path_buf(), &IGNORED)
+            .expect("the start accepts an absolute root");
+        let opening = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the registration finishes")
+            .expect("the task opens the stream with one burst");
+        assert_eq!(
+            opening.fidelity(),
+            WatchFidelity::Dropped,
+            "no watch covered the window between the start and the registration"
+        );
+        assert!(
+            opening.directories().is_empty(),
+            "the opening burst names no directory, so the consumer reads every one of them"
+        );
+        watcher
     }
 
     fn event(path: &str, kind: WatchKind) -> WatchEvent {
@@ -1055,8 +1197,7 @@ mod tests {
         let tree = TempTree::new("events");
         tree.file("src/main.rs", "fn main() {}\n");
         tree.dir("target/debug");
-        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the platform watches a readable root");
+        let mut watcher = started(&tree.path).await;
 
         // The ignored write reaches no queue, and the kept write does.
         tree.file("target/debug/kvim", "\n");
@@ -1077,8 +1218,7 @@ mod tests {
     #[tokio::test]
     async fn a_change_of_one_root_entry_reaches_one_burst() {
         let tree = TempTree::new("root-events");
-        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the platform watches a readable root");
+        let mut watcher = started(&tree.path).await;
 
         tree.file("README.md", "\n");
 
@@ -1094,8 +1234,7 @@ mod tests {
     async fn a_directory_that_appears_after_the_walk_reports_its_own_creation() {
         let tree = TempTree::new("new-directory");
         tree.dir("src");
-        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the platform watches a readable root");
+        let mut watcher = started(&tree.path).await;
 
         tree.dir("src/tui");
 
@@ -1115,8 +1254,7 @@ mod tests {
     async fn a_directory_that_appears_after_the_walk_reports_a_change_inside_it() {
         let tree = TempTree::new("new-directory-events");
         tree.dir("src");
-        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the platform watches a readable root");
+        let mut watcher = started(&tree.path).await;
 
         tree.dir("src/tui");
         let created = timeout(EVENT_WAIT, watcher.recv())
@@ -1142,8 +1280,7 @@ mod tests {
     #[tokio::test]
     async fn an_ignored_directory_that_appears_after_the_walk_still_carries_no_watch() {
         let tree = TempTree::new("new-ignored");
-        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the platform watches a readable root");
+        let mut watcher = started(&tree.path).await;
 
         // The creation of the ignored directory reaches no queue, so the kept
         // directory produces the burst that adds the later watches.
@@ -1171,10 +1308,65 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_root_that_does_not_exist_starts_no_watcher() {
+    async fn a_root_that_does_not_exist_ends_the_published_stream() {
         let root = PathBuf::from("/kvim-watch-root-that-never-exists");
-        let error =
-            FileWatcher::start(root, &IGNORED).expect_err("the platform refuses a missing root");
-        assert!(matches!(error, WatchError::Start(_)));
+        let mut watcher = FileWatcher::start(root, &IGNORED)
+            .expect("the start places no watch, so it refuses no readable root");
+
+        let ended = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the refused registration ends the task");
+
+        assert!(
+            ended.is_none(),
+            "the refused registration closes the stream, and the consumer then reports the loss"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[test]
+    fn the_start_places_no_watch_before_the_task_runs() {
+        let tree = TempTree::new("deferred");
+        tree.dir("src/tui");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("the test builds one runtime");
+        let guard = runtime.enter();
+
+        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the start accepts an absolute root");
+
+        // The runtime polled no task yet, so the registration cannot have run.
+        // A caller therefore reaches its first frame before the first watch.
+        assert!(
+            watcher.batches.try_recv().is_err(),
+            "the start publishes no burst, because it places no watch"
+        );
+        drop(guard);
+        let opening = runtime
+            .block_on(async { timeout(EVENT_WAIT, watcher.recv()).await })
+            .expect("the registration finishes")
+            .expect("the task opens the stream with one burst");
+        assert_eq!(
+            opening.fidelity(),
+            WatchFidelity::Dropped,
+            "the burst reports the window that no watch covered"
+        );
+        runtime.block_on(watcher.shutdown());
+    }
+
+    #[tokio::test]
+    async fn a_shutdown_during_the_registration_ends_the_watch() {
+        let tree = TempTree::new("shutdown-early");
+        tree.dir("src/tui/render");
+        // The start returns before the registration runs, so this shutdown
+        // reaches the watcher while that registration is still open.
+        let watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the start accepts an absolute root");
+
+        timeout(EVENT_WAIT, watcher.shutdown())
+            .await
+            .expect("the shutdown waits for the registration and then returns");
     }
 }

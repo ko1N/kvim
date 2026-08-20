@@ -287,8 +287,12 @@ async fn drive<C: TerminalControl>(
     // loop, so no filesystem event ever reaches it directly. It ignores the
     // generated directory names of the file tree, so it watches no build output
     // directory and one build writes no event.
+    // The start places no watch and reads no directory. The coalescing task
+    // walks the workspace after the first frame, so a large workspace delays no
+    // frame. That task then reports the window that no watch covered, and the
+    // burst that reports it reads the workspace again.
     // A host that refuses the watch leaves the editor fully usable with the
-    // refresh command. See `docs/files.md`.
+    // refresh command. See `docs/files.md` and `docs/responsiveness.md`.
     let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
     if watcher.is_none() {
         let _ = editor.report_watch_unavailable();
@@ -332,7 +336,7 @@ async fn drive<C: TerminalControl>(
                         publish(&mut editor, outcome, start.elapsed())
                     }
                     batch = next_watch_batch(&mut watcher) => {
-                        publish_watch(&mut editor, &batch, start.elapsed())
+                        publish_watch(&mut editor, batch.as_ref(), start.elapsed())
                     }
                     _ = terminations.recv() => Step::Stop,
                     () = sleep(deadline - now) => Step::Handled(editor.tick(start.elapsed())),
@@ -354,7 +358,7 @@ async fn drive<C: TerminalControl>(
                         publish(&mut editor, outcome, start.elapsed())
                     }
                     batch = next_watch_batch(&mut watcher) => {
-                        publish_watch(&mut editor, &batch, start.elapsed())
+                        publish_watch(&mut editor, batch.as_ref(), start.elapsed())
                     }
                     _ = terminations.recv() => Step::Stop,
                 }
@@ -430,21 +434,37 @@ async fn next_language_event(language: &mut Option<LanguageServices>) -> Languag
 ///
 /// The future never completes while the editor runs without a watcher, so the
 /// loop then waits for its other events alone.
-async fn next_watch_batch(watcher: &mut Option<FileWatcher>) -> WatchBatch {
-    match watcher {
-        Some(watcher) => match watcher.recv().await {
-            Some(batch) => batch,
-            // The coalescing task ended, so no further burst can arrive.
-            None => std::future::pending().await,
-        },
-        None => std::future::pending().await,
+///
+/// Returns `None` once when the watch ended, which happens when the platform
+/// refused the deferred registration. The call drops the ended watcher, so the
+/// loop reports that state once and then waits for its other events alone.
+async fn next_watch_batch(watcher: &mut Option<FileWatcher>) -> Option<WatchBatch> {
+    let Some(active) = watcher else {
+        return std::future::pending().await;
+    };
+    match active.recv().await {
+        Some(batch) => Some(batch),
+        None => {
+            // The coalescing task ended, so no further burst can arrive. It
+            // dropped the platform watcher before it closed this stream, so no
+            // callback thread outlives this value.
+            *watcher = None;
+            None
+        }
     }
 }
 
 /// Applies one coalesced burst of workspace filesystem changes.
-fn publish_watch(editor: &mut Session, batch: &WatchBatch, now: Duration) -> Step {
+///
+/// A burst that never arrived reports that no watcher observes the workspace,
+/// because the deferred registration failed. The editor stays fully usable and
+/// the refresh command reads the workspace by hand. See `docs/files.md`.
+fn publish_watch(editor: &mut Session, batch: Option<&WatchBatch>, now: Duration) -> Step {
     editor.advance_clock(now);
-    Step::Handled(editor.apply_watch_batch(batch))
+    match batch {
+        Some(batch) => Step::Handled(editor.apply_watch_batch(batch)),
+        None => Step::Handled(editor.report_watch_unavailable()),
+    }
 }
 
 /// Applies one typed result of the language services.
@@ -887,11 +907,25 @@ fn apply(
 mod tests {
     use kvim_terminal::{Key, KeyCode, TerminalEvent};
     use kvim_workspace::temp::TempDir;
+    use tokio::time::timeout;
 
     use super::*;
 
     /// The elapsed time that every transition of these tests reports.
     const NOW: Duration = Duration::ZERO;
+
+    /// The absolute root that no host holds, so its registration always fails.
+    const MISSING_ROOT: &str = "/kvim-app-root-that-never-exists";
+
+    /// The time that one test waits for the refused registration.
+    const REGISTRATION_WAIT: Duration = Duration::from_secs(5);
+
+    /// The time that one test waits for a future that must never complete.
+    const PARKED_WAIT: Duration = Duration::from_millis(50);
+
+    /// The report of a workspace that no watcher observes.
+    const WATCH_MISSING_NOTE: &str =
+        "the workspace watcher could not start; the file tree updates on a refresh";
 
     #[tokio::test]
     async fn one_dispatch_hands_a_refused_format_and_the_save_behind_it_to_their_services() {
@@ -996,5 +1030,50 @@ mod tests {
             "the formatter answer completes the save that waited for it"
         );
         runtime.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_registration_that_fails_reports_that_no_watcher_runs() {
+        // The start places no watch, so it accepts the root that the deferred
+        // registration then refuses.
+        let mut watcher = FileWatcher::start(PathBuf::from(MISSING_ROOT), &GENERATED_NAMES).ok();
+        assert!(
+            watcher.is_some(),
+            "the start defers every platform call, so it refuses no root"
+        );
+
+        let batch = timeout(REGISTRATION_WAIT, next_watch_batch(&mut watcher))
+            .await
+            .expect("the refused registration ends the published stream");
+
+        assert!(batch.is_none(), "the ended stream publishes no burst");
+        assert!(
+            watcher.is_none(),
+            "the loop drops the ended watch instead of reading it again"
+        );
+        assert!(
+            timeout(PARKED_WAIT, next_watch_batch(&mut watcher))
+                .await
+                .is_err(),
+            "the loop then waits for its other events alone"
+        );
+
+        let mut editor = Session::new(
+            Rect::new(0, 0, 80, 24),
+            EditorSettings::default(),
+            PathBuf::from("/workspace"),
+        );
+        let step = publish_watch(&mut editor, batch.as_ref(), NOW);
+
+        assert!(
+            matches!(step, Step::Handled(Redraw::Needed)),
+            "the report changes the message line, so one frame follows it"
+        );
+        assert_eq!(
+            editor
+                .message()
+                .map_or_else(String::new, |message| message.text().to_owned()),
+            WATCH_MISSING_NOTE,
+        );
     }
 }

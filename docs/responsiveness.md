@@ -123,12 +123,23 @@ duties as every other service. Its platform callback and its coalescing task run
 beside the event loop, its queues are bounded, and a full queue drops events and
 reports the drop instead of growing.
 
-The watcher performs one filesystem read of its own, when it starts. It walks
-the workspace once and adds one watch for each directory that it keeps. The walk
-skips every generated directory name, so it reads no build output directory and
-no repository database. The walk is bounded by directories, by depth, and by the
-entries of one directory, so a very large workspace costs bounded time before
-the first frame. [`files.md`](files.md) owns that rule and its bounds.
+The watcher performs one filesystem read of its own, for its registration. It
+walks the workspace once and adds one watch for each directory that it keeps.
+The walk skips every generated directory name, so it reads no build output
+directory and no repository database. The walk is bounded by directories, by
+depth, and by the entries of one directory. [`files.md`](files.md) owns that
+rule and its bounds.
+
+That walk runs after the first frame. The start of the watcher places no watch
+and reads no directory. It hands the root to the coalescing task, and that task
+performs the walk on a blocking thread. The event loop draws its first frame
+while the walk runs, so no workspace delays that frame.
+
+No watch covers the window between the first frame and the completed
+registration. The coalescing task therefore publishes one burst of `Dropped` as
+it opens its stream, which asks the sidebar to read every expanded directory
+again. A change inside the window reaches the editor through that read, so the
+deferred registration loses no change. [`files.md`](files.md) owns the rule.
 
 The watcher performs one further read for each burst. A watch covers one
 directory alone, so a directory that appeared after the last walk needs its own
@@ -188,6 +199,11 @@ the watcher owns the platform watcher, so the shutdown cancels that task and
 waits for it. The task drops the platform watcher as it ends, which ends the
 platform callback thread. The shutdown therefore returns only after no further
 event can reach any queue.
+
+A shutdown during the registration waits for that registration. The blocking
+thread holds the platform watcher until it returns, so the task waits for that
+thread and then drops the watcher. The registration is bounded, so the wait is
+bounded as well.
 
 Dropping a process future kills its child process. Dropping the runtime remains
 a best-effort safety net. Normal editor shutdown must use the explicit consuming

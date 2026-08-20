@@ -474,6 +474,19 @@ The watcher runs its platform callback and one coalescing task beside the event
 loop. The loop reads one published burst as it reads a language event, and it
 performs no filesystem work of its own.
 
+The start of the watcher places no watch and reads no directory. The coalescing
+task performs the registration, on a blocking thread, so the editor draws its
+first frame before the first watch exists and a large workspace delays no frame.
+[`responsiveness.md`](responsiveness.md) owns the start-up ordering.
+
+No watch covers the window between the first frame and the completed
+registration. The coalescing task therefore publishes one burst of `Dropped` as
+it opens its stream. The sidebar then reads every expanded directory again, and
+the editor checks every loaded buffer against its file, so a change inside the
+window reaches the editor through those reads. The burst follows the
+registration, so every change after it reaches a watch and no change falls
+between the two.
+
 One logical change writes many platform events, and one compiler run writes
 thousands. The watcher therefore collects events for `WATCH_COALESCE_WINDOW` and
 publishes one burst for that window. Kvim coalesces itself instead of adding a
@@ -501,13 +514,13 @@ whose own root carries such a name still reports every change inside it, because
 the comparison starts below the root.
 
 The list limits the registration first. The watcher walks the workspace once,
-when it starts, and adds one watch for each directory that stays. It reads no
-directory below an ignored name. Every watch covers one directory alone, so the
-platform adds no watch of its own inside an ignored subtree. One recursive watch
-over the root would read that subtree instead. Linux then adds one kernel watch
-for each directory below the root, so a repository with a large build output
-directory costs tens of thousands of system calls. Such a repository also
-reaches the watch limit of the host, which Linux names
+after the first frame, and adds one watch for each directory that stays. It
+reads no directory below an ignored name. Every watch covers one directory
+alone, so the platform adds no watch of its own inside an ignored subtree. One
+recursive watch over the root would read that subtree instead. Linux then adds
+one kernel watch for each directory below the root, so a repository with a large
+build output directory costs tens of thousands of system calls. Such a
+repository also reaches the watch limit of the host, which Linux names
 `fs.inotify.max_user_watches`, and a refused watch leaves the workspace with no
 watcher at all.
 
@@ -563,6 +576,11 @@ queue ever grows without a limit.
 A host that refuses the watch leaves the editor fully usable. The editor names
 that state once for each session and the refresh command reads the workspace by
 hand.
+
+The registration runs after the first frame, so a host that refuses the root
+refuses it there. The coalescing task then ends and closes its published stream.
+The event loop reads that end as the report that no watcher observes the
+workspace, and it names the state once, as a refused start already does.
 
 ### Watch Bounds
 
