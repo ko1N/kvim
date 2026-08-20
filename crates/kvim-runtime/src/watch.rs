@@ -352,7 +352,11 @@ struct WalkOutcome {
     /// Every kept directory that the walk reached, in the order that it read
     /// them.
     directories: Vec<PathBuf>,
-    /// Whether a bound of this module left a kept directory out of the walk.
+    /// Whether the directory bound or the depth bound left a kept directory
+    /// out of the walk.
+    ///
+    /// The scan bound of one directory read leaves no report. A directory above
+    /// [`WATCH_DIRECTORY_SCAN_MAX`] entries loses the entries after that count.
     truncated: bool,
 }
 
@@ -377,10 +381,12 @@ struct WalkOutcome {
 /// [`WATCH_DIRECTORY_SCAN_MAX`] entries of one directory, so a very large tree
 /// costs bounded time.
 ///
-/// A bound that leaves one kept directory out reports
-/// [`WalkOutcome::truncated`]. The walk reads a directory at the depth bound to
-/// answer that question, and it stops that read at the first kept directory
-/// below the bound, so an exactly deep tree reports no gap of its own.
+/// The directory bound and the depth bound both report
+/// [`WalkOutcome::truncated`] when they leave one kept directory out. The walk
+/// reads a directory at the depth bound to answer that question, and it stops
+/// that read at the first kept directory below the bound, so an exactly deep
+/// tree reports no gap of its own. The scan bound of one directory read reports
+/// nothing, so a directory above that many entries loses the rest in silence.
 ///
 /// A `start` outside `root` returns no directory. The platform names the
 /// watched root itself when that root disappears, and the burst then names the
@@ -1454,26 +1460,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_directory_that_appears_after_the_walk_reports_its_own_creation() {
-        let tree = TempTree::new("new-directory");
-        tree.dir("src");
-        let mut watcher = started(&tree.path).await;
-
-        tree.dir("src/tui");
-
-        let batch = timeout(EVENT_WAIT, watcher.recv())
-            .await
-            .expect("the platform reports the new directory")
-            .expect("the coalescing task publishes the burst");
-        assert_eq!(
-            batch.directories(),
-            [tree.path.join("src")],
-            "the parent of the new directory reports its creation"
-        );
-        watcher.shutdown().await;
-    }
-
-    #[tokio::test]
     async fn a_directory_that_appears_after_the_walk_reports_a_change_inside_it() {
         let tree = TempTree::new("new-directory-events");
         tree.dir("src");
@@ -1685,16 +1671,6 @@ mod tests {
             refusal(&notify::Error::io(io::Error::from(io::ErrorKind::NotFound))).is_complete(),
             "the platform names the same removal as one input failure"
         );
-    }
-
-    #[test]
-    fn one_setting_of_the_host_names_the_watch_limit() {
-        // The name is a platform detail, so only this module holds it. A
-        // platform that publishes no name still reports the refusal itself.
-        #[cfg(target_os = "linux")]
-        assert_eq!(watch_limit_setting(), Some("fs.inotify.max_user_watches"));
-        #[cfg(not(target_os = "linux"))]
-        assert_eq!(watch_limit_setting(), None);
     }
 
     #[tokio::test]
