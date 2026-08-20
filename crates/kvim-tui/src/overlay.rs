@@ -35,7 +35,8 @@ use kvim_settings::FileTreeIcons;
 use super::cells::{text_cells, truncate_cells_left, wrap_cells};
 use super::completion::{CompletionOutcome, LineCompletion};
 use super::icons::{ICON_CELLS, Icon};
-use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, FloatRow};
+use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, FloatContent, FloatRow};
+use super::markup::{FloatLine, FloatStyle, markup_lines};
 use super::notify::NotificationRow;
 use super::theme::{Theme, ThemeRole};
 
@@ -490,7 +491,7 @@ pub(super) fn render_float(
     theme: Theme,
     float: &Float,
 ) {
-    if window.is_empty() || float.rows.is_empty() {
+    if window.is_empty() || float.is_empty() {
         return;
     }
     let cursor =
@@ -503,15 +504,18 @@ pub(super) fn render_float(
     if budget == 0 {
         return;
     }
-    let mut lines = wrap_float(float, budget);
+    let mut lines = float_lines(float, budget);
     // The row bound applies before the measurement, so a row that the float
     // never shows cannot widen it.
     fit(&mut lines, FLOAT_ROWS_MAX);
+    // No row reaches past the budget, so the float keeps its column bound even
+    // while one row of it loses its end.
     let text_width = lines
         .iter()
-        .map(|row| text_cells(&row.text))
+        .map(FloatLine::cells)
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .min(budget);
     let width = text_width
         .saturating_add(FLOAT_PADDING_CELLS)
         .max(text_cells(float.title));
@@ -548,35 +552,68 @@ pub(super) fn render_float(
             debug_assert!(false, "the row bound keeps the index small");
             break;
         };
-        let style = match row.severity {
-            Some(severity) => surface.patch(theme.style(severity_role(severity))),
-            None => surface,
-        };
-        target.set_stringn(
-            area.x.saturating_add(1),
-            area.y + TITLE_ROWS + offset,
-            &row.text,
-            usize::from(area.width.saturating_sub(1)),
-            style,
-        );
+        let mut column = area.x.saturating_add(1);
+        for span in &row.spans {
+            let Some(available) = area.right().checked_sub(column).filter(|cells| *cells > 0)
+            else {
+                break;
+            };
+            target.set_stringn(
+                column,
+                area.y + TITLE_ROWS + offset,
+                &span.text,
+                usize::from(available),
+                span_style(theme, surface, span.style),
+            );
+            let Ok(cells) = u16::try_from(text_cells(&span.text)) else {
+                debug_assert!(false, "the column bound keeps one row short");
+                break;
+            };
+            column = column.saturating_add(cells);
+        }
     }
 }
 
-/// Wraps every source row of one float into rows of at most `cells` cells.
+/// Returns the style of one piece of one float row.
+///
+/// A piece without a role of its own paints in the surface style of the float.
+/// Every other role decorates that style, so the surface band stays behind the
+/// text. See `docs/windows.md`.
+fn span_style(theme: Theme, surface: Style, style: FloatStyle) -> Style {
+    match style {
+        FloatStyle::Plain => surface,
+        FloatStyle::Severity(severity) => surface.patch(theme.style(severity_role(severity))),
+        FloatStyle::Markup(role) => surface.patch(theme.style(ThemeRole::Markup(role))),
+        FloatStyle::Structure => surface.patch(theme.style(ThemeRole::MarkupStructure)),
+    }
+}
+
+/// Returns the rows that one float paints at one width.
 ///
 /// The result holds at most one row beyond [`FLOAT_ROWS_MAX`], because [`fit`]
-/// needs to see only that further rows exist.
-fn wrap_float(float: &Float, cells: usize) -> Vec<FloatRow> {
-    let mut lines: Vec<FloatRow> = Vec::new();
-    for row in &float.rows {
+/// needs to see only that further rows exist. A float that already lost content
+/// carries one further row, so [`fit`] always ends it with the note.
+pub(super) fn float_lines(float: &Float, cells: usize) -> Vec<FloatLine> {
+    let mut lines = match &float.content {
+        FloatContent::Text(rows) => wrap_text_rows(rows, cells),
+        FloatContent::Markup(document) => markup_lines(document, cells),
+    };
+    if float.is_clipped() {
+        lines.push(FloatLine::new(OVERFLOW_NOTE, FloatStyle::Plain));
+    }
+    lines
+}
+
+/// Wraps every source row of one plain float into rows of at most `cells`
+/// cells.
+fn wrap_text_rows(rows: &[FloatRow], cells: usize) -> Vec<FloatLine> {
+    let mut lines: Vec<FloatLine> = Vec::new();
+    for row in rows {
         for text in wrap_cells(&row.text, cells) {
             if lines.len() > FLOAT_ROWS_MAX {
                 return lines;
             }
-            lines.push(FloatRow {
-                text,
-                severity: row.severity,
-            });
+            lines.push(FloatLine::new(text, FloatStyle::of_severity(row.severity)));
         }
     }
     lines
@@ -586,7 +623,7 @@ fn wrap_float(float: &Float, cells: usize) -> Vec<FloatRow> {
 ///
 /// A float that holds more rows than fit keeps its first rows and reports the
 /// missing ones in the last one, so no row disappears without a note.
-fn fit(lines: &mut Vec<FloatRow>, shown: usize) {
+fn fit(lines: &mut Vec<FloatLine>, shown: usize) {
     debug_assert!(shown >= 1, "the caller returns before an empty float");
     if lines.len() <= shown {
         return;
@@ -596,8 +633,7 @@ fn fit(lines: &mut Vec<FloatRow>, shown: usize) {
         debug_assert!(false, "the truncation keeps at least one row");
         return;
     };
-    last.text = OVERFLOW_NOTE.to_owned();
-    last.severity = None;
+    *last = FloatLine::new(OVERFLOW_NOTE, FloatStyle::Plain);
 }
 
 /// Renders the candidate list of the command-line completion.

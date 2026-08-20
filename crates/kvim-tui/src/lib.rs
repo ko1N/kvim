@@ -55,6 +55,7 @@ mod icons;
 mod language;
 mod layout;
 mod log;
+mod markup;
 mod notify;
 mod overlay;
 mod picker;

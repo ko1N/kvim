@@ -507,6 +507,8 @@ roles. A new role belongs here first, and its color stays in code.
 | TitleMuted | The title of an unfocused window |
 | PopupSelection | The selected row of a popup list |
 | Icon(role) | One file-tree icon |
+| Markup(role) | One markup role of a server answer |
+| MarkupStructure | One glyph that the float draws for a markup document |
 | Error, Warning, Info, Hint | One message severity |
 | Syntax(role) | One syntax role of a language adapter |
 
@@ -543,6 +545,22 @@ keyword role also carry the italic modifier of the reference configuration.
 
 Add a new syntax role in `kvim-language`, then add its style here. The theme
 holds the color; it never defines the role.
+
+### Markup Roles
+
+A markup role names one stretch of text of a server answer, so `kvim-language`
+owns that role set as well. The role set is: Text, Heading, Emphasis, Strong,
+InlineCode, Link, and Quote. [`language-services.md`](language-services.md) owns
+the roles and the document that carries them.
+
+The heading role carries the bold modifier, the strong role carries it as well,
+the emphasis role carries the italic modifier, and the link role carries the
+underline. Every markup style holds a foreground color alone, so the surface
+band of the float stays behind the text.
+
+The float draws two glyphs that no role of the document names: the thematic
+break and the marker of a list item. Both take the structure role, which is
+quiet, because they separate text instead of holding it.
 
 ## Buffer Presentation
 

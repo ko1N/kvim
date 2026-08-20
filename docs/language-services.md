@@ -419,6 +419,11 @@ follows the order in [`responsiveness.md`](responsiveness.md).
 
 ### The Markup Of One Hover Answer
 
+kvim names `markdown` before `plaintext` in the hover capability of its
+`initialize` request. The protocol reads that order as the preference of the
+client, so a server that honors the order sends the markup that the float
+renders.
+
 The protocol writes the answer of a hover request in four shapes. The session
 reads every shape and carries one text and one markup kind to the editor. The
 kind names plain text or markdown, and nothing above the session guesses it.
@@ -442,10 +447,10 @@ An object that names no kind and no language is no shape of the protocol, and an
 unknown kind name names no shape either. Both take plain text for the same
 reason.
 
-The session reads no `language` of a deprecated pair yet, so that part reaches
-the float without its fence. The fence arrives with the renderer of the markup.
-A fence in front of a reader that shows raw text would add two rows of literal
-backticks, so the two changes belong together.
+The session writes the fence of a deprecated pair itself, because the protocol
+defines that pair as one code block and the text alone is no code block. The
+opening fence holds more backticks than the longest run of backticks inside the
+value, so a value that holds a fence of its own never closes the block early.
 
 The editor merges the answers of several servers after this reading. Each answer
 keeps its own kind, because each server declares the markup of its own text.
@@ -511,7 +516,8 @@ highlight role. See [`windows.md`](windows.md).
 | Link | The text of one link. The destination is markup, so it never paints. |
 | Quote | The text inside one block quote |
 
-A code block carries no role, because its body already names it as code.
+A code block carries no role, because its body already names it as code. The
+float paints its lines in the code span role, because both hold code.
 
 #### What The Parse Keeps As Text
 
@@ -1102,6 +1108,47 @@ holds more, so no row disappears without a note.
 The float is decoration. It changes no buffer text, no line mapping, and no
 cursor position, and the next key closes it. See [`windows.md`](windows.md) for
 the overlay layering.
+
+### The Rows Of One Markdown Answer
+
+The float holds one plain text or one markup document. A hover answer becomes a
+document only while every server answer of it names markdown. One answer of
+plain text therefore decides the whole float, because a markdown parse of a
+plain text removes the characters that mark up a document. A diagnostic message
+is plain text as well, so it reaches the float unchanged.
+
+The float renders the document at the width that it has, because only the
+renderer measures a terminal cell. One block produces one or more rows, and one
+blank row stands above a block that reports one. The prose of a block wraps at
+the width that the prefix of the block leaves.
+
+Each row starts with the prefix of the containers of its block.
+
+| Container | The first row of the block | Every later row |
+|---|---|---|
+| Quote | The rail `│` and one blank | The same rail, because the quote holds every row |
+| List item | The marker of the item, right-aligned in the field of the document | Blanks of the field width |
+| List continuation | Blanks of the field width | Blanks of the field width |
+
+Every list container of one document occupies the same field, so a row that
+continues an item stands under the text of that item. The widest marker of the
+document decides that field, and `FLOAT_LIST_FIELD_CELLS_MAX` bounds it. A
+marker that is wider than the field loses its end, because a list that keeps one
+left edge reads better than one marker that keeps every digit. An unordered item
+takes the marker `•`, and an ordered item takes its number and a full stop.
+
+The body of a block decides the rest of the row.
+
+| Body | Rows | Reason |
+|---|---|---|
+| Prose | The wrapped text, in the roles of its pieces | One paragraph wraps at the width that it has. |
+| Heading | The text in the heading role, indented by one cell for each rank below the first | No marker of the source reaches the screen, so the style and the indentation carry the rank. |
+| Code | One row for each source line, in the code role | A code line must not wrap, so a line that is wider than the float loses its end. |
+| Rule | One row of `─` | The break is as wide as the widest other row of the float, so a short answer keeps a narrow float. |
+
+A document that reports itself as clipped ends with the `...` note of the float,
+exactly as a float that holds more rows than it shows. The reader therefore sees
+one note for every part of an answer that the float hides.
 
 ## Formatting
 

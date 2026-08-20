@@ -65,7 +65,7 @@ pub const MARKUP_NESTING_DEPTH_MAX: usize = 8;
 /// A role names the meaning of the text, never its color. `kvim-tui` maps each
 /// role to one style, exactly as it maps a highlight role. See
 /// `docs/windows.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum MarkupRole {
     /// The body text of one block.
     Text,

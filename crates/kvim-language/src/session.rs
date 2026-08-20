@@ -1158,7 +1158,9 @@ impl Session<'_> {
                             },
                             "hover": {
                                 "dynamicRegistration": false,
-                                "contentFormat": ["plaintext", "markdown"],
+                                // The order names the preference of the client,
+                                // and the float renders markdown.
+                                "contentFormat": ["markdown", "plaintext"],
                             },
                             "formatting": { "dynamicRegistration": false },
                         },
@@ -2169,8 +2171,8 @@ impl HoverAnswer {
             // protocol defines as markdown.
             Value::String(value) => self.push(value, MarkupKind::Markdown),
             Value::Object(object) => {
-                if let Some(Value::String(value)) = object.get("value") {
-                    self.push(value, hover_part_kind(object));
+                if let Some((part, kind)) = hover_part(object) {
+                    self.push(&part, kind);
                 }
             }
             Value::Array(values) => {
@@ -2209,27 +2211,56 @@ impl HoverAnswer {
     }
 }
 
-/// Returns the markup kind of one hover object part.
+/// Returns the text and the markup kind of one hover object part.
 ///
-/// `MarkupContent` names its kind. The deprecated object form of
-/// `MarkedString` names a `language` instead, and the protocol defines that
-/// form as one fenced markdown code block. An object that names neither is no
-/// shape of the protocol, so it takes plain text, which loses no character.
-fn hover_part_kind(object: &Map<String, Value>) -> MarkupKind {
+/// `MarkupContent` names its kind and carries its text unchanged. The
+/// deprecated object form of `MarkedString` names a `language` instead, and the
+/// protocol defines that form as one fenced markdown code block, so the reader
+/// writes that fence. An object that names neither is no shape of the protocol,
+/// so it takes plain text, which loses no character. An object without a
+/// `value` carries no text at all.
+fn hover_part(object: &Map<String, Value>) -> Option<(String, MarkupKind)> {
+    let Some(Value::String(value)) = object.get("value") else {
+        return None;
+    };
     if let Some(Value::String(name)) = object.get("kind")
         && let Some(kind) = MarkupKind::from_protocol(name)
     {
-        return kind;
+        return Some((value.clone(), kind));
     }
-    if matches!(object.get("language"), Some(Value::String(_))) {
-        return MarkupKind::Markdown;
+    if let Some(Value::String(language)) = object.get("language") {
+        let fence = "`".repeat(fence_backticks(value));
+        return Some((
+            format!("{fence}{language}\n{value}\n{fence}"),
+            MarkupKind::Markdown,
+        ));
     }
-    MarkupKind::PlainText
+    Some((value.clone(), MarkupKind::PlainText))
+}
+
+/// Returns the number of backticks that one fence around `value` needs.
+///
+/// CommonMark closes a fence at the first line that holds as many backticks as
+/// the opening one, so a fence around a text that holds backticks must be
+/// longer than the longest run inside that text.
+fn fence_backticks(value: &str) -> usize {
+    /// The backticks of the shortest fence of CommonMark.
+    const FENCE_BACKTICKS_MIN: usize = 3;
+
+    let mut longest = 0_usize;
+    let mut run = 0_usize;
+    for character in value.chars() {
+        run = if character == '`' { run + 1 } else { 0 };
+        longest = longest.max(run);
+    }
+    longest.saturating_add(1).max(FENCE_BACKTICKS_MIN)
 }
 
 #[cfg(test)]
 mod tests {
     use serde_json::{Value, json};
+
+    use crate::markup::MarkupDocument;
 
     use super::{
         MarkupKind, MarkupText, SynchronizationMode, hover_contents, synchronization_mode,
@@ -2333,8 +2364,8 @@ mod tests {
             .expect("the block carries text");
         assert_eq!(fenced.kind, MarkupKind::Markdown);
         assert_eq!(
-            fenced.text, "fn main()",
-            "the reader keeps the value, and the fence of the language is still open work"
+            fenced.text, "```rust\nfn main()\n```",
+            "the pair of a language and a value is one code block, so the reader writes its fence"
         );
 
         let array = answer(&json!([
@@ -2343,7 +2374,23 @@ mod tests {
         ]))
         .expect("the array carries text");
         assert_eq!(array.kind, MarkupKind::Markdown);
-        assert_eq!(array.text, "fn main()\n*emphasis*");
+        assert_eq!(array.text, "```rust\nfn main()\n```\n*emphasis*");
+    }
+
+    #[test]
+    fn a_deprecated_pair_that_holds_a_fence_keeps_its_whole_value() {
+        // CommonMark closes a fence at the first line that holds as many
+        // backticks as the opening one, so the fence must be the longer one.
+        let fenced = answer(&json!({ "language": "md", "value": "a\n```\nb\n```\nc" }))
+            .expect("the block carries text");
+
+        assert_eq!(fenced.text, "````md\na\n```\nb\n```\nc\n````");
+        let document = MarkupDocument::parse(&fenced.text);
+        assert_eq!(
+            document.blocks().len(),
+            1,
+            "the value stands in one code block: {document:?}"
+        );
     }
 
     #[test]

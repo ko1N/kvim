@@ -2857,20 +2857,16 @@ impl Session {
     /// Shows the merged hover answer as a float.
     ///
     /// The merge joins the non-empty answers in declaration order, and one
-    /// blank row separates the answers of two servers. See
-    /// `docs/language-services.md`.
+    /// blank row separates the answers of two servers. The float renders the
+    /// markdown of the join, and one answer of plain text keeps the whole join
+    /// as text. See `docs/language-services.md`.
     fn show_hover(&mut self, pending: &PendingQuery) -> Redraw {
         let answers = pending.hover();
         if answers.is_empty() {
             self.set_message("no hover information", MessageLevel::Info);
             return Redraw::Needed;
         }
-        let joined = answers
-            .iter()
-            .map(|answer| answer.text.as_str())
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        self.float = Some(Float::text(HOVER_TITLE, &joined));
+        self.float = Some(Float::hover(HOVER_TITLE, &answers));
         Redraw::Needed
     }
 
