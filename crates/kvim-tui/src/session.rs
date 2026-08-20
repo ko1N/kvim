@@ -2508,11 +2508,11 @@ impl Session {
             LanguageOutcome::Hover {
                 request,
                 version,
-                text,
+                markup,
             } => self.answer_query(
                 request,
                 Some(version),
-                Answer::Hover(text.unwrap_or_default()),
+                markup.map_or(Answer::Empty, Answer::Hover),
             ),
             LanguageOutcome::Formatting { request, edits } => {
                 self.answer_query(request, None, Answer::Formatting(edits))
@@ -2865,7 +2865,12 @@ impl Session {
             self.set_message("no hover information", MessageLevel::Info);
             return Redraw::Needed;
         }
-        self.float = Some(Float::text(HOVER_TITLE, &answers.join("\n\n")));
+        let joined = answers
+            .iter()
+            .map(|answer| answer.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+        self.float = Some(Float::text(HOVER_TITLE, &joined));
         Redraw::Needed
     }
 

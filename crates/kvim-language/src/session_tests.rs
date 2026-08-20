@@ -14,7 +14,7 @@ use tokio::time;
 use kvim_core::{BufferVersion, CharRange, EditTransaction, TextBuffer, TextChange};
 use kvim_settings::{EditorSettings, FileSettings};
 
-use super::document::ContentChange;
+use super::document::{ContentChange, MarkupKind};
 use super::mock::{
     self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, PIPE_BYTES,
     ROOT, TEST_DEADLINE, connected, pipe, session,
@@ -830,10 +830,16 @@ async fn answers_a_hover() {
         )
         .await;
 
-    let LanguageOutcome::Hover { text: hover, .. } = harness.next().await else {
+    let LanguageOutcome::Hover { markup, .. } = harness.next().await else {
         panic!("the session answers the hover");
     };
-    assert_eq!(hover.as_deref(), Some("fn main()"));
+    let markup = markup.expect("the server described the symbol");
+    assert_eq!(markup.text, "fn main()");
+    assert_eq!(
+        markup.kind,
+        MarkupKind::Markdown,
+        "the answer names its markup, and the session carries that name"
+    );
 }
 
 #[tokio::test]
@@ -1168,10 +1174,13 @@ async fn restarts_and_serves_the_reopened_document() {
         .respond(&sent["id"], json!({ "contents": "restarted" }))
         .await;
 
-    let LanguageOutcome::Hover { text: hover, .. } = harness.next().await else {
+    let LanguageOutcome::Hover { markup, .. } = harness.next().await else {
         panic!("the restarted session answers the hover");
     };
-    assert_eq!(hover.as_deref(), Some("restarted"));
+    assert_eq!(
+        markup.map(|markup| markup.text).as_deref(),
+        Some("restarted")
+    );
 }
 
 #[tokio::test]
@@ -2087,10 +2096,10 @@ async fn a_server_that_sends_no_progress_publishes_no_report() {
         .await;
 
     // The hover answer is the first outcome, so no progress preceded it.
-    let LanguageOutcome::Hover { text: hover, .. } = harness.next().await else {
+    let LanguageOutcome::Hover { markup, .. } = harness.next().await else {
         panic!("the session answers the hover without any progress report");
     };
-    assert_eq!(hover.as_deref(), Some("quiet"));
+    assert_eq!(markup.map(|markup| markup.text).as_deref(), Some("quiet"));
 }
 
 #[tokio::test]
@@ -2123,10 +2132,13 @@ async fn a_progress_value_that_carries_no_stage_reports_nothing_and_never_fails(
         .respond(&sent["id"], json!({ "contents": "still alive" }))
         .await;
 
-    let LanguageOutcome::Hover { text: hover, .. } = harness.next().await else {
+    let LanguageOutcome::Hover { markup, .. } = harness.next().await else {
         panic!("the session drops the unreadable reports and answers the hover");
     };
-    assert_eq!(hover.as_deref(), Some("still alive"));
+    assert_eq!(
+        markup.map(|markup| markup.text).as_deref(),
+        Some("still alive")
+    );
 }
 
 #[tokio::test]

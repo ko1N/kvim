@@ -415,6 +415,38 @@ document, so kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
 
+### The Markup Of One Hover Answer
+
+The protocol writes the answer of a hover request in four shapes. The session
+reads every shape and carries one text and one markup kind to the editor. The
+kind names plain text or markdown, and nothing above the session guesses it.
+
+| Shape | Kind | Reason |
+|---|---|---|
+| `MarkupContent`, which names `plaintext` or `markdown` | The named kind | The server declares the markup of its own text. |
+| A bare string | Markdown | The protocol defines the deprecated `MarkedString` string as markdown. |
+| An object with a `language` and a `value` | Markdown | The protocol defines that deprecated pair as one fenced markdown code block. |
+| An array of the shapes above | One kind for the array | The array holds parts of one answer, and the float shows one text. |
+
+The session joins the parts of an array on separate lines and answers the one
+kind that covers the joined text. A part of plain text decides the whole
+answer. Markdown that a reader shows unchanged keeps every character, and plain
+text that a parser reads as markdown loses the characters that mark up a
+document, so the join takes the kind that loses nothing. The current protocol
+holds only `MarkedString` parts in an array, and every such part is markdown, so
+a mixed array reaches kvim from a server that the protocol does not describe.
+
+An object that names no kind and no language is no shape of the protocol, and an
+unknown kind name names no shape either. Both take plain text for the same
+reason.
+
+The session reads no `language` of a deprecated pair yet, so that part reaches
+the float without its fence. The float shows the text of every answer and reads
+no kind yet.
+
+The editor merges the answers of several servers after this reading. Each answer
+keeps its own kind, because each server declares the markup of its own text.
+
 ### The Document Synchronization
 
 Each server chooses what one change notification carries. The session reads the

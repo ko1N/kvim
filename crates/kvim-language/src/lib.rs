@@ -124,8 +124,8 @@ pub use c::CAdapter;
 pub use cpp::CppAdapter;
 pub use css::CssAdapter;
 pub use document::{
-    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, SourceLocation,
-    TextEdit,
+    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, MarkupKind,
+    MarkupText, SourceLocation, TextEdit,
 };
 pub use fish::FishAdapter;
 pub use formatter::{
