@@ -17,6 +17,9 @@ use super::{
 /// The file extensions that the Nix adapter owns.
 const NIX_EXTENSIONS: [&str; 1] = ["nix"];
 
+/// The language names that the Nix adapter answers to.
+const NIX_LANGUAGE_NAMES: [&str; 1] = ["nix"];
+
 /// The node kinds whose content takes one more indent level in Nix.
 ///
 /// The binding set of an attribute set is not listed, because every node that
@@ -108,6 +111,10 @@ impl LanguageAdapter for NixAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &NIX_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &NIX_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

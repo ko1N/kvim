@@ -18,6 +18,9 @@ use super::{
 /// The file extensions that the HTML adapter owns.
 const HTML_EXTENSIONS: [&str; 2] = ["htm", "html"];
 
+/// The language names that the HTML adapter answers to.
+const HTML_LANGUAGE_NAMES: [&str; 1] = ["html"];
+
 /// The node kinds whose content takes one more indent level in HTML.
 ///
 /// An `element` node spans the start tag, the content, and the end tag, so one
@@ -111,6 +114,10 @@ impl LanguageAdapter for HtmlAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &HTML_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &HTML_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

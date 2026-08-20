@@ -21,6 +21,9 @@ use super::{
 /// XML document, so one grammar reads all of them.
 const XML_EXTENSIONS: [&str; 5] = ["svg", "xml", "xsd", "xsl", "xslt"];
 
+/// The language names that the XML adapter answers to.
+const XML_LANGUAGE_NAMES: [&str; 1] = ["xml"];
+
 /// The node kinds whose content takes one more indent level in XML.
 ///
 /// An `element` node spans the start tag, the content, and the end tag, so it
@@ -114,6 +117,10 @@ impl LanguageAdapter for XmlAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &XML_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &XML_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

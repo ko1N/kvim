@@ -21,6 +21,11 @@ use super::{
 /// second grammar for it and one adapter carries one grammar.
 const TYPESCRIPT_EXTENSIONS: [&str; 3] = ["cts", "mts", "ts"];
 
+/// The language names that the TypeScript adapter answers to.
+///
+/// `ts` is the short form that a fence carries beside `typescript`.
+const TYPESCRIPT_LANGUAGE_NAMES: [&str; 2] = ["ts", "typescript"];
+
 /// The node kinds whose content takes one more indent level in TypeScript.
 ///
 /// The table holds the JavaScript nodes and the five bracketed nodes that the
@@ -172,6 +177,10 @@ impl LanguageAdapter for TypescriptAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &TYPESCRIPT_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &TYPESCRIPT_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

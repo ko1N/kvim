@@ -23,6 +23,12 @@ use super::{
 /// The file extensions that the TSX adapter owns.
 const TSX_EXTENSIONS: [&str; 1] = ["tsx"];
 
+/// The language names that the TSX adapter answers to.
+///
+/// The plain TypeScript grammar rejects the JSX syntax, so this name reaches
+/// the TSX adapter alone.
+const TSX_LANGUAGE_NAMES: [&str; 1] = ["tsx"];
+
 /// The node kinds whose content takes one more indent level in TSX.
 ///
 /// The table holds the TypeScript nodes and the two nodes of the JSX syntax. A
@@ -183,6 +189,10 @@ impl LanguageAdapter for TsxAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &TSX_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &TSX_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

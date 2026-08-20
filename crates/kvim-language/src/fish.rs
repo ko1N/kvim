@@ -17,6 +17,9 @@ use super::{
 /// The file extensions that the fish adapter owns.
 const FISH_EXTENSIONS: [&str; 1] = ["fish"];
 
+/// The language names that the fish adapter answers to.
+const FISH_LANGUAGE_NAMES: [&str; 1] = ["fish"];
+
 /// The node kinds whose content takes one more indent level in fish.
 ///
 /// Every compound statement of fish ends with the `end` keyword, so each node
@@ -114,6 +117,10 @@ impl LanguageAdapter for FishAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &FISH_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &FISH_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {

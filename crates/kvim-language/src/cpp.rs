@@ -25,6 +25,11 @@ use super::{
 /// of that extension an ambiguous failure.
 const CPP_EXTENSIONS: [&str; 6] = ["cc", "cpp", "cxx", "hh", "hpp", "hxx"];
 
+/// The language names that the C++ adapter answers to.
+///
+/// A fence writes `c++` as often as `cpp`, and `cxx` names the same language.
+const CPP_LANGUAGE_NAMES: [&str; 3] = ["c++", "cpp", "cxx"];
+
 /// The node kinds whose content takes one more indent level in C++.
 ///
 /// The table extends the C table. `declaration_list` is the braced body of a
@@ -156,6 +161,10 @@ impl LanguageAdapter for CppAdapter {
 
     fn extensions(&self) -> &'static [&'static str] {
         &CPP_EXTENSIONS
+    }
+
+    fn language_names(&self) -> &'static [&'static str] {
+        &CPP_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {
