@@ -24,8 +24,8 @@ use super::completion::{CompletionOutcome, LineCompletion};
 use super::language::{LanguageRequest, LanguageRequestKind};
 use super::log::LOG_ENTRIES_MAX;
 use super::session::{
-    CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, MessageLevel, Redraw, RunState,
-    Session,
+    CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
+    Redraw, RunState, Session,
 };
 use super::window::{SidebarSide, WindowId};
 
@@ -534,6 +534,99 @@ fn the_log_command_opens_a_snapshot_that_holds_a_replaced_message() {
 }
 
 #[test]
+fn the_diagnostics_command_probes_off_the_event_loop_and_opens_the_report() {
+    let mut session = session(60, 12);
+    // The declared minimum of the name reaches the command, so `:d` runs it.
+    run_command(&mut session, "d");
+
+    // The probe reads the executable search path, so the command opens no
+    // buffer yet and the message line names the wait.
+    assert_eq!(session.active_buffer().name(), "[Scratch]");
+    assert_eq!(
+        message(&session),
+        "the host report is running; its buffer opens when it answers"
+    );
+
+    // The event loop hands the request to the bounded worker service, and one
+    // command produces exactly one request.
+    let request = session
+        .take_host_request()
+        .expect("the command asked for one probe");
+    assert!(
+        session.take_host_request().is_none(),
+        "one command asks for one probe"
+    );
+
+    let report = request.run();
+    assert_eq!(session.apply_host_report(&report), Redraw::Needed);
+    assert_eq!(session.active_buffer().name(), "[Diagnostics]");
+    let text = session.buffer().to_string();
+    assert!(text.contains("Language servers ("), "{text}");
+    assert!(text.contains("Formatters ("), "{text}");
+    assert!(text.contains("rust-analyzer"), "{text}");
+
+    // The probe answered, so the note that named the wait leaves the message
+    // line with the buffer that it promised.
+    assert_eq!(message(&session), "");
+
+    // The buffer is an ordinary scratch buffer over generated text.
+    assert_eq!(session.active_buffer().path(), None);
+    assert!(!session.active_buffer().is_modified());
+}
+
+#[test]
+fn a_second_diagnostics_command_starts_no_second_probe() {
+    let mut session = session(60, 12);
+    run_command(&mut session, "diagnostics");
+    let request = session
+        .take_host_request()
+        .expect("the first command asked for one probe");
+
+    // The probe already runs, so the second command reports the same state and
+    // queues nothing.
+    run_command(&mut session, "diagnostics");
+    assert!(
+        session.take_host_request().is_none(),
+        "the running probe answers both commands"
+    );
+
+    let report = request.run();
+    assert_eq!(session.apply_host_report(&report), Redraw::Needed);
+    assert_eq!(
+        session.buffers().len(),
+        2,
+        "the two commands open one buffer"
+    );
+
+    // The finished probe leaves the session ready for a fresh report.
+    run_command(&mut session, "diagnostics");
+    assert!(
+        session.take_host_request().is_some(),
+        "a later command asks for a fresh probe"
+    );
+}
+
+#[test]
+fn a_failed_host_probe_opens_no_buffer_and_reports_the_outcome() {
+    let mut session = session(60, 12);
+    run_command(&mut session, "diagnostics");
+    let _request = session
+        .take_host_request()
+        .expect("the command asked for one probe");
+
+    assert_eq!(
+        session.abandon_host_request(HostProbeFailure::Timeout),
+        Redraw::Needed
+    );
+    assert_eq!(message(&session), "the host report passed its deadline");
+    assert_eq!(session.buffers().len(), 1, "the failure opens no buffer");
+
+    // The abandoned probe leaves the session ready for a fresh report.
+    run_command(&mut session, "diagnostics");
+    assert!(session.take_host_request().is_some());
+}
+
+#[test]
 fn an_edit_of_the_log_buffer_changes_no_entry_and_a_second_log_builds_a_new_snapshot() {
     let mut session = session(60, 12);
     let (_, newest) = report_two_messages(&mut session);
@@ -593,9 +686,9 @@ fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     // candidate and opens the list.
     press(&mut session, ':');
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "edit");
+    assert_eq!(prompt_text(&session), "diagnostics");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
-    for expected in ["logs", "quit", "wq", "write"] {
+    for expected in ["edit", "logs", "quit", "wq", "write"] {
         press_code(&mut session, KeyCode::Tab);
         assert_eq!(prompt_text(&session), expected);
     }
@@ -603,7 +696,7 @@ fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     // The candidates stay anchored to the typed text, so the cycle wraps
     // instead of narrowing the list to the written candidate.
     press_code(&mut session, KeyCode::Tab);
-    assert_eq!(prompt_text(&session), "edit");
+    assert_eq!(prompt_text(&session), "diagnostics");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
 }
 
@@ -709,6 +802,9 @@ fn the_command_line_completion_cycles_backward_and_restores_the_typed_text() {
 fn one_typed_key_after_a_cycle_closes_the_list_and_reads_the_new_line() {
     let mut session = session(60, 12);
     press(&mut session, ':');
+    // An empty line names every command, so the second cycle reaches `edit`
+    // and the list stays open.
+    press_code(&mut session, KeyCode::Tab);
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "edit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);

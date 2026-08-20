@@ -50,6 +50,7 @@ mod cells;
 mod chrome;
 mod clipboard;
 mod completion;
+mod diagnostics;
 mod icons;
 mod language;
 mod layout;
@@ -77,6 +78,7 @@ mod tests;
 mod tree_tests;
 
 pub use app::{EVENT_ERRORS_MAX, EditorError, PanicProbe, run};
+pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
 pub use language::{
     DiagnosticJump, FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, FormatOnSave, LANGUAGE_OUTBOX_MAX,
     LanguageQuery, LanguageRequest, LanguageRequestKind,
@@ -85,7 +87,7 @@ pub use layout::{Region, RegionKind, WindowLayout};
 pub use picker::PickerFailure;
 pub use session::{
     AnalysisRequest, AnalysisResult, CONFIRM_ANSWER_CHARS_MAX, FileRequestFailure,
-    MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
+    HostProbeFailure, MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
 };
 pub use theme::{IconRole, Theme, ThemeRole};
 pub use window::{

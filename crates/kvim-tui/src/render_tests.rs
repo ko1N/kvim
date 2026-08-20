@@ -1683,7 +1683,7 @@ const SURFACE: Color = Color::Rgb(0x16, 0x1a, 0x20);
 ///
 /// The line holds no `!`, so the list holds no `!` variant. See
 /// `docs/input-actions.md`.
-const COMMAND_CANDIDATES: [&str; 5] = ["edit", "logs", "quit", "wq", "write"];
+const COMMAND_CANDIDATES: [&str; 6] = ["diagnostics", "edit", "logs", "quit", "wq", "write"];
 
 /// Opens the command line of one session and offers its candidates.
 fn open_completion(session: &mut Session) {
@@ -1727,7 +1727,7 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     );
     assert_eq!(
         row(&session, 23),
-        ":edit",
+        ":diagnostics",
         "the list covers no cell of the message line"
     );
     // The list is decoration, so it moves no cursor and it leaves the rows
@@ -1741,10 +1741,10 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     assert_eq!(style_at(&session, 0, first + 1).bg, Some(SURFACE));
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(selected_row(&session), Some(first + 1));
-    assert_eq!(row(&session, 23), ":logs");
+    assert_eq!(row(&session, 23), ":edit");
     press_code(&mut session, KeyCode::BackTab);
     assert_eq!(selected_row(&session), Some(first));
-    assert_eq!(row(&session, 23), ":edit");
+    assert_eq!(row(&session, 23), ":diagnostics");
 }
 
 #[test]
@@ -1789,7 +1789,7 @@ fn the_candidate_list_reports_the_candidates_that_it_hides() {
         row(&session, 3),
         statusline_without_state(40, "Normal", "1:1")
     );
-    assert_eq!(row(&session, 4), ":edit");
+    assert_eq!(row(&session, 4), ":diagnostics");
 }
 
 #[test]
@@ -1818,7 +1818,7 @@ fn a_narrow_terminal_keeps_the_command_line_readable() {
 
     // The list bounds its width by the body band, so it reaches no cell outside
     // the terminal, and the command line below it stays complete.
-    assert_eq!(row(&session, 9), ":edit");
+    assert_eq!(row(&session, 9), ":diagnostics");
     assert_eq!(
         row(&session, 8),
         statusline_without_state(20, "Normal", "1:1")
@@ -1833,5 +1833,5 @@ fn a_narrow_terminal_keeps_the_command_line_readable() {
     // The list takes the last body rows, so its first row holds the first
     // candidate.
     let first = 8 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
-    assert_eq!(row(&session, first), " edit");
+    assert_eq!(row(&session, first), " diagnostics");
 }

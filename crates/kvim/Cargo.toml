@@ -11,11 +11,9 @@ path = "src/main.rs"
 
 [dependencies]
 # kvim crates
-kvim-clipboard.workspace = true
 kvim-language.workspace = true
 kvim-settings.workspace = true
 kvim-tui.workspace = true
-kvim-workspace.workspace = true
 
 # Basics
 thiserror.workspace = true
