@@ -265,6 +265,7 @@ impl LanguageServices {
             workspace_settings: declaration.settings(self.settings.language),
             indent: self.settings.indent,
             diagnostics_enabled: self.settings.language.diagnostics_enabled,
+            registry: self.registry,
         };
         let factory = TransportFactory::Process {
             program: OsString::from(declaration.program),

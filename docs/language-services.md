@@ -498,7 +498,9 @@ renders.
 
 The protocol writes the answer of a hover request in four shapes. The session
 reads every shape and carries one text and one markup kind to the editor. The
-kind names plain text or markdown, and nothing above the session guesses it.
+kind names plain text or markdown, and nothing above the session guesses it. An
+answer that names markdown carries its document as well, and the section below
+owns that value.
 
 | Shape | Kind | Reason |
 |---|---|---|
@@ -546,6 +548,12 @@ language name key of the registry answers that name.
 The parse is pure. It reads no clock, no environment, and no file, so one text
 always produces one document.
 
+The session names the document of each markdown answer where that answer
+arrives, beside the text that the server wrote. An answer of plain text carries
+no document at all, because a markdown parse of a plain text removes the
+characters that mark up a document. The float reads the document of an answer
+only while every answer of that float names markdown.
+
 #### The Blocks Of One Document
 
 A document is a sequence of blocks. Each block names the containers around it
@@ -591,7 +599,10 @@ highlight role. See [`windows.md`](windows.md).
 | Quote | The text inside one block quote |
 
 A code block carries no role, because its body already names it as code. The
-float paints its lines in the code span role, because both hold code.
+float paints the range of each highlight span of a code line in the syntax role
+of that span, and every other part of that line in the code span role. A fence
+that carries no span therefore paints in one color, exactly as every fence
+painted before the highlight.
 
 #### What The Parse Keeps As Text
 
@@ -631,6 +642,12 @@ span. None of these is a failure. A server may write any info string, and a
 fence without a span reads as plain code, which is the state that every fence
 had before this work.
 
+A code line that is wider than the float loses its end, and that clip measures
+terminal cells. The renderer therefore keeps the spans of the part that it
+paints. It drops a span that starts behind the cut, and it shortens a span that
+crosses it. A clip never splits a wide character, so every kept span still
+addresses a character boundary of the painted text.
+
 The highlight is Tree-sitter work, so the terminal event loop must never run it.
 Two shapes serve that rule. The editor can highlight the answer where it
 arrives, off the loop, and let the float paint a finished value. The editor can
@@ -656,6 +673,27 @@ terminal event loop, so a document that it parses itself could carry no span.
 [`architecture.md`](architecture.md) owns the layer table, and the direction
 stays one-way: the answer arrives in `kvim-language`, the document is complete
 when it leaves, and `kvim-tui` paints it.
+
+#### The Join Of Several Answers
+
+Each answer of one hover carries its own document, because the highlight of a
+fence runs where that answer arrives. The editor therefore joins documents and
+never joins the texts of two markdown answers.
+
+The join appends the blocks of each later document to the blocks of the first
+one. One blank row stands above the first block of each later document, so a
+reader sees where one answer ends and the next one starts. The join reports
+itself as clipped as soon as one joined document reports itself as clipped.
+
+The bounds of one document hold over the join as well. The join tests the two
+counts before each block, exactly as the parse tests them before each event. It
+therefore appends no block after the count reached `MARKUP_BLOCKS_MAX` or
+`MARKUP_PIECES_MAX`, and it reports the join as clipped as soon as one of these
+bounds stops it. The answers of several servers therefore cost the memory of one
+document.
+
+The join names no role and reads no grammar. It moves finished blocks, so the
+terminal event loop may run it.
 
 #### The Bounds Of One Document
 
@@ -1060,7 +1098,7 @@ always shows the same result.
 | Answer | Rule |
 |---|---|
 | Diagnostics | The editor keeps the newest set of each server and merges every set. Two diagnostics describe the same problem when their range and their message text are both identical, and the merge keeps the diagnostic of the earlier declaration. The merged list ascends by position. |
-| Hover | The editor joins the non-empty answers in declaration order. One blank row separates two answers. |
+| Hover | The editor joins the non-empty answers in declaration order. One blank row separates two answers. Every answer of markdown joins as its document, and one answer of plain text makes the whole float plain text. |
 | Definition | The editor takes the first non-empty answer in declaration order. |
 | Formatting | Exactly one declaration of one adapter carries the formatting role. Only that server receives a formatting request, and only while its adapter declares no external formatter. |
 
@@ -1243,10 +1281,15 @@ the overlay layering.
 ### The Rows Of One Markdown Answer
 
 The float holds one plain text or one markup document. A hover answer becomes a
-document only while every server answer of it names markdown. One answer of
-plain text therefore decides the whole float, because a markdown parse of a
-plain text removes the characters that mark up a document. A diagnostic message
-is plain text as well, so it reaches the float unchanged.
+document only while every server answer of it names markdown, and the float then
+joins the document of each answer. One answer of plain text therefore decides
+the whole float, because a markdown parse of a plain text removes the characters
+that mark up a document. A diagnostic message is plain text as well, so it
+reaches the float unchanged.
+
+The float parses nothing. `kvim-language` names every block, every role, and
+every highlight span before the answer reaches this layer, so the terminal event
+loop paints a finished value.
 
 The float renders the document at the width that it has, because only the
 renderer measures a terminal cell. One block produces one or more rows, and one
@@ -1274,7 +1317,7 @@ The body of a block decides the rest of the row.
 |---|---|---|
 | Prose | The wrapped text, in the roles of its pieces | One paragraph wraps at the width that it has. |
 | Heading | The text in the heading role, indented by one cell for each rank below the first | No marker of the source reaches the screen, so the style and the indentation carry the rank. |
-| Code | One row for each source line, in the code role | A code line must not wrap, so a line that is wider than the float loses its end. |
+| Code | One row for each source line. Each highlight span takes its own syntax role, and the rest of the line takes the code role. | A code line must not wrap, so a line that is wider than the float loses its end, and the spans of the part that survives stay aligned to it. |
 | Rule | One row of `─` | The break is as wide as the widest other row of the float, so a short answer keeps a narrow float. |
 
 A document that reports itself as clipped ends with the `...` note of the float,

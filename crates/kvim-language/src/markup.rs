@@ -29,6 +29,11 @@
 //! server arrives, off that loop, so the float paints a finished value. See
 //! `docs/language-services.md` and `docs/responsiveness.md`.
 //!
+//! Two servers answer one hover on their own, and each answer therefore carries
+//! its own document. [`MarkupDocument::joined`] appends the blocks of one
+//! document to another, so the reader of two answers still paints one document
+//! and never parses a text that a join produced.
+//!
 //! # The value holds no glyph, no width, and no color
 //!
 //! `kvim-tui` owns the palette, and it owns the terminal cell as well, because
@@ -340,6 +345,21 @@ impl MarkupBlock {
     pub fn body(&self) -> &MarkupBody {
         &self.body
     }
+
+    /// Returns the styled pieces that the block holds.
+    ///
+    /// One stretch of text in one role is one piece, and one line of a code
+    /// block is one piece as well, so the count follows the rule of
+    /// [`MARKUP_PIECES_MAX`].
+    fn pieces(&self) -> usize {
+        match &self.body {
+            MarkupBody::Prose(styled) | MarkupBody::Heading { text: styled, .. } => {
+                styled.runs.len()
+            }
+            MarkupBody::Code { lines, .. } => lines.len(),
+            MarkupBody::Rule => 1,
+        }
+    }
 }
 
 /// The markdown of one text, as blocks of styled text.
@@ -478,10 +498,67 @@ impl MarkupDocument {
         self
     }
 
+    /// Appends the blocks of one further document.
+    ///
+    /// Two servers answer one hover on their own, and each answer carries its
+    /// own document, because the highlight of a fence runs where that answer
+    /// arrives. The editor therefore joins documents and never joins two
+    /// markdown texts.
+    ///
+    /// One blank row stands above the first block of `other`, so a reader sees
+    /// where one answer ends and the next one starts. The join reports itself
+    /// as clipped as soon as one of the two documents does.
+    ///
+    /// The bounds of one document hold over the join. It tests the two counts
+    /// before each block, exactly as the parse tests them before each event, so
+    /// it appends no block after the count reached [`MARKUP_BLOCKS_MAX`] or
+    /// [`MARKUP_PIECES_MAX`]. It reports the join as clipped as soon as one of
+    /// these bounds stops it.
+    ///
+    /// The join names no role and reads no grammar. It moves finished blocks,
+    /// so the terminal event loop may run it. See `docs/language-services.md`.
+    #[must_use]
+    pub fn joined(mut self, other: &Self) -> Self {
+        let held = self.blocks.len();
+        let mut pieces = self.pieces();
+        self.clipped |= other.clipped;
+
+        for (index, block) in other.blocks.iter().enumerate() {
+            if self.blocks.len() >= MARKUP_BLOCKS_MAX || pieces >= MARKUP_PIECES_MAX {
+                self.clipped = true;
+                break;
+            }
+
+            let mut block = block.clone();
+            // The first block of a document opens no blank row, because it
+            // stands at the top of its own answer. It follows another answer
+            // here, so it opens one.
+            if index == 0 && held > 0 {
+                block.spaced = true;
+            }
+            pieces = pieces.saturating_add(block.pieces());
+            self.blocks.push(block);
+        }
+
+        debug_assert!(
+            self.blocks.len() <= held.max(MARKUP_BLOCKS_MAX),
+            "the bound check runs before each appended block"
+        );
+        self
+    }
+
     /// Returns the blocks of the document, in order.
     #[must_use]
     pub fn blocks(&self) -> &[MarkupBlock] {
         &self.blocks
+    }
+
+    /// Returns the styled pieces of every block of the document.
+    fn pieces(&self) -> usize {
+        self.blocks
+            .iter()
+            .map(MarkupBlock::pieces)
+            .fold(0_usize, usize::saturating_add)
     }
 
     /// Reports whether the document holds no block.
@@ -1251,6 +1328,103 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![false, true, true, true]
         );
+    }
+
+    #[test]
+    fn two_answers_join_into_one_document_and_one_blank_row() {
+        // Two servers of one language answer on their own, and each answer
+        // carries its own document, so the editor joins documents.
+        let first = highlighted("```rust\nfn first() {}\n```");
+        let second = highlighted("The second server *answers* as well.");
+        let joined = first.clone().joined(&second);
+
+        assert_eq!(
+            joined
+                .blocks()
+                .iter()
+                .map(|block| (content(block), block.is_spaced()))
+                .collect::<Vec<_>>(),
+            vec![
+                ("fn first() {}".to_owned(), false),
+                (
+                    "The second server answers as well.".to_owned(),
+                    // One blank row stands above the first block of the second
+                    // answer, and the first block of the join opens none.
+                    true,
+                ),
+            ]
+        );
+        assert_eq!(
+            spans(&joined, 0),
+            spans(&first, 0),
+            "the join moves the spans of each fence unchanged"
+        );
+        assert!(!joined.is_clipped());
+    }
+
+    #[test]
+    fn the_first_answer_of_one_join_opens_no_blank_row() {
+        // The join starts at the empty document, so the first answer keeps the
+        // spacing that its own parse gave it.
+        let answer = MarkupDocument::parse("one\n\ntwo");
+        let joined = MarkupDocument::default().joined(&answer);
+
+        assert_eq!(joined, answer, "the empty document adds nothing");
+    }
+
+    #[test]
+    fn one_clipped_answer_reports_the_join_as_clipped() {
+        let clipped = MarkupDocument::parse(&"word ".repeat(MARKUP_SOURCE_BYTES_MAX));
+        assert!(clipped.is_clipped());
+        let complete = MarkupDocument::parse("a short answer");
+        assert!(!complete.is_clipped());
+
+        assert!(complete.clone().joined(&clipped).is_clipped());
+        assert!(clipped.joined(&complete).is_clipped());
+    }
+
+    #[test]
+    fn the_block_bound_holds_over_one_join() {
+        // Neither answer reaches the bound alone, and the two reach it
+        // together, so the join is the step that stops.
+        let answer = MarkupDocument::parse(&"a\n\n".repeat(MARKUP_BLOCKS_MAX * 3 / 4));
+        assert!(!answer.is_clipped(), "one answer stays under the bound");
+
+        let joined = answer.clone().joined(&answer);
+
+        assert_eq!(
+            joined.blocks().len(),
+            MARKUP_BLOCKS_MAX,
+            "the join appends no block above the bound"
+        );
+        assert!(joined.is_clipped(), "the join stopped at the block bound");
+    }
+
+    #[test]
+    fn the_piece_bound_holds_over_one_join() {
+        // One line of a code block is one piece, and the lines of that block
+        // join the count when the block closes, so this answer holds the
+        // complete bound in one block.
+        let answer =
+            MarkupDocument::parse(&format!("```\n{}```", "line\n".repeat(MARKUP_PIECES_MAX)));
+        assert!(!answer.is_clipped(), "the parse reached no bound");
+        assert_eq!(
+            answer
+                .blocks()
+                .iter()
+                .map(MarkupBlock::pieces)
+                .sum::<usize>(),
+            MARKUP_PIECES_MAX
+        );
+
+        let joined = answer.joined(&MarkupDocument::parse("a second answer"));
+
+        assert_eq!(
+            joined.blocks().len(),
+            1,
+            "the join appends no block after the count reached the bound"
+        );
+        assert!(joined.is_clipped(), "the join stopped at the piece bound");
     }
 
     #[test]

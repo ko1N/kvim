@@ -34,11 +34,13 @@ use tokio_util::sync::CancellationToken;
 use kvim_core::BufferVersion;
 use kvim_settings::IndentSettings;
 
+use super::LanguageRegistry;
 use super::document::{
     ContentChange, DiagnosticSet, FormatEdits, MarkupKind, MarkupText, RawDiagnostic, RawTextEdit,
     SourceLocation, TextEdit,
 };
 use super::encoding::{DocumentMapping, PositionEncoding, TextMirroring};
+use super::markup::MarkupDocument;
 use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
 use super::protocol::{
     ArrayBudget, DocumentPosition, LspBound, LspError, ProtocolReader, ProtocolSpan,
@@ -569,6 +571,12 @@ pub(super) struct SessionConfig {
     pub(super) indent: IndentSettings,
     /// Whether the session parses and publishes diagnostics.
     pub(super) diagnostics_enabled: bool,
+    /// The adapters that name the code of one fence of a hover answer.
+    ///
+    /// The session runs off the terminal event loop, so it performs the
+    /// Tree-sitter highlight that the loop must never run. See
+    /// `docs/language-services.md`.
+    pub(super) registry: LanguageRegistry,
 }
 
 /// The byte streams of one server attempt.
@@ -1631,7 +1639,7 @@ impl Session<'_> {
             Query::Hover(_) => Ok(LanguageOutcome::Hover {
                 request,
                 version: pending.version,
-                markup: hover_markup(result)?,
+                markup: hover_markup(result, self.config.registry)?,
             }),
             Query::Diagnostics => {
                 debug_assert!(
@@ -2133,13 +2141,16 @@ impl RawLocation {
 }
 
 /// Returns the bounded text of one hover answer and the markup that covers it.
-fn hover_markup(result: &RawValue) -> Result<Option<MarkupText>, LspError> {
+fn hover_markup(
+    result: &RawValue,
+    registry: LanguageRegistry,
+) -> Result<Option<MarkupText>, LspError> {
     let value: Value =
         serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
     let Some(contents) = value.get("contents") else {
         return Ok(None);
     };
-    hover_contents(contents)
+    hover_contents(contents, registry)
 }
 
 /// Returns the bounded answer of one hover `contents` value.
@@ -2147,11 +2158,14 @@ fn hover_markup(result: &RawValue) -> Result<Option<MarkupText>, LspError> {
 /// The protocol allows a string, a marked block, a markup block, or an array of
 /// those. One reader serves every shape and answers the one kind that covers
 /// the complete text. See `docs/language-services.md`.
-fn hover_contents(contents: &Value) -> Result<Option<MarkupText>, LspError> {
+fn hover_contents(
+    contents: &Value,
+    registry: LanguageRegistry,
+) -> Result<Option<MarkupText>, LspError> {
     let mut answer = HoverAnswer::default();
     answer.append(contents);
     enforce(answer.text.len(), LSP_HOVER_BYTES_MAX, LspBound::HoverBytes)?;
-    Ok(answer.finish())
+    Ok(answer.finish(registry))
 }
 
 /// The collected parts of one hover answer and the kind that covers them.
@@ -2197,7 +2211,14 @@ impl HoverAnswer {
     }
 
     /// Returns the trimmed answer, or `None` when no part carried text.
-    fn finish(self) -> Option<MarkupText> {
+    ///
+    /// A markdown answer also carries its document, with the code of each fence
+    /// named. This session runs off the terminal event loop, so the highlight
+    /// of a fence runs here and the float paints a finished value.
+    ///
+    /// A plain text carries an empty document, because a markdown parse of a
+    /// plain text removes the characters that mark up a document.
+    fn finish(self, registry: LanguageRegistry) -> Option<MarkupText> {
         let text = self.text.trim().to_owned();
         if text.is_empty() {
             return None;
@@ -2207,7 +2228,15 @@ impl HoverAnswer {
             "a text of this answer arrived with one part, and every part names its kind"
         );
         let kind = self.kind.unwrap_or(MarkupKind::PlainText);
-        Some(MarkupText { kind, text })
+        let document = match kind {
+            MarkupKind::Markdown => MarkupDocument::parse(&text).highlighted(registry),
+            MarkupKind::PlainText => MarkupDocument::default(),
+        };
+        Some(MarkupText {
+            kind,
+            text,
+            document,
+        })
     }
 }
 
@@ -2263,7 +2292,8 @@ mod tests {
     use crate::markup::MarkupDocument;
 
     use super::{
-        MarkupKind, MarkupText, SynchronizationMode, hover_contents, synchronization_mode,
+        LanguageRegistry, MarkupKind, MarkupText, SynchronizationMode, hover_contents,
+        synchronization_mode,
     };
 
     /// Returns the mode of one `textDocumentSync` capability value.
@@ -2273,7 +2303,8 @@ mod tests {
 
     /// Returns the answer of one hover `contents` value.
     fn answer(contents: &Value) -> Option<MarkupText> {
-        hover_contents(contents).expect("the text stays under the bound")
+        hover_contents(contents, LanguageRegistry::first_release())
+            .expect("the text stays under the bound")
     }
 
     #[test]
