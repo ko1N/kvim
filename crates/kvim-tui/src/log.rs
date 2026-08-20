@@ -40,6 +40,11 @@ pub(super) const LOG_BUFFER_NAME: &str = "[Log]";
 pub(super) enum LogSource {
     /// The report reached the message line.
     MessageLine,
+    /// One language server changed its state, or wrote to its standard error.
+    ///
+    /// The `language` module bounds that text before it reaches the log. See
+    /// `docs/language-services.md`.
+    LanguageServer,
 }
 
 impl LogSource {
@@ -47,6 +52,7 @@ impl LogSource {
     const fn label(self) -> &'static str {
         match self {
             Self::MessageLine => "MESSAGE",
+            Self::LanguageServer => "SERVER",
         }
     }
 }

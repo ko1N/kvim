@@ -28,7 +28,8 @@ use super::protocol::{
 use super::session::{
     LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
     LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX,
-    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LanguageOutcome,
+    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX,
+    LanguageOutcome, ServerReport,
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
@@ -2239,4 +2240,95 @@ async fn reports_the_configuration_request_of_a_server_without_settings() {
     assert_eq!(answer["id"], 13);
     assert_eq!(answer["error"]["code"], -32601);
     drop(harness);
+}
+
+/// The shell that runs every child of the standard error tests.
+///
+/// The child is no language server. The tests drive a real pipe and a real
+/// process, which the prepared streams of the mock cannot give.
+const SHELL: &str = "/bin/sh";
+
+/// The line that the broken server of the user wrote before it exited.
+const SHIM_LINE: &str = "info: `rust-analyzer` is unavailable for the active toolchain";
+
+/// Collects every server report of one session until the session stops.
+///
+/// The result holds the recorded lines and the number of bound reports.
+async fn recorded_output(harness: &mut Harness) -> (Vec<String>, usize) {
+    let mut lines = Vec::new();
+    let mut bounds = 0;
+    loop {
+        match harness.next_any().await.outcome {
+            LanguageOutcome::Reported(ServerReport::Output(text)) => lines.push(text),
+            LanguageOutcome::Reported(ServerReport::OutputBound) => bounds += 1,
+            LanguageOutcome::Stopped => return (lines, bounds),
+            _ => {}
+        }
+    }
+}
+
+#[tokio::test]
+async fn reports_the_start_of_one_server() {
+    let (mut harness, mut server) = connected();
+    server.handshake().await;
+
+    // The handshake completed, so the session reports the start and the editor
+    // records it beside the output of the server.
+    assert!(matches!(
+        harness.next_any().await.outcome,
+        LanguageOutcome::Reported(ServerReport::Started)
+    ));
+    drop(harness);
+}
+
+#[tokio::test]
+async fn records_the_standard_error_of_a_server_that_exits_at_once() {
+    // The child repeats the failure that this capture exists for: the program
+    // names its cause on the standard error and exits at once.
+    let mut harness = mock::process_session(
+        SHELL,
+        &["-c", "printf '%s\\n' \"$1\" >&2; exit 1", "shim", SHIM_LINE],
+        PathBuf::from("/"),
+    );
+
+    let (lines, bounds) = recorded_output(&mut harness).await;
+    assert!(
+        lines.iter().any(|line| line == SHIM_LINE),
+        "the recorded output names the cause, not {lines:?}"
+    );
+    assert_eq!(bounds, 0, "a short output passes no bound");
+    harness.task.await.expect("the session task ends cleanly");
+}
+
+#[tokio::test]
+async fn drains_a_server_that_writes_more_than_its_bound() {
+    // Every line passes the line bound, and the child writes several times the
+    // recording bound. A reader that stopped draining would fill the pipe, and
+    // the child would never exit, so this test would never reach the stop.
+    let line = "x".repeat(LSP_STDERR_LINE_BYTES_MAX * 2);
+    let writes = LSP_STDERR_BYTES_MAX / LSP_STDERR_LINE_BYTES_MAX * 4;
+    let script = format!(
+        "count=0; while [ $count -lt {writes} ]; \
+         do printf '%s\\n' \"$1\" >&2; count=$((count + 1)); done; exit 1"
+    );
+    let mut harness =
+        mock::process_session(SHELL, &["-c", &script, "flood", &line], PathBuf::from("/"));
+
+    let (lines, bounds) = recorded_output(&mut harness).await;
+    assert!(bounds >= 1, "the session reports the bound that it passed");
+    // One attempt records at most the bound, and every restart records again.
+    let attempts = LSP_RESTARTS_MAX + 1;
+    let lines_max = attempts * (LSP_STDERR_BYTES_MAX / LSP_STDERR_LINE_BYTES_MAX + 1);
+    assert!(
+        lines.len() <= lines_max,
+        "the session records at most {lines_max} lines, not {}",
+        lines.len()
+    );
+    assert!(
+        lines
+            .iter()
+            .all(|line| line.len() <= LSP_STDERR_LINE_BYTES_MAX),
+        "every recorded line stays inside the line bound"
+    );
+    harness.task.await.expect("the session task ends cleanly");
 }

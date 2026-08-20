@@ -359,6 +359,8 @@ The session owns:
   messages, all enforced by one bounds helper,
 - the child-process lifecycle, including start, `initialize`, `shutdown`,
   `exit`, and a bounded restart after a failure,
+- the standard error of the child, which one background task drains and records
+  inside its bounds,
 - workspace containment for every path and every `file` URI,
 - protocol limits for open documents, in-flight requests, and every received
   list,
@@ -414,6 +416,40 @@ A crashed server restarts a bounded number of times. The new server holds no
 document, so kvim reports the restart and opens its buffers again. The session
 does not retry a failed request. Cancellation owns child termination. Shutdown
 follows the order in [`responsiveness.md`](responsiveness.md).
+
+### The Standard Error Of One Server
+
+A server writes its own log to its standard error. That text names the cause of
+a failure that the protocol never reports. A server that cannot start writes the
+cause there and exits, so the editor must read that stream.
+
+The session starts every server with a pipe on its standard error, and one
+background task reads that pipe. The task is not optional. A child that writes
+to a pipe that nobody reads blocks when the pipe fills. Several servers write to
+their standard error while they run correctly.
+
+The task separates draining from recording. It drains the stream until the
+stream ends, so the pipe never fills and the server never blocks. It records at
+most `LSP_STDERR_BYTES_MAX` bytes of one attempt. It records one further line
+that names the bound, and it then drains the rest of that attempt without
+recording it.
+
+The task splits the stream into lines and clips one line at
+`LSP_STDERR_LINE_BYTES_MAX` bytes. It drops an empty line, and it replaces every
+byte sequence that is not valid UTF-8.
+
+Each recorded line reaches the editor as one typed result of the session, on the
+event path that carries every other result. The `language` module holds no
+editor log, and it depends on no module above it. The editor records the line.
+See [`windows.md`](windows.md).
+
+The session reports its own lifecycle on that same path. It reports the start of
+one server after the handshake, and it already reports a failure, a restart, and
+a stop. The editor records each of those reports with the identity of the
+server, so a reader knows which server changed its state and why.
+
+A full result queue drops one output line instead of waiting for space. The
+capture is a report, never a failure path, and the drain must never stop.
 
 ### The Two Diagnostic Models
 
@@ -720,6 +756,8 @@ below must always agree.
 | Formatting edits | `LSP_FORMAT_EDITS_MAX` | 4,096 edits | The transaction bound of [`text-model.md`](text-model.md), so every accepted formatter answer becomes exactly one undoable transaction. |
 | Progress string | `LSP_PROGRESS_CHARS_MAX` | 128 characters | One progress token, title, or message names one operation. A longer string cannot fit on the overlay row, so the session clips it and drops a token above it. |
 | Hover text | `LSP_HOVER_BYTES_MAX` | 16 KiB | One hover float shows a signature and a short description. A larger text cannot fit on a terminal screen. |
+| Recorded standard error | `LSP_STDERR_BYTES_MAX` | 64 KiB | The bytes of the standard error of one server attempt that the editor records. A server that fails names its cause in its first lines, so this value holds that cause and bounds a server that writes without limit. The task drains every further byte and records none. |
+| Standard error line | `LSP_STDERR_LINE_BYTES_MAX` | 1 KiB | One line of a server log names one state. The editor log clips an entry further, so this value bounds a stream that carries no line break. |
 | Restarts | `LSP_RESTARTS_MAX` | 3 restarts | A server that fails four times in one session is broken. Further restarts would loop instead of reporting the state. |
 | Handshake deadline | `LSP_INITIALIZE_DEADLINE` | 30 s | A cold server indexes a workspace before it answers `initialize`. Thirty seconds reports a stuck server without failing a normal cold start. |
 | Request deadline | `LSP_REQUEST_DEADLINE` | 5 s | A definition or a hover answer is interactive. Five seconds reports a stuck request while the buffer stays editable. |

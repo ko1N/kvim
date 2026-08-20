@@ -20,7 +20,7 @@ use serde_json::{Value, json};
 use kvim_language::mock::{
     self, Harness, MockServer, OTHER_SERVER, named_session_at, pipe, session_at,
 };
-use kvim_language::{FormatterFailure, LanguageServerHandle};
+use kvim_language::{FormatterFailure, LanguageOutcome, LanguageServerHandle};
 use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
@@ -1334,5 +1334,81 @@ async fn a_missing_formatter_program_names_its_state_in_the_save_report() {
             .starts_with("the formatter is not installed, so the file holds unformatted content; "),
         "every save names the state of the file that it wrote: {}",
         editor.message()
+    );
+}
+
+/// The line that the broken server of the user wrote before it exited.
+///
+/// The program was a `rustup` shim that found no `rust-analyzer` in the active
+/// toolchain. It named the cause on its standard error and exited, and the
+/// editor reported a restart and a stop that named no cause.
+const SHIM_LINE: &str = "info: `rust-analyzer` is unavailable for the active toolchain";
+
+/// Opens the editor log and returns the rows of the new buffer.
+fn open_log(session: &mut Session) -> Vec<String> {
+    for key in ":log".chars() {
+        session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(key))), NOW);
+    }
+    session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Enter)), NOW);
+    assert_eq!(session.active_buffer().name(), "[Log]");
+    session
+        .buffer()
+        .to_string()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[tokio::test]
+async fn the_log_names_the_cause_of_a_server_that_cannot_start() {
+    let directory = TempDir::new("log_broken_server");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(AREA, settings, directory.path.clone());
+    // The child repeats the failure that this capture exists for. It is no
+    // language server: it names its cause on the standard error and exits.
+    let mut harness = mock::process_session(
+        "/bin/sh",
+        &["-c", "printf '%s\\n' \"$1\" >&2; exit 1", "shim", SHIM_LINE],
+        directory.path.clone(),
+    );
+
+    // The event loop applies every result of the session until it stops.
+    loop {
+        let event = harness.next_any().await;
+        let stopped = matches!(event.outcome, LanguageOutcome::Stopped);
+        let _ = session.apply_language_event(event);
+        if stopped {
+            break;
+        }
+    }
+
+    // The editor stays fully usable while the server fails.
+    for key in "ihello".chars() {
+        session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(key))), NOW);
+    }
+    session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Esc)), NOW);
+    assert_eq!(session.buffer().to_string(), "hello\n");
+
+    let rows = open_log(&mut session);
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("SERVER") && row.contains(SHIM_LINE)),
+        "the log names the cause that the server wrote, not {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("ERROR SERVER") && row.contains("mock/mock failed:")),
+        "the log names the failure of the server, not {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("WARN  SERVER") && row.contains("mock/mock restarted")),
+        "the log names every restart, not {rows:?}"
+    );
+    assert!(
+        rows.iter()
+            .any(|row| row.contains("INFO  SERVER") && row.contains("mock/mock stopped")),
+        "the log names the stop, not {rows:?}"
     );
 }

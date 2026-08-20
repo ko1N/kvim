@@ -25,7 +25,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Value, json};
-use tokio::io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
@@ -71,6 +71,28 @@ pub const LSP_FORMAT_EDITS_MAX: usize = 4_096;
 
 /// The largest hover text that one answer may carry, in bytes.
 pub const LSP_HOVER_BYTES_MAX: usize = 16 * 1024;
+
+/// The bytes of the standard error of one server attempt that the editor
+/// records.
+///
+/// A server that fails names its cause in its first lines, so this bound holds
+/// that cause. The reader drains every further byte of that attempt and records
+/// none of it. A server that writes without limit therefore still runs, and it
+/// costs bounded memory. See `docs/language-services.md`.
+pub const LSP_STDERR_BYTES_MAX: usize = 64 * 1024;
+
+/// The bytes that one recorded standard error line keeps.
+///
+/// One line of a server log names one state. The editor log clips one entry
+/// further, so this bound protects the reader from a stream that carries no
+/// line break.
+pub const LSP_STDERR_LINE_BYTES_MAX: usize = 1024;
+
+/// The bytes that one read of the standard error takes.
+///
+/// The value is the size of one read buffer, not a bound on the recorded text.
+/// [`LSP_STDERR_BYTES_MAX`] and [`LSP_STDERR_LINE_BYTES_MAX`] bound that text.
+const STDERR_CHUNK_BYTES: usize = 4 * 1024;
 
 /// The largest result identifier that one pulled report may carry, in bytes.
 ///
@@ -142,6 +164,26 @@ impl LanguageRequestId {
     }
 }
 
+/// One recorded fact about the server process of one session.
+///
+/// A report changes no buffer text, no cursor, and no message line. The editor
+/// records it in its log, so a reader finds the cause of a failure that the
+/// protocol never names. See `docs/windows.md`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ServerReport {
+    /// The handshake completed, so the server serves its documents.
+    Started,
+    /// The server wrote one line to its standard error.
+    ///
+    /// The line holds at most [`LSP_STDERR_LINE_BYTES_MAX`] bytes.
+    Output(String),
+    /// The output of one attempt passed [`LSP_STDERR_BYTES_MAX`].
+    ///
+    /// The session records no further line of that attempt. It still drains the
+    /// stream, so the server never blocks on a full pipe.
+    OutputBound,
+}
+
 /// One typed result of one language-server session.
 #[derive(Debug)]
 pub enum LanguageOutcome {
@@ -197,6 +239,11 @@ pub enum LanguageOutcome {
     Restarted,
     /// The session stopped and accepts no further request.
     Stopped,
+    /// The session recorded one fact about the server process.
+    ///
+    /// The editor writes the fact to its log and changes no visible state. See
+    /// `docs/language-services.md`.
+    Reported(ServerReport),
 }
 
 /// One typed result and the server whose session produced it.
@@ -486,6 +533,11 @@ pub(super) struct SessionConfig {
 pub struct Transport {
     input: Box<dyn AsyncWrite + Send + Unpin>,
     output: Box<dyn AsyncRead + Send + Unpin>,
+    /// The standard error of the child, which one background task drains.
+    ///
+    /// A prepared stream pair holds no standard error, so a test transport
+    /// carries `None` and the attempt starts no reader.
+    errors: Option<Box<dyn AsyncRead + Send + Unpin>>,
     child: Option<Child>,
 }
 
@@ -499,6 +551,7 @@ impl Transport {
         Self {
             input: Box::new(input),
             output: Box::new(output),
+            errors: None,
             child: None,
         }
     }
@@ -535,9 +588,12 @@ impl TransportFactory {
                     .current_dir(&*root)
                     .stdin(Stdio::piped())
                     .stdout(Stdio::piped())
-                    // The server log is not editor state, so it goes nowhere and
-                    // cannot fill a pipe that no reader drains.
-                    .stderr(Stdio::null())
+                    // The server log names the cause of a failure that the
+                    // protocol never reports, so the session captures it. One
+                    // background task drains this pipe from the first byte, so
+                    // the pipe never fills and the child never blocks. See
+                    // `docs/language-services.md`.
+                    .stderr(Stdio::piped())
                     .kill_on_drop(true);
                 let mut child = command.spawn().map_err(|source| {
                     if source.kind() == std::io::ErrorKind::NotFound {
@@ -554,9 +610,14 @@ impl TransportFactory {
                     .stdout
                     .take()
                     .expect("the command configures a piped standard output");
+                let errors = child
+                    .stderr
+                    .take()
+                    .expect("the command configures a piped standard error");
                 Ok(Transport {
                     input: Box::new(input),
                     output: Box::new(output),
+                    errors: Some(Box::new(errors)),
                     child: Some(child),
                 })
             }
@@ -731,8 +792,14 @@ async fn attempt(
     let Transport {
         input,
         output,
+        errors,
         mut child,
     } = transport;
+    // The standard error of the child needs a reader from the first byte,
+    // because a pipe that nobody drains fills and stops the child. See
+    // `docs/language-services.md`.
+    let errors =
+        errors.map(|stream| tokio::spawn(record_errors(stream, config.id, events.clone())));
     let (envelope_sender, mut envelopes) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
     // The frame reader owns its stream in one task, so no cancelled future can
     // drop a partly read frame and desynchronize the stream.
@@ -756,7 +823,135 @@ async fn attempt(
     if let Some(child) = child.as_mut() {
         terminate(child).await;
     }
+    if let Some(mut task) = errors {
+        // The child ended, so the stream ends and the reader records its last
+        // line. Another process may still hold the write end of that pipe, so
+        // the wait carries the shutdown deadline and the rest stays unrecorded.
+        if time::timeout(LSP_SHUTDOWN_DEADLINE, &mut task)
+            .await
+            .is_err()
+        {
+            task.abort();
+        }
+    }
     outcome
+}
+
+/// Drains the standard error of one server and records a bounded part of it.
+///
+/// The task drains the stream until the stream ends. A child that writes to a
+/// pipe that nobody reads blocks when the pipe fills. Several servers write to
+/// their standard error while they run correctly.
+///
+/// Draining and recording carry two different bounds. The task records at most
+/// [`LSP_STDERR_BYTES_MAX`] bytes of one attempt, and it drains every further
+/// byte without recording it. See `docs/language-services.md`.
+async fn record_errors<R>(
+    mut stream: R,
+    server: LanguageServerId,
+    events: mpsc::Sender<LanguageEvent>,
+) where
+    R: AsyncRead + Unpin,
+{
+    let mut chunk = [0_u8; STDERR_CHUNK_BYTES];
+    let mut recorder = ErrorRecorder::new(server, events);
+    loop {
+        let read = match stream.read(&mut chunk).await {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        debug_assert!(read <= chunk.len(), "one read fills at most the chunk");
+        recorder.take(&chunk[..read]);
+    }
+    recorder.finish();
+}
+
+/// The bounded recorder of the standard error of one server attempt.
+///
+/// The recorder holds one partial line and two counters. It never waits, so the
+/// task that owns it always returns to the stream and the pipe never fills.
+struct ErrorRecorder {
+    /// The server that wrote the stream.
+    server: LanguageServerId,
+    /// The result queue of the editor.
+    events: mpsc::Sender<LanguageEvent>,
+    /// The bytes of the line that no line break ended yet.
+    line: Vec<u8>,
+    /// The bytes that the recorder already recorded.
+    recorded: usize,
+    /// Whether the recorded bytes passed [`LSP_STDERR_BYTES_MAX`].
+    stopped: bool,
+}
+
+impl ErrorRecorder {
+    /// Creates the recorder of one attempt.
+    fn new(server: LanguageServerId, events: mpsc::Sender<LanguageEvent>) -> Self {
+        Self {
+            server,
+            events,
+            line: Vec::new(),
+            recorded: 0,
+            stopped: false,
+        }
+    }
+
+    /// Records the complete lines of one chunk and keeps the rest.
+    ///
+    /// The call returns at once after the recorder stopped, so the caller
+    /// drains the stream at full speed.
+    fn take(&mut self, chunk: &[u8]) {
+        for &byte in chunk {
+            if self.stopped {
+                return;
+            }
+            if byte == b'\n' {
+                self.end_line();
+            } else if self.line.len() < LSP_STDERR_LINE_BYTES_MAX {
+                // A longer line loses its tail. The recorded start names the
+                // state that the server reports.
+                self.line.push(byte);
+            }
+        }
+    }
+
+    /// Records the line that the stream ended without a line break.
+    fn finish(&mut self) {
+        if !self.stopped {
+            self.end_line();
+        }
+    }
+
+    /// Records one complete line and starts the next one.
+    fn end_line(&mut self) {
+        debug_assert!(
+            self.line.len() <= LSP_STDERR_LINE_BYTES_MAX,
+            "every earlier byte left the line inside its bound"
+        );
+        let text = String::from_utf8_lossy(&self.line);
+        let text = text.trim_end().to_owned();
+        // The line break counts as one byte, so an empty line still moves the
+        // recorder towards its bound.
+        self.recorded = self.recorded.saturating_add(self.line.len() + 1);
+        self.line.clear();
+        if !text.is_empty() {
+            self.report(ServerReport::Output(text));
+        }
+        if self.recorded >= LSP_STDERR_BYTES_MAX {
+            self.stopped = true;
+            self.report(ServerReport::OutputBound);
+        }
+    }
+
+    /// Sends one report to the editor without waiting.
+    ///
+    /// A full result queue drops the report. The capture is a report, never a
+    /// failure path, and a wait here would stop the drain and fill the pipe.
+    fn report(&self, report: ServerReport) {
+        let _ = self.events.try_send(LanguageEvent {
+            server: self.server,
+            outcome: LanguageOutcome::Reported(report),
+        });
+    }
 }
 
 /// Reads frames until the stream ends or one bound stops the session.
@@ -832,6 +1027,14 @@ impl Session<'_> {
         if let Err(error) = handshake {
             return AttemptOutcome::Failed(error);
         }
+        // The server answered the handshake, so it serves its documents from
+        // here. The editor records the start beside the output of the server.
+        emit(
+            self.events,
+            self.config.id,
+            LanguageOutcome::Reported(ServerReport::Started),
+        )
+        .await;
         loop {
             let deadline = self.next_deadline();
             let step = tokio::select! {
