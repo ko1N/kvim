@@ -460,6 +460,113 @@ fn the_command_line_runs_the_fixed_command_set_and_rejects_the_rest() {
     assert_eq!(session.run_state(), RunState::Finished);
 }
 
+/// Reports two messages and returns both texts, oldest first.
+///
+/// The second message replaces the first one on the message line, so the
+/// message line alone loses the first text.
+fn report_two_messages(session: &mut Session) -> (String, String) {
+    // A scratch buffer holds no file name, so `:w` refuses the save.
+    press(session, ':');
+    type_keys(session, "w");
+    press_code(session, KeyCode::Enter);
+    let replaced = message(session);
+    assert!(!replaced.is_empty(), "the refused save reports its reason");
+
+    press(session, ':');
+    type_keys(session, "wqa");
+    press_code(session, KeyCode::Enter);
+    let newest = message(session);
+    assert_ne!(
+        newest, replaced,
+        "the message line keeps the newest message only"
+    );
+    (replaced, newest)
+}
+
+/// Opens the editor log and returns the rows of the new buffer.
+fn open_log(session: &mut Session, name: &str) -> Vec<String> {
+    press(session, ':');
+    type_keys(session, name);
+    press_code(session, KeyCode::Enter);
+    assert_eq!(session.active_buffer().name(), "[Log]");
+    session
+        .buffer()
+        .to_string()
+        .lines()
+        .map(str::to_owned)
+        .collect()
+}
+
+#[test]
+fn the_log_command_opens_a_snapshot_that_holds_a_replaced_message() {
+    let mut session = session(60, 12);
+    let (replaced, newest) = report_two_messages(&mut session);
+
+    // `:l` is the declared abbreviation of `:log`.
+    let rows = open_log(&mut session, "l");
+    assert_eq!(rows.len(), 2, "the log holds both messages, not {rows:?}");
+    assert!(
+        rows[0].ends_with(&replaced),
+        "the replaced message survives in {:?}",
+        rows[0]
+    );
+    assert!(
+        rows[1].ends_with(&newest),
+        "the newest message is the last row, not {:?}",
+        rows[1]
+    );
+    assert!(
+        rows[0].contains("ERROR MESSAGE"),
+        "one entry names its severity and its source in {:?}",
+        rows[0]
+    );
+
+    // The buffer is an ordinary scratch buffer over generated text.
+    assert_eq!(session.active_buffer().path(), None);
+    assert!(
+        !session.active_buffer().is_modified(),
+        "the new buffer holds no unsaved change"
+    );
+    // The command line clears the message line when it opens, exactly as it
+    // does for every other command, and the log command reports nothing.
+    assert_eq!(message(&session), "");
+}
+
+#[test]
+fn an_edit_of_the_log_buffer_changes_no_entry_and_a_second_log_builds_a_new_snapshot() {
+    let mut session = session(60, 12);
+    let (_, newest) = report_two_messages(&mut session);
+    let rows = open_log(&mut session, "log");
+    let edited = session.buffers().ids();
+
+    // The user edits the snapshot like any other buffer.
+    press(&mut session, 'i');
+    type_keys(&mut session, "note");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(session.active_buffer().is_modified());
+
+    // The edit changed no entry, so the next snapshot holds the same rows.
+    assert_eq!(open_log(&mut session, "log"), rows);
+
+    // One more report reaches the log, and the next snapshot holds it.
+    press(&mut session, ':');
+    type_keys(&mut session, "wqa");
+    press_code(&mut session, KeyCode::Enter);
+    let grown = open_log(&mut session, "log");
+    assert_eq!(grown.len(), 3, "the newest snapshot holds every report");
+    assert!(grown[2].ends_with(&newest));
+
+    // Every earlier snapshot stayed as it was.
+    let first = edited
+        .last()
+        .and_then(|id| session.buffers().get(*id))
+        .expect("the first log buffer is still loaded");
+    assert!(
+        first.text().to_string().starts_with("note"),
+        "the first log buffer keeps the edit of the user"
+    );
+}
+
 #[test]
 fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     let mut session = session(60, 12);
@@ -481,7 +588,7 @@ fn the_command_line_completes_a_command_name_and_wraps_the_cycle() {
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(prompt_text(&session), "edit");
     assert_eq!(completion_outcome(&session), CompletionOutcome::Listed);
-    for expected in ["quit", "wq", "write"] {
+    for expected in ["log", "quit", "wq", "write"] {
         press_code(&mut session, KeyCode::Tab);
         assert_eq!(prompt_text(&session), expected);
     }

@@ -392,7 +392,7 @@ stays outside the first release.
 - [`responsiveness.md`](responsiveness.md) owns background work, bounds,
   publication gates, latency budgets, and shutdown.
 - [`windows.md`](windows.md) owns the window tree, layout, focus, resize,
-  sidebars, and the theme.
+  sidebars, the theme, and the editor log.
 - [`files.md`](files.md) owns buffers, saving, external-change conflicts,
   persistent undo files, workspace mutations, and picker limits.
 - [`language-services.md`](language-services.md) owns the language adapter
