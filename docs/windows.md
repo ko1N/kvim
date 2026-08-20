@@ -2,8 +2,8 @@
 
 ## Ownership
 
-The `tui` module owns the window tree, layout, focus, resize, rendering, and the
-theme. It is the sole owner of visible editor state. See
+The `tui` module owns the window tree, layout, focus, resize, rendering, the
+theme, and the editor log. It is the sole owner of visible editor state. See
 [`architecture.md`](architecture.md).
 
 The window tree contains no buffer text and no terminal colors. It contains
@@ -236,8 +236,9 @@ The terminal holds three bands. The window tree receives the body band only.
   color, so only a warning and a failure stand out. A confirmation shows its
   question on the same row, over the prompt and over the message, because it
   owns the keys. The user types the answer after the hint of the question, so
-  the line draws the cursor after that answer. See
-  [`input-actions.md`](input-actions.md).
+  the line draws the cursor after that answer. Every message that this line
+  shows also reaches the editor log, so a replaced message stays readable. See
+  [`input-actions.md`](input-actions.md) and [The Editor Log](#the-editor-log).
 
 The command line can open a candidate list of the completion. The list is an
 overlay, so it takes the last rows of the body band and covers neither the
@@ -323,6 +324,61 @@ The list and the notification overlay both reach the last rows of the body
 band. The list draws over the notification overlay. The user cycles the list
 with a key and reads it now. The overlay reports background work that no key
 waits for. See [`language-services.md`](language-services.md).
+
+## The Editor Log
+
+The message line shows one message. A second message replaces the first one, so
+the message line alone loses a report that the user still needs. The editor
+therefore keeps a bounded log beside the message line, and every report that
+reaches the message line also reaches the log.
+
+The `tui` module owns the log, because it owns the message line and every other
+visible editor state. The log is a history. It never replaces the message line,
+and the message line reports exactly what it reports without it.
+
+One entry holds four values:
+
+- the elapsed time since the editor started,
+- the severity of the report, which is `Error`, `Warning`, or `Info`,
+- the source that made the report,
+- the one-line text of the report.
+
+The elapsed time is the time that the event loop already passes into every
+entry point. The session reads no clock, so no entry holds a wall-clock time and
+no entry needs one. See [`responsiveness.md`](responsiveness.md). A reader needs
+the order of the reports and the distance between two of them, and the elapsed
+time gives both.
+
+The log keeps at most 256 entries. A new entry above that count removes the
+oldest entry, so the newest reports always survive. The number holds every
+report of a normal session, and it still holds several groups of reports from a
+component that fails and starts again, which is the case that a reader opens the
+log for. A smaller number loses the first report of such a group, which is the
+report that usually names the cause.
+
+One entry keeps at most as many characters as the message line keeps, so one
+long report never fills the log and a message-line entry loses no character that
+the message line showed. The log replaces every control character of the text
+with one blank. One entry is therefore one row of the log buffer, and a search
+reaches every entry.
+
+One entry renders as four fields with one blank between them:
+
+```
+00:12.345 ERROR MESSAGE the file does not exist
+00:13.001 INFO  MESSAGE "main.rs" 42L, 900B
+```
+
+The first field is the elapsed time as minutes, seconds, and milliseconds. The
+minutes field grows past two digits after 100 minutes. The second field is the
+severity, and the third field is the source. Both are uppercase and padded to a
+fixed width, so the entries align and a search for `ERROR` or for `MESSAGE`
+reaches one severity or one source without reaching ordinary report text. The
+fourth field is the text of the report.
+
+`:l[og]` opens one snapshot of the log as a new buffer, newest entry last. The
+snapshot is a value, so the buffer never changes while it is open and an edit of
+that buffer changes no entry. See [`input-actions.md`](input-actions.md).
 
 ## Theme
 

@@ -53,6 +53,7 @@ mod completion;
 mod icons;
 mod language;
 mod layout;
+mod log;
 mod notify;
 mod overlay;
 mod picker;

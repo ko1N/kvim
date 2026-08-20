@@ -1684,7 +1684,7 @@ const SURFACE: Color = Color::Rgb(0x16, 0x1a, 0x20);
 ///
 /// The line holds no `!`, so the list holds no `!` variant. See
 /// `docs/input-actions.md`.
-const COMMAND_CANDIDATES: [&str; 4] = ["edit", "quit", "wq", "write"];
+const COMMAND_CANDIDATES: [&str; 5] = ["edit", "log", "quit", "wq", "write"];
 
 /// Opens the command line of one session and offers its candidates.
 fn open_completion(session: &mut Session) {
@@ -1742,7 +1742,7 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     assert_eq!(style_at(&session, 0, first + 1).bg, Some(SURFACE));
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(selected_row(&session), Some(first + 1));
-    assert_eq!(row(&session, 23), ":quit");
+    assert_eq!(row(&session, 23), ":log");
     press_code(&mut session, KeyCode::BackTab);
     assert_eq!(selected_row(&session), Some(first));
     assert_eq!(row(&session, 23), ":edit");
@@ -1766,7 +1766,7 @@ fn one_candidate_completes_the_command_line_without_a_list() {
 #[test]
 fn the_candidate_list_reports_the_candidates_that_it_hides() {
     // The body band of this terminal holds three rows, and the completion
-    // offers four candidates, so the list spends its last row on the note.
+    // offers more candidates, so the list spends its last row on the note.
     let mut session = session(40, 5);
     open_completion(&mut session);
 
@@ -1831,5 +1831,8 @@ fn a_narrow_terminal_keeps_the_command_line_readable() {
             "row {y} stays inside the terminal"
         );
     }
-    assert_eq!(row(&session, 4), " edit");
+    // The list takes the last body rows, so its first row holds the first
+    // candidate.
+    let first = 8 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
+    assert_eq!(row(&session, first), " edit");
 }

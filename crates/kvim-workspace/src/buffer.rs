@@ -87,10 +87,36 @@ impl FileBuffer {
     pub fn scratch(files: &FileSettings) -> Self {
         let text = TextBuffer::from_text("", files)
             .expect("an empty text never passes the file size limit");
+        Self::generated(SCRATCH_BUFFER_NAME, text)
+    }
+
+    /// Creates a buffer over generated text that holds no file.
+    ///
+    /// The `name` names the buffer in the winbar, exactly as
+    /// [`FileBuffer::scratch`] names its own. The buffer holds no path, so it
+    /// stays an ordinary scratch buffer: the user edits it and closes it, and a
+    /// save asks for a file name first.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_core::TextBuffer;
+    /// use kvim_settings::FileSettings;
+    /// use kvim_workspace::FileBuffer;
+    ///
+    /// let files = FileSettings::default();
+    /// let text = TextBuffer::from_text("one\n", &files).expect("the text is short");
+    /// let buffer = FileBuffer::generated("[Log]", text);
+    /// assert_eq!(buffer.name(), "[Log]");
+    /// assert_eq!(buffer.path(), None);
+    /// assert!(!buffer.is_modified());
+    /// ```
+    #[must_use]
+    pub fn generated(name: impl Into<String>, text: TextBuffer) -> Self {
         Self {
             text,
             path: None,
-            name: SCRATCH_BUFFER_NAME.to_owned(),
+            name: name.into(),
             identity: None,
             external: None,
         }

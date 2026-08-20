@@ -1,8 +1,8 @@
 //! The command line parser for the fixed first-release command set.
 //!
 //! Kvim implements no Ex grammar. The parser accepts `write`, `quit`, `wq`,
-//! `edit`, `edit <path>`, the `!` variant of `quit` and `edit`, and a line
-//! number only. It rejects every other line.
+//! `edit`, `edit <path>`, `log`, the `!` variant of `quit` and `edit`, and a
+//! line number only. It rejects every other line.
 //!
 //! Each command declares one full name and the shortest abbreviation that names
 //! it, as Vim does. `quit` declares one character, so `q`, `qu`, `qui`, and
@@ -39,6 +39,8 @@ pub enum CommandLineCommand {
     Reload,
     /// `:e!` discards the unsaved changes of that buffer and reads its file.
     ReloadDiscard,
+    /// `:log` opens one snapshot of the editor log in a new buffer.
+    Log,
     /// `:<number>` moves the cursor to that line.
     GoToLine(NonZeroU32),
 }
@@ -65,7 +67,7 @@ pub enum CommandLineError {
     },
     /// The line matched no accepted command.
     #[error(
-        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, and :<number> only"
+        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, :l[og], and :<number> only"
     )]
     Unknown,
 }
@@ -76,6 +78,8 @@ enum NamedCommand {
     /// The name of [`CommandLineCommand::Edit`], [`CommandLineCommand::Reload`],
     /// and [`CommandLineCommand::ReloadDiscard`].
     Edit,
+    /// The name of [`CommandLineCommand::Log`].
+    Log,
     /// The name of [`CommandLineCommand::Quit`] and
     /// [`CommandLineCommand::QuitDiscard`].
     Quit,
@@ -127,10 +131,15 @@ struct CommandName {
 /// one new row here and no new completion code. The table holds no `:<number>`
 /// row, because a line number is no name. It holds no `:e <path>` row either,
 /// because the path is an argument of `edit`. See `docs/input-actions.md`.
-const NAMES: [CommandName; 4] = [
+const NAMES: [CommandName; 5] = [
     CommandName {
         command: NamedCommand::Edit,
         full: "edit",
+        minimum: 1,
+    },
+    CommandName {
+        command: NamedCommand::Log,
+        full: "log",
         minimum: 1,
     },
     CommandName {
@@ -311,6 +320,8 @@ impl CommandLineCommand {
     /// // `:e` without a path reads the file of the focused window again.
     /// assert_eq!(CommandLineCommand::parse("e"), Ok(CommandLineCommand::Reload));
     /// assert_eq!(CommandLineCommand::parse("edit!"), Ok(CommandLineCommand::ReloadDiscard));
+    /// // `:l[og]` opens one snapshot of the editor log.
+    /// assert_eq!(CommandLineCommand::parse("l"), Ok(CommandLineCommand::Log));
     /// assert_eq!(
     ///     CommandLineCommand::parse("42"),
     ///     Ok(CommandLineCommand::GoToLine(NonZeroU32::new(42).unwrap()))
@@ -366,6 +377,7 @@ impl CommandLineCommand {
             (NamedCommand::Edit, Bang::Absent, None) => Self::Reload,
             (NamedCommand::Edit, Bang::Present, None) => Self::ReloadDiscard,
             (NamedCommand::Edit, Bang::Absent, Some(path)) => Self::Edit(PathBuf::from(path)),
+            (NamedCommand::Log, Bang::Absent, None) => Self::Log,
             _ => return Err(CommandLineError::Unknown),
         };
         Ok(command)
@@ -408,6 +420,8 @@ mod tests {
             ("  e  ", CommandLineCommand::Reload),
             ("e!", CommandLineCommand::ReloadDiscard),
             ("edit!", CommandLineCommand::ReloadDiscard),
+            ("l", CommandLineCommand::Log),
+            ("log", CommandLineCommand::Log),
             (
                 "e  a path/with space.rs ",
                 CommandLineCommand::Edit(PathBuf::from("a path/with space.rs")),
@@ -503,12 +517,16 @@ mod tests {
 
     #[test]
     fn the_name_source_offers_a_full_name_that_the_parser_accepts() {
-        let cases: [(&str, &[&str]); 20] = [
+        let cases: [(&str, &[&str]); 23] = [
             // A text without a `!` offers no `!` variant, so no cycle of that
             // text writes a command that discards unsaved changes.
-            ("", &["edit", "quit", "wq", "write"]),
+            ("", &["edit", "log", "quit", "wq", "write"]),
             ("e", &["edit"]),
             ("edit", &["edit"]),
+            ("l", &["log"]),
+            ("log", &["log"]),
+            // `log` has no `!` variant, so a typed `!` offers nothing.
+            ("l!", &[]),
             ("q", &["quit"]),
             ("qu", &["quit"]),
             // The typed `!` is a deliberate choice, so the completion serves it.
@@ -574,6 +592,8 @@ mod tests {
             // carry a `!`.
             ("write foo", CommandLineError::Unknown),
             ("quit foo", CommandLineError::Unknown),
+            ("log foo", CommandLineError::Unknown),
+            ("log!", CommandLineError::Unknown),
             ("e! src/main.rs", CommandLineError::Unknown),
             ("edit! src/main.rs", CommandLineError::Unknown),
             ("w!", CommandLineError::Unknown),

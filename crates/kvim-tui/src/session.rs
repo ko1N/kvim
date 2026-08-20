@@ -2,7 +2,8 @@
 //!
 //! [`Session`] owns every value that the terminal shows: the loaded buffers,
 //! the window tree, the editing state, the input resolver, the active search,
-//! the open prompt, and the last message. It performs no filesystem work, no
+//! the open prompt, the last message, and the bounded log of every report that
+//! the editor made. It performs no filesystem work, no
 //! process work, and no language work, so the event loop stays inside the
 //! latency budget of `docs/responsiveness.md`.
 //!
@@ -79,6 +80,7 @@ use super::language::{
     QueryPurpose, QueryState, formatter, has_formatter, jump_target,
 };
 use super::layout::RegionKind;
+use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::theme::Theme;
@@ -907,6 +909,12 @@ pub struct Session {
     /// files while the user types. See `docs/files.md`.
     completion_walk: CompletionWalk,
     message: Option<Message>,
+    /// The bounded history of every report that the editor made.
+    ///
+    /// The message line keeps one message, so a replaced message would be gone
+    /// without this log. `:log` opens one snapshot of it as a buffer. See
+    /// `docs/windows.md`.
+    log: EditorLog,
     /// The open floating overlay of the language services.
     float: Option<Float>,
     which_key: Option<Vec<WhichKeyRow>>,
@@ -966,6 +974,7 @@ impl Session {
             confirmation: None,
             completion_walk: CompletionWalk::Unasked,
             message: None,
+            log: EditorLog::default(),
             float: None,
             which_key: None,
             notifications: NotificationBoard::default(),
@@ -2049,6 +2058,7 @@ impl Session {
             CommandLineCommand::ReloadDiscard => {
                 return self.reload_active(UnsavedChanges::Discard);
             }
+            CommandLineCommand::Log => return self.open_log(),
             CommandLineCommand::Quit => return self.close_window(UnsavedChanges::Ask),
             CommandLineCommand::QuitDiscard => {
                 return self.close_window(UnsavedChanges::Discard);
@@ -2059,6 +2069,38 @@ impl Session {
             }
         }
         Redraw::Needed
+    }
+
+    /// Opens one snapshot of the editor log in a new buffer.
+    ///
+    /// The snapshot is a value, so the buffer never changes while it is open,
+    /// and an edit of that buffer changes no entry. A second call opens a
+    /// second buffer that holds the log of that later moment. The call reads
+    /// editor state only, so it performs no filesystem work. See
+    /// `docs/windows.md`.
+    fn open_log(&mut self) -> Redraw {
+        let snapshot = self.log.snapshot();
+        let text = match TextBuffer::from_text(&snapshot, &self.settings.files) {
+            Ok(text) => text,
+            Err(error) => {
+                self.set_message(error.to_string(), MessageLevel::Error);
+                return Redraw::Needed;
+            }
+        };
+        let buffer = FileBuffer::generated(LOG_BUFFER_NAME, text);
+        let Some(id) = self.buffers.insert(buffer) else {
+            self.report_buffer_limit();
+            return Redraw::Needed;
+        };
+        self.switch_to(id).or(Redraw::Needed)
+    }
+
+    /// Reports that the buffer list holds no room for another buffer.
+    fn report_buffer_limit(&mut self) {
+        self.set_message(
+            format!("the editor holds the maximum of {BUFFERS_MAX} buffers"),
+            MessageLevel::Error,
+        );
     }
 
     /// Opens one path in the focused window.
@@ -2090,10 +2132,7 @@ impl Session {
             return self.switch_to(id);
         }
         if self.buffers.len() >= BUFFERS_MAX {
-            self.set_message(
-                format!("the editor holds the maximum of {BUFFERS_MAX} buffers"),
-                MessageLevel::Error,
-            );
+            self.report_buffer_limit();
             return Redraw::Needed;
         }
         let files = self.settings.files;
@@ -4326,7 +4365,13 @@ impl Session {
         // notification overlay carries language server progress alone, so an
         // ordinary report never reaches a second surface. See
         // `docs/language-services.md`.
-        self.message = Some(Message::new(text, level));
+        let message = Message::new(text, level);
+        // Every message reaches the message line through this one call, so the
+        // log holds every message, including one that another message replaces.
+        // See `docs/windows.md`.
+        self.log
+            .record(self.clock, LogSource::MessageLine, level, message.text());
+        self.message = Some(message);
     }
 
     /// Empties the message line and reports whether it held a message.
