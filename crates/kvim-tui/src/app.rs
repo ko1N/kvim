@@ -39,7 +39,10 @@ use kvim_workspace::{
 use super::clipboard::{SessionClipboard, command_failure, refused_submission};
 use super::language::{LANGUAGE_OUTBOX_MAX, send_request};
 use super::picker::PickerFailure;
-use super::session::{AnalysisResult, FileRequestFailure, Redraw, RunState, Session};
+use super::session::{
+    AnalysisResult, FileRequestFailure, JOB_ANALYSIS, JOB_OBSOLETE, JOB_REFUSED, JOB_WALK,
+    MessageLevel, Redraw, RunState, Session,
+};
 use super::tree::GENERATED_NAMES;
 
 /// The number of consecutive terminal read failures that ends the editor.
@@ -809,9 +812,43 @@ fn submit_analysis_work(
         WorkResult::Analysis(request.run(&cancellation))
     });
     if submitted.is_err() {
+        // The refusal paints nothing, so the log is the one place that holds
+        // it. See `docs/responsiveness.md`.
+        editor.record_job(JOB_ANALYSIS, MessageLevel::Warning, JOB_REFUSED);
         editor.abandon_analysis_request();
     }
     Redraw::Skipped
+}
+
+/// Returns the log outcome of one runtime failure.
+///
+/// Every outcome is one fixed text, so a job that fails the same way twice
+/// collapses into one log entry. See `docs/windows.md`.
+const fn job_outcome(error: &RuntimeError) -> &'static str {
+    match error {
+        RuntimeError::Timeout => "passed its deadline",
+        RuntimeError::Cancelled => "was cancelled",
+        RuntimeError::WorkerFailure(_) => "failed inside its worker",
+        RuntimeError::ProcessSpawn(_) => "did not start",
+        RuntimeError::ProcessRead(_) | RuntimeError::ProcessWrite(_) => "lost its pipe",
+        RuntimeError::OutputLimit { .. } => "wrote more than its output limit",
+    }
+}
+
+/// Returns the log severity of one runtime failure.
+///
+/// A newer request in the same slot cancels the older one, so a cancelled job
+/// is a normal state. Every other failure needs attention.
+const fn job_level(error: &RuntimeError) -> MessageLevel {
+    match error {
+        RuntimeError::Cancelled => MessageLevel::Info,
+        RuntimeError::Timeout
+        | RuntimeError::WorkerFailure(_)
+        | RuntimeError::ProcessSpawn(_)
+        | RuntimeError::ProcessRead(_)
+        | RuntimeError::ProcessWrite(_)
+        | RuntimeError::OutputLimit { .. } => MessageLevel::Warning,
+    }
 }
 
 /// Applies one result of the bounded worker service.
@@ -827,7 +864,13 @@ fn complete(
         return Step::Handled(Redraw::Skipped);
     };
     if !gate.accepts(&event.request) {
-        // A newer request owns the slot, so this result is obsolete.
+        // A newer request owns the slot, so this result is obsolete. The log
+        // records the analysis slot alone, because the log collapses one
+        // repeated report and two obsolete kinds that alternate would collapse
+        // into nothing. See `docs/responsiveness.md`.
+        if event.request.slot() == ANALYSIS_SLOT {
+            editor.record_job(JOB_ANALYSIS, MessageLevel::Info, JOB_OBSOLETE);
+        }
         return Step::Handled(Redraw::Skipped);
     }
     let analysis = event.request.slot() == ANALYSIS_SLOT;
@@ -870,8 +913,10 @@ fn complete(
             editor.apply_clipboard_result(Err(command_failure(&error)))
         }
         // An analysis that fails, times out, or is cancelled renders plain text
-        // and reports nothing, because highlighting is decoration.
-        (None, Err(_)) if analysis => {
+        // and reports nothing, because highlighting is decoration. The log
+        // names the outcome instead.
+        (None, Err(error)) if analysis => {
+            editor.record_job(JOB_ANALYSIS, job_level(&error), job_outcome(&error));
             editor.abandon_analysis_request();
             Redraw::Skipped
         }
@@ -885,8 +930,12 @@ fn complete(
         }
         // A walk that fails, times out, or is cancelled leaves the command line
         // without a path list. The user still types the path in full, so the
-        // editor keeps nothing to clear and reports nothing.
-        (None, Err(_)) if completion => Redraw::Skipped,
+        // editor keeps nothing to clear and reports nothing. The log names the
+        // outcome instead.
+        (None, Err(error)) if completion => {
+            editor.record_job(JOB_WALK, job_level(&error), job_outcome(&error));
+            Redraw::Skipped
+        }
         (None, Err(error)) if workspace => editor.abandon_workspace_request(failure(&error)),
         (None, Err(error)) => editor.abandon_file_request(failure(&error)),
     })

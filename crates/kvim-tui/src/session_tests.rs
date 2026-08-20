@@ -22,6 +22,7 @@ use kvim_workspace::{Candidate, ExternalChange, PickerRequest, PickerResult, ran
 use super::clipboard::SessionClipboard;
 use super::completion::{CompletionOutcome, LineCompletion};
 use super::language::{LanguageRequest, LanguageRequestKind};
+use super::log::LOG_ENTRIES_MAX;
 use super::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, MessageLevel, Redraw, RunState,
     Session,
@@ -548,13 +549,19 @@ fn an_edit_of_the_log_buffer_changes_no_entry_and_a_second_log_builds_a_new_snap
     // The edit changed no entry, so the next snapshot holds the same rows.
     assert_eq!(open_log(&mut session, "log"), rows);
 
-    // One more report reaches the log, and the next snapshot holds it.
+    // The same report reaches the log again. The log collapses a repeated
+    // report, so the next snapshot counts it instead of adding one row.
     press(&mut session, ':');
     type_keys(&mut session, "wqa");
     press_code(&mut session, KeyCode::Enter);
     let grown = open_log(&mut session, "log");
-    assert_eq!(grown.len(), 3, "the newest snapshot holds every report");
-    assert!(grown[2].ends_with(&newest));
+    assert_eq!(grown.len(), 2, "a repeated report adds no row to {grown:?}");
+    assert!(
+        grown[1].ends_with(&format!("{newest} (x2)")),
+        "the repeat raises the count of the newest entry, not {:?}",
+        grown[1]
+    );
+    assert_ne!(grown, rows, "the command builds the snapshot again");
 
     // Every earlier snapshot stayed as it was.
     let first = edited
@@ -2246,6 +2253,51 @@ fn an_accepted_analysis_reaches_the_view_and_an_obsolete_one_is_rejected() {
     assert!(
         session.take_analysis_request().is_none(),
         "the accepted result already describes the current version"
+    );
+}
+
+#[test]
+fn a_burst_of_obsolete_analyses_costs_one_log_entry_and_keeps_an_earlier_report() {
+    let (_directory, mut session) = opened("main.rs", "fn main() {}\n");
+
+    // One report reaches the message line before the burst starts.
+    press(&mut session, ':');
+    type_keys(&mut session, "nosuchcommand");
+    press_code(&mut session, KeyCode::Enter);
+    let earlier = message(&session);
+    assert!(!earlier.is_empty(), "the command line rejected the command");
+
+    // The user types while every analysis runs, so every result is obsolete.
+    let burst = LOG_ENTRIES_MAX + 16;
+    for _ in 0..burst {
+        let request = session
+            .take_analysis_request()
+            .expect("the changed buffer needs one analysis");
+        let obsolete = request.run(&CancellationToken::new());
+        press(&mut session, 'o');
+        press_code(&mut session, KeyCode::Esc);
+        assert_eq!(
+            session.apply_analysis_result(obsolete),
+            Redraw::Skipped,
+            "an obsolete buffer version changes nothing"
+        );
+    }
+
+    let rows = open_log(&mut session, "log");
+    let jobs: Vec<&String> = rows.iter().filter(|row| row.contains(" JOB ")).collect();
+    assert_eq!(
+        jobs.len(),
+        1,
+        "the whole burst costs one entry, but the log holds {jobs:?}"
+    );
+    assert!(
+        jobs[0].ends_with(&format!("analysis rejected: the buffer changed (x{burst})")),
+        "the entry names its job, its outcome, and its count, not {:?}",
+        jobs[0]
+    );
+    assert!(
+        rows.iter().any(|row| row.ends_with(&earlier)),
+        "the report from before the burst is still in {rows:?}"
     );
 }
 

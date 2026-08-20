@@ -179,6 +179,43 @@ candidate. Apply it on the event loop as one transition. Cancellation, timeout,
 worker failure, saturation, or invalid output leaves the previous valid state
 usable.
 
+### Recorded Outcomes
+
+A background job that changes no visible state reports nothing on the message
+line. A user then reads no cause for a file that lost its highlighting, or for
+a path completion that stayed empty. The editor therefore records a selected
+set of these outcomes in the editor log. [`windows.md`](windows.md) owns the
+log, the entry shape, and the rule that collapses a repeated report.
+
+The editor records these outcomes:
+
+| Job | Outcome | Severity |
+|---|---|---|
+| `analysis` | A newer buffer version displaced the result. | `Info` |
+| `analysis` | The worker service accepted no job. | `Warning` |
+| `analysis` | The job was cancelled, passed its deadline, or failed. | `Info` or `Warning` |
+| `analysis` | The adapter passed a bound, or returned no usable result. | `Warning` |
+| `walk` | The walk was cancelled, passed its deadline, or failed. | `Info` or `Warning` |
+| `formatter` | A newer buffer version displaced the answer. | `Info` |
+
+A cancelled job carries the `Info` severity, because a newer request in the
+same slot cancels the older one and that is a normal state. Every other outcome
+carries `Warning`.
+
+The editor records the obsolete result of one slot alone, and that slot is the
+analysis slot. The log compares one report with its newest entry alone, so two
+obsolete kinds that alternate cost two entries for each keystroke. That pair
+would fill the log and remove every earlier report. The picker, the preview,
+and the path completion also reject an obsolete result, and the editor records
+none of the three.
+
+The editor records no outcome that already reaches the message line. The
+formatter that the host does not hold, the formatter that refused a document,
+and the missing `git` command all reach it, so the `MESSAGE` entry beside them
+already holds the report. The editor also records no failed Git status read,
+because that failure names a directory outside a repository and a timeout with
+one value, and such an entry would name no outcome that a reader can act on.
+
 ## Latency Budgets
 
 - Process one terminal event and its pure state transition within 8 ms at p95.

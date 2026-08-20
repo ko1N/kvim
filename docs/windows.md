@@ -336,12 +336,13 @@ The `tui` module owns the log, because it owns the message line and every other
 visible editor state. The log is a history. It never replaces the message line,
 and the message line reports exactly what it reports without it.
 
-One entry holds four values:
+One entry holds five values:
 
 - the elapsed time since the editor started,
 - the severity of the report, which is `Error`, `Warning`, or `Info`,
 - the source that made the report,
-- the one-line text of the report.
+- the one-line text of the report,
+- the number of times that the report repeated.
 
 The elapsed time is the time that the event loop already passes into every
 entry point. The session reads no clock, so no entry holds a wall-clock time and
@@ -368,6 +369,7 @@ One entry renders as four fields with one blank between them:
 00:12.345 ERROR MESSAGE the file does not exist
 00:13.001 INFO  MESSAGE "main.rs" 42L, 900B
 00:13.400 INFO  SERVER  rust/rust-analyzer started
+00:14.902 INFO  JOB     analysis rejected: the buffer changed (x84)
 ```
 
 The first field is the elapsed time as minutes, seconds, and milliseconds. The
@@ -375,13 +377,44 @@ minutes field grows past two digits after 100 minutes. The second field is the
 severity, and the third field is the source. Both are uppercase and padded to a
 fixed width, so the entries align and a search for `ERROR` or for `MESSAGE`
 reaches one severity or one source without reaching ordinary report text. The
-fourth field is the text of the report.
+fourth field is the text of the report. A count above one follows the text.
+
+### One Entry For One Repeated Report
+
+A background job repeats one outcome as often as the user types. A log that
+adds one entry for each repeat therefore loses every earlier report inside one
+paragraph of typing. That log looks complete and is not, which is worse than no
+log. The log therefore collapses a repeated report into one entry with a count.
+
+The log compares a new report with its newest entry alone. Two reports are the
+same report when the source, the severity, and the one-line text are all equal.
+The log then raises the count of that entry, and it adds no entry. The entry
+keeps the time of its first report, so the entry names when the group started.
+
+Any other report ends the group. A later repeat of an earlier report starts a
+new entry, so the log merges no two groups that another report separates. The
+count stops at the largest value that its field holds. A group that repeats
+without limit therefore costs one entry and one bounded number.
+
+A row shows a count above one as `(xN)` after the text of the report. A row of
+a single report shows no count. The rule holds for every source, so the log
+keeps one mechanism and one entry shape.
 
 The log holds the reports of more than one source. `MESSAGE` names every report
 that reached the message line. `SERVER` names one language server: its start,
 its restart, its stop, its failure, and the text that it wrote to its standard
 error. Every `SERVER` entry names the adapter and the server, so a reader knows
 which server made the report.
+
+`JOB` names one background job that ended without a report on the message line.
+An analysis that passed a bound, a job that the worker service refused, and a
+result that a newer buffer version displaced are all such outcomes. Without the
+log a user reads no cause for a file that lost its highlighting.
+
+Every `JOB` entry names the job first and the outcome second. It names no
+buffer and no path, so every repeat of one outcome carries the same text and
+collapses into one entry. [`responsiveness.md`](responsiveness.md) owns the
+list of the recorded outcomes and the reason for each one.
 
 The text of a server is not a failure by itself, because a healthy server writes
 notes while it runs. The log therefore records that text at the `Info` severity,

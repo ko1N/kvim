@@ -104,6 +104,28 @@ pub const MESSAGE_CHARS_MAX: usize = 512;
 /// `docs/input-actions.md`.
 pub const CONFIRM_ANSWER_CHARS_MAX: usize = 32;
 
+/// The name of the buffer analysis in the editor log.
+///
+/// A job name holds no buffer name and no path, so every repeat of one outcome
+/// carries the same text and collapses into one entry. See
+/// `docs/responsiveness.md`.
+pub(super) const JOB_ANALYSIS: &str = "analysis";
+
+/// The name of the path-completion walk in the editor log.
+pub(super) const JOB_WALK: &str = "walk";
+
+/// The name of the external formatter in the editor log.
+const JOB_FORMATTER: &str = "formatter";
+
+/// The outcome of one result that a newer buffer version displaced.
+///
+/// Every job that a buffer version gates names this same outcome, so a reader
+/// searches one text for every obsolete result.
+pub(super) const JOB_OBSOLETE: &str = "rejected: the buffer changed";
+
+/// The outcome of one analysis that the bounded worker service refused.
+pub(super) const JOB_REFUSED: &str = "refused: the worker service accepted no job";
+
 /// Whether the visible state changed and the terminal needs a new frame.
 ///
 /// kvim renders only after a visible state change. It runs no unconditional
@@ -2192,6 +2214,10 @@ impl Session {
     ///
     /// A result for an obsolete buffer version changes nothing and enters no
     /// cache. A typed failure renders plain text and keeps the buffer editable.
+    ///
+    /// Neither outcome reaches the message line, because highlighting is
+    /// decoration. Both therefore reach the editor log, so a user reads why one
+    /// file lost its highlighting. See `docs/responsiveness.md`.
     #[must_use]
     pub fn apply_analysis_result(&mut self, result: AnalysisResult) -> Redraw {
         self.analysis_pending = None;
@@ -2200,6 +2226,17 @@ impl Session {
             return Redraw::Skipped;
         };
         let current = file.text().version();
+        let analysis = match result.outcome {
+            Ok(analysis) => analysis,
+            Err(error) => {
+                self.record_job(
+                    JOB_ANALYSIS,
+                    MessageLevel::Warning,
+                    &format!("failed: {error}"),
+                );
+                return Redraw::Skipped;
+            }
+        };
         let Some(entry) = self.analysis.get_mut(&result.buffer) else {
             debug_assert!(
                 false,
@@ -2207,10 +2244,8 @@ impl Session {
             );
             return Redraw::Skipped;
         };
-        let Ok(analysis) = result.outcome else {
-            return Redraw::Skipped;
-        };
         if entry.syntax.accept(current, analysis) == Publication::Rejected {
+            self.record_job(JOB_ANALYSIS, MessageLevel::Info, JOB_OBSOLETE);
             return Redraw::Skipped;
         }
         entry.reuse = entry
@@ -2373,6 +2408,20 @@ impl Session {
             LogSource::LanguageServer,
             level,
             &format!("{}/{} {text}", server.adapter(), server.server()),
+        );
+    }
+
+    /// Records the outcome of one background job in the editor log.
+    ///
+    /// The job reached no message line, so the log is the one place that holds
+    /// the outcome. The entry names the job first and the outcome second, and
+    /// it stays one line. See `docs/responsiveness.md`.
+    pub(super) fn record_job(&mut self, job: &str, level: MessageLevel, outcome: &str) {
+        self.log.record(
+            self.clock,
+            LogSource::BackgroundJob,
+            level,
+            &format!("{job} {outcome}"),
         );
     }
 
@@ -3197,7 +3246,14 @@ impl Session {
             ),
             // The buffer already matches its formatter.
             Ok(None) => (Redraw::Skipped, FormatBeforeSave::Silent),
-            Err(failure) => (Redraw::Skipped, FormatBeforeSave::of(failure)),
+            Err(failure) => {
+                // The save report names every other failure, so the log holds
+                // the one answer that reaches no message line.
+                if matches!(failure, FormatterFailure::Obsolete) {
+                    self.record_job(JOB_FORMATTER, MessageLevel::Info, JOB_OBSOLETE);
+                }
+                (Redraw::Skipped, FormatBeforeSave::of(failure))
+            }
         };
         self.start_save(pending.then, format).or(formatted)
     }

@@ -45,6 +45,12 @@ pub(super) enum LogSource {
     /// The `language` module bounds that text before it reaches the log. See
     /// `docs/language-services.md`.
     LanguageServer,
+    /// One background job ended without a report on the message line.
+    ///
+    /// The entry names the job and the outcome alone, so every repeat of one
+    /// outcome carries the same text and collapses into one entry. See
+    /// `docs/responsiveness.md`.
+    BackgroundJob,
 }
 
 impl LogSource {
@@ -53,6 +59,7 @@ impl LogSource {
         match self {
             Self::MessageLine => "MESSAGE",
             Self::LanguageServer => "SERVER",
+            Self::BackgroundJob => "JOB",
         }
     }
 }
@@ -74,7 +81,7 @@ impl MessageLevel {
 /// One recorded editor report.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct LogEntry {
-    /// The elapsed time since the editor started.
+    /// The elapsed time of the first report of this entry.
     at: Duration,
     /// The severity of the report.
     level: MessageLevel,
@@ -83,6 +90,11 @@ struct LogEntry {
     /// The text of the report, as one line of at most
     /// [`LOG_ENTRY_CHARS_MAX`] characters.
     text: String,
+    /// The number of reports that this entry collapses, at least one.
+    ///
+    /// The count stops at [`u32::MAX`], so a group that repeats without limit
+    /// still costs one entry and one bounded number.
+    count: u32,
 }
 
 impl LogEntry {
@@ -93,13 +105,29 @@ impl LogEntry {
             level,
             source,
             text: one_bounded_line(text),
+            count: 1,
         }
+    }
+
+    /// Reports whether `other` repeats the report that this entry holds.
+    ///
+    /// The time and the count carry no identity. A repeat arrives later and
+    /// raises the count, so only the source, the severity, and the bounded text
+    /// decide. See `docs/windows.md`.
+    fn repeats(&self, other: &Self) -> bool {
+        self.source == other.source && self.level == other.level && self.text == other.text
+    }
+
+    /// Counts one more report of this entry.
+    fn repeat(&mut self) {
+        self.count = self.count.saturating_add(1);
     }
 
     /// Returns the entry as one row of the log buffer.
     fn row(&self) -> String {
+        debug_assert!(self.count >= 1, "every entry holds at least one report");
         let seconds = self.at.as_secs();
-        format!(
+        let mut row = format!(
             "{:02}:{:02}.{:03} {:<5} {:<7} {}",
             seconds / 60,
             seconds % 60,
@@ -107,7 +135,11 @@ impl LogEntry {
             self.level.log_label(),
             self.source.label(),
             self.text
-        )
+        );
+        if self.count > 1 {
+            row.push_str(&format!(" (x{})", self.count));
+        }
+        row
     }
 }
 
@@ -135,6 +167,11 @@ impl EditorLog {
     /// The `at` is the elapsed time that the event loop reported last. A log
     /// that already holds [`LOG_ENTRIES_MAX`] entries drops its oldest entry
     /// first, so the newest reports always survive.
+    ///
+    /// A report that repeats the newest entry raises the count of that entry
+    /// and adds no entry. A background job repeats one outcome as often as the
+    /// user types, so this rule keeps one burst from removing every earlier
+    /// report. See `docs/windows.md`.
     pub(super) fn record(
         &mut self,
         at: Duration,
@@ -146,11 +183,17 @@ impl EditorLog {
             self.entries.len() <= LOG_ENTRIES_MAX,
             "every earlier record left the log inside its bound"
         );
+        let entry = LogEntry::new(at, source, level, text);
+        if let Some(newest) = self.entries.back_mut()
+            && newest.repeats(&entry)
+        {
+            newest.repeat();
+            return;
+        }
         if self.entries.len() >= LOG_ENTRIES_MAX {
             self.entries.pop_front();
         }
-        self.entries
-            .push_back(LogEntry::new(at, source, level, text));
+        self.entries.push_back(entry);
     }
 
     /// Returns one snapshot of the log as buffer text, newest entry last.
@@ -180,6 +223,16 @@ mod tests {
         log.record(
             Duration::from_secs(seconds),
             LogSource::MessageLine,
+            MessageLevel::Info,
+            text,
+        );
+    }
+
+    /// Records one background-job outcome at a whole number of seconds.
+    fn record_job(log: &mut EditorLog, seconds: u64, text: &str) {
+        log.record(
+            Duration::from_secs(seconds),
+            LogSource::BackgroundJob,
             MessageLevel::Info,
             text,
         );
@@ -247,6 +300,82 @@ mod tests {
             rows[1].chars().filter(|value| *value == 'x').count(),
             LOG_ENTRY_CHARS_MAX,
             "one long report is clipped to the entry bound"
+        );
+    }
+
+    #[test]
+    fn a_repeated_report_collapses_into_one_entry_with_a_count() {
+        let mut log = EditorLog::default();
+        record_job(&mut log, 12, "analysis rejected: the buffer changed");
+        for second in 13..16 {
+            record_job(&mut log, second, "analysis rejected: the buffer changed");
+        }
+        assert_eq!(
+            log.snapshot(),
+            "00:12.000 INFO  JOB     analysis rejected: the buffer changed (x4)\n",
+            "four reports of one outcome cost one entry that keeps its first time"
+        );
+    }
+
+    #[test]
+    fn another_report_ends_one_collapsed_group() {
+        let mut log = EditorLog::default();
+        record_job(&mut log, 1, "walk was cancelled");
+        record_job(&mut log, 2, "walk was cancelled");
+        record(&mut log, 3, "written");
+        record_job(&mut log, 4, "walk was cancelled");
+        let snapshot = log.snapshot();
+        let rows: Vec<&str> = snapshot.lines().collect();
+        assert_eq!(
+            rows.len(),
+            3,
+            "the message separates two groups in {rows:?}"
+        );
+        assert!(
+            rows[0].ends_with("walk was cancelled (x2)"),
+            "{:?}",
+            rows[0]
+        );
+        assert!(rows[1].ends_with("written"), "{:?}", rows[1]);
+        assert!(
+            rows[2].ends_with("walk was cancelled"),
+            "a later repeat starts a new entry with no count, not {:?}",
+            rows[2]
+        );
+    }
+
+    #[test]
+    fn one_report_before_a_burst_survives_the_burst() {
+        let mut log = EditorLog::default();
+        log.record(
+            Duration::from_secs(1),
+            LogSource::LanguageServer,
+            MessageLevel::Error,
+            "rust/rust-analyzer failed: no such file or directory",
+        );
+
+        // A fast typist rejects one obsolete analysis for every keystroke.
+        for second in 2..2 + (LOG_ENTRIES_MAX as u64 * 8) {
+            record_job(&mut log, second, "analysis rejected: the buffer changed");
+        }
+
+        let snapshot = log.snapshot();
+        let rows: Vec<&str> = snapshot.lines().collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "the burst costs one entry, not {}",
+            rows.len()
+        );
+        assert!(
+            rows[0].contains("rust/rust-analyzer failed"),
+            "the report that names the cause survives the burst, but the first row is {:?}",
+            rows[0]
+        );
+        assert!(
+            rows[1].ends_with(&format!(" (x{})", LOG_ENTRIES_MAX * 8)),
+            "one entry counts every report of the burst, not {:?}",
+            rows[1]
         );
     }
 }
