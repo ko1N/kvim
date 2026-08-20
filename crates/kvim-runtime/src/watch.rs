@@ -15,8 +15,9 @@
 //! [`WatchFidelity::Dropped`], so the consumer knows that its knowledge of the
 //! change is incomplete and can read the complete state again.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -50,6 +51,15 @@ pub const WATCH_BATCH_DIRECTORIES_MAX: usize = 64;
 
 /// The largest number of platform events that one burst inspects.
 pub const WATCH_BURST_EVENTS_MAX: usize = 4096;
+
+/// The largest number of directories that one registration watches.
+pub const WATCH_DIRECTORIES_MAX: usize = 4096;
+
+/// The largest depth below the root that one registration reaches.
+pub const WATCH_DEPTH_MAX: usize = 16;
+
+/// The largest number of entries that one registration reads of one directory.
+pub const WATCH_DIRECTORY_SCAN_MAX: usize = 4096;
 
 /// What happened to one watched path.
 ///
@@ -240,10 +250,92 @@ pub fn is_ignored(root: &Path, path: &Path, ignored: &[&str]) -> bool {
     })
 }
 
+/// Returns the directories that one registration watches, in walk order.
+///
+/// The first value is always the root, so the watch always reports the entries
+/// of the workspace itself. The walk skips a directory whose name `ignored`
+/// holds, and it reads no directory below such a name.
+///
+/// The walk skips a directory that it cannot read, because an unreadable
+/// subtree reports no change to any reader. It also skips a symbolic link,
+/// because the type comes from the directory read and names the link itself, so
+/// no link builds a cycle and no tree is watched twice.
+///
+/// The walk stops at [`WATCH_DIRECTORIES_MAX`] directories, at
+/// [`WATCH_DEPTH_MAX`] levels below the root, and at
+/// [`WATCH_DIRECTORY_SCAN_MAX`] entries of one directory, so a very large tree
+/// costs bounded time at start.
+fn watched_directories(root: &Path, ignored: &[&str]) -> Vec<PathBuf> {
+    let mut directories = vec![root.to_path_buf()];
+    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
+    queue.push_back((root.to_path_buf(), 0));
+    while let Some((directory, depth)) = queue.pop_front() {
+        if depth >= WATCH_DEPTH_MAX {
+            continue;
+        }
+        let Ok(listing) = fs::read_dir(&directory) else {
+            // An unreadable directory reports no change of its own entries, and
+            // its parent still reports every change of the directory itself.
+            continue;
+        };
+        for entry in listing.take(WATCH_DIRECTORY_SCAN_MAX).flatten() {
+            if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
+                continue;
+            }
+            let path = entry.path();
+            // The registration and the callback ask the same question, so the
+            // two filters can never disagree about one entry.
+            if is_ignored(root, &path, ignored) {
+                continue;
+            }
+            if directories.len() >= WATCH_DIRECTORIES_MAX {
+                return directories;
+            }
+            directories.push(path.clone());
+            queue.push_back((path, depth.saturating_add(1)));
+        }
+    }
+    directories
+}
+
+/// Adds one watch for the root and for every directory that stays.
+///
+/// Every watch covers one directory alone, so the platform adds no watch of its
+/// own below an ignored name. The call adds every path in one batch and applies
+/// the batch once, because a platform that keeps one event stream rebuilds that
+/// stream for each applied change.
+///
+/// # Errors
+///
+/// Returns [`WatchError::Start`] when the platform refuses the root or the
+/// batch. A refused directory below the root loses the events of that
+/// directory alone, and its parent still reports every change of the directory
+/// itself.
+fn register(
+    watcher: &mut RecommendedWatcher,
+    root: &Path,
+    ignored: &[&str],
+) -> Result<(), WatchError> {
+    let directories = watched_directories(root, ignored);
+    let mut paths = watcher.paths_mut();
+    for directory in &directories {
+        let Err(error) = paths.add(directory, RecursiveMode::NonRecursive) else {
+            continue;
+        };
+        if directory.as_path() == root {
+            return Err(WatchError::Start(error));
+        }
+        // Another program may remove one directory between the walk and this
+        // call. The parent of that directory still reports the removal.
+    }
+    paths.commit().map_err(WatchError::Start)
+}
+
 /// Watches one directory tree and publishes coalesced bursts of its changes.
 ///
 /// The value owns the platform watcher, its callback thread, and one bounded
-/// coalescing task. It performs no filesystem read of its own: it names the
+/// coalescing task. It reads the tree once, at start, to place its watches.
+/// After that it performs no filesystem read of its own: it names the
 /// directories that changed and leaves every read to the caller.
 ///
 /// # Examples
@@ -288,12 +380,16 @@ impl fmt::Debug for FileWatcher {
 }
 
 impl FileWatcher {
-    /// Starts one recursive watch over `root`.
+    /// Starts one watch over every directory of `root` that stays.
     ///
     /// `ignored` names the directory names that produce no event, such as a
-    /// build output directory. The filter runs inside the platform callback,
-    /// before any queue, so an ignored subtree costs no queue space and no
-    /// later work.
+    /// build output directory. The table limits the registration and the
+    /// events. The call walks the tree once, skips a directory whose name the
+    /// table holds, and adds one watch for each directory that stays, so the
+    /// platform reads no ignored subtree and holds no watch inside it. The
+    /// filter also runs inside the platform callback, before any queue, so a
+    /// directory that appears after the walk costs no queue space and no later
+    /// work.
     ///
     /// # Errors
     ///
@@ -337,9 +433,7 @@ impl FileWatcher {
             Config::default(),
         )
         .map_err(WatchError::Start)?;
-        watcher
-            .watch(&root, RecursiveMode::Recursive)
-            .map_err(WatchError::Start)?;
+        register(&mut watcher, &root, ignored)?;
 
         let (publisher, batches) = mpsc::channel(WATCH_BATCH_QUEUE_MAX);
         let cancellation = CancellationToken::new();
@@ -439,8 +533,88 @@ async fn coalesce(
 mod tests {
     use super::*;
 
+    use std::sync::atomic::AtomicU64;
+
+    use tokio::time::timeout;
+
     /// The generated directory names that a workspace watch ignores.
     const IGNORED: [&str; 5] = [".direnv", ".git", "__pycache__", "node_modules", "target"];
+
+    /// The time that one test waits for the platform to report one change.
+    const EVENT_WAIT: Duration = Duration::from_secs(5);
+
+    /// The counter that keeps two temporary trees of one process apart.
+    static TREE_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+    /// One temporary directory tree that disappears with the test.
+    ///
+    /// The crate holds its own helper, because a watcher test may not depend on
+    /// a crate above this layer. See `docs/architecture.md`.
+    struct TempTree {
+        /// The canonical directory that holds every file of one test.
+        path: PathBuf,
+    }
+
+    impl TempTree {
+        /// Creates one empty tree under the temporary directory of the system.
+        ///
+        /// The path is always canonical, because a platform event names the
+        /// canonical path. A host that reaches its temporary directory through
+        /// a link, as macOS does with `/tmp`, would otherwise place every event
+        /// outside the watched root.
+        fn new(label: &str) -> Self {
+            let counter = TREE_COUNTER.fetch_add(1, Ordering::Relaxed);
+            let path = std::env::temp_dir().join(format!(
+                "kvim-watch-{label}-{}-{counter}",
+                std::process::id()
+            ));
+            fs::create_dir_all(&path).expect("the temporary directory is writable");
+            let path = fs::canonicalize(&path).expect("the new directory exists");
+            Self { path }
+        }
+
+        /// Creates one directory, and every directory above it, inside the tree.
+        fn dir(&self, name: &str) -> PathBuf {
+            let path = self.path.join(name);
+            fs::create_dir_all(&path).expect("the temporary directory is writable");
+            path
+        }
+
+        /// Writes one file, and every directory above it, inside the tree.
+        fn file(&self, name: &str, content: &str) -> PathBuf {
+            let path = self.path.join(name);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).expect("the temporary directory is writable");
+            }
+            fs::write(&path, content).expect("the temporary directory is writable");
+            path
+        }
+
+        /// Returns the watched directories below the root, in ascending order.
+        ///
+        /// The root itself carries the empty name, so a caller reads the whole
+        /// registration from one list.
+        fn watched(&self) -> Vec<String> {
+            let mut names: Vec<String> = watched_directories(&self.path, &IGNORED)
+                .iter()
+                .map(|path| {
+                    path.strip_prefix(&self.path)
+                        .expect("every watched directory lies below the root")
+                        .to_string_lossy()
+                        .replace('\\', "/")
+                })
+                .collect();
+            names.sort();
+            names
+        }
+    }
+
+    impl Drop for TempTree {
+        /// Removes the tree, so no test leaves a directory behind.
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.path);
+        }
+    }
 
     fn event(path: &str, kind: WatchKind) -> WatchEvent {
         WatchEvent {
@@ -569,6 +743,152 @@ mod tests {
         let error = FileWatcher::start(PathBuf::from("relative/root"), &IGNORED)
             .expect_err("a relative root places no event");
         assert!(matches!(error, WatchError::RelativeRoot));
+    }
+
+    #[test]
+    fn the_registration_adds_no_watch_below_an_ignored_name() {
+        let tree = TempTree::new("ignored");
+        tree.file("src/main.rs", "fn main() {}\n");
+        tree.dir("src/tui");
+        tree.dir("target/debug/build/kvim");
+        tree.dir(".git/objects/ab");
+        tree.dir("node_modules/left-pad");
+        tree.dir("crates/kvim-runtime/src");
+
+        assert_eq!(
+            tree.watched(),
+            vec![
+                "",
+                "crates",
+                "crates/kvim-runtime",
+                "crates/kvim-runtime/src",
+                "src",
+                "src/tui",
+            ],
+            "the root and every kept directory carry one watch, and no ignored name does"
+        );
+    }
+
+    #[test]
+    fn a_root_that_carries_an_ignored_name_still_watches_itself() {
+        let tree = TempTree::new("target");
+        tree.dir("src");
+        tree.dir("target");
+
+        assert_eq!(tree.watched(), vec!["", "src"]);
+    }
+
+    #[test]
+    fn the_registration_stops_at_the_depth_bound() {
+        let tree = TempTree::new("deep");
+        let mut name = String::from("d0");
+        for level in 1..WATCH_DEPTH_MAX + 4 {
+            name.push_str(&format!("/d{level}"));
+        }
+        tree.dir(&name);
+
+        let watched = tree.watched();
+        let deepest = watched
+            .last()
+            .expect("the registration always watches the root");
+        assert_eq!(
+            deepest.split('/').count(),
+            WATCH_DEPTH_MAX,
+            "the deepest watched directory is `{deepest}`"
+        );
+        assert_eq!(watched.len(), WATCH_DEPTH_MAX + 1);
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn an_unreadable_directory_keeps_the_rest_of_the_registration() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tree = TempTree::new("unreadable");
+        tree.dir("src");
+        let locked = tree.dir("locked/inner");
+        let locked = locked
+            .parent()
+            .expect("the created directory lies below the root")
+            .to_path_buf();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))
+            .expect("the temporary directory is writable");
+        let readable = fs::read_dir(&locked).is_ok();
+        let watched = tree.watched();
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o755))
+            .expect("the temporary directory is writable");
+
+        if readable {
+            // A process that ignores the mode, such as one that runs as the
+            // superuser, proves nothing about an unreadable directory.
+            return;
+        }
+        assert_eq!(
+            watched,
+            vec!["", "locked", "src"],
+            "the unreadable directory keeps its own watch and loses its subtree"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_change_of_one_watched_file_reaches_one_burst() {
+        let tree = TempTree::new("events");
+        tree.file("src/main.rs", "fn main() {}\n");
+        tree.dir("target/debug");
+        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the platform watches a readable root");
+
+        // The ignored write reaches no queue, and the kept write does.
+        tree.file("target/debug/kvim", "\n");
+        tree.file("src/lib.rs", "\n");
+
+        let batch = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the change of one watched file")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(
+            batch.directories(),
+            [tree.path.join("src")],
+            "the burst names the watched directory alone"
+        );
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_change_of_one_root_entry_reaches_one_burst() {
+        let tree = TempTree::new("root-events");
+        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the platform watches a readable root");
+
+        tree.file("README.md", "\n");
+
+        let batch = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the change of one root entry")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(batch.directories(), std::slice::from_ref(&tree.path));
+        watcher.shutdown().await;
+    }
+
+    #[tokio::test]
+    async fn a_directory_that_appears_after_the_walk_reports_its_own_creation() {
+        let tree = TempTree::new("new-directory");
+        tree.dir("src");
+        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
+            .expect("the platform watches a readable root");
+
+        tree.dir("src/tui");
+
+        let batch = timeout(EVENT_WAIT, watcher.recv())
+            .await
+            .expect("the platform reports the new directory")
+            .expect("the coalescing task publishes the burst");
+        assert_eq!(
+            batch.directories(),
+            [tree.path.join("src")],
+            "the parent of the new directory reports its creation"
+        );
+        watcher.shutdown().await;
     }
 
     #[tokio::test]

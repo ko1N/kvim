@@ -123,6 +123,13 @@ duties as every other service. Its platform callback and its coalescing task run
 beside the event loop, its queues are bounded, and a full queue drops events and
 reports the drop instead of growing.
 
+The watcher performs one filesystem read of its own, when it starts. It walks
+the workspace once and adds one watch for each directory that it keeps. The walk
+skips every generated directory name, so it reads no build output directory and
+no repository database. The walk is bounded by directories, by depth, and by the
+entries of one directory, so a very large workspace costs bounded time before
+the first frame. [`files.md`](files.md) owns that rule and its bounds.
+
 ## Request Identity And Publication
 
 Every background request has an explicit identity. A newer request for the same

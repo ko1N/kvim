@@ -496,11 +496,44 @@ files. The Reload section above owns that rule.
 
 The watcher ignores the generated directory names of the row-state list above:
 `.direnv`, `.git`, `__pycache__`, `node_modules`, and `target`. One list answers
-both questions, so the two rules can never disagree about one entry. The filter
-runs inside the platform callback, before every queue, so an ignored subtree
-costs no queue space and no later work. A workspace whose own root carries such
-a name still reports every change inside it, because the comparison starts below
-the root.
+both questions, so the two rules can never disagree about one entry. A workspace
+whose own root carries such a name still reports every change inside it, because
+the comparison starts below the root.
+
+The list limits the registration first. The watcher walks the workspace once,
+when it starts, and adds one watch for each directory that stays. It reads no
+directory below an ignored name. Every watch covers one directory alone, so the
+platform adds no watch of its own inside an ignored subtree. One recursive watch
+over the root would read that subtree instead. Linux then adds one kernel watch
+for each directory below the root, so a repository with a large build output
+directory costs tens of thousands of system calls. Such a repository also
+reaches the watch limit of the host, which Linux names
+`fs.inotify.max_user_watches`, and a refused watch leaves the workspace with no
+watcher at all.
+
+The registration adds every directory in one batch and applies the batch once.
+A platform that keeps one event stream, as macOS does, rebuilds that stream for
+each applied change. One measured tree of 1112 directories costs 105 ms as one
+batch, and 71 s as one call for each directory.
+
+The filter of the same list also runs inside the platform callback, before every
+queue, so an ignored subtree costs no queue space and no later work. The filter
+stays beside the registration, because a directory that appears after the walk
+carries no watch of its own and still reports through its parent.
+
+The walk is bounded. A directory that the process cannot read loses its subtree,
+and a platform that also refuses the watch of that directory loses its entries.
+Its parent still reports every change of the directory itself, so one refused
+directory never stops the watch. A symbolic link adds no watch, because the
+entry type names the link itself, so no link watches one tree twice and no link
+builds a cycle. A tree above the bounds below keeps the directories that the
+walk reached.
+
+A directory that appears after the walk carries no watch, so the watcher reports
+the creation of that directory and no later change inside it. The tree still
+learns that the directory exists, because the parent reports the creation, and a
+read of that directory shows current entries. A reader who needs the changes
+inside such a directory uses the refresh command.
 
 Every queue is bounded. A full queue, a burst above the directory bound, and a
 failed platform read all drop events. A burst that lost events reports
@@ -521,6 +554,9 @@ hand.
 | Waiting bursts | `WATCH_BATCH_QUEUE_MAX` | 16 | The event loop reads one burst per window, so a queue of 16 covers a loop that is briefly busy. |
 | Directories of one burst | `WATCH_BATCH_DIRECTORIES_MAX` | 64 | The value matches `TREE_PENDING_READS_MAX`, so one burst never names more reads than the tree queues. |
 | Events of one burst | `WATCH_BURST_EVENTS_MAX` | 4096 | The bound ends one window even while a program writes without pause, so the consumer always receives its burst. |
+| Directories of one registration | `WATCH_DIRECTORIES_MAX` | 4096 | The value matches `WALK_DIRECTORIES_MAX` of the picker walk, so one workspace answers both walks with one size. |
+| Depth of one registration | `WATCH_DEPTH_MAX` | 16 | The value matches `WALK_DEPTH_MAX` of the picker walk. A source tree below 16 levels holds no edited file. |
+| Entries of one registration read | `WATCH_DIRECTORY_SCAN_MAX` | 4096 | The value matches `TREE_DIRECTORY_SCAN_MAX`, so one very large directory costs the registration bounded time. |
 
 ### Tree Bounds
 
