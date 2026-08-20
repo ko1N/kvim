@@ -935,7 +935,7 @@ pub struct Session {
     /// The bounded history of every report that the editor made.
     ///
     /// The message line keeps one message, so a replaced message would be gone
-    /// without this log. `:log` opens one snapshot of it as a buffer. See
+    /// without this log. `:logs` opens one snapshot of it as a buffer. See
     /// `docs/windows.md`.
     log: EditorLog,
     /// The open floating overlay of the language services.

@@ -1350,7 +1350,7 @@ fn open_log(session: &mut Session) -> Vec<String> {
         session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(key))), NOW);
     }
     session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Enter)), NOW);
-    assert_eq!(session.active_buffer().name(), "[Log]");
+    assert_eq!(session.active_buffer().name(), "[Logs]");
     session
         .buffer()
         .to_string()

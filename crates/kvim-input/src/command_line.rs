@@ -39,7 +39,7 @@ pub enum CommandLineCommand {
     Reload,
     /// `:e!` discards the unsaved changes of that buffer and reads its file.
     ReloadDiscard,
-    /// `:log` opens one snapshot of the editor log in a new buffer.
+    /// `:logs` opens one snapshot of the editor log in a new buffer.
     Log,
     /// `:<number>` moves the cursor to that line.
     GoToLine(NonZeroU32),
@@ -67,7 +67,7 @@ pub enum CommandLineError {
     },
     /// The line matched no accepted command.
     #[error(
-        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, :l[og], and :<number> only"
+        "the command line accepts :w[rite], :q[uit], :q[uit]!, :wq, :e[dit], :e[dit]!, :e[dit] <path>, :l[ogs], and :<number> only"
     )]
     Unknown,
 }
@@ -139,7 +139,7 @@ const NAMES: [CommandName; 5] = [
     },
     CommandName {
         command: NamedCommand::Log,
-        full: "log",
+        full: "logs",
         minimum: 1,
     },
     CommandName {
@@ -320,7 +320,7 @@ impl CommandLineCommand {
     /// // `:e` without a path reads the file of the focused window again.
     /// assert_eq!(CommandLineCommand::parse("e"), Ok(CommandLineCommand::Reload));
     /// assert_eq!(CommandLineCommand::parse("edit!"), Ok(CommandLineCommand::ReloadDiscard));
-    /// // `:l[og]` opens one snapshot of the editor log.
+    /// // `:l[ogs]` opens one snapshot of the editor log.
     /// assert_eq!(CommandLineCommand::parse("l"), Ok(CommandLineCommand::Log));
     /// assert_eq!(
     ///     CommandLineCommand::parse("42"),
@@ -421,7 +421,7 @@ mod tests {
             ("e!", CommandLineCommand::ReloadDiscard),
             ("edit!", CommandLineCommand::ReloadDiscard),
             ("l", CommandLineCommand::Log),
-            ("log", CommandLineCommand::Log),
+            ("logs", CommandLineCommand::Log),
             (
                 "e  a path/with space.rs ",
                 CommandLineCommand::Edit(PathBuf::from("a path/with space.rs")),
@@ -520,11 +520,11 @@ mod tests {
         let cases: [(&str, &[&str]); 23] = [
             // A text without a `!` offers no `!` variant, so no cycle of that
             // text writes a command that discards unsaved changes.
-            ("", &["edit", "log", "quit", "wq", "write"]),
+            ("", &["edit", "logs", "quit", "wq", "write"]),
             ("e", &["edit"]),
             ("edit", &["edit"]),
-            ("l", &["log"]),
-            ("log", &["log"]),
+            ("l", &["logs"]),
+            ("logs", &["logs"]),
             // `log` has no `!` variant, so a typed `!` offers nothing.
             ("l!", &[]),
             ("q", &["quit"]),

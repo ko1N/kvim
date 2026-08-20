@@ -11,6 +11,9 @@
 //! text that it sent to its server. A UTF-8 session mirrors no text and pays no
 //! conversion cost.
 //!
+//! A session that sends a full synchronization also mirrors that text, because
+//! it builds the complete text of every change from the mirror.
+//!
 //! Every function in this file is pure. It reads text and returns a value, and
 //! it performs no input and no output. See `docs/language-services.md`.
 
@@ -62,14 +65,32 @@ impl PositionEncoding {
     }
 }
 
+/// Whether one document mirrors the text that the server holds.
+///
+/// The negotiated encoding decides one part of the answer, and the
+/// synchronization that the server asked for decides the other part. A full
+/// synchronization sends the complete text of every change, so its session
+/// builds that text from the mirror. See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum TextMirroring {
+    /// The session needs no mirror of this document.
+    Absent,
+    /// The session mirrors the exact text that the server holds.
+    Present,
+}
+
 /// The position conversion of one open document.
 ///
-/// The variant follows the negotiated encoding, so a UTF-8 session cannot hold
-/// a mirror and a UTF-16 session cannot lose one.
+/// The variant follows the negotiated encoding and the mirror that the session
+/// needs, so a UTF-16 session cannot lose its mirror.
 pub(crate) enum DocumentMapping {
-    /// The server confirmed UTF-8, so one protocol column is already one byte
-    /// column and the session converts nothing.
+    /// The server confirmed UTF-8 and the session needs no mirror, so one
+    /// protocol column is already one byte column and the session converts
+    /// nothing and mirrors nothing.
     Direct,
+    /// The server confirmed UTF-8 and the session mirrors the text, so it
+    /// converts no column and still holds the text that the server holds.
+    Mirrored(DocumentMirror),
     /// The server counts UTF-16 code units, so the session mirrors the exact
     /// text that the server holds and converts every column against it.
     Utf16(DocumentMirror),
@@ -77,10 +98,21 @@ pub(crate) enum DocumentMapping {
 
 impl DocumentMapping {
     /// Creates the conversion of one document that the session opens.
-    pub(crate) fn new(encoding: PositionEncoding, text: &str) -> Self {
-        match encoding {
-            PositionEncoding::Utf8 => Self::Direct,
-            PositionEncoding::Utf16 => Self::Utf16(DocumentMirror::new(text)),
+    ///
+    /// A UTF-16 session always mirrors the text, because every conversion reads
+    /// the line that its column indexes. A UTF-8 session mirrors the text only
+    /// when `mirroring` asks for it.
+    pub(crate) fn new(
+        encoding: PositionEncoding,
+        mirroring: TextMirroring,
+        text: &str,
+    ) -> Self {
+        match (encoding, mirroring) {
+            (PositionEncoding::Utf8, TextMirroring::Absent) => Self::Direct,
+            (PositionEncoding::Utf8, TextMirroring::Present) => {
+                Self::Mirrored(DocumentMirror::new(text))
+            }
+            (PositionEncoding::Utf16, _) => Self::Utf16(DocumentMirror::new(text)),
         }
     }
 
@@ -97,7 +129,28 @@ impl DocumentMapping {
     pub(crate) fn apply(&mut self, changes: &[ContentChange]) -> Result<(), LspError> {
         match self {
             Self::Direct => Ok(()),
-            Self::Utf16(mirror) => mirror.apply(changes),
+            Self::Mirrored(mirror) | Self::Utf16(mirror) => mirror.apply(changes),
+        }
+    }
+
+    /// Returns the text that the changes of one synchronization produce.
+    ///
+    /// A full synchronization carries the complete text of the document instead
+    /// of one range for each change. The call changes nothing, so the caller
+    /// sends this text first and applies the changes after the notification
+    /// reached the server.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LspError::InvalidPosition`] when one change does not address
+    /// the exact mirrored text, and for a mapping that mirrors no text.
+    pub(crate) fn projected(&self, changes: &[ContentChange]) -> Result<String, LspError> {
+        match self {
+            Self::Direct => {
+                debug_assert!(false, "a full synchronization always mirrors its text");
+                Err(LspError::InvalidPosition)
+            }
+            Self::Mirrored(mirror) | Self::Utf16(mirror) => mirror.projected(changes),
         }
     }
 
@@ -112,7 +165,9 @@ impl DocumentMapping {
         position: DocumentPosition,
     ) -> Result<ProtocolPosition, LspError> {
         match self {
-            Self::Direct => Ok(ProtocolPosition::new(position.line, position.byte_column)),
+            Self::Direct | Self::Mirrored(_) => {
+                Ok(ProtocolPosition::new(position.line, position.byte_column))
+            }
             Self::Utf16(mirror) => {
                 let line = mirror.line(position.line)?;
                 let column = utf16_column(line, position.byte_column)?;
@@ -131,7 +186,9 @@ impl DocumentMapping {
         position: ProtocolPosition,
     ) -> Result<DocumentPosition, LspError> {
         match self {
-            Self::Direct => Ok(DocumentPosition::new(position.line, position.character)),
+            Self::Direct | Self::Mirrored(_) => {
+                Ok(DocumentPosition::new(position.line, position.character))
+            }
             Self::Utf16(mirror) => {
                 let line = mirror.line(position.line)?;
                 let column = byte_column(line, position.character)?;
@@ -224,13 +281,24 @@ impl DocumentMirror {
 
     /// Replaces the changed ranges and rebuilds the line index.
     ///
-    /// The session sends the changes in descending order, so one ascending walk
-    /// builds the new text in one pass. The walk never moves an offset twice,
-    /// so a large transaction stays linear in the document length.
+    /// Call this only after the notification reached the server, so a failed
+    /// write leaves the mirror on the text that the server still holds.
     fn apply(&mut self, changes: &[ContentChange]) -> Result<(), LspError> {
         if changes.is_empty() {
             return Ok(());
         }
+        let text = self.projected(changes)?;
+        self.line_starts = line_starts(&text);
+        self.text = text;
+        Ok(())
+    }
+
+    /// Returns the text that the changed ranges produce.
+    ///
+    /// The session sends the changes in descending order, so one ascending walk
+    /// builds the new text in one pass. The walk never moves an offset twice,
+    /// so a large transaction stays linear in the document length.
+    fn projected(&self, changes: &[ContentChange]) -> Result<String, LspError> {
         let mut ranges: Vec<(usize, usize)> = Vec::with_capacity(changes.len());
         for change in changes.iter().rev() {
             let start = self.byte_offset(change.span.start)?;
@@ -250,9 +318,7 @@ impl DocumentMirror {
             cursor = end;
         }
         text.push_str(&self.text[cursor..]);
-        self.line_starts = line_starts(&text);
-        self.text = text;
-        Ok(())
+        Ok(text)
     }
 }
 
@@ -340,7 +406,8 @@ fn utf16_column(line: &str, column: u32) -> Result<u32, LspError> {
 #[cfg(test)]
 mod tests {
     use super::{
-        DocumentMapping, DocumentMirror, PositionEncoding, byte_column, line_starts, utf16_column,
+        DocumentMapping, DocumentMirror, PositionEncoding, TextMirroring, byte_column, line_starts,
+        utf16_column,
     };
     use crate::protocol::{DocumentPosition, LspError, ProtocolPosition};
 
@@ -475,7 +542,7 @@ mod tests {
 
     #[test]
     fn a_utf8_mapping_copies_every_column() {
-        let mapping = DocumentMapping::new(PositionEncoding::Utf8, EMOJI);
+        let mapping = DocumentMapping::new(PositionEncoding::Utf8, TextMirroring::Absent, EMOJI);
         assert_eq!(
             mapping
                 .to_protocol(DocumentPosition::new(0, 4))
@@ -492,7 +559,11 @@ mod tests {
 
     #[test]
     fn a_utf16_mapping_converts_the_line_that_the_position_names() {
-        let mapping = DocumentMapping::new(PositionEncoding::Utf16, "ascii\n\u{1f600}ab\n");
+        let mapping = DocumentMapping::new(
+            PositionEncoding::Utf16,
+            TextMirroring::Absent,
+            "ascii\n\u{1f600}ab\n",
+        );
         assert_eq!(
             mapping
                 .to_document(ProtocolPosition::new(1, 2))

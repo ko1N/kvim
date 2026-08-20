@@ -1684,7 +1684,7 @@ const SURFACE: Color = Color::Rgb(0x16, 0x1a, 0x20);
 ///
 /// The line holds no `!`, so the list holds no `!` variant. See
 /// `docs/input-actions.md`.
-const COMMAND_CANDIDATES: [&str; 5] = ["edit", "log", "quit", "wq", "write"];
+const COMMAND_CANDIDATES: [&str; 5] = ["edit", "logs", "quit", "wq", "write"];
 
 /// Opens the command line of one session and offers its candidates.
 fn open_completion(session: &mut Session) {
@@ -1742,7 +1742,7 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     assert_eq!(style_at(&session, 0, first + 1).bg, Some(SURFACE));
     press_code(&mut session, KeyCode::Tab);
     assert_eq!(selected_row(&session), Some(first + 1));
-    assert_eq!(row(&session, 23), ":log");
+    assert_eq!(row(&session, 23), ":logs");
     press_code(&mut session, KeyCode::BackTab);
     assert_eq!(selected_row(&session), Some(first));
     assert_eq!(row(&session, 23), ":edit");

@@ -81,7 +81,7 @@ this fixed set only:
 | `:e[dit] <path>` | Open one file in the focused window |
 | `:e[dit]` | Read the file of the focused window again, after a confirmation of unsaved changes |
 | `:e[dit]!` | Discard the unsaved changes of that buffer and read its file |
-| `:l[og]` | Open one snapshot of the editor log in a new buffer |
+| `:l[ogs]` | Open one snapshot of the editor log in a new buffer |
 | `:<number>` | Move the cursor to that line |
 
 Each command declares one full name and the shortest abbreviation that names it.
@@ -119,10 +119,10 @@ buffer and its unsaved changes. `:q!` and `:e!` ask nothing, and `:wq` asks
 nothing, because the save keeps every change. See the Confirmation section below
 and [`files.md`](files.md).
 
-`:l[og]` opens one snapshot of the editor log in a new buffer. That buffer is an
+`:l[ogs]` opens one snapshot of the editor log in a new buffer. That buffer is an
 ordinary scratch buffer. The user reads it with the normal motions, searches it,
 yanks from it, edits it, and closes it. An edit of the buffer changes no log
-entry, and a later report changes no open snapshot. A second `:log` opens a
+entry, and a later report changes no open snapshot. A second `:logs` opens a
 second buffer that holds the log of that later moment. The command reads editor
 state only, so it performs no filesystem work. [`windows.md`](windows.md) owns
 the log, its bounds, and the shape of one entry.

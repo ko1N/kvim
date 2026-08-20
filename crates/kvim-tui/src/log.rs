@@ -34,7 +34,7 @@ pub(super) const LOG_ENTRIES_MAX: usize = 256;
 pub(super) const LOG_ENTRY_CHARS_MAX: usize = MESSAGE_CHARS_MAX;
 
 /// The name of the buffer that holds one snapshot of the log.
-pub(super) const LOG_BUFFER_NAME: &str = "[Log]";
+pub(super) const LOG_BUFFER_NAME: &str = "[Logs]";
 
 /// The part of the editor that made one report.
 ///

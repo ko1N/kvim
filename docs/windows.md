@@ -444,7 +444,7 @@ keeps one mechanism and one entry shape.
 
 ### Opening The Log
 
-`:l[og]` opens one snapshot of the log as a new buffer, newest entry last. The
+`:l[ogs]` opens one snapshot of the log as a new buffer, newest entry last. The
 snapshot is a value, so the buffer never changes while it is open and an edit of
 that buffer changes no entry. A log that holds no entry opens an empty buffer,
 because the editor reported nothing. See [`input-actions.md`](input-actions.md).
