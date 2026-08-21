@@ -3815,6 +3815,10 @@ impl Session {
             return self.report_clipboard(notice);
         }
         let applied = self.apply_editing_command(command, count);
+        // A clipboard answer arrives outside `handle_event`, so no `settle`
+        // transition follows it. Refresh positions before the next frame reads
+        // them against text that a Visual paste can shorten.
+        self.refresh_search(SearchRefresh::OnVersionChange);
         let reported = self.report_clipboard(notice);
         self.reconcile_viewports();
         applied.or(reported)
