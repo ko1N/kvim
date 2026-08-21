@@ -968,6 +968,8 @@ fn add_operator_pending_bindings(table: &mut Vec<Binding>) {
 /// `docs/input-actions.md`.
 fn add_picker_bindings(table: &mut Vec<Binding>) {
     for (key, command) in [
+        (Key::plain(KeyCode::Down), Command::PickerSelectNext),
+        (Key::plain(KeyCode::Up), Command::PickerSelectPrevious),
         (ctrl('j'), Command::PickerSelectNext),
         (ctrl('k'), Command::PickerSelectPrevious),
     ] {
@@ -1178,6 +1180,24 @@ mod tests {
                 registry.command(Mode::Insert, &[ch(letter)]),
                 None,
                 "`{letter}` is buffer text in Insert mode"
+            );
+        }
+    }
+
+    #[test]
+    fn the_picker_arrow_keys_and_control_chords_select_results() {
+        let registry = Registry::first_release();
+        for (key, expected) in [
+            (Key::plain(KeyCode::Down), Command::PickerSelectNext),
+            (Key::plain(KeyCode::Up), Command::PickerSelectPrevious),
+            (ctrl('j'), Command::PickerSelectNext),
+            (ctrl('k'), Command::PickerSelectPrevious),
+        ] {
+            assert_eq!(
+                registry.command(BindingScope::Picker, &[key]),
+                Some(expected),
+                "picker `{}` must reach `{expected}`",
+                super::KeyLabel(key)
             );
         }
     }

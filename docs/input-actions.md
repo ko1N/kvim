@@ -747,8 +747,8 @@ subset. See [`files.md`](files.md) for the behavior behind them.
 
 | Keys | Command |
 |---|---|
-| `Ctrl-J` | Select the next result |
-| `Ctrl-K` | Select the previous result |
+| `Down` or `Ctrl-J` | Select the next result |
+| `Up` or `Ctrl-K` | Select the previous result |
 | `Enter` | Open the selected result |
 | `Esc` | Close the picker |
 | `Ctrl-C` | Close the picker |
