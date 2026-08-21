@@ -3083,6 +3083,33 @@ fn a_failed_clipboard_read_falls_back_to_the_internal_register() {
 }
 
 #[test]
+fn a_clipboard_paste_refreshes_search_positions_before_the_next_frame() {
+    let mut session = clipboard_session(&[
+        "first target",
+        "second target",
+        "third target",
+        "fourth target",
+        "fifth target",
+    ]);
+    type_keys(&mut session, "/target");
+    press_code(&mut session, KeyCode::Enter);
+    type_keys(&mut session, "ggVGp");
+    let _ = clipboard_text(&mut session);
+
+    let _ = session.apply_clipboard_result(Ok(clipboard_output("one\ntwo\nthree\nfour\n")));
+
+    let visible = session.visible();
+    let search = visible.search.expect("the accepted search stays active");
+    assert!(
+        search
+            .matches
+            .iter()
+            .all(|position| position.get() <= session.buffer().len_chars()),
+        "the frame must not convert search positions from the longer buffer"
+    );
+}
+
+#[test]
 fn a_kvim_yank_pastes_with_the_shape_that_it_recorded() {
     let mut session = clipboard_session(&["alpha", "beta"]);
     type_keys(&mut session, "yy");
