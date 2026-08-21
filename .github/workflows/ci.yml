@@ -22,8 +22,8 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install Rust 1.85
-        uses: dtolnay/rust-toolchain@1.85.0
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
         with:
           components: clippy, rustfmt
 
@@ -32,7 +32,7 @@ jobs:
       # the toolchain of this job. The variable keeps this job on the minimum
       # supported version.
       - name: Keep the job on the minimum supported Rust version
-        run: echo "RUSTUP_TOOLCHAIN=1.85.0" >> "$GITHUB_ENV"
+        run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
 
       - name: Check formatting
         run: cargo fmt --all -- --check
