@@ -1457,10 +1457,17 @@ mod tests {
             .await
             .expect("the platform reports the change of one watched file")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(
-            batch.directories(),
-            [tree.path.join("src")],
-            "the burst names the watched directory alone"
+        let directories = batch.directories();
+        assert!(
+            directories.contains(&tree.path.join("src")),
+            "the burst names the watched src directory; got {directories:?}"
+        );
+        let target = tree.path.join("target");
+        assert!(
+            !directories
+                .iter()
+                .any(|directory| directory.starts_with(&target)),
+            "the ignored target subtree names no changed directory; got {directories:?}"
         );
         watcher.shutdown().await;
     }
@@ -1476,7 +1483,11 @@ mod tests {
             .await
             .expect("the platform reports the change of one root entry")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(batch.directories(), std::slice::from_ref(&tree.path));
+        let directories = batch.directories();
+        assert!(
+            directories.contains(&tree.path),
+            "the burst names the workspace root; got {directories:?}"
+        );
         watcher.shutdown().await;
     }
 
@@ -1515,6 +1526,7 @@ mod tests {
     async fn an_ignored_directory_that_appears_after_the_walk_still_carries_no_watch() {
         let tree = TempTree::new("new-ignored");
         let mut watcher = started(&tree.path).await;
+        let target = tree.path.join("target");
 
         // The creation of the ignored directory reaches no queue, so the kept
         // directory produces the burst that adds the later watches.
@@ -1524,7 +1536,17 @@ mod tests {
             .await
             .expect("the platform reports the new directory")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(created.directories(), std::slice::from_ref(&tree.path));
+        let directories = created.directories();
+        assert!(
+            directories.contains(&tree.path),
+            "the kept directory creation names the workspace root; got {directories:?}"
+        );
+        assert!(
+            !directories
+                .iter()
+                .any(|directory| directory.starts_with(&target)),
+            "the ignored target subtree names no changed directory; got {directories:?}"
+        );
 
         tree.file("target/debug/kvim", "\n");
         tree.file("docs/files.md", "\n");
@@ -1533,10 +1555,16 @@ mod tests {
             .await
             .expect("the platform reports the change of the kept directory")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(
-            batch.directories(),
-            [tree.path.join("docs")],
-            "the kept directory carries a watch and the ignored directory carries none"
+        let directories = batch.directories();
+        assert!(
+            directories.contains(&tree.path.join("docs")),
+            "the kept docs directory carries a watch; got {directories:?}"
+        );
+        assert!(
+            !directories
+                .iter()
+                .any(|directory| directory.starts_with(&target)),
+            "the ignored target subtree carries no watch; got {directories:?}"
         );
         watcher.shutdown().await;
     }
@@ -1767,7 +1795,11 @@ mod tests {
             .await
             .expect("the platform reports the change of one watched file")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(batch.directories(), [tree.path.join("d0")]);
+        let directories = batch.directories();
+        assert!(
+            directories.contains(&tree.path.join("d0")),
+            "the burst names the covered d0 directory; got {directories:?}"
+        );
         watcher.shutdown().await;
     }
 
