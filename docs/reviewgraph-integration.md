@@ -5,21 +5,23 @@
 This document owns the relationship between kvim and ReviewGraph. It is the only
 document that describes deferred ReviewGraph work.
 
-## First Release
+## Dependency Boundary
 
-The first release has no ReviewGraph dependency. kvim does not depend on the
-`reviewgraph` crate and does not share a crate with it.
+Kvim has no ReviewGraph application dependency. It does not import ReviewGraph
+sessions, commands, workspaces, or comparison state.
 
-Two reasons support this decision:
+Kvim can publish domain-neutral crates and contracts that ReviewGraph, keel, or
+another host consumes. Shared use does not make kvim aware of the consumer. The
+public syntax, LSP, keymap, UI, embedded editor, Git diff, and review contracts
+remain useful without a ReviewGraph application.
 
-- kvim mutates text. ReviewGraph is read-only. The two applications own
-  different state models, so a shared crate would carry both models.
-- Neither interface is stable enough to extract shared crates. An early
-  extraction would freeze interfaces that both projects still change.
+Kvim mutates text. ReviewGraph is read-only. Each application keeps its own
+state model and composition policy. A neutral review comment carries a bounded
+anchor and body. It carries no application-specific meaning.
 
-kvim therefore adapts generic ReviewGraph behavior instead of importing it. See
-[`architecture.md`](architecture.md) for the module boundaries that receive the
-adapted behavior.
+Kvim adapts generic ReviewGraph behavior where useful. See
+[`architecture.md`](architecture.md) for crate boundaries and
+[`embedding.md`](embedding.md) for host ownership.
 
 ## Source Attribution
 
@@ -33,19 +35,16 @@ origin, for example:
 Both projects use the MIT license, so later code movement stays possible with
 preserved notices.
 
-## Deferred Work
+## Application Integration
 
-The following work stays outside the first release:
+Application integration stays outside kvim:
 
-- Integrate ReviewGraph as an editor review workspace that publishes complete
-  immutable comparison candidates.
-- Let a ReviewGraph action open a working file in kvim, without making
-  ReviewGraph comparison state mutable.
-- Merge the projects only after kvim and ReviewGraph prove stable matching
-  interfaces.
-- Extract shared terminal interface, runtime, language, and Git crates during
-  that later merge.
+- A host can compose a ReviewGraph surface with an embedded kvim editor.
+- A host can open a working file from an immutable review candidate.
+- A host owns comparison state, focus, commands, and comment persistence.
+- Kvim owns only its domain-neutral editor, diff, anchor, and presentation
+  values.
 
-Do not add a ReviewGraph dependency, a shared crate, or a ReviewGraph
-application concept to kvim before that merge. Do not copy ReviewGraph concepts
-such as commits, blame, or comparison previews into generic kvim modules.
+Do not add a ReviewGraph application dependency or application concept to kvim.
+Do not copy ReviewGraph session policy, blame policy, or comparison workflow
+into generic kvim modules. Neutral shared contracts are permitted.

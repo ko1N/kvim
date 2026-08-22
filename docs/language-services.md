@@ -2,15 +2,20 @@
 
 ## Ownership
 
-The `language` module owns the language adapter registry, the Tree-sitter
-analysis, the language-server session, the position encoding of that session,
-the markup document of one server answer, and the external formatter. All
-language work runs off the terminal event loop through bounded runtime
-services. The markup parse is the one exception: it reads a bounded text, it
-touches no process and no file, so the event loop may run it. The exception
-covers the markdown parse alone. The highlight of one fence is Tree-sitter
-work, so it runs off the loop like every other analysis. See
+`kvim-syntax` owns grammar selection, parser ownership, bounded highlighting,
+and theme-independent syntax classes. `kvim-lsp` owns project-scoped protocol
+and process sessions. `kvim-language` combines both through kvim adapters and
+owns indentation, formatting, hover markup, and editor publication gates.
+
+All parser, filesystem, process, formatter, and LSP work runs off every host
+event loop through bounded runtime services. A bounded markup parse is pure and
+can run on the visible-state owner. Tree-sitter work cannot. See
 [`responsiveness.md`](responsiveness.md).
+
+LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
+grammar by default. It provides one feature for each language and one
+`all-grammars` feature. `kvim-language` forwards these features without a
+default grammar. The standalone `kvim` binary enables all 25 grammars.
 
 ## Language Adapter Boundary
 
@@ -185,14 +190,29 @@ plain text, it uses the fallback indent rule of
 [`text-model.md`](text-model.md), and its comment toggle changes nothing and
 reports the reason. An unsupported path is never a failure of the editor.
 
-## Tree-Sitter Analysis
+## Syntax Highlighting
 
-The adapter parses buffer content with Tree-sitter. It reparses incrementally
-after an edit transaction, so a small change does not reparse the complete
-buffer.
+`SyntaxHighlighter` owns a bounded parser and query cache. Dropping it releases
+that state. Its `highlight` operation accepts source text, a language hint,
+explicit bounds, and cancellation. It returns zero-based byte ranges and
+theme-independent `SyntaxRole` values.
 
-Parsing and highlighting run only on the bounded worker service. They never run
-on the terminal event loop.
+The result distinguishes unsupported language, malformed syntax, cancellation,
+and truncation. A malformed fragment can return useful spans and bounded syntax
+errors. Every truncated result reports which bound stopped work.
+
+Highlighting is synchronous bounded processor work. It creates no task and
+reads no runtime or clock. The scheduler owns the deadline and cancellation
+token. The highlighter checks cancellation during parser and query work. A
+direct consumer submits requests to its own bounded worker spawner. An embedded
+driver uses the caller-supplied worker spawner. No host event loop calls the
+synchronous highlighter directly.
+
+The standalone language adapter reparses buffer content incrementally after an
+edit transaction, so a small change does not reparse the complete buffer.
+
+Parsing and highlighting run only on a bounded worker service. They never run
+on a host event loop.
 
 A grammar crate sometimes ships the patterns of its own dialect alone, because
 the upstream query inherits the patterns of a base language. kvim resolves no
@@ -291,10 +311,11 @@ the user indents a continuation of that list.
 ## Analysis Limits
 
 Analysis enforces explicit limits on buffer bytes, buffer lines, syntax nodes,
-traversal depth, and highlight spans. kvim rejects a complete result that
-exceeds a limit. It never publishes a truncated result. The `language` module
-names each bound as one constant. The constant and the row below must always
-agree.
+traversal depth, parser work, captures, highlight spans, and syntax errors. The
+public syntax facade reports truncation and can return its bounded useful
+prefix. The standalone editor can choose plain text instead of publishing a
+truncated buffer analysis. The owning syntax configuration validates every
+limit against its fixed safety cap.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
@@ -366,7 +387,7 @@ under the `JOB` source, so a user reads why one file carries no highlighting.
 
 ## Highlight Roles
 
-Highlight roles are terminal-independent, so `kvim-language` owns the role set.
+Highlight roles are terminal-independent, so `kvim-syntax` owns the role set.
 A role names what a range of source is, never how it looks. `kvim-tui` maps each
 role to one style and keeps every color.
 
@@ -376,9 +397,9 @@ and Tree-sitter highlight queries share one capture vocabulary across grammars,
 so the mapping serves every language. See [`windows.md`](windows.md) for the
 theme rule.
 
-The role set is fixed, because `kvim-tui` maps every role to one style. A
+The public role set is non-exhaustive and keeps the current vocabulary. A
 grammar whose query uses a name of the shared vocabulary that the mapping does
-not yet cover therefore extends the mapping, never the role set. The `text`
+not yet cover extends the capture mapping before it extends the role set. The `text`
 family of the prose grammars is mapped that way: a title takes the type role, a
 literal and a uniform resource identifier take the string role, and a reference
 takes the constant role. The older words of the same vocabulary are mapped that
@@ -403,10 +424,22 @@ before it highlights, and the role of the node survives.
 
 ## The Language Server Session
 
-kvim is a general Language Server Protocol (LSP) client. It runs one persistent
-session for each server that an adapter of the workspace declares. The session
-speaks the protocol over JSON-RPC and knows no server product. rust-analyzer is
-the first configuration of that client, not a special case inside it.
+`kvim-lsp` is a general Language Server Protocol (LSP) client. One manager owns
+several independent projects. The caller supplies each `ProjectId`, canonical
+root, bounded server declaration list, language selectors, initialization data,
+completion policies, manager limits, and deadlines.
+
+Every handle, request, and event carries project identity. One project owns its
+processes, document versions, diagnostics, cancellation, and shutdown. Two
+projects can use one root, and projects on different roots remain independent.
+Closing one project consumes its handle and cannot cancel another project.
+
+The public project driver returns a future. The host starts and supervises it.
+The library creates no runtime and detaches no task.
+
+Inside one project, kvim runs one persistent session for each selected server.
+The session speaks JSON-RPC and knows no server product. Rust-analyzer is adapter
+data, not a special case inside the client.
 
 The adapter declares each server as data: the identifier, the program, its
 arguments, the protocol language identifier, the formatting role, the workspace
@@ -416,11 +449,10 @@ therefore means adding one declaration to one adapter. No code above the
 adapter boundary changes, and no name, type, or assumption of one server
 appears there.
 
-One session identity is the pair of the adapter identifier and the declaration
-identifier. The identity also carries the position of the declaration in the
-table of its adapter, so every merge reads the servers in declaration order.
-The identifier is unique inside one adapter. Two adapters may declare the same
-program, which starts one session for each adapter.
+One session identity contains project identity, server declaration identity,
+and declaration order. Every request correlation key contains project, server,
+and request identity. Two projects or servers can use the same request number
+without collision.
 
 Every result of a session carries that identity. One server that is missing,
 that fails, or that stops therefore disables only its own session. Every other
@@ -441,10 +473,10 @@ The session owns:
 - explicit deadlines for the handshake, for every request, and for shutdown,
 - buffer-version checks for every request and for every published result.
 
-The session runs as one background task. The terminal event loop sends bounded
-requests through one queue and reads typed results from another queue. It never
-reads, writes, or waits for a server. A full request queue returns a typed
-saturated result at once, and the caller keeps its previous visible state.
+The session runs as one tracked background task. The host or editor driver sends
+bounded requests through one queue and reads typed results from another queue.
+No event loop reads, writes, or waits for a server. A full request queue returns
+a typed saturated result at once, and the caller keeps its previous state.
 
 The handshake offers the UTF-8 position encoding first and the UTF-16 position
 encoding second. The Position Encoding section owns the negotiation and the
@@ -630,11 +662,11 @@ the line by its index inside the fence and the range by its bytes inside that
 line, exactly as one span of a buffer does, so the renderer paints a fence
 through the mapping that already paints a buffer. `kvim-tui` keeps every color.
 
-The highlight reads the language name of the info string, selects the adapter of
-that name, and collects the spans of the one highlighter that also serves a
-buffer. kvim holds one highlighter, so a fence needs no second one. The reader
-of the fence extracts the name, because no code above the adapter boundary may
-match a language name.
+The highlight reads the language name of the info string and selects its catalog
+entry. It uses the owned `SyntaxHighlighter` that also serves the language
+composition instance, so a fence needs no second parser cache. The reader of the
+fence extracts the name because no code above the adapter boundary may match a
+language name.
 
 A fence that names no language, a fence that names a language that no adapter
 declares, and a fence that passes one bound all keep every line and carry no
@@ -921,6 +953,49 @@ session accepts that request and schedules one pull for each open document of
 that session. kvim answers every unsolicited server request, so no request of a
 server can stall it.
 
+### Changed-File Diagnostics
+
+The public changed-file operation reads no Git state and requests no full build.
+The caller supplies one project, one validated worktree-relative path, exact
+document text, one document revision, one language, result limits, cancellation,
+and a wait policy.
+
+The operation dispatches to every configured server that declares that language,
+in declaration order. Each server has its own pull or versioned-push completion
+policy and one result slot. One refusal, unsupported policy, failure, timeout, or
+cancellation remains visible beside the outcomes of other servers.
+
+A request reaches `Ready` only when every selected server reaches a terminal
+ready, unavailable, unsupported, failed, or cancelled state. A ready result is
+accepted only for the requested path, exact text, and document revision.
+
+`WaitPolicy::Immediate` can return `Starting` and then ends that request. It
+does not publish a later result.
+
+`WaitPolicy::Until(Deadline)` owns the overall deadline. It keeps the exact
+request alive through process startup and diagnostic completion. It returns
+diagnostics, a terminal availability outcome, `Superseded`, or timeout for that
+revision without polling or resubmission.
+
+A newer request for the same document cannot receive an older result. The
+configured policy either waits behind the active revision or explicitly
+supersedes it. Kvim never guesses that versionless push diagnostics completed
+after a quiet period. A server without a safe completion policy returns an
+ordinary unsupported outcome.
+
+Kvim applies each server's bounds before aggregate bounds. The result reports
+both forms of truncation and every per-server outcome. It merges exact duplicate
+diagnostics once. It sorts the remaining diagnostics by severity, path, range,
+source, message, and server declaration order. Diagnostics above the aggregate
+bound retain stricter severities first.
+
+Bounds cover projects, processes, servers, open documents, exact text,
+diagnostics, related information, ranges, message bytes, queues, protocol
+traffic, and output. Every wait has one cancellation owner and an explicit
+deadline. Typed errors keep protocol, process, invalid-response, timeout,
+cancellation, and availability causes distinct. No classification inspects
+error text.
+
 ### The Settings Channel
 
 Some servers read their behavior from the workspace configuration of the client
@@ -1049,10 +1124,9 @@ the directory names that prove that the workspace uses this server. A marker
 matches a file of the workspace root. It also matches a directory of that root,
 because a project proves a tool with both shapes.
 
-The lookup reads the workspace root alone. It never walks to a parent
-directory. kvim resolves one workspace root for the complete editor session.
-Workspace containment rejects every path outside that root. A parent directory
-is therefore outside the workspace, and it decides nothing.
+The lookup reads one project's canonical root alone. It never walks to a parent
+directory. Workspace containment rejects every path outside that root. A parent
+directory is therefore outside the project, and it decides nothing.
 
 An empty marker table names no marker, so its server always starts. Only the
 `eslint` declaration of JavaScript, of TypeScript, and of TSX names markers
@@ -1065,14 +1139,12 @@ as a complete project. `typescript-language-server`,
 workspace root alone. A marker would therefore stop such a server in an
 ordinary subdirectory layout.
 
-The language services read the workspace root once, when the editor creates
-them and before the terminal event loop runs. The probe asks the filesystem for
-one path for each distinct marker of the registry. Its cost therefore follows
-the adapter data, and never the size of the workspace. The answer is the set of
-markers that the root holds. Every later gate decision reads that set alone, so
-no gate performs a filesystem lookup on the terminal event loop. The workspace
-root does not change while the editor runs, so one probe answers for every
-buffer of the session.
+The language services read each project root once during project creation. The
+probe runs off the host event loop and asks for one path for each distinct
+marker. Its cost follows adapter data, not workspace size. The answer is the set
+of markers that the root holds. Every later gate decision reads that set alone.
+The root does not change while the project runs, so one probe answers for every
+document of that project.
 
 A root that the process cannot read records no marker. Every gated server then
 stays off, and every server without a marker still starts.
@@ -1136,7 +1208,7 @@ below must always agree.
 |---|---|---|---|
 | Servers of one adapter | `LANGUAGE_SERVERS_MAX` | 4 servers | One language splits its work over a type checker, a linter, and few other tools. Four declarations cover that practice and still bound the merge of one buffer. |
 | Root markers of one server | `LANGUAGE_ROOT_MARKERS_MAX` | 16 markers | One linter names every file name that can hold its configuration. The reference `eslint` configuration names twelve of them, so sixteen covers that practice and still bounds the probe of one workspace. |
-| Sessions of one workspace | `LSP_SESSIONS_MAX` | 16 sessions | One workspace mixes few languages, and a session starts only when the user opens a buffer of its language. Sixteen exceeds normal practice and still bounds the child processes of one editor. |
+| Sessions of one project | `LSP_SESSIONS_MAX` | 16 sessions | One project mixes few languages, and a session starts only when a caller opens a document of its language. Sixteen exceeds normal practice and still bounds one project's child processes. |
 | Frame header | `LSP_HEADER_BYTES_MAX` | 256 B | One `Content-Length` header and one optional `Content-Type` header fit far below this value, so a header that never ends stops early. |
 | Frame body | `LSP_MESSAGE_BYTES_MAX` | 8 MiB | One `didOpen` carries a complete file, and one full `didChange` carries the same text. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for JSON escaping. |
 | Session input | `LSP_INPUT_BYTES_MAX` | 512 MiB | The cumulative bytes that one session writes. A day of editing stays far below this value for an incremental server, and an unbounded write loop stops. A full server receives the text of the document in every change, so its session spends this budget in proportion to that size. |
@@ -1170,14 +1242,16 @@ no partial result. Nested lists of one answer share one element budget, so a
 server cannot allocate without limit by splitting many elements over many short
 lists.
 
-Every bound above applies to one session. The merged diagnostics of one buffer
+Session bounds apply to one session. Manager and project configuration also
+bound projects, aggregate processes, aggregate documents, and aggregate queue
+capacity. The merged diagnostics of one buffer
 therefore hold at most `LANGUAGE_SERVERS_MAX` times `LSP_DIAGNOSTICS_MAX`
 entries, because only the servers of one adapter describe one buffer. The merge
 removes the duplicates, so the visible list is normally far shorter.
 
-A language-server session owns a long-lived child process that no bounded
-process service starts. `LSP_SESSIONS_MAX` therefore bounds those children on
-its own, and the `PROCESS_CONCURRENCY_LIMIT` of
+A language-server session owns a long-lived child process through the supplied
+process spawner. `LSP_SESSIONS_MAX` bounds those children per project, and the
+manager's process limit bounds them in aggregate. `PROCESS_CONCURRENCY_LIMIT` of
 [`responsiveness.md`](responsiveness.md) keeps its whole capacity for the short
 external commands of the editor.
 

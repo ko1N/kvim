@@ -5,10 +5,10 @@
 This document owns the workspace shape, the crate boundaries, the dependency
 direction, state ownership, and the dependency ledger for kvim.
 
-kvim is a standalone terminal modal editor for Rust. It builds one executable
-named `kvim`. kvim mutates text. macOS and Linux use one editor model. Platform
-branches stay in terminal, process, filesystem, clipboard, and packaging
-boundaries.
+kvim is an embeddable editor platform and a standalone terminal modal editor.
+The `kvim` executable consumes the same public library APIs as an external host.
+macOS and Linux use one editor model. Platform branches stay in terminal,
+process, filesystem, clipboard, and packaging boundaries.
 
 ## Workspace
 
@@ -36,15 +36,20 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 |---|---|
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
-| `kvim-input` | Editor modes, semantic commands, the mapping registry, the bounded sequence resolver, and which-key generation. |
-| `kvim-language` | The language adapter registry, language-neutral Tree-sitter analysis, the syntax role set, the language-server session, the markup document of one server answer with the highlighted code of its fences, and the external formatter. The registry holds 25 adapters. Every adapter declares at least one language server, and 20 of them also declare an external formatter. [`language-services.md`](language-services.md) owns the table. |
+| `kvim-keymap` | Terminal-neutral keys, generic bindings, one pending sequence, dispatch ownership, and which-key hints. |
+| `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
+| `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
+| `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
+| `kvim-ui` | Generic ratatui split, sidebar, which-key presentation, and host-workspace composition. |
+| `kvim-input` | Kvim commands, modes, prompts, counts, and the standalone binding preset. Builds on `kvim-keymap`. |
+| `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
-| `kvim-terminal` | Terminal lifecycle, raw mode, the alternate screen, enhanced keyboard reporting, normalized terminal events, and the process termination signals. |
-| `kvim-tui` | The window tree, layout, rendering, the theme, and the event loop. Sole owner of visible editor state. Also builds the host report that the `--diagnostics` flag and the `:diagnostics` command show. |
-| `kvim-workspace` | Files, buffers, atomic save, the file tree, the read-only Git status, workspace mutations, and pickers. |
-| `kvim` | The binary and the composition root. Parses the command line, builds the runtime, prints the host report, and starts the editor. |
+| `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
+| `kvim-tui` | The embedded editor and review presentation models and standalone presentation adapters. It owns visible state for one supplied editor instance. |
+| `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers. It owns no host worktree list or focus policy. |
+| `kvim` | Terminal setup, terminal events, signals, runtime startup, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
 and file code must not contain language-specific path rules. Only a language
@@ -109,40 +114,86 @@ result, not to find the cause.
 
 The dependency direction is one-way, and Cargo enforces it:
 
-| Layer | Crate | Depends on |
+| Layer | Crate | Depends on kvim crates |
 |---|---|---|
-| 0 | `kvim-settings` | — |
+| 0 | `kvim-keymap` | none |
+| 0 | `kvim-path` | none |
+| 0 | `kvim-runtime` | none |
+| 0 | `kvim-settings` | none |
+| 0 | `kvim-syntax` | none |
 | 1 | `kvim-core` | `kvim-settings` |
-| 1 | `kvim-runtime` | — |
-| 1 | `kvim-terminal` | — |
-| 2 | `kvim-input` | `kvim-settings`, `kvim-terminal` |
+| 1 | `kvim-terminal` | `kvim-keymap` |
 | 2 | `kvim-clipboard` | `kvim-runtime` |
+| 2 | `kvim-input` | `kvim-keymap`, `kvim-settings` |
+| 2 | `kvim-lsp` | `kvim-path`, `kvim-runtime` |
+| 2 | `kvim-ui` | `kvim-keymap` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
-| 3 | `kvim-language` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
-| 3 | `kvim-workspace` | `kvim-core`, `kvim-runtime`, `kvim-settings` |
-| 4 | `kvim-tui` | every crate above |
-| 5 | `kvim` | `kvim-language`, `kvim-settings`, `kvim-tui` |
+| 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings` |
+| 4 | `kvim-tui` | every library above except `kvim-terminal` |
+| 5 | `kvim` | `kvim-clipboard`, `kvim-language`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
 
-`kvim-runtime` and `kvim-terminal` need no setting today. Add
-`kvim-settings` to either one when a setting reaches it.
+External dependencies do not change the layer number. `kvim-ui` owns ratatui
+geometry and rendering. `kvim-tui` does not depend on terminal lifecycle code.
+No syntax-only consumer compiles LSP, ratatui, or the editor.
 
 `kvim-clipboard` has one consumer. `kvim-tui` mirrors the unnamed register into
 the system clipboard, and it reads the selected commands for the host report.
 Both reach the platform through the same selection, so no module above the
 crate names a clipboard command. See [`clipboard.md`](clipboard.md).
 
-The binary is the composition root. It constructs dependencies and starts the
-editor.
+The binary is the standalone composition root. An external host is another
+composition root and constructs only the public capabilities that it uses.
 
-Do not add a reverse dependency. Move a shared type down to `kvim-core` or
-`kvim-settings` instead. A reverse dependency is a Cargo cycle, so it fails the
-build rather than a review.
+Do not add a reverse dependency. Move a shared type to the lowest charter that
+owns its meaning. A reverse dependency is a Cargo cycle, so it fails the build.
+
+## External Consumption
+
+The supported external packages are `kvim-path`, `kvim-syntax`, `kvim-lsp`,
+`kvim-keymap`, `kvim-ui`, and the embedded facade in `kvim-tui`.
+
+Each public crate supports a revision-pinned Cargo Git dependency from another
+repository. It requires no shared parent workspace. Every normal dependency of
+a public crate is available at the same Git revision or from crates.io. A public
+crate must not depend on an unpublished path outside this repository or on a
+test-support feature.
+
+The public and workspace minimum supported Rust version (MSRV) is Rust 1.94.1.
+`[workspace.package].rust-version` records this minimum. The development and
+release toolchain remains Rust 1.97.1 in `rust-toolchain.toml`. Continuous
+integration compiles and tests the library workspace separately with Rust
+1.94.1. This document records the target policy. The toolchain and manifest
+changes belong to the MSRV implementation slice.
+
+Public ratatui signatures use workspace ratatui 0.29 types. External consumer
+checks use the same compatible release. Public feature crates remain at version
+`0.1`. A breaking facade change requires a workspace minor-version increase, a
+migration note, updated rustdoc, and an updated dedicated example. A patch
+release must not intentionally break a documented public facade.
+
+Continuous integration checks minimal features, each required feature, default
+features, and all valid feature combinations. This matrix is exact:
+
+| Crate | Default | Required CI combinations |
+|---|---|---|
+| `kvim-path` | no optional production features | default |
+| `kvim-keymap` | no optional production features | default |
+| `kvim-lsp` | no optional production features | default |
+| `kvim-ui` | no optional production features | default |
+| `kvim-syntax` | no grammar | no grammar, each grammar alone, `all-grammars` |
+| `kvim-tui` | no grammar | no grammar, each forwarded grammar alone, `all-grammars` |
+
+`kvim-language` forwards the same grammar features without a default grammar.
+The `kvim` binary enables `all-grammars`. Private `test-support` features are
+not external combinations. Record an architectural reason before excluding any
+future combination.
 
 ## State Ownership
 
-The terminal event loop is the sole owner of visible editor state. Background
-work returns typed results through bounded channels. Background work cannot
-mutate visible state.
+One host event-loop owner owns the visible state of each editor instance. The
+standalone terminal loop is one such host. Background work returns typed results
+through bounded channels and cannot mutate visible state.
 
 Build a complete candidate before publication. Validate the candidate. Publish
 the candidate with one state transition. A failed, cancelled, or obsolete
@@ -178,7 +229,7 @@ imperative boundary.
   - Cost: compile time and platform-specific transitive code.
 - `ratatui`
   - Replaces: a local widget set, cell buffer, and layout implementation.
-  - May run: in `kvim-tui` only.
+  - May run: in `kvim-ui` and `kvim-tui` only.
   - Cost: compile time. Rendering cost stays bounded by the terminal buffer and
     the visible window content.
 - `unicode-width`
@@ -194,23 +245,44 @@ imperative boundary.
 - `tokio`
   - Replaces: local thread pools, channels, deadlines, and child-process
     handling.
-  - May run: in `kvim-runtime`, the composition root, and the crates that own
-    one bounded task of their own: `kvim-language`, `kvim-terminal`, and
-    `kvim-tui`. Every other crate receives runtime services as injected values.
+  - May run: in `kvim-runtime`, `kvim-lsp`, `kvim-terminal`, `kvim-tui`, and the
+    standalone composition root. Public drivers return futures and create no
+    runtime. Every task starts through a caller-supplied bounded spawner.
   - Cost: compile time, supply-chain size, and a worker thread pool.
 - `tokio-util`
   - Replaces: local cancellation flags and shared shutdown state.
-  - May run: in `kvim-runtime`, and in every crate that owns a cancellable
-    request: `kvim-language`, `kvim-tui`, and `kvim-workspace`. A cancellation
-    token crosses the service boundary with the request it belongs to.
+  - May run: in `kvim-runtime`, and in crates that own cancellable requests:
+    `kvim-lsp`, `kvim-language`, `kvim-syntax`, `kvim-tui`, and
+    `kvim-workspace`. A token crosses the boundary with its request.
   - Cost: small. It adds owned cancellation tokens.
 - `notify`
   - Replaces: local inotify and FSEvents code for external change hints.
-  - May run: behind the portable watch service of `kvim-runtime` only. The
-    event loop of `kvim-tui` reads bursts from that service and never touches
-    the platform API.
+  - May run: behind the portable watch service of `kvim-runtime` only. An
+    editor driver reads typed bursts from that service. No host event loop
+    touches the platform API.
   - Cost: platform-specific transitive code and one callback thread. Watch
     roots and callback delivery stay bounded.
+
+### Filesystem Confinement
+
+- `cap-std`
+  - Replaces: ambient path access and local symbolic-link confinement logic.
+  - May run: in `kvim-path` and behind `kvim-workspace` file boundaries. Public
+    operations use a capability directory rooted at one canonical worktree.
+  - Cost: compile time and descriptor-relative system calls. The security
+    benefit is that file access cannot escape its supplied worktree root through
+    path traversal or symbolic-link replacement.
+
+### Review Identity
+
+- `blake3`
+  - Replaces: a local content-digest implementation for immutable diff
+    revisions, side bytes, selected review lines, and capture fingerprints.
+  - May run: in bounded Git capture and pure review-anchor construction inside
+    `kvim-workspace`.
+  - Cost: compile time and one bounded hashing pass over captured bytes. A
+    mature cryptographic digest prevents ambiguous review identities and avoids
+    designing a security-sensitive hash locally.
 
 ### The Text Model
 
@@ -240,15 +312,16 @@ These dependencies run only on the bounded worker service.
 
 - `tree-sitter`
   - Replaces: a local Rust parser and incremental reparse logic.
-  - May run: on the bounded worker service, inside `kvim-language`.
+  - May run: in `kvim-syntax`, when a direct consumer or editor driver submits
+    synchronous highlight work through its bounded worker spawner.
   - Cost: compile time, native code, and bounded parse memory for each buffer.
 - `tree-sitter-highlight`
   - Replaces: local highlight-query execution and capture mapping.
-  - May run: on the bounded worker service, inside `kvim-language`.
+  - May run: in `kvim-syntax` through the same bounded worker path.
   - Cost: small addition over `tree-sitter`.
 - `tree-sitter-rust`
   - Replaces: a local Rust grammar and local highlight queries.
-  - May run: on the bounded worker service, inside `kvim-language`.
+  - May run: in `kvim-syntax` when its Cargo grammar feature is enabled.
   - Cost: generated C code and compile time.
 - The other 23 grammar crates: `tree-sitter-asm`, `tree-sitter-bash`,
   `tree-sitter-c`, `tree-sitter-cpp`, `tree-sitter-css`, `tree-sitter-fish`,
@@ -260,15 +333,15 @@ These dependencies run only on the bounded worker service.
   - Replaces: a local grammar and local highlight queries for each registered
     language. [`language-services.md`](language-services.md) owns the language
     table.
-  - May run: on the bounded worker service, inside `kvim-language`. Each crate
-    is adapter data. No crate name reaches code above the adapter boundary.
-  - Cost: generated C code and compile time for each grammar. kvim links every
-    grammar into the executable, so a user installs no parser file. One host and
+  - May run: in `kvim-syntax` when its Cargo grammar feature is enabled. Each
+    crate is catalog data. No crate name reaches code above that boundary.
+  - Cost: generated C code and compile time for each grammar. Standalone kvim
+    enables every grammar, so a user installs no parser file. One host and
     one toolchain measured the whole set: the release executable grew from
     5,402,048 bytes to 19,872,288 bytes, and the cold release build grew from
     22.2 s to 29.5 s. The user accepted that cost, so the complete language
-    table works in a normal build. A later release can move each language behind
-    a Cargo feature.
+    table works in the standalone build. Public consumers enable only the
+    grammar features that they use.
   - Version reason: every one of these crates carries its parser through
     `tree-sitter-language`, not through the `tree-sitter` runtime, so all of
     them link against the single pinned `tree-sitter` version. `tree-sitter-md`
@@ -289,11 +362,11 @@ These dependencies run only in the bounded language-server task.
 
 - `serde`
   - Replaces: hand-written JSON-RPC envelope parsing.
-  - May run: in the bounded language-server task, inside `kvim-language`.
+  - May run: in bounded language-server tasks inside `kvim-lsp`.
   - Cost: derive macros and compile time.
 - `serde_json`
   - Replaces: a local JSON parser and serializer.
-  - May run: in the bounded language-server task, inside `kvim-language`.
+  - May run: in bounded language-server tasks inside `kvim-lsp`.
   - Cost: compile time. Allocation stays inside the bounded task.
 
 ### The Markup Of One Answer
@@ -452,21 +525,24 @@ learn that it failed. See [`responsiveness.md`](responsiveness.md).
 - [`text-model.md`](text-model.md) owns text coordinates, edit transactions,
   undo, encoding, size limits, and the indent policy.
 - [`input-actions.md`](input-actions.md) owns editor modes, semantic commands,
-  the mapping registry, sequence resolution, and the first-release bindings.
+  shared key dispatch, input snapshots, and the standalone bindings.
 - [`responsiveness.md`](responsiveness.md) owns background work, bounds,
   publication gates, latency budgets, and shutdown.
 - [`windows.md`](windows.md) owns the window tree, layout, focus, resize,
-  sidebars, the theme, and the editor log.
+  generic sidebars and rendering, the standalone theme, and the editor log.
 - [`files.md`](files.md) owns buffers, saving, external-change conflicts,
-  persistent undo files, workspace mutations, and picker limits.
+  confined worktree paths, persistent undo files, workspace mutations, and
+  picker limits.
 - [`language-services.md`](language-services.md) owns the language adapter
-  boundary, Tree-sitter analysis, the language-server session, the position
-  encoding, and the formatter.
-- [`git.md`](git.md) owns the read-only Git status boundary, the recorded entry
-  states, the directory roll-up, and the ignored-entry strategy.
+  boundary, independent syntax, project-scoped LSP, position encoding, and the
+  formatter.
+- [`git.md`](git.md) owns read-only Git status and diff capture, review anchors,
+  recorded entry states, and safe Git execution.
 - [`clipboard.md`](clipboard.md) owns the system clipboard boundary, the
   register shape rule, and the platform commands.
 - [`settings.md`](settings.md) owns the `EditorSettings` structure and every
   default value.
 - [`reviewgraph-integration.md`](reviewgraph-integration.md) owns the deferred
   ReviewGraph relationship and source attribution.
+- [`embedding.md`](embedding.md) owns host, driver, embedded editor, event
+  lifecycle, composition, external use, and public examples.

@@ -2,13 +2,15 @@
 
 ## Ownership
 
-The `runtime` module owns background scheduling, cancellation, deadlines,
-request identity, and result delivery. The `tui` module owns the terminal event
-loop and visible editor state.
+`kvim-runtime` owns reusable bounded scheduling, cancellation, deadlines, and
+result delivery. An `EditorDriver` owns request identity, routing, publication
+gates, tracked work, and shutdown for one embedded editor. The host event loop
+owns that instance's visible editor state. The standalone `kvim` binary owns the
+terminal event loop.
 
 ## Event Loop
 
-The terminal event loop must not run:
+No host or terminal event loop may run:
 
 - filesystem reads, writes, or directory scans,
 - external processes, including ripgrep, a language server, and a formatter,
@@ -19,9 +21,9 @@ The terminal event loop must not run:
 - clipboard reads or writes that can block,
 - any other blocking or unbounded work.
 
-The event loop processes normalized terminal events, applies pure state
-transitions, applies completed typed results, and renders after a visible state
-change.
+An event loop resolves input, applies pure state transitions, applies completed
+typed results, and renders after a visible state change. An embedded host supplies
+resolved input. The standalone binary also normalizes terminal events.
 
 Do not use an unconditional frame loop. A terminal event, a resize, an expired
 deadline, or an accepted background result requests a render.
@@ -77,10 +79,16 @@ until an unrelated event paints the next frame.
 
 ## Bounded Work
 
-Run external commands through a bounded and cancellable process service. Run
-processor-bound work through a bounded worker service. Bound queues, process
-concurrency, worker concurrency, input sizes, output sizes, caches, retries, and
-deadlines.
+Run external commands through a bounded and cancellable process spawner. Run
+processor-bound work through a bounded worker spawner. The host supplies these
+spawners to an embedded driver and chooses isolated capacity or an explicitly
+shared pool. Bound queues, process concurrency, worker concurrency, input sizes,
+output sizes, caches, retries, and deadlines.
+
+The library creates no asynchronous runtime and starts no detached task. The
+host runs every returned driver future and supervises every submitted task.
+Synchronous syntax highlighting is bounded processor work. Submit it through the
+worker spawner. Never call it directly from an event loop.
 
 Submission never waits for capacity. When no permit or result slot is available,
 submission returns a typed saturated result immediately. The event loop then
@@ -163,9 +171,10 @@ skips a directory that already carries a watch, so one burst costs bounded time.
 
 ## Request Identity And Publication
 
-Every background request has an explicit identity. A newer request for the same
-slot makes an older request obsolete. Every request has one cancellation owner.
-Every request has an explicit deadline.
+Every background request has an explicit identity. LSP requests also carry
+project and server identity. A newer request for the same slot makes an older
+request obsolete. Every request has one cancellation owner and an explicit
+deadline.
 
 A request that reads or transforms buffer text also carries the buffer version
 that produced its input. See [`text-model.md`](text-model.md).
@@ -183,6 +192,25 @@ Build a fallible state change outside live state. Validate the complete
 candidate. Apply it on the event loop as one transition. Cancellation, timeout,
 worker failure, saturation, or invalid output leaves the previous valid state
 usable.
+
+## Mandatory Event Delivery
+
+Optional results can coalesce or return a typed saturated outcome. A mandatory
+event after a durable side effect must not be lost.
+
+An editor driver reserves bounded outbox capacity before it accepts a save,
+workspace mutation, or review-comment submission. Saturation refuses the
+operation before it starts. Accepted work follows `Reserved -> Running ->
+Committed -> Published`.
+
+Cancellation can stop work before commit. Once commit starts, the tracked task
+masks cancellation and uses its reserved slot. Failure releases the reservation.
+A successful write, workspace mutation, or review-comment submission always
+publishes its typed event.
+
+`RedrawRequested` uses one coalesced latch. A full component event queue returns
+a typed `Saturated` outcome. It never silently drops the oldest or newest event.
+[`embedding.md`](embedding.md) owns the complete event lifecycle.
 
 ### Recorded Outcomes
 
@@ -235,7 +263,7 @@ result. The previous visible state stays usable.
 
 ## Shutdown
 
-Shutdown runs in this order:
+Standalone shutdown runs in this order:
 
 1. Stop the workspace watcher, so it queues no further directory read.
 2. Reject new work.
@@ -257,6 +285,13 @@ bounded as well.
 Dropping a process future kills its child process. Dropping the runtime remains
 a best-effort safety net. Normal editor shutdown must use the explicit consuming
 shutdown operation.
+
+Embedded shutdown consumes one `EditorDriver`. It rejects new work, cancels
+pre-commit work, closes its optional services, and waits only until the supplied
+deadline. It does not abort a task that can have committed a side effect. If the
+deadline expires first, shutdown returns a bounded, must-use `ShutdownDrain`.
+The drain owns remaining tasks, event reservations, and mandatory delivery. The
+host keeps its runtime alive until the drain completes.
 
 Terminal restoration runs after runtime shutdown and also runs while the process
 unwinds from a panic. See [`architecture.md`](architecture.md) for the release
