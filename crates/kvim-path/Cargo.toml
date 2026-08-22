@@ -1,0 +1,13 @@
+[package]
+name = "kvim-path"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+# Basics
+thiserror.workspace = true
+
+# Filesystem confinement
+cap-std.workspace = true
