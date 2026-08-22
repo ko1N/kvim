@@ -2,16 +2,20 @@
 
 ## Ownership
 
-The `settings` module owns the `EditorSettings` structure and every default
-value in it. `settings` depends on no other module. Every other module may
-depend on `settings`.
+`kvim-settings` owns the standalone `EditorSettings` structure and every
+standalone default in it. It depends on no other kvim crate. Only the crate
+dependency table in [`architecture.md`](architecture.md) decides which other
+crates may depend on it.
 
-`EditorSettings` is the single owner of every adjustable value. No other module
-holds an adjustable constant. A module that needs an adjustable value reads it
-from the injected `EditorSettings` value.
+`EditorSettings` is the single owner of adjustable standalone editor behavior.
+A standalone module reads such a value from the injected `EditorSettings`.
+Public library limits and policies use validated feature-specific configuration
+types. A syntax-only, LSP-only, keymap, UI, or embedded consumer does not need to
+construct `EditorSettings`.
 
-A fixed safety bound is not an adjustable value. Runtime limits, picker limits,
-analysis limits, and protocol limits stay in their owning documents:
+A fixed safety cap is not an adjustable value. Runtime, picker, syntax, and
+protocol caps stay in their owning documents. Public request and instance limits
+can be lower validated values inside those caps. See
 [`responsiveness.md`](responsiveness.md), [`files.md`](files.md), and
 [`language-services.md`](language-services.md).
 
@@ -125,6 +129,10 @@ the lint check onto `clippy` and the compile check onto `check`.
 [`language-services.md`](language-services.md) owns the language adapter
 boundary and the language server session.
 
+Kvim language adapters translate `EditorSettings` into neutral syntax and LSP
+declarations. The public `kvim-syntax` and `kvim-lsp` APIs do not accept
+`EditorSettings` and do not name a standalone setting.
+
 ## Notifications
 
 | Field | Default |
@@ -177,8 +185,8 @@ value cannot exist.
 The first release does not parse a configuration file. `EditorSettings` uses its
 defaults for every field.
 
-A later release adds a loader that overrides these fields. The loader parses,
-validates, and realizes user values, then constructs the same typed
-`EditorSettings` value. Every field in this document must stay overridable by
-that loader. Do not add a value that only a loader could set, and do not add a
-value outside `EditorSettings`.
+A later standalone release can add a loader that overrides these fields. The
+loader parses, validates, and realizes user values. It then constructs the same
+typed `EditorSettings` value. Every field in this document must stay overridable
+by that loader. Do not add a value that only a loader could set. Do not add
+standalone adjustable behavior outside `EditorSettings`.

@@ -1,20 +1,33 @@
 # Git
 
-This document owns the Git dependency of kvim: what the editor reads, how it
-reads it, and how the file tree shows the result.
+This document owns the Git dependency of kvim: status, immutable worktree diff
+capture, review anchors, and the process policy for every Git read.
 
 ## Scope
 
-kvim reads the repository. It never writes it. The first release holds no
-stage, no unstage, no revert, no discard, and no hunk operation. Every function
-of `kvim-workspace/src/git.rs` is a read, and the one command that the editor
-runs gives up every optional lock, so a status read changes no file inside
-`.git`.
+Kvim reads the repository. It never writes it. It has no stage, unstage, revert,
+discard, or comment-persistence operation. Every Git command gives up optional
+locks, so a read changes no file inside `.git`.
 
 `git` is the first external command of the first release beside `rg`,
 `rust-analyzer`, and the clipboard command. It comes from the host platform.
 [`architecture.md`](architecture.md) owns the packaging rule for an external
 command. A host without `git` keeps a fully usable editor.
+
+## Execution Policy
+
+One `GitExecutionPolicy` builds every Git command without a shell. It sets the
+canonical `WorktreeRoot` as the explicit working directory. It never reads or
+changes the process current directory.
+
+The policy disables optional locks, external diff, text conversion, pagers,
+prompts, filesystem monitors, and hooks. It also removes inherited helper
+environment variables. Repository and host configuration must not start another
+program during a Git read.
+
+Diff capture uses plumbing commands or explicit `--no-ext-diff --no-textconv`
+reads for exact bytes. Kvim classifies failures through typed outcomes, exit
+status, or stable Git codes. It never inspects error text.
 
 ## The Status Read
 
@@ -41,14 +54,84 @@ Each argument answers one requirement:
 | `--untracked-files=normal` | Git collapses an untracked directory the same way. The ignored mode above collapses only while this mode does. |
 | `-- .` | The pathspec keeps the report inside the workspace root, and the separator keeps a root that starts with a hyphen a path. |
 
-Git reports every path against the top level of the repository, not against the
-working directory. The request therefore locates that top level with a bounded
-search for a `.git` entry above the workspace root, and it performs that search
-inside the process service, never on the event loop. A workspace root below the
-top level of a repository is a normal case, and its marks resolve correctly.
+Git runs with the canonical worktree root as its explicit working directory.
+The request never searches above that root. Every reported path is converted to
+a validated `WorktreeRelativePath` before publication.
 
 Git reports a directory outside a repository through its exit code. No branch of
 kvim reads the message text of `git`, of any other command, or of any error.
+
+## Worktree Diff Capture
+
+The caller supplies one full `BaseRevision` Git commit object identifier. Kvim
+does not discover a review base. An unavailable object or an object that is not
+a commit returns `BaseUnavailable`.
+
+`DiffTarget` selects the complete worktree or one validated
+`WorktreeRelativePath`. One-path selection matches either side of a rename and
+returns the complete rename pair.
+
+Capture compares the base commit tree with the current working tree. One
+candidate includes commits after the base, staged changes, unstaged changes, and
+untracked content. A clean worktree with commits after the base remains
+reviewable.
+
+The candidate records exact source bytes, file kinds, modes, old and new sides,
+line mappings, truncation, and one `DiffRevision`. Added, deleted, modified,
+renamed, binary, symbolic-link, submodule, and unsupported sides remain distinct.
+Truncated data stays visibly truncated. Omitted content cannot receive a review
+comment.
+
+`DiffRevision` is a BLAKE3 digest of:
+
+- the base commit,
+- current `HEAD`,
+- index authority,
+- sorted paths,
+- file kinds and modes,
+- exact published side bytes.
+
+[`architecture.md`](architecture.md) records the BLAKE3 dependency.
+
+## Capture Consistency
+
+Capture reads one authority fingerprint before and after collection. The
+fingerprint covers the base commit, current `HEAD`, the index, status records,
+and each selected worktree file identity and content digest.
+
+The collected candidate derives the same authority projection from its paths,
+modes, and side-byte digests. The initial fingerprint, candidate projection, and
+final fingerprint must match before publication. This three-way comparison also
+rejects an A-to-B-to-A change during capture.
+
+A changed fingerprint retries within an explicit attempt bound. Exhaustion
+returns `ChangedDuringCapture`. Kvim never publishes a mixed candidate. Capture
+also has explicit source-byte, process-output, file, hunk, line, deadline, and
+cancellation bounds. Every limit returns a typed outcome and reports
+truncation where partial display is safe.
+
+## Review Anchors And Events
+
+A `ReviewAnchor` names:
+
+- the base revision and candidate revision,
+- the worktree-relative path,
+- the old or new file side,
+- hunk identity and line range,
+- a digest of the selected lines,
+- bounded surrounding context.
+
+Before comment submission, Kvim captures the target authority again. The active
+candidate path, mode, side-byte digest, and revision must match that authority.
+A changed candidate returns a typed stale-location outcome and emits no event.
+
+A successful submission emits one bounded `ReviewEvent::CommentSubmitted` with
+the durable anchor and bounded body. The event assigns no host meaning to the
+comment. A full event queue returns `Saturated` before submission and drops no
+comment silently.
+
+A pure relocation API compares an anchor with a later candidate. It returns
+`Exact`, `Relocated`, `Missing`, or `Ambiguous`. It never guesses among matches.
 
 ## The Recorded State
 
@@ -173,8 +256,8 @@ service. Only a real invocation proves that the flags are right: a recorded
 output cannot show that `--ignored=traditional` still names one directory
 instead of every file below it, or that `--porcelain=v2` still writes the format
 that the parser reads. Three facts need one real read each: every state of one
-repository, the top-level discovery below a repository, and a directory that is
-no repository.
+repository, explicit worktree-root execution, and a directory that is no
+repository.
 
 `TempRepository` in the `test-support` module of `kvim-workspace` builds each
 such repository. The development shell and the build sandbox both provide `git`,

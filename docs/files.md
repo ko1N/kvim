@@ -2,20 +2,39 @@
 
 ## Ownership
 
-The `workspace` module owns files, buffers, saving, the file tree, workspace
-mutations, and pickers. The `core` module owns buffer text. See
+`kvim-workspace` owns generic files, buffers, saving, the file tree, workspace
+mutations, pickers, Git capture, and review data. It owns no host worktree list,
+workspace shell, focus policy, or command policy. `kvim-core` owns buffer text. See
 [`text-model.md`](text-model.md).
 
-All filesystem work and all external processes run off the terminal event loop
+All filesystem work and all external processes run off every host event loop
 through bounded runtime services. See
 [`responsiveness.md`](responsiveness.md).
 
+## Worktree Paths
+
+Every public file operation starts from one explicit `WorktreeRoot`. This value
+is an owned, canonical, absolute directory identity. A
+`WorktreeRelativePath` is non-empty, relative, and free of parent traversal.
+Public APIs expose no unchecked path constructor.
+
+A `cap-std` capability directory owns access below one root. Existing symbolic
+links are usable only when their resolved target remains below that root. A new
+target resolves through its nearest existing parent below the root. Tree and
+picker traversal never crosses the root and never loops through links.
+
+Public APIs never inspect or change the process current directory. LSP and Git
+children receive the canonical root as their explicit working directory. Two
+instances can use the same relative path under different roots without sharing
+file identity or state. [`architecture.md`](architecture.md) records the
+`cap-std` security purpose.
+
 ## File Operations
 
-One file operation is one request and one result. The event loop builds the
-complete request, which holds the path, the settings, and the buffer content
-that the operation needs. The bounded worker service runs the blocking steps.
-The event loop then applies the typed result as one state transition.
+One file operation is one request and one result. The visible-state owner builds
+the complete request with its validated root, relative path, policy, and buffer
+content. The bounded worker service runs the blocking steps. The owner then
+applies the typed result as one state transition.
 
 The editor runs one file operation at a time. A second command reports that one
 operation is already running. This rule keeps a result from reaching a buffer
@@ -35,10 +54,10 @@ path of every affected loaded buffer as part of the same transition. The
 identity stays unchanged.
 
 Opening a path that a loaded buffer already owns reuses that buffer. It does not
-create a second buffer for the same file. A buffer records the absolute path
-with every symlink resolved, so two spellings of one file reach one buffer. A
-path that matches no loaded buffer needs one file read, and the completed load
-compares the resolved path again before it publishes a new buffer.
+create a second buffer for the same file. A buffer records its root identity and
+canonical contained target, so two contained spellings of one file reach one
+buffer. A path that matches no loaded buffer needs one file read, and the
+completed load compares the resolved target again before publication.
 
 Opening a path that holds no file starts an empty buffer. The first save writes
 a new file at that path.
@@ -76,6 +95,11 @@ target before it replaces the file.
 A save failure at any step leaves the buffer dirty and usable. The user keeps
 every unsaved change and can retry the save. A failed save never discards buffer
 content and never leaves the temporary file in place.
+
+An embedded driver reserves event capacity before it accepts a save. A
+successful save publishes `FileWritten` through that reservation. If capacity
+is unavailable, the save returns `Saturated` before it writes. See
+[`embedding.md`](embedding.md).
 
 The temporary file stays in the directory of the target, so the rename never
 crosses a filesystem boundary. Its name holds the target name, the process
@@ -674,11 +698,19 @@ disk. Validation checks:
 - which loaded buffers the mutation affects,
 - whether an affected buffer is dirty.
 
+A mutation plan contains capability-relative operations only. Kvim revalidates
+every source, parent, and destination immediately before commit. It never
+replaces a destination that changed without the exact prior approval.
+
 kvim builds one staged transition that describes the filesystem operation and
 every affected buffer path. It applies the filesystem operation first. It then
 applies the buffer path updates as one visible state change. A validation
 failure or a filesystem failure leaves both the workspace and the buffers
 unchanged.
+
+An embedded driver reserves event capacity before it accepts a mutation. A
+successful create, delete, rename, copy, or move publishes one bounded
+`WorkspaceChanged` fact. Saturation refuses the mutation before it starts.
 
 A buffer of a moved or renamed entry follows that entry and keeps its identity.
 A buffer of a removed entry stays loaded, so the user keeps the content. kvim
