@@ -9,6 +9,7 @@
 
 use std::io::{self, stdout};
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
@@ -22,6 +23,7 @@ use kvim_language::{
     ANALYSIS_DEADLINE, FormattedDocument, FormatterFailure, LanguageEvent, LanguageRegistry,
     LanguageServices, LspError,
 };
+use kvim_path::WorktreeRoot;
 use kvim_runtime::{
     FileWatcher, ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeEvent,
     SubmitError, WORKER_DEADLINE_DEFAULT, WatchBatch,
@@ -222,11 +224,9 @@ enum Step {
 /// platforms. A termination signal leaves the event loop instead, so the
 /// restore below writes the same steps as an ordinary exit.
 ///
-/// The caller resolves the workspace root, because the language services
-/// perform no filesystem lookup. The root is the containment boundary of every
-/// document that a language server sees. A root that is not absolute leaves the
-/// editor fully usable with no language services. See
-/// `docs/language-services.md`.
+/// The caller supplies one validated workspace root. The root is the
+/// containment boundary of every file operation and every document that a
+/// language server sees. See `docs/language-services.md`.
 ///
 /// # Errors
 ///
@@ -234,7 +234,7 @@ enum Step {
 /// fails, or when the event stream fails [`EVENT_ERRORS_MAX`] times in a row.
 pub async fn run(
     settings: EditorSettings,
-    root: PathBuf,
+    root: WorktreeRoot,
     path: Option<PathBuf>,
     probe: PanicProbe,
 ) -> Result<(), EditorError> {
@@ -268,7 +268,7 @@ async fn drive<C: TerminalControl>(
     session: &mut TerminalSession<C>,
     mut terminations: TerminationSource,
     settings: EditorSettings,
-    root: PathBuf,
+    root: WorktreeRoot,
     path: Option<PathBuf>,
     probe: PanicProbe,
 ) -> Result<(), EditorError> {
@@ -278,10 +278,12 @@ async fn drive<C: TerminalControl>(
     // once, here at the start, so no operation ever guesses. The editor and the
     // registers name no platform, no command, and no selection. See
     // `docs/clipboard.md`.
+    let root = Arc::new(root);
+    let root_path = root.as_path().to_path_buf();
     let mut editor = Session::new(
         Rect::new(0, 0, size.width, size.height),
         settings,
-        root.clone(),
+        Arc::clone(&root),
     )
     .with_clipboard(SessionClipboard::detect());
     let mut events = EventSource::from_terminal();
@@ -292,8 +294,12 @@ async fn drive<C: TerminalControl>(
     // The language sessions run as background tasks of this runtime context, so
     // the loop below never reads, writes, or waits for a server. A root that
     // this constructor refuses leaves the editor fully usable without them.
-    let mut language =
-        LanguageServices::new(LanguageRegistry::first_release(), root.clone(), settings).ok();
+    let mut language = LanguageServices::new(
+        LanguageRegistry::first_release(),
+        root_path.clone(),
+        settings,
+    )
+    .ok();
     // The watcher runs its platform callback and its coalescing task beside this
     // loop, so no filesystem event ever reaches it directly. It ignores the
     // generated directory names of the file tree, so it watches no build output
@@ -306,7 +312,7 @@ async fn drive<C: TerminalControl>(
     // refresh command. A registration that covers a part of the workspace
     // reports that state with the burst that opens the stream.
     // See `docs/files.md` and `docs/responsiveness.md`.
-    let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
+    let mut watcher = FileWatcher::start(root_path, &GENERATED_NAMES).ok();
     if watcher.is_none() {
         let _ = editor.report_watch_unavailable();
     }
@@ -1029,6 +1035,7 @@ mod tests {
     use tokio::time::timeout;
 
     use super::*;
+    use crate::session::test_root;
 
     /// The elapsed time that every transition of these tests reports.
     const NOW: Duration = Duration::ZERO;
@@ -1056,7 +1063,7 @@ mod tests {
             .parent()
             .expect("the temporary file holds a parent directory")
             .to_path_buf();
-        let mut editor = Session::new(Rect::new(0, 0, 80, 24), settings, root);
+        let mut editor = Session::new(Rect::new(0, 0, 80, 24), settings, test_root(root));
         let _ = editor.open_path(path);
         let request = editor
             .take_file_request()
@@ -1101,7 +1108,7 @@ mod tests {
             .parent()
             .expect("the temporary file holds a parent directory")
             .to_path_buf();
-        let mut editor = Session::new(Rect::new(0, 0, 80, 24), settings, root);
+        let mut editor = Session::new(Rect::new(0, 0, 80, 24), settings, test_root(root));
         let _ = editor.open_path(path);
         let request = editor
             .take_file_request()
@@ -1180,7 +1187,7 @@ mod tests {
         let mut editor = Session::new(
             Rect::new(0, 0, 80, 24),
             EditorSettings::default(),
-            PathBuf::from("/workspace"),
+            test_root(std::env::current_dir().expect("the test process holds a working directory")),
         );
         let step = publish_watch(&mut editor, batch.as_ref(), NOW);
 

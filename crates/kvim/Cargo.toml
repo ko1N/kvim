@@ -12,6 +12,7 @@ path = "src/main.rs"
 [dependencies]
 # kvim crates
 kvim-language.workspace = true
+kvim-path.workspace = true
 kvim-settings.workspace = true
 kvim-tui.workspace = true
 

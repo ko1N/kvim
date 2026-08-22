@@ -27,7 +27,7 @@ use kvim_workspace::{
     TakenDestination, temp::TempDir,
 };
 
-use super::session::{FileRequestFailure, Redraw, Session, watch_coverage_note};
+use super::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
 use super::theme::{Theme, ThemeRole};
 use super::tree::{
     GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
@@ -73,7 +73,7 @@ fn workspace_with_icons(icons: FileTreeIcons) -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = icons;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     (dir, session)
 }
@@ -581,7 +581,7 @@ fn a_delete_without_a_selection_reports_the_refusal_and_asks_nothing() {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
 
@@ -939,7 +939,7 @@ fn search_workspace() -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     // `closed` is the first row, so one step down reaches `open`.
@@ -1457,7 +1457,7 @@ fn flat_workspace(entries: usize) -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     (dir, session)
@@ -1705,7 +1705,7 @@ fn appearance_workspace(icons: FileTreeIcons) -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = icons;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     (dir, session)
@@ -1973,7 +1973,7 @@ fn a_narrow_sidebar_clips_every_row_at_its_own_edge() {
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
     settings.windows.file_tree_width_cells = 10;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     press(&mut session, 'l');
@@ -2021,7 +2021,7 @@ fn git_workspace() -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     (dir, session)
@@ -2173,7 +2173,11 @@ fn a_save_asks_for_the_repository_state_again() {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, dir.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        settings,
+        test_root(dir.path.clone()),
+    );
     drain(&mut session);
     let _opening_read = session.take_git_request();
 

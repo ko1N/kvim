@@ -15,26 +15,32 @@
 //! # Examples
 //!
 //! ```
+//! use std::sync::Arc;
+//!
+//! use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 //! use kvim_settings::FileSettings;
 //! use kvim_workspace::{Buffers, FileBuffer, FileRequest, FileResult, OpenRequest};
 //!
 //! let files = FileSettings::default();
 //! let (mut buffers, scratch) = Buffers::new(FileBuffer::scratch(&files));
+//! let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
 //!
 //! // The request holds every value that the worker needs.
 //! let request = FileRequest::Open(OpenRequest {
-//!     path: "Cargo.toml".into(),
+//!     root,
+//!     path: WorktreeRelativePath::new("Cargo.toml")?,
 //!     files,
 //! });
 //!
 //! // The worker runs the blocking step and returns one complete candidate.
 //! if let FileResult::Opened { outcome: Ok(file), .. } = request.run() {
 //!     let id = buffers
-//!         .insert(FileBuffer::loaded(file.text, file.path, file.identity))
+//!         .insert(FileBuffer::loaded(file.text, file.target, file.identity))
 //!         .expect("the list holds fewer buffers than the limit");
 //!     assert_ne!(id, scratch);
 //!     assert_eq!(buffers.len(), 2);
 //! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 mod buffer;
@@ -59,11 +65,14 @@ mod tests;
 #[cfg(test)]
 mod tree_tests;
 
-pub use buffer::{BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME};
+pub use buffer::{
+    BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME,
+    SaveApplyOutcome,
+};
 pub use clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 pub use file::{
-    FileChange, FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, identity, load,
-    render_content, save,
+    FileChange, FileIdentity, FileTarget, LoadedFile, OpenError, SaveError, SavedFile, identity,
+    load, render_content, save,
 };
 pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use git::{

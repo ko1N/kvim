@@ -30,7 +30,7 @@ use std::collections::BTreeMap;
 use std::mem;
 use std::num::NonZeroU16;
 use std::num::NonZeroU32;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -56,17 +56,18 @@ use kvim_language::{
     LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
     SyntaxTree,
 };
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
-    FileOperation, FileRequest, FileResult, FileTree, GitStatusFailure, GitStatusRequest,
-    GitStatusSnapshot, MutationError, MutationOutcome, OpenError, OpenRequest, OpenedFile,
-    Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot,
-    RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer,
-    SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
-    WorkspaceRequest, WorkspaceResult, render_content,
+    FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure,
+    GitStatusRequest, GitStatusSnapshot, MutationError, MutationOutcome, OpenError, OpenRequest,
+    OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult,
+    PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger,
+    ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX,
+    TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -295,13 +296,14 @@ enum UnsavedText {
 
 /// One buffer that waits for the outcome of a reload check.
 ///
-/// The recorded version is the publication gate: a buffer that changed while
-/// the check ran no longer describes the text that the worker compared, so its
-/// outcome is obsolete.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// The recorded target and version form the publication gate. A buffer that
+/// moved or changed while the check ran makes the outcome obsolete.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct PendingReload {
     /// The buffer that the outcome belongs to.
     buffer: BufferId,
+    /// The file target at the moment that the request left.
+    target: FileTarget,
     /// The buffer version at the moment that the request left.
     version: BufferVersion,
     /// Whether the reload may replace unsaved text.
@@ -887,6 +889,11 @@ impl HostProbe {
     }
 }
 
+#[cfg(test)]
+pub(super) fn test_root(path: PathBuf) -> Arc<WorktreeRoot> {
+    Arc::new(WorktreeRoot::open(path).expect("the test workspace root exists"))
+}
+
 /// The visible editor state of one terminal.
 ///
 /// # Examples
@@ -900,7 +907,12 @@ impl HostProbe {
 /// use kvim_terminal::{Key, KeyCode, TerminalEvent};
 /// use kvim_tui::{Redraw, Session};
 ///
-/// let root = std::env::current_dir().expect("the test process holds a working directory");
+/// let root = std::sync::Arc::new(
+///     kvim_path::WorktreeRoot::open(
+///         std::env::current_dir().expect("the process holds a working directory"),
+///     )
+///     .expect("the working directory is a worktree"),
+/// );
 /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
 /// let now = Duration::ZERO;
 ///
@@ -918,6 +930,7 @@ pub struct Session {
     area: Rect,
     settings: EditorSettings,
     theme: Theme,
+    root: Arc<WorktreeRoot>,
     buffers: Buffers,
     active: BufferId,
     /// The file operation that waits for the bounded worker service.
@@ -1030,28 +1043,30 @@ pub struct Session {
 impl Session {
     /// Creates a session that shows one empty scratch buffer.
     ///
-    /// The workspace root is the directory that the file tree shows. The
-    /// caller resolves it once, because the session performs no filesystem
-    /// work. See `docs/files.md`.
+    /// The workspace root is the capability and directory that the file tree
+    /// shows. The caller resolves it once, because the session performs no
+    /// filesystem work. See `docs/files.md`.
     ///
     /// # Panics
     ///
     /// Panics when the hardcoded first-release binding table is invalid. This
     /// is a cold-path bootstrap check, so an invalid table must fail at start.
     #[must_use]
-    pub fn new(area: Rect, settings: EditorSettings, root: PathBuf) -> Self {
+    pub fn new(area: Rect, settings: EditorSettings, root: Arc<WorktreeRoot>) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
+        let root_path = root.as_path().to_path_buf();
         let mut session = Self {
             area,
             settings,
             theme: Theme::new(),
+            root,
             buffers,
             active,
             file_outbox: None,
             file_pending: None,
             reload_due: false,
             windows: Windows::new(active, shell_areas(area).body, settings.windows),
-            tree: TreeSidebar::new(root),
+            tree: TreeSidebar::new(root_path),
             tree_region: None,
             picker: None,
             ripgrep_reported: false,
@@ -2282,7 +2297,12 @@ impl Session {
     /// use kvim_settings::EditorSettings;
     /// use kvim_tui::Session;
     ///
-    /// let root = std::env::current_dir().expect("the test process holds a working directory");
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
     /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
     /// session.open_path("Cargo.toml".into());
     ///
@@ -2292,16 +2312,43 @@ impl Session {
     /// assert_eq!(session.buffers().len(), 2);
     /// ```
     pub fn open_path(&mut self, path: PathBuf) -> Redraw {
-        if let Some(id) = self.buffers.find_path(&path) {
+        let relative = if path.is_absolute() {
+            path.strip_prefix(self.root.as_path())
+        } else {
+            Ok(path.as_path())
+        };
+        let relative = match relative
+            .map_err(|_| "the path is outside the worktree".to_owned())
+            .map(|path| {
+                path.components()
+                    .filter_map(|component| match component {
+                        Component::CurDir => None,
+                        other => Some(other.as_os_str()),
+                    })
+                    .collect::<PathBuf>()
+            })
+            .and_then(|path| WorktreeRelativePath::new(path).map_err(|error| error.to_string()))
+        {
+            Ok(relative) => relative,
+            Err(error) => {
+                self.set_message(
+                    format!("cannot open {}: {error}", path.display()),
+                    MessageLevel::Error,
+                );
+                return Redraw::Needed;
+            }
+        };
+        let display_path = self.root.as_path().join(relative.as_path());
+        if let Some(id) = self.buffers.find_path(&display_path) {
             return self.switch_to(id);
-        }
-        if self.buffers.len() >= BUFFERS_MAX {
-            self.report_buffer_limit();
-            return Redraw::Needed;
         }
         let files = self.settings.files;
         self.start_file_request(
-            FileRequest::Open(OpenRequest { path, files }),
+            FileRequest::Open(OpenRequest {
+                root: Arc::clone(&self.root),
+                path: relative,
+                files,
+            }),
             PendingFile::Open,
         )
     }
@@ -3635,6 +3682,7 @@ impl Session {
             FileResult::Opened { requested, outcome } => match outcome {
                 Ok(file) => self.publish_open(file),
                 Err(error) => {
+                    let requested = self.root.as_path().join(requested.as_path());
                     self.set_message(
                         format!("cannot open {}: {error}", requested.display()),
                         MessageLevel::Error,
@@ -3653,7 +3701,7 @@ impl Session {
                         (AfterSave::Stay, FormatBeforeSave::Silent)
                     }
                 };
-                self.publish_save(buffer, &requested, outcome, then, format)
+                self.publish_save(buffer, requested.as_path(), outcome, then, format)
             }
             FileResult::Reloaded { buffers } => {
                 let Some(PendingFile::Reload { targets, origin }) = pending else {
@@ -3910,7 +3958,7 @@ impl Session {
             );
             return Redraw::Skipped;
         };
-        let Some(path) = file.path().map(Path::to_path_buf) else {
+        let Some(target) = file.target().cloned() else {
             self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
             return Redraw::Needed;
         };
@@ -3919,7 +3967,7 @@ impl Session {
             FileRequest::Reload(ReloadRequest {
                 targets: vec![ReloadTarget {
                     buffer,
-                    path,
+                    target: target.clone(),
                     trigger: ReloadTrigger::Read,
                 }],
                 files: self.settings.files,
@@ -3927,6 +3975,7 @@ impl Session {
             PendingFile::Reload {
                 targets: vec![PendingReload {
                     buffer,
+                    target,
                     version,
                     unsaved,
                 }],
@@ -3962,14 +4011,14 @@ impl Session {
                 debug_assert!(false, "the list answers for every identity that it named");
                 continue;
             };
-            let Some(path) = file.path().map(Path::to_path_buf) else {
+            let Some(target) = file.target().cloned() else {
                 // A buffer without a file name has no file to compare.
                 continue;
             };
             let identity = file.identity();
             targets.push(ReloadTarget {
                 buffer: id,
-                path,
+                target: target.clone(),
                 trigger: if file.is_modified() {
                     ReloadTrigger::Compare(identity)
                 } else {
@@ -3978,6 +4027,7 @@ impl Session {
             });
             pending.push(PendingReload {
                 buffer: id,
+                target,
                 version: file.text().version(),
                 unsaved: UnsavedText::Keep,
             });
@@ -4096,14 +4146,15 @@ impl Session {
         // Build the complete request before the operation starts, so a rejected
         // save never changes the buffer.
         let staged = self.buffers.get(buffer).and_then(|active| {
-            let path = active.path()?.to_path_buf();
+            let target = active.target()?.clone();
             Some(SaveRequest {
                 buffer,
                 content: render_content(active.text()),
+                version: active.text().version(),
                 expected: active.identity(),
                 snapshot: active.text().clone(),
                 files: self.settings.files,
-                path,
+                target,
             })
         });
         let Some(request) = staged else {
@@ -4124,13 +4175,13 @@ impl Session {
     fn publish_open(&mut self, file: OpenedFile) -> Redraw {
         // Two spellings of one path reach the same file, so the completed load
         // returns the buffer that already owns it.
-        if let Some(existing) = self.buffers.find_path(&file.path) {
+        if let Some(existing) = self.buffers.find_target(&file.target) {
             return self.switch_to(existing).or(Redraw::Needed);
         }
-        let name = file.path.display().to_string();
+        let name = file.target.as_path().display().to_string();
         let lines = file.text.line_count();
         let bytes = file.text.len_bytes();
-        let loaded = FileBuffer::loaded(file.text, file.path, file.identity);
+        let loaded = FileBuffer::loaded(file.text, file.target, file.identity);
         let Some(id) = self.buffers.insert(loaded) else {
             self.set_message(
                 format!("the editor holds the maximum of {BUFFERS_MAX} buffers"),
@@ -4149,7 +4200,8 @@ impl Session {
     /// Publishes one completed reload check.
     ///
     /// Each outcome passes the publication gate of its own buffer, so a buffer
-    /// that changed while the check ran keeps its text. See `docs/files.md`.
+    /// that moved or changed while the check ran keeps its text. See
+    /// `docs/files.md`.
     fn publish_reload(
         &mut self,
         buffers: Vec<ReloadedBuffer>,
@@ -4158,15 +4210,11 @@ impl Session {
     ) -> Redraw {
         let mut redraw = Redraw::Skipped;
         for result in buffers {
-            let Some(target) = targets
-                .iter()
-                .find(|target| target.buffer == result.buffer)
-                .copied()
-            else {
+            let Some(target) = targets.iter().find(|target| target.buffer == result.buffer) else {
                 debug_assert!(false, "the worker answers for the targets that it received");
                 continue;
             };
-            if !self.accepts_reload(target) {
+            if !self.accepts_reload(target, &result) {
                 continue;
             }
             redraw = redraw.or(match result.outcome {
@@ -4179,7 +4227,9 @@ impl Session {
                 Ok(ReloadOutcome::Missing) => {
                     self.report_external(result.buffer, ExternalChange::Missing, origin)
                 }
-                Err(error) => self.report_reload_error(result.buffer, &result.path, &error, origin),
+                Err(error) => {
+                    self.report_reload_error(result.buffer, result.target.as_path(), &error, origin)
+                }
             });
         }
         redraw
@@ -4187,12 +4237,15 @@ impl Session {
 
     /// Reports whether one reload outcome still describes its buffer.
     ///
-    /// A buffer that changed while the check ran holds other text than the text
-    /// that the worker compared, so its outcome is obsolete.
-    fn accepts_reload(&self, target: PendingReload) -> bool {
-        self.buffers
-            .get(target.buffer)
-            .is_some_and(|file| file.text().version() == target.version)
+    /// A buffer that moved or changed while the check ran no longer describes
+    /// the target and text that the worker checked.
+    fn accepts_reload(&self, target: &PendingReload, result: &ReloadedBuffer) -> bool {
+        if result.target != target.target {
+            return false;
+        }
+        self.buffers.get(target.buffer).is_some_and(|file| {
+            file.target() == Some(&target.target) && file.text().version() == target.version
+        })
     }
 
     /// Replaces one buffer with the text that its file holds now.
@@ -4202,7 +4255,7 @@ impl Session {
     /// shorter leaves no cursor beyond its end.
     fn publish_reloaded_text(
         &mut self,
-        target: PendingReload,
+        target: &PendingReload,
         file: OpenedFile,
         origin: ReloadOrigin,
     ) -> Redraw {
@@ -4220,7 +4273,7 @@ impl Session {
             return Redraw::Skipped;
         }
         debug_assert!(
-            loaded.path() == Some(file.path.as_path()),
+            loaded.target() == Some(&file.target),
             "a reload reads the path that its own buffer holds"
         );
         let lines = file.text.line_count();
@@ -4376,10 +4429,10 @@ impl Session {
             // The buffer left the list while the save ran.
             return Redraw::Skipped;
         };
-        let lines = target.text().line_count();
-        let name = saved.path.display().to_string();
+        let lines = saved.lines;
+        let name = saved.target.as_path().display().to_string();
         let bytes = saved.bytes;
-        target.mark_saved(saved.path, saved.identity);
+        let applied = target.apply_save(saved.target, saved.identity, saved.version);
         // The saved file changed the working tree, so the recorded state of the
         // workspace changed with it.
         self.tree.request_git_status();
@@ -4392,9 +4445,11 @@ impl Session {
             None => written,
         };
         self.set_message(report, format.level());
-        match then {
-            AfterSave::Stay => Redraw::Needed,
-            AfterSave::CloseWindow => self
+        match (then, applied) {
+            (AfterSave::Stay, _) | (AfterSave::CloseWindow, SaveApplyOutcome::Stale) => {
+                Redraw::Needed
+            }
+            (AfterSave::CloseWindow, SaveApplyOutcome::Current) => self
                 .close_window(UnsavedChanges::Discard)
                 .or(Redraw::Needed),
         }

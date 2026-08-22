@@ -86,7 +86,7 @@ The save procedure is:
 3. Flush the temporary file.
 4. Rename the temporary file over the target path.
 5. Record the new file metadata with the buffer.
-6. Clear the dirty state.
+6. Clear the dirty state if the live buffer still has the saved version.
 
 The rename replaces the file in one step, so a reader never observes a partial
 file. kvim preserves the existing file permissions and resolves a symlink to its
@@ -95,6 +95,11 @@ target before it replaces the file.
 A save failure at any step leaves the buffer dirty and usable. The user keeps
 every unsaved change and can retry the save. A failed save never discards buffer
 content and never leaves the temporary file in place.
+
+Each save binds its result to the buffer version that produced the written
+content. If the live version changes while the save runs, kvim records the
+written target and file identity but keeps the live buffer dirty. A stale `:wq`
+result keeps the window open.
 
 An embedded driver reserves event capacity before it accepts a save. A
 successful save publishes `FileWritten` through that reservation. If capacity
@@ -114,7 +119,8 @@ answer keeps the buffer and the window. The question names the buffer, and the
 answer closes the window only while that named buffer still holds the focus,
 because an open that completes while the question waits makes another buffer
 active. `:q!` discards the changes without a question. `:wq` saves first and
-closes the window after the save succeeds. A failed save keeps the window open.
+closes the window after a current save succeeds. A failed or stale save keeps
+the window open.
 
 ## External Change Detection
 

@@ -20,7 +20,7 @@ use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{PickerResult, PickerSlot, Preview, PreviewKey, PreviewTarget, temp::TempDir};
 
 use super::picker::{PREVIEW_WIDTH_PERCENT, PickerFailure, picker_areas};
-use super::session::{Redraw, Session};
+use super::session::{Redraw, Session, test_root};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -57,7 +57,7 @@ fn workspace() -> (TempDir, Session) {
     let session = Session::new(
         Rect::new(0, 0, WIDTH, HEIGHT),
         EditorSettings::default(),
-        root,
+        test_root(root),
     );
     (dir, session)
 }

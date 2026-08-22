@@ -8,6 +8,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use kvim_language::LanguageRegistry;
+use kvim_path::WorktreeRoot;
 use kvim_settings::EditorSettings;
 use kvim_tui::{HostReportRequest, HostWorkspace, PanicProbe};
 use thiserror::Error as ErrorDerive;
@@ -111,13 +112,13 @@ fn panic_probe() -> PanicProbe {
 /// Returns the workspace root that contains every document of a language server.
 ///
 /// The root is the working directory of the editor, with every symlink
-/// resolved, so it matches the spelling that a loaded buffer holds. A document
-/// outside the root receives no language service and stays fully editable. See
+/// resolved. File operations reject every path outside this root. See
 /// `docs/language-services.md`.
-fn workspace_root() -> Result<PathBuf, String> {
+fn workspace_root() -> Result<WorktreeRoot, String> {
     let current = std::env::current_dir()
         .map_err(|error| format!("cannot read the working directory: {error}"))?;
-    Ok(std::fs::canonicalize(&current).unwrap_or(current))
+    WorktreeRoot::open(current)
+        .map_err(|error| format!("cannot open the working directory as a worktree: {error}"))
 }
 
 /// Returns the host report of this machine as plain text.
@@ -132,7 +133,9 @@ fn workspace_root() -> Result<PathBuf, String> {
 /// bounded worker service instead. See `docs/architecture.md`.
 fn host_report() -> String {
     let workspace = match workspace_root() {
-        Ok(root) => HostWorkspace::Resolved { root },
+        Ok(root) => HostWorkspace::Resolved {
+            root: root.as_path().to_path_buf(),
+        },
         Err(reason) => HostWorkspace::Unresolved { reason },
     };
     HostReportRequest::new(LanguageRegistry::first_release(), workspace).run()
