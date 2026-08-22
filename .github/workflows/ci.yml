@@ -27,11 +27,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      # The repository holds a rust-toolchain.toml that pins the development
-      # toolchain for the Nix shell. Rustup reads that file and it overrides
-      # the toolchain of this job. The variable keeps this job on the minimum
-      # supported version.
-      - name: Keep the job on the minimum supported Rust version
+      # Rustup reads rust-toolchain.toml and can override the toolchain selected
+      # by the action. Keep this job on the development and release version.
+      - name: Keep the job on the development Rust version
         run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
 
       - name: Check formatting
@@ -45,3 +43,26 @@ jobs:
 
       - name: Build release executable
         run: cargo build --release --all-features --locked
+
+  msrv:
+    name: MSRV (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Check workspace with the minimum supported Rust version
+        run: nix develop .#msrv -c cargo check --workspace --all-targets --locked
+
+      - name: Test workspace libraries with the minimum supported Rust version
+        run: nix develop .#msrv -c cargo test --workspace --lib --tests --locked
