@@ -7,6 +7,9 @@
 //! `docs/responsiveness.md`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use kvim_path::{WorktreeDirectoryPath, WorktreeRoot};
 
 use super::mutation::{
     FileOperation, MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite,
@@ -34,8 +37,10 @@ pub struct MutateRequest {
 pub enum WorkspaceRequest {
     /// Read one directory for the file tree.
     ReadDirectory {
-        /// The directory to read.
-        path: PathBuf,
+        /// The root capability used for this read.
+        root: Arc<WorktreeRoot>,
+        /// The validated directory at or below the root.
+        path: WorktreeDirectoryPath,
     },
     /// Validate and apply one workspace mutation.
     Mutate(MutateRequest),
@@ -65,9 +70,9 @@ impl WorkspaceRequest {
     #[must_use]
     pub fn run(self) -> WorkspaceResult {
         match self {
-            Self::ReadDirectory { path } => WorkspaceResult::Directory {
-                outcome: tree::read_directory(&path),
-                path,
+            Self::ReadDirectory { root, path } => WorkspaceResult::Directory {
+                outcome: tree::read_directory(&root, &path),
+                path: path.display_path(&root),
             },
             Self::Mutate(request) => WorkspaceResult::Mutated {
                 outcome: MutationPlan::stage_with(

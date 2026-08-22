@@ -11,12 +11,15 @@
 //! supported pattern subset that `docs/files.md` records. It reads no global
 //! ignore file and no Git configuration, because it starts no Git process.
 
-use std::collections::VecDeque;
-use std::fs;
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeSet, VecDeque};
+use std::io::Read as _;
+use std::path::Path;
 use std::rc::Rc;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
+
+use kvim_path::{ResolvedTargetState, WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 
 use super::picker::PICKER_CANDIDATES_MAX;
 use super::tree::{EntryKind, Truncation, read_directory};
@@ -48,8 +51,8 @@ const SEPARATOR: char = '/';
 /// The files that one bounded walk found.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WalkOutcome {
-    /// The absolute paths of the files, in directory order.
-    pub files: Vec<PathBuf>,
+    /// The validated paths of the files, in directory order.
+    pub files: Vec<WorktreeRelativePath>,
     /// Reports whether the walk stopped at one of its bounds.
     pub truncated: bool,
 }
@@ -66,26 +69,30 @@ pub struct WalkOutcome {
 /// # Examples
 ///
 /// ```no_run
-/// use std::path::Path;
+/// use std::sync::Arc;
 ///
+/// use kvim_path::WorktreeRoot;
 /// use kvim_workspace::walk_files;
 /// use tokio_util::sync::CancellationToken;
 ///
-/// let outcome = walk_files(Path::new("."), &CancellationToken::new());
+/// let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
+/// let outcome = walk_files(root, &CancellationToken::new());
 /// // A complete walk found every file that the ignore rules keep.
 /// assert!(!outcome.truncated || outcome.files.len() <= kvim_workspace::WALK_FILES_MAX);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[must_use]
-pub fn walk_files(root: &Path, cancellation: &CancellationToken) -> WalkOutcome {
+pub fn walk_files(root: Arc<WorktreeRoot>, cancellation: &CancellationToken) -> WalkOutcome {
     let mut outcome = WalkOutcome::default();
     let mut queue: VecDeque<Directory> = VecDeque::new();
     queue.push_back(Directory {
-        path: root.to_path_buf(),
+        path: WorktreeDirectoryPath::Root,
         relative: String::new(),
         depth: 0,
         rules: None,
     });
     let mut directories = 0_usize;
+    let mut resolved = BTreeSet::new();
     while let Some(directory) = queue.pop_front() {
         if cancellation.is_cancelled() {
             outcome.truncated = true;
@@ -96,16 +103,25 @@ pub fn walk_files(root: &Path, cancellation: &CancellationToken) -> WalkOutcome 
             outcome.truncated = true;
             return outcome;
         }
-        let Ok(listing) = read_directory(&directory.path) else {
+        let Ok(listing) = read_directory(&root, &directory.path) else {
             // An unreadable directory holds no file that the picker can open.
+            outcome.truncated = true;
             continue;
         };
+        if !resolved.insert(listing.identity.clone()) {
+            // A contained link aliases a directory that the walk already read.
+            // Keep source order deterministic and never repeat its subtree.
+            outcome.truncated = true;
+            continue;
+        }
         // The shared directory reader keeps one bounded listing, so a very
         // large directory also truncates the walk.
         if listing.truncation != Truncation::Complete {
             outcome.truncated = true;
         }
-        let rules = read_rules(&directory);
+        let rules_read = read_rules(&root, &directory);
+        outcome.truncated |= rules_read.truncated;
+        let rules = rules_read.rules;
         for entry in listing.entries {
             if entry.name == GIT_DIRECTORY {
                 continue;
@@ -118,16 +134,34 @@ pub fn walk_files(root: &Path, cancellation: &CancellationToken) -> WalkOutcome 
             {
                 continue;
             }
-            let path = directory.path.join(&entry.name);
+            let Ok(path) = WorktreeRelativePath::new(Path::new(&relative)) else {
+                outcome.truncated = true;
+                continue;
+            };
             if is_directory {
                 if directory.depth < WALK_DEPTH_MAX {
                     queue.push_back(Directory {
-                        path,
+                        path: WorktreeDirectoryPath::Relative(path),
                         relative,
                         depth: directory.depth.saturating_add(1),
                         rules: rules.clone(),
                     });
+                } else {
+                    outcome.truncated = true;
                 }
+                continue;
+            }
+            let Ok(resolved) = root.resolve(&path) else {
+                // An escaping, dangling, or looping link is not an openable
+                // picker candidate. Report the omission through the existing
+                // visible truncation state.
+                outcome.truncated = true;
+                continue;
+            };
+            if resolved.state() != ResolvedTargetState::Existing
+                || root.revalidate(&path, &resolved).is_err()
+            {
+                outcome.truncated = true;
                 continue;
             }
             if outcome.files.len() >= WALK_FILES_MAX {
@@ -142,8 +176,8 @@ pub fn walk_files(root: &Path, cancellation: &CancellationToken) -> WalkOutcome 
 
 /// One directory that waits for its read.
 struct Directory {
-    /// The absolute path of the directory.
-    path: PathBuf,
+    /// The validated directory at or below the root.
+    path: WorktreeDirectoryPath,
     /// The path of the directory below the root, with `/` separators.
     relative: String,
     /// The number of levels between the root and this directory.
@@ -156,29 +190,113 @@ struct Directory {
 ///
 /// The rules of the directory sit above the rules of its parents, so a deeper
 /// ignore file decides first.
-fn read_rules(directory: &Directory) -> Option<Rc<Rules>> {
-    let path = directory.path.join(IGNORE_FILE_NAME);
-    let readable =
-        fs::metadata(&path).is_ok_and(|it| it.is_file() && it.len() <= IGNORE_FILE_BYTES_MAX);
-    if !readable {
-        return directory.rules.clone();
-    }
-    let Ok(text) = fs::read_to_string(&path) else {
-        return directory.rules.clone();
+fn read_rules(root: &WorktreeRoot, directory: &Directory) -> RulesRead {
+    let relative = join(&directory.relative, IGNORE_FILE_NAME);
+    let Ok(requested) = WorktreeRelativePath::new(Path::new(&relative)) else {
+        return RulesRead::truncated(directory);
     };
-    let patterns: Vec<Pattern> = text
+    let Ok(resolved) = root.resolve(&requested) else {
+        return RulesRead::truncated(directory);
+    };
+    let metadata = match root.directory().metadata(resolved.path().as_path()) {
+        Ok(metadata) => metadata,
+        Err(error)
+            if error.kind() == std::io::ErrorKind::NotFound
+                && resolved.state() == ResolvedTargetState::Missing =>
+        {
+            return RulesRead::inherited(directory);
+        }
+        Err(_) => return RulesRead::truncated(directory),
+    };
+    if !metadata.is_file() {
+        return RulesRead::truncated(directory);
+    }
+    if metadata.len() > IGNORE_FILE_BYTES_MAX {
+        return RulesRead::truncated(directory);
+    }
+    let Ok(file) = root.directory().open(resolved.path().as_path()) else {
+        return RulesRead::truncated(directory);
+    };
+    let Ok(opened) = file.metadata() else {
+        return RulesRead::truncated(directory);
+    };
+    let opened = metadata_identity(&opened);
+    let mut bytes = Vec::new();
+    let Ok(_) = file
+        .take(IGNORE_FILE_BYTES_MAX.saturating_add(1))
+        .read_to_end(&mut bytes)
+    else {
+        return RulesRead::truncated(directory);
+    };
+    if bytes.len() > usize::try_from(IGNORE_FILE_BYTES_MAX).unwrap_or(usize::MAX) {
+        return RulesRead::truncated(directory);
+    }
+    let Ok(current) = root.directory().metadata(resolved.path().as_path()) else {
+        return RulesRead::truncated(directory);
+    };
+    if metadata_identity(&current) != opened || root.revalidate(&requested, &resolved).is_err() {
+        return RulesRead::truncated(directory);
+    }
+    let Ok(text) = String::from_utf8(bytes) else {
+        return RulesRead::truncated(directory);
+    };
+    let mut patterns: Vec<Pattern> = text
         .lines()
         .filter_map(Pattern::parse)
-        .take(IGNORE_PATTERNS_MAX)
+        .take(IGNORE_PATTERNS_MAX.saturating_add(1))
         .collect();
+    let truncated = patterns.len() > IGNORE_PATTERNS_MAX;
+    patterns.truncate(IGNORE_PATTERNS_MAX);
     if patterns.is_empty() {
-        return directory.rules.clone();
+        return RulesRead {
+            rules: directory.rules.clone(),
+            truncated,
+        };
     }
-    Some(Rc::new(Rules {
-        base: directory.relative.clone(),
-        patterns,
-        parent: directory.rules.clone(),
-    }))
+    RulesRead {
+        rules: Some(Rc::new(Rules {
+            base: directory.relative.clone(),
+            patterns,
+            parent: directory.rules.clone(),
+        })),
+        truncated,
+    }
+}
+
+struct RulesRead {
+    rules: Option<Rc<Rules>>,
+    truncated: bool,
+}
+
+impl RulesRead {
+    fn inherited(directory: &Directory) -> Self {
+        Self {
+            rules: directory.rules.clone(),
+            truncated: false,
+        }
+    }
+
+    fn truncated(directory: &Directory) -> Self {
+        Self {
+            rules: directory.rules.clone(),
+            truncated: true,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MetadataIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn metadata_identity(metadata: &cap_std::fs::Metadata) -> MetadataIdentity {
+    use cap_std::fs::MetadataExt as _;
+
+    MetadataIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
 }
 
 /// Returns the path of one entry inside one directory.
@@ -371,8 +489,10 @@ fn read_star(pattern: &[char], index: usize) -> (usize, bool) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use std::path::Path;
+    use std::sync::Arc;
 
+    use kvim_path::{WorktreeRelativePath, WorktreeRoot};
     use tokio_util::sync::CancellationToken;
 
     use crate::TREE_DIRECTORY_ENTRIES_MAX;
@@ -382,12 +502,12 @@ mod tests {
 
     /// Returns the walked files, relative to the root and in ascending order.
     fn walked(dir: &TempDir) -> Vec<String> {
-        let outcome = walk_files(&dir.path, &CancellationToken::new());
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &CancellationToken::new());
         let mut files: Vec<String> = outcome
             .files
             .iter()
-            .filter_map(|path| path.strip_prefix(&dir.path).ok())
-            .map(|path| path.to_string_lossy().replace('\\', "/"))
+            .map(|path| path.as_path().to_string_lossy().replace('\\', "/"))
             .collect();
         files.sort();
         files
@@ -450,9 +570,10 @@ mod tests {
         dir.file("src/main.rs", "\n");
         let cancellation = CancellationToken::new();
         cancellation.cancel();
-        let outcome = walk_files(&dir.path, &cancellation);
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &cancellation);
         assert!(outcome.truncated);
-        assert_eq!(outcome.files, Vec::<PathBuf>::new());
+        assert!(outcome.files.is_empty());
     }
 
     #[test]
@@ -463,10 +584,152 @@ mod tests {
         for index in 0..TREE_DIRECTORY_ENTRIES_MAX + 4 {
             dir.file(&format!("f{index}"), "\n");
         }
-        let outcome = walk_files(&dir.path, &CancellationToken::new());
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &CancellationToken::new());
         assert!(outcome.truncated);
         assert_eq!(outcome.files.len(), TREE_DIRECTORY_ENTRIES_MAX);
         assert!(outcome.files.len() <= super::WALK_FILES_MAX);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn contained_directory_aliases_repeat_no_files() {
+        let dir = TempDir::new("walk-alias");
+        dir.file("real/inner.rs", "");
+        std::os::unix::fs::symlink("real", dir.join("alias"))
+            .expect("the temporary directory supports links");
+
+        let files = walked(&dir);
+        assert_eq!(files.len(), 1, "one resolved directory is walked once");
+        assert!(
+            files == ["alias/inner.rs"] || files == ["real/inner.rs"],
+            "source order decides which contained spelling owns the subtree: {files:?}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn root_directory_aliases_repeat_no_files() {
+        let dir = TempDir::new("walk-root-alias");
+        dir.file("main.rs", "");
+        std::os::unix::fs::symlink(".", dir.join("alias"))
+            .expect("the temporary directory supports links");
+
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &CancellationToken::new());
+        assert_eq!(
+            outcome
+                .files
+                .iter()
+                .map(WorktreeRelativePath::as_path)
+                .collect::<Vec<_>>(),
+            [Path::new("main.rs")]
+        );
+        assert!(outcome.truncated);
+    }
+
+    #[test]
+    fn a_kept_directory_below_the_depth_bound_reports_truncation() {
+        let dir = TempDir::new("walk-depth");
+        let mut path = String::new();
+        for depth in 0..=super::WALK_DEPTH_MAX {
+            if !path.is_empty() {
+                path.push('/');
+            }
+            path.push_str(&format!("d{depth}"));
+        }
+        dir.file(&format!("{path}/hidden.rs"), "");
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+
+        let outcome = walk_files(root, &CancellationToken::new());
+
+        assert!(outcome.truncated);
+        assert!(outcome.files.is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn escaping_and_looping_links_are_omitted_visibly() {
+        let dir = TempDir::new("walk-link-failures");
+        let outside = TempDir::new("walk-link-failures-outside");
+        outside.file("outside.rs", "");
+        std::os::unix::fs::symlink(outside.join("outside.rs"), dir.join("escape.rs"))
+            .expect("the temporary directory supports links");
+        std::os::unix::fs::symlink("loop-b.rs", dir.join("loop-a.rs"))
+            .expect("the temporary directory supports links");
+        std::os::unix::fs::symlink("loop-a.rs", dir.join("loop-b.rs"))
+            .expect("the temporary directory supports links");
+
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &CancellationToken::new());
+        assert!(outcome.files.is_empty());
+        assert!(outcome.truncated, "the picker reports the rejected links");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_escaping_ignore_file_applies_no_outside_rules_and_reports_truncation() {
+        let dir = TempDir::new("walk-ignore-escape");
+        let outside = TempDir::new("walk-ignore-escape-outside");
+        outside.file("rules", "*.rs\n");
+        dir.file("main.rs", "");
+        std::os::unix::fs::symlink(outside.join("rules"), dir.join(".gitignore"))
+            .expect("the temporary directory supports links");
+
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &CancellationToken::new());
+        assert_eq!(
+            outcome
+                .files
+                .iter()
+                .map(WorktreeRelativePath::as_path)
+                .collect::<Vec<_>>(),
+            [Path::new("main.rs")]
+        );
+        assert!(outcome.truncated);
+    }
+
+    #[test]
+    fn a_non_utf8_existing_ignore_file_reports_truncation() {
+        let dir = TempDir::new("walk-ignore-utf8");
+        dir.file("main.rs", "");
+        std::fs::write(dir.join(".gitignore"), [0xff])
+            .expect("the temporary directory is writable");
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+
+        let outcome = walk_files(root, &CancellationToken::new());
+
+        assert!(outcome.truncated);
+        assert_eq!(
+            outcome
+                .files
+                .iter()
+                .map(WorktreeRelativePath::as_path)
+                .collect::<Vec<_>>(),
+            [Path::new(".gitignore"), Path::new("main.rs")]
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_unreadable_queued_directory_reports_truncation() {
+        use std::os::unix::fs::PermissionsExt as _;
+
+        let dir = TempDir::new("walk-unreadable");
+        dir.file("locked/main.rs", "");
+        let locked = dir.join("locked");
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o000))
+            .expect("the temporary directory is writable");
+        let readable = std::fs::read_dir(&locked).is_ok();
+        let root = Arc::new(WorktreeRoot::open(&dir.path).expect("the fixture root exists"));
+        let outcome = walk_files(root, &CancellationToken::new());
+        std::fs::set_permissions(&locked, std::fs::Permissions::from_mode(0o755))
+            .expect("the temporary directory is writable");
+
+        if !readable {
+            assert!(outcome.truncated);
+            assert!(outcome.files.is_empty());
+        }
     }
 
     #[test]

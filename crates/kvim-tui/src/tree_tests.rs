@@ -605,7 +605,7 @@ fn a_delete_of_an_entry_that_disappeared_reports_it_and_removes_nothing() {
     // follows the change, which proves that the editor stays usable.
     let removed = dir.join("README.md");
     fs::remove_file(&removed).expect("the temporary directory is writable");
-    let _ = session.apply_watch_batch(&watch_batch(&removed, WatchKind::Removed));
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &removed, WatchKind::Removed));
     drain(&mut session);
     assert!(!shows_readme(&session), "the tree followed the removal");
 
@@ -2303,12 +2303,12 @@ fn a_missing_git_command_reaches_the_message_line_once() {
 }
 
 /// Builds one coalesced burst that names the change of a single path.
-fn watch_batch(path: &Path, kind: WatchKind) -> WatchBatch {
+fn watch_batch(root: &Path, path: &Path, kind: WatchKind) -> WatchBatch {
     let mut batch = WatchBatch::default();
-    batch.push(&WatchEvent {
-        path: path.to_path_buf(),
-        kind,
-    });
+    batch.push(
+        &WatchEvent::new(test_root(root.to_path_buf()), path.to_path_buf(), kind)
+            .expect("the fixture event lies below its worktree root"),
+    );
     batch
 }
 
@@ -2333,7 +2333,7 @@ fn a_watched_change_reads_only_the_directory_that_it_named() {
     // The `docs` directory stays closed, so its listing must not appear.
     dir.file("docs/guide.md", "guide\n");
 
-    let redraw = session.apply_watch_batch(&watch_batch(&created, WatchKind::Created));
+    let redraw = session.apply_watch_batch(&watch_batch(&dir.path, &created, WatchKind::Created));
     assert_eq!(
         redraw,
         Redraw::Skipped,
@@ -2371,7 +2371,7 @@ fn a_watched_removal_drops_the_entry_and_keeps_the_expansion() {
     let removed = dir.join("src/main.rs");
     fs::remove_file(&removed).expect("the temporary directory is writable");
 
-    let _ = session.apply_watch_batch(&watch_batch(&removed, WatchKind::Removed));
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &removed, WatchKind::Removed));
     drain(&mut session);
 
     assert_eq!(
@@ -2395,7 +2395,7 @@ fn a_watched_burst_that_lost_events_reads_every_expanded_directory() {
     // bound dropped events, so the sidebar must not trust the named set.
     let elsewhere = dir.file("src/added.rs", "fn added() {}\n");
     dir.file("late.txt", "late\n");
-    let mut batch = watch_batch(&elsewhere, WatchKind::Created);
+    let mut batch = watch_batch(&dir.path, &elsewhere, WatchKind::Created);
     batch.drop_events();
 
     let _ = session.apply_watch_batch(&batch);
@@ -2422,7 +2422,7 @@ fn a_watched_content_change_reads_no_directory() {
     // Another program rewrites one file. Its directory keeps the same entries,
     // so the burst asks for no read at all.
     let modified = dir.file("README.md", "changed\n");
-    let _ = session.apply_watch_batch(&watch_batch(&modified, WatchKind::Modified));
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &modified, WatchKind::Modified));
 
     assert!(
         session.take_workspace_request().is_none(),
@@ -2569,8 +2569,8 @@ fn a_created_file_reaches_the_editor_through_the_workspace_watcher() {
         .build()
         .expect("the test host provides a Tokio runtime");
     let batch = tokio.block_on(async {
-        let mut watcher =
-            FileWatcher::start(root, &GENERATED_NAMES).expect("the root is a readable directory");
+        let mut watcher = FileWatcher::start(test_root(root), &GENERATED_NAMES)
+            .expect("the root is a readable directory");
         // The registration runs after the start, so the first burst reports the
         // window that no watch covered. The write follows that burst, so every
         // watch of the workspace already stands.

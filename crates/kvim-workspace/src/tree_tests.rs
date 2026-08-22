@@ -7,6 +7,9 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+
+use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 
 use super::clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 use super::mutation::{
@@ -15,9 +18,9 @@ use super::mutation::{
 };
 use super::temp::TempDir;
 use super::tree::{
-    DirectoryListing, EntryKind, Expansion, FileTree, LinkKind, Notice, RowContent, TREE_DEPTH_MAX,
-    TREE_DIRECTORY_ENTRIES_MAX, TREE_ENTRIES_MAX, TREE_SEARCH_CHARS_MAX, TREE_SEARCH_READS_MAX,
-    TreeEntry, Truncation, read_directory,
+    DirectoryIdentity, DirectoryListing, EntryKind, Expansion, FileTree, LinkKind, Notice,
+    RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX, TREE_ENTRIES_MAX,
+    TREE_SEARCH_CHARS_MAX, TREE_SEARCH_READS_MAX, TreeEntry, Truncation, read_directory,
 };
 use super::tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 use crate::BufferId;
@@ -36,14 +39,28 @@ fn root_of(directory: &TempDir) -> PathBuf {
 /// runs the same steps in order and returns the paths that it read.
 fn pump(tree: &mut FileTree) -> Vec<PathBuf> {
     let mut read = Vec::new();
+    let root = Arc::new(WorktreeRoot::open(tree.root()).expect("the fixture root exists"));
     while let Some(path) = tree.take_pending_read() {
         read.push(path.clone());
-        match read_directory(&path) {
+        let target = directory_path(&root, &path);
+        match read_directory(&root, &target) {
             Ok(listing) => tree.apply_listing(listing),
             Err(_) => tree.apply_read_failure(&path),
         }
     }
     read
+}
+
+fn directory_path(root: &WorktreeRoot, path: &Path) -> WorktreeDirectoryPath {
+    if path == root.as_path() {
+        return WorktreeDirectoryPath::Root;
+    }
+    let relative = path
+        .strip_prefix(root.as_path())
+        .expect("the tree path lies below its root");
+    WorktreeDirectoryPath::Relative(
+        WorktreeRelativePath::new(relative).expect("the tree path is valid"),
+    )
 }
 
 /// Returns one label for every visible row.
@@ -483,7 +500,9 @@ fn the_directory_bound_reports_the_truncation() {
     }
     let root = root_of(&directory);
 
-    let listing = read_directory(&root).expect("the directory is readable");
+    let capability = Arc::new(WorktreeRoot::open(&root).expect("the fixture root exists"));
+    let listing = read_directory(&capability, &WorktreeDirectoryPath::Root)
+        .expect("the directory is readable");
     assert_eq!(listing.entries.len(), TREE_DIRECTORY_ENTRIES_MAX);
     assert_eq!(
         listing.truncation,
@@ -497,6 +516,52 @@ fn the_directory_bound_reports_the_truncation() {
     pump(&mut tree);
     assert_eq!(tree.rows().len(), TREE_DIRECTORY_ENTRIES_MAX + 1);
     assert_eq!(labels(&tree).last().map(String::as_str), Some("!"));
+}
+
+#[test]
+fn the_directory_scan_bound_reports_uninspected_entries() {
+    let directory = TempDir::new("tree-scan-bound");
+    for index in 0..=super::tree::TREE_DIRECTORY_SCAN_MAX {
+        directory.file(&format!("file-{index:05}.rs"), "");
+    }
+    let root = Arc::new(WorktreeRoot::open(&directory.path).expect("the fixture root exists"));
+
+    let listing =
+        read_directory(&root, &WorktreeDirectoryPath::Root).expect("the directory is readable");
+
+    assert_eq!(listing.entries.len(), TREE_DIRECTORY_ENTRIES_MAX);
+    assert_eq!(
+        listing.truncation,
+        Truncation::Truncated {
+            shown: TREE_DIRECTORY_ENTRIES_MAX,
+            total: super::tree::TREE_DIRECTORY_SCAN_MAX + 1,
+        }
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn an_unrepresentable_inspected_name_reports_truncation() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt as _;
+
+    let directory = TempDir::new("tree-invalid-name");
+    directory.file("shown.rs", "");
+    if fs::write(directory.path.join(OsString::from_vec(vec![0xff])), "").is_err() {
+        // Some macOS filesystems reject non-UTF-8 names before kvim can inspect
+        // them. Linux exercises the reader branch.
+        return;
+    }
+    let root = Arc::new(WorktreeRoot::open(&directory.path).expect("the fixture root exists"));
+
+    let listing = read_directory(&root, &WorktreeDirectoryPath::Root)
+        .expect("the directory itself is readable");
+
+    assert_eq!(listing.entries.len(), 1);
+    assert_eq!(
+        listing.truncation,
+        Truncation::Truncated { shown: 1, total: 2 }
+    );
 }
 
 #[test]
@@ -519,6 +584,7 @@ fn the_tree_bound_truncates_a_later_listing() {
     }
     tree.apply_listing(DirectoryListing {
         path: root.clone(),
+        identity: DirectoryIdentity::Root,
         entries,
         truncation: Truncation::Complete,
     });
@@ -527,6 +593,9 @@ fn the_tree_bound_truncates_a_later_listing() {
     assert_eq!(tree.take_pending_read(), Some(root.join("sub")));
     tree.apply_listing(DirectoryListing {
         path: root.join("sub"),
+        identity: DirectoryIdentity::Relative(
+            WorktreeRelativePath::new("sub").expect("the fixture path is valid"),
+        ),
         entries: vec![TreeEntry {
             name: "late.rs".to_owned(),
             kind: EntryKind::File,
@@ -609,6 +678,103 @@ fn a_symbolic_link_to_a_directory_expands_like_a_directory() {
             ..
         }
     ));
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_links_to_the_root_are_directories_and_repeat_no_subtree() {
+    let directory = TempDir::new("tree-root-alias");
+    directory.file("nested/file.rs", "");
+    let root = root_of(&directory);
+    std::os::unix::fs::symlink(".", root.join("alias"))
+        .expect("the temporary directory supports links");
+    std::os::unix::fs::symlink("..", root.join("nested/back"))
+        .expect("the temporary directory supports links");
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+    assert_eq!(tree.rows()[0].kind(), Some(EntryKind::Directory));
+    tree.expand(&root.join("alias"));
+    pump(&mut tree);
+    assert!(matches!(
+        labels(&tree).get(1).map(String::as_str),
+        Some("!")
+    ));
+
+    tree.expand(&root.join("nested"));
+    pump(&mut tree);
+    tree.expand(&root.join("nested/back"));
+    pump(&mut tree);
+    assert_eq!(
+        labels(&tree)
+            .iter()
+            .filter(|label| label.as_str() == "file.rs")
+            .count(),
+        1,
+        "the first loaded root spelling owns the root subtree"
+    );
+    assert!(
+        labels(&tree)
+            .iter()
+            .filter(|label| label.as_str() == "!")
+            .count()
+            >= 2
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn contained_directory_aliases_repeat_no_subtree() {
+    let directory = TempDir::new("tree-symlink-alias");
+    directory.file("real/inner.rs", "");
+    let root = root_of(&directory);
+    std::os::unix::fs::symlink("real", root.join("alias"))
+        .expect("the temporary directory supports links");
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+    tree.expand(&root.join("alias"));
+    pump(&mut tree);
+    tree.expand(&root.join("real"));
+    pump(&mut tree);
+
+    assert_eq!(
+        labels(&tree),
+        vec!["alias/", "inner.rs", "real/", "!"],
+        "the second spelling reports an incomplete read instead of repeating the subtree"
+    );
+    assert_eq!(
+        labels(&tree)
+            .iter()
+            .filter(|label| *label == "inner.rs")
+            .count(),
+        1
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn escaping_and_looping_directory_links_never_expand() {
+    let directory = TempDir::new("tree-link-failures");
+    let outside = TempDir::new("tree-link-failures-outside");
+    outside.file("inner.rs", "");
+    std::os::unix::fs::symlink(&outside.path, directory.join("escape"))
+        .expect("the temporary directory supports links");
+    std::os::unix::fs::symlink("loop-b", directory.join("loop-a"))
+        .expect("the temporary directory supports links");
+    std::os::unix::fs::symlink("loop-a", directory.join("loop-b"))
+        .expect("the temporary directory supports links");
+
+    let mut tree = FileTree::new(root_of(&directory));
+    pump(&mut tree);
+
+    assert_eq!(labels(&tree), vec!["escape", "loop-a", "loop-b"]);
+    assert!(
+        tree.rows()
+            .iter()
+            .all(|row| row.kind() == Some(EntryKind::File))
+    );
+    assert_eq!(tree.take_pending_read(), None);
 }
 
 #[test]
@@ -1344,7 +1510,12 @@ fn a_directory_request_returns_the_listing_of_the_named_directory() {
     directory.file("main.rs", "");
     let root = root_of(&directory);
 
-    let result = WorkspaceRequest::ReadDirectory { path: root.clone() }.run();
+    let capability = Arc::new(WorktreeRoot::open(&root).expect("the fixture root exists"));
+    let result = WorkspaceRequest::ReadDirectory {
+        root: capability,
+        path: WorktreeDirectoryPath::Root,
+    }
+    .run();
 
     let WorkspaceResult::Directory { path, outcome } = result else {
         panic!("the request was one directory read");
@@ -1358,9 +1529,14 @@ fn a_directory_request_returns_the_listing_of_the_named_directory() {
 #[test]
 fn a_directory_request_rejects_a_file() {
     let directory = TempDir::new("request-file");
-    let path = directory.file("main.rs", "");
+    directory.file("main.rs", "");
+    let root = Arc::new(WorktreeRoot::open(&directory.path).expect("the fixture root exists"));
+    let path = WorktreeDirectoryPath::Relative(
+        WorktreeRelativePath::new("main.rs").expect("the fixture path is valid"),
+    );
 
-    let WorkspaceResult::Directory { outcome, .. } = WorkspaceRequest::ReadDirectory { path }.run()
+    let WorkspaceResult::Directory { outcome, .. } =
+        WorkspaceRequest::ReadDirectory { root, path }.run()
     else {
         panic!("the request was one directory read");
     };

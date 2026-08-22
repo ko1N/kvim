@@ -1054,19 +1054,18 @@ impl Session {
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings, root: Arc<WorktreeRoot>) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
-        let root_path = root.as_path().to_path_buf();
         let mut session = Self {
             area,
             settings,
             theme: Theme::new(),
-            root,
+            root: Arc::clone(&root),
             buffers,
             active,
             file_outbox: None,
             file_pending: None,
             reload_due: false,
             windows: Windows::new(active, shell_areas(area).body, settings.windows),
-            tree: TreeSidebar::new(root_path),
+            tree: TreeSidebar::new(Arc::clone(&root)),
             tree_region: None,
             picker: None,
             ripgrep_reported: false,
@@ -1862,7 +1861,7 @@ impl Session {
     /// The buffer picker receives its candidates at once, and the other two ask
     /// the bounded services for theirs. See `docs/files.md`.
     fn open_picker(&mut self, kind: PickerKind) -> Redraw {
-        let root = self.tree.tree().root().to_path_buf();
+        let root = Arc::clone(&self.root);
         let buffers = match kind {
             PickerKind::Buffers => self.buffer_candidates(),
             PickerKind::Files | PickerKind::Search => Vec::new(),
@@ -1959,7 +1958,7 @@ impl Session {
             return;
         }
         self.completion_walk = CompletionWalk::Queued(PickerRequest::Files {
-            root: self.tree.tree().root().to_path_buf(),
+            root: Arc::clone(&self.root),
         });
     }
 
@@ -3496,6 +3495,9 @@ impl Session {
     /// this call also reports a registration that covers the workspace in part.
     #[must_use]
     pub fn apply_watch_batch(&mut self, batch: &WatchBatch) -> Redraw {
+        if batch.root().is_some_and(|root| root != self.root.as_ref()) {
+            return Redraw::Skipped;
+        }
         self.tree.apply_watch(batch);
         self.reconcile_tree();
         self.start_watch_reload();

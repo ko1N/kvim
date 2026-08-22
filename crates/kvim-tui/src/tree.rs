@@ -12,12 +12,14 @@
 
 use std::env;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use kvim_editor::{SearchDirection, Viewport};
+use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
@@ -276,6 +278,7 @@ impl TreeRefusal {
 /// The file-tree sidebar of one editor.
 #[derive(Debug)]
 pub(super) struct TreeSidebar {
+    root: Arc<WorktreeRoot>,
     tree: FileTree,
     clipboard: FileClipboard,
     /// The first visible row. The reconciliation keeps the selection visible.
@@ -302,9 +305,11 @@ pub(super) struct TreeSidebar {
 
 impl TreeSidebar {
     /// Creates one sidebar over a workspace root and asks for its first read.
-    pub(super) fn new(root: PathBuf) -> Self {
+    pub(super) fn new(root: Arc<WorktreeRoot>) -> Self {
+        let root_path = root.as_path().to_path_buf();
         let mut sidebar = Self {
-            tree: FileTree::new(root),
+            root,
+            tree: FileTree::new(root_path),
             clipboard: FileClipboard::default(),
             first_row: 0,
             outbox: None,
@@ -838,7 +843,20 @@ impl TreeSidebar {
         let Some(path) = self.tree.take_pending_read() else {
             return;
         };
-        self.outbox = Some(WorkspaceRequest::ReadDirectory { path: path.clone() });
+        let target = if path == self.root.as_path() {
+            WorktreeDirectoryPath::Root
+        } else {
+            let relative = path
+                .strip_prefix(self.root.as_path())
+                .expect("the file tree queues only paths below its root");
+            let relative = WorktreeRelativePath::new(relative)
+                .expect("file-tree paths contain only validated entry names");
+            WorktreeDirectoryPath::Relative(relative)
+        };
+        self.outbox = Some(WorkspaceRequest::ReadDirectory {
+            root: Arc::clone(&self.root),
+            path: target,
+        });
         self.pending = Some(PendingWorkspace::Read { path });
     }
 }

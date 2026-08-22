@@ -276,13 +276,15 @@ fn a_stale_preview_never_reaches_the_screen() {
     drain(&mut session);
 
     let stale = PickerResult::Preview {
-        key: PreviewKey {
-            path: dir.join("src/mode.rs"),
-            target: PreviewTarget::Match { line: 400 },
-        },
+        key: PreviewKey::new(
+            test_root(dir.path.clone()),
+            kvim_path::WorktreeRelativePath::new("src/mode.rs").expect("the preview path is valid"),
+            PreviewTarget::Match { line: 400 },
+        ),
         outcome: Ok(Preview {
             first_line: 400,
             lines: vec!["stale preview line".to_owned()],
+            truncated: false,
         }),
     };
     assert_eq!(session.apply_picker_result(stale), Redraw::Skipped);
@@ -291,6 +293,27 @@ fn a_stale_preview_never_reaches_the_screen() {
     assert!(
         rows.iter().all(|row| !row.contains("stale preview line")),
         "the reader already moved past that row: {rows:?}"
+    );
+}
+
+#[test]
+fn a_truncated_preview_shows_its_own_notice() {
+    let (dir, mut session) = workspace();
+    std::fs::write(
+        dir.join("src/main.rs"),
+        "x".repeat(kvim_workspace::PREVIEW_LINE_CHARS_MAX + 1),
+    )
+    .expect("the temporary directory is writable");
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "main");
+    drain(&mut session);
+
+    let buffer = draw(&session);
+    let rows: Vec<String> = (0..HEIGHT).map(|y| row_of(&buffer, y)).collect();
+    assert!(
+        rows.iter().any(|row| row.contains("preview stops")),
+        "the picker reports preview clipping: {rows:?}"
     );
 }
 

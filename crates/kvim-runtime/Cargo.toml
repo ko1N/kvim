@@ -6,6 +6,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+# kvim crates
+kvim-path.workspace = true
+
 # Basics
 thiserror.workspace = true
 
