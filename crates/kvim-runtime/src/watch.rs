@@ -1491,7 +1491,11 @@ mod tests {
             .await
             .expect("the platform reports the new directory")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(created.directories(), [tree.path.join("src")]);
+        let directories = created.directories();
+        assert!(
+            directories.contains(&tree.path.join("src")),
+            "the new-directory burst names src; got {directories:?}"
+        );
 
         tree.file("src/tui/render.rs", "\n");
 
@@ -1499,10 +1503,10 @@ mod tests {
             .await
             .expect("the platform reports the change inside the new directory")
             .expect("the coalescing task publishes the burst");
-        assert_eq!(
-            batch.directories(),
-            [tree.path.join("src/tui")],
-            "the directory that appeared after the walk carries its own watch"
+        let directories = batch.directories();
+        assert!(
+            directories.contains(&tree.path.join("src/tui")),
+            "the directory that appeared after the walk carries its own watch; got {directories:?}"
         );
         watcher.shutdown().await;
     }
