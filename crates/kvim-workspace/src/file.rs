@@ -9,15 +9,20 @@
 //! any step leaves the original file and the dirty buffer unchanged. See
 //! `docs/files.md`.
 
-use std::fs::{self, File, Metadata};
-use std::io::{self, Write};
+use std::hash::{Hash, Hasher};
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::SystemTime;
 
 use thiserror::Error;
 
 use kvim_core::{FinalLineEnding, LineEnding, TextBuffer};
+use kvim_path::{
+    ResolvedTargetState, ResolvedWorktreePath, WorktreeConfinementError, WorktreeRelativePath,
+    WorktreeRoot,
+};
 use kvim_settings::FileSettings;
 
 /// The counter that keeps two temporary file names of one process apart.
@@ -40,10 +45,10 @@ pub struct FileIdentity {
 impl FileIdentity {
     /// Reads the identity from file metadata.
     #[must_use]
-    pub fn from_metadata(metadata: &Metadata) -> Self {
+    pub fn from_metadata(metadata: &cap_std::fs::Metadata) -> Self {
         Self {
             len_bytes: metadata.len(),
-            modified: metadata.modified().ok(),
+            modified: metadata.modified().ok().map(|time| time.into_std()),
         }
     }
 
@@ -95,6 +100,9 @@ pub enum FileChange {
 /// A rejected file open.
 #[derive(Debug, Error)]
 pub enum OpenError {
+    /// The target did not remain confined to its worktree root.
+    #[error("the file target is not confined to the worktree")]
+    Confinement(#[from] WorktreeConfinementError),
     /// The path names a directory.
     #[error("the path is a directory")]
     Directory,
@@ -123,6 +131,9 @@ pub enum OpenError {
 /// A rejected file save.
 #[derive(Debug, Error)]
 pub enum SaveError {
+    /// The target did not remain confined to its worktree root.
+    #[error("the file target is not confined to the worktree")]
+    Confinement(#[from] WorktreeConfinementError),
     /// The file changed after kvim loaded or last saved it.
     #[error("the file changed on disk; the buffer keeps every unsaved change")]
     Conflict,
@@ -142,10 +153,75 @@ pub enum SaveError {
 pub struct LoadedFile {
     /// The complete file text.
     pub text: String,
-    /// The absolute path of the file, with every symlink resolved.
-    pub path: PathBuf,
+    /// The validated root and canonical contained target.
+    pub target: FileTarget,
     /// The observed file state, or `None` while the path holds no file yet.
     pub identity: Option<FileIdentity>,
+}
+
+/// The canonical identity of one loaded or new worktree file.
+///
+/// Equality includes both the canonical root and the contained target. Equal
+/// relative paths under different roots are different file identities.
+#[derive(Clone, Debug)]
+pub struct FileTarget {
+    root: Arc<WorktreeRoot>,
+    relative: WorktreeRelativePath,
+    absolute: PathBuf,
+}
+
+impl FileTarget {
+    pub(crate) fn resolved(root: Arc<WorktreeRoot>, relative: WorktreeRelativePath) -> Self {
+        let absolute = root.as_path().join(relative.as_path());
+        Self {
+            root,
+            relative,
+            absolute,
+        }
+    }
+
+    /// Returns the canonical worktree root of this target.
+    #[must_use]
+    pub fn root(&self) -> &WorktreeRoot {
+        &self.root
+    }
+
+    pub(crate) fn root_handle(&self) -> Arc<WorktreeRoot> {
+        Arc::clone(&self.root)
+    }
+
+    /// Returns the canonical contained path of this target.
+    #[must_use]
+    pub const fn relative_path(&self) -> &WorktreeRelativePath {
+        &self.relative
+    }
+
+    /// Returns the canonical absolute display path of this target.
+    #[must_use]
+    pub fn as_path(&self) -> &Path {
+        &self.absolute
+    }
+
+    pub(crate) fn retarget(&self, path: &Path) -> Option<Self> {
+        let relative = path.strip_prefix(self.root.as_path()).ok()?;
+        let relative = WorktreeRelativePath::new(relative).ok()?;
+        Some(Self::resolved(Arc::clone(&self.root), relative))
+    }
+}
+
+impl PartialEq for FileTarget {
+    fn eq(&self, other: &Self) -> bool {
+        self.root == other.root && self.relative == other.relative
+    }
+}
+
+impl Eq for FileTarget {}
+
+impl Hash for FileTarget {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.root.hash(state);
+        self.relative.hash(state);
+    }
 }
 
 /// Reads one file into memory.
@@ -157,19 +233,26 @@ pub struct LoadedFile {
 ///
 /// Returns [`OpenError`] for a directory, a special file, an oversized file, a
 /// file that is not UTF-8 text, and an unreadable file.
-pub fn load(path: &Path, files: &FileSettings) -> Result<LoadedFile, OpenError> {
-    let resolved = resolve(path);
-    let metadata = match fs::metadata(&resolved) {
-        Ok(metadata) => metadata,
-        Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            return Ok(LoadedFile {
-                text: String::new(),
-                path: resolved,
-                identity: None,
-            });
-        }
-        Err(error) => return Err(OpenError::Read(error)),
-    };
+pub fn load(
+    root: &Arc<WorktreeRoot>,
+    path: &WorktreeRelativePath,
+    files: &FileSettings,
+) -> Result<LoadedFile, OpenError> {
+    let resolved = root.resolve(path)?;
+    let target = FileTarget::resolved(Arc::clone(root), resolved.path().clone());
+    if resolved.state() == ResolvedTargetState::Missing {
+        root.revalidate(path, &resolved)?;
+        return Ok(LoadedFile {
+            text: String::new(),
+            target,
+            identity: None,
+        });
+    }
+    let mut file = root
+        .directory()
+        .open(resolved.path().as_path())
+        .map_err(|error| replaced_or_open_error(error, &resolved))?;
+    let metadata = file.metadata().map_err(OpenError::Read)?;
     if metadata.is_dir() {
         return Err(OpenError::Directory);
     }
@@ -184,7 +267,8 @@ pub fn load(path: &Path, files: &FileSettings) -> Result<LoadedFile, OpenError> 
         });
     }
 
-    let bytes = fs::read(&resolved).map_err(OpenError::Read)?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes).map_err(OpenError::Read)?;
     // The file can grow between the metadata read and the content read.
     let read_bytes = bytes.len() as u64;
     if read_bytes > files.max_file_bytes {
@@ -193,13 +277,33 @@ pub fn load(path: &Path, files: &FileSettings) -> Result<LoadedFile, OpenError> 
             max_bytes: files.max_file_bytes,
         });
     }
+    let identity = FileIdentity::from_metadata(&metadata);
+    let descriptor_identity =
+        FileIdentity::from_metadata(&file.metadata().map_err(OpenError::Read)?);
+    if descriptor_identity != identity {
+        return Err(OpenError::Confinement(WorktreeConfinementError::Replaced));
+    }
+    root.revalidate(path, &resolved)?;
+    let path_metadata = root
+        .directory()
+        .metadata(resolved.path().as_path())
+        .map_err(|error| {
+            if error.kind() == io::ErrorKind::NotFound {
+                OpenError::Confinement(WorktreeConfinementError::Replaced)
+            } else {
+                OpenError::Read(error)
+            }
+        })?;
+    if FileIdentity::from_metadata(&path_metadata) != descriptor_identity {
+        return Err(OpenError::Confinement(WorktreeConfinementError::Replaced));
+    }
     let text = String::from_utf8(bytes).map_err(|error| OpenError::NotUtf8 {
         valid_up_to: error.utf8_error().valid_up_to(),
     })?;
     Ok(LoadedFile {
         text,
-        path: resolved,
-        identity: Some(FileIdentity::from_metadata(&metadata)),
+        target,
+        identity: Some(identity),
     })
 }
 
@@ -214,8 +318,13 @@ pub fn load(path: &Path, files: &FileSettings) -> Result<LoadedFile, OpenError> 
 ///
 /// Returns [`OpenError::Read`] when the metadata read failed for another reason
 /// than a missing file.
-pub fn identity(path: &Path) -> Result<Option<FileIdentity>, OpenError> {
-    match fs::metadata(resolve(path)) {
+pub fn identity(target: &FileTarget) -> Result<Option<FileIdentity>, OpenError> {
+    let resolved = validate_stored_target(target)?;
+    match target
+        .root()
+        .directory()
+        .metadata(resolved.path().as_path())
+    {
         Ok(metadata) => Ok(Some(FileIdentity::from_metadata(&metadata))),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(OpenError::Read(error)),
@@ -225,8 +334,8 @@ pub fn identity(path: &Path) -> Result<Option<FileIdentity>, OpenError> {
 /// The outcome of one successful save.
 #[derive(Debug)]
 pub struct SavedFile {
-    /// The absolute path that the save replaced.
-    pub path: PathBuf,
+    /// The canonical contained target that the save replaced.
+    pub target: FileTarget,
     /// The observed state of the new file.
     pub identity: FileIdentity,
 }
@@ -243,90 +352,140 @@ pub struct SavedFile {
 /// replace failure of the staged replacement. Every failure leaves the original
 /// file unchanged.
 pub fn save(
-    path: &Path,
+    target: &FileTarget,
     content: &str,
     expected: Option<FileIdentity>,
     files: &FileSettings,
 ) -> Result<SavedFile, SaveError> {
-    let target = resolve(path);
-    let existing = match fs::metadata(&target) {
+    let resolved = validate_stored_target(target)?;
+    let parent_path = resolved
+        .path()
+        .as_path()
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let name = resolved
+        .path()
+        .as_path()
+        .file_name()
+        .ok_or(SaveError::NoDirectory)?;
+    let parent = target
+        .root()
+        .directory()
+        .open_dir(parent_path)
+        .map_err(SaveError::Write)?;
+    let existing = match parent.metadata(name) {
         Ok(metadata) => Some(metadata),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
         Err(error) => return Err(SaveError::Write(error)),
     };
-    let current = existing.as_ref().map(FileIdentity::from_metadata);
-    match FileIdentity::compare(expected, current) {
-        // A file that another program changed, or that appeared after kvim
-        // opened a path without a file, must not be overwritten.
-        FileChange::Changed => return Err(SaveError::Conflict),
-        // A file that another program removed carries no content to lose.
-        FileChange::Unchanged | FileChange::Missing => {}
-    }
+    require_expected_identity(expected, existing.as_ref().map(FileIdentity::from_metadata))?;
 
     if files.atomic_save {
-        write_staged(&target, content, existing.as_ref())?;
+        write_staged(
+            target,
+            &resolved,
+            &parent,
+            name,
+            content,
+            existing.as_ref(),
+            expected,
+        )?;
     } else {
-        fs::write(&target, content).map_err(SaveError::Write)?;
+        target
+            .root()
+            .revalidate(target.relative_path(), &resolved)?;
+        require_expected_identity(
+            expected,
+            current_identity(&parent, name).map_err(SaveError::Write)?,
+        )?;
+        parent.write(name, content).map_err(SaveError::Write)?;
     }
-    let metadata = fs::metadata(&target).map_err(SaveError::Write)?;
+    let metadata = parent.metadata(name).map_err(SaveError::Write)?;
     Ok(SavedFile {
-        path: target,
+        target: target.clone(),
         identity: FileIdentity::from_metadata(&metadata),
     })
 }
 
 /// Writes the content beside the target and renames it over the target.
 fn write_staged(
-    target: &Path,
+    target: &FileTarget,
+    resolved: &ResolvedWorktreePath,
+    directory: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
     content: &str,
-    existing: Option<&Metadata>,
+    existing: Option<&cap_std::fs::Metadata>,
+    expected: Option<FileIdentity>,
 ) -> Result<(), SaveError> {
-    let directory = target.parent().ok_or(SaveError::NoDirectory)?;
-    let temporary = directory.join(temporary_name(target));
-    if let Err(error) = write_temporary(&temporary, content, existing) {
-        // A partial temporary file must never stay behind.
-        let _ = fs::remove_file(&temporary);
+    let temporary = temporary_name(Path::new(name));
+    let temporary_path = Path::new(&temporary);
+    let mut file = create_temporary(directory, temporary_path)?;
+    let prepared = write_temporary(&mut file, content).and_then(|()| apply_mode(&file, existing));
+    drop(file);
+    if let Err(error) = prepared {
+        // Cleanup is safe because this save created the entry with create_new.
+        let _ = directory.remove_file(&temporary);
         return Err(error);
     }
-    if let Err(error) = fs::rename(&temporary, target) {
-        let _ = fs::remove_file(&temporary);
+    if let Err(error) = target.root().revalidate(target.relative_path(), resolved) {
+        let _ = directory.remove_file(&temporary);
+        return Err(SaveError::Confinement(error));
+    }
+    if let Err(error) = current_identity(directory, name)
+        .map_err(SaveError::Write)
+        .and_then(|current| require_expected_identity(expected, current))
+    {
+        let _ = directory.remove_file(&temporary);
+        return Err(error);
+    }
+    if let Err(error) = directory.rename(&temporary, directory, name) {
+        let _ = directory.remove_file(&temporary);
         return Err(SaveError::Replace(error));
     }
     Ok(())
 }
 
-/// Writes and flushes the temporary file with the mode of the target file.
-fn write_temporary(
+/// Creates one owned temporary file without following or replacing an entry.
+pub(super) fn create_temporary(
+    directory: &cap_std::fs::Dir,
     temporary: &Path,
-    content: &str,
-    existing: Option<&Metadata>,
-) -> Result<(), SaveError> {
-    let mut file = File::create(temporary).map_err(SaveError::Write)?;
+) -> Result<cap_std::fs::File, SaveError> {
+    let mut options = cap_std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    directory
+        .open_with(temporary, &options)
+        .map_err(SaveError::Write)
+}
+
+/// Writes and flushes the temporary file with the mode of the target file.
+fn write_temporary(file: &mut cap_std::fs::File, content: &str) -> Result<(), SaveError> {
     file.write_all(content.as_bytes())
         .map_err(SaveError::Write)?;
     // The rename must publish complete content, so the bytes reach the device
     // before the rename runs.
-    file.sync_all().map_err(SaveError::Write)?;
-    drop(file);
-    apply_mode(temporary, existing)
+    file.sync_all().map_err(SaveError::Write)
 }
 
 /// Copies the permissions of the replaced file onto the temporary file.
 #[cfg(unix)]
-fn apply_mode(temporary: &Path, existing: Option<&Metadata>) -> Result<(), SaveError> {
-    use std::fs::Permissions;
-    use std::os::unix::fs::PermissionsExt;
-
+fn apply_mode(
+    file: &cap_std::fs::File,
+    existing: Option<&cap_std::fs::Metadata>,
+) -> Result<(), SaveError> {
     let Some(metadata) = existing else {
         return Ok(());
     };
-    let mode = metadata.permissions().mode();
-    fs::set_permissions(temporary, Permissions::from_mode(mode)).map_err(SaveError::Write)
+    file.set_permissions(metadata.permissions())
+        .map_err(SaveError::Write)
 }
 
 /// Keeps the default permissions on a platform without a file mode.
 #[cfg(not(unix))]
-fn apply_mode(_temporary: &Path, _existing: Option<&Metadata>) -> Result<(), SaveError> {
+fn apply_mode(
+    _file: &cap_std::fs::File,
+    _existing: Option<&cap_std::fs::Metadata>,
+) -> Result<(), SaveError> {
     Ok(())
 }
 
@@ -345,14 +504,47 @@ pub(super) fn temporary_name(target: &Path) -> String {
     format!(".{name}.kvim-{}-{counter}.tmp", std::process::id())
 }
 
-/// Returns the absolute path of one target with every symlink resolved.
-///
-/// The save replaces the symlink target, not the symlink, so a link keeps
-/// pointing at the file that the user edits.
-fn resolve(path: &Path) -> PathBuf {
-    fs::canonicalize(path)
-        .or_else(|_| std::path::absolute(path))
-        .unwrap_or_else(|_| path.to_path_buf())
+fn validate_stored_target(
+    target: &FileTarget,
+) -> Result<ResolvedWorktreePath, WorktreeConfinementError> {
+    let resolved = target.root().resolve(target.relative_path())?;
+    if resolved.path() != target.relative_path() || resolved.followed_link() {
+        return Err(WorktreeConfinementError::Replaced);
+    }
+    Ok(resolved)
+}
+
+fn current_identity(
+    directory: &cap_std::fs::Dir,
+    name: &std::ffi::OsStr,
+) -> Result<Option<FileIdentity>, io::Error> {
+    match directory.metadata(name) {
+        Ok(metadata) => Ok(Some(FileIdentity::from_metadata(&metadata))),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    }
+}
+
+fn require_expected_identity(
+    expected: Option<FileIdentity>,
+    current: Option<FileIdentity>,
+) -> Result<(), SaveError> {
+    match FileIdentity::compare(expected, current) {
+        // A file that another program changed, or that appeared after kvim
+        // opened a path without a file, must not be overwritten.
+        FileChange::Changed => Err(SaveError::Conflict),
+        // A file that another program removed carries no content to lose.
+        FileChange::Unchanged | FileChange::Missing => Ok(()),
+    }
+}
+
+fn replaced_or_open_error(error: io::Error, resolved: &ResolvedWorktreePath) -> OpenError {
+    if resolved.state() == ResolvedTargetState::Existing && error.kind() == io::ErrorKind::NotFound
+    {
+        OpenError::Confinement(WorktreeConfinementError::Replaced)
+    } else {
+        OpenError::Read(error)
+    }
 }
 
 /// Returns the file content of one buffer.

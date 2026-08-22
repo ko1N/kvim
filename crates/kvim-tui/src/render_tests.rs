@@ -22,14 +22,14 @@ use kvim_workspace::temp::TempDir;
 
 use super::buffer_view::WINBAR_ROWS;
 use super::clipboard::SessionClipboard;
-use super::session::{ConfirmedAction, MessageLevel, Redraw, Session};
+use super::session::{ConfirmedAction, MessageLevel, Redraw, Session, test_root};
 use super::window::WindowId;
 
 const NOW: Duration = Duration::ZERO;
 
 /// Returns the workspace root that the file tree of a test session shows.
 fn workspace_root() -> PathBuf {
-    PathBuf::from("/workspace")
+    std::env::current_dir().expect("the test process holds a working directory")
 }
 
 /// The which-key delay of the settings that every test session holds.
@@ -166,7 +166,7 @@ fn session(width: u16, height: u16) -> Session {
     Session::new(
         Rect::new(0, 0, width, height),
         EditorSettings::default(),
-        workspace_root(),
+        test_root(workspace_root()),
     )
 }
 
@@ -177,7 +177,11 @@ fn session(width: u16, height: u16) -> Session {
 fn session_without_icons(width: u16, height: u16) -> Session {
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    Session::new(Rect::new(0, 0, width, height), settings, workspace_root())
+    Session::new(
+        Rect::new(0, 0, width, height),
+        settings,
+        test_root(workspace_root()),
+    )
 }
 
 /// Feeds one plain character key.
@@ -330,7 +334,11 @@ fn the_winbar_names_an_open_file_relative_to_the_directory_that_kvim_started_in(
     settings.files.undo_file = false;
     // The session starts in the temporary directory, so the winbar strips that
     // prefix from the path of the buffer.
-    let mut session = Session::new(Rect::new(0, 0, 30, 6), settings, directory.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, 30, 6),
+        settings,
+        test_root(directory.path.clone()),
+    );
     open_file(&mut session, path);
 
     // The window holds three text rows over six buffer lines, so the view sits
@@ -385,7 +393,11 @@ fn the_statusline_shows_the_format_on_save_state_of_the_focused_buffer() {
     let second = directory.write("second.rs", "fn second() {}\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, 60, 8),
+        settings,
+        test_root(directory.path.clone()),
+    );
     open_file(&mut session, first);
 
     // Every new buffer follows the settings default, which enables the format.
@@ -414,7 +426,11 @@ fn the_statusline_reports_no_format_on_save_state_without_a_formatter() {
     let code = directory.write("code.rs", "fn code() {}\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, 60, 8),
+        settings,
+        test_root(directory.path.clone()),
+    );
 
     // The scratch buffer holds no file name, so no adapter serves it.
     assert_eq!(
@@ -450,7 +466,11 @@ fn the_format_on_save_toggle_reports_a_buffer_that_no_formatter_serves() {
     let data = directory.write("data.txt", "plain text\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, 60, 8),
+        settings,
+        test_root(directory.path.clone()),
+    );
     open_file(&mut session, data);
 
     // The toggle would change a state that no save can act on, so it reports
@@ -472,7 +492,11 @@ fn a_narrow_statusline_drops_the_format_on_save_state_before_the_cursor_position
     let narrow = |width: u16| {
         let mut settings = EditorSettings::default();
         settings.files.undo_file = false;
-        let mut session = Session::new(Rect::new(0, 0, width, 6), settings, directory.path.clone());
+        let mut session = Session::new(
+            Rect::new(0, 0, width, 6),
+            settings,
+            test_root(directory.path.clone()),
+        );
         open_file(&mut session, path.clone());
         row(&session, 4)
     };
@@ -803,7 +827,11 @@ fn a_wide_character_occupies_two_cells() {
 fn a_tab_expands_to_the_configured_tab_stop() {
     let mut settings = EditorSettings::default();
     settings.indent.expand_tab = false;
-    let mut session = Session::new(Rect::new(0, 0, 30, 6), settings, workspace_root());
+    let mut session = Session::new(
+        Rect::new(0, 0, 30, 6),
+        settings,
+        test_root(workspace_root()),
+    );
     press(&mut session, 'i');
     type_keys(&mut session, "ab");
     press_code(&mut session, KeyCode::Tab);
@@ -864,7 +892,11 @@ fn two_splits_paint_two_different_buffers() {
     settings.files.undo_file = false;
     // The session starts in the directory that holds both files, so each winbar
     // names its buffer relative to that directory.
-    let mut session = Session::new(Rect::new(0, 0, 60, 8), settings, directory.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, 60, 8),
+        settings,
+        test_root(directory.path.clone()),
+    );
 
     open_file(&mut session, first);
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
@@ -1555,7 +1587,11 @@ fn a_later_attempt_clears_the_rows_of_the_attempt_that_failed() {
 fn save_session(width: u16, height: u16) -> Session {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    Session::new(Rect::new(0, 0, width, height), settings, workspace_root())
+    Session::new(
+        Rect::new(0, 0, width, height),
+        settings,
+        test_root(workspace_root()),
+    )
 }
 
 /// Refuses every queued language request, like an editor without a server.

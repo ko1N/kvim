@@ -422,6 +422,7 @@ name = "kvim"
 version = "0.1.0"
 dependencies = [
  "kvim-language",
+ "kvim-path",
  "kvim-settings",
  "kvim-tui",
  "thiserror",
@@ -546,6 +547,7 @@ dependencies = [
  "kvim-editor",
  "kvim-input",
  "kvim-language",
+ "kvim-path",
  "kvim-runtime",
  "kvim-settings",
  "kvim-terminal",
@@ -562,7 +564,9 @@ dependencies = [
 name = "kvim-workspace"
 version = "0.1.0"
 dependencies = [
+ "cap-std",
  "kvim-core",
+ "kvim-path",
  "kvim-runtime",
  "kvim-settings",
  "thiserror",

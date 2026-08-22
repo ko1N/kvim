@@ -16,6 +16,8 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+use std::collections::VecDeque;
+use std::ffi::OsString;
 use std::fmt;
 use std::fs;
 use std::hash::{Hash, Hasher};
@@ -31,6 +33,9 @@ pub const WORKTREE_PATH_BYTES_MAX: usize = 4096;
 
 /// The maximum non-root components in a worktree path.
 pub const WORKTREE_PATH_COMPONENTS_MAX: usize = 256;
+
+/// The maximum number of symbolic links resolved for one target.
+pub const WORKTREE_SYMLINKS_MAX: usize = 40;
 
 /// An owned canonical worktree identity and its filesystem capability.
 ///
@@ -116,6 +121,132 @@ impl WorktreeRoot {
     pub fn directory(&self) -> &Dir {
         &self.directory
     }
+
+    /// Resolves one target without permitting access outside this root.
+    ///
+    /// Existing targets return their canonical worktree-relative identity. A
+    /// missing target returns the same identity after resolving its nearest
+    /// existing parent. Symbolic links can point only to contained targets.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed confinement failure for an escaping, dangling, looping,
+    /// inaccessible, or structurally invalid target.
+    pub fn resolve(
+        &self,
+        requested: &WorktreeRelativePath,
+    ) -> Result<ResolvedWorktreePath, WorktreeConfinementError> {
+        let pending = requested
+            .as_path()
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(component) => Some(ResolutionComponent::Normal {
+                    value: component.to_os_string(),
+                    from_link_target: false,
+                }),
+                _ => None,
+            })
+            .collect();
+        self.resolve_components(pending)
+    }
+
+    /// Confirms that a requested path still has the same resolved identity.
+    ///
+    /// This check includes every symbolic link in the resolution chain. A link
+    /// replacement cannot publish a load or reach a save commit unnoticed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeConfinementError::Replaced`] when the resolved identity
+    /// changed. Other typed resolution failures remain intact.
+    pub fn revalidate(
+        &self,
+        requested: &WorktreeRelativePath,
+        expected: &ResolvedWorktreePath,
+    ) -> Result<(), WorktreeConfinementError> {
+        let current = self.resolve(requested)?;
+        if &current == expected {
+            Ok(())
+        } else {
+            Err(WorktreeConfinementError::Replaced)
+        }
+    }
+
+    fn resolve_components(
+        &self,
+        mut pending: VecDeque<ResolutionComponent>,
+    ) -> Result<ResolvedWorktreePath, WorktreeConfinementError> {
+        let mut resolved = PathBuf::new();
+        let mut links = Vec::new();
+        while let Some(component) = pending.pop_front() {
+            match component {
+                ResolutionComponent::Parent => {
+                    if !resolved.pop() {
+                        return Err(WorktreeConfinementError::Escape);
+                    }
+                }
+                ResolutionComponent::Normal {
+                    value: component,
+                    from_link_target,
+                } => {
+                    let candidate = resolved.join(&component);
+                    let metadata = match self.directory.symlink_metadata(&candidate) {
+                        Ok(metadata) => metadata,
+                        Err(source) if source.kind() == io::ErrorKind::NotFound => {
+                            if from_link_target {
+                                return Err(WorktreeConfinementError::DanglingLink);
+                            }
+                            resolved.push(component);
+                            append_missing_components(&mut resolved, pending)?;
+                            return Ok(ResolvedWorktreePath {
+                                path: validated_resolved_path(resolved)?,
+                                state: ResolvedTargetState::Missing,
+                                links,
+                            });
+                        }
+                        Err(source) if is_symlink_loop(&source) => {
+                            return Err(WorktreeConfinementError::LinkLoop);
+                        }
+                        Err(source) => {
+                            return Err(WorktreeConfinementError::Access { source });
+                        }
+                    };
+
+                    if metadata.file_type().is_symlink() {
+                        if links.len() >= WORKTREE_SYMLINKS_MAX {
+                            return Err(WorktreeConfinementError::LinkLoop);
+                        }
+                        let target =
+                            self.directory
+                                .read_link_contents(&candidate)
+                                .map_err(|source| {
+                                    if source.kind() == io::ErrorKind::NotFound {
+                                        WorktreeConfinementError::DanglingLink
+                                    } else if is_symlink_loop(&source) {
+                                        WorktreeConfinementError::LinkLoop
+                                    } else {
+                                        WorktreeConfinementError::Access { source }
+                                    }
+                                })?;
+                        links.push(LinkIdentity::new(candidate, target.clone(), &metadata));
+                        prepend_link_target(self, &mut resolved, &mut pending, &target)?;
+                        continue;
+                    }
+
+                    if !pending.is_empty() && !metadata.is_dir() {
+                        return Err(WorktreeConfinementError::NotDirectory);
+                    }
+                    resolved.push(component);
+                }
+            }
+        }
+
+        Ok(ResolvedWorktreePath {
+            path: validated_resolved_path(resolved)?,
+            state: ResolvedTargetState::Existing,
+            links,
+        })
+    }
 }
 
 impl fmt::Debug for WorktreeRoot {
@@ -139,6 +270,103 @@ impl Hash for WorktreeRoot {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.path.hash(state);
     }
+}
+
+/// The resolved state of one worktree target.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ResolvedTargetState {
+    /// The complete target exists.
+    Existing,
+    /// The target is absent below its nearest existing parent.
+    Missing,
+}
+
+/// One descriptor-relative resolution below a worktree root.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedWorktreePath {
+    path: WorktreeRelativePath,
+    state: ResolvedTargetState,
+    links: Vec<LinkIdentity>,
+}
+
+impl ResolvedWorktreePath {
+    /// Returns the canonical worktree-relative target identity.
+    #[must_use]
+    pub const fn path(&self) -> &WorktreeRelativePath {
+        &self.path
+    }
+
+    /// Returns whether the complete target exists.
+    #[must_use]
+    pub const fn state(&self) -> ResolvedTargetState {
+        self.state
+    }
+
+    /// Reports whether resolution followed a symbolic link.
+    #[must_use]
+    pub fn followed_link(&self) -> bool {
+        !self.links.is_empty()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct LinkIdentity {
+    path: PathBuf,
+    target: PathBuf,
+    len: u64,
+    modified: Option<std::time::SystemTime>,
+    #[cfg(unix)]
+    device: u64,
+    #[cfg(unix)]
+    inode: u64,
+}
+
+impl LinkIdentity {
+    fn new(path: PathBuf, target: PathBuf, metadata: &cap_std::fs::Metadata) -> Self {
+        #[cfg(unix)]
+        use cap_std::fs::MetadataExt as _;
+
+        Self {
+            path,
+            target,
+            len: metadata.len(),
+            modified: metadata.modified().ok().map(|time| time.into_std()),
+            #[cfg(unix)]
+            device: metadata.dev(),
+            #[cfg(unix)]
+            inode: metadata.ino(),
+        }
+    }
+}
+
+/// A failure to resolve a target below a [`WorktreeRoot`].
+#[derive(Debug, Error)]
+pub enum WorktreeConfinementError {
+    /// A symbolic link or parent component leaves the capability root.
+    #[error("the target escapes the worktree root")]
+    Escape,
+    /// A symbolic link has no existing target.
+    #[error("the target contains a dangling symbolic link")]
+    DanglingLink,
+    /// Symbolic-link resolution loops or exceeds [`WORKTREE_SYMLINKS_MAX`].
+    #[error("the target contains a symbolic-link loop")]
+    LinkLoop,
+    /// An existing non-directory occurs before the final component.
+    #[error("a target parent is not a directory")]
+    NotDirectory,
+    /// A path changed after its first validated resolution.
+    #[error("the target was replaced during the operation")]
+    Replaced,
+    /// The operating system refused a descriptor-relative access.
+    #[error("the target could not be accessed through the worktree capability")]
+    Access {
+        /// The operating-system failure.
+        #[source]
+        source: io::Error,
+    },
+    /// A resolved symbolic-link target exceeds the public path limits.
+    #[error("the resolved target is not a valid worktree-relative path")]
+    InvalidResolvedPath(#[source] WorktreeRelativePathError),
 }
 
 /// A failure to construct a [`WorktreeRoot`].
@@ -356,6 +584,97 @@ pub enum WorktreeRelativePathError {
     },
 }
 
+#[derive(Debug)]
+enum ResolutionComponent {
+    Normal {
+        value: OsString,
+        from_link_target: bool,
+    },
+    Parent,
+}
+
+fn prepend_link_target(
+    root: &WorktreeRoot,
+    resolved: &mut PathBuf,
+    pending: &mut VecDeque<ResolutionComponent>,
+    target: &Path,
+) -> Result<(), WorktreeConfinementError> {
+    let canonical_target;
+    let target = if target.is_absolute() {
+        canonical_target = fs::canonicalize(target).map_err(|source| {
+            if source.kind() == io::ErrorKind::NotFound {
+                WorktreeConfinementError::DanglingLink
+            } else if is_symlink_loop(&source) {
+                WorktreeConfinementError::LinkLoop
+            } else {
+                WorktreeConfinementError::Access { source }
+            }
+        })?;
+        resolved.clear();
+        canonical_target
+            .strip_prefix(root.as_path())
+            .map_err(|_| WorktreeConfinementError::Escape)?
+    } else {
+        target
+    };
+    let mut components = Vec::new();
+    for component in target.components() {
+        match component {
+            Component::Normal(component) => components.push(ResolutionComponent::Normal {
+                value: component.to_os_string(),
+                from_link_target: true,
+            }),
+            Component::CurDir => {}
+            Component::ParentDir => components.push(ResolutionComponent::Parent),
+            Component::RootDir | Component::Prefix(_) => {
+                return Err(WorktreeConfinementError::Escape);
+            }
+        }
+    }
+    for component in components.into_iter().rev() {
+        pending.push_front(component);
+    }
+    Ok(())
+}
+
+fn append_missing_components(
+    resolved: &mut PathBuf,
+    pending: VecDeque<ResolutionComponent>,
+) -> Result<(), WorktreeConfinementError> {
+    for component in pending {
+        match component {
+            ResolutionComponent::Normal { value, .. } => resolved.push(value),
+            ResolutionComponent::Parent => {
+                if !resolved.pop() {
+                    return Err(WorktreeConfinementError::Escape);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn validated_resolved_path(
+    path: PathBuf,
+) -> Result<WorktreeRelativePath, WorktreeConfinementError> {
+    WorktreeRelativePath::new(path).map_err(WorktreeConfinementError::InvalidResolvedPath)
+}
+
+#[cfg(target_os = "linux")]
+fn is_symlink_loop(source: &io::Error) -> bool {
+    source.raw_os_error() == Some(40)
+}
+
+#[cfg(target_os = "macos")]
+fn is_symlink_loop(source: &io::Error) -> bool {
+    source.raw_os_error() == Some(62)
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn is_symlink_loop(_source: &io::Error) -> bool {
+    false
+}
+
 fn non_root_component_count(path: &Path) -> usize {
     path.components()
         .filter(|component| !matches!(component, Component::RootDir | Component::Prefix(_)))
@@ -486,6 +805,33 @@ mod tests {
         let root = WorktreeRoot::open(alias).expect("the alias resolves inside the fixture");
 
         assert_eq!(root.as_path(), canonical_root);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn absolute_link_alias_is_accepted_when_its_canonical_target_is_contained() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TempDir::new("absolute-link-alias");
+        let private = directory.path().join("private");
+        let canonical_root = private.join("tmp").join("project");
+        fs::create_dir_all(&canonical_root).expect("the canonical root is writable");
+        fs::write(canonical_root.join("file.rs"), "contained\n")
+            .expect("the contained file is writable");
+        symlink("private/tmp", directory.path().join("tmp"))
+            .expect("the symbolic-link alias is writable");
+        symlink(
+            directory.path().join("tmp/project/file.rs"),
+            canonical_root.join("alias.rs"),
+        )
+        .expect("the absolute target alias is writable");
+        let root = WorktreeRoot::open(&canonical_root).expect("the worktree root exists");
+
+        let resolved = root
+            .resolve(&WorktreeRelativePath::new("alias.rs").expect("the path is valid"))
+            .expect("the canonical absolute target stays inside the root");
+
+        assert_eq!(resolved.path().as_path(), Path::new("file.rs"));
     }
 
     #[test]
