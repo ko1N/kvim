@@ -118,10 +118,10 @@ The dependency direction is one-way, and Cargo enforces it:
 |---|---|---|
 | 0 | `kvim-keymap` | none |
 | 0 | `kvim-path` | none |
-| 0 | `kvim-runtime` | none |
 | 0 | `kvim-settings` | none |
 | 0 | `kvim-syntax` | none |
 | 1 | `kvim-core` | `kvim-settings` |
+| 1 | `kvim-runtime` | `kvim-path` |
 | 1 | `kvim-terminal` | `kvim-keymap` |
 | 2 | `kvim-clipboard` | `kvim-runtime` |
 | 2 | `kvim-input` | `kvim-keymap`, `kvim-settings` |
@@ -136,6 +136,11 @@ The dependency direction is one-way, and Cargo enforces it:
 External dependencies do not change the layer number. `kvim-ui` owns ratatui
 geometry and rendering. `kvim-tui` does not depend on terminal lifecycle code.
 No syntax-only consumer compiles LSP, ratatui, or the editor.
+
+`kvim-runtime` depends on `kvim-path` only for the portable filesystem watcher.
+The watcher uses one caller-supplied worktree capability for registration reads
+and event validation. The ambient path required by `notify` stays inside that
+portable boundary.
 
 `kvim-clipboard` has one consumer. `kvim-tui` mirrors the unnamed register into
 the system clipboard, and it reads the selected commands for the host report.

@@ -312,7 +312,7 @@ async fn drive<C: TerminalControl>(
     // refresh command. A registration that covers a part of the workspace
     // reports that state with the burst that opens the stream.
     // See `docs/files.md` and `docs/responsiveness.md`.
-    let mut watcher = FileWatcher::start(root_path, &GENERATED_NAMES).ok();
+    let mut watcher = FileWatcher::start(Arc::clone(&root), &GENERATED_NAMES).ok();
     if watcher.is_none() {
         let _ = editor.report_watch_unavailable();
     }
@@ -1040,9 +1040,6 @@ mod tests {
     /// The elapsed time that every transition of these tests reports.
     const NOW: Duration = Duration::ZERO;
 
-    /// The absolute root that no host holds, so its registration always fails.
-    const MISSING_ROOT: &str = "/kvim-app-root-that-never-exists";
-
     /// The time that one test waits for the refused registration.
     const REGISTRATION_WAIT: Duration = Duration::from_secs(5);
 
@@ -1162,7 +1159,11 @@ mod tests {
     async fn a_registration_that_fails_reports_that_no_watcher_runs() {
         // The start places no watch, so it accepts the root that the deferred
         // registration then refuses.
-        let mut watcher = FileWatcher::start(PathBuf::from(MISSING_ROOT), &GENERATED_NAMES).ok();
+        let directory = TempDir::new("app-missing-watch-root");
+        let root = test_root(directory.path.clone());
+        std::fs::remove_dir_all(&directory.path)
+            .expect("the fixture root exists before watcher registration");
+        let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
         assert!(
             watcher.is_some(),
             "the start defers every platform call, so it refuses no root"

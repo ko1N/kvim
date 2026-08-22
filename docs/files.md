@@ -22,6 +22,8 @@ A `cap-std` capability directory owns access below one root. Existing symbolic
 links are usable only when their resolved target remains below that root. A new
 target resolves through its nearest existing parent below the root. Tree and
 picker traversal never crosses the root and never loops through links.
+Watcher registration reads through the same capability. Only the final
+platform watch call receives the canonical absolute path required by `notify`.
 
 Public APIs never inspect or change the process current directory. LSP and Git
 children receive the canonical root as their explicit working directory. Two
@@ -311,6 +313,11 @@ The tree orders entries deterministically. A directory sorts before a file, and
 two entries of one kind sort by name. A symbolic link takes the kind of its
 target, so an expanded link to a directory shows that directory.
 
+The first loaded spelling of one resolved directory owns that subtree. A later
+contained symbolic-link alias stays visible as a directory, but its read shows
+an incomplete notice and repeats no child. This rule also applies to a link that
+resolves to the worktree root.
+
 ### Row Layout
 
 Every row of the sidebar holds the same five parts, from the left edge:
@@ -499,6 +506,11 @@ for the `notify` dependency. See [`architecture.md`](architecture.md). The
 watcher converts every platform event into one typed value, and no `notify` type
 crosses that boundary. The typed kinds are `Created`, `Removed`, `Renamed`,
 `Modified`, and `Unknown`, which a platform reports when it names no kind.
+Each event resolves against the watcher instance's `WorktreeRoot` before
+publication. An outside, escaping, or cross-root event is dropped and marks the
+next published burst as incomplete. Resolution proves confinement only. The
+published event keeps its lexical path, so a link event refreshes the directory
+that contains the link instead of the directory that contains its target.
 
 The watcher runs its platform callback and one coalescing task beside the event
 loop. The loop reads one published burst as it reads a language event, and it
@@ -597,16 +609,22 @@ directory adds no path, opens no batch, and rebuilds no event stream.
 The later registration obeys the same bounds as the walk at start. A batch adds
 nothing above the directory bound, and a walk reaches nothing below the depth
 bound. A tree above either bound keeps the watches that it already holds. The
-set also records a directory that the platform refused, so one refused directory
-costs one attempt instead of one attempt for each burst. A directory that
-disappeared between the burst and the batch produces no entry, because its read
-fails and its parent still reports its removal.
+set also records a stable non-missing platform refusal, so one refused directory
+costs one attempt instead of one attempt for each burst. A skipped or disappeared
+directory stays outside the set. A later burst can retry it.
 
 Every queue is bounded. A full queue, a burst above the directory bound, and a
 failed platform read all drop events. A burst that lost events reports
 `Dropped`, and the sidebar then reads every expanded directory again instead of
 trusting an incomplete set. A drop therefore never leaves the tree stale, and no
 queue ever grows without a limit.
+
+A platform callback failure enqueues one bounded wake value. This value publishes
+a `Dropped` burst even when no later filesystem event arrives.
+
+`notify` receives only UTF-8 absolute paths on macOS and Linux. A non-UTF-8 root
+ends registration through the normal start failure. A non-UTF-8 descendant
+reports incomplete coverage and receives no platform watch.
 
 A host that refuses the watch leaves the editor fully usable. The editor names
 that state once for each session and the refresh command reads the workspace by
@@ -894,6 +912,10 @@ file decides first, and the last matching pattern of one file wins.
 The walk reads no global ignore file, no `.git/info/exclude`, and no Git
 configuration, because it starts no Git process.
 
+The search picker also disables ripgrep configuration, link following, parent
+ignore files, and global ignore files. Each result path must resolve to one
+existing contained file before publication.
+
 ### The Walk Of The Command Line
 
 The command-line completion of the path argument of `:e[dit]` reads the same
@@ -932,6 +954,9 @@ rejects it a second time from its visible state. See
 
 A missing `rg` command is a normal state, not an error. kvim reports it once and
 stays fully usable without the search picker.
+
+A preview reports when its byte, line, or line-character bound clips the shown
+text. The picker displays this report separately from candidate-list truncation.
 
 ### Picker Bounds
 

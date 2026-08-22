@@ -518,6 +518,7 @@ dependencies = [
 name = "kvim-runtime"
 version = "0.1.0"
 dependencies = [
+ "kvim-path",
  "notify",
  "thiserror",
  "tokio",

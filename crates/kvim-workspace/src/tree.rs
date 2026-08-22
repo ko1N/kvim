@@ -10,11 +10,16 @@
 //! directory to the caller, and [`FileTree::apply_listing`] applies the result.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use thiserror::Error;
+
+use kvim_path::{
+    WorktreeConfinementError, WorktreeDirectoryPath, WorktreeRelativePath,
+    WorktreeRelativePathError, WorktreeRoot,
+};
 
 /// The largest number of entries that the tree keeps for one directory.
 ///
@@ -121,21 +126,41 @@ pub enum Truncation {
 pub struct DirectoryListing {
     /// The directory that the read inspected.
     pub path: PathBuf,
+    /// The resolved contained directory that this listing read.
+    pub identity: DirectoryIdentity,
     /// The entries, ordered by kind and then by name.
     pub entries: Vec<TreeEntry>,
     /// Whether the listing holds every entry of the directory.
     pub truncation: Truncation,
 }
 
+/// The resolved identity of one directory at or below a worktree root.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum DirectoryIdentity {
+    /// The worktree root itself.
+    Root,
+    /// One resolved directory below the root.
+    Relative(WorktreeRelativePath),
+}
+
 /// A rejected directory read.
 #[derive(Debug, Error)]
 pub enum ReadError {
+    /// The target did not remain confined to its worktree root.
+    #[error("the directory target is not confined to the worktree")]
+    Confinement(#[from] WorktreeConfinementError),
+    /// A directory entry cannot form a validated worktree-relative path.
+    #[error("a directory entry is not a valid worktree-relative path")]
+    InvalidPath(#[from] WorktreeRelativePathError),
     /// The path names no directory.
     #[error("the path is not a directory")]
     NotADirectory,
     /// The directory could not be read.
     #[error("the directory could not be read")]
     Read(#[source] io::Error),
+    /// The directory changed while its listing was read.
+    #[error("the directory was replaced while it was read")]
+    Replaced,
 }
 
 /// Reads one directory into a bounded and ordered listing.
@@ -146,26 +171,51 @@ pub enum ReadError {
 ///
 /// Returns [`ReadError`] for a path that names no directory and for an
 /// unreadable directory.
-pub fn read_directory(path: &Path) -> Result<DirectoryListing, ReadError> {
-    let metadata = fs::metadata(path).map_err(ReadError::Read)?;
+pub fn read_directory(
+    root: &Arc<WorktreeRoot>,
+    path: &WorktreeDirectoryPath,
+) -> Result<DirectoryListing, ReadError> {
+    let resolved = root.resolve_directory(path)?;
+    let capability_path = resolved.path().capability_path();
+    let metadata = root
+        .directory()
+        .metadata(capability_path)
+        .map_err(ReadError::Read)?;
     if !metadata.is_dir() {
         return Err(ReadError::NotADirectory);
     }
-    let reader = fs::read_dir(path).map_err(ReadError::Read)?;
+    let identity = metadata_identity(&metadata);
+    let reader = root
+        .directory()
+        .read_dir(capability_path)
+        .map_err(ReadError::Read)?;
 
     let mut entries = Vec::new();
     let mut total = 0usize;
-    for entry in reader.take(TREE_DIRECTORY_SCAN_MAX) {
-        let entry = entry.map_err(ReadError::Read)?;
+    let mut incomplete = false;
+    for entry in reader.take(TREE_DIRECTORY_SCAN_MAX.saturating_add(1)) {
+        total = total.saturating_add(1);
+        if total > TREE_DIRECTORY_SCAN_MAX {
+            incomplete = true;
+            break;
+        }
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(_) => {
+                incomplete = true;
+                continue;
+            }
+        };
         // A name that is not UTF-8 has no place in the tree, because every path
         // that the editor shows and stores is UTF-8 text.
         let Ok(name) = entry.file_name().into_string() else {
+            incomplete = true;
             continue;
         };
         let Ok(file_type) = entry.file_type() else {
+            incomplete = true;
             continue;
         };
-        total += 1;
         let link = if file_type.is_symlink() {
             LinkKind::Symlink
         } else {
@@ -173,9 +223,21 @@ pub fn read_directory(path: &Path) -> Result<DirectoryListing, ReadError> {
         };
         // A symbolic link takes the kind of its target, so an expanded link to a
         // directory shows that directory. A broken link stays a file.
-        let kind = if file_type.is_dir()
-            || (file_type.is_symlink() && fs::metadata(entry.path()).is_ok_and(|it| it.is_dir()))
-        {
+        let Ok(child) = child_path(path, &name) else {
+            incomplete = true;
+            continue;
+        };
+        let linked_directory = file_type.is_symlink()
+            && root
+                .resolve_directory(&WorktreeDirectoryPath::Relative(child))
+                .ok()
+                .and_then(|resolved| {
+                    root.directory()
+                        .metadata(resolved.path().capability_path())
+                        .ok()
+                })
+                .is_some_and(|metadata| metadata.is_dir());
+        let kind = if file_type.is_dir() || linked_directory {
             EntryKind::Directory
         } else {
             EntryKind::File
@@ -189,20 +251,59 @@ pub fn read_directory(path: &Path) -> Result<DirectoryListing, ReadError> {
             .cmp(&right.kind.order())
             .then_with(|| left.name.cmp(&right.name))
     });
-    let truncation = if entries.len() > TREE_DIRECTORY_ENTRIES_MAX {
+    let truncation = if entries.len() > TREE_DIRECTORY_ENTRIES_MAX || incomplete {
         entries.truncate(TREE_DIRECTORY_ENTRIES_MAX);
         Truncation::Truncated {
-            shown: TREE_DIRECTORY_ENTRIES_MAX,
+            shown: entries.len(),
             total,
         }
     } else {
         Truncation::Complete
     };
+    let current = root
+        .directory()
+        .metadata(capability_path)
+        .map_err(ReadError::Read)?;
+    if metadata_identity(&current) != identity {
+        return Err(ReadError::Replaced);
+    }
+    root.revalidate_directory(path, &resolved)?;
+
     Ok(DirectoryListing {
-        path: path.to_path_buf(),
+        path: path.display_path(root),
+        identity: match resolved.path() {
+            WorktreeDirectoryPath::Root => DirectoryIdentity::Root,
+            WorktreeDirectoryPath::Relative(path) => DirectoryIdentity::Relative(path.clone()),
+        },
         entries,
         truncation,
     })
+}
+
+fn child_path(
+    directory: &WorktreeDirectoryPath,
+    name: &str,
+) -> Result<WorktreeRelativePath, WorktreeRelativePathError> {
+    let path = directory.relative_path().map_or_else(
+        || PathBuf::from(name),
+        |directory| directory.as_path().join(name),
+    );
+    WorktreeRelativePath::new(path)
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MetadataIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn metadata_identity(metadata: &cap_std::fs::Metadata) -> MetadataIdentity {
+    use cap_std::fs::MetadataExt as _;
+
+    MetadataIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
 }
 
 /// Whether the tree shows dotfiles and the names of [`HIDDEN_NAMES`].
@@ -371,6 +472,7 @@ struct TreeSearch {
 enum DirectoryState {
     /// The read finished.
     Listed {
+        identity: DirectoryIdentity,
         entries: Vec<TreeEntry>,
         truncation: Truncation,
     },
@@ -390,7 +492,7 @@ enum DirectoryState {
 /// ```
 /// use std::path::PathBuf;
 ///
-/// use kvim_workspace::{DirectoryListing, EntryKind, FileTree, LinkKind, TreeEntry, Truncation};
+/// use kvim_workspace::{DirectoryIdentity, DirectoryListing, EntryKind, FileTree, LinkKind, TreeEntry, Truncation};
 ///
 /// let root = PathBuf::from("/workspace");
 /// let mut tree = FileTree::new(root.clone());
@@ -399,6 +501,7 @@ enum DirectoryState {
 /// assert_eq!(tree.take_pending_read(), Some(root.clone()));
 /// tree.apply_listing(DirectoryListing {
 ///     path: root.clone(),
+///     identity: DirectoryIdentity::Root,
 ///     entries: vec![TreeEntry {
 ///         name: "main.rs".to_owned(),
 ///         kind: EntryKind::File,
@@ -517,6 +620,18 @@ impl FileTree {
             // read ran.
             return;
         }
+        if self.directories.iter().any(|(path, state)| {
+            path != &listing.path
+                && matches!(state, DirectoryState::Listed { identity, .. } if identity == &listing.identity)
+        }) {
+            // A contained symbolic-link alias can name a directory that the
+            // tree already loaded. Keep the alias row, but never repeat that
+            // subtree or permit it to form a cycle.
+            self.directories
+                .insert(listing.path, DirectoryState::Unreadable);
+            self.rebuild();
+            return;
+        }
         let names: BTreeSet<&str> = listing
             .entries
             .iter()
@@ -546,6 +661,7 @@ impl FileTree {
         self.directories.insert(
             listing.path,
             DirectoryState::Listed {
+                identity: listing.identity,
                 entries,
                 truncation,
             },

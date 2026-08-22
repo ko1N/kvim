@@ -13,6 +13,7 @@ use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
 use kvim_input::{CommandLineCommand, Mode};
 use kvim_language::LspError;
+use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{FocusChange, Key, KeyCode, TerminalEvent};
@@ -862,6 +863,7 @@ fn enter_runs_the_command_that_the_completion_wrote_into_the_line() {
 /// The walk returns absolute paths below the workspace root, so the candidates
 /// hold the same shape that the file picker receives.
 fn walked_files() -> Vec<Candidate> {
+    let root = test_root(workspace_root());
     [
         "src/session.rs",
         "src/main.rs",
@@ -869,7 +871,12 @@ fn walked_files() -> Vec<Candidate> {
         "src/mode.rs",
     ]
     .into_iter()
-    .map(|relative| Candidate::file(&workspace_root(), workspace_root().join(relative)))
+    .map(|relative| {
+        Candidate::file(
+            &root,
+            WorktreeRelativePath::new(relative).expect("the fixture path is valid"),
+        )
+    })
     .collect()
 }
 
@@ -882,7 +889,7 @@ fn answer_completion_walk(session: &mut Session, files: Vec<Candidate>) {
         .take_completion_request()
         .expect("the open command line asks for one walk");
     assert!(
-        matches!(&request, PickerRequest::Files { root } if root == &workspace_root()),
+        matches!(&request, PickerRequest::Files { root } if root.as_path() == workspace_root()),
         "the walk starts at the workspace root, so no candidate leaves it"
     );
     apply_completion_walk(session, files);
@@ -2038,11 +2045,12 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
 /// A content change names no path at all, so one burst asks the session to
 /// check every loaded buffer against its file.
 fn report_watch_change(session: &mut Session) -> Redraw {
+    let root = test_root(workspace_root());
     let mut batch = WatchBatch::default();
-    batch.push(&WatchEvent {
-        path: workspace_root().join("changed"),
-        kind: WatchKind::Modified,
-    });
+    batch.push(
+        &WatchEvent::new(root, workspace_root().join("changed"), WatchKind::Modified)
+            .expect("the event lies below the session root"),
+    );
     session.apply_watch_batch(&batch)
 }
 

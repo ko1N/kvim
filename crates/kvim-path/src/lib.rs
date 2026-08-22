@@ -147,7 +147,53 @@ impl WorktreeRoot {
                 _ => None,
             })
             .collect();
-        self.resolve_components(pending)
+        let resolved = self.resolve_components(pending)?;
+        Ok(ResolvedWorktreePath {
+            path: validated_resolved_path(resolved.path)?,
+            state: resolved.state,
+            links: resolved.links,
+        })
+    }
+
+    /// Resolves one root-or-relative target for directory traversal.
+    ///
+    /// Unlike [`WorktreeRoot::resolve`], this operation can represent a
+    /// contained link whose target is the worktree root. File operations keep
+    /// using [`WorktreeRoot::resolve`] and therefore still reject an empty file
+    /// identity.
+    pub fn resolve_directory(
+        &self,
+        requested: &WorktreeDirectoryPath,
+    ) -> Result<ResolvedWorktreeDirectory, WorktreeConfinementError> {
+        let WorktreeDirectoryPath::Relative(requested) = requested else {
+            return Ok(ResolvedWorktreeDirectory {
+                path: WorktreeDirectoryPath::Root,
+                state: ResolvedTargetState::Existing,
+                links: Vec::new(),
+            });
+        };
+        let pending = requested
+            .as_path()
+            .components()
+            .filter_map(|component| match component {
+                Component::Normal(component) => Some(ResolutionComponent::Normal {
+                    value: component.to_os_string(),
+                    from_link_target: false,
+                }),
+                _ => None,
+            })
+            .collect();
+        let resolved = self.resolve_components(pending)?;
+        let path = if resolved.path.as_os_str().is_empty() {
+            WorktreeDirectoryPath::Root
+        } else {
+            WorktreeDirectoryPath::Relative(validated_resolved_path(resolved.path)?)
+        };
+        Ok(ResolvedWorktreeDirectory {
+            path,
+            state: resolved.state,
+            links: resolved.links,
+        })
     }
 
     /// Confirms that a requested path still has the same resolved identity.
@@ -172,10 +218,24 @@ impl WorktreeRoot {
         }
     }
 
+    /// Confirms that a directory target still has the same resolved identity.
+    pub fn revalidate_directory(
+        &self,
+        requested: &WorktreeDirectoryPath,
+        expected: &ResolvedWorktreeDirectory,
+    ) -> Result<(), WorktreeConfinementError> {
+        let current = self.resolve_directory(requested)?;
+        if &current == expected {
+            Ok(())
+        } else {
+            Err(WorktreeConfinementError::Replaced)
+        }
+    }
+
     fn resolve_components(
         &self,
         mut pending: VecDeque<ResolutionComponent>,
-    ) -> Result<ResolvedWorktreePath, WorktreeConfinementError> {
+    ) -> Result<RawResolvedWorktreePath, WorktreeConfinementError> {
         let mut resolved = PathBuf::new();
         let mut links = Vec::new();
         while let Some(component) = pending.pop_front() {
@@ -198,8 +258,8 @@ impl WorktreeRoot {
                             }
                             resolved.push(component);
                             append_missing_components(&mut resolved, pending)?;
-                            return Ok(ResolvedWorktreePath {
-                                path: validated_resolved_path(resolved)?,
+                            return Ok(RawResolvedWorktreePath {
+                                path: resolved,
                                 state: ResolvedTargetState::Missing,
                                 links,
                             });
@@ -241,12 +301,18 @@ impl WorktreeRoot {
             }
         }
 
-        Ok(ResolvedWorktreePath {
-            path: validated_resolved_path(resolved)?,
+        Ok(RawResolvedWorktreePath {
+            path: resolved,
             state: ResolvedTargetState::Existing,
             links,
         })
     }
+}
+
+struct RawResolvedWorktreePath {
+    path: PathBuf,
+    state: ResolvedTargetState,
+    links: Vec<LinkIdentity>,
 }
 
 impl fmt::Debug for WorktreeRoot {
@@ -293,6 +359,34 @@ impl ResolvedWorktreePath {
     /// Returns the canonical worktree-relative target identity.
     #[must_use]
     pub const fn path(&self) -> &WorktreeRelativePath {
+        &self.path
+    }
+
+    /// Returns whether the complete target exists.
+    #[must_use]
+    pub const fn state(&self) -> ResolvedTargetState {
+        self.state
+    }
+
+    /// Reports whether resolution followed a symbolic link.
+    #[must_use]
+    pub fn followed_link(&self) -> bool {
+        !self.links.is_empty()
+    }
+}
+
+/// One resolved root-or-relative identity used by directory traversal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ResolvedWorktreeDirectory {
+    path: WorktreeDirectoryPath,
+    state: ResolvedTargetState,
+    links: Vec<LinkIdentity>,
+}
+
+impl ResolvedWorktreeDirectory {
+    /// Returns the resolved root-or-relative identity.
+    #[must_use]
+    pub const fn path(&self) -> &WorktreeDirectoryPath {
         &self.path
     }
 
@@ -527,6 +621,48 @@ impl AsRef<Path> for WorktreeRelativePath {
     }
 }
 
+/// One directory target at or below a worktree root.
+///
+/// [`WorktreeRelativePath`] is intentionally non-empty, so the root directory
+/// needs its own variant. Every descendant still carries a validated relative
+/// path.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum WorktreeDirectoryPath {
+    /// The capability root itself.
+    Root,
+    /// One non-empty directory path below the root.
+    Relative(WorktreeRelativePath),
+}
+
+impl WorktreeDirectoryPath {
+    /// Returns the descendant path, or `None` for the root directory.
+    #[must_use]
+    pub const fn relative_path(&self) -> Option<&WorktreeRelativePath> {
+        match self {
+            Self::Root => None,
+            Self::Relative(path) => Some(path),
+        }
+    }
+
+    /// Returns the path used with the root capability.
+    #[must_use]
+    pub fn capability_path(&self) -> &Path {
+        match self {
+            Self::Root => Path::new("."),
+            Self::Relative(path) => path.as_path(),
+        }
+    }
+
+    /// Returns the root-derived absolute display path of this spelling.
+    #[must_use]
+    pub fn display_path(&self, root: &WorktreeRoot) -> PathBuf {
+        match self {
+            Self::Root => root.as_path().to_path_buf(),
+            Self::Relative(path) => root.as_path().join(path.as_path()),
+        }
+    }
+}
+
 /// A non-normal path component rejected by [`WorktreeRelativePath::new`].
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnsupportedPathComponent {
@@ -691,7 +827,8 @@ mod tests {
 
     use super::{
         UnsupportedPathComponent, WORKTREE_PATH_BYTES_MAX, WORKTREE_PATH_COMPONENTS_MAX,
-        WorktreeRelativePath, WorktreeRelativePathError, WorktreeRoot, WorktreeRootError,
+        WorktreeConfinementError, WorktreeDirectoryPath, WorktreeRelativePath,
+        WorktreeRelativePathError, WorktreeRoot, WorktreeRootError,
     };
 
     static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -832,6 +969,35 @@ mod tests {
             .expect("the canonical absolute target stays inside the root");
 
         assert_eq!(resolved.path().as_path(), Path::new("file.rs"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn directory_links_can_resolve_to_the_worktree_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = TempDir::new("directory-root-alias");
+        fs::create_dir(directory.path().join("nested")).expect("the nested directory is writable");
+        symlink(".", directory.path().join("alias"))
+            .expect("the temporary directory supports links");
+        symlink("..", directory.path().join("nested/back"))
+            .expect("the temporary directory supports links");
+        let root = WorktreeRoot::open(directory.path()).expect("the root exists");
+
+        for requested in ["alias", "nested/back"] {
+            let requested = WorktreeRelativePath::new(requested).expect("the path is valid");
+            let resolved = root
+                .resolve_directory(&WorktreeDirectoryPath::Relative(requested.clone()))
+                .expect("the directory link remains contained");
+            assert_eq!(resolved.path(), &WorktreeDirectoryPath::Root);
+            assert!(resolved.followed_link());
+            assert!(matches!(
+                root.resolve(&requested),
+                Err(WorktreeConfinementError::InvalidResolvedPath(
+                    WorktreeRelativePathError::Empty
+                ))
+            ));
+        }
     }
 
     #[test]
