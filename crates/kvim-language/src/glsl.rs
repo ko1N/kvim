@@ -11,8 +11,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the GLSL adapter owns.
@@ -96,35 +96,39 @@ impl GlslAdapter {
     }
 }
 
+/// The catalog entry of the glsl language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static GLSL_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "glsl",
+    &GLSL_LANGUAGE_NAMES,
+    &GLSL_EXTENSIONS,
+    &[],
+    glsl_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of glsl.
+fn glsl_grammar() -> Grammar {
+    Grammar {
+        language: glsl_language,
+        highlights_query: tree_sitter_glsl::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for GlslAdapter {
-    fn id(&self) -> &'static str {
-        "glsl"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &GLSL_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &GLSL_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &GLSL_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "glsl",
-            language: glsl_language,
-            highlights_query: tree_sitter_glsl::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

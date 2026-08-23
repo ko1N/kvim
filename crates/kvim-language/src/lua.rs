@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Lua adapter owns.
@@ -117,37 +117,41 @@ impl LuaAdapter {
     }
 }
 
+/// The catalog entry of the lua language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static LUA_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "lua",
+    &LUA_LANGUAGE_NAMES,
+    &LUA_EXTENSIONS,
+    &[],
+    lua_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of lua.
+fn lua_grammar() -> Grammar {
+    Grammar {
+        language: lua_language,
+        highlights_query: tree_sitter_lua::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for LuaAdapter {
-    fn id(&self) -> &'static str {
-        "lua"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &LUA_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &LUA_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &LUA_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // A long comment opens with two dashes and a long bracket, and it closes
         // with the matching long bracket.
         CommentStyle::new(Some("--"), Some(BlockComment::new("--[[", "]]")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "lua",
-            language: lua_language,
-            highlights_query: tree_sitter_lua::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

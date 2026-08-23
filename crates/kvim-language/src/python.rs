@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Python adapter owns.
@@ -152,37 +152,41 @@ impl PythonAdapter {
     }
 }
 
+/// The catalog entry of the python language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static PYTHON_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "python",
+    &PYTHON_LANGUAGE_NAMES,
+    &PYTHON_EXTENSIONS,
+    &[],
+    python_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of python.
+fn python_grammar() -> Grammar {
+    Grammar {
+        language: python_language,
+        highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for PythonAdapter {
-    fn id(&self) -> &'static str {
-        "python"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &PYTHON_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &PYTHON_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &PYTHON_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // Python defines no block comment. A triple-quoted text is a string
         // expression, so the metadata carries the line token alone.
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "python",
-            language: python_language,
-            highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

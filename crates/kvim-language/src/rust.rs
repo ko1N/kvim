@@ -11,8 +11,8 @@ use tree_sitter::Language;
 use kvim_settings::{CheckDepth, LanguageSettings};
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Rust adapter owns.
@@ -105,35 +105,39 @@ impl RustAdapter {
     }
 }
 
+/// The catalog entry of the rust language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static RUST_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "rust",
+    &RUST_LANGUAGE_NAMES,
+    &RUST_EXTENSIONS,
+    &[],
+    rust_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of rust.
+fn rust_grammar() -> Grammar {
+    Grammar {
+        language: rust_language,
+        highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for RustAdapter {
-    fn id(&self) -> &'static str {
-        "rust"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &RUST_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &RUST_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &RUST_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "rust",
-            language: rust_language,
-            highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

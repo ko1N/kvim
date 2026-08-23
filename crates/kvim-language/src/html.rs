@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the HTML adapter owns.
@@ -103,37 +103,41 @@ impl HtmlAdapter {
     }
 }
 
+/// The catalog entry of the html language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static HTML_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "html",
+    &HTML_LANGUAGE_NAMES,
+    &HTML_EXTENSIONS,
+    &[],
+    html_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of html.
+fn html_grammar() -> Grammar {
+    Grammar {
+        language: html_language,
+        highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for HtmlAdapter {
-    fn id(&self) -> &'static str {
-        "html"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &HTML_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &HTML_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &HTML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // HTML defines a block comment alone, so the metadata carries no line
         // token and the first-release toggle stays disabled.
         CommentStyle::new(None, Some(BlockComment::new("<!--", "-->")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "html",
-            language: html_language,
-            highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

@@ -33,8 +33,8 @@ use super::session::{
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
-    LanguageAdapter, LanguageRegistry, LanguageServerDeclaration, LanguageServerId,
-    LanguageServices, RustAdapter, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageRegistry, LanguageServerDeclaration,
+    LanguageServerId, LanguageServices, RustAdapter, ServerFormatting,
 };
 
 /// Returns a buffer with the exact test document content.
@@ -1453,29 +1453,57 @@ async fn rejects_more_content_changes_than_the_bound_allows() {
     ));
 }
 
+/// Returns the grammar that every test language reuses.
+///
+/// The tests exercise the session, not a grammar, so each one borrows
+/// the bundled Rust grammar instead of adding a second one.
+fn test_grammar() -> Grammar {
+    RustAdapter::new().grammar()
+}
+
+/// The extensions of the serverless test language.
+static SERVERLESS_EXTENSIONS: [&str; 1] = ["kv"];
+
+/// The catalog entry of the serverless test language.
+static SERVERLESS_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("serverless", &[], &SERVERLESS_EXTENSIONS, &[], test_grammar);
+
+/// The extensions of the two test language.
+static TWO_EXTENSIONS: [&str; 1] = ["two"];
+
+/// The catalog entry of the two test language.
+static TWO_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("two", &[], &TWO_EXTENSIONS, &[], test_grammar);
+
+/// The extensions of the gate test language.
+static GATE_EXTENSIONS: [&str; 1] = ["gate"];
+
+/// The catalog entry of the gate test language.
+static GATE_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("gate", &[], &GATE_EXTENSIONS, &[], test_grammar);
+
+/// The extensions of the unused test language.
+static UNUSED_EXTENSIONS: [&str; 1] = ["unused"];
+
+/// The catalog entry of the unused test language.
+static UNUSED_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("unused", &[], &UNUSED_EXTENSIONS, &[], test_grammar);
+
 /// One adapter that serves a language without a language server.
 #[derive(Clone, Copy, Debug)]
 struct ServerlessAdapter;
 
 impl LanguageAdapter for ServerlessAdapter {
-    fn id(&self) -> &'static str {
-        "serverless"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &SERVERLESS_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["kv"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1550,24 +1578,16 @@ fn no_options(_settings: kvim_settings::LanguageSettings) -> Value {
 }
 
 impl LanguageAdapter for TwoServerAdapter {
-    fn id(&self) -> &'static str {
-        "two"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &TWO_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["two"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1705,24 +1725,16 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
 ];
 
 impl LanguageAdapter for GatedAdapter {
-    fn id(&self) -> &'static str {
-        "gate"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &GATE_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["gate"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1759,24 +1771,16 @@ static UNUSED_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclarati
 }];
 
 impl LanguageAdapter for UnusedAdapter {
-    fn id(&self) -> &'static str {
-        "unused"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &UNUSED_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["unused"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {

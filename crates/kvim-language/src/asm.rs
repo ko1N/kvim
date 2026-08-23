@@ -11,8 +11,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the assembly adapter owns.
@@ -86,21 +86,35 @@ impl AsmAdapter {
     }
 }
 
+/// The catalog entry of the asm language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static ASM_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "asm",
+    &ASM_LANGUAGE_NAMES,
+    &ASM_EXTENSIONS,
+    &[],
+    asm_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of asm.
+fn asm_grammar() -> Grammar {
+    Grammar {
+        language: asm_language,
+        highlights_query: tree_sitter_asm::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for AsmAdapter {
-    fn id(&self) -> &'static str {
-        "asm"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &ASM_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
-    }
-
-    fn extensions(&self) -> &'static [&'static str] {
-        &ASM_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &ASM_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {
@@ -110,16 +124,6 @@ impl LanguageAdapter for AsmAdapter {
         // token of that assembler. The same assembler reads the C block
         // comment on every target.
         CommentStyle::new(Some("#"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "asm",
-            language: asm_language,
-            highlights_query: tree_sitter_asm::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

@@ -11,7 +11,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Zig adapter owns.
@@ -98,37 +99,41 @@ impl ZigAdapter {
     }
 }
 
+/// The catalog entry of the zig language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static ZIG_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "zig",
+    &ZIG_LANGUAGE_NAMES,
+    &ZIG_EXTENSIONS,
+    &[],
+    zig_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of zig.
+fn zig_grammar() -> Grammar {
+    Grammar {
+        language: zig_language,
+        highlights_query: tree_sitter_zig::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for ZigAdapter {
-    fn id(&self) -> &'static str {
-        "zig"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &ZIG_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &ZIG_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &ZIG_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The Zig language defines no block comment, so the adapter carries the
         // line token alone.
         CommentStyle::new(Some("//"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "zig",
-            language: zig_language,
-            highlights_query: tree_sitter_zig::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

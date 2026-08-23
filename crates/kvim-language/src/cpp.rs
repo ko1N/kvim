@@ -14,7 +14,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the C++ adapter owns.
@@ -150,35 +150,39 @@ impl CppAdapter {
     }
 }
 
+/// The catalog entry of the cpp language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static CPP_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "cpp",
+    &CPP_LANGUAGE_NAMES,
+    &CPP_EXTENSIONS,
+    &[],
+    cpp_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of cpp.
+fn cpp_grammar() -> Grammar {
+    Grammar {
+        language: cpp_language,
+        highlights_query: cpp_highlights_query(),
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for CppAdapter {
-    fn id(&self) -> &'static str {
-        "cpp"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &CPP_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &CPP_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &CPP_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "cpp",
-            language: cpp_language,
-            highlights_query: cpp_highlights_query(),
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

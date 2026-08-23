@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the SQL adapter owns.
@@ -100,35 +100,39 @@ impl SqlAdapter {
     }
 }
 
+/// The catalog entry of the sql language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static SQL_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "sql",
+    &SQL_LANGUAGE_NAMES,
+    &SQL_EXTENSIONS,
+    &[],
+    sql_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of sql.
+fn sql_grammar() -> Grammar {
+    Grammar {
+        language: sql_language,
+        highlights_query: tree_sitter_sequel::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for SqlAdapter {
-    fn id(&self) -> &'static str {
-        "sql"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &SQL_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &SQL_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &SQL_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("--"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "sql",
-            language: sql_language,
-            highlights_query: tree_sitter_sequel::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

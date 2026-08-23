@@ -2,11 +2,17 @@
 //! Adapted from ReviewGraph (MIT), src/analysis.rs.
 //!
 //! The adapter boundary is the multi-language extension point of kvim. An
-//! adapter supplies data: the paths of its language, the Tree-sitter grammar
-//! with its highlight query, the comment tokens, the indent rule, the language
-//! servers, and the external formatter. Nothing above the trait names a
-//! language, so a release adds a language by registering one more adapter. This
-//! build registers 25 adapters, which `docs/language-services.md` names.
+//! adapter supplies data: one [`LanguageCatalogEntry`], the comment tokens, the
+//! indent rule, the language servers, and the external formatter. Nothing above
+//! the trait names a language, so a release adds a language by registering one
+//! more adapter. This build registers 25 adapters, which
+//! `docs/language-services.md` names.
+//!
+//! The catalog entry owns what selects and parses one language: the language
+//! names, the file extensions, the complete file names, and the Tree-sitter
+//! grammar with its queries. The adapter owns what a grammar cannot answer, so
+//! indentation, formatter, server, and editor-version behavior stays with the
+//! adapter and no lookup table exists twice.
 //!
 //! Only an adapter can select a path by language, by file extension, or by file
 //! name, and only an adapter answers to the name of a language. Generic
@@ -80,7 +86,7 @@ use std::time::Duration;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
-use tree_sitter::{InputEdit, Language, Point, Tree};
+use tree_sitter::{InputEdit, Point, Tree};
 
 use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange};
 
@@ -88,6 +94,7 @@ mod analysis;
 mod asm;
 mod bash;
 mod c;
+mod catalog;
 mod cpp;
 mod css;
 mod document;
@@ -131,6 +138,7 @@ mod tests;
 pub use asm::AsmAdapter;
 pub use bash::BashAdapter;
 pub use c::CAdapter;
+pub use catalog::{Grammar, LanguageCatalogEntry};
 pub use cpp::CppAdapter;
 pub use css::CssAdapter;
 pub use document::{
@@ -346,23 +354,6 @@ impl CommentStyle {
     pub const fn block(self) -> Option<BlockComment> {
         self.block
     }
-}
-
-/// The Tree-sitter grammar and highlight query of one language.
-///
-/// The value is adapter data. The analysis reads it and knows no language.
-#[derive(Clone, Copy)]
-pub struct Grammar {
-    /// The stable grammar name, which also keys the query cache.
-    pub name: &'static str,
-    /// The entry point of the compiled grammar.
-    pub language: fn() -> Language,
-    /// The highlight query of the grammar.
-    pub highlights_query: &'static str,
-    /// The injection query, or the empty text when the grammar has none.
-    pub injections_query: &'static str,
-    /// The local-variable query, or the empty text when the grammar has none.
-    pub locals_query: &'static str,
 }
 
 /// The indent rule of one language, as syntax-tree data.
@@ -612,25 +603,40 @@ fn owns(keys: &[&'static str], value: &OsStr) -> bool {
 /// The trait stays object-safe, because the registry holds trait objects. A
 /// later asynchronous method must return a boxed future for the same reason.
 pub trait LanguageAdapter: Send + Sync {
-    /// Returns the stable adapter identifier.
-    fn id(&self) -> &'static str;
+    /// Returns the catalog entry of the language.
+    ///
+    /// The entry owns the lookup keys and the grammar, so an adapter names each
+    /// of them once. The adapter itself owns only what a catalog entry cannot
+    /// answer: the comment tokens, the indent rule, the language servers, the
+    /// external formatter, and the analysis version.
+    fn catalog(&self) -> &'static LanguageCatalogEntry;
 
     /// Returns the analysis implementation version.
     fn version(&self) -> &'static str;
 
+    /// Returns the stable adapter identifier.
+    ///
+    /// The identifier is the one that the catalog entry carries, so an adapter
+    /// and its grammar can never answer to two names.
+    fn id(&self) -> &'static str {
+        self.catalog().id()
+    }
+
     /// Returns the file extensions that this adapter owns.
     ///
     /// The extensions are case-sensitive.
-    fn extensions(&self) -> &'static [&'static str];
+    fn extensions(&self) -> &'static [&'static str] {
+        self.catalog().extensions()
+    }
 
     /// Returns the complete file names that this adapter owns.
     ///
     /// A file name is the second lookup key of the same selection, for a file
     /// whose extension does not name its format. `flake.lock` holds JSON, so
-    /// the JSON adapter names that file here. The names are case-sensitive,
-    /// and they carry no directory. The default answer is the empty table.
+    /// the JSON catalog entry names that file. The names are case-sensitive,
+    /// and they carry no directory.
     fn file_names(&self) -> &'static [&'static str] {
-        &[]
+        self.catalog().file_names()
     }
 
     /// Returns the names of the language that this adapter answers to.
@@ -640,17 +646,19 @@ pub trait LanguageAdapter: Send + Sync {
     /// reaches its adapter through this key alone. The table holds the name of
     /// the language and the aliases that an author or a server writes for it,
     /// for example `rs` beside `rust`. Every name stands in lower case, and
-    /// exactly one adapter of the registry owns each name. The default answer
-    /// is the empty table. See `docs/language-services.md`.
+    /// exactly one adapter of the registry owns each name. See
+    /// `docs/language-services.md`.
     fn language_names(&self) -> &'static [&'static str] {
-        &[]
+        self.catalog().language_names()
     }
 
     /// Returns the comment tokens of the language.
     fn comment(&self) -> CommentStyle;
 
     /// Returns the Tree-sitter grammar and highlight query of the language.
-    fn grammar(&self) -> Grammar;
+    fn grammar(&self) -> Grammar {
+        self.catalog().grammar()
+    }
 
     /// Returns the indent rule of the language.
     fn indent_rule(&self) -> IndentRule;

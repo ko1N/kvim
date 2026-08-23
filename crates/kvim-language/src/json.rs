@@ -11,7 +11,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the JSON adapter owns.
@@ -107,41 +107,41 @@ impl JsonAdapter {
     }
 }
 
+/// The catalog entry of the json language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static JSON_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "json",
+    &JSON_LANGUAGE_NAMES,
+    &JSON_EXTENSIONS,
+    &JSON_FILE_NAMES,
+    json_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of json.
+fn json_grammar() -> Grammar {
+    Grammar {
+        language: json_language,
+        highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for JsonAdapter {
-    fn id(&self) -> &'static str {
-        "json"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &JSON_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &JSON_EXTENSIONS
-    }
-
-    fn file_names(&self) -> &'static [&'static str] {
-        &JSON_FILE_NAMES
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &JSON_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The JSON grammar accepts a comment, but the format defines none, so
         // kvim writes none.
         CommentStyle::none()
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "json",
-            language: json_language,
-            highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

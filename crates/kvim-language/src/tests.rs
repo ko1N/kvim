@@ -18,8 +18,8 @@ use super::{
     CommentStyle, FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX,
     FormattedDocument, FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest,
     Grammar, IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX,
-    LanguageAdapter, LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter, Publication,
-    RustAdapter, ServerFormatting, SyntaxRole, SyntaxTree,
+    LanguageAdapter, LanguageCatalogEntry, LanguageFormatter, LanguageRegistry, MarkdownAdapter,
+    NixAdapter, Publication, RustAdapter, ServerFormatting, SyntaxRole, SyntaxTree,
 };
 
 /// A second adapter that proves the multi-language seam.
@@ -30,25 +30,32 @@ use super::{
 #[derive(Clone, Copy, Debug)]
 struct SecondAdapter;
 
+/// The extensions of the second language.
+static SECOND_EXTENSIONS: [&str; 1] = ["kv"];
+
+/// The catalog entry of the second language.
+static SECOND_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("second", &[], &SECOND_EXTENSIONS, &[], second_grammar);
+
+/// Returns the grammar of the second language.
+///
+/// The language reuses the bundled Rust grammar, because this release adds no
+/// second grammar.
+fn second_grammar() -> Grammar {
+    RustAdapter::new().grammar()
+}
+
 impl LanguageAdapter for SecondAdapter {
-    fn id(&self) -> &'static str {
-        "second"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &SECOND_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["kv"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -547,6 +554,32 @@ fn every_registered_adapter_declares_a_valid_server_table() {
                 .count()
                 <= 1,
             "the {id} adapter names at most one server that formats its buffers",
+        );
+    }
+}
+
+#[test]
+fn every_registered_adapter_compiles_its_highlight_query_once() {
+    // The catalog entry owns the compiled query, so this sweep proves that
+    // every grammar of the build still compiles and that the entry keeps one
+    // value instead of compiling again for each analysis.
+    for adapter in LanguageRegistry::first_release().adapters() {
+        let entry = adapter.catalog();
+        let id = entry.id();
+        assert_eq!(
+            id,
+            adapter.id(),
+            "the {id} adapter and its catalog entry answer to one identifier",
+        );
+        let first = entry.highlight_configuration().unwrap_or_else(|error| {
+            panic!("the {id} grammar compiles its highlight query: {error}")
+        });
+        let second = entry
+            .highlight_configuration()
+            .expect("a compiled configuration stays available");
+        assert!(
+            std::ptr::eq(first, second),
+            "the {id} entry compiles its highlight query once and keeps that value",
         );
     }
 }

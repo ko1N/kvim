@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the C adapter owns.
@@ -110,36 +110,35 @@ impl CAdapter {
     }
 }
 
+/// The catalog entry of the c language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static C_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("c", &C_LANGUAGE_NAMES, &C_EXTENSIONS, &[], c_grammar);
+
+/// Returns the Tree-sitter grammar and the queries of c.
+fn c_grammar() -> Grammar {
+    Grammar {
+        language: c_language,
+        // The crate names the query in the singular.
+        highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for CAdapter {
-    fn id(&self) -> &'static str {
-        "c"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &C_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &C_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &C_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "c",
-            language: c_language,
-            // The crate names the query in the singular.
-            highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

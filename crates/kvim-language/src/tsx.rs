@@ -17,7 +17,7 @@ use tree_sitter::Language;
 use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the TSX adapter owns.
@@ -178,35 +178,39 @@ impl TsxAdapter {
     }
 }
 
+/// The catalog entry of the tsx language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static TSX_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "tsx",
+    &TSX_LANGUAGE_NAMES,
+    &TSX_EXTENSIONS,
+    &[],
+    tsx_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of tsx.
+fn tsx_grammar() -> Grammar {
+    Grammar {
+        language: tsx_language,
+        highlights_query: tsx_highlights_query(),
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for TsxAdapter {
-    fn id(&self) -> &'static str {
-        "tsx"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &TSX_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &TSX_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &TSX_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "tsx",
-            language: tsx_language,
-            highlights_query: tsx_highlights_query(),
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

@@ -17,7 +17,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Terraform adapter owns.
@@ -118,37 +118,41 @@ impl TerraformAdapter {
     }
 }
 
+/// The catalog entry of the terraform language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static TERRAFORM_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "terraform",
+    &TERRAFORM_LANGUAGE_NAMES,
+    &TERRAFORM_EXTENSIONS,
+    &[],
+    terraform_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of terraform.
+fn terraform_grammar() -> Grammar {
+    Grammar {
+        language: terraform_language,
+        highlights_query: TERRAFORM_HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for TerraformAdapter {
-    fn id(&self) -> &'static str {
-        "terraform"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &TERRAFORM_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &TERRAFORM_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &TERRAFORM_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The language reads `#` and `//` as a line comment. `tofu fmt` writes
         // `#`, so the adapter names that token.
         CommentStyle::new(Some("#"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "terraform",
-            language: terraform_language,
-            highlights_query: TERRAFORM_HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

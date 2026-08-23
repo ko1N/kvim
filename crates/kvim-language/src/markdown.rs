@@ -11,7 +11,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Markdown adapter owns.
@@ -92,37 +92,41 @@ impl MarkdownAdapter {
     }
 }
 
+/// The catalog entry of the markdown language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static MARKDOWN_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "markdown",
+    &MARKDOWN_LANGUAGE_NAMES,
+    &MARKDOWN_EXTENSIONS,
+    &[],
+    markdown_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of markdown.
+fn markdown_grammar() -> Grammar {
+    Grammar {
+        language: markdown_language,
+        highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for MarkdownAdapter {
-    fn id(&self) -> &'static str {
-        "markdown"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &MARKDOWN_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &MARKDOWN_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &MARKDOWN_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // Markdown defines no comment of its own. An HTML comment is HTML, and
         // the block toggle is deferred, so the adapter carries no token.
         CommentStyle::none()
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "markdown",
-            language: markdown_language,
-            highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

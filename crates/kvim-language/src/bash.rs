@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Bash adapter owns.
@@ -129,42 +129,42 @@ impl BashAdapter {
     }
 }
 
+/// The catalog entry of the bash language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static BASH_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "bash",
+    &BASH_LANGUAGE_NAMES,
+    &BASH_EXTENSIONS,
+    &BASH_FILE_NAMES,
+    bash_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of bash.
+fn bash_grammar() -> Grammar {
+    Grammar {
+        language: bash_language,
+        // The crate names the query in the singular.
+        highlights_query: tree_sitter_bash::HIGHLIGHT_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for BashAdapter {
-    fn id(&self) -> &'static str {
-        "bash"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &BASH_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &BASH_EXTENSIONS
-    }
-
-    fn file_names(&self) -> &'static [&'static str] {
-        &BASH_FILE_NAMES
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &BASH_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The shell defines no block comment, so the metadata carries the line
         // token alone.
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "bash",
-            language: bash_language,
-            // The crate names the query in the singular.
-            highlights_query: tree_sitter_bash::HIGHLIGHT_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

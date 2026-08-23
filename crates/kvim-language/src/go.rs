@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the Go adapter owns.
@@ -115,35 +115,34 @@ impl GoAdapter {
     }
 }
 
+/// The catalog entry of the go language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static GO_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("go", &GO_LANGUAGE_NAMES, &GO_EXTENSIONS, &[], go_grammar);
+
+/// Returns the Tree-sitter grammar and the queries of go.
+fn go_grammar() -> Grammar {
+    Grammar {
+        language: go_language,
+        highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for GoAdapter {
-    fn id(&self) -> &'static str {
-        "go"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &GO_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &GO_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &GO_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "go",
-            language: go_language,
-            highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

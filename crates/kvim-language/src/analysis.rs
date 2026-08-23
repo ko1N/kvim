@@ -6,28 +6,16 @@
 //! [`IndentRule`](super::IndentRule) that one adapter supplies as data. A new
 //! language therefore needs one new adapter, and no change here.
 
-use std::sync::Mutex;
-
 use tokio_util::sync::CancellationToken;
 use tree_sitter::{Node, ParseOptions, ParseState, Parser, Tree};
-use tree_sitter_highlight::{
-    Error as HighlightError, HighlightConfiguration, HighlightEvent, Highlighter,
-};
+use tree_sitter_highlight::{Error as HighlightError, HighlightEvent, Highlighter};
 
+use super::LanguageAdapter;
 use super::{
     ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_NODES_MAX, Analysis, AnalysisError,
-    AnalysisInput, BoundMeasure, Grammar, HighlightSpan, IndentLevel, IndentRule, LanguageAdapter,
-    SyntaxRole, analysis, enforce_count, previous_tree, validate_source,
+    AnalysisInput, BoundMeasure, Grammar, HighlightSpan, IndentLevel, IndentRule,
+    LanguageCatalogEntry, SyntaxRole, analysis, enforce_count, previous_tree, validate_source,
 };
-
-/// The compiled highlight configuration of each grammar that ran once.
-///
-/// Compiling one highlight query costs more than one parse, and the result is
-/// immutable after setup, so every analysis of one language shares one value.
-/// The table holds at most one entry for each registered adapter, so the
-/// retained memory stays bounded by the registry.
-static CONFIGURATIONS: Mutex<Vec<(&'static str, &'static HighlightConfiguration)>> =
-    Mutex::new(Vec::new());
 
 /// Parses one buffer version and collects its bounded highlight spans.
 ///
@@ -47,8 +35,8 @@ where
         return Err(AnalysisError::Cancelled);
     }
 
-    let grammar = adapter.grammar();
-    let tree = parse(grammar, source, previous_tree(input), cancellation)?;
+    let entry = adapter.catalog();
+    let tree = parse(entry.grammar(), source, previous_tree(input), cancellation)?;
     if cancellation.is_cancelled() {
         return Err(AnalysisError::Cancelled);
     }
@@ -58,8 +46,7 @@ where
         BoundMeasure::Nodes,
     )?;
 
-    let highlights =
-        collect_highlights(grammar, source, ANALYSIS_HIGHLIGHT_SPANS_MAX, cancellation)?;
+    let highlights = collect_highlights(entry, source, ANALYSIS_HIGHLIGHT_SPANS_MAX, cancellation)?;
     Ok(analysis(input, tree, highlights, adapter.indent_rule()))
 }
 
@@ -94,68 +81,6 @@ fn parse(
         })
 }
 
-/// Returns the shared highlight configuration of one grammar.
-fn highlight_configuration(
-    grammar: Grammar,
-) -> Result<&'static HighlightConfiguration, AnalysisError> {
-    let mut cache = CONFIGURATIONS
-        .lock()
-        .expect("the cache mutex guards only local vector operations that cannot panic");
-    if let Some((_, configuration)) = cache.iter().find(|(name, _)| *name == grammar.name) {
-        return Ok(configuration);
-    }
-
-    let mut configuration = HighlightConfiguration::new(
-        (grammar.language)(),
-        grammar.name,
-        grammar.highlights_query,
-        grammar.injections_query,
-        grammar.locals_query,
-    )
-    .map_err(|_| AnalysisError::ParserSetup)?;
-    disable_captures_without_a_role(&mut configuration);
-    // The identity mapping keeps every capture name, so the role lookup reads
-    // the name that the query of the grammar defines.
-    let names: Vec<String> = configuration
-        .names()
-        .iter()
-        .map(|name| (*name).to_owned())
-        .collect();
-    configuration.configure(&names);
-    let shared: &'static HighlightConfiguration = Box::leak(Box::new(configuration));
-    cache.push((grammar.name, shared));
-    Ok(shared)
-}
-
-/// Turns off every capture of one query that carries no role.
-///
-/// The highlighter keeps the last capture of one node and reads the role of
-/// that capture alone. Several grammars mark one node twice, for example
-/// `(comment) @comment @spell`, where the second name is a decoration marker of
-/// another editor. The marker would take the place of the role and leave the
-/// node plain, so the configuration turns every such capture off. A turned-off
-/// capture never reaches a match, and the capture indices keep their order.
-///
-/// The function keeps the injection and the local captures, because the
-/// highlighter reads those names itself and never asks for their role.
-fn disable_captures_without_a_role(configuration: &mut HighlightConfiguration) {
-    let disabled: Vec<String> = configuration
-        .query
-        .capture_names()
-        .iter()
-        .filter(|name| {
-            let owner = name.split('.').next().unwrap_or(name);
-            !matches!(owner, "injection" | "local")
-                && highlight_role(name, &[]).is_none()
-                && !name.is_empty()
-        })
-        .map(|name| (*name).to_owned())
-        .collect();
-    for name in &disabled {
-        configuration.query.disable_capture(name);
-    }
-}
-
 /// Collects the bounded highlight spans of one source.
 ///
 /// The highlighter reports one flat, ordered sequence of ranges with an active
@@ -167,12 +92,12 @@ fn disable_captures_without_a_role(configuration: &mut HighlightConfiguration) {
 /// stands. `spans_max` names the bound of the caller, because a buffer and a
 /// fence hold a different quantity of text.
 pub(super) fn collect_highlights(
-    grammar: Grammar,
+    entry: &LanguageCatalogEntry,
     source: &str,
     spans_max: usize,
     cancellation: &CancellationToken,
 ) -> Result<Vec<HighlightSpan>, AnalysisError> {
-    let configuration = highlight_configuration(grammar)?;
+    let configuration = entry.highlight_configuration()?;
     let names = configuration.names();
     let bytes = source.as_bytes();
     let mut highlighter = Highlighter::new();
@@ -222,7 +147,7 @@ pub(super) fn collect_highlights(
 /// so the mapping stays language-neutral. The first component of a dotted name
 /// carries the meaning. A constant that starts with a digit is a numeric
 /// literal, which several queries capture as a constant.
-fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
+pub(super) fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
     let mut parts = name.split('.');
     let prefix = parts.next()?;
     match prefix {
