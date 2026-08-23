@@ -2,18 +2,23 @@
 //!
 //! The editor never runs `git` itself. [`GitStatusRequest::command`] builds one
 //! [`ProcessRequest`], the bounded process service runs it, and
-//! [`GitStatusRequest::publish`] turns the captured output into one
-//! [`GitStatusSnapshot`]. [`GitStatusSnapshot::parse`] is pure and defensive: a
-//! malformed record is dropped, never a panic.
+//! [`GitStatusRequest::publish`] turns the captured output into the next step of
+//! the read. One read takes two commands: the first names the place of the
+//! worktree root inside its repository, and the second collects the status
+//! records. The record parser is pure and defensive: a malformed record is
+//! dropped, never a panic.
 //!
 //! This module reads the repository and never writes it. No function here
 //! stages, unstages, reverts, or discards anything. See `docs/git.md`.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::path::{Component, Path, PathBuf};
 use std::str;
+use std::sync::Arc;
 use std::time::Duration;
 
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest};
 
 /// The external command that reads the repository state.
@@ -28,21 +33,107 @@ pub const GIT_STATUS_ENTRIES_MAX: usize = 4096;
 /// The largest output that one status read captures, in bytes.
 pub const GIT_STATUS_OUTPUT_BYTES_MAX: usize = 1024 * 1024;
 
+/// The largest output that the prefix read of one status captures, in bytes.
+///
+/// The answer is one path below the top level of the repository, so the bound
+/// follows the path bound of one worktree entry.
+pub const GIT_PREFIX_OUTPUT_BYTES_MAX: usize = 8 * 1024;
+
 /// The deadline of one status read.
 pub const GIT_STATUS_DEADLINE: Duration = Duration::from_secs(5);
 
 /// The largest number of directory levels that one bounded path walk inspects.
 ///
-/// The search for the repository, the roll-up onto the directories above one
-/// entry, and the lookup of an inherited state all stop here, so no malformed
-/// path can cost unbounded time.
+/// The roll-up onto the directories above one entry and the lookup of an
+/// inherited state both stop here, so no malformed path can cost unbounded
+/// time.
 pub const GIT_PATH_DEPTH_MAX: usize = 64;
 
-/// The entry that marks the top level of one repository.
+/// The configuration that every Git command of kvim overrides.
 ///
-/// The entry is a directory in an ordinary clone and a file inside a linked
-/// worktree or a submodule, so the search only asks whether it exists.
-const REPOSITORY_MARKER: &str = ".git";
+/// Command-line configuration outranks the repository and the host, so no
+/// checkout can make one read start another program. `/dev/null` is a file
+/// rather than a directory, so Git finds no hook below it, and a host without
+/// that name finds no hook either.
+const POLICY_CONFIGURATION: [&str; 14] = [
+    "-c",
+    "core.fsmonitor=false",
+    "-c",
+    "core.hooksPath=/dev/null",
+    "-c",
+    "core.askPass=",
+    "-c",
+    "core.pager=cat",
+    "-c",
+    "credential.helper=",
+    "-c",
+    "diff.external=",
+    "-c",
+    "gc.auto=0",
+];
+
+/// The variables that no Git command of kvim inherits.
+///
+/// Each name either redirects the read to another repository, another index, or
+/// another configuration file, or names a program that Git would start.
+const DROPPED_VARIABLES: [&str; 22] = [
+    "EDITOR",
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_ASKPASS",
+    "GIT_CEILING_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_CONFIG",
+    "GIT_CONFIG_COUNT",
+    "GIT_CONFIG_GLOBAL",
+    "GIT_CONFIG_SYSTEM",
+    "GIT_DIR",
+    "GIT_EDITOR",
+    "GIT_EXTERNAL_DIFF",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_PAGER",
+    "GIT_PROXY_COMMAND",
+    "GIT_SEQUENCE_EDITOR",
+    "GIT_SSH",
+    "GIT_SSH_COMMAND",
+    "GIT_WORK_TREE",
+    "PAGER",
+];
+
+/// The variables that every Git command of kvim sets explicitly.
+const CHILD_VARIABLES: [(&str, &str); 3] = [
+    // The host configuration cannot name an external program for the read.
+    ("GIT_CONFIG_NOSYSTEM", "1"),
+    // The read gives up every optional lock, so it writes nothing.
+    ("GIT_OPTIONAL_LOCKS", "0"),
+    // A read that would ask the user fails instead of blocking the service.
+    ("GIT_TERMINAL_PROMPT", "0"),
+];
+
+/// The arguments of the bounded status read.
+const STATUS_ARGUMENTS: [&str; 7] = [
+    "status",
+    "--porcelain=v2",
+    // The records are NUL separated, so a name that holds a space, a quote, or
+    // a line break still names one entry.
+    "-z",
+    // The traditional mode names one ignored directory instead of every file
+    // below it, so a large build directory costs one record.
+    "--ignored=traditional",
+    // The mode is explicit, because the ignored mode above collapses a
+    // directory only while the untracked mode collapses one too.
+    "--untracked-files=normal",
+    // The pathspec follows the separator, so a workspace root that starts with
+    // a hyphen stays a path.
+    "--",
+    // The pathspec keeps the report inside the workspace root, which may sit
+    // below the top level of the repository.
+    ".",
+];
+
+/// The arguments that name the place of the worktree root in its repository.
+const PREFIX_ARGUMENTS: [&str; 2] = ["rev-parse", "--show-prefix"];
 
 /// The character that `git status --porcelain=v2` writes for an unchanged half
 /// of one two-character state field.
@@ -162,108 +253,231 @@ pub enum GitStatusFailure {
     Unavailable,
 }
 
-/// One bounded read of the repository state of one workspace root.
+/// The process policy of every Git read.
+///
+/// The policy builds one command without a shell. It gives the canonical
+/// worktree root to the child as its explicit working directory, and it neither
+/// reads nor changes the current directory of this process. It also disables
+/// every repository and host setting that could start another program. See
+/// `docs/git.md`.
 ///
 /// # Examples
 ///
 /// ```
-/// use std::path::Path;
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::sync::Arc;
 ///
+/// use kvim_path::WorktreeRoot;
+/// use kvim_workspace::{GIT_PROGRAM, GitExecutionPolicy};
+///
+/// let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
+/// let policy = GitExecutionPolicy::new(Arc::clone(&root));
+/// let command = policy.command(&["rev-parse", "--show-prefix"]);
+///
+/// assert_eq!(command.program, GIT_PROGRAM);
+/// assert_eq!(command.current_dir.as_deref(), Some(root.as_path()));
+/// # Ok(())
+/// # }
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GitExecutionPolicy {
+    root: Arc<WorktreeRoot>,
+}
+
+impl GitExecutionPolicy {
+    /// Creates the policy of one canonical worktree root.
+    #[must_use]
+    pub fn new(root: Arc<WorktreeRoot>) -> Self {
+        Self { root }
+    }
+
+    /// Returns the canonical worktree root that every command reads.
+    #[must_use]
+    pub fn root(&self) -> &WorktreeRoot {
+        &self.root
+    }
+
+    /// Returns the shared owner of the canonical worktree root.
+    #[must_use]
+    pub fn root_handle(&self) -> Arc<WorktreeRoot> {
+        Arc::clone(&self.root)
+    }
+
+    /// Returns one bounded Git command that carries the complete policy.
+    ///
+    /// The caller supplies the subcommand and its arguments. The policy writes
+    /// every option that keeps the read free of locks, pagers, prompts,
+    /// external programs, and inherited redirection.
+    ///
+    /// The default output bound and deadline of the process service apply. A
+    /// caller that needs another bound sets it on the returned request.
+    #[must_use]
+    pub fn command(&self, arguments: &[&str]) -> ProcessRequest {
+        let mut request = ProcessRequest::new(GIT_PROGRAM);
+        let mut args = Vec::with_capacity(3 + POLICY_CONFIGURATION.len() + arguments.len());
+        // The read must change nothing, so it refreshes no index cache, and it
+        // writes to no terminal that a pager would own.
+        args.push(OsString::from("--no-pager"));
+        args.push(OsString::from("--no-optional-locks"));
+        // A pathspec is a literal path, never a magic expression.
+        args.push(OsString::from("--literal-pathspecs"));
+        args.extend(POLICY_CONFIGURATION.iter().map(OsString::from));
+        args.extend(arguments.iter().map(OsString::from));
+        request.args = args;
+        request.current_dir = Some(self.root.as_path().to_path_buf());
+        request.dropped_variables = DROPPED_VARIABLES.iter().map(OsString::from).collect();
+        request.child_variables = CHILD_VARIABLES
+            .iter()
+            .map(|(name, value)| (OsString::from(name), OsString::from(value)))
+            .collect();
+        request
+    }
+}
+
+/// The place of one worktree root inside its repository.
+///
+/// `git status --porcelain=v2 -z` names every path against the top level of the
+/// repository, and that top level can sit above the worktree root. The prefix
+/// is the path from the top level down to the root, so the publication can
+/// subtract it and keep only contained relative paths. Git reports it, so kvim
+/// inspects no directory above its own root.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+struct RepositoryPrefix(PathBuf);
+
+impl RepositoryPrefix {
+    /// Returns the prefix that `git rev-parse --show-prefix` reported.
+    ///
+    /// A root that is the top level of its repository reports an empty prefix.
+    /// A reported path of any other shape than ordinary components is
+    /// malformed, so the read produces no snapshot.
+    fn parse(stdout: &[u8]) -> Option<Self> {
+        let reported = str::from_utf8(stdout)
+            .ok()?
+            .trim_end_matches(['\n', '\r'])
+            .trim_end_matches(DIRECTORY_SUFFIX);
+        if reported.is_empty() {
+            return Some(Self::default());
+        }
+        let path = Path::new(reported);
+        path.components()
+            .all(|component| matches!(component, Component::Normal(_)))
+            .then(|| Self(path.to_path_buf()))
+    }
+
+    /// Returns the prefix as a path of ordinary components.
+    fn as_path(&self) -> &Path {
+        &self.0
+    }
+}
+
+/// The stage that one bounded status read runs next.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum GitStatusStage {
+    /// Ask Git where the worktree root sits inside its repository.
+    Prefix,
+    /// Read the status records against the known prefix.
+    Records(RepositoryPrefix),
+}
+
+/// The next step of one bounded status read.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GitStatusRead {
+    /// The read needs one further command before it can publish.
+    Pending(GitStatusRequest),
+    /// The read finished and produced one snapshot.
+    Published(GitStatusSnapshot),
+}
+
+/// One bounded read of the repository state of one workspace root.
+///
+/// The read takes two commands. The first learns the place of the root inside
+/// its repository. The second collects the status records. The caller submits
+/// the command of [`GitStatusRequest::command`] and hands the captured output
+/// back to [`GitStatusRequest::publish`] until the read publishes a snapshot.
+///
+/// # Examples
+///
+/// ```
+/// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// use std::sync::Arc;
+///
+/// use kvim_path::WorktreeRoot;
 /// use kvim_workspace::{GIT_PROGRAM, GitStatusRequest};
 ///
-/// let request = GitStatusRequest::new(Path::new("/workspace").to_path_buf());
+/// let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
+/// let request = GitStatusRequest::new(Arc::clone(&root));
 /// let command = request.command();
+///
 /// assert_eq!(command.program, GIT_PROGRAM);
-/// assert_eq!(command.current_dir.as_deref(), Some(Path::new("/workspace")));
+/// assert_eq!(command.current_dir.as_deref(), Some(root.as_path()));
+/// # Ok(())
+/// # }
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitStatusRequest {
-    root: PathBuf,
+    policy: GitExecutionPolicy,
+    stage: GitStatusStage,
 }
 
 impl GitStatusRequest {
-    /// Creates one request over a workspace root.
+    /// Creates one request over a canonical workspace root.
     #[must_use]
-    pub fn new(root: PathBuf) -> Self {
-        Self { root }
+    pub fn new(root: Arc<WorktreeRoot>) -> Self {
+        Self {
+            policy: GitExecutionPolicy::new(root),
+            stage: GitStatusStage::Prefix,
+        }
     }
 
     /// Returns the workspace root that this request reads.
     #[must_use]
-    pub fn root(&self) -> &Path {
-        &self.root
+    pub fn root(&self) -> &WorktreeRoot {
+        self.policy.root()
     }
 
-    /// Returns the bounded command of one status read.
-    ///
-    /// The command gives up every optional lock, so it never writes the
-    /// repository. The pathspec keeps the report inside the workspace root,
-    /// which may sit below the top level of the repository.
+    /// Returns the bounded command of the current stage.
     #[must_use]
     pub fn command(&self) -> ProcessRequest {
-        let mut request = ProcessRequest::new(GIT_PROGRAM);
-        request.args = vec![
-            // The read must change nothing, so it refreshes no index cache.
-            "--no-optional-locks".into(),
-            "status".into(),
-            "--porcelain=v2".into(),
-            // The records are NUL separated, so a name that holds a space, a
-            // quote, or a line break still names one entry.
-            "-z".into(),
-            // The traditional mode names one ignored directory instead of every
-            // file below it, so a large build directory costs one record.
-            "--ignored=traditional".into(),
-            // The mode is explicit, because the ignored mode above collapses a
-            // directory only while the untracked mode collapses one too.
-            "--untracked-files=normal".into(),
-            // The pathspec follows the separator, so a workspace root that
-            // starts with a hyphen stays a path.
-            "--".into(),
-            ".".into(),
-        ];
-        request.current_dir = Some(self.root.clone());
-        request.output_bytes_max = GIT_STATUS_OUTPUT_BYTES_MAX;
+        let (arguments, output_bytes_max): (&[&str], usize) = match self.stage {
+            GitStatusStage::Prefix => (&PREFIX_ARGUMENTS, GIT_PREFIX_OUTPUT_BYTES_MAX),
+            GitStatusStage::Records(_) => (&STATUS_ARGUMENTS, GIT_STATUS_OUTPUT_BYTES_MAX),
+        };
+        let mut request = self.policy.command(arguments);
+        request.output_bytes_max = output_bytes_max;
         request.deadline = GIT_STATUS_DEADLINE;
         request
     }
 
-    /// Turns the captured output of one status read into one snapshot.
+    /// Turns the captured output of the current stage into the next step.
     ///
     /// The call runs on the bounded process service, never on the terminal
-    /// event loop, because it locates the repository that holds the workspace
-    /// root with a bounded search for the [`REPOSITORY_MARKER`] entry. Git
-    /// reports every path against the top level of the repository, so the
-    /// snapshot cannot resolve one record without that directory.
+    /// event loop.
     ///
     /// # Errors
     ///
-    /// Returns [`GitStatusFailure::Unavailable`] when Git refused the request
-    /// and when the workspace root sits inside no repository.
-    pub fn publish(&self, output: &ProcessOutput) -> Result<GitStatusSnapshot, GitStatusFailure> {
+    /// Returns [`GitStatusFailure::Unavailable`] when Git refused the command,
+    /// which includes a root that sits inside no repository, and when the
+    /// reported prefix is malformed.
+    pub fn publish(self, output: &ProcessOutput) -> Result<GitStatusRead, GitStatusFailure> {
         // Git reports every refusal, including a directory outside a
         // repository, through its exit code. No branch reads its message text.
         if output.status_code != Some(0) {
             return Err(GitStatusFailure::Unavailable);
         }
-        let top_level = repository_root(&self.root).ok_or(GitStatusFailure::Unavailable)?;
-        Ok(GitStatusSnapshot::parse(
-            &self.root,
-            &top_level,
-            &output.stdout,
-        ))
+        match self.stage {
+            GitStatusStage::Prefix => {
+                let prefix =
+                    RepositoryPrefix::parse(&output.stdout).ok_or(GitStatusFailure::Unavailable)?;
+                Ok(GitStatusRead::Pending(Self {
+                    policy: self.policy,
+                    stage: GitStatusStage::Records(prefix),
+                }))
+            }
+            GitStatusStage::Records(prefix) => Ok(GitStatusRead::Published(
+                GitStatusSnapshot::parse(self.policy.root_handle(), &prefix, &output.stdout),
+            )),
+        }
     }
-}
-
-/// Returns the top level of the repository that holds one directory.
-///
-/// The search inspects at most [`GIT_PATH_DEPTH_MAX`] directories above the
-/// start, so a very deep path costs bounded time.
-fn repository_root(start: &Path) -> Option<PathBuf> {
-    start
-        .ancestors()
-        .take(GIT_PATH_DEPTH_MAX)
-        .find(|directory| directory.join(REPOSITORY_MARKER).exists())
-        .map(Path::to_path_buf)
 }
 
 /// The published Git state of every entry below one workspace root.
@@ -272,28 +486,17 @@ fn repository_root(start: &Path) -> Option<PathBuf> {
 /// collapsed directory record covers, and the state that rolls up onto the
 /// directories above a changed entry. It performs no filesystem work.
 ///
-/// # Examples
-///
-/// ```
-/// use std::path::Path;
-///
-/// use kvim_workspace::{GitStatus, GitStatusSnapshot};
-///
-/// let root = Path::new("/workspace");
-/// let output = b"1 .M N... 100644 100644 100644 aa bb src/main.rs\0! target/\0";
-/// let snapshot = GitStatusSnapshot::parse(root, root, output);
-///
-/// assert_eq!(snapshot.state(&root.join("src/main.rs")), Some(GitStatus::Modified));
-/// // The directory above one changed entry carries its state.
-/// assert_eq!(snapshot.state(&root.join("src")), Some(GitStatus::Modified));
-/// // One ignored directory record covers every entry below it.
-/// assert_eq!(snapshot.state(&root.join("target/debug")), Some(GitStatus::Ignored));
-/// ```
+/// Every published path is a validated [`WorktreeRelativePath`] of the root, so
+/// no state of an entry above or beside the workspace root can reach the
+/// editor. See `docs/git.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GitStatusSnapshot {
     /// The workspace root that the snapshot describes.
-    root: PathBuf,
+    root: Arc<WorktreeRoot>,
     /// The state of one exact path, including every rolled-up directory.
+    ///
+    /// Every key is a contained relative path. The workspace root itself takes
+    /// no key, because the sidebar marks entries and not its own header.
     entries: BTreeMap<PathBuf, GitStatus>,
     /// The state that one collapsed directory record covers below itself.
     subtrees: BTreeMap<PathBuf, GitStatus>,
@@ -302,18 +505,18 @@ pub struct GitStatusSnapshot {
 impl GitStatusSnapshot {
     /// Builds one snapshot from the captured output of `git status`.
     ///
-    /// `top_level` is the top level of the repository, because Git reports
-    /// every path against that directory. `root` is the workspace root, and the
-    /// snapshot drops every record outside it.
+    /// `prefix` is the place of the workspace root inside its repository,
+    /// because Git reports every path against the top level of that
+    /// repository. The snapshot drops every record outside the root.
     ///
     /// The parser drops every record that names no known type, every record
     /// that holds too few fields, every record whose path leaves the workspace
     /// root, and the last record when the output bound stopped inside it. It
     /// keeps at most [`GIT_STATUS_ENTRIES_MAX`] records.
     #[must_use]
-    pub fn parse(root: &Path, top_level: &Path, stdout: &[u8]) -> Self {
+    fn parse(root: Arc<WorktreeRoot>, prefix: &RepositoryPrefix, stdout: &[u8]) -> Self {
         let mut snapshot = Self {
-            root: root.to_path_buf(),
+            root,
             entries: BTreeMap::new(),
             subtrees: BTreeMap::new(),
         };
@@ -336,21 +539,18 @@ impl GitStatusSnapshot {
             let Some(record) = parse_record(record) else {
                 continue;
             };
-            let Some(path) = absolute_path(top_level, record.path) else {
+            let Some(path) = contained_path(prefix, record.path) else {
                 continue;
             };
-            if !path.starts_with(root) {
-                continue;
-            }
             kept += 1;
-            snapshot.insert(&path, record.status, record.reach);
+            snapshot.insert(path.as_path(), record.status, record.reach);
         }
         snapshot
     }
 
     /// Returns the workspace root that the snapshot describes.
     #[must_use]
-    pub fn root(&self) -> &Path {
+    pub fn root(&self) -> &WorktreeRoot {
         &self.root
     }
 
@@ -360,18 +560,23 @@ impl GitStatusSnapshot {
     /// collapsed directory record above it, so an entry inside an ignored or an
     /// untracked directory reports the state of that directory.
     #[must_use]
-    pub fn state(&self, path: &Path) -> Option<GitStatus> {
+    pub fn state(&self, path: &WorktreeRelativePath) -> Option<GitStatus> {
+        let path = path.as_path();
         if let Some(state) = self.entries.get(path) {
             return Some(*state);
         }
         path.ancestors()
             .take(GIT_PATH_DEPTH_MAX)
-            .take_while(|ancestor| ancestor.starts_with(&self.root))
+            .take_while(|ancestor| !ancestor.as_os_str().is_empty())
             .find_map(|ancestor| self.subtrees.get(ancestor).copied())
     }
 
     /// Records one parsed entry and rolls its state up onto its directories.
     fn insert(&mut self, path: &Path, status: GitStatus, reach: Reach) {
+        debug_assert!(
+            !path.as_os_str().is_empty(),
+            "contained_path rejects a record that names the workspace root"
+        );
         match reach {
             Reach::Entry => merge(&mut self.entries, path, status),
             Reach::Subtree => merge(&mut self.subtrees, path, status),
@@ -383,7 +588,7 @@ impl GitStatusSnapshot {
             .ancestors()
             .skip(1)
             .take(GIT_PATH_DEPTH_MAX)
-            .take_while(|ancestor| ancestor.starts_with(&self.root))
+            .take_while(|ancestor| !ancestor.as_os_str().is_empty())
         {
             merge(&mut self.entries, ancestor, status);
         }
@@ -398,21 +603,23 @@ fn merge(states: &mut BTreeMap<PathBuf, GitStatus>, path: &Path, status: GitStat
         .or_insert(status);
 }
 
-/// Returns the absolute path of one reported record, or `None` when the record
-/// names a path that leaves the repository.
+/// Returns the contained path of one reported record.
 ///
-/// Git writes every path as a relative path of ordinary components. A record
-/// that holds a root component or a parent step is malformed, and resolving it
-/// would name an entry outside the repository.
-fn absolute_path(top_level: &Path, reported: &str) -> Option<PathBuf> {
-    let relative = Path::new(reported.trim_end_matches(DIRECTORY_SUFFIX));
-    if relative.as_os_str().is_empty() {
-        return None;
-    }
-    let ordinary = relative
+/// Git writes every path against the top level of the repository, as a relative
+/// path of ordinary components. A record that holds a root component or a
+/// parent step is malformed, and a record that does not start with the prefix
+/// names an entry outside the workspace root. Both return `None`, and so does
+/// a record that names the workspace root itself.
+fn contained_path(prefix: &RepositoryPrefix, reported: &str) -> Option<WorktreeRelativePath> {
+    let reported = Path::new(reported.trim_end_matches(DIRECTORY_SUFFIX));
+    let ordinary = reported
         .components()
         .all(|component| matches!(component, Component::Normal(_)));
-    ordinary.then(|| top_level.join(relative))
+    if !ordinary {
+        return None;
+    }
+    let contained = reported.strip_prefix(prefix.as_path()).ok()?;
+    WorktreeRelativePath::new(contained).ok()
 }
 
 /// How far the state of one record reaches.
@@ -505,18 +712,44 @@ fn tracked_status(field: &str) -> Option<GitStatus> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use std::path::Path;
+    use std::sync::Arc;
 
+    use kvim_path::{WorktreeRelativePath, WorktreeRoot};
     use kvim_runtime::{
-        ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeLimits, SubmitError,
+        ProcessOutput, ProcessRequest, PublicationGate, RequestSlot, Runtime, RuntimeLimits,
+        SubmitError,
     };
 
     use crate::temp::{TempDir, TempRepository};
 
     use super::{
         GIT_STATUS_DEADLINE, GIT_STATUS_ENTRIES_MAX, GIT_STATUS_OUTPUT_BYTES_MAX, GitStatus,
-        GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
+        GitStatusFailure, GitStatusRead, GitStatusRequest, GitStatusSnapshot, RepositoryPrefix,
     };
+
+    /// The number of commands that one complete status read runs.
+    const READ_COMMANDS: usize = 2;
+
+    /// Runs one bounded command through the process service of the editor.
+    async fn run(command: ProcessRequest) -> ProcessOutput {
+        let limits = RuntimeLimits::new(1, 1, 1).expect("every capacity is nonzero");
+        let (runtime, mut events) = Runtime::<ProcessOutput>::with_limits(limits);
+        let handle =
+            PublicationGate::default().begin(RequestSlot::new(1), &runtime.cancellation_root());
+        let submitted: Result<(), SubmitError> =
+            runtime.submit_process(handle, command, |output| output);
+        submitted.expect("the isolated runtime holds one free permit");
+        let event = events
+            .recv()
+            .await
+            .expect("every accepted request produces one result");
+        let output = event
+            .result
+            .expect("the development shell and the build sandbox both provide git");
+        runtime.shutdown().await;
+        output
+    }
 
     /// Reads the status of one workspace root through the bounded process
     /// service, exactly as the terminal event loop does.
@@ -524,46 +757,51 @@ mod tests {
     /// The call runs the real `git` command, so it proves the flags of
     /// [`GitStatusRequest::command`]. A recorded output can never prove them.
     fn read_status(root: &Path) -> Result<GitStatusSnapshot, GitStatusFailure> {
-        let request = GitStatusRequest::new(root.to_path_buf());
-        let command = request.command();
-        let limits = RuntimeLimits::new(1, 1, 1).expect("every capacity is nonzero");
+        let root = Arc::new(WorktreeRoot::open(root).expect("the fixture root is one directory"));
         let tokio = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(1)
             .enable_all()
             .build()
             .expect("the test host starts one Tokio runtime");
         tokio.block_on(async move {
-            let (runtime, mut events) = Runtime::<ProcessOutput>::with_limits(limits);
-            let handle =
-                PublicationGate::default().begin(RequestSlot::new(1), &runtime.cancellation_root());
-            let submitted: Result<(), SubmitError> =
-                runtime.submit_process(handle, command, |output| output);
-            submitted.expect("the isolated runtime holds one free permit");
-            let event = events
-                .recv()
-                .await
-                .expect("every accepted request produces one result");
-            let output = event
-                .result
-                .expect("the development shell and the build sandbox both provide git");
-            runtime.shutdown().await;
-            request.publish(&output)
+            let mut request = GitStatusRequest::new(root);
+            for _ in 0..READ_COMMANDS {
+                let output = run(request.command()).await;
+                match request.publish(&output)? {
+                    GitStatusRead::Pending(next) => request = next,
+                    GitStatusRead::Published(snapshot) => return Ok(snapshot),
+                }
+            }
+            unreachable!("one status read publishes after {READ_COMMANDS} commands");
         })
     }
 
     /// The workspace root of every parser test.
-    fn root() -> PathBuf {
-        PathBuf::from("/workspace")
+    ///
+    /// The parser performs no filesystem work, so one capability over the
+    /// working directory of the test process names the root of every snapshot.
+    fn root() -> Arc<WorktreeRoot> {
+        Arc::new(
+            WorktreeRoot::open(
+                std::env::current_dir().expect("the test process holds a working directory"),
+            )
+            .expect("the working directory is one canonical root"),
+        )
+    }
+
+    /// Returns one validated contained path of the test root.
+    fn relative(path: &str) -> WorktreeRelativePath {
+        WorktreeRelativePath::new(path).expect("the fixture path is contained")
     }
 
     /// Builds one snapshot whose workspace root is the repository top level.
     fn snapshot(output: &str) -> GitStatusSnapshot {
-        GitStatusSnapshot::parse(&root(), &root(), output.as_bytes())
+        GitStatusSnapshot::parse(root(), &RepositoryPrefix::default(), output.as_bytes())
     }
 
     /// Returns the state of one path below the workspace root.
-    fn state(snapshot: &GitStatusSnapshot, relative: &str) -> Option<GitStatus> {
-        snapshot.state(&root().join(relative))
+    fn state(snapshot: &GitStatusSnapshot, path: &str) -> Option<GitStatus> {
+        snapshot.state(&relative(path))
     }
 
     /// One ordinary record, from the recorded output of `git status`.
@@ -652,9 +890,11 @@ mod tests {
     #[test]
     fn an_ignored_entry_never_reaches_the_directories_above_it() {
         // An ordinary repository ignores its build directory. That directory
-        // must not make the whole workspace read as ignored.
+        // must not make the whole workspace read as ignored, so no entry beside
+        // it inherits the state.
         let snapshot = snapshot("! target/\0");
-        assert_eq!(snapshot.state(&root()), None);
+        assert_eq!(state(&snapshot, "target"), Some(GitStatus::Ignored));
+        assert_eq!(state(&snapshot, "src/main.rs"), None);
     }
 
     #[test]
@@ -735,19 +975,37 @@ mod tests {
     #[test]
     fn a_record_outside_the_workspace_root_is_dropped() {
         // The workspace root may sit below the top level of the repository.
-        // Git reports every path against that top level.
-        let top_level = PathBuf::from("/repository");
-        let workspace = top_level.join("crates/kvim");
+        // Git reports every path against that top level, and the prefix names
+        // the place of the root inside it.
+        let prefix = RepositoryPrefix::parse(b"crates/kvim/\n").expect("the prefix is one path");
         let output = concat!(
             "1 .M N... 100644 100644 100644 aa bb crates/kvim/src/main.rs\0",
             "1 .M N... 100644 100644 100644 aa bb docs/other.md\0",
         );
-        let snapshot = GitStatusSnapshot::parse(&workspace, &top_level, output.as_bytes());
+        let snapshot = GitStatusSnapshot::parse(root(), &prefix, output.as_bytes());
         assert_eq!(
-            snapshot.state(&workspace.join("src/main.rs")),
+            snapshot.state(&relative("src/main.rs")),
             Some(GitStatus::Modified)
         );
-        assert_eq!(snapshot.state(&top_level.join("docs/other.md")), None);
+        assert_eq!(snapshot.state(&relative("docs/other.md")), None);
+    }
+
+    #[test]
+    fn a_root_that_is_its_own_top_level_reports_an_empty_prefix() {
+        assert_eq!(
+            RepositoryPrefix::parse(b"\n"),
+            Some(RepositoryPrefix::default())
+        );
+        assert_eq!(
+            RepositoryPrefix::parse(b""),
+            Some(RepositoryPrefix::default())
+        );
+    }
+
+    #[test]
+    fn a_prefix_that_leaves_the_repository_is_refused() {
+        assert_eq!(RepositoryPrefix::parse(b"../escape/\n"), None);
+        assert_eq!(RepositoryPrefix::parse(b"/absolute/\n"), None);
     }
 
     #[test]
@@ -764,37 +1022,79 @@ mod tests {
             args.contains(&"--no-optional-locks".to_owned()),
             "the read gives up every optional lock of the repository"
         );
+        assert!(
+            args.contains(&"core.hooksPath=/dev/null".to_owned()),
+            "the repository cannot start a hook during a read"
+        );
+        assert!(
+            args.contains(&"diff.external=".to_owned()),
+            "the repository cannot start an external diff program"
+        );
+        assert!(command.stdin.is_empty());
+        assert_eq!(command.current_dir.as_deref(), Some(root().as_path()));
+    }
+
+    #[test]
+    fn every_command_drops_the_inherited_helper_variables() {
+        let command = GitStatusRequest::new(root()).command();
+        let dropped: Vec<String> = command
+            .dropped_variables
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
+        // Each of these either redirects the read to another repository or
+        // names a program that Git would start.
+        for name in [
+            "GIT_DIR",
+            "GIT_EXTERNAL_DIFF",
+            "GIT_PAGER",
+            "GIT_SSH_COMMAND",
+        ] {
+            assert!(dropped.contains(&name.to_owned()), "{name} stays inherited");
+        }
+    }
+
+    #[test]
+    fn the_status_stage_carries_the_bounds_of_one_status_read() {
+        let request = GitStatusRequest::new(root());
+        let prefix = ProcessOutput {
+            status_code: Some(0),
+            stdout: b"\n".to_vec(),
+            stderr: Vec::new(),
+        };
+        let GitStatusRead::Pending(request) = request
+            .publish(&prefix)
+            .expect("the prefix command answered")
+        else {
+            panic!("the first stage never publishes one snapshot");
+        };
+        let command = request.command();
+        let args: Vec<String> = command
+            .args
+            .iter()
+            .map(|value| value.to_string_lossy().into_owned())
+            .collect();
         assert_eq!(
             args.last().map(String::as_str),
             Some("."),
             "the pathspec follows the separator, so a root cannot become a flag"
         );
-        assert!(command.stdin.is_empty());
         assert_eq!(command.output_bytes_max, GIT_STATUS_OUTPUT_BYTES_MAX);
         assert_eq!(command.deadline, GIT_STATUS_DEADLINE);
     }
 
     #[test]
-    fn a_root_without_a_repository_marker_reports_no_status() {
-        // Git answered, but no directory above the root holds a repository
-        // marker, so no path of the output can resolve. The branch stays
-        // reachable through an inherited `GIT_DIR`.
-        let dir = TempDir::new("git-unmarked");
+    fn a_refused_command_reports_no_status() {
+        // Git reports a directory outside a repository through its exit code.
         let output = ProcessOutput {
-            status_code: Some(0),
+            status_code: Some(128),
             stdout: Vec::new(),
             stderr: Vec::new(),
         };
         assert_eq!(
-            GitStatusRequest::new(dir.path.clone()).publish(&output),
+            GitStatusRequest::new(root()).publish(&output),
             Err(GitStatusFailure::Unavailable)
         );
-    }
-
-    #[test]
-    fn the_snapshot_reads_no_path_outside_its_own_root() {
-        let snapshot = snapshot(&ordinary(".M", "src/main.rs"));
-        assert_eq!(snapshot.state(Path::new("/elsewhere/src/main.rs")), None);
     }
 
     #[test]
@@ -817,7 +1117,7 @@ mod tests {
         repository.file("build/output.o", "one\n");
 
         let snapshot = read_status(repository.path()).expect("the directory is one repository");
-        let state = |name: &str| snapshot.state(&repository.join(name));
+        let state = |name: &str| snapshot.state(&relative(name));
 
         assert_eq!(state("src/modified.rs"), Some(GitStatus::Modified));
         assert_eq!(state("src/staged.rs"), Some(GitStatus::Staged));
@@ -850,14 +1150,14 @@ mod tests {
         let workspace = repository.join("crates/kvim");
         let snapshot = read_status(&workspace).expect("the directory sits inside one repository");
 
-        assert_eq!(snapshot.root(), workspace.as_path());
+        assert_eq!(snapshot.root().as_path(), workspace.as_path());
         assert_eq!(
-            snapshot.state(&workspace.join("src/main.rs")),
+            snapshot.state(&relative("src/main.rs")),
             Some(GitStatus::Modified),
-            "Git reports the path against the top level, and the snapshot resolves it"
+            "Git reports the path against the top level, and the prefix subtracts it"
         );
         assert_eq!(
-            snapshot.state(&repository.join("docs/outside.md")),
+            snapshot.state(&relative("docs/outside.md")),
             None,
             "the pathspec keeps the report inside the workspace root"
         );

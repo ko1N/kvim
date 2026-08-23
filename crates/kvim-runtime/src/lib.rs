@@ -411,6 +411,15 @@ pub struct ProcessRequest {
     pub args: Vec<OsString>,
     /// The working directory of the child.
     pub current_dir: Option<PathBuf>,
+    /// The variables that the child must not inherit from this process.
+    ///
+    /// A caller drops every name that could redirect the command or make it
+    /// start another program. The runtime drops these names before it applies
+    /// [`ProcessRequest::child_variables`], so a name in both lists keeps the
+    /// value that the caller chose.
+    pub dropped_variables: Vec<OsString>,
+    /// The variables that the child receives with an explicit value.
+    pub child_variables: Vec<(OsString, OsString)>,
     /// The bytes that the runtime writes to standard input.
     pub stdin: Vec<u8>,
     /// The shared limit over standard output and standard error.
@@ -427,6 +436,8 @@ impl ProcessRequest {
             program: program.into(),
             args: Vec::new(),
             current_dir: None,
+            dropped_variables: Vec::new(),
+            child_variables: Vec::new(),
             stdin: Vec::new(),
             output_bytes_max: PROCESS_OUTPUT_BYTES_DEFAULT,
             deadline: PROCESS_DEADLINE_DEFAULT,
@@ -787,6 +798,12 @@ async fn execute_process(process: ProcessRequest) -> Result<ProcessOutput, Runti
         .kill_on_drop(true);
     if let Some(current_dir) = &process.current_dir {
         command.current_dir(current_dir);
+    }
+    for name in &process.dropped_variables {
+        command.env_remove(name);
+    }
+    for (name, value) in &process.child_variables {
+        command.env(name, value);
     }
     let mut child = command.spawn().map_err(RuntimeError::ProcessSpawn)?;
     let mut stdin = child

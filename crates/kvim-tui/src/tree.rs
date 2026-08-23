@@ -341,10 +341,11 @@ impl TreeSidebar {
     /// and one cancel each change exactly one place.
     pub(super) fn held_mode(&self, path: &Path) -> Option<TransferMode> {
         let mode = self.clipboard.mode()?;
+        let contained = self.contained(path)?;
         self.clipboard
             .paths()
             .iter()
-            .any(|held| held == path)
+            .any(|held| *held == contained)
             .then_some(mode)
     }
 
@@ -370,7 +371,15 @@ impl TreeSidebar {
     /// point, and no timer does, because the renderer runs no unconditional
     /// frame loop. See `docs/git.md`.
     pub(super) fn request_git_status(&mut self) {
-        self.git_outbox = Some(GitStatusRequest::new(self.tree.root().to_path_buf()));
+        self.git_outbox = Some(GitStatusRequest::new(Arc::clone(&self.root)));
+    }
+
+    /// Queues the next command of one status read that needs a further step.
+    ///
+    /// A newer refresh replaces the queued request, exactly as a new trigger
+    /// does, so the sidebar still runs one read at a time. See `docs/git.md`.
+    pub(super) fn resume_git_status(&mut self, request: GitStatusRequest) {
+        self.git_outbox = Some(request);
     }
 
     /// Publishes one completed Git status read.
@@ -379,7 +388,7 @@ impl TreeSidebar {
     /// newer one replaced. This second check rejects a snapshot of another
     /// workspace root from the visible state itself.
     pub(super) fn apply_git_status(&mut self, snapshot: GitStatusSnapshot) -> GitPublication {
-        if snapshot.root() != self.tree.root() {
+        if snapshot.root() != &*self.root {
             return GitPublication::Obsolete;
         }
         self.git = Some(snapshot);
@@ -389,7 +398,7 @@ impl TreeSidebar {
     /// Returns the recorded Git state of one entry, or `None` while none is
     /// known.
     pub(super) fn git_state(&self, path: &Path) -> Option<GitStatus> {
-        self.git.as_ref()?.state(path)
+        self.git.as_ref()?.state(&self.contained(path)?)
     }
 
     /// Applies one completed directory read and asks for the next one.
@@ -645,7 +654,8 @@ impl TreeSidebar {
     /// Returns [`TreeRefusal::NoSelection`] while the tree shows no entry.
     pub(super) fn hold(&mut self, mode: TransferMode) -> Result<PathBuf, TreeRefusal> {
         let path = self.selected_entry()?;
-        self.clipboard.hold(mode, vec![path.clone()]);
+        let contained = self.contained(&path).ok_or(TreeRefusal::EntryGone)?;
+        self.clipboard.hold(mode, vec![contained]);
         Ok(path)
     }
 
@@ -656,8 +666,9 @@ impl TreeSidebar {
     /// Returns [`TreeRefusal::ClipboardEmpty`] while the clipboard holds no
     /// entry.
     pub(super) fn stage_paste(&self) -> Result<FileOperation, TreeRefusal> {
+        let destination = self.destination_target()?;
         self.clipboard
-            .paste(&self.tree.destination_directory())
+            .paste(&destination)
             .ok_or(TreeRefusal::ClipboardEmpty)
     }
 
@@ -697,14 +708,17 @@ impl TreeSidebar {
     /// named entry.
     pub(super) fn stage_delete(&self, paths: Vec<PathBuf>) -> Result<FileOperation, TreeRefusal> {
         let rows = self.tree.rows();
-        let shown = paths.iter().all(|path| {
-            rows.iter()
-                .any(|row| row.is_selectable() && row.path == *path)
-        });
-        if !shown {
-            return Err(TreeRefusal::EntryGone);
+        let mut contained = Vec::with_capacity(paths.len());
+        for path in &paths {
+            let shown = rows
+                .iter()
+                .any(|row| row.is_selectable() && row.path == *path);
+            if !shown {
+                return Err(TreeRefusal::EntryGone);
+            }
+            contained.push(self.contained(path).ok_or(TreeRefusal::EntryGone)?);
         }
-        Ok(FileOperation::Delete { paths })
+        Ok(FileOperation::Delete { paths: contained })
     }
 
     /// Returns the creation of one entry inside the destination directory.
@@ -719,8 +733,9 @@ impl TreeSidebar {
         kind: EntryKind,
     ) -> Result<FileOperation, TreeRefusal> {
         let name = check_name(name)?;
+        let destination = self.destination_target()?;
         Ok(FileOperation::Create {
-            path: self.tree.destination_directory().join(name),
+            path: contained_child(&destination, name)?,
             kind,
         })
     }
@@ -734,12 +749,17 @@ impl TreeSidebar {
     pub(super) fn stage_rename(&self, name: &str) -> Result<FileOperation, TreeRefusal> {
         let name = check_name(name)?;
         let from = self.selected_entry()?;
+        let from = self.contained(&from).ok_or(TreeRefusal::EntryGone)?;
         let parent = from
+            .as_path()
             .parent()
-            .map_or_else(|| self.tree.root().to_path_buf(), Path::to_path_buf);
+            .map_or(WorktreeDirectoryPath::Root, |parent| {
+                WorktreeRelativePath::new(parent)
+                    .map_or(WorktreeDirectoryPath::Root, WorktreeDirectoryPath::Relative)
+            });
         Ok(FileOperation::Rename {
+            to: contained_child(&parent, name)?,
             from,
-            to: parent.join(name),
         })
     }
 
@@ -763,7 +783,7 @@ impl TreeSidebar {
         }
         self.outbox = Some(WorkspaceRequest::Mutate(MutateRequest {
             operation: operation.clone(),
-            root: self.tree.root().to_path_buf(),
+            root: Arc::clone(&self.root),
             buffers,
             overwrite,
         }));
@@ -843,22 +863,49 @@ impl TreeSidebar {
         let Some(path) = self.tree.take_pending_read() else {
             return;
         };
-        let target = if path == self.root.as_path() {
-            WorktreeDirectoryPath::Root
-        } else {
-            let relative = path
-                .strip_prefix(self.root.as_path())
-                .expect("the file tree queues only paths below its root");
-            let relative = WorktreeRelativePath::new(relative)
-                .expect("file-tree paths contain only validated entry names");
-            WorktreeDirectoryPath::Relative(relative)
-        };
+        let target = self
+            .directory_target(&path)
+            .expect("the file tree queues only validated paths below its root");
         self.outbox = Some(WorkspaceRequest::ReadDirectory {
             root: Arc::clone(&self.root),
             path: target,
         });
         self.pending = Some(PendingWorkspace::Read { path });
     }
+
+    /// Returns the contained path of one absolute path below the root.
+    ///
+    /// The tree shows one root, so a path that names no contained entry of it
+    /// belongs to no row and reaches no capability call.
+    fn contained(&self, path: &Path) -> Option<WorktreeRelativePath> {
+        let relative = path.strip_prefix(self.root.as_path()).ok()?;
+        WorktreeRelativePath::new(relative).ok()
+    }
+
+    /// Returns the contained directory target of one absolute path.
+    fn directory_target(&self, path: &Path) -> Option<WorktreeDirectoryPath> {
+        if path == self.root.as_path() {
+            return Some(WorktreeDirectoryPath::Root);
+        }
+        self.contained(path).map(WorktreeDirectoryPath::Relative)
+    }
+
+    /// Returns the contained directory that receives a create or a paste.
+    fn destination_target(&self) -> Result<WorktreeDirectoryPath, TreeRefusal> {
+        self.directory_target(&self.tree.destination_directory())
+            .ok_or(TreeRefusal::EntryGone)
+    }
+}
+
+/// Returns the contained path of one entry name inside a directory.
+fn contained_child(
+    directory: &WorktreeDirectoryPath,
+    name: &str,
+) -> Result<WorktreeRelativePath, TreeRefusal> {
+    let base = directory
+        .relative_path()
+        .map_or_else(PathBuf::new, |path| path.as_path().to_path_buf());
+    WorktreeRelativePath::new(base.join(name)).map_err(|_| TreeRefusal::EntryGone)
 }
 
 /// Returns the entry name that a prompt line holds.
@@ -906,7 +953,7 @@ pub(super) fn overwrite_question(destinations: &[TakenDestination]) -> String {
     let [destination] = destinations else {
         return format!("Overwrite {} entries", destinations.len());
     };
-    format!("Overwrite {}", question_name(&destination.path))
+    format!("Overwrite {}", question_name(destination.path.as_path()))
 }
 
 /// Returns the name that a question shows for one entry.

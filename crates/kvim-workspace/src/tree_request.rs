@@ -21,8 +21,8 @@ use super::tree::{self, DirectoryListing, ReadError};
 pub struct MutateRequest {
     /// The operation that the user asked for.
     pub operation: FileOperation,
-    /// The workspace root. Every affected path must stay inside it.
-    pub root: PathBuf,
+    /// The capability root that owns every affected path.
+    pub root: Arc<WorktreeRoot>,
     /// The loaded buffers that the mutation can affect.
     pub buffers: Vec<OpenBuffer>,
     /// The destinations that one confirmed answer approved.

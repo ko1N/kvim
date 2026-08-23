@@ -62,12 +62,12 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
-    FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure,
-    GitStatusRequest, GitStatusSnapshot, MutationError, MutationOutcome, OpenError, OpenRequest,
-    OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult,
-    PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger,
-    ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX,
-    TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult, render_content,
+    FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure, GitStatusRead,
+    GitStatusRequest, MutationError, MutationOutcome, OpenError, OpenRequest, OpenedFile,
+    Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot,
+    RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer,
+    SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination,
+    TransferMode, WorkspaceRequest, WorkspaceResult, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -3362,7 +3362,7 @@ impl Session {
     fn queue_tree_mutation(&mut self, operation: FileOperation, overwrite: Overwrite) -> Redraw {
         // The worker validates the operation against the loaded buffers, so it
         // receives the complete list with the request.
-        let buffers = self.buffers.open_buffers();
+        let buffers = self.buffers.open_buffers(&self.root);
         if let Err(refusal) = self.tree.start_mutation(operation, overwrite, buffers) {
             self.set_message(refusal.message(), MessageLevel::Warning);
         }
@@ -3415,13 +3415,17 @@ impl Session {
     /// keeps the marks of the last successful read, so no failure removes
     /// workspace state. A missing `git` command reaches the message line once
     /// for each session.
+    ///
+    /// One status read takes more than one command, so a step that needs a
+    /// further command returns to the outbox instead of publishing.
     #[must_use]
-    pub fn apply_git_result(
-        &mut self,
-        result: Result<GitStatusSnapshot, GitStatusFailure>,
-    ) -> Redraw {
+    pub fn apply_git_result(&mut self, result: Result<GitStatusRead, GitStatusFailure>) -> Redraw {
         let failure = match result {
-            Ok(snapshot) => match self.tree.apply_git_status(snapshot) {
+            Ok(GitStatusRead::Pending(request)) => {
+                self.tree.resume_git_status(request);
+                return Redraw::Skipped;
+            }
+            Ok(GitStatusRead::Published(snapshot)) => match self.tree.apply_git_status(snapshot) {
                 GitPublication::Applied => return Redraw::Needed,
                 GitPublication::Obsolete => return Redraw::Skipped,
             },

@@ -97,11 +97,26 @@ fn expansion(tree: &FileTree, path: &Path) -> Option<Expansion> {
     })
 }
 
+/// Returns one capability root over the fixture directory.
+fn worktree(root: &Path) -> Arc<WorktreeRoot> {
+    Arc::new(WorktreeRoot::open(root).expect("the fixture root exists"))
+}
+
+/// Returns one validated contained path of a fixture root.
+fn relative(path: &str) -> WorktreeRelativePath {
+    WorktreeRelativePath::new(path).expect("the fixture path is contained")
+}
+
+/// Returns one validated contained directory of a fixture root.
+fn directory_of(path: &str) -> WorktreeDirectoryPath {
+    WorktreeDirectoryPath::Relative(relative(path))
+}
+
 /// Returns one loaded buffer that holds no unsaved change.
-fn open_buffer(id: u32, path: &Path) -> OpenBuffer {
+fn open_buffer(id: u32, path: &str) -> OpenBuffer {
     OpenBuffer {
         id: BufferId::new(id),
-        path: path.to_path_buf(),
+        path: relative(path),
         is_modified: false,
     }
 }
@@ -785,10 +800,10 @@ fn a_create_adds_the_entry_and_selects_it() {
 
     let outcome = MutationPlan::stage(
         &FileOperation::Create {
-            path: path.clone(),
+            path: relative("new.rs"),
             kind: EntryKind::File,
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect("the path is free")
@@ -808,10 +823,10 @@ fn a_create_refuses_an_existing_path() {
 
     let error = MutationPlan::stage(
         &FileOperation::Create {
-            path: root.join("main.rs"),
+            path: relative("main.rs"),
             kind: EntryKind::File,
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect_err("the path holds a file");
@@ -830,11 +845,11 @@ fn a_rename_moves_the_file_and_retargets_its_buffer() {
 
     let outcome = MutationPlan::stage(
         &FileOperation::Rename {
-            from: from.clone(),
-            to: to.clone(),
+            from: relative("old.rs"),
+            to: relative("new.rs"),
         },
-        &root,
-        &[open_buffer(1, &from)],
+        &worktree(&root),
+        &[open_buffer(1, "old.rs")],
     )
     .expect("the destination is free")
     .apply()
@@ -853,16 +868,15 @@ fn a_move_retargets_the_buffer_of_a_file_inside_the_directory() {
     directory.file("src/lib.rs", "content");
     directory.dir("dest");
     let root = root_of(&directory);
-    let buffer_path = root.join("src").join("lib.rs");
 
     let outcome = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("src")],
-            destination: root.join("dest"),
+            sources: vec![relative("src")],
+            destination: directory_of("dest"),
         },
-        &root,
-        &[open_buffer(4, &buffer_path)],
+        &worktree(&root),
+        &[open_buffer(4, "src/lib.rs")],
     )
     .expect("the destination is free")
     .apply()
@@ -885,11 +899,11 @@ fn a_copy_keeps_the_source_and_changes_no_buffer() {
     let outcome = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Copy,
-            sources: vec![root.join("src")],
-            destination: root.join("dest"),
+            sources: vec![relative("src")],
+            destination: directory_of("dest"),
         },
-        &root,
-        &[open_buffer(2, &buffer_path)],
+        &worktree(&root),
+        &[open_buffer(2, "src/lib.rs")],
     )
     .expect("the destination is free")
     .apply()
@@ -913,10 +927,10 @@ fn a_transfer_refuses_a_destination_collision() {
     let error = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("lib.rs")],
-            destination: root.join("dest"),
+            sources: vec![relative("lib.rs")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect_err("the destination holds the name");
@@ -930,9 +944,9 @@ fn a_transfer_refuses_a_destination_collision() {
 }
 
 /// Returns the approval of one file destination.
-fn approved_file(path: &Path) -> Overwrite {
+fn approved_file(path: &str) -> Overwrite {
     Overwrite::Replace(vec![TakenDestination {
-        path: path.to_path_buf(),
+        path: relative(path),
         kind: EntryKind::File,
     }])
 }
@@ -949,10 +963,10 @@ fn a_collision_reports_every_taken_destination() {
     let error = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("first.rs"), root.join("second.rs")],
-            destination: root.join("dest"),
+            sources: vec![relative("first.rs"), relative("second.rs")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect_err("both destinations hold an entry");
@@ -978,12 +992,12 @@ fn an_approved_overwrite_replaces_the_destination() {
 
     MutationPlan::stage_with(
         &FileOperation::Rename {
-            from: root.join("new.rs"),
-            to: destination.clone(),
+            from: relative("new.rs"),
+            to: relative("old.rs"),
         },
-        &root,
+        &worktree(&root),
         &[],
-        &approved_file(&destination),
+        &approved_file("old.rs"),
     )
     .expect("the answer approved the destination")
     .apply()
@@ -1016,12 +1030,12 @@ fn an_overwrite_refuses_a_destination_that_the_answer_did_not_name() {
 
     let error = MutationPlan::stage_with(
         &FileOperation::Rename {
-            from: root.join("new.rs"),
-            to: root.join("old.rs"),
+            from: relative("new.rs"),
+            to: relative("old.rs"),
         },
-        &root,
+        &worktree(&root),
         &[],
-        &approved_file(&root.join("other.rs")),
+        &approved_file("other.rs"),
     )
     .expect_err("the answer names another destination");
 
@@ -1039,7 +1053,7 @@ fn an_overwrite_refuses_a_destination_that_changed_its_kind() {
     directory.file("old.rs", "kept");
     let root = root_of(&directory);
     let destination = root.join("old.rs");
-    let approval = approved_file(&destination);
+    let approval = approved_file("old.rs");
 
     // A watcher event replaced the file with a directory while the question
     // waited, so the answer would destroy an entry that it never named.
@@ -1049,10 +1063,10 @@ fn an_overwrite_refuses_a_destination_that_changed_its_kind() {
 
     let error = MutationPlan::stage_with(
         &FileOperation::Rename {
-            from: root.join("new.rs"),
-            to: destination.clone(),
+            from: relative("new.rs"),
+            to: relative("old.rs"),
         },
-        &root,
+        &worktree(&root),
         &[],
         &approval,
     )
@@ -1073,16 +1087,16 @@ fn an_overwrite_of_a_destination_that_became_free_takes_the_free_path() {
     directory.file("old.rs", "kept");
     let root = root_of(&directory);
     let destination = root.join("old.rs");
-    let approval = approved_file(&destination);
+    let approval = approved_file("old.rs");
 
     fs::remove_file(&destination).expect("the file exists");
 
     MutationPlan::stage_with(
         &FileOperation::Rename {
-            from: root.join("new.rs"),
-            to: destination.clone(),
+            from: relative("new.rs"),
+            to: relative("old.rs"),
         },
-        &root,
+        &worktree(&root),
         &[],
         &approval,
     )
@@ -1106,12 +1120,12 @@ fn a_failed_overwrite_leaves_the_destination_unchanged() {
     let plan = MutationPlan::stage_with(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("first.rs"), root.join("second.rs")],
-            destination: root.join("dest"),
+            sources: vec![relative("first.rs"), relative("second.rs")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
-        &approved_file(&destination),
+        &approved_file("dest/first.rs"),
     )
     .expect("the answer approved the one taken destination");
 
@@ -1153,15 +1167,15 @@ fn an_overwrite_refuses_a_destination_with_unsaved_changes() {
     directory.file("old.rs", "kept");
     let root = root_of(&directory);
     let destination = root.join("old.rs");
-    let mut buffer = open_buffer(7, &destination);
+    let mut buffer = open_buffer(7, "old.rs");
     buffer.is_modified = true;
 
     let error = MutationPlan::stage(
         &FileOperation::Rename {
-            from: root.join("new.rs"),
-            to: destination.clone(),
+            from: relative("new.rs"),
+            to: relative("old.rs"),
         },
-        &root,
+        &worktree(&root),
         &[buffer],
     )
     .expect_err("the buffer of the destination holds unsaved changes");
@@ -1173,29 +1187,37 @@ fn an_overwrite_refuses_a_destination_with_unsaved_changes() {
     );
 }
 
+#[cfg(unix)]
 #[test]
-fn an_overwrite_refuses_a_destination_outside_the_workspace() {
+fn an_overwrite_refuses_a_destination_that_a_link_moves_outside_the_workspace() {
     let directory = TempDir::new("mutate-overwrite-outside");
-    directory.file("new.rs", "source");
-    let root = root_of(&directory);
-    let outside = root.join("..").join("escape.rs");
+    let outside = TempDir::new("mutate-overwrite-target");
+    outside.file("escape.rs", "kept");
+    let root = directory.dir("workspace");
+    fs::write(root.join("new.rs"), "source").expect("the workspace is writable");
+    std::os::unix::fs::symlink(&outside.path, root.join("beyond"))
+        .expect("the temporary directory supports links");
 
     let error = MutationPlan::stage_with(
         &FileOperation::Rename {
-            from: root.join("new.rs"),
-            to: outside.clone(),
+            from: relative("new.rs"),
+            to: relative("beyond/escape.rs"),
         },
-        &root,
+        &worktree(&root),
         &[],
-        &approved_file(&outside),
+        &approved_file("beyond/escape.rs"),
     )
     .expect_err("the destination leaves the workspace");
 
     assert!(
-        matches!(error, MutationError::Outside { .. }),
-        "an approval never reaches outside the workspace"
+        matches!(error, MutationError::Confinement { .. }),
+        "an approval never reaches outside the workspace: {error}"
     );
-    assert!(!outside.exists(), "the mutation wrote nothing");
+    assert_eq!(
+        fs::read_to_string(outside.path.join("escape.rs")).expect("the target survived"),
+        "kept",
+        "the mutation wrote nothing outside the workspace"
+    );
 }
 
 #[test]
@@ -1207,10 +1229,10 @@ fn an_entry_that_names_itself_refuses_the_mutation() {
     let error = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("lib.rs")],
-            destination: root.clone(),
+            sources: vec![relative("lib.rs")],
+            destination: WorktreeDirectoryPath::Root,
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect_err("the source names its own destination");
@@ -1233,10 +1255,10 @@ fn two_sources_with_one_name_collide_before_any_change() {
     let error = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Copy,
-            sources: vec![root.join("a").join("lib.rs"), root.join("b").join("lib.rs")],
-            destination: root.join("dest"),
+            sources: vec![relative("a/lib.rs"), relative("b/lib.rs")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect_err("both sources hold one name");
@@ -1259,10 +1281,10 @@ fn a_directory_cannot_move_into_its_own_descendant() {
     let error = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("src")],
-            destination: root.join("src").join("inner"),
+            sources: vec![relative("src")],
+            destination: directory_of("src/inner"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect_err("the destination lies inside the source");
@@ -1271,35 +1293,43 @@ fn a_directory_cannot_move_into_its_own_descendant() {
     assert!(root.join("src").join("inner").is_dir());
 }
 
+#[cfg(unix)]
 #[test]
-fn a_mutation_refuses_a_path_outside_the_workspace() {
+fn a_mutation_refuses_a_source_that_a_link_moves_outside_the_workspace() {
     let directory = TempDir::new("mutate-outside");
-    let outside = directory.file("outside.rs", "");
+    let outside = directory.file("outside.rs", "kept");
     let root = directory.dir("workspace");
+    std::os::unix::fs::symlink(&outside, root.join("beyond.rs"))
+        .expect("the temporary directory supports links");
 
     let error = MutationPlan::stage(
-        &FileOperation::Transfer {
-            mode: TransferMode::Move,
-            sources: vec![outside],
-            destination: root.clone(),
+        &FileOperation::Delete {
+            paths: vec![relative("beyond.rs")],
         },
-        &root,
+        &worktree(&root),
         &[],
     )
-    .expect_err("the source lies outside the workspace");
+    .expect_err("the source leaves the workspace");
 
-    assert!(matches!(error, MutationError::Outside { .. }));
+    assert!(
+        matches!(error, MutationError::Confinement { .. }),
+        "a link out of the workspace names no removable entry: {error}"
+    );
+    assert_eq!(
+        fs::read_to_string(&outside).expect("the target survived"),
+        "kept"
+    );
 }
 
 #[test]
 fn the_path_bound_refuses_an_oversized_operation() {
     let directory = TempDir::new("mutate-bound");
     let root = root_of(&directory);
-    let paths: Vec<PathBuf> = (0..=MUTATION_PATHS_MAX)
-        .map(|index| root.join(format!("file-{index}.rs")))
+    let paths: Vec<WorktreeRelativePath> = (0..=MUTATION_PATHS_MAX)
+        .map(|index| relative(&format!("file-{index}.rs")))
         .collect();
 
-    let error = MutationPlan::stage(&FileOperation::Delete { paths }, &root, &[])
+    let error = MutationPlan::stage(&FileOperation::Delete { paths }, &worktree(&root), &[])
         .expect_err("the operation names too many entries");
 
     assert!(matches!(
@@ -1320,9 +1350,9 @@ fn a_delete_removes_the_entries() {
 
     MutationPlan::stage(
         &FileOperation::Delete {
-            paths: vec![root.join("src"), root.join("main.rs")],
+            paths: vec![relative("src"), relative("main.rs")],
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect("both entries exist")
@@ -1334,18 +1364,51 @@ fn a_delete_removes_the_entries() {
 }
 
 #[test]
+fn a_delete_refuses_an_entry_that_another_program_replaced() {
+    let directory = TempDir::new("mutate-delete-race");
+    directory.file("first.rs", "first");
+    directory.file("second.rs", "second");
+    let root = root_of(&directory);
+
+    let plan = MutationPlan::stage(
+        &FileOperation::Delete {
+            paths: vec![relative("first.rs"), relative("second.rs")],
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect("both entries exist");
+
+    // The second entry disappears between the validation and the removal. The
+    // identity check that runs immediately before each removal names that
+    // change, so the removal refuses instead of destroying what took its place.
+    fs::remove_file(root.join("second.rs")).expect("the file exists");
+    let error = plan.apply().expect_err("the second entry is gone");
+
+    assert!(
+        matches!(error, MutationError::Confinement { .. }),
+        "an entry that another program replaced stops the removal: {error}"
+    );
+    assert_eq!(
+        fs::read_to_string(root.join("first.rs")).expect("the first entry returned"),
+        "first",
+        "a refused removal puts every staged entry back"
+    );
+}
+
+#[test]
 fn a_delete_refuses_an_entry_with_unsaved_changes() {
     let directory = TempDir::new("mutate-delete-dirty");
     directory.file("src/lib.rs", "content");
     let root = root_of(&directory);
-    let mut buffer = open_buffer(3, &root.join("src").join("lib.rs"));
+    let mut buffer = open_buffer(3, "src/lib.rs");
     buffer.is_modified = true;
 
     let error = MutationPlan::stage(
         &FileOperation::Delete {
-            paths: vec![root.join("src")],
+            paths: vec![relative("src")],
         },
-        &root,
+        &worktree(&root),
         &[buffer],
     )
     .expect_err("the buffer holds unsaved changes");
@@ -1365,20 +1428,24 @@ fn a_failed_copy_leaves_no_partial_result() {
     let plan = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Copy,
-            sources: vec![root.join("first.rs"), root.join("second.rs")],
-            destination: root.join("dest"),
+            sources: vec![relative("first.rs"), relative("second.rs")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect("both sources exist");
 
-    // The second source disappears between the validation and the copy, so the
-    // commit cannot finish.
+    // The second source disappears between the validation and the copy. The
+    // identity check that runs immediately before the copy names that change,
+    // so the commit refuses before it writes the second entry.
     fs::remove_file(root.join("second.rs")).expect("the file exists");
     let error = plan.apply().expect_err("the second source is gone");
 
-    assert!(matches!(error, MutationError::Filesystem { .. }));
+    assert!(
+        matches!(error, MutationError::Confinement { .. }),
+        "a source that another program replaced stops the commit: {error}"
+    );
     assert_eq!(
         fs::read_dir(root.join("dest"))
             .expect("the directory exists")
@@ -1399,10 +1466,10 @@ fn a_failed_move_restores_every_staged_source() {
     let plan = MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Move,
-            sources: vec![root.join("first.rs"), root.join("second.rs")],
-            destination: root.join("dest"),
+            sources: vec![relative("first.rs"), relative("second.rs")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect("both sources exist");
@@ -1410,7 +1477,10 @@ fn a_failed_move_restores_every_staged_source() {
     fs::remove_file(root.join("second.rs")).expect("the file exists");
     let error = plan.apply().expect_err("the second source is gone");
 
-    assert!(matches!(error, MutationError::Filesystem { .. }));
+    assert!(
+        matches!(error, MutationError::Confinement { .. }),
+        "a source that another program replaced stops the commit: {error}"
+    );
     assert_eq!(
         fs::read_to_string(root.join("first.rs")).expect("the source returned"),
         "first"
@@ -1439,10 +1509,10 @@ fn a_copy_recreates_a_symbolic_link() {
     MutationPlan::stage(
         &FileOperation::Transfer {
             mode: TransferMode::Copy,
-            sources: vec![root.join("src")],
-            destination: root.join("dest"),
+            sources: vec![relative("src")],
+            destination: directory_of("dest"),
         },
-        &root,
+        &worktree(&root),
         &[],
     )
     .expect("the destination is free")
@@ -1466,17 +1536,17 @@ fn the_clipboard_builds_one_paste_of_the_held_entries() {
 
     let mut clipboard = FileClipboard::default();
     assert!(clipboard.is_empty());
-    assert!(clipboard.paste(&root).is_none());
+    assert!(clipboard.paste(&WorktreeDirectoryPath::Root).is_none());
 
-    clipboard.hold(TransferMode::Move, vec![root.join("lib.rs")]);
+    clipboard.hold(TransferMode::Move, vec![relative("lib.rs")]);
     assert_eq!(clipboard.mode(), Some(TransferMode::Move));
     let operation = clipboard
-        .paste(&root.join("dest"))
+        .paste(&directory_of("dest"))
         .expect("the clipboard holds one entry");
 
     let result = WorkspaceRequest::Mutate(MutateRequest {
         operation,
-        root: root.clone(),
+        root: worktree(&root),
         buffers: Vec::new(),
         overwrite: Overwrite::Refuse,
     })
@@ -1494,8 +1564,8 @@ fn the_clipboard_builds_one_paste_of_the_held_entries() {
 
 #[test]
 fn the_clipboard_holds_no_more_than_the_bound() {
-    let paths: Vec<PathBuf> = (0..FILE_CLIPBOARD_PATHS_MAX + 5)
-        .map(|index| PathBuf::from(format!("/workspace/file-{index}.rs")))
+    let paths: Vec<WorktreeRelativePath> = (0..FILE_CLIPBOARD_PATHS_MAX + 5)
+        .map(|index| relative(&format!("file-{index}.rs")))
         .collect();
 
     let mut clipboard = FileClipboard::default();
