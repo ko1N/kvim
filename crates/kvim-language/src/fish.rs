@@ -5,21 +5,16 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
-    LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration,
+    ServerFormatting,
 };
-
-/// The file extensions that the fish adapter owns.
-const FISH_EXTENSIONS: [&str; 1] = ["fish"];
-
-/// The language names that the fish adapter answers to.
-const FISH_LANGUAGE_NAMES: [&str; 1] = ["fish"];
 
 /// The node kinds whose content takes one more indent level in fish.
 ///
@@ -47,15 +42,6 @@ const FISH_INDENT_SCOPES: [&str; 8] = [
 /// A parenthesis closes a command substitution. Every other scope closes with
 /// the `end` keyword, which this rule cannot name.
 const FISH_CLOSING_DELIMITERS: [char; 1] = [')'];
-
-/// Returns the fish grammar of the bundled parser.
-///
-/// The crate predates the `LanguageFn` convention of the newer grammar crates,
-/// so it exports a function that returns the grammar and no `LANGUAGE`
-/// constant.
-fn fish_language() -> Language {
-    tree_sitter_fish::language()
-}
 
 /// Returns the initialization options of `fish-lsp`.
 ///
@@ -107,31 +93,12 @@ impl FishAdapter {
     }
 }
 
-/// The catalog entry of the fish language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static FISH_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "fish",
-    &FISH_LANGUAGE_NAMES,
-    &FISH_EXTENSIONS,
-    &[],
-    fish_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of fish.
-fn fish_grammar() -> Grammar {
-    Grammar {
-        language: fish_language,
-        highlights_query: tree_sitter_fish::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for FishAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &FISH_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("fish").expect("the grammar-fish feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

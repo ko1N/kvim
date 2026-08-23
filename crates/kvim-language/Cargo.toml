@@ -6,6 +6,11 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
+# No grammar is bundled by default. Each feature forwards to the grammar of
+# `kvim-syntax`, and an adapter exists only while its grammar does, so a
+# consumer compiles the languages that it names and nothing else.
+default = []
+
 # Publishes the deterministic mock language server of the `mock` module.
 #
 # The editor wiring tests of `kvim-tui` drive the same mock as the protocol
@@ -13,11 +18,66 @@ version.workspace = true
 # never editor behavior, so a normal build leaves it out.
 test-support = []
 
+grammar-asm = ["kvim-syntax/grammar-asm"]
+grammar-bash = ["kvim-syntax/grammar-bash"]
+grammar-c = ["kvim-syntax/grammar-c"]
+grammar-cpp = ["kvim-syntax/grammar-cpp"]
+grammar-css = ["kvim-syntax/grammar-css"]
+grammar-fish = ["kvim-syntax/grammar-fish"]
+grammar-glsl = ["kvim-syntax/grammar-glsl"]
+grammar-go = ["kvim-syntax/grammar-go"]
+grammar-html = ["kvim-syntax/grammar-html"]
+grammar-javascript = ["kvim-syntax/grammar-javascript"]
+grammar-json = ["kvim-syntax/grammar-json"]
+grammar-lua = ["kvim-syntax/grammar-lua"]
+grammar-markdown = ["kvim-syntax/grammar-markdown"]
+grammar-nix = ["kvim-syntax/grammar-nix"]
+grammar-python = ["kvim-syntax/grammar-python"]
+grammar-rust = ["kvim-syntax/grammar-rust"]
+grammar-scss = ["kvim-syntax/grammar-scss"]
+grammar-sql = ["kvim-syntax/grammar-sql"]
+grammar-terraform = ["kvim-syntax/grammar-terraform"]
+grammar-toml = ["kvim-syntax/grammar-toml"]
+grammar-tsx = ["kvim-syntax/grammar-tsx"]
+grammar-typescript = ["kvim-syntax/grammar-typescript"]
+grammar-xml = ["kvim-syntax/grammar-xml"]
+grammar-yaml = ["kvim-syntax/grammar-yaml"]
+grammar-zig = ["kvim-syntax/grammar-zig"]
+
+all-grammars = [
+  "grammar-asm",
+  "grammar-bash",
+  "grammar-c",
+  "grammar-cpp",
+  "grammar-css",
+  "grammar-fish",
+  "grammar-glsl",
+  "grammar-go",
+  "grammar-html",
+  "grammar-javascript",
+  "grammar-json",
+  "grammar-lua",
+  "grammar-markdown",
+  "grammar-nix",
+  "grammar-python",
+  "grammar-rust",
+  "grammar-scss",
+  "grammar-sql",
+  "grammar-terraform",
+  "grammar-toml",
+  "grammar-tsx",
+  "grammar-typescript",
+  "grammar-xml",
+  "grammar-yaml",
+  "grammar-zig",
+]
+
 [dependencies]
 # kvim crates
 kvim-core.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true
+kvim-syntax.workspace = true
 
 # Basics
 thiserror.workspace = true
@@ -31,31 +91,6 @@ serde_json.workspace = true
 
 # Language analysis
 tree-sitter.workspace = true
-tree-sitter-asm.workspace = true
-tree-sitter-bash.workspace = true
-tree-sitter-c.workspace = true
-tree-sitter-cpp.workspace = true
-tree-sitter-css.workspace = true
-tree-sitter-fish.workspace = true
-tree-sitter-glsl.workspace = true
-tree-sitter-go.workspace = true
-tree-sitter-hcl.workspace = true
-tree-sitter-highlight.workspace = true
-tree-sitter-html.workspace = true
-tree-sitter-javascript.workspace = true
-tree-sitter-json.workspace = true
-tree-sitter-lua.workspace = true
-tree-sitter-md.workspace = true
-tree-sitter-nix.workspace = true
-tree-sitter-python.workspace = true
-tree-sitter-rust.workspace = true
-tree-sitter-scss.workspace = true
-tree-sitter-sequel.workspace = true
-tree-sitter-toml-ng.workspace = true
-tree-sitter-typescript.workspace = true
-tree-sitter-xml.workspace = true
-tree-sitter-yaml.workspace = true
-tree-sitter-zig.workspace = true
 
 # Runtime
 tokio.workspace = true

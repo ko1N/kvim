@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the HTML adapter owns.
-const HTML_EXTENSIONS: [&str; 2] = ["htm", "html"];
-
-/// The language names that the HTML adapter answers to.
-const HTML_LANGUAGE_NAMES: [&str; 1] = ["html"];
 
 /// The node kinds whose content takes one more indent level in HTML.
 ///
@@ -36,11 +31,6 @@ const HTML_INDENT_SCOPES: [&str; 3] = ["element", "script_element", "style_eleme
 /// that holds an end tag reports one indent level too many. The user corrects
 /// that line, exactly as the documented limit of the Python indent rule works.
 const HTML_CLOSING_DELIMITERS: [char; 0] = [];
-
-/// Returns the HTML grammar of the bundled parser.
-fn html_language() -> Language {
-    tree_sitter_html::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `vscode-html-language-server`.
 ///
@@ -103,31 +93,12 @@ impl HtmlAdapter {
     }
 }
 
-/// The catalog entry of the html language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static HTML_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "html",
-    &HTML_LANGUAGE_NAMES,
-    &HTML_EXTENSIONS,
-    &[],
-    html_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of html.
-fn html_grammar() -> Grammar {
-    Grammar {
-        language: html_language,
-        highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for HtmlAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &HTML_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("html").expect("the grammar-html feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

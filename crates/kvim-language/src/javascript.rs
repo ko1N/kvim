@@ -7,25 +7,11 @@
 
 use std::sync::OnceLock;
 
-use tree_sitter::Language;
-
 use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the JavaScript adapter owns.
-///
-/// The grammar reads the JSX extension of the language, so the `jsx` extension
-/// needs no grammar of its own and stands beside the three module extensions.
-const JAVASCRIPT_EXTENSIONS: [&str; 4] = ["cjs", "js", "jsx", "mjs"];
-
-/// The language names that the JavaScript adapter answers to.
-///
-/// One grammar reads the module syntax and the JSX syntax of the language, so
-/// the adapter answers to `jsx` as well.
-const JAVASCRIPT_LANGUAGE_NAMES: [&str; 3] = ["javascript", "js", "jsx"];
 
 /// The node kinds whose content takes one more indent level in JavaScript.
 ///
@@ -52,35 +38,6 @@ const JAVASCRIPT_INDENT_SCOPES: [&str; 14] = [
 
 /// The characters that close a JavaScript indent scope.
 const JAVASCRIPT_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the JavaScript grammar of the bundled parser.
-fn javascript_language() -> Language {
-    tree_sitter_javascript::LANGUAGE.into()
-}
-
-/// The joined highlight query of the JavaScript adapter.
-///
-/// The crate ships the JSX patterns in a second text, because another editor
-/// selects them by file type. One grammar reads both dialects, so the adapter
-/// joins the two texts once and highlights a JSX document with the same
-/// configuration.
-static JAVASCRIPT_HIGHLIGHTS_QUERY: OnceLock<String> = OnceLock::new();
-
-/// Returns the joined highlight query of the JavaScript adapter.
-fn javascript_highlights_query() -> &'static str {
-    JAVASCRIPT_HIGHLIGHTS_QUERY.get_or_init(|| {
-        let mut query = String::with_capacity(
-            tree_sitter_javascript::HIGHLIGHT_QUERY.len()
-                + tree_sitter_javascript::JSX_HIGHLIGHT_QUERY.len()
-                + 1,
-        );
-        // The crate names the first query in the singular.
-        query.push_str(tree_sitter_javascript::HIGHLIGHT_QUERY);
-        query.push('\n');
-        query.push_str(tree_sitter_javascript::JSX_HIGHLIGHT_QUERY);
-        query
-    })
-}
 
 /// The language servers that the JavaScript adapter declares, in declaration
 /// order.
@@ -158,31 +115,13 @@ impl JavascriptAdapter {
     }
 }
 
-/// The catalog entry of the javascript language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static JAVASCRIPT_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "javascript",
-    &JAVASCRIPT_LANGUAGE_NAMES,
-    &JAVASCRIPT_EXTENSIONS,
-    &[],
-    javascript_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of javascript.
-fn javascript_grammar() -> Grammar {
-    Grammar {
-        language: javascript_language,
-        highlights_query: javascript_highlights_query(),
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for JavascriptAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &JAVASCRIPT_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("javascript")
+                .expect("the grammar-javascript feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

@@ -4,21 +4,16 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Nix adapter owns.
-const NIX_EXTENSIONS: [&str; 1] = ["nix"];
-
-/// The language names that the Nix adapter answers to.
-const NIX_LANGUAGE_NAMES: [&str; 1] = ["nix"];
 
 /// The node kinds whose content takes one more indent level in Nix.
 ///
@@ -38,11 +33,6 @@ const NIX_INDENT_SCOPES: [&str; 7] = [
 
 /// The characters that close a Nix indent scope.
 const NIX_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the Nix grammar of the bundled parser.
-fn nix_language() -> Language {
-    tree_sitter_nix::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `nil`.
 ///
@@ -100,31 +90,12 @@ impl NixAdapter {
     }
 }
 
-/// The catalog entry of the nix language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static NIX_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "nix",
-    &NIX_LANGUAGE_NAMES,
-    &NIX_EXTENSIONS,
-    &[],
-    nix_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of nix.
-fn nix_grammar() -> Grammar {
-    Grammar {
-        language: nix_language,
-        highlights_query: tree_sitter_nix::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for NixAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &NIX_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("nix").expect("the grammar-nix feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

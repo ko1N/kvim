@@ -472,12 +472,44 @@ dependencies = [
  "kvim-core",
  "kvim-runtime",
  "kvim-settings",
+ "kvim-syntax",
  "pulldown-cmark",
  "serde",
  "serde_json",
  "thiserror",
  "tokio",
  "tokio-util",
+ "tree-sitter",
+]
+
+[[package]]
+name = "kvim-path"
+version = "0.1.0"
+dependencies = [
+ "cap-std",
+ "thiserror",
+]
+
+[[package]]
+name = "kvim-runtime"
+version = "0.1.0"
+dependencies = [
+ "kvim-path",
+ "notify",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "kvim-settings"
+version = "0.1.0"
+
+[[package]]
+name = "kvim-syntax"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
  "tree-sitter",
  "tree-sitter-asm",
  "tree-sitter-bash",
@@ -505,29 +537,6 @@ dependencies = [
  "tree-sitter-yaml",
  "tree-sitter-zig",
 ]
-
-[[package]]
-name = "kvim-path"
-version = "0.1.0"
-dependencies = [
- "cap-std",
- "thiserror",
-]
-
-[[package]]
-name = "kvim-runtime"
-version = "0.1.0"
-dependencies = [
- "kvim-path",
- "notify",
- "thiserror",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
-name = "kvim-settings"
-version = "0.1.0"
 
 [[package]]
 name = "kvim-terminal"

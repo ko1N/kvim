@@ -5,32 +5,16 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
     LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the assembly adapter owns.
-///
-/// The two source extensions are distinct files by convention: the C
-/// preprocessor runs over `S` and never over `s`. The match is case-sensitive,
-/// so the adapter names both.
-const ASM_EXTENSIONS: [&str; 3] = ["S", "asm", "s"];
-
-/// The language names that the assembly adapter answers to.
-///
-/// `assembly` is the long form of the same name.
-const ASM_LANGUAGE_NAMES: [&str; 2] = ["asm", "assembly"];
-
-/// Returns the assembly grammar of the bundled parser.
-fn asm_language() -> Language {
-    tree_sitter_asm::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `asm-lsp`.
 ///
@@ -86,31 +70,12 @@ impl AsmAdapter {
     }
 }
 
-/// The catalog entry of the asm language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static ASM_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "asm",
-    &ASM_LANGUAGE_NAMES,
-    &ASM_EXTENSIONS,
-    &[],
-    asm_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of asm.
-fn asm_grammar() -> Grammar {
-    Grammar {
-        language: asm_language,
-        highlights_query: tree_sitter_asm::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for AsmAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &ASM_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("asm").expect("the grammar-asm feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

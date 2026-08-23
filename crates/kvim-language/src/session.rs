@@ -33,6 +33,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_core::BufferVersion;
 use kvim_settings::IndentSettings;
+use kvim_syntax::SyntaxHighlighter;
 
 use super::LanguageRegistry;
 use super::document::{
@@ -870,6 +871,7 @@ async fn attempt(
         writer: ProtocolWriter::new(input),
         documents: HashMap::new(),
         pending: HashMap::new(),
+        highlighter: SyntaxHighlighter::new(),
     };
 
     let outcome = session.serve(&mut envelopes, requests, cancellation).await;
@@ -1068,6 +1070,11 @@ struct Session<'a> {
     writer: ProtocolWriter<Box<dyn AsyncWrite + Send + Unpin>>,
     documents: HashMap<PathBuf, OpenDocument>,
     pending: HashMap<u64, PendingRequest>,
+    /// The highlighter that names the roles of the fences of a hover answer.
+    ///
+    /// The session owns it, so the compiled query of a language serves every
+    /// later answer of that session and leaves with it.
+    highlighter: SyntaxHighlighter,
 }
 
 type Envelopes = mpsc::Receiver<Result<RpcEnvelope, LspError>>;
@@ -1614,7 +1621,7 @@ impl Session<'_> {
 
     /// Converts one answer while its buffer version is still current.
     fn convert(
-        &self,
+        &mut self,
         pending: &PendingRequest,
         result: &RawValue,
     ) -> Result<LanguageOutcome, LspError> {
@@ -1639,7 +1646,7 @@ impl Session<'_> {
             Query::Hover(_) => Ok(LanguageOutcome::Hover {
                 request,
                 version: pending.version,
-                markup: hover_markup(result, self.config.registry)?,
+                markup: hover_markup(result, self.config.registry, &mut self.highlighter)?,
             }),
             Query::Diagnostics => {
                 debug_assert!(
@@ -2144,13 +2151,14 @@ impl RawLocation {
 fn hover_markup(
     result: &RawValue,
     registry: LanguageRegistry,
+    highlighter: &mut SyntaxHighlighter,
 ) -> Result<Option<MarkupText>, LspError> {
     let value: Value =
         serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
     let Some(contents) = value.get("contents") else {
         return Ok(None);
     };
-    hover_contents(contents, registry)
+    hover_contents(contents, registry, highlighter)
 }
 
 /// Returns the bounded answer of one hover `contents` value.
@@ -2161,11 +2169,12 @@ fn hover_markup(
 fn hover_contents(
     contents: &Value,
     registry: LanguageRegistry,
+    highlighter: &mut SyntaxHighlighter,
 ) -> Result<Option<MarkupText>, LspError> {
     let mut answer = HoverAnswer::default();
     answer.append(contents);
     enforce(answer.text.len(), LSP_HOVER_BYTES_MAX, LspBound::HoverBytes)?;
-    Ok(answer.finish(registry))
+    Ok(answer.finish(registry, highlighter))
 }
 
 /// The collected parts of one hover answer and the kind that covers them.
@@ -2218,7 +2227,11 @@ impl HoverAnswer {
     ///
     /// A plain text carries an empty document, because a markdown parse of a
     /// plain text removes the characters that mark up a document.
-    fn finish(self, registry: LanguageRegistry) -> Option<MarkupText> {
+    fn finish(
+        self,
+        registry: LanguageRegistry,
+        highlighter: &mut SyntaxHighlighter,
+    ) -> Option<MarkupText> {
         let text = self.text.trim().to_owned();
         if text.is_empty() {
             return None;
@@ -2229,7 +2242,7 @@ impl HoverAnswer {
         );
         let kind = self.kind.unwrap_or(MarkupKind::PlainText);
         let document = match kind {
-            MarkupKind::Markdown => MarkupDocument::parse(&text).highlighted(registry),
+            MarkupKind::Markdown => MarkupDocument::parse(&text).highlighted(registry, highlighter),
             MarkupKind::PlainText => MarkupDocument::default(),
         };
         Some(MarkupText {
@@ -2289,6 +2302,7 @@ fn fence_backticks(value: &str) -> usize {
 mod tests {
     use serde_json::{Value, json};
 
+    use crate::SyntaxHighlighter;
     use crate::markup::MarkupDocument;
 
     use super::{
@@ -2303,8 +2317,12 @@ mod tests {
 
     /// Returns the answer of one hover `contents` value.
     fn answer(contents: &Value) -> Option<MarkupText> {
-        hover_contents(contents, LanguageRegistry::first_release())
-            .expect("the text stays under the bound")
+        hover_contents(
+            contents,
+            LanguageRegistry::first_release(),
+            &mut SyntaxHighlighter::new(),
+        )
+        .expect("the text stays under the bound")
     }
 
     #[test]

@@ -5,26 +5,16 @@
 //! The analysis itself is language-neutral, so a later adapter adds a language
 //! by supplying the same kinds of data. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::{CheckDepth, LanguageSettings};
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
     LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Rust adapter owns.
-///
-/// The match is case-sensitive, because a Rust source file uses a lowercase
-/// extension.
-const RUST_EXTENSIONS: [&str; 1] = ["rs"];
-
-/// The language names that the Rust adapter answers to.
-///
-/// `rs` is the short form that a fence carries beside `rust`.
-const RUST_LANGUAGE_NAMES: [&str; 2] = ["rs", "rust"];
 
 /// The node kinds whose content takes one more indent level in Rust.
 const RUST_INDENT_SCOPES: [&str; 16] = [
@@ -61,11 +51,6 @@ const RUST_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     initialization_options: rust_analyzer_options,
     workspace_settings: None,
 }];
-
-/// Returns the Rust grammar of the bundled parser.
-fn rust_language() -> Language {
-    tree_sitter_rust::LANGUAGE.into()
-}
 
 /// Maps the language-neutral settings onto the rust-analyzer options.
 ///
@@ -105,31 +90,12 @@ impl RustAdapter {
     }
 }
 
-/// The catalog entry of the rust language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static RUST_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "rust",
-    &RUST_LANGUAGE_NAMES,
-    &RUST_EXTENSIONS,
-    &[],
-    rust_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of rust.
-fn rust_grammar() -> Grammar {
-    Grammar {
-        language: rust_language,
-        highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for RustAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &RUST_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("rust").expect("the grammar-rust feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

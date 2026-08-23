@@ -60,10 +60,15 @@ The registry reads one complete name. It normalizes no info string, because a
 CommonMark info string may carry an attribute after the name. The reader of the
 fence extracts the name and passes it alone.
 
-An adapter supplies data, not behavior. One catalog entry carries everything
-that selects and parses the language, and the adapter carries everything that a
-grammar cannot answer. The adapter names its catalog entry, so no lookup table
-of one language exists twice:
+An adapter supplies data, not behavior. One `kvim-syntax` catalog entry carries
+everything that selects and parses the language, and the adapter carries
+everything that a grammar cannot answer. The adapter names its catalog entry, so
+no lookup table of one language exists twice.
+
+The compiled highlight query belongs to `SyntaxHighlighter`, which owns a
+bounded cache and releases it on drop. One adapter exists only while the Cargo
+feature of its grammar does, so `kvim-language` registers the languages that the
+build enables and no more:
 
 | Item | Owner | Meaning |
 |---|---|---|
@@ -72,7 +77,6 @@ of one language exists twice:
 | File names | Catalog entry | The case-sensitive complete file names that the language owns, for a file whose extension does not name its format. |
 | Language names | Catalog entry | The names that the language answers to, in lower case. The match folds ASCII case, and it needs no path. |
 | Grammar | Catalog entry | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
-| Compiled highlight query | Catalog entry | The entry compiles its highlight query at most once and owns the result, so no separate cache retains it. |
 | Version | Adapter | The stable name of the analysis implementation. |
 | Comment tokens | Adapter | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | Adapter | The node kinds that hold their content one level deeper, and the characters that close such a node. |

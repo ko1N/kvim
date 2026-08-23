@@ -8,27 +8,13 @@
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the C++ adapter owns.
-///
-/// The adapter owns the explicit C++ header extensions alone. The C adapter
-/// owns `h`, because a C header is the common meaning of that extension.
-/// Exactly one adapter owns each extension, because two owners make every path
-/// of that extension an ambiguous failure.
-const CPP_EXTENSIONS: [&str; 6] = ["cc", "cpp", "cxx", "hh", "hpp", "hxx"];
-
-/// The language names that the C++ adapter answers to.
-///
-/// A fence writes `c++` as often as `cpp`, and `cxx` names the same language.
-const CPP_LANGUAGE_NAMES: [&str; 3] = ["c++", "cpp", "cxx"];
 
 /// The node kinds whose content takes one more indent level in C++.
 ///
@@ -56,34 +42,6 @@ const CPP_INDENT_SCOPES: [&str; 11] = [
 /// and a formatter never puts that character on its own line, so the table
 /// keeps `>` out and never dedents a shifted or compared expression.
 const CPP_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the C++ grammar of the bundled parser.
-fn cpp_language() -> Language {
-    tree_sitter_cpp::LANGUAGE.into()
-}
-
-/// The joined highlight query of the C++ adapter.
-///
-/// The crate ships the C++ patterns alone, because the upstream query inherits
-/// the C patterns. kvim resolves no query inheritance, so the adapter joins the
-/// two texts once. The C patterns come first, so a C++ pattern of the same node
-/// takes precedence. The C++ grammar is a superset of the C grammar, so every
-/// C pattern names a node kind that the C++ grammar holds.
-static CPP_HIGHLIGHTS_QUERY: OnceLock<String> = OnceLock::new();
-
-/// Returns the joined highlight query of the C++ adapter.
-fn cpp_highlights_query() -> &'static str {
-    CPP_HIGHLIGHTS_QUERY.get_or_init(|| {
-        let mut query = String::with_capacity(
-            tree_sitter_c::HIGHLIGHT_QUERY.len() + tree_sitter_cpp::HIGHLIGHT_QUERY.len() + 1,
-        );
-        // The crates name both queries in the singular.
-        query.push_str(tree_sitter_c::HIGHLIGHT_QUERY);
-        query.push('\n');
-        query.push_str(tree_sitter_cpp::HIGHLIGHT_QUERY);
-        query
-    })
-}
 
 /// Returns the initialization options of `clangd`.
 ///
@@ -150,31 +108,12 @@ impl CppAdapter {
     }
 }
 
-/// The catalog entry of the cpp language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static CPP_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "cpp",
-    &CPP_LANGUAGE_NAMES,
-    &CPP_EXTENSIONS,
-    &[],
-    cpp_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of cpp.
-fn cpp_grammar() -> Grammar {
-    Grammar {
-        language: cpp_language,
-        highlights_query: cpp_highlights_query(),
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for CppAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &CPP_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("cpp").expect("the grammar-cpp feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

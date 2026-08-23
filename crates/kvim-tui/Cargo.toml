@@ -33,7 +33,7 @@ tokio-util.workspace = true
 # kvim crates
 # The editor wiring tests drive the mock language server and the temporary
 # directory helper that these two crates publish behind `test-support`.
-kvim-language = { workspace = true, features = ["test-support"] }
+kvim-language = { workspace = true, features = ["all-grammars", "test-support"] }
 kvim-workspace = { workspace = true, features = ["test-support"] }
 
 # Serialization

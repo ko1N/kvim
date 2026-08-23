@@ -5,29 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the YAML adapter owns.
-const YAML_EXTENSIONS: [&str; 2] = ["yaml", "yml"];
-
-/// The complete file names that the YAML adapter owns.
-///
-/// Each name is a tool configuration that holds YAML and carries no extension,
-/// so the file-name key is the only key that selects it.
-const YAML_FILE_NAMES: [&str; 2] = [".clang-format", ".clang-tidy"];
-
-/// The language names that the YAML adapter answers to.
-///
-/// `yml` is the short form that a fence carries beside `yaml`.
-const YAML_LANGUAGE_NAMES: [&str; 2] = ["yaml", "yml"];
 
 /// The node kinds whose content takes one more indent level in YAML.
 ///
@@ -49,11 +36,6 @@ const YAML_INDENT_SCOPES: [&str; 4] = [
 /// A block collection closes with indentation alone, so the table names the
 /// brackets of the flow collections.
 const YAML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
-
-/// Returns the YAML grammar of the bundled parser.
-fn yaml_language() -> Language {
-    tree_sitter_yaml::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `yaml-language-server`.
 ///
@@ -114,31 +96,12 @@ impl YamlAdapter {
     }
 }
 
-/// The catalog entry of the yaml language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static YAML_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "yaml",
-    &YAML_LANGUAGE_NAMES,
-    &YAML_EXTENSIONS,
-    &YAML_FILE_NAMES,
-    yaml_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of yaml.
-fn yaml_grammar() -> Grammar {
-    Grammar {
-        language: yaml_language,
-        highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for YamlAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &YAML_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("yaml").expect("the grammar-yaml feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
