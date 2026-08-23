@@ -11,7 +11,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the TOML adapter owns.
@@ -94,35 +94,39 @@ impl TomlAdapter {
     }
 }
 
+/// The catalog entry of the toml language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static TOML_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "toml",
+    &TOML_LANGUAGE_NAMES,
+    &TOML_EXTENSIONS,
+    &[],
+    toml_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of toml.
+fn toml_grammar() -> Grammar {
+    Grammar {
+        language: toml_language,
+        highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for TomlAdapter {
-    fn id(&self) -> &'static str {
-        "toml"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &TOML_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &TOML_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &TOML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "toml",
-            language: toml_language,
-            highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

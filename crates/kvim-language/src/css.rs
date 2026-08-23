@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the CSS adapter owns.
@@ -98,37 +98,41 @@ impl CssAdapter {
     }
 }
 
+/// The catalog entry of the css language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static CSS_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "css",
+    &CSS_LANGUAGE_NAMES,
+    &CSS_EXTENSIONS,
+    &[],
+    css_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of css.
+fn css_grammar() -> Grammar {
+    Grammar {
+        language: css_language,
+        highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for CssAdapter {
-    fn id(&self) -> &'static str {
-        "css"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &CSS_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &CSS_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &CSS_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // CSS defines a block comment alone, so the metadata carries no line
         // token and the first-release toggle stays disabled.
         CommentStyle::new(None, Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "css",
-            language: css_language,
-            highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

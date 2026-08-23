@@ -11,7 +11,8 @@ use tree_sitter::Language;
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the fish adapter owns.
@@ -106,37 +107,41 @@ impl FishAdapter {
     }
 }
 
+/// The catalog entry of the fish language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static FISH_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "fish",
+    &FISH_LANGUAGE_NAMES,
+    &FISH_EXTENSIONS,
+    &[],
+    fish_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of fish.
+fn fish_grammar() -> Grammar {
+    Grammar {
+        language: fish_language,
+        highlights_query: tree_sitter_fish::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for FishAdapter {
-    fn id(&self) -> &'static str {
-        "fish"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &FISH_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &FISH_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &FISH_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // fish defines no block comment, so the metadata carries the line token
         // alone.
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "fish",
-            language: fish_language,
-            highlights_query: tree_sitter_fish::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

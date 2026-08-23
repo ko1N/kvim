@@ -481,7 +481,7 @@ impl MarkupDocument {
             // bound all leave the fence plain, exactly as an unknown language
             // does. kvim publishes no partial result.
             if let Ok(spans) = analysis::collect_highlights(
-                adapter.grammar(),
+                adapter.catalog(),
                 &source,
                 MARKUP_FENCE_SPANS_MAX,
                 &cancellation,

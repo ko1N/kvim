@@ -12,7 +12,7 @@ use kvim_settings::LanguageSettings;
 
 use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the YAML adapter owns.
@@ -114,40 +114,40 @@ impl YamlAdapter {
     }
 }
 
+/// The catalog entry of the yaml language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static YAML_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "yaml",
+    &YAML_LANGUAGE_NAMES,
+    &YAML_EXTENSIONS,
+    &YAML_FILE_NAMES,
+    yaml_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of yaml.
+fn yaml_grammar() -> Grammar {
+    Grammar {
+        language: yaml_language,
+        highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for YamlAdapter {
-    fn id(&self) -> &'static str {
-        "yaml"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &YAML_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &YAML_EXTENSIONS
-    }
-
-    fn file_names(&self) -> &'static [&'static str] {
-        &YAML_FILE_NAMES
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &YAML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // YAML defines a line comment alone.
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "yaml",
-            language: yaml_language,
-            highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

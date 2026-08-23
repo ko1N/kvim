@@ -12,7 +12,7 @@ use tree_sitter::Language;
 use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
     BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The file extensions that the JavaScript adapter owns.
@@ -158,35 +158,39 @@ impl JavascriptAdapter {
     }
 }
 
+/// The catalog entry of the javascript language.
+///
+/// The entry owns the lookup keys and the grammar of this language, so the
+/// adapter below names each of them once.
+static JAVASCRIPT_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
+    "javascript",
+    &JAVASCRIPT_LANGUAGE_NAMES,
+    &JAVASCRIPT_EXTENSIONS,
+    &[],
+    javascript_grammar,
+);
+
+/// Returns the Tree-sitter grammar and the queries of javascript.
+fn javascript_grammar() -> Grammar {
+    Grammar {
+        language: javascript_language,
+        highlights_query: javascript_highlights_query(),
+        injections_query: "",
+        locals_query: "",
+    }
+}
+
 impl LanguageAdapter for JavascriptAdapter {
-    fn id(&self) -> &'static str {
-        "javascript"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &JAVASCRIPT_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &JAVASCRIPT_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &JAVASCRIPT_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "javascript",
-            language: javascript_language,
-            highlights_query: javascript_highlights_query(),
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

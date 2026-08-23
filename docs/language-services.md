@@ -60,19 +60,24 @@ The registry reads one complete name. It normalizes no info string, because a
 CommonMark info string may carry an attribute after the name. The reader of the
 fence extracts the name and passes it alone.
 
-An adapter supplies data, not behavior:
+An adapter supplies data, not behavior. One catalog entry carries everything
+that selects and parses the language, and the adapter carries everything that a
+grammar cannot answer. The adapter names its catalog entry, so no lookup table
+of one language exists twice:
 
-| Item | Meaning |
-|---|---|
-| Identifier and version | The stable name of the adapter and of its analysis implementation. |
-| File extensions | The case-sensitive extensions that the adapter owns. |
-| File names | The case-sensitive complete file names that the adapter owns, for a file whose extension does not name its format. |
-| Language names | The names of the language that the adapter answers to, in lower case. The match folds ASCII case, and it needs no path. |
-| Grammar | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
-| Comment tokens | The line-comment token and the block-comment delimiters, each optional. |
-| Indent rule | The node kinds that hold their content one level deeper, and the characters that close such a node. |
-| Language servers | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, the initialization options, and the optional workspace settings. |
-| External formatter | The program that formats a buffer of this language, and its arguments in command order. One argument is a literal text, or the place of the document path. |
+| Item | Owner | Meaning |
+|---|---|---|
+| Identifier | Catalog entry | The stable name of the language, which also names its grammar in a parser failure. |
+| File extensions | Catalog entry | The case-sensitive extensions that the language owns. |
+| File names | Catalog entry | The case-sensitive complete file names that the language owns, for a file whose extension does not name its format. |
+| Language names | Catalog entry | The names that the language answers to, in lower case. The match folds ASCII case, and it needs no path. |
+| Grammar | Catalog entry | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
+| Compiled highlight query | Catalog entry | The entry compiles its highlight query at most once and owns the result, so no separate cache retains it. |
+| Version | Adapter | The stable name of the analysis implementation. |
+| Comment tokens | Adapter | The line-comment token and the block-comment delimiters, each optional. |
+| Indent rule | Adapter | The node kinds that hold their content one level deeper, and the characters that close such a node. |
+| Language servers | Adapter | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, the initialization options, and the optional workspace settings. |
+| External formatter | Adapter | The program that formats a buffer of this language, and its arguments in command order. One argument is a literal text, or the place of the document path. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
