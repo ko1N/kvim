@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the SQL adapter owns.
-const SQL_EXTENSIONS: [&str; 1] = ["sql"];
-
-/// The language names that the SQL adapter answers to.
-const SQL_LANGUAGE_NAMES: [&str; 1] = ["sql"];
 
 /// The node kinds whose content takes one more indent level in SQL.
 ///
@@ -37,11 +32,6 @@ const SQL_INDENT_SCOPES: [&str; 5] = [
 
 /// The characters that close an SQL indent scope.
 const SQL_CLOSING_DELIMITERS: [char; 1] = [')'];
-
-/// Returns the SQL grammar of the bundled parser.
-fn sql_language() -> Language {
-    tree_sitter_sequel::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `sqls`.
 ///
@@ -100,31 +90,12 @@ impl SqlAdapter {
     }
 }
 
-/// The catalog entry of the sql language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static SQL_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "sql",
-    &SQL_LANGUAGE_NAMES,
-    &SQL_EXTENSIONS,
-    &[],
-    sql_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of sql.
-fn sql_grammar() -> Grammar {
-    Grammar {
-        language: sql_language,
-        highlights_query: tree_sitter_sequel::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for SqlAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &SQL_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("sql").expect("the grammar-sql feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

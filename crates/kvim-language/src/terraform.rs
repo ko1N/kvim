@@ -1,44 +1,21 @@
 //! The Terraform language adapter.
 //!
-//! The highlight query is adapted from nvim-treesitter (Apache-2.0),
-//! runtime/queries/hcl/highlights.scm. The `tree-sitter-hcl` crate ships no
-//! query file, so `queries/hcl/highlights.scm` of this crate vendors that text
-//! and names its origin and its license.
+//! The grammar and its vendored highlight query live in `kvim-syntax`.
 //!
-//! The adapter supplies data only, exactly as the other adapters do: the paths
-//! that it owns, the Tree-sitter grammar with its highlight query, the comment
-//! metadata, the indent rule, the language servers, and the external formatter.
-//! See `docs/language-services.md`.
+//! The adapter supplies data only, exactly as the other adapters do: its
+//! catalog entry, the comment metadata, the indent rule, the language servers,
+//! and the external formatter. See `docs/language-services.md`.
+
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Terraform adapter owns.
-///
-/// The table names the two extensions of a Terraform configuration. A plain
-/// `hcl` file carries another tool, and `tofu-ls` does not serve it, so the
-/// adapter leaves that extension unclaimed.
-const TERRAFORM_EXTENSIONS: [&str; 2] = ["tf", "tfvars"];
-
-/// The language names that the Terraform adapter answers to.
-///
-/// The adapter leaves `hcl` unclaimed, exactly as it leaves that extension
-/// unclaimed, because a plain HCL file carries another tool.
-const TERRAFORM_LANGUAGE_NAMES: [&str; 2] = ["terraform", "tf"];
-
-/// The highlight query of the Terraform adapter.
-///
-/// The `tree-sitter-hcl` crate ships no query, so this crate vendors the
-/// nvim-treesitter query beside its source. See the module document above for
-/// the origin and the license.
-const TERRAFORM_HIGHLIGHTS_QUERY: &str = include_str!("../queries/hcl/highlights.scm");
 
 /// The node kinds whose content takes one more indent level in Terraform.
 ///
@@ -51,11 +28,6 @@ const TERRAFORM_INDENT_SCOPES: [&str; 4] = ["block", "function_call", "object", 
 
 /// The characters that close a Terraform indent scope.
 const TERRAFORM_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the HCL grammar of the bundled parser.
-fn terraform_language() -> Language {
-    tree_sitter_hcl::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `tofu-ls`.
 ///
@@ -118,31 +90,13 @@ impl TerraformAdapter {
     }
 }
 
-/// The catalog entry of the terraform language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static TERRAFORM_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "terraform",
-    &TERRAFORM_LANGUAGE_NAMES,
-    &TERRAFORM_EXTENSIONS,
-    &[],
-    terraform_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of terraform.
-fn terraform_grammar() -> Grammar {
-    Grammar {
-        language: terraform_language,
-        highlights_query: TERRAFORM_HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for TerraformAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &TERRAFORM_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("terraform")
+                .expect("the grammar-terraform feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

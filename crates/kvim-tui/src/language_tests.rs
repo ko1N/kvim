@@ -22,7 +22,8 @@ use kvim_language::mock::{
 };
 use kvim_language::{
     FormatterFailure, LanguageOutcome, LanguageRegistry, LanguageServerHandle, LspError,
-    MARKUP_SOURCE_BYTES_MAX, MarkupDocument, MarkupKind, MarkupRole, MarkupText, SyntaxRole,
+    MARKUP_SOURCE_BYTES_MAX, MarkupDocument, MarkupKind, MarkupRole, MarkupText, SyntaxHighlighter,
+    SyntaxRole,
 };
 use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
@@ -1153,9 +1154,10 @@ async fn the_hover_float_paints_the_code_of_a_fence_in_its_syntax_roles() {
 /// answer arrives, so the helper builds the value that reaches the float.
 fn hover_answer(kind: MarkupKind, text: &str) -> MarkupText {
     let document = match kind {
-        MarkupKind::Markdown => {
-            MarkupDocument::parse(text).highlighted(LanguageRegistry::first_release())
-        }
+        MarkupKind::Markdown => MarkupDocument::parse(text).highlighted(
+            LanguageRegistry::first_release(),
+            &mut SyntaxHighlighter::new(),
+        ),
         MarkupKind::PlainText => MarkupDocument::default(),
     };
     MarkupText {

@@ -5,26 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the C adapter owns.
-///
-/// The adapter owns the header extension `h`, because a C header is the common
-/// meaning of that extension. The C++ adapter therefore owns the explicit C++
-/// header extensions alone. Exactly one adapter owns each extension, because
-/// two owners make every path of that extension an ambiguous failure.
-const C_EXTENSIONS: [&str; 2] = ["c", "h"];
-
-/// The language names that the C adapter answers to.
-const C_LANGUAGE_NAMES: [&str; 1] = ["c"];
 
 /// The node kinds whose content takes one more indent level in C.
 ///
@@ -43,11 +33,6 @@ const C_INDENT_SCOPES: [&str; 7] = [
 
 /// The characters that close a C indent scope.
 const C_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the C grammar of the bundled parser.
-fn c_language() -> Language {
-    tree_sitter_c::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `clangd`.
 ///
@@ -110,27 +95,12 @@ impl CAdapter {
     }
 }
 
-/// The catalog entry of the c language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static C_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("c", &C_LANGUAGE_NAMES, &C_EXTENSIONS, &[], c_grammar);
-
-/// Returns the Tree-sitter grammar and the queries of c.
-fn c_grammar() -> Grammar {
-    Grammar {
-        language: c_language,
-        // The crate names the query in the singular.
-        highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for CAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &C_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("c").expect("the grammar-c feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

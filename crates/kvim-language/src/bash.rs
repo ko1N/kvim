@@ -5,33 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Bash adapter owns.
-///
-/// The grammar reads the POSIX shell language and the Bash extensions of it, so
-/// one adapter owns both extensions.
-const BASH_EXTENSIONS: [&str; 2] = ["bash", "sh"];
-
-/// The complete file names that the Bash adapter owns.
-///
-/// Each name is a startup script of an interactive or a login shell. The name
-/// carries no extension, so the file-name key is the only key that selects it.
-const BASH_FILE_NAMES: [&str; 4] = [".bash_logout", ".bash_profile", ".bashrc", ".profile"];
-
-/// The language names that the Bash adapter answers to.
-///
-/// One grammar reads the POSIX shell language and the Bash extensions of it,
-/// so the adapter answers to the plain name of the shell as well.
-const BASH_LANGUAGE_NAMES: [&str; 3] = ["bash", "sh", "shell"];
 
 /// The node kinds whose content takes one more indent level in Bash.
 ///
@@ -62,11 +45,6 @@ const BASH_INDENT_SCOPES: [&str; 8] = [
 /// brace closes a compound statement. The remaining scopes close with a keyword,
 /// which this rule cannot name.
 const BASH_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
-
-/// Returns the Bash grammar of the bundled parser.
-fn bash_language() -> Language {
-    tree_sitter_bash::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `bash-language-server`.
 ///
@@ -129,32 +107,12 @@ impl BashAdapter {
     }
 }
 
-/// The catalog entry of the bash language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static BASH_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "bash",
-    &BASH_LANGUAGE_NAMES,
-    &BASH_EXTENSIONS,
-    &BASH_FILE_NAMES,
-    bash_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of bash.
-fn bash_grammar() -> Grammar {
-    Grammar {
-        language: bash_language,
-        // The crate names the query in the singular.
-        highlights_query: tree_sitter_bash::HIGHLIGHT_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for BashAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &BASH_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("bash").expect("the grammar-bash feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

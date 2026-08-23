@@ -5,26 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Python adapter owns.
-///
-/// A stub file carries the `pyi` extension and the same grammar, so one adapter
-/// owns both extensions.
-const PYTHON_EXTENSIONS: [&str; 2] = ["py", "pyi"];
-
-/// The language names that the Python adapter answers to.
-///
-/// `py` is the short form that a fence carries beside `python`.
-const PYTHON_LANGUAGE_NAMES: [&str; 2] = ["py", "python"];
 
 /// The node kinds whose content takes one more indent level in Python.
 ///
@@ -80,11 +70,6 @@ const PYTHON_INDENT_SCOPES: [&str; 21] = [
 /// A suite closes with no character, so these three characters close the
 /// bracketed expressions of the table above alone.
 const PYTHON_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the Python grammar of the bundled parser.
-fn python_language() -> Language {
-    tree_sitter_python::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `pyright-langserver`.
 ///
@@ -152,31 +137,13 @@ impl PythonAdapter {
     }
 }
 
-/// The catalog entry of the python language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static PYTHON_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "python",
-    &PYTHON_LANGUAGE_NAMES,
-    &PYTHON_EXTENSIONS,
-    &[],
-    python_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of python.
-fn python_grammar() -> Grammar {
-    Grammar {
-        language: python_language,
-        highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for PythonAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &PYTHON_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("python")
+                .expect("the grammar-python feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

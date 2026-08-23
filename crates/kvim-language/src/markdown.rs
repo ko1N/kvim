@@ -4,32 +4,16 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Markdown adapter owns.
-const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
-
-/// The language names that the Markdown adapter answers to.
-///
-/// `md` is the short form that a fence carries beside `markdown`.
-const MARKDOWN_LANGUAGE_NAMES: [&str; 2] = ["markdown", "md"];
-
-/// Returns the Markdown block grammar of the bundled parser.
-///
-/// The parser splits Markdown into a block grammar and an inline grammar. kvim
-/// resolves no grammar injection yet, so the block grammar is the whole
-/// analysis, and it carries every structural highlight of a document.
-fn markdown_language() -> Language {
-    tree_sitter_md::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `marksman`.
 ///
@@ -92,31 +76,13 @@ impl MarkdownAdapter {
     }
 }
 
-/// The catalog entry of the markdown language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static MARKDOWN_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "markdown",
-    &MARKDOWN_LANGUAGE_NAMES,
-    &MARKDOWN_EXTENSIONS,
-    &[],
-    markdown_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of markdown.
-fn markdown_grammar() -> Grammar {
-    Grammar {
-        language: markdown_language,
-        highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for MarkdownAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &MARKDOWN_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("markdown")
+                .expect("the grammar-markdown feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

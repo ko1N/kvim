@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Lua adapter owns.
-const LUA_EXTENSIONS: [&str; 1] = ["lua"];
-
-/// The language names that the Lua adapter answers to.
-const LUA_LANGUAGE_NAMES: [&str; 1] = ["lua"];
 
 /// The node kinds whose content takes one more indent level in Lua.
 ///
@@ -56,11 +51,6 @@ const LUA_INDENT_SCOPES: [&str; 11] = [
 /// expression. A brace closes a table constructor. Every other scope closes with
 /// a keyword, which this rule cannot name.
 const LUA_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
-
-/// Returns the Lua grammar of the bundled parser.
-fn lua_language() -> Language {
-    tree_sitter_lua::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `lua-language-server`.
 ///
@@ -117,31 +107,12 @@ impl LuaAdapter {
     }
 }
 
-/// The catalog entry of the lua language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static LUA_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "lua",
-    &LUA_LANGUAGE_NAMES,
-    &LUA_EXTENSIONS,
-    &[],
-    lua_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of lua.
-fn lua_grammar() -> Grammar {
-    Grammar {
-        language: lua_language,
-        highlights_query: tree_sitter_lua::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for LuaAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &LUA_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("lua").expect("the grammar-lua feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

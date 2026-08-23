@@ -31,7 +31,7 @@ use std::mem;
 use std::num::NonZeroU16;
 use std::num::NonZeroU32;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -54,7 +54,7 @@ use kvim_language::{
     DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure, FormatterRequest,
     HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
     LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
-    SyntaxTree,
+    SyntaxHighlighter, SyntaxTree,
 };
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
@@ -460,6 +460,12 @@ pub struct AnalysisRequest {
     buffer: BufferId,
     adapter: &'static dyn LanguageAdapter,
     input: AnalysisInput,
+    /// The highlighter that the session owns.
+    ///
+    /// One analysis runs at a time, so the jobs share one highlighter and every
+    /// later analysis of a language reuses its compiled query. The lock is free
+    /// whenever a job starts, because the publication gate admits one analysis.
+    highlighter: Arc<Mutex<SyntaxHighlighter>>,
 }
 
 impl AnalysisRequest {
@@ -475,9 +481,15 @@ impl AnalysisRequest {
     /// so a superseded job stops as early as the parser allows.
     #[must_use]
     pub fn run(self, cancellation: &CancellationToken) -> AnalysisResult {
+        let mut highlighter = self
+            .highlighter
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         AnalysisResult {
             buffer: self.buffer,
-            outcome: self.adapter.analyze(&self.input, cancellation),
+            outcome: self
+                .adapter
+                .analyze(&self.input, &mut highlighter, cancellation),
         }
     }
 }
@@ -931,6 +943,12 @@ pub struct Session {
     settings: EditorSettings,
     theme: Theme,
     root: Arc<WorktreeRoot>,
+    /// The highlighter that every analysis job of this session shares.
+    ///
+    /// One analysis runs at a time, so one highlighter keeps the compiled query
+    /// of each language that the session opened, and it releases every one of
+    /// them with the session.
+    highlighter: Arc<Mutex<SyntaxHighlighter>>,
     buffers: Buffers,
     active: BufferId,
     /// The file operation that waits for the bounded worker service.
@@ -1059,6 +1077,7 @@ impl Session {
             settings,
             theme: Theme::new(),
             root: Arc::clone(&root),
+            highlighter: Arc::new(Mutex::new(SyntaxHighlighter::new())),
             buffers,
             active,
             file_outbox: None,
@@ -2394,6 +2413,7 @@ impl Session {
             buffer,
             adapter,
             input,
+            highlighter: Arc::clone(&self.highlighter),
         })
     }
 

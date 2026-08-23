@@ -1,29 +1,54 @@
 //! The language-neutral Tree-sitter analysis.
 //! Adapted from ReviewGraph (MIT), src/analysis.rs.
 //!
-//! Nothing in this file names one language. The parse, the highlight walk, and
-//! the indent query all read the [`Grammar`](super::Grammar) and the
-//! [`IndentRule`](super::IndentRule) that one adapter supplies as data. A new
-//! language therefore needs one new adapter, and no change here.
+//! Nothing in this file names one language. The parse and the indent query both
+//! read the catalog entry and the [`IndentRule`](super::IndentRule) that one
+//! adapter supplies as data. A new language therefore needs one new adapter,
+//! and no change here.
+//!
+//! The highlight walk itself belongs to `kvim-syntax`, which owns the grammar
+//! catalog and the bounded highlighter. This file keeps the parse, because the
+//! editor also needs the syntax tree for the indent query and for the reuse
+//! input of the next parse.
 
 use tokio_util::sync::CancellationToken;
 use tree_sitter::{Node, ParseOptions, ParseState, Parser, Tree};
-use tree_sitter_highlight::{Error as HighlightError, HighlightEvent, Highlighter};
+
+use kvim_syntax::{
+    Grammar, HighlightLimits, Highlighted, LimitKind, SyntaxHighlighter, Truncation,
+};
 
 use super::LanguageAdapter;
 use super::{
-    ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_NODES_MAX, Analysis, AnalysisError,
-    AnalysisInput, BoundMeasure, Grammar, HighlightSpan, IndentLevel, IndentRule,
-    LanguageCatalogEntry, SyntaxRole, analysis, enforce_count, previous_tree, validate_source,
+    ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_NODES_MAX,
+    ANALYSIS_SOURCE_BYTES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, IndentLevel,
+    IndentRule, analysis, enforce_count, previous_tree, validate_source,
 };
+
+/// Returns the bounds that one buffer analysis gives the highlighter.
+///
+/// The values repeat the analysis bounds of this crate, so a buffer keeps the
+/// limits that `docs/language-services.md` records.
+pub(super) fn buffer_limits() -> HighlightLimits {
+    HighlightLimits::default()
+        .with_source_bytes_max(ANALYSIS_SOURCE_BYTES_MAX)
+        .with_parse_depth_max(ANALYSIS_DEPTH_MAX)
+        .with_capture_depth_max(ANALYSIS_DEPTH_MAX)
+        .with_spans_max(ANALYSIS_HIGHLIGHT_SPANS_MAX)
+}
 
 /// Parses one buffer version and collects its bounded highlight spans.
 ///
 /// The parse reuses the moved tree of the previous version when the caller
 /// supplies one, so a small change does not reparse the complete buffer.
+///
+/// The caller owns `highlighter`, which keeps the compiled query of each
+/// language that it served. One analysis runs at a time, so one highlighter
+/// serves the editor.
 pub(super) fn analyze<A>(
     adapter: &A,
     input: &AnalysisInput,
+    highlighter: &mut SyntaxHighlighter,
     cancellation: &CancellationToken,
 ) -> Result<Analysis, AnalysisError>
 where
@@ -46,8 +71,50 @@ where
         BoundMeasure::Nodes,
     )?;
 
-    let highlights = collect_highlights(entry, source, ANALYSIS_HIGHLIGHT_SPANS_MAX, cancellation)?;
-    Ok(analysis(input, tree, highlights, adapter.indent_rule()))
+    let highlighted = highlighter
+        .highlight(entry, source, &buffer_limits(), &|| {
+            cancellation.is_cancelled()
+        })
+        .map_err(AnalysisError::from)?;
+    // The public facade truncates and names the bound that stopped it. The
+    // editor publishes no partial buffer analysis, so a truncated result
+    // renders plain text instead of highlighting the head of a file and
+    // leaving its tail bare. See `docs/language-services.md`.
+    if let Some(bounds) = rejected_truncation(&highlighted) {
+        return Err(bounds);
+    }
+    Ok(analysis(
+        input,
+        tree,
+        highlighted.spans().to_vec(),
+        adapter.indent_rule(),
+    ))
+}
+
+/// Returns the bounds failure of one truncated buffer analysis.
+///
+/// A truncated syntax-error list changes no published value, because a buffer
+/// analysis carries spans alone, so that bound alone keeps the result.
+fn rejected_truncation(highlighted: &Highlighted) -> Option<AnalysisError> {
+    let Truncation::Truncated { limit } = highlighted.truncation() else {
+        return None;
+    };
+    let (measure, bound) = match limit {
+        LimitKind::Spans => (BoundMeasure::HighlightSpans, ANALYSIS_HIGHLIGHT_SPANS_MAX),
+        LimitKind::CaptureDepth | LimitKind::ParseDepth => {
+            (BoundMeasure::Depth, ANALYSIS_DEPTH_MAX)
+        }
+        LimitKind::SourceBytes => (BoundMeasure::Bytes, ANALYSIS_SOURCE_BYTES_MAX),
+        LimitKind::ParserWork | LimitKind::SyntaxErrors => return None,
+        _ => return None,
+    };
+    Some(AnalysisError::Bounds {
+        measure,
+        limit: bound,
+        // The walk stopped at the bound, so the kept count names what the
+        // analysis would have published.
+        actual: highlighted.spans().len(),
+    })
 }
 
 /// Parses the source with the grammar of one adapter.
@@ -79,239 +146,6 @@ fn parse(
                 AnalysisError::ParseFailure
             }
         })
-}
-
-/// Collects the bounded highlight spans of one source.
-///
-/// The highlighter reports one flat, ordered sequence of ranges with an active
-/// capture stack, so the innermost capture decides the role of a range.
-///
-/// This is the one highlighter of kvim. One buffer version reaches it through
-/// [`analyze`], and the code of one markdown fence reaches it through
-/// [`crate::markup`], so one source carries one set of roles wherever it
-/// stands. `spans_max` names the bound of the caller, because a buffer and a
-/// fence hold a different quantity of text.
-pub(super) fn collect_highlights(
-    entry: &LanguageCatalogEntry,
-    source: &str,
-    spans_max: usize,
-    cancellation: &CancellationToken,
-) -> Result<Vec<HighlightSpan>, AnalysisError> {
-    let configuration = entry.highlight_configuration()?;
-    let names = configuration.names();
-    let bytes = source.as_bytes();
-    let mut highlighter = Highlighter::new();
-    let events = highlighter
-        .highlight(configuration, bytes, None, |_| None)
-        .map_err(map_highlight_error)?;
-
-    let mut spans = Vec::new();
-    let mut active: Vec<usize> = Vec::new();
-    let mut lines = LineCursor::default();
-    for event in events {
-        if cancellation.is_cancelled() {
-            return Err(AnalysisError::Cancelled);
-        }
-        match event.map_err(map_highlight_error)? {
-            HighlightEvent::HighlightStart(highlight) => {
-                enforce_count(active.len() + 1, ANALYSIS_DEPTH_MAX, BoundMeasure::Depth)?;
-                active.push(highlight.0);
-            }
-            HighlightEvent::HighlightEnd => {
-                active.pop().ok_or(AnalysisError::MalformedOutput)?;
-            }
-            HighlightEvent::Source { start, end } => {
-                if start > end || end > bytes.len() {
-                    return Err(AnalysisError::MalformedOutput);
-                }
-                let Some(role) = active.iter().rev().find_map(|index| {
-                    names
-                        .get(*index)
-                        .and_then(|name| highlight_role(name, &bytes[start..end]))
-                }) else {
-                    continue;
-                };
-                push_spans(bytes, &mut lines, start, end, role, spans_max, &mut spans)?;
-            }
-        }
-    }
-    if !active.is_empty() {
-        return Err(AnalysisError::MalformedOutput);
-    }
-    Ok(spans)
-}
-
-/// Maps one capture name of a highlight query to one syntax role.
-///
-/// Tree-sitter highlight queries share one capture vocabulary across grammars,
-/// so the mapping stays language-neutral. The first component of a dotted name
-/// carries the meaning. A constant that starts with a digit is a numeric
-/// literal, which several queries capture as a constant.
-pub(super) fn highlight_role(name: &str, bytes: &[u8]) -> Option<SyntaxRole> {
-    let mut parts = name.split('.');
-    let prefix = parts.next()?;
-    match prefix {
-        "attribute" => Some(SyntaxRole::Attribute),
-        "boolean" => Some(SyntaxRole::Boolean),
-        // A character literal is a string of one character, so it takes the
-        // string role.
-        "character" => Some(SyntaxRole::String),
-        "comment" => Some(SyntaxRole::Comment),
-        // The Lua query names the branch keywords and the loop keywords with
-        // the older words of the same shared vocabulary.
-        "conditional" | "repeat" => Some(SyntaxRole::Keyword),
-        "constant" if bytes.first().is_some_and(u8::is_ascii_digit) => Some(SyntaxRole::Number),
-        "constant" => Some(SyntaxRole::Constant),
-        "constructor" => Some(SyntaxRole::Constructor),
-        // The C family names a comma and a semicolon `delimiter`, while the
-        // other grammars name the same characters `punctuation.delimiter`.
-        "delimiter" => Some(SyntaxRole::Delimiter),
-        "escape" | "string" => Some(SyntaxRole::String),
-        // A table field of the Lua query is the property of its table.
-        "field" => Some(SyntaxRole::Property),
-        // The SQL query names a floating-point literal with the older word of
-        // the same shared vocabulary.
-        "float" => Some(SyntaxRole::Number),
-        "function" if name.split('.').any(|part| part == "macro") => Some(SyntaxRole::Macro),
-        "function" => Some(SyntaxRole::Function),
-        "keyword" => Some(SyntaxRole::Keyword),
-        "label" => Some(SyntaxRole::Statement),
-        // The `markup` family is the newer name of the `text` family below, so
-        // each name takes the role of the older word that carries the same
-        // meaning. A bare `markup` marks the plain text of a document, which
-        // no role names, so that capture stays off and its text stays plain.
-        "markup" => match parts.next() {
-            Some("heading") => Some(SyntaxRole::Type),
-            Some("link" | "raw") => Some(SyntaxRole::String),
-            _ => None,
-        },
-        // A method is a function of one value, so it takes the function role.
-        "method" => Some(SyntaxRole::Function),
-        // A module name names a namespace of declarations, so it takes the type
-        // role of that namespace.
-        "module" => Some(SyntaxRole::Type),
-        "number" => Some(SyntaxRole::Number),
-        "operator" => Some(SyntaxRole::Operator),
-        // The Lua query names a function parameter with the older word of the
-        // same shared vocabulary.
-        "parameter" => Some(SyntaxRole::Parameter),
-        "preproc" => Some(SyntaxRole::Preprocessor),
-        "property" => Some(SyntaxRole::Property),
-        "punctuation" => match parts.next() {
-            Some("bracket") => Some(SyntaxRole::Bracket),
-            Some("delimiter") => Some(SyntaxRole::Delimiter),
-            _ => Some(SyntaxRole::Operator),
-        },
-        // A storage class names how a database keeps an object, so the SQL
-        // query marks a keyword with the older word of the same shared
-        // vocabulary.
-        "storageclass" => Some(SyntaxRole::Keyword),
-        // A tag names the kind of an element, exactly as a type name names the
-        // kind of a value, so the markup grammars take the type role. The
-        // deeper names of the same family, for example the erroneous end tag of
-        // the HTML query, keep that role.
-        "tag" => Some(SyntaxRole::Type),
-        // The `text` family belongs to the prose grammars of the same shared
-        // vocabulary. Each name maps onto the role that carries the same
-        // meaning, because the role set names source meaning and stays fixed.
-        "text" => match parts.next() {
-            Some("literal" | "uri") => Some(SyntaxRole::String),
-            Some("reference") => Some(SyntaxRole::Constant),
-            Some("title") => Some(SyntaxRole::Type),
-            _ => None,
-        },
-        "type" => Some(SyntaxRole::Type),
-        "variable" => match parts.next() {
-            // A member of a value is the property of that value, so the newer
-            // word takes the role of `field` above.
-            Some("member") => Some(SyntaxRole::Property),
-            Some("parameter") => Some(SyntaxRole::Parameter),
-            _ => Some(SyntaxRole::Variable),
-        },
-        _ => None,
-    }
-}
-
-/// The line and the line start of the last visited byte offset.
-///
-/// The highlighter reports ascending ranges, so one forward walk over the
-/// source converts every range. A scan from the start of the source for each
-/// range would cost the square of the source length.
-#[derive(Debug, Default)]
-struct LineCursor {
-    /// The byte offset that the cursor already counted.
-    position: usize,
-    /// The zero-based line of [`LineCursor::position`].
-    line: usize,
-    /// The byte offset at which that line starts.
-    line_start: usize,
-}
-
-impl LineCursor {
-    /// Moves the cursor forward to one byte offset.
-    fn advance_to(&mut self, source: &[u8], byte: usize) {
-        debug_assert!(
-            byte >= self.position,
-            "the highlighter reports ascending ranges, so the cursor never moves back"
-        );
-        let end = byte.min(source.len());
-        for (offset, value) in source[self.position..end].iter().enumerate() {
-            if *value == b'\n' {
-                self.line += 1;
-                self.line_start = self.position + offset + 1;
-            }
-        }
-        self.position = byte;
-    }
-}
-
-/// Splits one source range into per-line spans with byte columns.
-fn push_spans(
-    source: &[u8],
-    lines: &mut LineCursor,
-    start: usize,
-    end: usize,
-    role: SyntaxRole,
-    spans_max: usize,
-    spans: &mut Vec<HighlightSpan>,
-) -> Result<(), AnalysisError> {
-    lines.advance_to(source, start);
-    let mut segment_start = start;
-    while segment_start < end {
-        let segment_end = source[segment_start..end]
-            .iter()
-            .position(|byte| *byte == b'\n')
-            .map_or(end, |offset| segment_start + offset);
-        if segment_start < segment_end {
-            enforce_count(spans.len() + 1, spans_max, BoundMeasure::HighlightSpans)?;
-            spans.push(HighlightSpan {
-                line: narrowed(lines.line)?,
-                start_byte: narrowed(segment_start - lines.line_start)?,
-                end_byte: narrowed(segment_end - lines.line_start)?,
-                role,
-            });
-        }
-        if segment_end == end {
-            break;
-        }
-        segment_start = segment_end + 1;
-        lines.advance_to(source, segment_start);
-    }
-    Ok(())
-}
-
-/// Narrows one span coordinate to the published width.
-fn narrowed(value: usize) -> Result<u32, AnalysisError> {
-    u32::try_from(value).map_err(|_| AnalysisError::MalformedOutput)
-}
-
-/// Maps one highlighter failure to a typed analysis failure.
-fn map_highlight_error(error: HighlightError) -> AnalysisError {
-    match error {
-        HighlightError::Cancelled => AnalysisError::Cancelled,
-        HighlightError::InvalidLanguage => AnalysisError::ParserSetup,
-        HighlightError::Unknown => AnalysisError::ParseFailure,
-    }
 }
 
 /// Returns the indent level of a new line at one byte offset.

@@ -4,21 +4,16 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the TOML adapter owns.
-const TOML_EXTENSIONS: [&str; 1] = ["toml"];
-
-/// The language names that the TOML adapter answers to.
-const TOML_LANGUAGE_NAMES: [&str; 1] = ["toml"];
 
 /// The node kinds whose content takes one more indent level in TOML.
 ///
@@ -28,11 +23,6 @@ const TOML_INDENT_SCOPES: [&str; 2] = ["array", "inline_table"];
 
 /// The characters that close a TOML indent scope.
 const TOML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
-
-/// Returns the TOML grammar of the bundled parser.
-fn toml_language() -> Language {
-    tree_sitter_toml_ng::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `taplo`.
 ///
@@ -94,31 +84,12 @@ impl TomlAdapter {
     }
 }
 
-/// The catalog entry of the toml language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static TOML_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "toml",
-    &TOML_LANGUAGE_NAMES,
-    &TOML_EXTENSIONS,
-    &[],
-    toml_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of toml.
-fn toml_grammar() -> Grammar {
-    Grammar {
-        language: toml_language,
-        highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for TomlAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &TOML_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("toml").expect("the grammar-toml feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {

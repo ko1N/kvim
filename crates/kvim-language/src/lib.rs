@@ -58,7 +58,7 @@
 //!
 //! ```
 //! use std::path::Path;
-//! use std::sync::Arc;
+//! use std::sync::{Arc, OnceLock};
 //!
 //! use kvim_core::TextBuffer;
 //! use kvim_language::{AnalysisInput, LanguageRegistry};
@@ -81,7 +81,7 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use thiserror::Error;
@@ -91,41 +91,70 @@ use tree_sitter::{InputEdit, Point, Tree};
 use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange};
 
 mod analysis;
+#[cfg(feature = "grammar-asm")]
 mod asm;
+#[cfg(feature = "grammar-bash")]
 mod bash;
+#[cfg(feature = "grammar-c")]
 mod c;
-mod catalog;
+#[cfg(feature = "grammar-cpp")]
 mod cpp;
+#[cfg(feature = "grammar-css")]
 mod css;
 mod document;
+#[cfg(any(
+    feature = "grammar-javascript",
+    feature = "grammar-tsx",
+    feature = "grammar-typescript",
+))]
 mod ecma;
 mod encoding;
+#[cfg(feature = "grammar-fish")]
 mod fish;
 mod formatter;
+#[cfg(feature = "grammar-glsl")]
 mod glsl;
+#[cfg(feature = "grammar-go")]
 mod go;
+#[cfg(feature = "grammar-html")]
 mod html;
+#[cfg(feature = "grammar-javascript")]
 mod javascript;
+#[cfg(feature = "grammar-json")]
 mod json;
+#[cfg(feature = "grammar-lua")]
 mod lua;
+#[cfg(feature = "grammar-markdown")]
 mod markdown;
 mod markup;
+#[cfg(feature = "grammar-nix")]
 mod nix;
 mod progress;
 mod protocol;
+#[cfg(feature = "grammar-python")]
 mod python;
+#[cfg(feature = "grammar-rust")]
 mod rust;
+#[cfg(feature = "grammar-scss")]
 mod scss;
 mod server;
 mod services;
 mod session;
+#[cfg(feature = "grammar-sql")]
 mod sql;
+#[cfg(feature = "grammar-terraform")]
 mod terraform;
+#[cfg(feature = "grammar-toml")]
 mod toml;
+#[cfg(feature = "grammar-tsx")]
 mod tsx;
+#[cfg(feature = "grammar-typescript")]
 mod typescript;
+#[cfg(feature = "grammar-xml")]
 mod xml;
+#[cfg(feature = "grammar-yaml")]
 mod yaml;
+#[cfg(feature = "grammar-zig")]
 mod zig;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -135,33 +164,50 @@ mod session_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "grammar-asm")]
 pub use asm::AsmAdapter;
+#[cfg(feature = "grammar-bash")]
 pub use bash::BashAdapter;
+#[cfg(feature = "grammar-c")]
 pub use c::CAdapter;
-pub use catalog::{Grammar, LanguageCatalogEntry};
+#[cfg(feature = "grammar-cpp")]
 pub use cpp::CppAdapter;
+#[cfg(feature = "grammar-css")]
 pub use css::CssAdapter;
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, MarkupKind,
     MarkupText, SourceLocation, TextEdit,
 };
+#[cfg(feature = "grammar-fish")]
 pub use fish::FishAdapter;
 pub use formatter::{
     FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
     FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, LanguageFormatter,
 };
+#[cfg(feature = "grammar-glsl")]
 pub use glsl::GlslAdapter;
+#[cfg(feature = "grammar-go")]
 pub use go::GoAdapter;
+#[cfg(feature = "grammar-html")]
 pub use html::HtmlAdapter;
+#[cfg(feature = "grammar-javascript")]
 pub use javascript::JavascriptAdapter;
+#[cfg(feature = "grammar-json")]
 pub use json::JsonAdapter;
+pub use kvim_syntax::{
+    Grammar, HighlightLimits, HighlightSpan, Highlighted, LanguageCatalogEntry, LimitKind,
+    SyntaxHighlighter, SyntaxRole, Truncation,
+};
+#[cfg(feature = "grammar-lua")]
 pub use lua::LuaAdapter;
+#[cfg(feature = "grammar-markdown")]
 pub use markdown::MarkdownAdapter;
 pub use markup::{
     MARKUP_BLOCKS_MAX, MARKUP_FENCE_SOURCE_BYTES_MAX, MARKUP_FENCE_SPANS_MAX, MARKUP_FENCES_MAX,
     MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX, MarkupBlock, MarkupBody,
     MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole, StyledMarkup,
 };
+#[cfg(feature = "grammar-nix")]
 pub use nix::NixAdapter;
 pub use progress::{
     LSP_PROGRESS_CHARS_MAX, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
@@ -172,8 +218,11 @@ pub use protocol::{
     LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError, SourceSpan,
     WorkspaceRoot,
 };
+#[cfg(feature = "grammar-python")]
 pub use python::PythonAdapter;
+#[cfg(feature = "grammar-rust")]
 pub use rust::RustAdapter;
+#[cfg(feature = "grammar-scss")]
 pub use scss::ScssAdapter;
 pub use server::{
     LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId,
@@ -189,13 +238,21 @@ pub use session::{
     LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LanguageEvent, LanguageOutcome,
     LanguageRequestId, LanguageServerHandle, ServerReport,
 };
+#[cfg(feature = "grammar-sql")]
 pub use sql::SqlAdapter;
+#[cfg(feature = "grammar-terraform")]
 pub use terraform::TerraformAdapter;
+#[cfg(feature = "grammar-toml")]
 pub use toml::TomlAdapter;
+#[cfg(feature = "grammar-tsx")]
 pub use tsx::TsxAdapter;
+#[cfg(feature = "grammar-typescript")]
 pub use typescript::TypescriptAdapter;
+#[cfg(feature = "grammar-xml")]
 pub use xml::XmlAdapter;
+#[cfg(feature = "grammar-yaml")]
 pub use yaml::YamlAdapter;
+#[cfg(feature = "grammar-zig")]
 pub use zig::ZigAdapter;
 
 /// The largest source that one analysis reads, in bytes.
@@ -269,6 +326,27 @@ pub enum AnalysisError {
     /// The parser returned a range that the source does not hold.
     #[error("the language adapter returned malformed spans")]
     MalformedOutput,
+}
+
+impl From<kvim_syntax::HighlightFailure> for AnalysisError {
+    /// Maps one highlighter outcome onto the analysis vocabulary.
+    ///
+    /// The editor keeps its own failure names, because a buffer analysis also
+    /// parses and reads an indent rule, which the highlighter never does.
+    fn from(failure: kvim_syntax::HighlightFailure) -> Self {
+        match failure {
+            kvim_syntax::HighlightFailure::UnsupportedLanguage => Self::UnsupportedPath,
+            kvim_syntax::HighlightFailure::SourceTooLarge { bytes, max_bytes } => Self::Bounds {
+                measure: BoundMeasure::Bytes,
+                limit: max_bytes,
+                actual: bytes,
+            },
+            kvim_syntax::HighlightFailure::GrammarSetup => Self::ParserSetup,
+            kvim_syntax::HighlightFailure::ParseFailure => Self::ParseFailure,
+            kvim_syntax::HighlightFailure::Cancelled => Self::Cancelled,
+            kvim_syntax::HighlightFailure::MalformedRanges => Self::MalformedOutput,
+        }
+    }
 }
 
 /// The delimiters of one block comment.
@@ -387,70 +465,6 @@ impl IndentLevel {
     pub const fn get(self) -> u16 {
         self.0
     }
-}
-
-/// One terminal-independent syntax role.
-///
-/// A language adapter emits these roles. A role names what a range of source
-/// is, never how it looks, so the language boundary needs no palette and no
-/// terminal. The interface layer maps each role to one style. See
-/// `docs/language-services.md`.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SyntaxRole {
-    /// An attribute, such as a Rust derive attribute.
-    Attribute,
-    /// A boolean literal.
-    Boolean,
-    /// A bracket, brace, or parenthesis.
-    Bracket,
-    /// A comment.
-    Comment,
-    /// A named constant.
-    Constant,
-    /// A constructor, such as an enum variant.
-    Constructor,
-    /// A delimiter, such as a comma or a semicolon.
-    Delimiter,
-    /// A function name.
-    Function,
-    /// A language keyword.
-    Keyword,
-    /// A macro name.
-    Macro,
-    /// A numeric literal.
-    Number,
-    /// An operator.
-    Operator,
-    /// A function parameter.
-    Parameter,
-    /// A preprocessor directive.
-    Preprocessor,
-    /// A structure field or a property.
-    Property,
-    /// A statement keyword.
-    Statement,
-    /// A string literal.
-    String,
-    /// A type name.
-    Type,
-    /// A variable name.
-    Variable,
-}
-
-/// One bounded highlight range inside one buffer line.
-///
-/// The range holds byte offsets inside the line, never terminal cells and never
-/// a color. The interface layer maps [`SyntaxRole`] to one theme role.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HighlightSpan {
-    /// The zero-based line index.
-    pub line: u32,
-    /// The first byte of the range inside the line.
-    pub start_byte: u32,
-    /// The byte after the range inside the line.
-    pub end_byte: u32,
-    /// The terminal-independent role of the range.
-    pub role: SyntaxRole,
 }
 
 /// The syntax tree of one buffer version.
@@ -742,7 +756,10 @@ pub trait LanguageAdapter: Send + Sync {
     ///
     /// The job runs on the bounded worker service. It checks the cancellation
     /// token before and after the parse. The default implementation serves
-    /// every language through its grammar data.
+    /// every language through its catalog entry.
+    ///
+    /// The caller owns `highlighter`, which keeps the compiled query of each
+    /// language that it served and releases every one of them when it drops.
     ///
     /// # Errors
     ///
@@ -751,9 +768,10 @@ pub trait LanguageAdapter: Send + Sync {
     fn analyze(
         &self,
         input: &AnalysisInput,
+        highlighter: &mut SyntaxHighlighter,
         cancellation: &CancellationToken,
     ) -> Result<Analysis, AnalysisError> {
-        analysis::analyze(self, input, cancellation)
+        analysis::analyze(self, input, highlighter, cancellation)
     }
 }
 
@@ -792,78 +810,103 @@ pub struct LanguageRegistry {
 }
 
 /// The assembly adapter of this build.
+#[cfg(feature = "grammar-asm")]
 static ASM: AsmAdapter = AsmAdapter::new();
 
 /// The Bash adapter of this build.
+#[cfg(feature = "grammar-bash")]
 static BASH: BashAdapter = BashAdapter::new();
 
 /// The C adapter of this build.
+#[cfg(feature = "grammar-c")]
 static C: CAdapter = CAdapter::new();
 
 /// The C++ adapter of this build.
+#[cfg(feature = "grammar-cpp")]
 static CPP: CppAdapter = CppAdapter::new();
 
 /// The CSS adapter of this build.
+#[cfg(feature = "grammar-css")]
 static CSS: CssAdapter = CssAdapter::new();
 
 /// The fish adapter of this build.
+#[cfg(feature = "grammar-fish")]
 static FISH: FishAdapter = FishAdapter::new();
 
 /// The GLSL adapter of this build.
+#[cfg(feature = "grammar-glsl")]
 static GLSL: GlslAdapter = GlslAdapter::new();
 
 /// The Go adapter of this build.
+#[cfg(feature = "grammar-go")]
 static GO: GoAdapter = GoAdapter::new();
 
 /// The HTML adapter of this build.
+#[cfg(feature = "grammar-html")]
 static HTML: HtmlAdapter = HtmlAdapter::new();
 
 /// The JavaScript adapter of this build.
+#[cfg(feature = "grammar-javascript")]
 static JAVASCRIPT: JavascriptAdapter = JavascriptAdapter::new();
 
 /// The JSON adapter of this build.
+#[cfg(feature = "grammar-json")]
 static JSON: JsonAdapter = JsonAdapter::new();
 
 /// The Lua adapter of this build.
+#[cfg(feature = "grammar-lua")]
 static LUA: LuaAdapter = LuaAdapter::new();
 
 /// The Markdown adapter of this build.
+#[cfg(feature = "grammar-markdown")]
 static MARKDOWN: MarkdownAdapter = MarkdownAdapter::new();
 
 /// The Nix adapter of this build.
+#[cfg(feature = "grammar-nix")]
 static NIX: NixAdapter = NixAdapter::new();
 
 /// The Python adapter of this build.
+#[cfg(feature = "grammar-python")]
 static PYTHON: PythonAdapter = PythonAdapter::new();
 
 /// The Rust adapter of this build.
+#[cfg(feature = "grammar-rust")]
 static RUST: RustAdapter = RustAdapter::new();
 
 /// The SCSS adapter of this build.
+#[cfg(feature = "grammar-scss")]
 static SCSS: ScssAdapter = ScssAdapter::new();
 
 /// The SQL adapter of this build.
+#[cfg(feature = "grammar-sql")]
 static SQL: SqlAdapter = SqlAdapter::new();
 
 /// The Terraform adapter of this build.
+#[cfg(feature = "grammar-terraform")]
 static TERRAFORM: TerraformAdapter = TerraformAdapter::new();
 
 /// The TOML adapter of this build.
+#[cfg(feature = "grammar-toml")]
 static TOML: TomlAdapter = TomlAdapter::new();
 
 /// The TSX adapter of this build.
+#[cfg(feature = "grammar-tsx")]
 static TSX: TsxAdapter = TsxAdapter::new();
 
 /// The TypeScript adapter of this build.
+#[cfg(feature = "grammar-typescript")]
 static TYPESCRIPT: TypescriptAdapter = TypescriptAdapter::new();
 
 /// The XML adapter of this build.
+#[cfg(feature = "grammar-xml")]
 static XML: XmlAdapter = XmlAdapter::new();
 
 /// The YAML adapter of this build.
+#[cfg(feature = "grammar-yaml")]
 static YAML: YamlAdapter = YamlAdapter::new();
 
 /// The Zig adapter of this build.
+#[cfg(feature = "grammar-zig")]
 static ZIG: ZigAdapter = ZigAdapter::new();
 
 /// The registered languages of this editor build.
@@ -876,33 +919,64 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 /// every path of that key an ambiguous failure, which leaves the buffer without
 /// highlighting, without a server, and without a formatter. Exactly one adapter
 /// owns each language name for the same reason.
-static ADAPTERS: [&dyn LanguageAdapter; 25] = [
-    &ASM,
-    &BASH,
-    &C,
-    &CPP,
-    &CSS,
-    &FISH,
-    &GLSL,
-    &GO,
-    &HTML,
-    &JAVASCRIPT,
-    &JSON,
-    &LUA,
-    &MARKDOWN,
-    &NIX,
-    &PYTHON,
-    &RUST,
-    &SCSS,
-    &SQL,
-    &TERRAFORM,
-    &TOML,
-    &TSX,
-    &TYPESCRIPT,
-    &XML,
-    &YAML,
-    &ZIG,
-];
+fn registered_adapters() -> &'static [&'static dyn LanguageAdapter] {
+    static ADAPTERS: OnceLock<Vec<&'static dyn LanguageAdapter>> = OnceLock::new();
+    ADAPTERS.get_or_init(|| {
+        #[allow(unused_mut)]
+        let mut adapters: Vec<&'static dyn LanguageAdapter> = Vec::new();
+        #[cfg(feature = "grammar-asm")]
+        adapters.push(&ASM as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-bash")]
+        adapters.push(&BASH as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-c")]
+        adapters.push(&C as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-cpp")]
+        adapters.push(&CPP as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-css")]
+        adapters.push(&CSS as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-fish")]
+        adapters.push(&FISH as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-glsl")]
+        adapters.push(&GLSL as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-go")]
+        adapters.push(&GO as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-html")]
+        adapters.push(&HTML as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-javascript")]
+        adapters.push(&JAVASCRIPT as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-json")]
+        adapters.push(&JSON as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-lua")]
+        adapters.push(&LUA as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-markdown")]
+        adapters.push(&MARKDOWN as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-nix")]
+        adapters.push(&NIX as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-python")]
+        adapters.push(&PYTHON as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-rust")]
+        adapters.push(&RUST as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-scss")]
+        adapters.push(&SCSS as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-sql")]
+        adapters.push(&SQL as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-terraform")]
+        adapters.push(&TERRAFORM as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-toml")]
+        adapters.push(&TOML as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-tsx")]
+        adapters.push(&TSX as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-typescript")]
+        adapters.push(&TYPESCRIPT as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-xml")]
+        adapters.push(&XML as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-yaml")]
+        adapters.push(&YAML as &dyn LanguageAdapter);
+        #[cfg(feature = "grammar-zig")]
+        adapters.push(&ZIG as &dyn LanguageAdapter);
+        adapters
+    })
+}
 
 impl LanguageRegistry {
     /// Returns the registry of this build.
@@ -914,8 +988,8 @@ impl LanguageRegistry {
     /// table that this constructor names, or by building a registry with
     /// [`LanguageRegistry::new`].
     #[must_use]
-    pub const fn first_release() -> Self {
-        Self::new(&ADAPTERS)
+    pub fn first_release() -> Self {
+        Self::new(registered_adapters())
     }
 
     /// Creates a registry over an explicit adapter table.

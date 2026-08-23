@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the CSS adapter owns.
-const CSS_EXTENSIONS: [&str; 1] = ["css"];
-
-/// The language names that the CSS adapter answers to.
-const CSS_LANGUAGE_NAMES: [&str; 1] = ["css"];
 
 /// The node kinds whose content takes one more indent level in CSS.
 ///
@@ -31,11 +26,6 @@ const CSS_INDENT_SCOPES: [&str; 2] = ["arguments", "block"];
 
 /// The characters that close a CSS indent scope.
 const CSS_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
-
-/// Returns the CSS grammar of the bundled parser.
-fn css_language() -> Language {
-    tree_sitter_css::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `vscode-css-language-server`.
 ///
@@ -98,31 +88,12 @@ impl CssAdapter {
     }
 }
 
-/// The catalog entry of the css language.
-///
-/// The entry owns the lookup keys and the grammar of this language, so the
-/// adapter below names each of them once.
-static CSS_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "css",
-    &CSS_LANGUAGE_NAMES,
-    &CSS_EXTENSIONS,
-    &[],
-    css_grammar,
-);
-
-/// Returns the Tree-sitter grammar and the queries of css.
-fn css_grammar() -> Grammar {
-    Grammar {
-        language: css_language,
-        highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    }
-}
-
 impl LanguageAdapter for CssAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
-        &CSS_CATALOG
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("css").expect("the grammar-css feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
