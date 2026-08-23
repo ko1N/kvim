@@ -21,9 +21,11 @@ canonical `WorktreeRoot` as the explicit working directory. It never reads or
 changes the process current directory.
 
 The policy disables optional locks, external diff, text conversion, pagers,
-prompts, filesystem monitors, and hooks. It also removes inherited helper
-environment variables. Repository and host configuration must not start another
-program during a Git read.
+prompts, filesystem monitors, and hooks. It also drops every inherited helper
+variable that names a program or redirects the read to another repository,
+another index, or another configuration file. Command-line configuration
+outranks the repository and the host, so neither can start another program
+during a Git read.
 
 Diff capture uses plumbing commands or explicit `--no-ext-diff --no-textconv`
 reads for exact bytes. Kvim classifies failures through typed outcomes, exit
@@ -36,18 +38,23 @@ builds one request, the event loop hands it to the bounded process service, and
 the typed snapshot returns through one transition. See
 [`responsiveness.md`](responsiveness.md).
 
-The command is:
+One read runs two commands. The `-z` record format always names a path against
+the top level of the repository, and that top level can sit above the workspace
+root. The first command therefore asks Git where the root sits inside its
+repository, and the second collects the records:
 
 ```
-git --no-optional-locks status --porcelain=v2 -z \
+git rev-parse --show-prefix
+git status --porcelain=v2 -z \
     --ignored=traditional --untracked-files=normal -- .
 ```
 
-Each argument answers one requirement:
+Both commands carry the execution policy above.
+
+Each argument of the status command answers one requirement:
 
 | Argument | Reason |
 |---|---|
-| `--no-optional-locks` | The read never refreshes the index cache, so it writes nothing. |
 | `--porcelain=v2` | The format is stable for machines and names both halves of one change. |
 | `-z` | Records are NUL separated, so a name with a space, a quote, or a line break stays one entry. |
 | `--ignored=traditional` | Git names one ignored directory instead of every file below it. |
@@ -55,8 +62,11 @@ Each argument answers one requirement:
 | `-- .` | The pathspec keeps the report inside the workspace root, and the separator keeps a root that starts with a hyphen a path. |
 
 Git runs with the canonical worktree root as its explicit working directory.
-The request never searches above that root. Every reported path is converted to
-a validated `WorktreeRelativePath` before publication.
+Kvim inspects no directory above that root: the reported prefix answers the one
+question that the record paths need. The publication subtracts that prefix,
+drops every record that does not start with it, and converts the remainder to a
+validated `WorktreeRelativePath`. The snapshot therefore names only contained
+entries.
 
 Git reports a directory outside a repository through its exit code. No branch of
 kvim reads the message text of `git`, of any other command, or of any error.

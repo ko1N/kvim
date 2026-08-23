@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::Terminal;
@@ -16,15 +17,16 @@ use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
 use kvim_language::LspError;
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{
-    FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchCoverage, WatchEvent, WatchFidelity,
-    WatchKind,
+    FileWatcher, ProcessOutput, WATCH_COALESCE_WINDOW, WatchBatch, WatchCoverage, WatchEvent,
+    WatchFidelity, WatchKind,
 };
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
-    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusSnapshot, TREE_PENDING_READS_MAX,
-    TakenDestination, temp::TempDir,
+    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusRead, GitStatusRequest,
+    TREE_PENDING_READS_MAX, TakenDestination, temp::TempDir,
 };
 
 use super::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
@@ -641,13 +643,13 @@ fn a_delete_question_names_one_entry_or_the_count_of_several() {
 
 #[test]
 fn an_overwrite_question_names_one_entry_or_the_count_of_several() {
-    let one = [taken("/workspace/docs/README.md")];
+    let one = [taken("docs/README.md")];
     assert_eq!(overwrite_question(&one), "Overwrite README.md");
 
     let several = [
-        taken("/workspace/docs/README.md"),
-        taken("/workspace/src/main.rs"),
-        taken("/workspace/notes.txt"),
+        taken("docs/README.md"),
+        taken("src/main.rs"),
+        taken("notes.txt"),
     ];
     assert_eq!(overwrite_question(&several), "Overwrite 3 entries");
 }
@@ -655,7 +657,7 @@ fn an_overwrite_question_names_one_entry_or_the_count_of_several() {
 /// Returns one taken destination that holds a file.
 fn taken(path: &str) -> TakenDestination {
     TakenDestination {
-        path: PathBuf::from(path),
+        path: WorktreeRelativePath::new(path).expect("the fixture path is contained"),
         kind: EntryKind::File,
     }
 }
@@ -870,8 +872,8 @@ fn a_refused_mutation_reports_it_and_changes_nothing() {
 
     assert_eq!(
         message(&session),
-        format!("{} exists already", dir.join("src").display()),
-        "a destination collision reports the typed rejection"
+        "src exists already",
+        "a destination collision reports the typed rejection, against the workspace root"
     );
     assert!(dir.join("src").is_dir());
 }
@@ -2046,18 +2048,43 @@ fn git_output() -> String {
     )
 }
 
-/// Publishes one recorded status output, as the event loop does.
-fn publish_git(session: &mut Session, root: &Path, output: &str) {
+/// Answers one command of the status read with a recorded output.
+///
+/// The read takes one prefix command and one status command, so the session
+/// receives one answer for each and publishes after the second.
+fn answer_git(session: &mut Session, root: &Path, stdout: &[u8]) {
     let request = session
         .take_git_request()
         .expect("the sidebar asks for one status read");
-    assert_eq!(request.root(), root, "the read names the workspace root");
     assert_eq!(
-        request.command().program,
-        GIT_PROGRAM,
+        request.root().as_path(),
+        root,
+        "the read names the workspace root"
+    );
+    let command = request.command();
+    assert_eq!(
+        command.program, GIT_PROGRAM,
         "the read leaves the session as one external command"
     );
-    let _ = session.apply_git_result(Ok(GitStatusSnapshot::parse(root, root, output.as_bytes())));
+    assert_eq!(
+        command.current_dir.as_deref(),
+        Some(root),
+        "the child receives the canonical root as its working directory"
+    );
+    let output = ProcessOutput {
+        status_code: Some(0),
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    };
+    let _ = session.apply_git_result(request.publish(&output));
+}
+
+/// Publishes one recorded status output, as the event loop does.
+fn publish_git(session: &mut Session, root: &Path, output: &str) {
+    // The workspace root of every test is its own repository top level, so the
+    // prefix command reports an empty prefix.
+    answer_git(session, root, b"\n");
+    answer_git(session, root, output.as_bytes());
 }
 
 /// Returns the Git mark at the right edge of one sidebar row.
@@ -2151,7 +2178,7 @@ fn the_refresh_command_asks_for_the_repository_state_again() {
     assert_eq!(
         session
             .take_git_request()
-            .map(|request| request.root().to_path_buf()),
+            .map(|request| request.root().as_path().to_path_buf()),
         Some(dir.path.clone())
     );
 }
@@ -2229,12 +2256,23 @@ fn a_workspace_mutation_asks_for_the_repository_state_again() {
 #[test]
 fn a_snapshot_of_another_workspace_never_reaches_the_rows() {
     let (dir, mut session) = git_workspace();
-    let elsewhere = Path::new("/elsewhere");
-    let _ = session.apply_git_result(Ok(GitStatusSnapshot::parse(
-        elsewhere,
-        elsewhere,
-        b"? new.rs\0",
-    )));
+    let elsewhere = TempDir::new("git-elsewhere");
+    let root = Arc::new(WorktreeRoot::open(&elsewhere.path).expect("the fixture root exists"));
+    let answered = |stdout: &[u8]| ProcessOutput {
+        status_code: Some(0),
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    };
+    let GitStatusRead::Pending(records) = GitStatusRequest::new(root)
+        .publish(&answered(b"\n"))
+        .expect("the prefix command answered")
+    else {
+        panic!("the first stage never publishes one snapshot");
+    };
+    let published = records
+        .publish(&answered(b"? new.rs\0"))
+        .expect("the status command answered");
+    let _ = session.apply_git_result(Ok(published));
 
     assert_eq!(
         git_mark(&session, 4),

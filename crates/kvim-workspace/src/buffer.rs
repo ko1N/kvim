@@ -8,6 +8,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use kvim_core::{BufferVersion, TextBuffer};
+use kvim_path::WorktreeRoot;
 use kvim_settings::FileSettings;
 
 use super::file::{FileIdentity, FileTarget};
@@ -374,18 +375,21 @@ impl Buffers {
         }
     }
 
-    /// Returns the mutation view of every loaded buffer.
+    /// Returns the mutation view of every loaded buffer of one root.
     ///
     /// The mutation request holds this list, so the worker validates against
-    /// the buffers without reading editor state.
+    /// the buffers without reading editor state. A scratch buffer and a buffer
+    /// of another worktree root name no contained path of this root, so neither
+    /// can block or follow a mutation of it.
     #[must_use]
-    pub fn open_buffers(&self) -> Vec<OpenBuffer> {
+    pub fn open_buffers(&self, root: &WorktreeRoot) -> Vec<OpenBuffer> {
         self.entries
             .iter()
             .filter_map(|(id, buffer)| {
+                let target = buffer.target().filter(|target| target.root() == root)?;
                 Some(OpenBuffer {
                     id: *id,
-                    path: buffer.path()?.to_path_buf(),
+                    path: target.relative_path().clone(),
                     is_modified: buffer.is_modified(),
                 })
             })

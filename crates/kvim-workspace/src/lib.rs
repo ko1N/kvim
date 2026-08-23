@@ -76,8 +76,9 @@ pub use file::{
 };
 pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use git::{
-    GIT_PATH_DEPTH_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE, GIT_STATUS_ENTRIES_MAX,
-    GIT_STATUS_OUTPUT_BYTES_MAX, GitStatus, GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
+    GIT_PATH_DEPTH_MAX, GIT_PREFIX_OUTPUT_BYTES_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE,
+    GIT_STATUS_ENTRIES_MAX, GIT_STATUS_OUTPUT_BYTES_MAX, GitExecutionPolicy, GitStatus,
+    GitStatusFailure, GitStatusRead, GitStatusRequest, GitStatusSnapshot,
 };
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,

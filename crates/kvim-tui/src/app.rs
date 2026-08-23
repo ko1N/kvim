@@ -34,7 +34,7 @@ use kvim_terminal::{
     TerminalSession, TerminationSource,
 };
 use kvim_workspace::{
-    BUFFERS_MAX, FileResult, GitStatusFailure, GitStatusSnapshot, PickerResult, PickerSlot,
+    BUFFERS_MAX, FileResult, GitStatusFailure, GitStatusRead, PickerResult, PickerSlot,
     WorkspaceResult,
 };
 
@@ -169,7 +169,7 @@ enum WorkResult {
     /// One system clipboard command finished.
     Clipboard(ProcessOutput),
     /// One Git status read of the workspace finished.
-    Git(Result<GitStatusSnapshot, GitStatusFailure>),
+    Git(Result<GitStatusRead, GitStatusFailure>),
     /// One run of the external formatter of one buffer finished.
     Format(Result<Option<FormattedDocument>, FormatterFailure>),
     /// One host probe finished and produced the report as plain text.

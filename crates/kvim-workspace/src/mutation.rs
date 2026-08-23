@@ -14,14 +14,25 @@
 //! Both functions block. Run them on the bounded worker service only. See
 //! `docs/files.md` and `docs/responsiveness.md`.
 //!
-//! Every path must be absolute and must hold no parent-directory component, so
-//! containment stays decidable without a further filesystem read.
+//! Every path is a validated worktree-relative path, and every filesystem step
+//! runs through the capability directory of one canonical root. Containment
+//! therefore holds by construction, and no step can name an entry beside or
+//! above the workspace. The staging records the resolved identity of each path
+//! and confirms it again immediately before the commit, so a concurrent
+//! replacement cannot make the commit destroy another entry than the staging
+//! approved. See `docs/files.md`.
 
-use std::fs::{self, File};
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
+use cap_std::fs::Dir;
 use thiserror::Error;
+
+use kvim_path::{
+    ResolvedWorktreePath, WorktreeConfinementError, WorktreeDirectoryPath, WorktreeRelativePath,
+    WorktreeRoot,
+};
 
 use super::buffer::BufferId;
 use super::file::temporary_name;
@@ -52,8 +63,8 @@ pub enum TransferMode {
 /// another kind while the question waited.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TakenDestination {
-    /// The destination path.
-    pub path: PathBuf,
+    /// The contained destination path.
+    pub path: WorktreeRelativePath,
     /// The kind of the entry that holds it.
     pub kind: EntryKind,
 }
@@ -75,35 +86,38 @@ pub enum Overwrite {
 }
 
 /// One requested workspace mutation.
+///
+/// Every path is contained by construction, so no operation can name an entry
+/// outside the workspace root that validated it.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileOperation {
     /// Create one empty file or one empty directory.
     Create {
         /// The path of the new entry.
-        path: PathBuf,
+        path: WorktreeRelativePath,
         /// The kind of the new entry.
         kind: EntryKind,
     },
     /// Remove the named entries.
     Delete {
         /// The entries to remove.
-        paths: Vec<PathBuf>,
+        paths: Vec<WorktreeRelativePath>,
     },
     /// Give one entry another path inside the workspace.
     Rename {
         /// The entry that keeps its content.
-        from: PathBuf,
+        from: WorktreeRelativePath,
         /// The complete new path.
-        to: PathBuf,
+        to: WorktreeRelativePath,
     },
     /// Copy or move the named entries into one directory.
     Transfer {
         /// Whether the sources stay in place.
         mode: TransferMode,
         /// The entries to copy or move.
-        sources: Vec<PathBuf>,
+        sources: Vec<WorktreeRelativePath>,
         /// The directory that receives the entries.
-        destination: PathBuf,
+        destination: WorktreeDirectoryPath,
     },
 }
 
@@ -112,13 +126,16 @@ pub enum FileOperation {
 pub struct OpenBuffer {
     /// The stable identity of the buffer.
     pub id: BufferId,
-    /// The current path of the buffer.
-    pub path: PathBuf,
+    /// The current contained path of the buffer.
+    pub path: WorktreeRelativePath,
     /// Whether the buffer holds unsaved changes.
     pub is_modified: bool,
 }
 
 /// The new path of one loaded buffer.
+///
+/// The path is the absolute display path of the retargeted buffer, because the
+/// event loop names a loaded file by the path that the reader sees.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct BufferPathUpdate {
     /// The buffer that keeps its identity.
@@ -152,11 +169,18 @@ pub enum MutationError {
         /// The bound.
         max: usize,
     },
-    /// The path lies outside the workspace root.
-    #[error("{path} is outside the workspace")]
-    Outside {
+    /// The path did not remain contained in the workspace root.
+    ///
+    /// The path itself is contained by construction, so this names a link that
+    /// leaves the root, a link chain that loops, and an entry that another
+    /// program replaced while the mutation ran.
+    #[error("{path} is not contained in the workspace")]
+    Confinement {
         /// The rejected path.
         path: PathBuf,
+        /// The reported cause.
+        #[source]
+        source: WorktreeConfinementError,
     },
     /// The source holds no entry.
     #[error("{path} holds no entry")]
@@ -243,16 +267,63 @@ pub enum MutationError {
 /// message line holds one row.
 fn collision_message(entries: &[TakenDestination]) -> String {
     match entries {
-        [entry] => format!("{} exists already", entry.path.display()),
+        [entry] => format!("{} exists already", entry.path.as_path().display()),
         _ => format!("{} entries exist already", entries.len()),
+    }
+}
+
+/// One contained path and the identity that the staging resolved for it.
+///
+/// The filesystem work names the requested path, so a mutation of a symbolic
+/// link moves the link and not its target. The resolved identity answers one
+/// question only: does the path still name what the staging approved? The
+/// commit asks it immediately before it destroys or replaces anything.
+#[derive(Clone, Debug)]
+struct StagedPath {
+    requested: WorktreeRelativePath,
+    resolved: ResolvedWorktreePath,
+}
+
+impl StagedPath {
+    /// Resolves one contained path and records its identity.
+    fn stage(root: &WorktreeRoot, requested: &WorktreeRelativePath) -> Result<Self, MutationError> {
+        let resolved = root
+            .resolve(requested)
+            .map_err(|source| MutationError::Confinement {
+                path: display_path(root, requested.as_path()),
+                source,
+            })?;
+        Ok(Self {
+            requested: requested.clone(),
+            resolved,
+        })
+    }
+
+    /// Confirms that the path still names the entry that the staging approved.
+    fn revalidate(&self, root: &WorktreeRoot) -> Result<(), MutationError> {
+        root.revalidate(&self.requested, &self.resolved)
+            .map_err(|source| MutationError::Confinement {
+                path: self.display_path(root),
+                source,
+            })
+    }
+
+    /// Returns the path that the capability directory receives.
+    fn as_path(&self) -> &Path {
+        self.requested.as_path()
+    }
+
+    /// Returns the absolute path that the reader sees.
+    fn display_path(&self, root: &WorktreeRoot) -> PathBuf {
+        display_path(root, self.as_path())
     }
 }
 
 /// One entry that moves from its origin to its destination.
 #[derive(Clone, Debug)]
 struct Relocation {
-    origin: PathBuf,
-    destination: PathBuf,
+    origin: StagedPath,
+    destination: StagedPath,
     /// Whether the destination holds an entry that the commit replaces.
     replaces: bool,
 }
@@ -260,19 +331,20 @@ struct Relocation {
 /// The validated filesystem work of one mutation.
 #[derive(Clone, Debug)]
 enum PlannedWork {
-    Create { path: PathBuf, kind: EntryKind },
+    Create { path: StagedPath, kind: EntryKind },
     Copy(Vec<Relocation>),
     Move(Vec<Relocation>),
-    Discard(Vec<PathBuf>),
+    Discard(Vec<StagedPath>),
 }
 
 /// One complete mutation that passed every validation.
 ///
-/// The plan holds the filesystem work, the affected buffer paths, and the
-/// directories that need a new read. It changes nothing until
+/// The plan holds the canonical root, the filesystem work, the affected buffer
+/// paths, and the directories that need a new read. It changes nothing until
 /// [`MutationPlan::apply`] runs.
 #[derive(Clone, Debug)]
 pub struct MutationPlan {
+    root: Arc<WorktreeRoot>,
     work: PlannedWork,
     updates: Vec<BufferPathUpdate>,
     changed: Vec<PathBuf>,
@@ -287,12 +359,12 @@ impl MutationPlan {
     /// # Errors
     ///
     /// Returns [`MutationError`] for an empty or oversized operation, a path
-    /// outside the workspace, a missing source, a destination collision, a
-    /// directory that would receive one of its own parents, and a removed entry
-    /// whose buffer holds unsaved changes.
+    /// that leaves the root through a link, a missing source, a destination
+    /// collision, a directory that would receive one of its own parents, and a
+    /// removed entry whose buffer holds unsaved changes.
     pub fn stage(
         operation: &FileOperation,
-        root: &Path,
+        root: &Arc<WorktreeRoot>,
         buffers: &[OpenBuffer],
     ) -> Result<Self, MutationError> {
         Self::stage_with(operation, root, buffers, &Overwrite::Refuse)
@@ -311,36 +383,30 @@ impl MutationPlan {
     /// holds another kind of entry now.
     pub(crate) fn stage_with(
         operation: &FileOperation,
-        root: &Path,
+        root: &Arc<WorktreeRoot>,
         buffers: &[OpenBuffer],
         overwrite: &Overwrite,
     ) -> Result<Self, MutationError> {
         match operation {
             FileOperation::Create { path, kind } => stage_create(path, *kind, root),
             FileOperation::Delete { paths } => stage_delete(paths, root, buffers),
-            FileOperation::Rename { from, to } => stage_relocations(
-                TransferMode::Move,
-                &[relocate(from, to)],
-                root,
-                buffers,
-                overwrite,
-            ),
+            FileOperation::Rename { from, to } => {
+                stage_relocations(TransferMode::Move, &[(from, to)], root, buffers, overwrite)
+            }
             FileOperation::Transfer {
                 mode,
                 sources,
                 destination,
             } => {
                 check_count(sources.len())?;
-                check_contained(destination, root)?;
-                check_directory(destination)?;
-                let mut relocations = Vec::with_capacity(sources.len());
+                check_directory(root, destination)?;
+                let mut destinations = Vec::with_capacity(sources.len());
                 for source in sources {
-                    let name = source.file_name().ok_or_else(|| MutationError::Outside {
-                        path: source.clone(),
-                    })?;
-                    relocations.push(relocate(source, &destination.join(name)));
+                    destinations.push(transfer_destination(destination, source)?);
                 }
-                stage_relocations(*mode, &relocations, root, buffers, overwrite)
+                let pairs: Vec<(&WorktreeRelativePath, &WorktreeRelativePath)> =
+                    sources.iter().zip(destinations.iter()).collect();
+                stage_relocations(*mode, &pairs, root, buffers, overwrite)
             }
         }
     }
@@ -353,20 +419,26 @@ impl MutationPlan {
 
     /// Performs the validated filesystem work.
     ///
+    /// Every destructive step confirms the resolved identity of its path
+    /// immediately before it runs, so an entry that another program replaced
+    /// after the staging stops the mutation instead of losing its content.
+    ///
     /// A failure of one path unwinds every staged step, so the workspace keeps
     /// the state that it held before the call. The unwind also puts back every
     /// entry that an approved overwrite parked.
     ///
     /// # Errors
     ///
-    /// Returns [`MutationError::Filesystem`] and the copy bounds when the
+    /// Returns [`MutationError::Confinement`] for a path that another program
+    /// replaced, [`MutationError::Filesystem`] and the copy bounds when the
     /// filesystem refuses one step.
     pub fn apply(self) -> Result<MutationOutcome, MutationError> {
+        let root = &self.root;
         match &self.work {
-            PlannedWork::Create { path, kind } => create(path, *kind)?,
-            PlannedWork::Copy(relocations) => transfer(TransferMode::Copy, relocations)?,
-            PlannedWork::Move(relocations) => transfer(TransferMode::Move, relocations)?,
-            PlannedWork::Discard(paths) => discard(paths)?,
+            PlannedWork::Create { path, kind } => create(root, path, *kind)?,
+            PlannedWork::Copy(relocations) => transfer(root, TransferMode::Copy, relocations)?,
+            PlannedWork::Move(relocations) => transfer(root, TransferMode::Move, relocations)?,
+            PlannedWork::Discard(paths) => discard(root, paths)?,
         }
         Ok(MutationOutcome {
             updates: self.updates,
@@ -376,64 +448,82 @@ impl MutationPlan {
     }
 }
 
-/// Returns one relocation from a source and a complete destination path.
+/// Returns the absolute path that one reader sees for a contained path.
 ///
-/// The relocation replaces nothing until the staging approves its destination.
-fn relocate(origin: &Path, destination: &Path) -> Relocation {
-    Relocation {
-        origin: origin.to_path_buf(),
-        destination: destination.to_path_buf(),
-        replaces: false,
+/// An empty relative path names the workspace root itself.
+fn display_path(root: &WorktreeRoot, relative: &Path) -> PathBuf {
+    if relative.as_os_str().is_empty() {
+        return root.as_path().to_path_buf();
     }
+    root.as_path().join(relative)
+}
+
+/// Returns the parent directory of one contained path.
+///
+/// An entry directly below the root reports the empty path, which the
+/// capability directory reads as the root itself.
+fn parent_of(path: &Path) -> &Path {
+    path.parent().unwrap_or_else(|| Path::new(""))
+}
+
+/// Returns the complete destination of one transferred source.
+fn transfer_destination(
+    directory: &WorktreeDirectoryPath,
+    source: &WorktreeRelativePath,
+) -> Result<WorktreeRelativePath, MutationError> {
+    let name = source
+        .as_path()
+        .file_name()
+        .expect("a contained relative path ends with one ordinary component");
+    let directory = directory
+        .relative_path()
+        .map_or_else(PathBuf::new, |path| path.as_path().to_path_buf());
+    WorktreeRelativePath::new(directory.join(name)).map_err(|_| MutationError::NotADirectory {
+        path: directory.join(name),
+    })
 }
 
 /// Validates one create operation.
-fn stage_create(path: &Path, kind: EntryKind, root: &Path) -> Result<MutationPlan, MutationError> {
-    check_entry(path, root)?;
-    let parent = path.parent().ok_or_else(|| MutationError::Outside {
-        path: path.to_path_buf(),
-    })?;
-    check_directory(parent)?;
-    check_free(path)?;
+fn stage_create(
+    path: &WorktreeRelativePath,
+    kind: EntryKind,
+    root: &Arc<WorktreeRoot>,
+) -> Result<MutationPlan, MutationError> {
+    let staged = StagedPath::stage(root, path)?;
+    let parent = parent_of(staged.as_path()).to_path_buf();
+    check_existing_directory(root, &parent)?;
+    check_free(root, &staged)?;
     Ok(MutationPlan {
-        work: PlannedWork::Create {
-            path: path.to_path_buf(),
-            kind,
-        },
+        root: Arc::clone(root),
+        selection: Some(staged.display_path(root)),
+        changed: vec![display_path(root, &parent)],
+        work: PlannedWork::Create { path: staged, kind },
         updates: Vec::new(),
-        changed: vec![parent.to_path_buf()],
-        selection: Some(path.to_path_buf()),
     })
 }
 
 /// Validates one delete operation.
 fn stage_delete(
-    paths: &[PathBuf],
-    root: &Path,
+    paths: &[WorktreeRelativePath],
+    root: &Arc<WorktreeRoot>,
     buffers: &[OpenBuffer],
 ) -> Result<MutationPlan, MutationError> {
     check_count(paths.len())?;
     let mut changed = Vec::new();
+    let mut staged = Vec::with_capacity(paths.len());
     for path in paths {
-        check_entry(path, root)?;
-        check_exists(path)?;
+        let path = StagedPath::stage(root, path)?;
+        check_exists(root, &path)?;
         // A removed file must never discard unsaved work.
-        if let Some(buffer) = buffers
-            .iter()
-            .find(|buffer| buffer.is_modified && buffer.path.starts_with(path))
-        {
-            return Err(MutationError::DirtyBuffer {
-                path: buffer.path.clone(),
-            });
-        }
-        if let Some(parent) = path.parent() {
-            changed.push(parent.to_path_buf());
-        }
+        check_clean_subtree(root, path.as_path(), buffers)?;
+        changed.push(display_path(root, parent_of(path.as_path())));
+        staged.push(path);
     }
     changed.sort();
     changed.dedup();
     Ok(MutationPlan {
-        work: PlannedWork::Discard(paths.to_vec()),
+        root: Arc::clone(root),
+        work: PlannedWork::Discard(staged),
         updates: Vec::new(),
         changed,
         selection: None,
@@ -447,62 +537,53 @@ fn stage_delete(
 /// names that size in its question. See `docs/files.md`.
 fn stage_relocations(
     mode: TransferMode,
-    relocations: &[Relocation],
-    root: &Path,
+    pairs: &[(&WorktreeRelativePath, &WorktreeRelativePath)],
+    root: &Arc<WorktreeRoot>,
     buffers: &[OpenBuffer],
     overwrite: &Overwrite,
 ) -> Result<MutationPlan, MutationError> {
-    check_count(relocations.len())?;
+    check_count(pairs.len())?;
     let mut changed = Vec::new();
-    let mut planned = Vec::with_capacity(relocations.len());
+    let mut planned = Vec::with_capacity(pairs.len());
     let mut collisions = Vec::new();
-    for (index, relocation) in relocations.iter().enumerate() {
-        check_entry(&relocation.origin, root)?;
-        check_entry(&relocation.destination, root)?;
-        let kind = check_exists(&relocation.origin)?;
-        let parent =
-            relocation
-                .destination
-                .parent()
-                .ok_or_else(|| MutationError::NotADirectory {
-                    path: relocation.destination.clone(),
-                })?;
-        check_directory(parent)?;
+    for (index, (origin, destination)) in pairs.iter().enumerate() {
+        let origin = StagedPath::stage(root, origin)?;
+        let destination = StagedPath::stage(root, destination)?;
+        let kind = check_exists(root, &origin)?;
+        let parent = parent_of(destination.as_path()).to_path_buf();
+        check_existing_directory(root, &parent)?;
         // An entry that names itself destroys nothing, so it never becomes a
         // question and it never reaches the commit.
-        if relocation.origin == relocation.destination {
+        if origin.as_path() == destination.as_path() {
             return Err(MutationError::SameEntry {
-                path: relocation.destination.clone(),
+                path: destination.display_path(root),
             });
         }
         // Two sources with one name would overwrite each other during the
         // commit, so the collision must fail before any staging starts.
-        if relocations[..index]
+        if pairs[..index]
             .iter()
-            .any(|earlier| earlier.destination == relocation.destination)
+            .any(|(_, earlier)| earlier.as_path() == destination.as_path())
         {
             return Err(MutationError::DuplicateDestination {
-                path: relocation.destination.clone(),
+                path: destination.display_path(root),
             });
         }
-        if kind == EntryKind::Directory && relocation.destination.starts_with(&relocation.origin) {
+        if kind == EntryKind::Directory && destination.as_path().starts_with(origin.as_path()) {
             return Err(MutationError::IntoDescendant {
-                path: relocation.destination.clone(),
+                path: destination.display_path(root),
             });
         }
-        let replaces =
-            check_destination(&relocation.destination, overwrite, buffers, &mut collisions)?;
+        let replaces = check_destination(root, &destination, overwrite, buffers, &mut collisions)?;
+        changed.push(display_path(root, &parent));
+        if mode == TransferMode::Move {
+            changed.push(display_path(root, parent_of(origin.as_path())));
+        }
         planned.push(Relocation {
-            origin: relocation.origin.clone(),
-            destination: relocation.destination.clone(),
+            origin,
+            destination,
             replaces,
         });
-        changed.push(parent.to_path_buf());
-        if mode == TransferMode::Move
-            && let Some(parent) = relocation.origin.parent()
-        {
-            changed.push(parent.to_path_buf());
-        }
     }
     if !collisions.is_empty() {
         return Err(MutationError::Collision {
@@ -514,16 +595,17 @@ fn stage_relocations(
 
     let updates = match mode {
         TransferMode::Copy => Vec::new(),
-        TransferMode::Move => buffer_updates(relocations, buffers),
+        TransferMode::Move => buffer_updates(root, &planned, buffers),
     };
     let selection = planned
         .first()
-        .map(|relocation| relocation.destination.clone());
+        .map(|relocation| relocation.destination.display_path(root));
     let work = match mode {
         TransferMode::Copy => PlannedWork::Copy(planned),
         TransferMode::Move => PlannedWork::Move(planned),
     };
     Ok(MutationPlan {
+        root: Arc::clone(root),
         work,
         updates,
         changed,
@@ -535,16 +617,24 @@ fn stage_relocations(
 ///
 /// A buffer of a moved directory keeps its identity and follows the directory,
 /// so the buffer of a renamed file stays the same buffer.
-fn buffer_updates(relocations: &[Relocation], buffers: &[OpenBuffer]) -> Vec<BufferPathUpdate> {
+fn buffer_updates(
+    root: &WorktreeRoot,
+    relocations: &[Relocation],
+    buffers: &[OpenBuffer],
+) -> Vec<BufferPathUpdate> {
     let mut updates = Vec::new();
     for relocation in relocations {
         for buffer in buffers {
-            let Ok(relative) = buffer.path.strip_prefix(&relocation.origin) else {
+            let Ok(relative) = buffer
+                .path
+                .as_path()
+                .strip_prefix(relocation.origin.as_path())
+            else {
                 continue;
             };
             updates.push(BufferPathUpdate {
                 buffer: buffer.id,
-                path: relocation.destination.join(relative),
+                path: display_path(root, &relocation.destination.as_path().join(relative)),
             });
         }
     }
@@ -565,63 +655,59 @@ fn check_count(count: usize) -> Result<(), MutationError> {
     Ok(())
 }
 
-/// Rejects a path that leaves the workspace root.
-fn check_contained(path: &Path, root: &Path) -> Result<(), MutationError> {
-    let escapes = path
-        .components()
-        .any(|component| component == Component::ParentDir);
-    if escapes || !path.starts_with(root) {
-        return Err(MutationError::Outside {
-            path: path.to_path_buf(),
-        });
-    }
-    Ok(())
-}
-
-/// Rejects a path that leaves the workspace root or names the root itself.
-fn check_entry(path: &Path, root: &Path) -> Result<(), MutationError> {
-    check_contained(path, root)?;
-    if path == root {
-        return Err(MutationError::Outside {
-            path: path.to_path_buf(),
-        });
-    }
-    Ok(())
-}
-
 /// Returns the kind of one entry, or `None` while the path holds none.
-fn peek(path: &Path) -> Result<Option<EntryKind>, MutationError> {
-    match fs::symlink_metadata(path) {
-        // A symbolic link takes the kind of its target, so a link to a
-        // directory cannot receive one of its own parents either.
-        Ok(_) => Ok(Some(match fs::metadata(path) {
+///
+/// The lookup never follows the last component, so a mutation reads the link
+/// itself. A symbolic link still takes the kind of its target, so a link to a
+/// directory cannot receive one of its own parents either.
+fn peek(root: &WorktreeRoot, path: &Path) -> Result<Option<EntryKind>, MutationError> {
+    let directory = root.directory();
+    match directory.symlink_metadata(path) {
+        Ok(_) => Ok(Some(match directory.metadata(path) {
             Ok(metadata) if metadata.is_dir() => EntryKind::Directory,
             _ => EntryKind::File,
         })),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(MutationError::Filesystem {
-            path: path.to_path_buf(),
+            path: display_path(root, path),
             source,
         }),
     }
 }
 
 /// Returns the kind of an entry that must exist.
-fn check_exists(path: &Path) -> Result<EntryKind, MutationError> {
-    peek(path)?.ok_or_else(|| MutationError::Missing {
-        path: path.to_path_buf(),
+fn check_exists(root: &WorktreeRoot, path: &StagedPath) -> Result<EntryKind, MutationError> {
+    peek(root, path.as_path())?.ok_or_else(|| MutationError::Missing {
+        path: path.display_path(root),
     })
 }
 
 /// Rejects a destination that holds an entry already.
-fn check_free(path: &Path) -> Result<(), MutationError> {
-    match peek(path)? {
+fn check_free(root: &WorktreeRoot, path: &StagedPath) -> Result<(), MutationError> {
+    match peek(root, path.as_path())? {
         None => Ok(()),
         Some(kind) => Err(MutationError::Collision {
             entries: vec![TakenDestination {
-                path: path.to_path_buf(),
+                path: path.requested.clone(),
                 kind,
             }],
+        }),
+    }
+}
+
+/// Rejects a mutation that would discard the unsaved changes of one buffer.
+fn check_clean_subtree(
+    root: &WorktreeRoot,
+    path: &Path,
+    buffers: &[OpenBuffer],
+) -> Result<(), MutationError> {
+    let dirty = buffers
+        .iter()
+        .find(|buffer| buffer.is_modified && buffer.path.as_path().starts_with(path));
+    match dirty {
+        None => Ok(()),
+        Some(buffer) => Err(MutationError::DirtyBuffer {
+            path: display_path(root, buffer.path.as_path()),
         }),
     }
 }
@@ -639,37 +725,34 @@ fn check_free(path: &Path) -> Result<(), MutationError> {
 /// unsaved changes, and [`MutationError::DestinationChanged`] for an approved
 /// destination that holds another kind of entry now.
 fn check_destination(
-    path: &Path,
+    root: &WorktreeRoot,
+    destination: &StagedPath,
     overwrite: &Overwrite,
     buffers: &[OpenBuffer],
     collisions: &mut Vec<TakenDestination>,
 ) -> Result<bool, MutationError> {
-    let Some(kind) = peek(path)? else {
+    let Some(kind) = peek(root, destination.as_path())? else {
         return Ok(false);
     };
     // The destination loses its entry, so it follows the rule of a removal.
-    if let Some(buffer) = buffers
-        .iter()
-        .find(|buffer| buffer.is_modified && buffer.path.starts_with(path))
-    {
-        return Err(MutationError::DirtyBuffer {
-            path: buffer.path.clone(),
-        });
-    }
+    check_clean_subtree(root, destination.as_path(), buffers)?;
     let taken = TakenDestination {
-        path: path.to_path_buf(),
+        path: destination.requested.clone(),
         kind,
     };
     let Overwrite::Replace(approved) = overwrite else {
         collisions.push(taken);
         return Ok(false);
     };
-    match approved.iter().find(|entry| entry.path == path) {
+    match approved
+        .iter()
+        .find(|entry| entry.path == destination.requested)
+    {
         Some(entry) if entry.kind == kind => Ok(true),
         // The world changed while the question waited, so the answer would
         // destroy another entry than the question named.
         Some(_) => Err(MutationError::DestinationChanged {
-            path: path.to_path_buf(),
+            path: destination.display_path(root),
         }),
         None => {
             collisions.push(taken);
@@ -678,18 +761,40 @@ fn check_destination(
     }
 }
 
-/// Rejects a destination that names no existing directory.
-fn check_directory(path: &Path) -> Result<(), MutationError> {
-    match fs::metadata(path) {
+/// Rejects a destination directory that leaves the root or holds no directory.
+fn check_directory(
+    root: &WorktreeRoot,
+    directory: &WorktreeDirectoryPath,
+) -> Result<(), MutationError> {
+    // The resolution answers the containment question with a typed cause, so a
+    // directory that a link moves outside the root refuses the paste itself.
+    root.resolve_directory(directory)
+        .map_err(|source| MutationError::Confinement {
+            path: directory.display_path(root),
+            source,
+        })?;
+    let Some(relative) = directory.relative_path() else {
+        // The capability directory is the root, so the root is a directory.
+        return Ok(());
+    };
+    check_existing_directory(root, relative.as_path())
+}
+
+/// Rejects a contained path that names no existing directory.
+fn check_existing_directory(root: &WorktreeRoot, path: &Path) -> Result<(), MutationError> {
+    if path.as_os_str().is_empty() {
+        return Ok(());
+    }
+    match root.directory().metadata(path) {
         Ok(metadata) if metadata.is_dir() => Ok(()),
         Ok(_) => Err(MutationError::NotADirectory {
-            path: path.to_path_buf(),
+            path: display_path(root, path),
         }),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Err(MutationError::Missing {
-            path: path.to_path_buf(),
+            path: display_path(root, path),
         }),
         Err(source) => Err(MutationError::Filesystem {
-            path: path.to_path_buf(),
+            path: display_path(root, path),
             source,
         }),
     }
@@ -699,20 +804,30 @@ fn check_directory(path: &Path) -> Result<(), MutationError> {
 ///
 /// Both calls fail when the path exists, so the collision check of the staging
 /// step cannot be defeated by a concurrent write.
-fn create(path: &Path, kind: EntryKind) -> Result<(), MutationError> {
+fn create(root: &WorktreeRoot, path: &StagedPath, kind: EntryKind) -> Result<(), MutationError> {
+    path.revalidate(root)?;
+    let directory = root.directory();
     let created = match kind {
-        EntryKind::Directory => fs::create_dir(path),
-        EntryKind::File => File::create_new(path).map(drop),
+        EntryKind::Directory => directory.create_dir(path.as_path()),
+        EntryKind::File => {
+            let mut options = cap_std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            directory.open_with(path.as_path(), &options).map(drop)
+        }
     };
     created.map_err(|source| MutationError::Filesystem {
-        path: path.to_path_buf(),
+        path: path.display_path(root),
         source,
     })
 }
 
 /// Copies or moves every entry, or leaves the workspace unchanged.
-fn transfer(mode: TransferMode, relocations: &[Relocation]) -> Result<(), MutationError> {
-    let mut staged = StagedTransfer::new(mode);
+fn transfer(
+    root: &WorktreeRoot,
+    mode: TransferMode,
+    relocations: &[Relocation],
+) -> Result<(), MutationError> {
+    let mut staged = StagedTransfer::new(root, mode);
     for relocation in relocations {
         staged.stage(relocation)?;
     }
@@ -720,8 +835,8 @@ fn transfer(mode: TransferMode, relocations: &[Relocation]) -> Result<(), Mutati
 }
 
 /// Removes every entry, or leaves the workspace unchanged.
-fn discard(paths: &[PathBuf]) -> Result<(), MutationError> {
-    let mut staged = StagedDiscard::default();
+fn discard(root: &WorktreeRoot, paths: &[StagedPath]) -> Result<(), MutationError> {
+    let mut staged = StagedDiscard::new(root);
     for path in paths {
         staged.stage(path)?;
     }
@@ -737,6 +852,8 @@ struct StagedItem {
     destination: PathBuf,
     /// Whether the destination holds an entry that the commit replaces.
     replaces: bool,
+    /// The identity that the destination must still hold at the commit.
+    approved: StagedPath,
     /// The temporary name of the entry that held the destination.
     parked: Option<PathBuf>,
     /// Whether the destination holds the staged entry now.
@@ -750,19 +867,22 @@ struct StagedItem {
 /// directory. A drop before the commit undoes every staged step.
 ///
 /// An approved destination keeps its entry until the commit reaches it. The
-/// commit parks that entry under a temporary name first, so the unwind puts it
+/// commit confirms the resolved identity of that destination, parks the entry
+/// under a temporary name, and only then takes the name, so the unwind puts it
 /// back and a failed overwrite leaves the destination unchanged.
 #[derive(Debug)]
-struct StagedTransfer {
+struct StagedTransfer<'a> {
+    root: &'a WorktreeRoot,
     mode: TransferMode,
     items: Vec<StagedItem>,
     settled: bool,
 }
 
-impl StagedTransfer {
+impl<'a> StagedTransfer<'a> {
     /// Creates one empty transfer.
-    fn new(mode: TransferMode) -> Self {
+    fn new(root: &'a WorktreeRoot, mode: TransferMode) -> Self {
         Self {
+            root,
             mode,
             items: Vec::new(),
             settled: false,
@@ -771,35 +891,32 @@ impl StagedTransfer {
 
     /// Puts one entry beside its destination under a temporary name.
     fn stage(&mut self, relocation: &Relocation) -> Result<(), MutationError> {
-        let parent =
-            relocation
-                .destination
-                .parent()
-                .ok_or_else(|| MutationError::NotADirectory {
-                    path: relocation.destination.clone(),
-                })?;
-        let temporary = parent.join(temporary_name(&relocation.destination));
+        relocation.origin.revalidate(self.root)?;
+        let destination = relocation.destination.as_path();
+        let temporary = parent_of(destination).join(temporary_name(destination));
+        let directory = self.root.directory();
         match self.mode {
             TransferMode::Copy => {
-                if let Err(error) = copy_tree(&relocation.origin, &temporary) {
-                    let _ = remove_tree(&temporary);
+                if let Err(error) = copy_tree(self.root, relocation.origin.as_path(), &temporary) {
+                    let _ = remove_tree(directory, &temporary);
                     return Err(error);
                 }
             }
             TransferMode::Move => {
-                fs::rename(&relocation.origin, &temporary).map_err(|source| {
-                    MutationError::Filesystem {
-                        path: relocation.origin.clone(),
+                directory
+                    .rename(relocation.origin.as_path(), directory, &temporary)
+                    .map_err(|source| MutationError::Filesystem {
+                        path: relocation.origin.display_path(self.root),
                         source,
-                    }
-                })?;
+                    })?;
             }
         }
         self.items.push(StagedItem {
-            origin: relocation.origin.clone(),
+            origin: relocation.origin.as_path().to_path_buf(),
             temporary,
-            destination: relocation.destination.clone(),
+            destination: destination.to_path_buf(),
             replaces: relocation.replaces,
+            approved: relocation.destination.clone(),
             parked: None,
             committed: false,
         });
@@ -808,39 +925,44 @@ impl StagedTransfer {
 
     /// Gives every staged entry its destination name.
     ///
-    /// The commit parks an approved destination before it takes the name, and
-    /// it removes the parked entries only after every destination holds its new
-    /// entry.
+    /// The commit confirms the identity of an approved destination and parks it
+    /// before it takes the name. It removes the parked entries only after every
+    /// destination holds its new entry.
     fn commit(mut self) -> Result<(), MutationError> {
+        let directory = self.root.directory();
         for index in 0..self.items.len() {
             if self.items[index].replaces {
-                self.items[index].parked = park(&self.items[index].destination)?;
+                // The destination loses its entry in the next step, so its
+                // identity must still be the identity that the answer approved.
+                self.items[index].approved.revalidate(self.root)?;
+                self.items[index].parked = park(self.root, &self.items[index].destination)?;
             }
             let item = &self.items[index];
-            fs::rename(&item.temporary, &item.destination).map_err(|source| {
-                MutationError::Filesystem {
-                    path: item.destination.clone(),
+            directory
+                .rename(&item.temporary, directory, &item.destination)
+                .map_err(|source| MutationError::Filesystem {
+                    path: display_path(self.root, &item.destination),
                     source,
-                }
-            })?;
+                })?;
             self.items[index].committed = true;
         }
         self.settled = true;
         // Every destination holds its new entry, so no parked entry can return.
         for item in &self.items {
             if let Some(parked) = &item.parked {
-                let _ = remove_tree(parked);
+                let _ = remove_tree(directory, parked);
             }
         }
         Ok(())
     }
 }
 
-impl Drop for StagedTransfer {
+impl Drop for StagedTransfer<'_> {
     fn drop(&mut self) {
         if self.settled {
             return;
         }
+        let directory = self.root.directory();
         // The unwind repairs a failed transfer. Every step is best effort,
         // because the mutation already reports the first cause. It runs in
         // reverse order, so each destination is free before its parked entry
@@ -848,20 +970,20 @@ impl Drop for StagedTransfer {
         for item in self.items.iter().rev() {
             match (self.mode, item.committed) {
                 (TransferMode::Copy, false) => {
-                    let _ = remove_tree(&item.temporary);
+                    let _ = remove_tree(directory, &item.temporary);
                 }
                 (TransferMode::Move, false) => {
-                    let _ = fs::rename(&item.temporary, &item.origin);
+                    let _ = directory.rename(&item.temporary, directory, &item.origin);
                 }
                 (TransferMode::Copy, true) => {
-                    let _ = remove_tree(&item.destination);
+                    let _ = remove_tree(directory, &item.destination);
                 }
                 (TransferMode::Move, true) => {
-                    let _ = fs::rename(&item.destination, &item.origin);
+                    let _ = directory.rename(&item.destination, directory, &item.origin);
                 }
             }
             if let Some(parked) = &item.parked {
-                let _ = fs::rename(parked, &item.destination);
+                let _ = directory.rename(parked, directory, &item.destination);
             }
         }
     }
@@ -871,18 +993,14 @@ impl Drop for StagedTransfer {
 ///
 /// The parked entry keeps the complete content of the destination, so the
 /// unwind can put it back. A destination that holds no entry parks nothing.
-fn park(destination: &Path) -> Result<Option<PathBuf>, MutationError> {
-    let parent = destination
-        .parent()
-        .ok_or_else(|| MutationError::NotADirectory {
-            path: destination.to_path_buf(),
-        })?;
-    let parked = parent.join(temporary_name(destination));
-    match fs::rename(destination, &parked) {
+fn park(root: &WorktreeRoot, destination: &Path) -> Result<Option<PathBuf>, MutationError> {
+    let parked = parent_of(destination).join(temporary_name(destination));
+    let directory = root.directory();
+    match directory.rename(destination, directory, &parked) {
         Ok(()) => Ok(Some(parked)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(source) => Err(MutationError::Filesystem {
-            path: destination.to_path_buf(),
+            path: display_path(root, destination),
             source,
         }),
     }
@@ -893,8 +1011,9 @@ fn park(destination: &Path) -> Result<Option<PathBuf>, MutationError> {
 /// The rename to a temporary name is the visible removal. The commit then
 /// removes the temporary names. A failed removal leaves one hidden temporary
 /// entry, which the default hidden-entry policy keeps out of the tree.
-#[derive(Debug, Default)]
-struct StagedDiscard {
+#[derive(Debug)]
+struct StagedDiscard<'a> {
+    root: &'a WorktreeRoot,
     items: Vec<DiscardedItem>,
     settled: bool,
 }
@@ -906,19 +1025,32 @@ struct DiscardedItem {
     temporary: PathBuf,
 }
 
-impl StagedDiscard {
+impl<'a> StagedDiscard<'a> {
+    /// Creates one empty removal.
+    fn new(root: &'a WorktreeRoot) -> Self {
+        Self {
+            root,
+            items: Vec::new(),
+            settled: false,
+        }
+    }
+
     /// Renames one entry to a temporary name beside itself.
-    fn stage(&mut self, path: &Path) -> Result<(), MutationError> {
-        let parent = path.parent().ok_or_else(|| MutationError::Outside {
-            path: path.to_path_buf(),
-        })?;
-        let temporary = parent.join(temporary_name(path));
-        fs::rename(path, &temporary).map_err(|source| MutationError::Filesystem {
-            path: path.to_path_buf(),
-            source,
-        })?;
+    fn stage(&mut self, path: &StagedPath) -> Result<(), MutationError> {
+        // The rename below is the removal, so the entry must still be the entry
+        // that the staging observed.
+        path.revalidate(self.root)?;
+        let origin = path.as_path();
+        let temporary = parent_of(origin).join(temporary_name(origin));
+        let directory = self.root.directory();
+        directory
+            .rename(origin, directory, &temporary)
+            .map_err(|source| MutationError::Filesystem {
+                path: path.display_path(self.root),
+                source,
+            })?;
         self.items.push(DiscardedItem {
-            origin: path.to_path_buf(),
+            origin: origin.to_path_buf(),
             temporary,
         });
         Ok(())
@@ -927,19 +1059,21 @@ impl StagedDiscard {
     /// Removes every renamed entry.
     fn commit(mut self) {
         self.settled = true;
+        let directory = self.root.directory();
         for item in &self.items {
-            let _ = remove_tree(&item.temporary);
+            let _ = remove_tree(directory, &item.temporary);
         }
     }
 }
 
-impl Drop for StagedDiscard {
+impl Drop for StagedDiscard<'_> {
     fn drop(&mut self) {
         if self.settled {
             return;
         }
+        let directory = self.root.directory();
         for item in &self.items {
-            let _ = fs::rename(&item.temporary, &item.origin);
+            let _ = directory.rename(&item.temporary, directory, &item.origin);
         }
     }
 }
@@ -947,8 +1081,10 @@ impl Drop for StagedDiscard {
 /// Copies one file, one symbolic link, or one complete directory.
 ///
 /// The walk uses an explicit stack, so a deep directory never grows the call
-/// stack. The entry and depth bounds stop a very large or looping tree.
-fn copy_tree(source: &Path, target: &Path) -> Result<(), MutationError> {
+/// stack. The entry and depth bounds stop a very large or looping tree. Every
+/// step names a contained path, so the copy stays inside the root.
+fn copy_tree(root: &WorktreeRoot, source: &Path, target: &Path) -> Result<(), MutationError> {
+    let directory = root.directory();
     let mut stack = vec![(source.to_path_buf(), target.to_path_buf(), 0usize)];
     let mut visited = 0usize;
     while let Some((from, to, depth)) = stack.pop() {
@@ -963,32 +1099,41 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), MutationError> {
                 max: COPY_DEPTH_MAX,
             });
         }
-        let metadata = fs::symlink_metadata(&from).map_err(|source| MutationError::Filesystem {
-            path: from.clone(),
-            source,
-        })?;
+        let metadata =
+            directory
+                .symlink_metadata(&from)
+                .map_err(|source| MutationError::Filesystem {
+                    path: display_path(root, &from),
+                    source,
+                })?;
         if metadata.is_symlink() {
-            copy_link(&from, &to)?;
+            copy_link(root, &from, &to)?;
             continue;
         }
         if !metadata.is_dir() {
-            fs::copy(&from, &to).map_err(|source| MutationError::Filesystem {
-                path: from.clone(),
-                source,
-            })?;
+            directory
+                .copy(&from, directory, &to)
+                .map_err(|source| MutationError::Filesystem {
+                    path: display_path(root, &from),
+                    source,
+                })?;
             continue;
         }
-        fs::create_dir(&to).map_err(|source| MutationError::Filesystem {
-            path: to.clone(),
-            source,
-        })?;
-        let reader = fs::read_dir(&from).map_err(|source| MutationError::Filesystem {
-            path: from.clone(),
-            source,
-        })?;
+        directory
+            .create_dir(&to)
+            .map_err(|source| MutationError::Filesystem {
+                path: display_path(root, &to),
+                source,
+            })?;
+        let reader = directory
+            .read_dir(&from)
+            .map_err(|source| MutationError::Filesystem {
+                path: display_path(root, &from),
+                source,
+            })?;
         for entry in reader {
             let entry = entry.map_err(|source| MutationError::Filesystem {
-                path: from.clone(),
+                path: display_path(root, &from),
                 source,
             })?;
             let name = entry.file_name();
@@ -999,32 +1144,42 @@ fn copy_tree(source: &Path, target: &Path) -> Result<(), MutationError> {
 }
 
 /// Recreates one symbolic link at the target path.
-#[cfg(unix)]
-fn copy_link(source: &Path, target: &Path) -> Result<(), MutationError> {
-    let link = fs::read_link(source).map_err(|error| MutationError::Filesystem {
-        path: source.to_path_buf(),
-        source: error,
-    })?;
-    std::os::unix::fs::symlink(link, target).map_err(|error| MutationError::Filesystem {
-        path: target.to_path_buf(),
-        source: error,
-    })
+///
+/// The copy reproduces the exact contents of the link, including an absolute
+/// target, because a contained link may name its target either way. It grants
+/// no new reach: every reader resolves a link through the capability, which
+/// refuses one that leaves the root.
+#[cfg(not(windows))]
+fn copy_link(root: &WorktreeRoot, source: &Path, target: &Path) -> Result<(), MutationError> {
+    let directory = root.directory();
+    let link = directory
+        .read_link_contents(source)
+        .map_err(|error| MutationError::Filesystem {
+            path: display_path(root, source),
+            source: error,
+        })?;
+    directory
+        .symlink_contents(link, target)
+        .map_err(|error| MutationError::Filesystem {
+            path: display_path(root, target),
+            source: error,
+        })
 }
 
 /// Reports that this platform offers no symbolic link support.
-#[cfg(not(unix))]
-fn copy_link(source: &Path, _target: &Path) -> Result<(), MutationError> {
+#[cfg(windows)]
+fn copy_link(root: &WorktreeRoot, source: &Path, _target: &Path) -> Result<(), MutationError> {
     Err(MutationError::UnsupportedLink {
-        path: source.to_path_buf(),
+        path: display_path(root, source),
     })
 }
 
 /// Removes one file, one symbolic link, or one complete directory.
-fn remove_tree(path: &Path) -> io::Result<()> {
-    let metadata = fs::symlink_metadata(path)?;
+fn remove_tree(directory: &Dir, path: &Path) -> io::Result<()> {
+    let metadata = directory.symlink_metadata(path)?;
     if metadata.is_dir() {
-        fs::remove_dir_all(path)
+        directory.remove_dir_all(path)
     } else {
-        fs::remove_file(path)
+        directory.remove_file(path)
     }
 }
