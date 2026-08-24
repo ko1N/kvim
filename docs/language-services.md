@@ -289,7 +289,15 @@ Without the exclusion, the body would take the level of the `let` in addition
 to its own level. The undelimited-body span reaches from the end of the
 header, which is the sibling before the named field, through the last byte of
 the node, and it holds both ends, because no delimiter follows the body. The
-Python paragraph below names the scopes that use this span.
+span opens a block for one of three reasons: the body holds no statement yet;
+the body starts on a later row than the header; or the body reaches a later
+row than the header and its first child carries no scope of its own. A YAML
+block scalar (`a: |`) needs the third reason, because its value starts on the
+header row but its content follows on a later row and carries no scope of its
+own. A YAML flow collection (`a: [`) must fail the third reason, because its
+value is a scope in the same rule and already supplies its own level. The
+Python paragraph and the YAML paragraph below name the scopes that use this
+span.
 
 Python is the one registered language that closes a block with indentation
 alone. Its `block` node starts at the first token of the suite and ends at the
@@ -315,13 +323,15 @@ closing tag therefore reports one indent level too many, and the user corrects
 that line.
 
 YAML closes a block collection with indentation alone, exactly as Python closes
-a suite. The YAML adapter therefore names the entry that owns each nested
-collection, `block_mapping_pair` and `block_sequence_item`, and one entry
-supplies the level of its own block. The same two limits follow, and the user
-corrects each affected line: the last line of a block reports one level too
-few, and an entry whose value spans several lines reports one level too many. A
-`flow_mapping` node and a `flow_sequence` node carry their own brackets, so
-both behave exactly as the equivalent node of a brace language.
+a suite. The `block_mapping_pair` node names its `value` field, and the YAML
+adapter gives that node the undelimited-body indent span, so the entry that
+owns each nested collection reaches the last line of its collection and keeps
+that collection's level. A `block_sequence_item` node names no field, so it
+keeps the whole span, and the entry that holds the sequence supplies the level
+of every item. A `flow_mapping` node and a `flow_sequence` node carry their own
+brackets and their own scope, so both supply their own level, and the entry
+that holds one adds no second level. A block scalar (`a: |`) carries no scope
+of its own, so it takes its level from the entry that holds it.
 
 SQL names its parenthesized constructs alone: the column list of a table, a
 call with its arguments, a value list, a parenthesized predicate, and a nested
