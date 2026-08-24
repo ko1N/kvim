@@ -48,8 +48,8 @@ use kvim_editor::{
 };
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandAuthority, CommandLineCommand,
-    ConfirmAnswer, ConfirmEdit, Mode, PasteText, PromptEdit, PromptKind, Registry, Resolution,
-    Resolver, TreePrompt, WhichKeyRow,
+    ConfirmAnswer, ConfirmEdit, InputContextSnapshot, Mode, PasteText, PromptEdit, PromptKind,
+    Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
@@ -1549,6 +1549,49 @@ impl Session {
         self.finish_input(redraw, now)
     }
 
+    /// Returns the input context that this editor publishes.
+    ///
+    /// The host supplies this value to the shared resolver of its workspace,
+    /// so the next resolution reads the current scope, the grammar phases, the
+    /// text fallback, and the generation of this editor. See
+    /// `docs/embedding.md`.
+    #[must_use]
+    pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
+        self.resolver.snapshot()
+    }
+
+    /// Cancels every pending semantic phase of this editor.
+    ///
+    /// A workspace composer proposes this effect before it moves focus or
+    /// overlay ownership. The call closes an open question and an open prompt
+    /// line, and it clears the count, the operator, the register, and the text
+    /// object. The host then reads [`Session::input_context`] and resumes the
+    /// proposed transition.
+    #[must_use]
+    pub fn cancel_pending(&mut self, now: Duration) -> Reduction {
+        self.begin_input(now);
+        let mut redraw = Redraw::Skipped;
+        // The question owns the keys above the prompt, so it closes first and
+        // the prompt below it closes next.
+        if self.confirmation.is_some() {
+            redraw = self.edit_confirmation(ConfirmEdit::Cancel).or(redraw);
+        }
+        if self.prompt.is_some() {
+            redraw = self.apply_prompt(PromptEdit::Cancel).or(redraw);
+        }
+        // A waiting operator reports one command, which aborts it and changes
+        // nothing else.
+        if let Resolution::Command {
+            command,
+            count,
+            register: _,
+        } = self.resolver.cancel()
+        {
+            redraw = self.dispatch_command(command, count).or(redraw);
+        }
+        self.finish_input(redraw, now)
+    }
+
     /// Starts one input reduction.
     fn begin_input(&mut self, now: Duration) {
         self.advance_clock(now);
@@ -1919,32 +1962,20 @@ impl Session {
 
     /// Routes one command to the open question or the open prompt line.
     ///
-    /// The standalone key resolver performs the identical mapping for its own
-    /// binding scope, so a host-supplied command reaches the same owner as the
-    /// key that names it. A command that no open line owns returns `None` and
+    /// [`PromptEdit::of_command`] and [`ConfirmEdit::of_command`] own the one
+    /// mapping, so a host-supplied command reaches the same owner as the key
+    /// that names it. A command that no open line owns returns `None` and
     /// continues to the ordinary owners.
     fn route_to_open_line(&mut self, command: Command) -> Option<Redraw> {
         if self.confirmation.is_some() {
             // A question owns every key below it, so an unnamed command edits
             // nothing and reaches no owner under the question.
-            let edit = match command {
-                Command::PromptAccept => ConfirmEdit::Accept,
-                Command::PromptCancel => ConfirmEdit::Cancel,
-                Command::PromptDeleteBackward => ConfirmEdit::DeleteBackward,
-                _ => ConfirmEdit::Ignore,
-            };
+            let edit = ConfirmEdit::of_command(command).unwrap_or(ConfirmEdit::Ignore);
             return Some(self.edit_confirmation(edit));
         }
         // An open picker owns its own chords above the query line, so only the
         // prompt commands reach the line itself.
-        let edit = match command {
-            Command::PromptAccept => PromptEdit::Accept,
-            Command::PromptCancel => PromptEdit::Cancel,
-            Command::PromptDeleteBackward => PromptEdit::DeleteBackward,
-            Command::PromptCompleteNext => PromptEdit::CompleteNext,
-            Command::PromptCompletePrevious => PromptEdit::CompletePrevious,
-            _ => return None,
-        };
+        let edit = PromptEdit::of_command(command)?;
         self.prompt.as_ref()?;
         Some(self.apply_prompt(edit))
     }

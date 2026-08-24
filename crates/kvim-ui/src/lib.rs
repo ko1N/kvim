@@ -10,6 +10,13 @@
 //! viewport. Rows, heights, styles, labels, and the meaning of every action
 //! stay with the host, and one host callback draws every cell.
 //!
+//! [`WorkspaceComposer`] joins those parts into one composition model of a
+//! complete host-owned workspace: split geometry, sidebar regions, overlay
+//! ownership, focus, one shared resolver, and which-key state. It owns no
+//! surface value and no host command. A focus or overlay transition that needs
+//! surface state returns one addressed [`CompositionEffect::CancelPending`],
+//! and the host resumes it with the reset context. See `docs/embedding.md`.
+//!
 //! [`WhichKeyOverlay`] renders the keys that may follow a pending key sequence.
 //! It holds no binding table: the caller derives its hints from the one shared
 //! registry of `kvim-keymap` and supplies final texts, optional icons, and its
@@ -38,6 +45,14 @@
 //! cargo run -p kvim-ui --example which_key
 //! ```
 //!
+//! `crates/kvim-tui/examples/host_workspace.rs` composes host-owned chat, one
+//! embedded editor, one review surface, and one sidebar into one workspace
+//! through [`WorkspaceComposer`]:
+//!
+//! ```sh
+//! cargo run -p kvim-tui --example host_workspace
+//! ```
+//!
 //! ```
 //! use ratatui::layout::Rect;
 //!
@@ -61,11 +76,14 @@
 //! assert_eq!(tree.focus_direction(Direction::Left), LayoutChange::Changed);
 //! ```
 
+mod composer;
 mod layout;
 mod sidebar;
 mod which_key;
 mod window;
 
+#[cfg(test)]
+mod composer_tests;
 #[cfg(test)]
 mod sidebar_tests;
 #[cfg(test)]
@@ -73,6 +91,10 @@ mod which_key_tests;
 #[cfg(test)]
 mod window_tests;
 
+pub use composer::{
+    COMPOSED_SURFACES_MAX, Composition, CompositionEffect, CompositionLayout, OverlayPlacement,
+    ResumeError, SurfacePlacement, TransitionId, UnknownSurface, WorkspaceComposer,
+};
 pub use layout::{Region, RegionKind, WindowLayout};
 pub use sidebar::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DRAWS_MAX,

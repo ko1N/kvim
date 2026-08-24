@@ -6,6 +6,9 @@ rust-version.workspace = true
 version.workspace = true
 
 [dependencies]
+# kvim crates
+kvim-keymap.workspace = true
+
 # Basics
 thiserror.workspace = true
 
@@ -13,8 +16,3 @@ thiserror.workspace = true
 ratatui.workspace = true
 unicode-width.workspace = true
 
-[dev-dependencies]
-# kvim crates
-# The which-key example builds one shared registry and one resolver, so the
-# example derives its hints exactly as a host does.
-kvim-keymap.workspace = true

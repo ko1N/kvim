@@ -48,6 +48,36 @@ pub enum PromptEdit {
     Cancel,
 }
 
+impl PromptEdit {
+    /// Returns the edit that one resolved command names for an open prompt.
+    ///
+    /// The mapping belongs to this type, so a key that reaches the prompt and
+    /// a host-supplied command reach the identical edit. An open picker owns
+    /// its own chords above the query line, so every other command returns
+    /// `None` and continues to the owners below the prompt.
+    ///
+    /// ```
+    /// use kvim_input::{Command, PromptEdit};
+    ///
+    /// assert_eq!(
+    ///     PromptEdit::of_command(Command::PromptAccept),
+    ///     Some(PromptEdit::Accept)
+    /// );
+    /// assert_eq!(PromptEdit::of_command(Command::MoveDown), None);
+    /// ```
+    #[must_use]
+    pub const fn of_command(command: Command) -> Option<Self> {
+        match command {
+            Command::PromptAccept => Some(Self::Accept),
+            Command::PromptCancel => Some(Self::Cancel),
+            Command::PromptDeleteBackward => Some(Self::DeleteBackward),
+            Command::PromptCompleteNext => Some(Self::CompleteNext),
+            Command::PromptCompletePrevious => Some(Self::CompletePrevious),
+            _ => None,
+        }
+    }
+}
+
 /// One edit of the answer of an open confirmation.
 ///
 /// The confirmation completes nothing, so this enumeration holds no completion
@@ -67,6 +97,33 @@ pub enum ConfirmEdit {
     /// An open confirmation owns every key, so a key that its table does not
     /// hold reaches no other owner and inserts no buffer text.
     Ignore,
+}
+
+impl ConfirmEdit {
+    /// Returns the edit that one resolved command names for an open question.
+    ///
+    /// The question completes nothing, so it names fewer edits than a prompt.
+    /// A command that it does not name returns `None`, and the caller decides
+    /// whether the question ignores that command or lets it pass.
+    ///
+    /// ```
+    /// use kvim_input::{Command, ConfirmEdit};
+    ///
+    /// assert_eq!(
+    ///     ConfirmEdit::of_command(Command::PromptCancel),
+    ///     Some(ConfirmEdit::Cancel)
+    /// );
+    /// assert_eq!(ConfirmEdit::of_command(Command::PromptCompleteNext), None);
+    /// ```
+    #[must_use]
+    pub const fn of_command(command: Command) -> Option<Self> {
+        match command {
+            Command::PromptAccept => Some(Self::Accept),
+            Command::PromptCancel => Some(Self::Cancel),
+            Command::PromptDeleteBackward => Some(Self::DeleteBackward),
+            _ => None,
+        }
+    }
 }
 
 /// The answer to one open confirmation.
@@ -263,6 +320,19 @@ impl Resolver {
         Some(view.hints().iter().map(WhichKeyRow::of).collect())
     }
 
+    /// Cancels every pending key and every pending grammar phase.
+    ///
+    /// A cancel key reaches this path, and so does the addressed cancellation
+    /// effect that a workspace composer proposes before it moves focus or
+    /// overlay ownership. A waiting operator reports
+    /// [`Command::ReturnToNormal`], which names no motion and no text object,
+    /// so it aborts the operator and changes nothing else.
+    pub fn cancel(&mut self) -> Resolution {
+        let scope = self.reducer.active_scope();
+        self.shared.clear_pending();
+        resolution(self.reducer.cancel(), scope)
+    }
+
     /// Resolves one key at the elapsed time `now`.
     ///
     /// A cancel key ends pending input first, at every depth and in every mode.
@@ -270,9 +340,7 @@ impl Resolver {
     /// composes the outcome.
     pub fn resolve(&mut self, key: Key, now: Duration) -> Resolution {
         if self.holds_pending_input() && is_cancel_key(key) {
-            let scope = self.reducer.active_scope();
-            self.shared.clear_pending();
-            return resolution(self.reducer.cancel(), scope);
+            return self.cancel();
         }
         let context = self.reducer.dispatch_context();
         let scope = context.focus.scope;
@@ -331,25 +399,10 @@ fn resolution(reduced: Reduced, scope: BindingScope) -> Resolution {
 /// Every other command reaches the editor with its count and its register.
 fn operation_resolution(scope: BindingScope, operation: SemanticOperation) -> Resolution {
     let edit = match scope {
-        BindingScope::Prompt => match operation.command {
-            Command::PromptAccept => Some(Resolution::Prompt(PromptEdit::Accept)),
-            Command::PromptCancel => Some(Resolution::Prompt(PromptEdit::Cancel)),
-            Command::PromptDeleteBackward => Some(Resolution::Prompt(PromptEdit::DeleteBackward)),
-            Command::PromptCompleteNext => Some(Resolution::Prompt(PromptEdit::CompleteNext)),
-            Command::PromptCompletePrevious => {
-                Some(Resolution::Prompt(PromptEdit::CompletePrevious))
-            }
-            // An open picker owns its own chords above the query line.
-            _ => None,
-        },
-        BindingScope::Confirmation => match operation.command {
-            Command::PromptAccept => Some(Resolution::Confirmation(ConfirmEdit::Accept)),
-            Command::PromptCancel => Some(Resolution::Confirmation(ConfirmEdit::Cancel)),
-            Command::PromptDeleteBackward => {
-                Some(Resolution::Confirmation(ConfirmEdit::DeleteBackward))
-            }
-            _ => None,
-        },
+        BindingScope::Prompt => PromptEdit::of_command(operation.command).map(Resolution::Prompt),
+        BindingScope::Confirmation => {
+            ConfirmEdit::of_command(operation.command).map(Resolution::Confirmation)
+        }
         _ => None,
     };
     edit.unwrap_or(Resolution::Command {
