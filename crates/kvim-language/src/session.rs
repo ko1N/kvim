@@ -11,10 +11,11 @@
 //! options as data, so no code in this file names one server product.
 //!
 //! `kvim-lsp` owns the neutral half of that work: the child process, the
-//! bounded transport, the standard-error recorder, the handshake, and the
-//! shutdown sequence. This file owns the editor half: the open documents, the
-//! buffer versions, the pending requests, the diagnostic pulls, the hover
-//! markup, and the bounded restart of a failed attempt.
+//! bounded transport, the standard-error recorder, the handshake, the shutdown
+//! sequence, and the bounded restart of a failed attempt. This file owns the
+//! editor half: the open documents, the buffer versions, the pending requests,
+//! the diagnostic pulls, and the hover markup. It also translates every neutral
+//! [`ProjectEvent`] of the supervisor into one editor [`LanguageOutcome`].
 //!
 //! Every request and every published result carries the buffer version that
 //! produced its input. A result for an obsolete version is rejected before
@@ -35,12 +36,13 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_core::BufferVersion;
 use kvim_lsp::{
-    ArrayBudget, ContentChange, DiagnosticsModel, DocumentMapping, DocumentPosition, Envelopes,
-    Handshake, HandshakeOutcome, LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LspBound, LspError,
-    PositionEncoding, ProtocolSpan, ProtocolWriter, RawDiagnostic, RawTextEdit, RpcEnvelope, RpcId,
-    ServerInput, ServerProcess, ServerReport, ServerStreams, SourceLocation, SynchronizationMode,
-    TextEdit, TransportFactory, WorkspaceRoot, deserialize_bounded_array, enforce, initialize,
-    shutdown,
+    ArrayBudget, Attempt, AttemptEnd, ContentChange, DiagnosticsModel, DocumentMapping,
+    DocumentPosition, Envelopes, Handshake, LSP_OPEN_DOCUMENTS_MAX, LSP_RESULT_ID_BYTES_MAX,
+    LspBound, LspError, PositionEncoding, ProjectEvent, ProjectEvents, ProjectId, ProtocolSpan,
+    ProtocolWriter, RawDiagnostic, RawTextEdit, RpcEnvelope, RpcId, ServerConversation,
+    ServerEvent, ServerId, ServerInput, ServerReport, ServerSupervisor, SessionGeneration,
+    SourceLocation, SynchronizationMode, TextEdit, TransportFactory, WorkspaceRoot,
+    deserialize_bounded_array, enforce,
 };
 use kvim_settings::IndentSettings;
 use kvim_syntax::SyntaxHighlighter;
@@ -48,20 +50,14 @@ use kvim_syntax::SyntaxHighlighter;
 use super::LanguageRegistry;
 use super::document::{DiagnosticSet, FormatEdits, MarkupKind, MarkupText};
 use super::markup::MarkupDocument;
-use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
+use super::progress::{ProgressReport, parse as parse_progress};
 use super::server::{LanguageServerId, ServerFormatting};
-
-/// The documents that one session holds open at the same time.
-pub const LSP_OPEN_DOCUMENTS_MAX: usize = 64;
 
 /// The requests of one session that wait for an answer at the same time.
 pub const LSP_PENDING_REQUESTS_MAX: usize = 32;
 
 /// The editor requests that one session queue holds.
 pub const LSP_REQUEST_QUEUE_CAPACITY: usize = 64;
-
-/// The results that the language service holds for the event loop.
-pub const LSP_EVENT_QUEUE_CAPACITY: usize = 256;
 
 /// The content changes of one document synchronization.
 pub const LSP_CONTENT_CHANGES_MAX: usize = 4_096;
@@ -435,6 +431,13 @@ impl LanguageServerHandle {
 pub(super) struct SessionConfig {
     /// The server that owns the session.
     pub(super) id: LanguageServerId,
+    /// The neutral address of this session inside its project.
+    ///
+    /// Every neutral record of `kvim-lsp` carries this pair, so the adapter of
+    /// this file translates one project's records and never mixes two projects.
+    pub(super) project: ProjectId,
+    /// The neutral identity of this server inside that project.
+    pub(super) server_id: ServerId,
     /// The protocol language identifier of every document of this session.
     pub(super) language_id: &'static str,
     /// The program that runs the server, which titles one overlay group.
@@ -462,16 +465,6 @@ pub(super) struct SessionConfig {
     /// Tree-sitter highlight that the loop must never run. See
     /// `docs/language-services.md`.
     pub(super) registry: LanguageRegistry,
-}
-
-/// Why one session attempt ended.
-enum AttemptOutcome {
-    /// The editor closed or cancelled the session.
-    Stopped,
-    /// The declared executable is not installed.
-    NotInstalled,
-    /// The attempt failed, so a bounded restart may follow.
-    Failed(LspError),
 }
 
 /// One document that the session holds open.
@@ -554,118 +547,118 @@ pub(super) fn start(
     (handle, task)
 }
 
-/// Runs one session and restarts it a bounded number of times.
+/// Runs the bounded restart loop of `kvim-lsp` over one editor session.
+///
+/// `kvim-lsp` owns the process, the handshake, the shutdown, and the restart
+/// bounds. This function supplies the editor conversation and the translation of
+/// every neutral record.
 async fn supervise(
-    mut factory: TransportFactory,
+    factory: TransportFactory,
     config: SessionConfig,
-    mut requests: mpsc::Receiver<SessionRequest>,
+    requests: mpsc::Receiver<SessionRequest>,
     events: mpsc::Sender<LanguageEvent>,
     cancellation: CancellationToken,
 ) {
-    let mut restarts = 0_usize;
-    let mut generation = SessionGeneration::FIRST;
-    loop {
-        let outcome = attempt(
-            &mut factory,
-            &config,
-            generation,
-            &mut requests,
-            &events,
-            &cancellation,
-        )
-        .await;
-        match outcome {
-            AttemptOutcome::Stopped => break,
-            AttemptOutcome::NotInstalled => {
-                emit(&events, config.id, LanguageOutcome::Unavailable).await;
-                return;
-            }
-            AttemptOutcome::Failed(error) => {
-                emit(
-                    &events,
-                    config.id,
-                    LanguageOutcome::Failed {
-                        request: None,
-                        error,
-                    },
-                )
-                .await;
-                if restarts >= LSP_RESTARTS_MAX || cancellation.is_cancelled() {
-                    break;
-                }
-                restarts += 1;
-                // The new server assigns its own progress tokens, so the next
-                // attempt reports a later generation and the editor drops every
-                // report of the attempt that failed.
-                generation = generation.next();
-                // The new server holds no document, so the caller must open its
-                // buffers again before it queries them.
-                emit(&events, config.id, LanguageOutcome::Restarted).await;
-            }
-        }
-    }
-    emit(&events, config.id, LanguageOutcome::Stopped).await;
-}
-
-/// Runs one server process from the handshake to its end.
-async fn attempt(
-    factory: &mut TransportFactory,
-    config: &SessionConfig,
-    generation: SessionGeneration,
-    requests: &mut mpsc::Receiver<SessionRequest>,
-    events: &mpsc::Sender<LanguageEvent>,
-    cancellation: &CancellationToken,
-) -> AttemptOutcome {
     let server = config.id;
     let reports = events.clone();
-    let opened = ServerProcess::open(factory, move |report| {
-        // A full result queue drops the report. The capture is a report, never
-        // a failure path, and a wait here would stop the drain and fill the
-        // pipe of the child.
-        let _ = reports.try_send(LanguageEvent {
+    let supervisor = ServerSupervisor {
+        address: config.project.server(config.server_id),
+        factory,
+        handshake: Handshake {
+            root: &config.root,
+            options: &config.options,
+            settings: config.workspace_settings.as_ref(),
+        },
+        conversation: LanguageConversation {
+            config: &config,
+            events: &events,
+            requests,
+        },
+        events: LanguageEvents {
             server,
-            outcome: LanguageOutcome::Reported(report),
-        });
-    });
-    let (process, streams) = match opened {
-        Ok(opened) => opened,
-        Err(LspError::NotInstalled) => return AttemptOutcome::NotInstalled,
-        Err(error) => return AttemptOutcome::Failed(error),
+            events: events.clone(),
+        },
+        report: move |report| {
+            // A full result queue drops the report. The capture is a report,
+            // never a failure path, and a wait here would stop the drain and
+            // fill the pipe of the child.
+            let _ = reports.try_send(LanguageEvent {
+                server,
+                outcome: LanguageOutcome::Reported(report),
+            });
+        },
     };
-    let ServerStreams {
-        writer,
-        mut envelopes,
-    } = streams;
-    let mut session = Session {
-        config,
-        generation,
-        encoding: PositionEncoding::Utf16,
-        synchronization: SynchronizationMode::None,
-        diagnostics: DiagnosticsModel::Push,
-        events,
-        writer,
-        documents: HashMap::new(),
-        pending: HashMap::new(),
-        highlighter: SyntaxHighlighter::new(),
-    };
-
-    let outcome = session.serve(&mut envelopes, requests, cancellation).await;
-    if matches!(outcome, AttemptOutcome::Stopped) {
-        // The sequence carries its own deadline, and the process ends next, so
-        // a server that refuses the sequence still leaves no running child.
-        let _ = shutdown(&mut session.writer, &mut envelopes).await;
-    }
-    process.close().await;
-    outcome
+    supervisor.run(&cancellation).await;
 }
 
-/// Sends one result to the editor.
-async fn emit(
-    events: &mpsc::Sender<LanguageEvent>,
+/// Translates every neutral record of one supervised server.
+///
+/// The record vocabulary of `kvim-lsp` names no editor state. This adapter is
+/// the one place that turns it into the outcome vocabulary of the editor.
+struct LanguageEvents {
+    /// The server that owns the session.
     server: LanguageServerId,
-    outcome: LanguageOutcome,
-) {
-    let _ = events.send(LanguageEvent { server, outcome }).await;
+    /// The result queue of the language service.
+    events: mpsc::Sender<LanguageEvent>,
+}
+
+impl ProjectEvents for LanguageEvents {
+    async fn record(&mut self, event: ProjectEvent) {
+        let outcome = match event.event {
+            ServerEvent::Started => LanguageOutcome::Reported(ServerReport::Started),
+            ServerEvent::Reported(report) => LanguageOutcome::Reported(report),
+            ServerEvent::Unavailable => LanguageOutcome::Unavailable,
+            ServerEvent::Failed(error) => LanguageOutcome::Failed {
+                request: None,
+                error,
+            },
+            // The new server holds no document, so the caller must open its
+            // buffers again before it queries them.
+            ServerEvent::Restarted { .. } => LanguageOutcome::Restarted,
+            ServerEvent::Stopped => LanguageOutcome::Stopped,
+        };
+        let _ = self
+            .events
+            .send(LanguageEvent {
+                server: self.server,
+                outcome,
+            })
+            .await;
+    }
+}
+
+/// The editor conversation that serves every attempt of one session.
+///
+/// The value survives a restart, because the request queue of the editor belongs
+/// to the session and not to one server process. Every other piece of live state
+/// belongs to [`Session`], which one attempt builds and drops.
+struct LanguageConversation<'a> {
+    config: &'a SessionConfig,
+    events: &'a mpsc::Sender<LanguageEvent>,
+    requests: mpsc::Receiver<SessionRequest>,
+}
+
+impl ServerConversation for LanguageConversation<'_> {
+    async fn serve(&mut self, attempt: Attempt<'_>) -> AttemptEnd {
+        // Every negotiated value belongs to one server attempt, so a restart
+        // reads the capabilities of the new server again. See
+        // `docs/language-services.md`.
+        let mut session = Session {
+            config: self.config,
+            generation: attempt.generation,
+            encoding: attempt.capabilities.encoding(),
+            synchronization: attempt.capabilities.synchronization(),
+            diagnostics: attempt.capabilities.diagnostics().clone(),
+            events: self.events,
+            writer: attempt.writer,
+            documents: HashMap::new(),
+            pending: HashMap::new(),
+            highlighter: SyntaxHighlighter::new(),
+        };
+        session
+            .serve(attempt.envelopes, &mut self.requests, attempt.cancellation)
+            .await
+    }
 }
 
 /// The live state of one server attempt.
@@ -675,15 +668,13 @@ struct Session<'a> {
     generation: SessionGeneration,
     /// The position encoding that the handshake negotiated.
     ///
-    /// The session serves no editor request before the handshake completes, so
-    /// the value always names the encoding that the running server confirmed.
-    /// UTF-16 is the encoding that the protocol defines until a server answers.
+    /// The supervisor completes the handshake before it builds this value, so
+    /// the encoding always names what the running server confirmed.
     encoding: PositionEncoding,
     /// The change notification that the handshake selected.
     ///
     /// The mode belongs to one server attempt, so a restart reads the
-    /// capability again. No change notification for the value that the protocol
-    /// defines for an absent capability. See `docs/language-services.md`.
+    /// capability again. See `docs/language-services.md`.
     synchronization: SynchronizationMode,
     /// The diagnostic model that the handshake selected.
     ///
@@ -691,7 +682,8 @@ struct Session<'a> {
     /// capability again. See `docs/language-services.md`.
     diagnostics: DiagnosticsModel,
     events: &'a mpsc::Sender<LanguageEvent>,
-    writer: ProtocolWriter<ServerInput>,
+    /// The writer of the attempt, which the supervisor keeps for the shutdown.
+    writer: &'a mut ProtocolWriter<ServerInput>,
     documents: HashMap<PathBuf, OpenDocument>,
     pending: HashMap<u64, PendingRequest>,
     /// The highlighter that names the roles of the fences of a hover answer.
@@ -702,64 +694,36 @@ struct Session<'a> {
 }
 
 impl Session<'_> {
-    /// Runs the handshake and then serves the editor until the session ends.
+    /// Serves the editor until the server or the caller ends the attempt.
     async fn serve(
         &mut self,
         envelopes: &mut Envelopes,
         requests: &mut mpsc::Receiver<SessionRequest>,
         cancellation: &CancellationToken,
-    ) -> AttemptOutcome {
-        // The handshake carries its own deadline, and it answers every
-        // unsolicited server request while it waits.
-        let config = self.config;
-        let declaration = Handshake {
-            root: &config.root,
-            options: &config.options,
-            settings: config.workspace_settings.as_ref(),
-        };
-        let capabilities =
-            match initialize(&mut self.writer, envelopes, &declaration, cancellation).await {
-                Ok(HandshakeOutcome::Ready(capabilities)) => capabilities,
-                Ok(HandshakeOutcome::Cancelled) => return AttemptOutcome::Stopped,
-                Err(error) => return AttemptOutcome::Failed(error),
-            };
-        // Every negotiated value belongs to one server attempt, so a restart
-        // reads the capabilities of the new server again. See
-        // `docs/language-services.md`.
-        self.encoding = capabilities.encoding();
-        self.synchronization = capabilities.synchronization();
-        self.diagnostics = capabilities.diagnostics().clone();
-        // The server answered the handshake, so it serves its documents from
-        // here. The editor records the start beside the output of the server.
-        emit(
-            self.events,
-            self.config.id,
-            LanguageOutcome::Reported(ServerReport::Started),
-        )
-        .await;
+    ) -> AttemptEnd {
         loop {
             let deadline = self.next_deadline();
             let step = tokio::select! {
                 biased;
-                () = cancellation.cancelled() => return AttemptOutcome::Stopped,
+                () = cancellation.cancelled() => return AttemptEnd::Stopped,
                 envelope = envelopes.recv() => match envelope {
                     Some(Ok(envelope)) => self.dispatch(envelope).await,
-                    Some(Err(error)) => return AttemptOutcome::Failed(error),
-                    None => return AttemptOutcome::Failed(LspError::Stopped),
+                    Some(Err(error)) => return AttemptEnd::Failed(error),
+                    None => return AttemptEnd::Failed(LspError::Stopped),
                 },
                 request = requests.recv() => match request {
                     Some(request) => self.handle(request).await,
-                    None => return AttemptOutcome::Stopped,
+                    None => return AttemptEnd::Stopped,
                 },
                 () = sleep_until(deadline), if deadline.is_some() => self.expire().await,
             };
             if let Err(error) = step {
-                return AttemptOutcome::Failed(error);
+                return AttemptEnd::Failed(error);
             }
             // One step can open a document, apply a change, or complete a pull,
             // and each of those can make one pull due.
             if let Err(error) = self.fire_pulls().await {
-                return AttemptOutcome::Failed(error);
+                return AttemptEnd::Failed(error);
             }
         }
     }

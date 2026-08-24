@@ -193,11 +193,12 @@ pub use javascript::JavascriptAdapter;
 #[cfg(feature = "grammar-json")]
 pub use json::JsonAdapter;
 pub use kvim_lsp::{
-    ContentChange, Diagnostic, DiagnosticSeverity, DocumentPosition, LSP_HEADER_BYTES_MAX,
-    LSP_INITIALIZE_DEADLINE, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX, LSP_MESSAGES_MAX,
-    LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX,
-    LSP_SHUTDOWN_DEADLINE, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError,
-    ServerReport, SourceLocation, SourceSpan, TextEdit, WorkspaceRoot,
+    ContentChange, Diagnostic, DiagnosticSeverity, DocumentPosition, LSP_EVENT_QUEUE_CAPACITY,
+    LSP_HEADER_BYTES_MAX, LSP_INITIALIZE_DEADLINE, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
+    LSP_MESSAGES_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX,
+    LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LSP_SESSIONS_MAX, LSP_SHUTDOWN_DEADLINE,
+    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError, ProjectId, ServerId,
+    ServerReport, SessionGeneration, SourceLocation, SourceSpan, TextEdit, WorkspaceRoot,
 };
 pub use kvim_syntax::{
     Grammar, HighlightLimits, HighlightSpan, Highlighted, LanguageCatalogEntry, LimitKind,
@@ -216,7 +217,6 @@ pub use markup::{
 pub use nix::NixAdapter;
 pub use progress::{
     LSP_PROGRESS_CHARS_MAX, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
-    SessionGeneration,
 };
 #[cfg(feature = "grammar-python")]
 pub use python::PythonAdapter;
@@ -228,13 +228,13 @@ pub use server::{
     LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId,
     ServerFormatting,
 };
-pub use services::{LSP_SESSIONS_MAX, LanguageServices};
+pub use services::LanguageServices;
 pub use session::{
     LSP_CONFIGURATION_ITEMS_MAX, LSP_CONTENT_CHANGES_MAX, LSP_DIAGNOSTIC_DEADLINE,
-    LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_EVENT_QUEUE_CAPACITY, LSP_FORMAT_DEADLINE,
-    LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX,
-    LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE, LSP_REQUEST_QUEUE_CAPACITY, LanguageEvent,
-    LanguageOutcome, LanguageRequestId, LanguageServerHandle,
+    LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_DEADLINE, LSP_FORMAT_EDITS_MAX,
+    LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE,
+    LSP_REQUEST_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageRequestId,
+    LanguageServerHandle,
 };
 #[cfg(feature = "grammar-sql")]
 pub use sql::SqlAdapter;

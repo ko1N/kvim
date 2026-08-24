@@ -8,37 +8,14 @@
 use serde::Deserialize;
 use serde_json::value::RawValue;
 
+use kvim_lsp::SessionGeneration;
+
 /// The largest number of characters that one progress string may hold.
 ///
 /// A token, a title, and a message all pass this bound. A longer value is a
 /// report that the overlay cannot show, so the session drops it instead of
 /// keeping an unbounded string.
 pub const LSP_PROGRESS_CHARS_MAX: usize = 128;
-
-/// The attempt of one session that produced one report.
-///
-/// A session restarts after a server failure, and the new server assigns its
-/// own tokens. The generation therefore separates the reports of two attempts,
-/// so a report of the attempt that failed can never change visible state.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct SessionGeneration(u64);
-
-impl SessionGeneration {
-    /// The generation of the first attempt of one session.
-    pub const FIRST: Self = Self(0);
-
-    /// Returns the generation of the attempt that follows this one.
-    #[must_use]
-    pub const fn next(self) -> Self {
-        Self(self.0.saturating_add(1))
-    }
-
-    /// Returns the underlying value for logs and comparisons.
-    #[must_use]
-    pub const fn get(self) -> u64 {
-        self.0
-    }
-}
 
 /// The identity that one server assigns to one progress item.
 ///
