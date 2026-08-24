@@ -60,7 +60,7 @@ mod reducer;
 mod registry;
 mod resolver;
 
-pub use command::{Command, CommandGroup};
+pub use command::{Command, CommandAuthority, CommandGroup};
 pub use command_line::{
     COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError, CommandPathArgument,
 };
