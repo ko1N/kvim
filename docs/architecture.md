@@ -196,9 +196,17 @@ changes belong to the MSRV implementation slice.
 
 Public ratatui signatures use workspace ratatui 0.29 types. External consumer
 checks use the same compatible release. Public feature crates remain at version
-`0.1`. A breaking facade change requires a workspace minor-version increase, a
-migration note, updated rustdoc, and an updated dedicated example. A patch
-release must not intentionally break a documented public facade.
+`0.1`.
+
+kvim is before its first release. A consumer pins one revision of the Git
+repository, so a version number signals nothing to it yet. A breaking facade
+change therefore needs updated rustdoc and an updated dedicated example, and it
+needs no version increase and no migration note. Both obligations begin at the
+first release.
+
+From that release, a breaking facade change requires a workspace minor-version
+increase, a migration note, updated rustdoc, and an updated dedicated example. A
+patch release must not intentionally break a documented public facade.
 
 Continuous integration checks minimal features, each required feature, default
 features, and all valid feature combinations. This matrix is exact:
