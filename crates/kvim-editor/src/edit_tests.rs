@@ -562,6 +562,29 @@ fn a_backward_delete_at_column_zero_removes_a_complete_crlf_ending() {
     assert_eq!(session.text(), "alphabeta\r\n");
 }
 
+#[test]
+fn an_inserted_line_feed_follows_the_line_ending_of_the_buffer() {
+    let mut crlf = Session::new("alpha\r\n");
+    assert_eq!(crlf.buffer.line_ending(), LineEnding::Crlf);
+    place(&mut crlf, 0, 0);
+    crlf.enter_insert();
+    assert_eq!(crlf.insert_text("one\ntwo"), CommandOutcome::Changed);
+    assert_eq!(crlf.text(), "one\r\ntwoalpha\r\n");
+    assert_eq!(
+        crlf.position(),
+        (1, 3),
+        "the cursor follows the last inserted character"
+    );
+
+    let mut lf = Session::new("alpha\n");
+    assert_eq!(lf.buffer.line_ending(), LineEnding::Lf);
+    place(&mut lf, 0, 0);
+    lf.enter_insert();
+    assert_eq!(lf.insert_text("one\ntwo"), CommandOutcome::Changed);
+    assert_eq!(lf.text(), "one\ntwoalpha\n");
+    assert_eq!(lf.position(), (1, 3));
+}
+
 /// Selects the rectangle from line 0, column 2, to line 2, column 4.
 fn select_block(session: &mut Session) {
     place(session, 0, 2);
