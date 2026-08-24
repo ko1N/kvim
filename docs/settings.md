@@ -55,7 +55,13 @@ indent width for the active buffer, in this order:
 
 1. The indent width override wins, when the user sets an explicit width.
 2. Otherwise, the width that the language adapter declares wins.
-3. Otherwise, the tab width applies, for a buffer that no adapter serves.
+3. Otherwise, the shift width applies, for a buffer that no adapter serves. The
+   shift width follows the tab width by default, so the default resolution of
+   such a buffer is the tab width.
+
+The resolved width is one indent level. The automatic indent, the tab key, the
+Visual `<` and `>` commands, and the formatting request of a language server
+all step by it.
 
 [`text-model.md`](text-model.md) owns the indent policy.
 

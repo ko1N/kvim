@@ -162,12 +162,17 @@ a buffer.
 
 ## Indent Policy
 
-The default indent policy uses four-space soft tabs. kvim inserts spaces for the
-tab key. The tab width is four. The shift width follows the tab width, so one
-indent level and one tab render at equal width.
+The default indent policy uses soft tabs. kvim inserts spaces for the tab key.
+The tab width is four, and it measures how wide one existing tab character
+draws.
 
-The Visual `<` and `>` commands change the selection by one shift width. The
-comment toggle preserves the existing indent of each affected line.
+One indent level is a separate width. `EditorSettings` resolves it against the
+language of the buffer, so a Nix buffer steps by two columns and a Rust buffer
+steps by four. See [`settings.md`](settings.md) for the resolution order.
+
+The tab key inserts one indent level, and the Visual `<` and `>` commands change
+the selection by one indent level. The comment toggle preserves the existing
+indent of each affected line.
 
 `kvim-core` supplies the indent measurement, the indent rendering, and the shift
 step. `kvim-editor` owns the automatic indent rule and the shift commands.

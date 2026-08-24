@@ -2814,6 +2814,53 @@ fn the_language_adapter_declares_the_width_of_one_indent_level() {
     );
 }
 
+/// One reported module, trimmed to the smallest shape that carries a `let`, an
+/// `in` body, and one nested attribute set.
+const NIX_LET_MODULE: &str = concat!(
+    "{ config, pkgs, ... }:\n",
+    "\n",
+    "let\n",
+    "  guard = 1;\n",
+    "in\n",
+    "{\n",
+    "  xdg.configFile.\"keel\" = {\n",
+    "    recursive = true;\n",
+    "  };\n",
+    "}\n",
+);
+
+#[test]
+fn a_new_line_after_the_last_binding_of_a_nix_let_body_takes_one_level() {
+    let (_directory, mut session) = opened("home.nix", NIX_LET_MODULE);
+    run_analysis(&mut session);
+
+    // `G` reaches the closing brace of the file, and `k` reaches the `};` that
+    // closes the last attribute set. The `let` spans that body, so counting the
+    // level of the `let` as well would open the new line eight columns deep.
+    type_keys(&mut session, "G");
+    press(&mut session, 'k');
+    press(&mut session, 'o');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+
+    assert_eq!(
+        session.buffer().to_string(),
+        concat!(
+            "{ config, pkgs, ... }:\n",
+            "\n",
+            "let\n",
+            "  guard = 1;\n",
+            "in\n",
+            "{\n",
+            "  xdg.configFile.\"keel\" = {\n",
+            "    recursive = true;\n",
+            "  };\n",
+            "  x\n",
+            "}\n",
+        )
+    );
+}
+
 #[test]
 fn the_tab_key_takes_the_width_of_the_language_or_of_the_settings() {
     // Nix indents with two columns, while the settings tab width is four.

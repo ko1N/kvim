@@ -1510,6 +1510,12 @@ The rule follows the reference `conform.nvim` configuration. That configuration
 formats with its own table of programs, and it keeps the language server as the
 fallback.
 
+A formatting request carries the indent of the language that it formats. One
+session serves one language, so `LanguageServices` resolves that width from the
+adapter once and the session holds no unresolved indent value. A server of a
+two-column language therefore receives the tab size two. See
+[`settings.md`](settings.md) for the resolution order.
+
 kvim applies the accepted answer of either formatter as one edit transaction, so
 one undo reverses a complete format. It rejects an answer whose buffer version
 is obsolete, and it never applies a change that was computed against different
