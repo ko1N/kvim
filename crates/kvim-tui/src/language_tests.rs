@@ -260,6 +260,12 @@ impl Editor {
             .handle_event(TerminalEvent::Key(Key::plain(code)), NOW);
     }
 
+    /// Feeds one character key with the control chord.
+    fn press_ctrl(&mut self, value: char) {
+        self.session
+            .handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char(value))), NOW);
+    }
+
     /// Saves the active buffer, like `Ctrl-S`.
     fn save(&mut self) {
         self.session
@@ -785,6 +791,26 @@ async fn a_definition_moves_the_cursor_inside_this_file_and_into_another_file() 
 
     editor.pump();
     editor.expect_request("textDocument/didOpen").await;
+
+    // The definition jump records the call site, so one backward step returns
+    // to it across the file boundary, and one forward step returns to the
+    // definition.
+    editor.press_ctrl('o');
+    assert_eq!(editor.session.active_buffer().name(), "main.rs");
+    assert_eq!(
+        editor.cursor(),
+        (0, 3),
+        "`Ctrl-O` returns to the call site of the definition"
+    );
+
+    // A terminal reports `Ctrl-I` as `Tab`.
+    editor.press_code(KeyCode::Tab);
+    assert_eq!(editor.session.active_buffer().name(), "helper.rs");
+    assert_eq!(
+        editor.cursor(),
+        (0, 7),
+        "`Tab` returns to the definition target"
+    );
 }
 
 #[tokio::test]
@@ -800,6 +826,16 @@ async fn a_definition_answer_without_a_target_reports_it() {
 
     assert_eq!(editor.message(), "no definition found");
     assert_eq!(editor.cursor(), (0, 0));
+
+    // The answer named no target, so the cursor never left its position and the
+    // jump list stayed empty.
+    editor.press_ctrl('o');
+    assert_eq!(editor.cursor(), (0, 0));
+    assert!(
+        editor.message().contains("no older position"),
+        "an answer without a target records nothing: {}",
+        editor.message()
+    );
 }
 
 /// The title band of the diagnostic float.

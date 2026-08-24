@@ -2022,6 +2022,20 @@ impl Session {
             // positions and start no request of their own.
             Command::JumpBack => return self.jump(JumpDirection::Backward).or(cleared),
             Command::JumpForward => return self.jump(JumpDirection::Forward).or(cleared),
+            // The motions that Vim records as jumps. Every other motion, and
+            // every half-page and full-page move, records nothing. The same key
+            // as the target of a waiting operator moves inside one change, so
+            // it records nothing either. See `docs/input-actions.md`.
+            Command::MoveFirstLine
+            | Command::MoveLastLine
+            | Command::MoveMatchingBracket
+            | Command::SearchNext
+            | Command::SearchPrevious => {
+                if self.editing.pending_operator().is_none() {
+                    self.record_jump();
+                }
+                return self.apply_editing_command(command, count).or(cleared);
+            }
             Command::EndSearch => return self.end_search().or(cleared),
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
             Command::RevealInFileTree => return self.reveal_active_file().or(cleared),
@@ -2656,6 +2670,10 @@ impl Session {
             // restores the previous view.
             return Redraw::Needed;
         };
+        // The accepted row moves the cursor, and it can also change the buffer
+        // of the focused window, so the position under the picker joins the
+        // list before either move.
+        self.record_jump();
         match acceptance {
             Acceptance::ShowBuffer { buffer } => self.switch_to(buffer).or(Redraw::Needed),
             Acceptance::OpenFile {
@@ -2927,6 +2945,9 @@ impl Session {
                 return self.close_window(UnsavedChanges::Discard);
             }
             CommandLineCommand::GoToLine(line) => {
+                // `:<number>` is a jump, so the line under the command line
+                // joins the list before the cursor leaves it.
+                self.record_jump();
                 let target = usize::try_from(line.get()).unwrap_or(usize::MAX);
                 self.place_cursor(target - 1, 0);
             }
@@ -3619,6 +3640,10 @@ impl Session {
             self.set_message("no definition found", MessageLevel::Warning);
             return Redraw::Needed;
         };
+        // The answer names a target, so the cursor leaves the call site. The
+        // record runs before both branches move it, so one backward step
+        // returns to that call site in this file and in another file alike.
+        self.record_jump();
         if self.buffers.get(pending.buffer).and_then(FileBuffer::path) == Some(&location.path) {
             return self.move_to_position(location.span.start);
         }
@@ -3813,13 +3838,6 @@ impl Session {
     /// would then move nothing. The list belongs to the window, so a focus move
     /// never carries a recorded position into another window. See
     /// `docs/windows.md`.
-    #[cfg_attr(
-        not(test),
-        expect(
-            dead_code,
-            reason = "only the jump commands read the list of the focused window so far"
-        )
-    )]
     pub(super) fn record_jump(&mut self) {
         let entry = self.jump_entry();
         let window = self.windows.focused_window();
@@ -4151,6 +4169,10 @@ impl Session {
         let Some(path) = selected else {
             return Redraw::Needed;
         };
+        // The sidebar holds the keys, but the file opens in the focused editor
+        // window, so the record names that window and runs before the open
+        // changes the buffer that it shows.
+        self.record_jump();
         let window = self.windows.focused_window();
         self.windows.focus_region(window);
         self.sync_context();
@@ -5543,6 +5565,12 @@ impl Session {
                 return Redraw::Needed;
             }
         };
+        // The query is valid, so the search moves the cursor to its first
+        // match. Vim treats that move as a jump, so the position under the
+        // search prompt joins the list before the move. A query that finds no
+        // match records the line that the cursor already holds, which the list
+        // folds into the entry that names it.
+        self.record_jump();
         let Some(active) = self.buffers.get(self.active) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
             return Redraw::Skipped;

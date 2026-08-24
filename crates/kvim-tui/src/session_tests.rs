@@ -65,6 +65,11 @@ fn press_code(session: &mut Session, code: KeyCode) -> Redraw {
     session.handle_event(TerminalEvent::Key(Key::plain(code)), NOW)
 }
 
+/// Feeds one character key with the control chord.
+fn press_ctrl(session: &mut Session, value: char) -> Redraw {
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char(value))), NOW)
+}
+
 /// Feeds a run of plain character keys.
 fn type_keys(session: &mut Session, keys: &str) {
     for value in keys.chars() {
@@ -3237,8 +3242,8 @@ fn the_jump_commands_walk_the_recorded_positions_of_the_focused_window() {
 
 #[test]
 fn a_backward_jump_without_a_recorded_position_reports_the_end_of_the_list() {
-    let mut session = with_text(&["one", "two", "three"]);
-    type_keys(&mut session, "j");
+    let mut session = with_text_and_no_jump(&["one", "two"]);
+    assert_eq!(session.cursor().line().get(), 1);
 
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('o'))), NOW);
     assert_eq!(
@@ -3274,6 +3279,170 @@ fn a_recorded_line_past_the_end_of_the_buffer_clamps_to_the_last_line() {
         session.cursor().line().get(),
         last,
         "the recorded line clamps to the last line of the buffer"
+    );
+}
+
+/// Builds one session over the given lines without any jump.
+///
+/// [`with_text`] ends on `gg`, which is a jump source, so a test that asserts
+/// an empty jump list types the lines itself and leaves the cursor where the
+/// last line ends.
+fn with_text_and_no_jump(lines: &[&str]) -> Session {
+    let mut session = session(60, 20);
+    press(&mut session, 'i');
+    for (index, line) in lines.iter().enumerate() {
+        if index > 0 {
+            press_code(&mut session, KeyCode::Enter);
+        }
+        type_keys(&mut session, line);
+    }
+    press_code(&mut session, KeyCode::Esc);
+    session
+}
+
+#[test]
+fn the_first_line_and_last_line_motions_each_record_one_jump() {
+    let mut session = with_text(&["one", "two", "three", "four", "five"]);
+    assert_eq!(session.cursor().line().get(), 0);
+
+    type_keys(&mut session, "G");
+    assert_eq!(session.cursor().line().get(), 4);
+    type_keys(&mut session, "gg");
+    assert_eq!(session.cursor().line().get(), 0);
+
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        4,
+        "`Ctrl-O` returns to the line that `gg` left"
+    );
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(
+        session.cursor().line().get(),
+        0,
+        "`Tab` returns to the target of `gg`"
+    );
+}
+
+#[test]
+fn the_matching_bracket_motion_records_one_jump() {
+    let mut session = with_text(&["(", "alpha", ")"]);
+    assert_eq!(session.cursor().line().get(), 0);
+
+    type_keys(&mut session, "%");
+    assert_eq!(
+        session.cursor().line().get(),
+        2,
+        "`%` reaches the matching bracket"
+    );
+
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        0,
+        "`Ctrl-O` returns to the opening bracket"
+    );
+}
+
+#[test]
+fn an_accepted_search_and_the_repeat_keys_each_record_one_jump() {
+    let mut session = with_text(&["alpha", "beta", "alpha", "gamma", "alpha"]);
+    type_keys(&mut session, "/alpha");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(
+        session.cursor().line().get(),
+        2,
+        "the accepted query moves to the next match"
+    );
+
+    type_keys(&mut session, "n");
+    assert_eq!(session.cursor().line().get(), 4);
+
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        2,
+        "`Ctrl-O` returns to the match that `n` left"
+    );
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        0,
+        "the next step returns to the line under the search prompt"
+    );
+
+    // `N` records its starting line as well.
+    type_keys(&mut session, "N");
+    assert_eq!(
+        session.cursor().line().get(),
+        4,
+        "`N` wraps to the last match"
+    );
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        0,
+        "`Ctrl-O` returns to the line that `N` left"
+    );
+}
+
+#[test]
+fn the_line_number_command_records_one_jump() {
+    let mut session = with_text(&["one", "two", "three", "four", "five"]);
+    press(&mut session, ':');
+    type_keys(&mut session, "4");
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(session.cursor().line().get(), 3);
+
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        0,
+        "`Ctrl-O` returns to the line under the command line"
+    );
+}
+
+#[test]
+fn a_word_motion_and_a_half_page_motion_record_no_jump() {
+    let lines: Vec<&str> = vec!["alpha beta"; 30];
+    let mut session = with_text_and_no_jump(&lines);
+    assert_eq!(session.cursor().line().get(), 29);
+
+    // Vim treats neither motion as a jump, so neither records a position.
+    type_keys(&mut session, "b");
+    press_ctrl(&mut session, 'u');
+    let reached = session.cursor().line().get();
+    assert!(reached < 29, "the half-page motion moved the cursor");
+
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.cursor().line().get(),
+        reached,
+        "neither motion recorded a position, so nothing moves"
+    );
+    assert!(
+        message(&session).contains("no older position"),
+        "the empty list names the end that it reached: {}",
+        message(&session)
+    );
+}
+
+#[test]
+fn a_jump_motion_that_completes_an_operator_records_no_jump() {
+    let mut session = with_text_and_no_jump(&["one", "two", "three", "four"]);
+    type_keys(&mut session, "kk");
+    assert_eq!(session.cursor().line().get(), 1);
+
+    // `dG` deletes to the end of the buffer. The motion serves the operator, so
+    // it moves nothing on its own and records nothing, exactly as in Vim.
+    type_keys(&mut session, "dG");
+    assert_eq!(session.buffer().to_string(), "one\n");
+
+    press_ctrl(&mut session, 'o');
+    assert!(
+        message(&session).contains("no older position"),
+        "the operator target recorded nothing: {}",
+        message(&session)
     );
 }
 
