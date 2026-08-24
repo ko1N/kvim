@@ -163,7 +163,17 @@ pub(super) fn indent_level(
     if byte > source.len() || !source.is_char_boundary(byte) {
         return Err(AnalysisError::MalformedOutput);
     }
-    let mut node = tree.root_node().descendant_for_byte_range(byte, byte);
+    // A node that no delimiter closes ends at the last token of its content.
+    // A new line at the end of that content names a byte that the node no
+    // longer holds, so `descendant_for_byte_range(byte, byte)` answers with
+    // an outer node and the walk never reaches the node itself. Starting one
+    // byte earlier names the character that ends the current line, so the
+    // walk reaches that node and every ancestor. That earlier byte can fall
+    // inside one multi-byte character; Tree-sitter reads bytes, not
+    // characters, so the range still names the right character.
+    let mut node = tree
+        .root_node()
+        .descendant_for_byte_range(byte.saturating_sub(1), byte);
     let mut levels: u16 = 0;
     let mut depth = 0;
     while let Some(current) = node {
