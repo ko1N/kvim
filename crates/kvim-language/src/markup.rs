@@ -371,7 +371,9 @@ impl MarkupBlock {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{LanguageRegistry, MarkupBody, MarkupDocument, SyntaxRole};
+/// use kvim_language::{
+///     LanguageRegistry, MarkupBody, MarkupDocument, SyntaxHighlighter, SyntaxRole,
+/// };
 ///
 /// let document = MarkupDocument::parse("```rust\nfn main() {}\n```");
 /// let MarkupBody::Code { info, lines, highlights } = document.blocks()[0].body() else {
@@ -382,7 +384,8 @@ impl MarkupBlock {
 /// // The parse alone names no role, so the fence reads as plain code.
 /// assert!(highlights.is_empty());
 ///
-/// let document = document.highlighted(LanguageRegistry::first_release());
+/// let mut highlighter = SyntaxHighlighter::new();
+/// let document = document.highlighted(LanguageRegistry::first_release(), &mut highlighter);
 /// let MarkupBody::Code { highlights, .. } = document.blocks()[0].body() else {
 ///     panic!("the fence stays a code block");
 /// };

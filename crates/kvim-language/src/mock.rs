@@ -24,12 +24,12 @@ use tokio_util::sync::CancellationToken;
 use kvim_settings::IndentSettings;
 
 use super::LanguageRegistry;
-use super::protocol::{LSP_OUTPUT_BYTES_MAX, WorkspaceRoot, read_frame};
 use super::server::{LanguageServerId, ServerFormatting};
 use super::session::{
     LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
     TransportFactory, start,
 };
+use kvim_lsp::{LSP_OUTPUT_BYTES_MAX, WorkspaceRoot, read_frame};
 
 /// The prepared byte streams that [`pipe`] hands to one session.
 ///

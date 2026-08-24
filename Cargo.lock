@@ -470,6 +470,7 @@ name = "kvim-language"
 version = "0.1.0"
 dependencies = [
  "kvim-core",
+ "kvim-lsp",
  "kvim-runtime",
  "kvim-settings",
  "kvim-syntax",
@@ -480,6 +481,17 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tree-sitter",
+]
+
+[[package]]
+name = "kvim-lsp"
+version = "0.1.0"
+dependencies = [
+ "kvim-path",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
 ]
 
 [[package]]

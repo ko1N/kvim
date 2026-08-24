@@ -50,11 +50,11 @@ use kvim_input::{
     Mode, PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
-    Analysis, AnalysisError, AnalysisInput, BufferSyntax, ContentChange, Diagnostic, DiagnosticSet,
+    Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
     DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure, FormatterRequest,
     HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
     LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
-    SyntaxHighlighter, SyntaxTree,
+    SyntaxHighlighter, SyntaxTree, buffer_position, content_changes, document_position,
 };
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
@@ -1627,7 +1627,7 @@ impl Session {
             self.language.mark_resync(buffer);
             return;
         };
-        let Ok(changes) = ContentChange::from_transaction(before, transaction) else {
+        let Ok(changes) = content_changes(before, transaction) else {
             self.language.mark_resync(buffer);
             return;
         };
@@ -2847,7 +2847,7 @@ impl Session {
         };
         let text = file.text();
         let version = text.version();
-        let position = DocumentPosition::of_buffer(text, self.cursor().position(text));
+        let position = document_position(text, self.cursor().position(text));
         let query = match purpose {
             QueryPurpose::Definition => LanguageQuery::Definition(position),
             QueryPurpose::Hover => LanguageQuery::Hover(position),
@@ -3029,7 +3029,7 @@ impl Session {
             return Redraw::Skipped;
         };
         let text = active.text();
-        let Ok(target) = position.char_position(text) else {
+        let Ok(target) = buffer_position(position, text) else {
             self.set_message(OUTSIDE_BUFFER_NOTE, MessageLevel::Warning);
             return Redraw::Needed;
         };
@@ -3083,10 +3083,7 @@ impl Session {
     /// Returns the protocol position of the cursor in the active buffer.
     fn cursor_position(&self) -> Option<DocumentPosition> {
         let text = self.buffers.get(self.active)?.text();
-        Some(DocumentPosition::of_buffer(
-            text,
-            self.cursor().position(text),
-        ))
+        Some(document_position(text, self.cursor().position(text)))
     }
 
     /// Returns the format-on-save state of one buffer.

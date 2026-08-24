@@ -75,6 +75,7 @@ all-grammars = [
 [dependencies]
 # kvim crates
 kvim-core.workspace = true
+kvim-lsp.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true
 kvim-syntax.workspace = true
