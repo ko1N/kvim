@@ -7,8 +7,9 @@
 //! beside them.
 
 use std::fmt;
+use std::sync::Arc;
 
-use kvim_keymap::{Key, KeyCode, KeySequence, Registry as KeymapRegistry};
+use kvim_keymap::{BoundCommand, Key, KeyCode, KeySequence, Registry as KeymapRegistry};
 use kvim_settings::PENDING_KEYS_MAX;
 
 use super::command::{Command, CommandGroup};
@@ -92,6 +93,38 @@ impl WhichKeyRow {
     pub const fn key_label(&self) -> kvim_keymap::KeyLabel {
         self.key.label()
     }
+
+    /// Folds the extensions of one prefix into one row for each next key.
+    ///
+    /// The registry returns every extension in sequence order, so the sequences
+    /// behind one next key are contiguous and the rows keep the deterministic
+    /// key order of the registry.
+    pub(crate) fn from_extensions<'a>(
+        prefix_keys: usize,
+        extensions: impl Iterator<Item = (&'a KeySequence, BoundCommand<Command>)>,
+    ) -> Vec<Self> {
+        let mut rows: Vec<Self> = Vec::new();
+        for (sequence, bound) in extensions {
+            debug_assert!(
+                sequence.keys().len() > prefix_keys,
+                "an extension of a prefix holds at least one more key"
+            );
+            let key = sequence.keys()[prefix_keys];
+            let command = bound.command;
+            match rows.last_mut() {
+                Some(last) if last.key == key => {
+                    last.target = last.target.grown();
+                    last.group = last.group.merged(command.group());
+                }
+                _ => rows.push(Self {
+                    key,
+                    target: WhichKeyTarget::Command(command),
+                    group: command.group(),
+                }),
+            }
+        }
+        rows
+    }
 }
 
 /// The validated kvim mapping registry, keyed by binding scope.
@@ -115,7 +148,7 @@ impl WhichKeyRow {
 /// );
 /// ```
 #[derive(Clone, Debug)]
-pub struct Registry(KeymapRegistry<Command, BindingScope>);
+pub struct Registry(Arc<KeymapRegistry<Command, BindingScope>>);
 
 impl Registry {
     /// Builds the registry from a binding list and validates it.
@@ -127,7 +160,16 @@ impl Registry {
     /// duplicate sequence inside one scope, and a strict prefix pair inside one
     /// scope.
     pub fn from_bindings(bindings: &[Binding], keys_max: u8) -> Result<Self, RegistryError> {
-        KeymapRegistry::from_bindings(bindings, keys_max).map(Self)
+        KeymapRegistry::from_bindings(bindings, keys_max).map(|registry| Self(Arc::new(registry)))
+    }
+
+    /// Returns the shared snapshot that the resolver dispatches against.
+    ///
+    /// The snapshot is immutable, so one clone serves dispatch, conflict
+    /// reports, help, and the which-key overlay of every composed interface.
+    #[must_use]
+    pub fn shared(&self) -> Arc<KeymapRegistry<Command, BindingScope>> {
+        Arc::clone(&self.0)
     }
 
     /// Builds the hardcoded first-release registry.
@@ -175,23 +217,10 @@ impl Registry {
         scope: impl Into<BindingScope>,
         prefix: &[Key],
     ) -> Vec<WhichKeyRow> {
-        let mut rows: Vec<WhichKeyRow> = Vec::new();
-        for (sequence, bound) in self.0.extensions_of_prefix(scope.into(), prefix) {
-            let key = sequence.keys()[prefix.len()];
-            let command = bound.command;
-            match rows.last_mut() {
-                Some(last) if last.key == key => {
-                    last.target = last.target.grown();
-                    last.group = last.group.merged(command.group());
-                }
-                _ => rows.push(WhichKeyRow {
-                    key,
-                    target: WhichKeyTarget::Command(command),
-                    group: command.group(),
-                }),
-            }
-        }
-        rows
+        WhichKeyRow::from_extensions(
+            prefix.len(),
+            self.0.extensions_of_prefix(scope.into(), prefix),
+        )
     }
 
     /// Returns every binding of one scope in sequence order.
@@ -234,6 +263,37 @@ const MOTION_MODES: &[Mode] = &[
 
 /// The three Visual modes.
 const VISUAL_MODES: &[Mode] = &[Mode::Visual, Mode::VisualLine, Mode::VisualBlock];
+
+/// Every scope that accepts a decimal count before a command.
+///
+/// A count digit is a surface command, so the shared registry holds it and no
+/// second key table reads digits. Insert mode and the text scopes stay out,
+/// because a digit is text there.
+const COUNT_SCOPES: &[BindingScope] = &[
+    BindingScope::Mode(Mode::Normal),
+    BindingScope::Mode(Mode::Visual),
+    BindingScope::Mode(Mode::VisualLine),
+    BindingScope::Mode(Mode::VisualBlock),
+    BindingScope::Sidebar,
+    BindingScope::OperatorPending,
+];
+
+/// The nine count digits that open or extend a count.
+///
+/// `0` is absent: it names the first-column motion until a count is already
+/// open, so it keeps [`Command::MoveFirstColumn`] and the semantic reducer
+/// reads it as the zero digit.
+const COUNT_DIGITS: &[(char, Command)] = &[
+    ('1', Command::CountDigitOne),
+    ('2', Command::CountDigitTwo),
+    ('3', Command::CountDigitThree),
+    ('4', Command::CountDigitFour),
+    ('5', Command::CountDigitFive),
+    ('6', Command::CountDigitSix),
+    ('7', Command::CountDigitSeven),
+    ('8', Command::CountDigitEight),
+    ('9', Command::CountDigitNine),
+];
 
 /// Every scope in which a text object names a range.
 ///
@@ -656,11 +716,96 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::ToggleFormatOnSave,
     );
 
+    // Insert-mode text entry. Every printable key reaches the text fallback of
+    // the Insert scope, so only these three keys carry a command there.
+    add(
+        table,
+        &[Mode::Insert],
+        &[Key::plain(KeyCode::Enter)],
+        Command::InsertLineBreak,
+    );
+    add(
+        table,
+        &[Mode::Insert],
+        &[Key::plain(KeyCode::Backspace)],
+        Command::DeleteCharacterBefore,
+    );
+    add(
+        table,
+        &[Mode::Insert],
+        &[Key::plain(KeyCode::Tab)],
+        Command::InsertIndent,
+    );
+
+    add_count_and_register_bindings(table);
+    add_prompt_bindings(table);
     add_text_object_bindings(table);
     add_operator_pending_bindings(table);
     add_tree_bindings(table);
     add_picker_bindings(table);
     bindings
+}
+
+/// Adds the count digits and the register selection.
+///
+/// Both are grammar prefixes, so they complete no operation. The semantic
+/// reducer composes them with the operator and the motion that follow.
+fn add_count_and_register_bindings(table: &mut Vec<Binding>) {
+    for &(key, command) in COUNT_DIGITS {
+        add_scoped(table, COUNT_SCOPES, &[ch(key)], command);
+    }
+    // A register qualifies one completed operation. Vim reads `\"ayy` in Normal
+    // mode and `\"ay` over a selection, and it reads no register between an
+    // operator and its target.
+    add(
+        table,
+        &[
+            Mode::Normal,
+            Mode::Visual,
+            Mode::VisualLine,
+            Mode::VisualBlock,
+        ],
+        &[ch('"')],
+        Command::SelectRegister,
+    );
+}
+
+/// Adds the binding tables of the prompt line and of the confirmation.
+///
+/// Every prompt reads the same keys, so one table serves the command line, the
+/// search prompt, the file-tree prompts, and the picker query. A printable key
+/// reaches no binding and falls through to the text of the scope.
+///
+/// The confirmation completes nothing, so it holds no completion key. Every key
+/// that its table does not hold stays unbound, and the open question keeps it.
+fn add_prompt_bindings(table: &mut Vec<Binding>) {
+    const PROMPT: &[BindingScope] = &[BindingScope::Prompt];
+    const CONFIRMATION: &[BindingScope] = &[BindingScope::Confirmation];
+    let shared = [
+        (Key::plain(KeyCode::Enter), Command::PromptAccept),
+        (Key::plain(KeyCode::Esc), Command::PromptCancel),
+        (ctrl('c'), Command::PromptCancel),
+        (
+            Key::plain(KeyCode::Backspace),
+            Command::PromptDeleteBackward,
+        ),
+    ];
+    for (key, command) in shared {
+        add_scoped(table, PROMPT, &[key], command);
+        add_scoped(table, CONFIRMATION, &[key], command);
+    }
+    add_scoped(
+        table,
+        PROMPT,
+        &[Key::plain(KeyCode::Tab)],
+        Command::PromptCompleteNext,
+    );
+    add_scoped(
+        table,
+        PROMPT,
+        &[Key::plain(KeyCode::BackTab)],
+        Command::PromptCompletePrevious,
+    );
 }
 
 /// Adds the `i` and `a` text objects to every scope that takes one.

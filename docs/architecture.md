@@ -36,12 +36,12 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 |---|---|
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
-| `kvim-keymap` | Terminal-neutral keys, generic bindings, one pending sequence, dispatch ownership, and which-key hints. |
+| `kvim-keymap` | Terminal-neutral keys, generic bindings, the shared resolver with its one pending sequence, published input contexts, dispatch ownership, and which-key hints. |
 | `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
 | `kvim-ui` | Generic ratatui split, sidebar, which-key presentation, and host-workspace composition. |
-| `kvim-input` | Kvim commands, modes, prompts, counts, and the standalone binding preset. Builds on `kvim-keymap`. |
+| `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |

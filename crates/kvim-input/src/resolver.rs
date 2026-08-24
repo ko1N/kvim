@@ -1,25 +1,33 @@
-//! The bounded, clock-independent key-sequence resolver.
+//! The standalone kvim adapter over the one shared key resolver.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The resolver never reads a clock. The terminal event loop measures the
+//! The module owns no key table and no sequence matching. `kvim-keymap` owns
+//! the shared resolver and the pending prefix, and [`SemanticReducer`] owns the
+//! count, the operator, the register, the text object, and the prompt phases.
+//! This adapter joins the two and reports the outcome in the shape that the
+//! standalone editor consumes.
+//!
+//! The adapter never reads a clock. The terminal event loop measures the
 //! elapsed time and supplies it with every request, so resolution stays
-//! deterministic and testable. The elapsed time serves the which-key overlay
-//! only. A pending sequence holds no deadline and waits for the next key.
+//! deterministic and testable.
 
 use std::num::NonZeroU32;
 use std::time::Duration;
 
-use kvim_keymap::{Chord, Key, KeyCode};
+use kvim_keymap::{
+    Chord, Input, InputContextSnapshot, Key, KeyCode, Resolver as SharedResolver, TypedText,
+};
 use kvim_settings::InputSettings;
 
 use super::command::Command;
 use super::mode::{BindingScope, InputContext};
+use super::reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer};
 use super::registry::{Registry, WhichKeyRow};
 
 /// One edit of an open line prompt.
 ///
-/// The resolver translates the raw key, so the command line and the search
-/// prompt never compare a key value.
+/// The shared registry holds the prompt keys, and this value names what each
+/// one does, so the command line and the search prompt never compare a key.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptEdit {
     /// Append one character to the prompt line.
@@ -42,9 +50,8 @@ pub enum PromptEdit {
 
 /// One edit of the answer of an open confirmation.
 ///
-/// The resolver translates the raw key, so the editor never compares a key
-/// value. The confirmation completes nothing, so this enumeration holds no
-/// completion edit. See `docs/input-actions.md`.
+/// The confirmation completes nothing, so this enumeration holds no completion
+/// edit. See `docs/input-actions.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfirmEdit {
     /// Append one character to the answer.
@@ -57,8 +64,8 @@ pub enum ConfirmEdit {
     Cancel,
     /// Change nothing and keep the question open.
     ///
-    /// An open confirmation owns every key, so a key that it does not read
-    /// reaches no other owner and inserts no buffer text.
+    /// An open confirmation owns every key, so a key that its table does not
+    /// hold reaches no other owner and inserts no buffer text.
     Ignore,
 }
 
@@ -102,89 +109,44 @@ impl ConfirmAnswer {
 /// The outcome of one resolution request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Resolution {
-    /// The sequence completed one command.
+    /// The input completed one semantic operation.
     Command {
-        /// The command that the sequence reached.
+        /// The command that the operation performs.
         command: Command,
-        /// The decimal count before the sequence.
+        /// The decimal count before the operation.
         count: Option<NonZeroU32>,
+        /// The register that qualifies the operation.
+        register: Option<char>,
     },
     /// An open prompt owns input and the key edits its line.
     Prompt(PromptEdit),
     /// An open confirmation owns input and the key edits its answer.
     Confirmation(ConfirmEdit),
-    /// The sequence is a valid prefix of at least one longer sequence.
-    Pending,
-    /// `Esc` or `Ctrl-C` cancelled the pending sequence and the pending count.
-    Cancelled,
-    /// The key reaches no command. Pending input is reset.
+    /// The focused scope takes the key as literal text.
     ///
-    /// In Insert mode a printable key produces this outcome, and the editor
+    /// Insert mode reaches this outcome for every printable key, and the editor
     /// inserts the character through an edit transaction.
+    Text(char),
+    /// A key sequence, a count, a register selection, or a text object waits
+    /// for more input.
+    Pending,
+    /// `Esc` or `Ctrl-C` cancelled the pending input.
+    Cancelled,
+    /// The key reaches no command and no text owner. Pending input is reset.
     NoMatch,
 }
 
-/// The which-key overlay state of one pending sequence.
+/// The standalone modal input adapter.
 ///
-/// The delay governs the first appearance only. The overlay then stays visible
-/// for the rest of the sequence, so a deeper level updates its rows without
-/// hiding them again. See `docs/input-actions.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Overlay {
-    /// The overlay appears at this elapsed time.
-    Delayed { at: Duration },
-    /// The overlay is visible and stays visible while the sequence continues.
-    Visible,
-}
-
-/// The pending input of the resolver.
-///
-/// The active variant ties the pending keys, the pending count, and the overlay
-/// state together, so a pending sequence without an overlay state cannot exist.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-enum PendingInput {
-    /// No key and no count wait for completion.
-    #[default]
-    Idle,
-    /// A key sequence, a count, or both wait for completion.
-    Active {
-        keys: Vec<Key>,
-        count: Option<u32>,
-        overlay: Overlay,
-    },
-}
-
-/// Whether an operator waits for the target that the next keys name.
-///
-/// The resolver derives the state from the commands that it emitted itself, so
-/// it needs no report from the editor. An operator command opens the state, and
-/// the next completed command closes it, exactly as the operator-pending state
-/// of the editor consumes the next command.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum OperatorInput {
-    /// No operator waits, so the active editor mode owns the keys.
-    #[default]
-    Idle,
-    /// One operator waits, so [`BindingScope::OperatorPending`] owns the keys.
-    Pending,
-}
-
-/// The modal input resolver.
-///
-/// The resolver accepts an optional decimal count, then a bounded key sequence.
-/// It classifies every request as a complete match, a valid prefix, a cancel, or
-/// no match. Only a scope that reports
-/// [`crate::BindingScope::accepts_count`] opens a count, so a digit stays
-/// buffer text in Insert mode.
-///
-/// An operator command moves the keys into
-/// [`BindingScope::OperatorPending`] until the next command completes, so `i`
-/// and `a` start a text object after `d`, `c`, and `y` instead of Insert mode.
+/// The adapter holds one shared resolver and one semantic reducer. The shared
+/// resolver owns the pending key prefix and the which-key overlay. The reducer
+/// owns the count, the operator, the register, the text object, and the prompt
+/// phases, and it publishes one [`InputContextSnapshot`] after every input.
 ///
 /// A pending sequence holds no deadline. It waits for the next key, and only
-/// `Esc`, `Ctrl-C`, a mismatch, a completed command, or a mode change ends it.
-/// The registry rejects a sequence that both completes a command and starts a
-/// longer sequence, so no ambiguity remains for a timer to resolve.
+/// `Esc`, `Ctrl-C`, a mismatch, a completed command, or a context change ends
+/// it. The registry rejects a sequence that both completes a command and starts
+/// a longer sequence, so no ambiguity remains for a timer to resolve.
 ///
 /// ```
 /// use std::time::Duration;
@@ -204,16 +166,15 @@ enum OperatorInput {
 ///     Resolution::Command {
 ///         command: Command::MoveFirstLine,
 ///         count: None,
+///         register: None,
 ///     }
 /// );
 /// ```
 #[derive(Clone, Debug)]
 pub struct Resolver {
     registry: Registry,
-    settings: InputSettings,
-    context: InputContext,
-    pending: PendingInput,
-    operator: OperatorInput,
+    shared: SharedResolver<Command, BindingScope>,
+    reducer: SemanticReducer,
 }
 
 impl Resolver {
@@ -224,12 +185,15 @@ impl Resolver {
             settings.pending_keys_max > 0 && settings.count_max > 0,
             "EditorSettings holds positive input bounds"
         );
+        let shared = SharedResolver::new(
+            registry.shared(),
+            settings.pending_keys_max,
+            settings.which_key_delay,
+        );
         Self {
             registry,
-            settings,
-            context: InputContext::NORMAL,
-            pending: PendingInput::Idle,
-            operator: OperatorInput::Idle,
+            shared,
+            reducer: SemanticReducer::new(settings),
         }
     }
 
@@ -242,304 +206,160 @@ impl Resolver {
     /// Returns the current input context.
     #[must_use]
     pub const fn context(&self) -> InputContext {
-        self.context
+        self.reducer.context()
+    }
+
+    /// Returns the context that the next resolution request carries.
+    #[must_use]
+    pub fn snapshot(&self) -> InputContextSnapshot<BindingScope> {
+        self.reducer.snapshot()
     }
 
     /// Returns the keys of the pending sequence.
     #[must_use]
     pub fn pending_keys(&self) -> &[Key] {
-        match &self.pending {
-            PendingInput::Idle => &[],
-            PendingInput::Active { keys, .. } => keys,
-        }
+        self.shared.pending_keys()
     }
 
     /// Returns the elapsed time at which the which-key overlay appears.
     ///
     /// The event loop uses the value to wake exactly when the overlay becomes
-    /// visible. It is the only time-driven state change of the resolver. A
-    /// visible overlay needs no further wake, so it reports no time.
-    ///
-    /// A pending count alone reports no time either. The rows list the keys that
-    /// follow a sequence, so [`Resolver::which_key`] shows no overlay while the
-    /// pending sequence holds no key. A time that no transition can consume
-    /// would wake the event loop forever. Both functions therefore apply the
-    /// same condition.
+    /// visible. A visible overlay and an empty sequence both report no time,
+    /// because no transition could consume it.
     #[must_use]
     pub fn overlay_deadline(&self) -> Option<Duration> {
-        let PendingInput::Active { keys, overlay, .. } = &self.pending else {
-            return None;
-        };
-        if keys.is_empty() {
-            return None;
-        }
-        match overlay {
-            Overlay::Visible => None,
-            Overlay::Delayed { at } => Some(*at),
-        }
+        self.shared.overlay_deadline()
     }
 
     /// Moves input to another context and resets pending input.
     ///
-    /// A mode change and a prompt change both reset the pending keys, the
-    /// pending count, and the which-key overlay. An unchanged context keeps the
+    /// A mode change and a prompt change both reset the pending keys, every
+    /// grammar phase, and the which-key overlay. An unchanged context keeps the
     /// pending sequence.
     pub fn set_context(&mut self, context: InputContext) {
-        if context == self.context {
+        if context == self.reducer.context() {
             return;
         }
-        self.context = context;
-        self.reset();
+        self.reducer.set_context(context);
+        self.shared.clear_pending();
     }
 
-    /// Clears the pending keys, the pending count, and the which-key overlay.
+    /// Clears the pending keys, every grammar phase, and the which-key overlay.
     ///
     /// A reset never changes buffer text and never cancels background work.
     pub fn reset(&mut self) {
-        self.pending = PendingInput::Idle;
-        self.operator = OperatorInput::Idle;
-    }
-
-    /// Returns the scope that owns the keys of the next request.
-    ///
-    /// A waiting operator owns them before the active mode does, because `i`
-    /// and `a` start a text object there instead of Insert mode.
-    fn active_scope(&self) -> BindingScope {
-        match self.operator {
-            OperatorInput::Idle => self.context.scope(),
-            OperatorInput::Pending => BindingScope::OperatorPending,
-        }
+        self.shared.clear_pending();
+        self.reducer.reset();
     }
 
     /// Returns the which-key overlay rows, or `None` while the overlay stays
     /// hidden.
     ///
-    /// The overlay appears after the which-key delay of `EditorSettings` and
-    /// lists the keys that may follow the pending sequence. The rows come from
-    /// the registry, so their order is deterministic.
-    ///
-    /// The delay governs the first appearance only. The call records that
-    /// appearance, so every further key of the same sequence updates the rows
-    /// at once, without a second wait.
+    /// The rows come from the same registry and the same pending prefix that
+    /// dispatch reads, so a row can never disagree with the command that its
+    /// key reaches.
     pub fn which_key(&mut self, now: Duration) -> Option<Vec<WhichKeyRow>> {
-        if !self.reveal_overlay(now) {
-            return None;
-        }
-        let scope = self.active_scope();
-        let PendingInput::Active { keys, .. } = &self.pending else {
-            debug_assert!(false, "a hidden overlay leaves the resolver above");
-            return None;
-        };
-        Some(self.registry.rows_for_prefix(scope, keys))
-    }
-
-    /// Reports whether the overlay is visible and records its first appearance.
-    ///
-    /// A pending count alone shows no overlay, because the rows list the keys
-    /// that follow a sequence.
-    fn reveal_overlay(&mut self, now: Duration) -> bool {
-        let PendingInput::Active { keys, overlay, .. } = &mut self.pending else {
-            return false;
-        };
-        if keys.is_empty() {
-            return false;
-        }
-        match *overlay {
-            Overlay::Visible => true,
-            Overlay::Delayed { at } if now >= at => {
-                *overlay = Overlay::Visible;
-                true
-            }
-            Overlay::Delayed { .. } => false,
-        }
+        let view = self.shared.which_key(now)?;
+        Some(WhichKeyRow::from_extensions(
+            view.prefix().len(),
+            view.extensions(),
+        ))
     }
 
     /// Resolves one key at the elapsed time `now`.
     ///
-    /// An open confirmation answers first, because it owns every key. The
-    /// function then cancels pending input on `Esc` or `Ctrl-C`, accumulates a
-    /// decimal count in a mode that holds one, and extends the pending
-    /// sequence. The elapsed time only arms the which-key overlay.
+    /// A cancel key ends pending input first, at every depth and in every mode.
+    /// Every other key reaches the shared resolver, and the semantic reducer
+    /// composes the outcome.
     pub fn resolve(&mut self, key: Key, now: Duration) -> Resolution {
-        // A confirmation reads its own answer and reaches no table, so it takes
-        // the key before every other branch. `Enter` therefore reaches the
-        // confirmation alone, never the prompt below it. Only this context
-        // produces a confirmation edit, so no key reaches a closed
-        // confirmation.
-        if matches!(self.context, InputContext::Confirmation { .. }) {
-            debug_assert!(
-                matches!(self.pending, PendingInput::Idle),
-                "a context change resets pending input, so a confirmation holds none"
-            );
-            return Resolution::Confirmation(confirm_edit(key));
+        if self.holds_pending_input() && is_cancel_key(key) {
+            let scope = self.reducer.active_scope();
+            self.shared.clear_pending();
+            return resolution(self.reducer.cancel(), scope);
         }
-        if self.context.prompt().is_some() {
-            debug_assert!(
-                matches!(self.pending, PendingInput::Idle),
-                "a context change resets pending input, so a prompt holds none"
-            );
-            // The picker reads a query and owns its own chords, so its table
-            // answers before the query takes the key. Every other prompt reads
-            // text alone.
-            if self.context.scope() == BindingScope::Picker
-                && let Some(command) = self.registry.command(BindingScope::Picker, &[key])
-            {
-                return Resolution::Command {
-                    command,
-                    count: None,
-                };
-            }
-            return prompt_edit(key).map_or(Resolution::NoMatch, Resolution::Prompt);
+        let context = self.reducer.dispatch_context();
+        let scope = context.focus.scope;
+        let dispatch = self.shared.dispatch(&context, Input::Key(key), now);
+        let reduced = self.reducer.reduce(dispatch);
+        if self.reducer.holds_grammar_prefix() {
+            // The reducer opened its own prefix, such as a count, so the
+            // which-key delay counts from this input.
+            self.shared.arm_overlay(now);
         }
-        // A cancel key ends pending input at every depth and in every mode.
-        // Without pending input the same key reaches the registry, so `Esc` and
-        // `Ctrl-C` still return to Normal mode.
-        if matches!(self.pending, PendingInput::Active { .. }) && is_cancel_key(key) {
-            self.pending = PendingInput::Idle;
-            // A waiting operator lives in the editor too, so the cancel must
-            // reach it. `ReturnToNormal` is no motion and no text object, which
-            // aborts the operator and changes nothing.
-            if self.operator == OperatorInput::Pending {
-                self.operator = OperatorInput::Idle;
-                return Resolution::Command {
-                    command: Command::ReturnToNormal,
-                    count: None,
-                };
-            }
-            return Resolution::Cancelled;
-        }
-        let scope = self.active_scope();
-        // Taking the pending state first makes every later branch a reset by
-        // default. Only a still-pending outcome puts it back.
-        let (mut keys, count, overlay) = self.take_pending();
-        debug_assert!(
-            count.is_none() || scope.accepts_count(),
-            "only a scope that accepts a count opens one, and a context change resets pending input"
-        );
-        // A digit builds the count only before the sequence starts, and only in
-        // a scope that holds a count. A count inside an operator-pending
-        // sequence belongs to the editor.
-        if keys.is_empty() && scope.accepts_count() {
-            match self.accumulate_count(key, count) {
-                CountStep::Grown(value) => {
-                    self.pending = self.arm(Vec::new(), Some(value), overlay, now);
-                    return Resolution::Pending;
-                }
-                CountStep::AboveMaximum => return Resolution::NoMatch,
-                CountStep::NotADigit => {}
-            }
-        }
-
-        debug_assert!(
-            keys.len() < usize::from(self.settings.pending_keys_max),
-            "the registry rejects a sequence above the pending-key maximum, so a pending sequence keeps room for one key"
-        );
-        keys.push(key);
-        let complete = self.registry.command(scope, &keys);
-        let longer = self.registry.has_longer_sequence(scope, &keys);
-        debug_assert!(
-            !(complete.is_some() && longer),
-            "the registry rejects a strict prefix pair, so a sequence never matches and extends at once"
-        );
-        if let Some(command) = complete {
-            debug_assert!(
-                count != Some(0),
-                "a count starts with a digit between 1 and 9, so it is never zero"
-            );
-            // The editor consumes exactly one command after an operator, so one
-            // completed command always closes the operator-pending scope, even
-            // when it names another operator: `dd` is one linewise delete.
-            self.operator = match self.operator {
-                OperatorInput::Idle if command.starts_operator_pending() => OperatorInput::Pending,
-                OperatorInput::Idle | OperatorInput::Pending => OperatorInput::Idle,
-            };
-            return Resolution::Command {
-                command,
-                count: count.and_then(NonZeroU32::new),
-            };
-        }
-        if longer {
-            self.pending = self.arm(keys, count, overlay, now);
-            return Resolution::Pending;
-        }
-        Resolution::NoMatch
+        resolution(reduced, scope)
     }
 
-    /// Takes the pending keys, the pending count, and the overlay state, and
-    /// leaves the resolver idle.
-    fn take_pending(&mut self) -> (Vec<Key>, Option<u32>, Option<Overlay>) {
-        match std::mem::take(&mut self.pending) {
-            PendingInput::Idle => (Vec::new(), None, None),
-            PendingInput::Active {
-                keys,
-                count,
-                overlay,
-            } => (keys, count, Some(overlay)),
-        }
-    }
-
-    /// Builds the active pending state and keeps the overlay state.
+    /// Reports whether a pending sequence or a pending grammar prefix waits.
     ///
-    /// A visible overlay stays visible, and a delayed overlay keeps its
-    /// original time, so the delay counts from the first key of the sequence
-    /// only.
-    fn arm(
-        &self,
-        keys: Vec<Key>,
-        count: Option<u32>,
-        overlay: Option<Overlay>,
-        now: Duration,
-    ) -> PendingInput {
-        PendingInput::Active {
-            keys,
-            count,
-            overlay: overlay.unwrap_or(Overlay::Delayed {
-                at: saturating_deadline(now, self.settings.which_key_delay),
-            }),
-        }
-    }
-
-    /// Extends the decimal count with one digit key.
-    ///
-    /// `0` starts no count, because it is the first-column motion until a count
-    /// is already open.
-    fn accumulate_count(&self, key: Key, count: Option<u32>) -> CountStep {
-        let Some(digit) = count_digit(key) else {
-            return CountStep::NotADigit;
-        };
-        if digit == 0 && count.is_none() {
-            return CountStep::NotADigit;
-        }
-        let next = count
-            .unwrap_or(0)
-            .checked_mul(10)
-            .and_then(|value| value.checked_add(u32::from(digit)))
-            .filter(|value| *value <= self.settings.count_max);
-        next.map_or(CountStep::AboveMaximum, CountStep::Grown)
+    /// A waiting operator is absent here, because its own scope binds the
+    /// cancel keys to [`Command::ReturnToNormal`].
+    fn holds_pending_input(&self) -> bool {
+        !self.shared.pending_keys().is_empty() || self.reducer.holds_grammar_prefix()
     }
 }
 
-/// The outcome of one count digit.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum CountStep {
-    /// The key is not a decimal count digit. The key starts a sequence instead.
-    NotADigit,
-    /// The count grew and stays inside the count maximum.
-    Grown(u32),
-    /// The count would pass the count maximum, so the input is a mismatch.
-    AboveMaximum,
+/// Reports the reduction in the shape that the standalone editor consumes.
+fn resolution(reduced: Reduced, scope: BindingScope) -> Resolution {
+    match reduced.reduction {
+        Reduction::Prefix => Resolution::Pending,
+        Reduction::Cancelled => Resolution::Cancelled,
+        // The terminal adapter rejects an unsupported chord before the session
+        // reads it, so the standalone loop never reports one.
+        Reduction::Unsupported => Resolution::NoMatch,
+        Reduction::Unbound => match scope {
+            // An open confirmation owns every key, so an unbound key changes
+            // nothing and reaches no owner below the question.
+            BindingScope::Confirmation => Resolution::Confirmation(ConfirmEdit::Ignore),
+            _ => Resolution::NoMatch,
+        },
+        Reduction::Text(TypedText::Typed(value)) => match scope {
+            BindingScope::Prompt => Resolution::Prompt(PromptEdit::Insert(value)),
+            BindingScope::Confirmation => Resolution::Confirmation(ConfirmEdit::Insert(value)),
+            _ => Resolution::Text(value),
+        },
+        Reduction::Text(TypedText::Pasted(_)) => {
+            debug_assert!(
+                false,
+                "the standalone adapter submits key input only, so no paste reaches it"
+            );
+            Resolution::NoMatch
+        }
+        Reduction::Operation(operation) => operation_resolution(scope, operation),
+    }
 }
 
-/// Returns the decimal value of a plain digit key.
-fn count_digit(key: Key) -> Option<u8> {
-    if key.chord() != Chord::Plain {
-        return None;
-    }
-    let KeyCode::Char(value) = key.code() else {
-        return None;
+/// Reports one completed operation.
+///
+/// A prompt command and a confirmation command name an edit of the open line.
+/// Every other command reaches the editor with its count and its register.
+fn operation_resolution(scope: BindingScope, operation: SemanticOperation) -> Resolution {
+    let edit = match scope {
+        BindingScope::Prompt => match operation.command {
+            Command::PromptAccept => Some(Resolution::Prompt(PromptEdit::Accept)),
+            Command::PromptCancel => Some(Resolution::Prompt(PromptEdit::Cancel)),
+            Command::PromptDeleteBackward => Some(Resolution::Prompt(PromptEdit::DeleteBackward)),
+            Command::PromptCompleteNext => Some(Resolution::Prompt(PromptEdit::CompleteNext)),
+            Command::PromptCompletePrevious => {
+                Some(Resolution::Prompt(PromptEdit::CompletePrevious))
+            }
+            // An open picker owns its own chords above the query line.
+            _ => None,
+        },
+        BindingScope::Confirmation => match operation.command {
+            Command::PromptAccept => Some(Resolution::Confirmation(ConfirmEdit::Accept)),
+            Command::PromptCancel => Some(Resolution::Confirmation(ConfirmEdit::Cancel)),
+            Command::PromptDeleteBackward => {
+                Some(Resolution::Confirmation(ConfirmEdit::DeleteBackward))
+            }
+            _ => None,
+        },
+        _ => None,
     };
-    // Radix ten accepts `0` through `9` only, so the value fits one byte.
-    u8::try_from(value.to_digit(10)?).ok()
+    edit.unwrap_or(Resolution::Command {
+        command: operation.command,
+        count: operation.count,
+        register: operation.register,
+    })
 }
 
 /// Reports whether one key cancels pending input.
@@ -551,48 +371,6 @@ fn is_cancel_key(key: Key) -> bool {
         (key.chord(), key.code()),
         (Chord::Plain, KeyCode::Esc) | (Chord::Ctrl, KeyCode::Char('c'))
     )
-}
-
-/// Translates one key into a prompt line edit.
-///
-/// Every prompt reads the same keys. A prompt that offers no candidate ignores
-/// the two completion edits, so only the command line answers them today. See
-/// `docs/input-actions.md`.
-fn prompt_edit(key: Key) -> Option<PromptEdit> {
-    if is_cancel_key(key) {
-        return Some(PromptEdit::Cancel);
-    }
-    match (key.chord(), key.code()) {
-        (Chord::Plain, KeyCode::Char(value)) => Some(PromptEdit::Insert(value)),
-        (Chord::Plain, KeyCode::Backspace) => Some(PromptEdit::DeleteBackward),
-        (Chord::Plain, KeyCode::Tab) => Some(PromptEdit::CompleteNext),
-        (Chord::Plain, KeyCode::BackTab) => Some(PromptEdit::CompletePrevious),
-        (Chord::Plain, KeyCode::Enter) => Some(PromptEdit::Accept),
-        _ => None,
-    }
-}
-
-/// Translates one key into an edit of the confirmation answer.
-///
-/// The confirmation reads its own small table, so it completes nothing: `Tab`
-/// and `Shift-Tab` change nothing. The function answers for every key, so an
-/// open confirmation owns every key and none of them reaches the buffer below
-/// it. See `docs/input-actions.md`.
-fn confirm_edit(key: Key) -> ConfirmEdit {
-    if is_cancel_key(key) {
-        return ConfirmEdit::Cancel;
-    }
-    match (key.chord(), key.code()) {
-        (Chord::Plain, KeyCode::Char(value)) => ConfirmEdit::Insert(value),
-        (Chord::Plain, KeyCode::Backspace) => ConfirmEdit::DeleteBackward,
-        (Chord::Plain, KeyCode::Enter) => ConfirmEdit::Accept,
-        _ => ConfirmEdit::Ignore,
-    }
-}
-
-/// Adds a bound to the elapsed time without overflow.
-fn saturating_deadline(now: Duration, bound: Duration) -> Duration {
-    now.checked_add(bound).unwrap_or(Duration::MAX)
 }
 
 #[cfg(test)]
@@ -631,6 +409,7 @@ mod tests {
         Resolution::Command {
             command,
             count: None,
+            register: None,
         }
     }
 
@@ -638,6 +417,7 @@ mod tests {
         Resolution::Command {
             command,
             count: NonZeroU32::new(count),
+            register: None,
         }
     }
 
@@ -649,9 +429,17 @@ mod tests {
                 let mut resolver = resolver();
                 resolver.set_context(InputContext::Mode(mode));
                 assert_eq!(resolver.context().scope(), BindingScope::Mode(mode));
+                // A count digit and a register selection are grammar prefixes,
+                // so they complete no operation of their own.
+                let outcome =
+                    if expected.count_digit().is_some() || expected == Command::SelectRegister {
+                        Resolution::Pending
+                    } else {
+                        command(expected)
+                    };
                 assert_eq!(
                     feed(&mut resolver, keys.keys()),
-                    command(expected),
+                    outcome,
                     "{mode} `{keys}` must reach `{expected}`"
                 );
                 assert!(
@@ -724,8 +512,8 @@ mod tests {
                 Resolution::Pending
             } else {
                 // Insert mode holds no count, so the digit reaches no command
-                // and the editor inserts it as buffer text.
-                Resolution::NoMatch
+                // and the text fallback of the scope types it.
+                Resolution::Text('5')
             };
             assert_eq!(
                 resolver.resolve(ch('5'), NOW),
@@ -864,6 +652,7 @@ mod tests {
             Resolution::Command {
                 command: Command::DeleteOverMotion,
                 count: None,
+                register: None,
             }
         );
         // `i` reaches Insert mode in Normal mode, and a text object here.
@@ -873,6 +662,7 @@ mod tests {
             Resolution::Command {
                 command: Command::SelectInnerParen,
                 count: None,
+                register: None,
             }
         );
         // The completed command closes the scope, so `i` inserts again.
@@ -881,6 +671,7 @@ mod tests {
             Resolution::Command {
                 command: Command::InsertBeforeCursor,
                 count: None,
+                register: None,
             }
         );
     }
@@ -894,6 +685,7 @@ mod tests {
             Resolution::Command {
                 command: Command::DeleteOverMotion,
                 count: None,
+                register: None,
             }
         );
         assert_eq!(
@@ -901,6 +693,7 @@ mod tests {
             Resolution::Command {
                 command: Command::InsertBeforeCursor,
                 count: None,
+                register: None,
             }
         );
     }
@@ -915,6 +708,7 @@ mod tests {
             Resolution::Command {
                 command: Command::MoveNextWordStart,
                 count: NonZeroU32::new(2),
+                register: None,
             }
         );
     }
@@ -975,6 +769,7 @@ mod tests {
             Resolution::Command {
                 command: Command::ReturnToNormal,
                 count: None,
+                register: None,
             },
             "the editor aborts its operator over a command that names no target"
         );
@@ -988,6 +783,7 @@ mod tests {
             Resolution::Command {
                 command: Command::ReturnToNormal,
                 count: None,
+                register: None,
             }
         );
         assert_eq!(
@@ -995,6 +791,7 @@ mod tests {
             Resolution::Command {
                 command: Command::InsertBeforeCursor,
                 count: None,
+                register: None,
             }
         );
     }
@@ -1356,6 +1153,157 @@ mod tests {
         assert_eq!(
             resolver.resolve(ch('g'), NOW),
             Resolution::Prompt(PromptEdit::Insert('g'))
+        );
+    }
+
+    /// Returns the resolution of one register-qualified command.
+    fn registered(command: Command, count: Option<u32>, register: char) -> Resolution {
+        Resolution::Command {
+            command,
+            count: count.and_then(NonZeroU32::new),
+            register: Some(register),
+        }
+    }
+
+    #[test]
+    fn a_count_reaches_the_operator_and_the_motion_separately() {
+        // `2d3w` deletes six words. The editor multiplies the two counts, so
+        // each one reaches it with its own command.
+        let mut resolver = resolver();
+        assert_eq!(feed(&mut resolver, &[ch('2')]), Resolution::Pending);
+        assert_eq!(
+            resolver.resolve(ch('d'), NOW),
+            counted(Command::DeleteOverMotion, 2)
+        );
+        assert_eq!(feed(&mut resolver, &[ch('3')]), Resolution::Pending);
+        assert_eq!(
+            resolver.resolve(ch('w'), NOW),
+            counted(Command::MoveNextWordStart, 3)
+        );
+        assert!(resolver.snapshot().phases.is_idle());
+    }
+
+    #[test]
+    fn a_register_qualifies_the_next_operation_only() {
+        let mut resolver = resolver();
+        assert_eq!(resolver.resolve(ch('"'), NOW), Resolution::Pending);
+        assert_eq!(
+            resolver.snapshot().scope,
+            BindingScope::RegisterSelection,
+            "the selection waits for the name of the register"
+        );
+        assert_eq!(
+            resolver.resolve(ch('a'), NOW),
+            Resolution::Pending,
+            "the printable key names the register through the text fallback"
+        );
+        assert_eq!(
+            resolver.resolve(ch('Y'), NOW),
+            registered(Command::YankLine, None, 'a')
+        );
+        assert_eq!(
+            resolver.resolve(ch('Y'), NOW),
+            command(Command::YankLine),
+            "the register applies to one operation only"
+        );
+    }
+
+    #[test]
+    fn a_cancel_key_ends_a_register_selection() {
+        let mut resolver = resolver();
+        resolver.resolve(ch('"'), NOW);
+        assert_eq!(
+            resolver.resolve(Key::plain(KeyCode::Esc), NOW),
+            Resolution::Cancelled
+        );
+        assert!(resolver.snapshot().phases.is_idle());
+        assert_eq!(resolver.snapshot().scope, BindingScope::Mode(Mode::Normal));
+    }
+
+    #[test]
+    fn the_picker_table_answers_above_its_query_line() {
+        let mut resolver = resolver();
+        resolver.set_context(InputContext::Picker.open_prompt(PromptKind::Picker));
+        assert_eq!(
+            resolver.resolve(Key::plain(KeyCode::Down), NOW),
+            command(Command::PickerSelectNext),
+            "the open picker owns its own chords"
+        );
+        assert_eq!(
+            resolver.resolve(ch('w'), NOW),
+            Resolution::Prompt(PromptEdit::Insert('w')),
+            "every other printable key belongs to the query"
+        );
+        assert_eq!(
+            resolver.resolve(Key::plain(KeyCode::Esc), NOW),
+            Resolution::Prompt(PromptEdit::Cancel)
+        );
+    }
+
+    #[test]
+    fn insert_mode_types_a_character_and_binds_the_three_entry_keys() {
+        let mut resolver = resolver();
+        resolver.set_context(InputContext::Mode(Mode::Insert));
+        assert_eq!(resolver.resolve(ch('x'), NOW), Resolution::Text('x'));
+        assert_eq!(resolver.resolve(ch(' '), NOW), Resolution::Text(' '));
+        for (key, expected) in [
+            (Key::plain(KeyCode::Enter), Command::InsertLineBreak),
+            (
+                Key::plain(KeyCode::Backspace),
+                Command::DeleteCharacterBefore,
+            ),
+            (Key::plain(KeyCode::Tab), Command::InsertIndent),
+        ] {
+            assert_eq!(
+                resolver.resolve(key, NOW),
+                command(expected),
+                "Insert mode binds `{}`, because it types no character",
+                key.label()
+            );
+        }
+    }
+
+    #[test]
+    fn every_context_state_change_publishes_a_new_generation() {
+        let mut resolver = resolver();
+        let start = resolver.snapshot().generation;
+        // A pending key sequence is the state of the resolver, not of the
+        // surface, so it publishes no new generation.
+        assert_eq!(resolver.resolve(ch('g'), NOW), Resolution::Pending);
+        assert_eq!(resolver.snapshot().generation, start);
+
+        assert_eq!(
+            resolver.resolve(ch('g'), NOW),
+            command(Command::MoveFirstLine)
+        );
+        let completed = resolver.snapshot().generation;
+        assert_ne!(completed, start);
+
+        assert_eq!(resolver.resolve(ch('3'), NOW), Resolution::Pending);
+        let counted = resolver.snapshot().generation;
+        assert_ne!(counted, completed);
+
+        resolver.set_context(InputContext::Mode(Mode::Visual));
+        assert_ne!(resolver.snapshot().generation, counted);
+    }
+
+    #[test]
+    fn every_default_binding_is_a_surface_contribution_of_the_shared_registry() {
+        let registry = Registry::first_release();
+        let mut bindings = 0_usize;
+        for scope in BindingScope::ALL {
+            for (keys, command) in registry.bindings(scope) {
+                bindings += 1;
+                assert_eq!(
+                    registry.command(scope, keys.keys()),
+                    Some(command),
+                    "{scope} `{keys}` must reach `{command}` through the shared registry"
+                );
+            }
+        }
+        assert!(
+            bindings > 300,
+            "the shared registry holds the complete kvim preset, but it holds {bindings} bindings"
         );
     }
 }

@@ -338,6 +338,23 @@ Paste follows the focused scope's typed-text owner and remains bounded. Focused
 unbound and unsupported outcomes remain addressed surface inputs while that
 surface reports semantic pending state.
 
+The resolver evaluates the overlay scope, the host-global scope, and the focused
+scope in that order. The first scope that completes the sequence wins. When no
+scope completes it, the first scope that can extend it owns the pending prefix,
+and every further key of that sequence stays in that scope. One sequence
+therefore never changes owner in the middle, and the which-key hints always come
+from the table that will answer.
+
+A text fallback takes the first key of a sequence only. A key that breaks a
+started sequence types no text.
+
+The scopes that declare a text fallback are Insert mode, the prompt, the
+confirmation, and the register selection. Each one names the focused surface as
+its text owner. The prompt scope and the confirmation scope hold their own small
+binding tables for the keys that type no character, so `Enter`, `Esc`,
+`Ctrl-C`, `Backspace`, `Tab`, and `Shift-Tab` are ordinary bindings. Insert mode
+binds `Enter`, `Backspace`, and `Tab` for the same reason.
+
 After every command, text, paste, unbound, unsupported, or cancellation input,
 the editor returns an `InputContextSnapshot`. It contains mode, operator phase,
 count phase, register phase, text-object phase, prompt phase, text fallback, and
@@ -346,6 +363,10 @@ a generation.
 Every context-state change increments the generation. A generation change
 clears a pending static prefix. Focus, mode, or overlay-stack changes also clear
 the resolver's pending sequence.
+
+The text-object phase mirrors the resolver's own pending prefix, so it publishes
+no new generation. A new generation would clear the very prefix that produced
+the phase. Typed text changes no phase, so it keeps the generation as well.
 
 Closing an overlay reveals the previous scope from the same immutable registry.
 It does not rebuild the registry.
@@ -358,10 +379,19 @@ Only then can the composer commit the transition. See
 
 ## Counts And Sequences
 
-Count digits are surface commands. The editor semantic reducer composes them with
-operators and motions after shared dispatch. The count maximum is 9,999. Count
-composition uses checked arithmetic. A count above the maximum is invalid and
-resets semantic pending state.
+Count digits are surface commands. The registry binds `1` through `9` in every
+scope that accepts a count, and the editor semantic reducer composes them with
+operators and motions after shared dispatch. `0` carries no count command,
+because it is the first-column motion until a count is already open. The reducer
+reads that motion as the zero digit while a count is open, so `10j` moves ten
+lines and `0` alone still reaches the first column.
+
+A register selection is a surface command as well. `"` reaches it in Normal mode
+and in the three Visual modes, and the register-selection scope then converts
+the next printable key into the register name through its text fallback.
+
+The count maximum is 9,999. Count composition uses checked arithmetic. A count
+above the maximum is invalid and resets semantic pending state.
 
 Count digits, register selection, operator start, and text-object start are
 grammar-prefix transitions. They do not complete a semantic operation. A

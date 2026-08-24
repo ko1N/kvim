@@ -59,7 +59,7 @@ use kvim_language::{
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
-use kvim_terminal::{Chord, Key, KeyCode, TerminalEvent};
+use kvim_terminal::{Key, TerminalEvent};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
     FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure, GitStatusRead,
@@ -1315,15 +1315,23 @@ impl Session {
     /// Resolves one key and applies what it names.
     fn resolve_key(&mut self, key: Key, now: Duration) -> Redraw {
         match self.resolver.resolve(key, now) {
-            Resolution::Command { command, count } => self.apply_command(command, count),
+            // The first-release editing state holds no register selection, so
+            // the qualified register reaches no operation yet.
+            Resolution::Command {
+                command,
+                count,
+                register: _,
+            } => self.apply_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
             Resolution::Confirmation(edit) => self.edit_confirmation(edit),
             // A pending sequence and a cancelled sequence both change only the
             // which-key overlay, and `settle` publishes that change.
             Resolution::Pending | Resolution::Cancelled => Redraw::Skipped,
-            // Insert mode reaches no binding for a printable key, so the key
-            // becomes buffer text.
-            Resolution::NoMatch => self.insert_key(key),
+            // The Insert scope declares the editor as its text owner, so a
+            // printable key becomes buffer text.
+            Resolution::Text(value) => self.insert_typed(value),
+            // No binding and no text owner took the key, so nothing changes.
+            Resolution::NoMatch => Redraw::Skipped,
         }
     }
 
@@ -1380,6 +1388,11 @@ impl Session {
             Command::EndSearch => return self.end_search().or(cleared),
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
             Command::RevealInFileTree => return self.reveal_active_file().or(cleared),
+            // Insert-mode text entry. The Insert scope binds these three keys,
+            // because none of them types a character.
+            Command::InsertLineBreak => return self.insert_line_break().or(cleared),
+            Command::DeleteCharacterBefore => return self.delete_character_before().or(cleared),
+            Command::InsertIndent => return self.insert_indent().or(cleared),
             _ => {}
         }
         match self.windows.apply(command) {
@@ -1671,44 +1684,55 @@ impl Session {
         entry.reuse = Some((after, tree.edited(before, transaction)));
     }
 
-    /// Applies one key while Insert mode is active.
+    /// Inserts one typed character while Insert mode is active.
     ///
-    /// The `editor` module owns every text rule, so `Enter` and `Backspace`
-    /// reach its entry points instead of building a text here. Every other plain
-    /// key inserts its own characters.
-    fn insert_key(&mut self, key: Key) -> Redraw {
-        if self.editing.mode() != Mode::Insert || key.chord() != Chord::Plain {
+    /// The shared resolver routes every printable key of the Insert scope to
+    /// this text owner, so the session compares no key.
+    fn insert_typed(&mut self, value: char) -> Redraw {
+        if self.editing.mode() != Mode::Insert {
             return Redraw::Skipped;
         }
+        let text = value.to_string();
+        let outcome =
+            self.edit(|editing, context, window| editing.insert_text(context, window, &text));
+        self.report(outcome)
+    }
+
+    /// Opens a line break at the cursor.
+    ///
+    /// The `editor` module owns every text rule, so the break reaches its entry
+    /// point. The break opens at the cursor, so the syntax indent answers for
+    /// that byte offset.
+    fn insert_line_break(&mut self) -> Redraw {
+        let buffer = self.buffer();
+        let byte = buffer.char_to_byte(self.cursor().position(buffer)).get();
+        let auto = self.indent_level(byte);
+        let outcome = self.edit(|editing, context, window| {
+            editing.insert_line_break_indented(context, window, auto)
+        });
+        self.report(outcome)
+    }
+
+    /// Removes the character before the cursor.
+    fn delete_character_before(&mut self) -> Redraw {
+        let outcome =
+            self.edit(|editing, context, window| editing.delete_backward(context, window));
+        self.report(outcome)
+    }
+
+    /// Inserts one indent step.
+    ///
+    /// The indent settings decide between one tab character and the configured
+    /// number of spaces.
+    fn insert_indent(&mut self) -> Redraw {
         let indent = self.settings.indent;
-        let outcome = match key.code() {
-            KeyCode::Enter => {
-                // The line break opens at the cursor, so the syntax indent
-                // answers for that byte offset.
-                let buffer = self.buffer();
-                let byte = buffer.char_to_byte(self.cursor().position(buffer)).get();
-                let auto = self.indent_level(byte);
-                self.edit(|editing, context, window| {
-                    editing.insert_line_break_indented(context, window, auto)
-                })
-            }
-            KeyCode::Backspace => {
-                self.edit(|editing, context, window| editing.delete_backward(context, window))
-            }
-            KeyCode::Char(value) => {
-                let text = value.to_string();
-                self.edit(|editing, context, window| editing.insert_text(context, window, &text))
-            }
-            KeyCode::Tab => {
-                let text = if indent.expand_tab {
-                    " ".repeat(usize::from(indent.tab_width.get()))
-                } else {
-                    "\t".to_owned()
-                };
-                self.edit(|editing, context, window| editing.insert_text(context, window, &text))
-            }
-            _ => return Redraw::Skipped,
+        let text = if indent.expand_tab {
+            " ".repeat(usize::from(indent.tab_width.get()))
+        } else {
+            "\t".to_owned()
         };
+        let outcome =
+            self.edit(|editing, context, window| editing.insert_text(context, window, &text));
         self.report(outcome)
     }
 
