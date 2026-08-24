@@ -214,6 +214,28 @@ impl Key {
         self.code
     }
 
+    /// Returns the character that the key types, or `None` for a key that types
+    /// no text.
+    ///
+    /// Only a plain chord types text. A control chord names a binding, so it
+    /// never reaches a text fallback.
+    ///
+    /// ```
+    /// use kvim_keymap::{Key, KeyCode};
+    ///
+    /// assert_eq!(Key::plain(KeyCode::Char('a')).typed_char(), Some('a'));
+    /// assert_eq!(Key::ctrl(KeyCode::Char('a')).typed_char(), None);
+    /// assert_eq!(Key::plain(KeyCode::Enter).typed_char(), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn typed_char(self) -> Option<char> {
+        match (self.chord, self.code) {
+            (Chord::Plain, KeyCode::Char(value)) => Some(value),
+            _ => None,
+        }
+    }
+
     /// Returns the key in its help form.
     ///
     /// ```

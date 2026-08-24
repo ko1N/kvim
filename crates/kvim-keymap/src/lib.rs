@@ -62,14 +62,21 @@
 //! ```
 
 mod binding;
+mod context;
 mod key;
 mod registry;
+mod resolver;
 mod sequence;
 
 pub use binding::{
     Binding, BoundCommand, COMMAND_ID_BYTES_MAX, COMMAND_LABEL_BYTES_MAX, CommandMetadata,
     CommandOwner, SCOPES_MAX, Scope,
 };
+pub use context::{ContextGeneration, InputContextSnapshot, Phase, SemanticPhases, TextFallback};
 pub use key::{Chord, KEY_LABEL_BYTES_MAX, Key, KeyCode, KeyLabel};
 pub use registry::{BINDINGS_MAX, Registry, RegistryError};
+pub use resolver::{
+    Dispatch, DispatchContext, Input, PASTE_BYTES_MAX, PasteError, PasteText, Resolver, TypedText,
+    WhichKeyView,
+};
 pub use sequence::{KeySequence, SEQUENCE_KEYS_MAX, SequenceError};

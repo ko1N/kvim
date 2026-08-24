@@ -70,6 +70,12 @@ semantic_commands! {
     OpenCommandLine => ("open-command-line", "Open the command line"),
     ReturnToNormal => ("return-to-normal", "Return to Normal mode"),
 
+    // Insert-mode text entry. A printable key reaches the text fallback of the
+    // scope, so only the keys that type no character carry a command.
+    InsertLineBreak => ("insert-line-break", "Insert a line break"),
+    DeleteCharacterBefore => ("delete-character-before", "Delete the character before the cursor"),
+    InsertIndent => ("insert-indent", "Insert one indent step"),
+
     // Motions.
     MoveLeft => ("move-left", "Move left"),
     MoveDown => ("move-down", "Move down"),
@@ -93,7 +99,30 @@ semantic_commands! {
     AlignCursorLineTop => ("align-cursor-line-top", "Align the cursor line to the window top"),
     AlignCursorLineBottom => ("align-cursor-line-bottom", "Align the cursor line to the window bottom"),
 
+    // Count digits. A digit is a surface command, so it reaches the semantic
+    // reducer through the shared registry instead of a second key table. `0` is
+    // the first-column motion until a count is already open, so it keeps
+    // `MoveFirstColumn` and the reducer reads it as the zero digit.
+    CountDigitOne => ("count-digit-one", "Append one to the count"),
+    CountDigitTwo => ("count-digit-two", "Append two to the count"),
+    CountDigitThree => ("count-digit-three", "Append three to the count"),
+    CountDigitFour => ("count-digit-four", "Append four to the count"),
+    CountDigitFive => ("count-digit-five", "Append five to the count"),
+    CountDigitSix => ("count-digit-six", "Append six to the count"),
+    CountDigitSeven => ("count-digit-seven", "Append seven to the count"),
+    CountDigitEight => ("count-digit-eight", "Append eight to the count"),
+    CountDigitNine => ("count-digit-nine", "Append nine to the count"),
+
+    // The prompt line. Every prompt reads the same keys, so one scope holds
+    // them and printable input falls through to the prompt text.
+    PromptAccept => ("prompt-accept", "Run the prompt line"),
+    PromptCancel => ("prompt-cancel", "Cancel the prompt line"),
+    PromptDeleteBackward => ("prompt-delete-backward", "Remove the character before the prompt cursor"),
+    PromptCompleteNext => ("prompt-complete-next", "Write the next completion candidate"),
+    PromptCompletePrevious => ("prompt-complete-previous", "Write the previous completion candidate"),
+
     // Operators, registers, and repeat.
+    SelectRegister => ("select-register", "Select the register of the next operation"),
     DeleteOverMotion => ("delete-over-motion", "Delete over a motion"),
     ChangeOverMotion => ("change-over-motion", "Change over a motion"),
     YankOverMotion => ("yank-over-motion", "Yank over a motion"),
@@ -322,7 +351,25 @@ impl Command {
             | Self::TreeToggleHidden
             | Self::TreeSearch => CommandGroup::Tree,
 
-            Self::InsertBeforeCursor
+            Self::CountDigitOne
+            | Self::CountDigitTwo
+            | Self::CountDigitThree
+            | Self::CountDigitFour
+            | Self::CountDigitFive
+            | Self::CountDigitSix
+            | Self::CountDigitSeven
+            | Self::CountDigitEight
+            | Self::CountDigitNine
+            | Self::PromptAccept
+            | Self::PromptCancel
+            | Self::PromptDeleteBackward
+            | Self::PromptCompleteNext
+            | Self::PromptCompletePrevious
+            | Self::SelectRegister
+            | Self::InsertLineBreak
+            | Self::DeleteCharacterBefore
+            | Self::InsertIndent
+            | Self::InsertBeforeCursor
             | Self::InsertAtFirstNonBlank
             | Self::InsertAfterCursor
             | Self::InsertAtLineEnd
@@ -397,6 +444,36 @@ impl Command {
             | Self::PickerSelectNext
             | Self::PickerSelectPrevious => CommandGroup::Other,
         }
+    }
+
+    /// Returns the decimal digit that the command appends to the count.
+    ///
+    /// `0` names the first-column motion until a count is already open, so it
+    /// carries no count command of its own. The semantic reducer reads
+    /// [`Command::MoveFirstColumn`] as the zero digit while a count is open.
+    ///
+    /// ```
+    /// use kvim_input::Command;
+    ///
+    /// assert_eq!(Command::CountDigitThree.count_digit(), Some(3));
+    /// assert_eq!(Command::MoveDown.count_digit(), None);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn count_digit(self) -> Option<u8> {
+        let digit = match self {
+            Self::CountDigitOne => 1,
+            Self::CountDigitTwo => 2,
+            Self::CountDigitThree => 3,
+            Self::CountDigitFour => 4,
+            Self::CountDigitFive => 5,
+            Self::CountDigitSix => 6,
+            Self::CountDigitSeven => 7,
+            Self::CountDigitEight => 8,
+            Self::CountDigitNine => 9,
+            _ => return None,
+        };
+        Some(digit)
     }
 
     /// Reports whether the command starts an operator that waits for a target.
