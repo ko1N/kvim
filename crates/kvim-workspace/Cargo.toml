@@ -27,6 +27,9 @@ thiserror.workspace = true
 # Filesystem confinement
 cap-std.workspace = true
 
+# Review identity
+blake3.workspace = true
+
 # Runtime
 tokio-util.workspace = true
 
