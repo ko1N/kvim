@@ -85,6 +85,7 @@ mod diagnostics;
 mod driver;
 mod embed;
 mod icons;
+mod jumps;
 mod language;
 mod log;
 mod markup;
