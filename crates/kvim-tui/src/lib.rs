@@ -51,6 +51,7 @@ mod chrome;
 mod clipboard;
 mod completion;
 mod diagnostics;
+mod driver;
 mod embed;
 mod icons;
 mod language;
@@ -82,6 +83,7 @@ mod tree_tests;
 
 pub use app::{EVENT_ERRORS_MAX, EditorError, PanicProbe, run};
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
+pub use driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
 pub use embed::{
     CursorRequest, CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorEvent, EditorInstanceId,
     GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal, Saturated,

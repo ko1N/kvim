@@ -180,6 +180,32 @@ pub struct SavedBuffer {
 }
 
 impl FileRequest {
+    /// Reports whether the operation changes the filesystem.
+    ///
+    /// A caller that reserved the mandatory event of a durable change submits a
+    /// committing request, so a cancellation can never release that reservation
+    /// after the write reached the filesystem. See `docs/embedding.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_workspace::{FileRequest, ReloadRequest};
+    /// # use kvim_settings::FileSettings;
+    ///
+    /// let reload = FileRequest::Reload(ReloadRequest {
+    ///     targets: Vec::new(),
+    ///     files: FileSettings::default(),
+    /// });
+    /// assert!(!reload.commits());
+    /// ```
+    #[must_use]
+    pub const fn commits(&self) -> bool {
+        match self {
+            Self::Save(_) => true,
+            Self::Open(_) | Self::Reload(_) => false,
+        }
+    }
+
     /// Runs the operation and returns its complete typed result.
     ///
     /// The call blocks. Run it on the bounded worker service only.
