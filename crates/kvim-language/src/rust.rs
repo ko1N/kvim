@@ -5,26 +5,16 @@
 //! The analysis itself is language-neutral, so a later adapter adds a language
 //! by supplying the same kinds of data. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::{CheckDepth, LanguageSettings};
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Rust adapter owns.
-///
-/// The match is case-sensitive, because a Rust source file uses a lowercase
-/// extension.
-const RUST_EXTENSIONS: [&str; 1] = ["rs"];
-
-/// The language names that the Rust adapter answers to.
-///
-/// `rs` is the short form that a fence carries beside `rust`.
-const RUST_LANGUAGE_NAMES: [&str; 2] = ["rs", "rust"];
 
 /// The node kinds whose content takes one more indent level in Rust.
 const RUST_INDENT_SCOPES: [&str; 16] = [
@@ -61,11 +51,6 @@ const RUST_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration 
     initialization_options: rust_analyzer_options,
     workspace_settings: None,
 }];
-
-/// Returns the Rust grammar of the bundled parser.
-fn rust_language() -> Language {
-    tree_sitter_rust::LANGUAGE.into()
-}
 
 /// Maps the language-neutral settings onto the rust-analyzer options.
 ///
@@ -106,34 +91,19 @@ impl RustAdapter {
 }
 
 impl LanguageAdapter for RustAdapter {
-    fn id(&self) -> &'static str {
-        "rust"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("rust").expect("the grammar-rust feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &RUST_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &RUST_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "rust",
-            language: rust_language,
-            highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

@@ -3,7 +3,7 @@
 //! No test opens a terminal. The session receives normalized events and an
 //! elapsed time, so every transition is deterministic.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::layout::Rect;
@@ -13,11 +13,15 @@ use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
 use kvim_input::{CommandLineCommand, Mode};
 use kvim_language::LspError;
+use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
-use kvim_terminal::{FocusChange, Key, KeyCode, TerminalEvent};
+use kvim_terminal::{FocusChange, Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
-use kvim_workspace::{Candidate, ExternalChange, PickerRequest, PickerResult, rank_candidates};
+use kvim_workspace::{
+    BUFFERS_MAX, BufferPathUpdate, Candidate, ExternalChange, FileResult, MutationOutcome,
+    PickerRequest, PickerResult, WorkspaceResult, rank_candidates,
+};
 
 use super::clipboard::SessionClipboard;
 use super::completion::{CompletionOutcome, LineCompletion};
@@ -25,9 +29,9 @@ use super::language::{LanguageRequest, LanguageRequestKind};
 use super::log::LOG_ENTRIES_MAX;
 use super::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
-    Redraw, RunState, Session,
+    Redraw, RunState, Session, test_root,
 };
-use super::window::{SidebarSide, WindowId};
+use kvim_ui::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -36,7 +40,7 @@ const NOW: Duration = Duration::ZERO;
 /// No test reads the directory, because the session hands every read to the
 /// bounded worker service.
 fn workspace_root() -> PathBuf {
-    PathBuf::from("/workspace")
+    std::env::current_dir().expect("the test process holds a working directory")
 }
 
 /// The which-key delay of the settings that every test session holds.
@@ -47,7 +51,7 @@ fn session(width: u16, height: u16) -> Session {
     Session::new(
         Rect::new(0, 0, width, height),
         EditorSettings::default(),
-        workspace_root(),
+        test_root(workspace_root()),
     )
 }
 
@@ -206,7 +210,11 @@ fn the_tab_key_follows_the_indent_settings() {
 
     let mut settings = EditorSettings::default();
     settings.indent.expand_tab = false;
-    let mut hard = Session::new(Rect::new(0, 0, 40, 10), settings, workspace_root());
+    let mut hard = Session::new(
+        Rect::new(0, 0, 40, 10),
+        settings,
+        test_root(workspace_root()),
+    );
     press(&mut hard, 'i');
     press_code(&mut hard, KeyCode::Tab);
     assert_eq!(hard.buffer().to_string(), "\t\n");
@@ -320,6 +328,75 @@ fn the_which_key_deadline_is_the_only_time_driven_change() {
     );
 }
 
+/// Feeds one bounded bracketed-paste block.
+fn paste(session: &mut Session, text: &str) -> Redraw {
+    let block = PasteText::new(text).expect("the block is bounded");
+    session.handle_event(TerminalEvent::Paste(block), NOW)
+}
+
+#[test]
+fn one_paste_block_inserts_as_one_undo_unit() {
+    // The terminal reports one bracketed paste as one event, so the editor
+    // applies it as one edit transaction. A run of key presses would need one
+    // undo for every character. See `docs/input-actions.md`.
+    let mut session = with_text(&["alpha"]);
+    press(&mut session, 'i');
+
+    assert_eq!(paste(&mut session, "one two"), Redraw::Needed);
+    assert_eq!(session.buffer().to_string(), "one twoalpha\n");
+
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "u");
+    assert_eq!(session.buffer().to_string(), "alpha\n");
+}
+
+#[test]
+fn a_paste_block_outside_insert_mode_changes_no_text() {
+    // Normal mode owns no text fallback, so a paste block reaches no buffer.
+    let mut session = with_text(&["alpha"]);
+
+    assert_eq!(paste(&mut session, "one two"), Redraw::Skipped);
+    assert_eq!(session.buffer().to_string(), "alpha\n");
+}
+
+#[test]
+fn a_paste_block_reaches_the_open_prompt_line() {
+    let mut session = session(60, 20);
+    press(&mut session, ':');
+
+    let _ = paste(&mut session, "write");
+
+    assert_eq!(prompt_text(&session), "write");
+}
+
+#[test]
+fn unsupported_input_resets_every_pending_grammar_phase() {
+    // A rejected chord must never run the binding of its unmodified key, so
+    // the pending count and the pending operator both end here.
+    let mut session = with_text(&["alpha beta", "gamma delta", "epsilon zeta"]);
+    type_keys(&mut session, "2d");
+
+    let _ = session.handle_event(TerminalEvent::Unsupported, NOW);
+
+    // The operator is gone, so `d` opens a new one and `d` completes it. One
+    // line leaves the buffer, not the two that the abandoned count named.
+    type_keys(&mut session, "dd");
+    assert_eq!(session.buffer().to_string(), "gamma delta\nepsilon zeta\n");
+}
+
+#[test]
+fn unsupported_input_changes_no_text_and_no_mode() {
+    let mut session = with_text(&["alpha"]);
+    press(&mut session, 'i');
+
+    assert_eq!(
+        session.handle_event(TerminalEvent::Unsupported, NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.mode(), Mode::Insert);
+    assert_eq!(session.buffer().to_string(), "alpha\n");
+}
+
 #[test]
 fn a_cancel_key_hides_the_overlay_and_keeps_the_mode() {
     for cancel in [
@@ -332,7 +409,7 @@ fn a_cancel_key_hides_the_overlay_and_keeps_the_mode() {
         assert_eq!(session.tick(WHICH_KEY_DELAY), Redraw::Needed);
         assert_eq!(session.next_deadline(), None);
 
-        assert_eq!(session.handle_event(cancel, NOW), Redraw::Needed);
+        assert_eq!(session.handle_event(cancel.clone(), NOW), Redraw::Needed);
         assert_eq!(
             session.mode(),
             Mode::Visual,
@@ -368,11 +445,11 @@ fn the_visual_modes_switch_between_each_other_and_keep_the_anchor() {
     // `Ctrl-V` completes the matrix and repeats into Normal mode.
     let mut session = with_text(&["alpha beta", "gamma delta"]);
     type_keys(&mut session, "v");
-    session.handle_event(control_v, NOW);
+    session.handle_event(control_v.clone(), NOW);
     assert_eq!(session.mode(), Mode::VisualBlock);
     type_keys(&mut session, "V");
     assert_eq!(session.mode(), Mode::VisualLine);
-    session.handle_event(control_v, NOW);
+    session.handle_event(control_v.clone(), NOW);
     assert_eq!(session.mode(), Mode::VisualBlock);
     session.handle_event(control_v, NOW);
     assert_eq!(session.mode(), Mode::Normal);
@@ -855,6 +932,7 @@ fn enter_runs_the_command_that_the_completion_wrote_into_the_line() {
 /// The walk returns absolute paths below the workspace root, so the candidates
 /// hold the same shape that the file picker receives.
 fn walked_files() -> Vec<Candidate> {
+    let root = test_root(workspace_root());
     [
         "src/session.rs",
         "src/main.rs",
@@ -862,7 +940,12 @@ fn walked_files() -> Vec<Candidate> {
         "src/mode.rs",
     ]
     .into_iter()
-    .map(|relative| Candidate::file(&workspace_root(), workspace_root().join(relative)))
+    .map(|relative| {
+        Candidate::file(
+            &root,
+            WorktreeRelativePath::new(relative).expect("the fixture path is valid"),
+        )
+    })
     .collect()
 }
 
@@ -875,7 +958,7 @@ fn answer_completion_walk(session: &mut Session, files: Vec<Candidate>) {
         .take_completion_request()
         .expect("the open command line asks for one walk");
     assert!(
-        matches!(&request, PickerRequest::Files { root } if root == &workspace_root()),
+        matches!(&request, PickerRequest::Files { root } if root.as_path() == workspace_root()),
         "the walk starts at the workspace root, so no candidate leaves it"
     );
     apply_completion_walk(session, files);
@@ -1597,10 +1680,14 @@ fn the_viewport_follows_the_text_area_instead_of_the_window_rectangle() {
 ///
 /// The tests below save real files. The undo file would reach the editor state
 /// directory of the user, so these sessions keep it off.
-fn file_session() -> Session {
+fn file_session(root: &Path) -> Session {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    Session::new(Rect::new(0, 0, 80, 24), settings, workspace_root())
+    Session::new(
+        Rect::new(0, 0, 80, 24),
+        settings,
+        test_root(root.to_path_buf()),
+    )
 }
 
 /// Refuses every queued language request, like an editor without a server.
@@ -1647,7 +1734,7 @@ fn run_file_request(session: &mut Session) {
 fn a_path_opens_one_buffer_and_ctrl_s_writes_it() {
     let directory = TempDir::new("session-save");
     let path = directory.write("main.rs", "fn main() {}\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path.clone());
     run_file_request(&mut session);
@@ -1688,11 +1775,55 @@ fn a_path_opens_one_buffer_and_ctrl_s_writes_it() {
 }
 
 #[test]
+fn a_path_outside_the_explicit_worktree_starts_no_file_operation() {
+    let directory = TempDir::new("session-confined-root");
+    let outside = TempDir::new("session-confined-outside");
+    let path = outside.write("main.rs", "outside\n");
+    let mut session = file_session(&directory.path);
+
+    session.open_path(path);
+
+    assert!(session.take_file_request().is_none());
+    assert_eq!(session.buffers().len(), 1);
+    assert_eq!(session.buffer().to_string(), "\n");
+    assert!(session.message().is_some_and(|message| {
+        message
+            .text()
+            .ends_with(": the path is outside the worktree")
+    }));
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+}
+
+#[test]
+fn current_directory_components_open_from_the_cli_and_edit_command() {
+    let directory = TempDir::new("session-current-directory-path");
+    directory.write("main.rs", "main\n");
+    directory.write("other.rs", "other\n");
+    let mut session = file_session(&directory.path);
+
+    session.open_path(PathBuf::from("./main.rs"));
+    run_file_request(&mut session);
+    assert_eq!(session.buffer().to_string(), "main\n");
+
+    press(&mut session, ':');
+    type_keys(&mut session, "e ./other.rs");
+    press_code(&mut session, KeyCode::Enter);
+    run_file_request(&mut session);
+    assert_eq!(session.buffer().to_string(), "other\n");
+}
+
+#[test]
 fn one_file_reaches_one_buffer_however_the_user_spells_its_path() {
+    use std::os::unix::fs::symlink;
+
     let directory = TempDir::new("session-duplicate");
     let path = directory.write("main.rs", "one\n");
-    let nested = directory.dir("nested");
-    let mut session = file_session();
+    let link = directory.join("linked.rs");
+    symlink("main.rs", &link).expect("the temporary directory supports links");
+    let mut session = file_session(&directory.path);
 
     session.open_path(path);
     run_file_request(&mut session);
@@ -1703,25 +1834,33 @@ fn one_file_reaches_one_buffer_however_the_user_spells_its_path() {
         .expect("the buffer holds the file")
         .to_path_buf();
 
-    // The recorded path needs no file read at all.
+    let remaining = BUFFERS_MAX - session.buffers().len();
+    for index in 0..remaining {
+        let other = directory.write(&format!("other-{index}.rs"), "other\n");
+        session.open_path(other);
+        run_file_request(&mut session);
+    }
+    assert_eq!(session.buffers().len(), BUFFERS_MAX);
+
+    // The canonical display path reuses the buffer without a filesystem read,
+    // even when no new buffer can enter the list.
     session.open_path(loaded_path);
     assert!(session.take_file_request().is_none());
     assert_eq!(session.active(), first);
 
-    // Another spelling of the same file reaches the same buffer after the load.
-    // The parent step keeps the two paths distinct on every host, because the
-    // comparison of two paths drops a `.` component but keeps a `..` component.
-    session.open_path(nested.join("..").join("main.rs"));
+    // A contained symbolic-link spelling also deduplicates after its read at
+    // capacity, because publication checks identity before insertion.
+    session.open_path(link);
     run_file_request(&mut session);
     assert_eq!(session.active(), first);
-    assert_eq!(session.buffers().len(), 2);
+    assert_eq!(session.buffers().len(), BUFFERS_MAX);
 }
 
 #[test]
 fn a_conflict_keeps_the_buffer_dirty_and_usable() {
     let directory = TempDir::new("session-conflict");
     let path = directory.write("main.rs", "one\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path.clone());
     run_file_request(&mut session);
@@ -1751,10 +1890,44 @@ fn a_conflict_keeps_the_buffer_dirty_and_usable() {
     assert_eq!(session.buffer().to_string(), "twoone\nthree\n");
 }
 
+#[cfg(unix)]
+#[test]
+fn a_confinement_failure_writes_nothing_and_keeps_the_live_buffer_dirty() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TempDir::new("session-save-confinement");
+    let path = directory.write("main.rs", "one\n");
+    let replacement = directory.write("replacement.rs", "replacement\n");
+    let mut session = file_session(&directory.path);
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "edited ");
+    press_code(&mut session, KeyCode::Esc);
+    std::fs::remove_file(&path).expect("the target can be replaced");
+    symlink("replacement.rs", &path).expect("the temporary directory supports links");
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+
+    assert!(session.buffer().is_modified());
+    assert_eq!(session.buffer().to_string(), "edited one\n");
+    assert_eq!(
+        std::fs::read_to_string(replacement).expect("the replacement remains readable"),
+        "replacement\n"
+    );
+    assert!(
+        std::fs::symlink_metadata(path)
+            .expect("the link remains")
+            .file_type()
+            .is_symlink()
+    );
+}
+
 #[test]
 fn a_failed_save_keeps_the_buffer_usable() {
     let directory = TempDir::new("session-failure");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     // The path holds no file yet, so the open starts a new empty buffer. Its
     // directory is missing, so no write can succeed.
@@ -1778,7 +1951,7 @@ fn a_failed_save_keeps_the_buffer_usable() {
 fn write_quit_saves_the_buffer_and_then_ends_the_editor() {
     let directory = TempDir::new("session-write-quit");
     let path = directory.write("main.rs", "one\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path.clone());
     run_file_request(&mut session);
@@ -1809,10 +1982,104 @@ fn write_quit_saves_the_buffer_and_then_ends_the_editor() {
 }
 
 #[test]
+fn write_quit_keeps_a_newer_edit_when_the_save_result_is_stale() {
+    let directory = TempDir::new("session-stale-write-quit");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session(&directory.path);
+
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "saved ");
+    press_code(&mut session, KeyCode::Esc);
+
+    press(&mut session, ':');
+    type_keys(&mut session, "wq");
+    press_code(&mut session, KeyCode::Enter);
+    refuse_language_requests(&mut session);
+    let request = session
+        .take_file_request()
+        .expect("write-quit queued one save request");
+    let result = request.run();
+
+    press(&mut session, 'o');
+    type_keys(&mut session, "newer");
+    press_code(&mut session, KeyCode::Esc);
+    let _ = session.apply_file_result(result);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the saved snapshot reached disk"),
+        "saved one\n"
+    );
+    assert_eq!(session.buffer().to_string(), "saved one\nnewer\n");
+    assert!(session.buffer().is_modified());
+    assert_eq!(session.run_state(), RunState::Running);
+    assert!(message(&session).ends_with(" 1L, 10B written"));
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the newer save reached disk"),
+        "saved one\nnewer\n"
+    );
+    assert!(!session.buffer().is_modified());
+}
+
+#[test]
+fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
+    let directory = TempDir::new("session-undone-stale-write-quit");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session(&directory.path);
+
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+
+    press(&mut session, ':');
+    type_keys(&mut session, "wq");
+    press_code(&mut session, KeyCode::Enter);
+    refuse_language_requests(&mut session);
+    let request = session
+        .take_file_request()
+        .expect("write-quit queued one save request");
+    let result = request.run();
+    let saved_version = match &result {
+        FileResult::Saved {
+            outcome: Ok(saved), ..
+        } => saved.version,
+        other => panic!("the save succeeds, got {other:?}"),
+    };
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "y");
+    press_code(&mut session, KeyCode::Esc);
+    press(&mut session, 'u');
+    press(&mut session, 'u');
+    assert_eq!(session.buffer().to_string(), "one\n");
+    assert!(
+        !session.buffer().is_modified(),
+        "the text history returned to its old saved position"
+    );
+    assert_ne!(session.buffer().version(), saved_version);
+
+    let _ = session.apply_file_result(result);
+
+    assert_eq!(
+        std::fs::read_to_string(path).expect("the request snapshot reached disk"),
+        "xone\n"
+    );
+    assert_eq!(session.buffer().to_string(), "one\n");
+    assert!(session.active_buffer().is_modified());
+    assert_eq!(session.run_state(), RunState::Running);
+}
+
+#[test]
 fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
     let directory = TempDir::new("session-unload");
     let path = directory.write("main.rs", "one\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path);
     run_file_request(&mut session);
@@ -1846,18 +2113,23 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
 ///
 /// A content change names no path at all, so one burst asks the session to
 /// check every loaded buffer against its file.
-fn report_watch_change(session: &mut Session) -> Redraw {
+///
+/// `root` is the worktree root of the session under test. The session drops a
+/// burst of another root, so a burst that names the working directory of the
+/// test process would reach no buffer of a session over a temporary directory.
+fn report_watch_change(session: &mut Session, root: &Path) -> Redraw {
+    let watched = test_root(root.to_path_buf());
     let mut batch = WatchBatch::default();
-    batch.push(&WatchEvent {
-        path: workspace_root().join("changed"),
-        kind: WatchKind::Modified,
-    });
+    batch.push(
+        &WatchEvent::new(watched, root.join("changed"), WatchKind::Modified)
+            .expect("the event lies below the session root"),
+    );
     session.apply_watch_batch(&batch)
 }
 
 /// Runs the reload check that one workspace change queued.
-fn run_watch_reload(session: &mut Session) {
-    let _ = report_watch_change(session);
+fn run_watch_reload(session: &mut Session, root: &Path) {
+    let _ = report_watch_change(session, root);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -1873,7 +2145,7 @@ fn external(session: &Session) -> Option<ExternalChange> {
 fn opened_file(label: &str, name: &str, text: &str) -> (TempDir, PathBuf, Session) {
     let directory = TempDir::new(label);
     let path = directory.write(name, text);
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
     session.open_path(path.clone());
     run_file_request(&mut session);
     (directory, path, session)
@@ -1881,7 +2153,7 @@ fn opened_file(label: &str, name: &str, text: &str) -> (TempDir, PathBuf, Sessio
 
 #[test]
 fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
-    let (_directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
 
     press(&mut session, 'i');
     type_keys(&mut session, "edited ");
@@ -1890,7 +2162,7 @@ fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
 
     std::fs::write(&path, "another program wrote a much longer line\n")
         .expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(
         session.buffer().to_string(),
@@ -1908,20 +2180,20 @@ fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
     // often never fills the message line.
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(message(&session), "");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
     assert_eq!(message(&session), "");
     assert_eq!(session.buffer().to_string(), "edited one\n");
 }
 
 #[test]
 fn a_clean_buffer_reloads_after_an_external_change() {
-    let (_directory, path, mut session) = opened_file("session-reload-clean", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-clean", "main.rs", "one\n");
 
     // A file that keeps its length reports no change, so the test changes it.
     std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(message(&session), "", "the open message is cleared");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(session.buffer().to_string(), "one\ntwo\n");
     assert!(!session.buffer().is_modified());
@@ -1943,7 +2215,7 @@ fn a_buffer_that_no_window_shows_reloads_in_the_background() {
     let directory = TempDir::new("session-reload-background");
     let first = directory.write("first.rs", "first\n");
     let second = directory.write("second.rs", "second\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(second.clone());
     run_file_request(&mut session);
@@ -1953,7 +2225,7 @@ fn a_buffer_that_no_window_shows_reloads_in_the_background() {
     assert_ne!(session.active(), background);
 
     std::fs::write(&second, "second, and changed\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     let reloaded = session
         .buffers()
@@ -1965,7 +2237,7 @@ fn a_buffer_that_no_window_shows_reloads_in_the_background() {
 
 #[test]
 fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
-    let (_directory, path, mut session) = opened_file(
+    let (directory, path, mut session) = opened_file(
         "session-reload-cursor",
         "main.rs",
         "one\ntwo\nthree\nfour\nfive\n",
@@ -1976,12 +2248,12 @@ fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
 
     // A file that keeps the cursor line keeps the cursor.
     std::fs::write(&path, "one\ntwo\nthree, longer\nfour\nfive\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
     assert_eq!(session.cursor().line().get(), 2);
 
     // A file that became shorter clamps the cursor and the viewport.
     std::fs::write(&path, "one\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
     assert_eq!(session.buffer().to_string(), "one\n");
     assert_eq!(session.cursor().line().get(), 0);
     assert_eq!(
@@ -1996,10 +2268,10 @@ fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
 
 #[test]
 fn a_deleted_file_keeps_its_buffer_editable_and_reports_it() {
-    let (_directory, path, mut session) = opened_file("session-reload-deleted", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-deleted", "main.rs", "one\n");
 
     std::fs::remove_file(&path).expect("the file exists");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(
         session.buffer().to_string(),
@@ -2031,7 +2303,7 @@ fn a_renamed_file_reaches_the_same_missing_state() {
     let (directory, path, mut session) = opened_file("session-reload-renamed", "main.rs", "one\n");
 
     std::fs::rename(&path, directory.join("other.rs")).expect("the file exists");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(session.buffer().to_string(), "one\n");
     assert_eq!(external(&session), Some(ExternalChange::Missing));
@@ -2040,11 +2312,11 @@ fn a_renamed_file_reaches_the_same_missing_state() {
 
 #[test]
 fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
-    let (_directory, path, mut session) =
+    let (directory, path, mut session) =
         opened_file("session-reload-language", "main.rs", "fn main() {}\n");
 
     std::fs::write(&path, "fn main() { println!(); }\n").expect("the file is writable");
-    let _ = report_watch_change(&mut session);
+    let _ = report_watch_change(&mut session, &directory.path);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -2069,11 +2341,10 @@ fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
 
 #[test]
 fn an_obsolete_reload_result_never_replaces_the_buffer() {
-    let (_directory, path, mut session) =
-        opened_file("session-reload-obsolete", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-obsolete", "main.rs", "one\n");
 
     std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
-    let _ = report_watch_change(&mut session);
+    let _ = report_watch_change(&mut session, &directory.path);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -2091,20 +2362,55 @@ fn an_obsolete_reload_result_never_replaces_the_buffer() {
 }
 
 #[test]
+fn a_reload_result_for_a_moved_target_is_obsolete() {
+    let (directory, path, mut session) = opened_file("session-reload-moved", "main.rs", "one\n");
+    let buffer = session.active();
+
+    std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
+    let _ = report_watch_change(&mut session, &directory.path);
+    let request = session
+        .take_file_request()
+        .expect("the burst queued one reload check");
+    let result = request.run();
+
+    let moved = directory.join("moved.rs");
+    std::fs::rename(path, &moved).expect("the file can move inside the worktree");
+    let _ = session.apply_workspace_result(WorkspaceResult::Mutated {
+        outcome: Ok(MutationOutcome {
+            updates: vec![BufferPathUpdate {
+                buffer,
+                path: moved.clone(),
+            }],
+            changed: Vec::new(),
+            selection: None,
+        }),
+    });
+    let _ = session.apply_file_result(result);
+
+    assert_eq!(session.active_buffer().path(), Some(moved.as_path()));
+    assert_eq!(session.buffer().to_string(), "one\n");
+    assert_eq!(external(&session), None);
+}
+
+#[test]
 fn a_file_that_grew_past_the_size_limit_keeps_its_buffer() {
     let directory = TempDir::new("session-reload-limit");
     let path = directory.write("main.rs", "one\n");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
     settings.files.max_file_bytes = 8;
-    let mut session = Session::new(Rect::new(0, 0, 80, 24), settings, workspace_root());
+    let mut session = Session::new(
+        Rect::new(0, 0, 80, 24),
+        settings,
+        test_root(directory.path.clone()),
+    );
 
     session.open_path(path.clone());
     run_file_request(&mut session);
     assert_eq!(session.buffer().to_string(), "one\n");
 
     std::fs::write(&path, "far above the limit\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(session.buffer().to_string(), "one\n");
     assert_eq!(external(&session), Some(ExternalChange::Changed));
@@ -2297,7 +2603,7 @@ fn highlights(session: &Session) -> usize {
 fn opened(name: &str, text: &str) -> (TempDir, Session) {
     let directory = TempDir::new("session-language");
     let path = directory.write(name, text);
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
     session.open_path(path);
     run_file_request(&mut session);
     (directory, session)
@@ -2475,7 +2781,7 @@ fn every_window_paints_its_own_buffer_and_only_the_focused_one_holds_the_cursor(
     let directory = TempDir::new("session-splits");
     let first = directory.write("first.rs", "fn first() {}\n");
     let second = directory.write("second.rs", "fn second() {}\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(first);
     run_file_request(&mut session);
@@ -2511,9 +2817,11 @@ fn every_window_paints_its_own_buffer_and_only_the_focused_one_holds_the_cursor(
 #[test]
 fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
     let directory = TempDir::new("session-reject");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
-    session.open_path(directory.path.clone());
+    // The target is a directory below the root, because the root itself names
+    // no worktree-relative path and the transition rejects it before the read.
+    session.open_path(directory.dir("nested"));
     run_file_request(&mut session);
     assert_eq!(
         session.message().map(|message| message.level()),
@@ -2530,7 +2838,7 @@ fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
 fn a_server_that_the_workspace_does_not_use_is_reported_once_and_editing_continues() {
     let directory = TempDir::new("session-unused-server");
     let path = directory.write("main.rs", "fn main() {}\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path);
     run_file_request(&mut session);
@@ -2560,7 +2868,7 @@ fn a_server_that_the_workspace_does_not_use_is_reported_once_and_editing_continu
 fn a_missing_language_server_is_reported_once_and_editing_continues() {
     let directory = TempDir::new("session-missing-server");
     let path = directory.write("main.rs", "fn main() {}\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path);
     run_file_request(&mut session);
@@ -2595,7 +2903,7 @@ fn a_missing_language_server_is_reported_once_and_editing_continues() {
 fn a_refusal_opens_no_document_again_without_a_lost_copy() {
     let directory = TempDir::new("session-refused-request");
     let path = directory.write("main.rs", "fn main() {}\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(path);
     run_file_request(&mut session);
@@ -2643,7 +2951,7 @@ fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
     let directory = TempDir::new("session-format-toggle");
     let first = directory.write("first.rs", "one\n");
     let second = directory.write("second.rs", "two\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(first.clone());
     run_file_request(&mut session);
@@ -2691,7 +2999,7 @@ fn a_save_starts_no_format_that_no_formatter_can_answer() {
     let directory = TempDir::new("session-format-absent");
     let plain = directory.write("notes.txt", "plain\n");
     let code = directory.write("code.rs", "fn code() {}\n");
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     // The scratch buffer holds no file name, so no adapter serves it and its
     // save asks nothing.
@@ -2818,7 +3126,7 @@ fn two_windows_on_two_buffers_scroll_independently() {
     let directory = TempDir::new("session-window-cursors");
     let first = directory.write("first.rs", &"first\n".repeat(200));
     let second = directory.write("second.rs", &"second\n".repeat(200));
-    let mut session = file_session();
+    let mut session = file_session(&directory.path);
 
     session.open_path(first);
     run_file_request(&mut session);
@@ -2946,7 +3254,7 @@ fn a_pending_count_reports_no_deadline_at_all() {
 /// The command never runs. Each test returns its output through
 /// [`Session::apply_clipboard_result`], exactly as the event loop does.
 fn clipboard_session(lines: &[&str]) -> Session {
-    with_text(lines).with_clipboard(SessionClipboard::deferred())
+    with_text(lines).with_session_clipboard(SessionClipboard::deferred())
 }
 
 /// Returns the standard input of the clipboard command that waits.

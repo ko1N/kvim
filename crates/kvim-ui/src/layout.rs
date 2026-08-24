@@ -1,27 +1,39 @@
-//! The one layout calculation of the editor.
+//! The one layout calculation of the window tree.
 //!
-//! The calculation converts the window tree, the sidebars, and the terminal
+//! The calculation converts the window tree, the sidebars, and the host
 //! rectangle into the exact rectangle of every visible region. Rendering,
 //! scrolling, focus, resize, and tests all read these rectangles. No other code
-//! computes a rectangle. See `docs/windows.md`.
+//! computes a rectangle.
 //!
 //! The calculation is deterministic. An equal tree, equal weights, and an equal
-//! terminal size produce equal rectangles.
+//! host size produce equal rectangles.
 
 use ratatui::layout::Rect;
 
-use kvim_settings::WindowSettings;
-
-use super::window::{
-    Direction, Node, Orientation, SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitId, WindowId,
+use crate::window::{
+    Direction, LayoutFit, Node, Orientation, SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitId,
+    WindowId, WindowLimits, axis_extent, child_minima,
 };
 
-/// The purpose of one region of the terminal.
+/// Reports whether one rectangle names only cells that a buffer holds.
+///
+/// Every public render checks its rectangle with this function before it writes
+/// one cell, because `ratatui::Buffer` panics on a cell outside its own
+/// rectangle. An empty rectangle names no cell at all, so every buffer holds it.
+pub(crate) fn fits(area: Rect, buffer: Rect) -> bool {
+    area.is_empty()
+        || (area.x >= buffer.x
+            && area.y >= buffer.y
+            && area.right() <= buffer.right()
+            && area.bottom() <= buffer.bottom())
+}
+
+/// The purpose of one region of the host area.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegionKind {
-    /// One editor window from the window tree.
-    Editor,
-    /// One fixed-width sidebar at one edge of the terminal.
+    /// One window from the window tree, which shows one host surface.
+    Surface,
+    /// One fixed-width sidebar at one edge of the host area.
     Sidebar(SidebarSide),
 }
 
@@ -36,29 +48,31 @@ pub struct Region {
     pub area: Rect,
 }
 
-/// The rectangle of every visible region of one terminal.
+/// The rectangle of every visible region of one host area.
 ///
-/// The regions cover the terminal without a gap and without an overlap while
-/// the terminal is large enough to hold the tree. A terminal that is too small
-/// hides windows in a deterministic order and keeps the focused window visible.
+/// The regions cover the host area without a gap and without an overlap while
+/// that area is large enough to hold the tree. A smaller area hides windows in
+/// a deterministic order, reports [`LayoutFit::Constrained`], and keeps the
+/// focused window visible.
 ///
 /// # Examples
 ///
 /// ```
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_settings::WindowSettings;
-/// use kvim_tui::{Direction, Orientation, Windows};
-/// use kvim_workspace::BufferId;
+/// use kvim_ui::{ChildSide, Direction, LayoutFit, Orientation, WindowLimits, WindowTree};
 ///
-/// let terminal = Rect::new(0, 0, 100, 30);
-/// let mut windows = Windows::new(BufferId::new(1), terminal, WindowSettings::default());
-/// let left = windows.focused_window();
-/// let right = windows.split(Orientation::Vertical).expect("the terminal is wide");
+/// let area = Rect::new(0, 0, 100, 30);
+/// let mut tree = WindowTree::new(0_u32, area, WindowLimits::default());
+/// let left = tree.focused_window();
+/// let right = tree
+///     .split(Orientation::Vertical, ChildSide::Second)
+///     .expect("the area is wide");
 ///
-/// let layout = windows.layout();
+/// let layout = tree.layout();
 /// let covered: u32 = layout.regions().iter().map(|region| region.area.area()).sum();
-/// assert_eq!(covered, terminal.area());
+/// assert_eq!(covered, area.area());
+/// assert_eq!(layout.fit(), LayoutFit::Complete);
 /// assert_eq!(layout.neighbor(left, Direction::Right), Some(right));
 /// assert_eq!(layout.neighbor(right, Direction::Right), None);
 /// ```
@@ -66,12 +80,14 @@ pub struct Region {
 pub struct WindowLayout {
     regions: Vec<Region>,
     splits: Vec<(SplitId, Rect)>,
+    hidden_windows: usize,
+    hidden_sidebars: usize,
 }
 
 impl WindowLayout {
     /// Creates a layout without a region.
     #[must_use]
-    pub(super) fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self::default()
     }
 
@@ -96,13 +112,28 @@ impl WindowLayout {
         self.region(id).map(|region| region.area)
     }
 
-    /// Returns the number of visible editor windows.
+    /// Returns the number of visible windows.
     #[must_use]
     pub fn window_count(&self) -> usize {
         self.regions
             .iter()
-            .filter(|region| region.kind == RegionKind::Editor)
+            .filter(|region| region.kind == RegionKind::Surface)
             .count()
+    }
+
+    /// Reports how much of the tree this layout shows.
+    ///
+    /// A layout that hides a window or a requested sidebar names the counts, so
+    /// no surface disappears silently.
+    #[must_use]
+    pub const fn fit(&self) -> LayoutFit {
+        if self.hidden_windows == 0 && self.hidden_sidebars == 0 {
+            return LayoutFit::Complete;
+        }
+        LayoutFit::Constrained {
+            hidden_windows: self.hidden_windows,
+            hidden_sidebars: self.hidden_sidebars,
+        }
     }
 
     /// Returns the nearest region on the named side of the named region.
@@ -136,7 +167,7 @@ impl WindowLayout {
     }
 
     /// Returns the rectangle that one materialized split node divides.
-    pub(super) fn split_area(&self, id: SplitId) -> Option<Rect> {
+    pub(crate) fn split_area(&self, id: SplitId) -> Option<Rect> {
         self.splits
             .iter()
             .find(|(split, _)| *split == id)
@@ -162,40 +193,52 @@ fn column_overlap(first: Rect, second: Rect) -> u16 {
 
 /// Returns the extent of the first child of one split node.
 ///
-/// The result always keeps both children at or above `minimum`, so the layout
-/// enforces the minimum dimensions before it publishes rectangles. The caller
-/// guarantees `extent >= minimum * 2` and `minimum >= 1`.
-pub(super) fn first_extent(extent: u16, weight: u32, minimum: u16) -> u16 {
+/// Each child reports its own recursive minimum, so a nested subtree keeps room
+/// for every leaf that it holds. The result always keeps both children at or
+/// above their minimum while `extent >= first_min + second_min`.
+pub(crate) fn first_extent(extent: u16, weight: u32, first_min: u16, second_min: u16) -> u16 {
     debug_assert!(
-        minimum >= 1 && extent >= minimum.saturating_mul(2),
-        "the caller materializes a split node only when both children fit"
+        extent >= first_min.saturating_add(second_min),
+        "the caller materializes a split node only when both subtrees fit"
     );
     let share = u32::from(extent) * weight.min(SPLIT_WEIGHT_TOTAL) / SPLIT_WEIGHT_TOTAL;
     let share = u16::try_from(share).unwrap_or(extent);
-    share.clamp(minimum, extent - minimum)
+    // The bounds saturate, so an extent below the two minima still returns a
+    // value inside the extent instead of overflowing.
+    let low = first_min.min(extent);
+    let high = extent.saturating_sub(second_min).max(low);
+    share.clamp(low, high)
 }
 
-/// Converts the window tree, the sidebars, and the terminal into rectangles.
-pub(super) fn compute_layout(
-    root: &Node,
+/// Converts the window tree, the sidebars, and the host area into rectangles.
+pub(crate) fn compute_layout<S>(
+    root: &Node<S>,
     focused: WindowId,
     left: Option<Sidebar>,
     right: Option<Sidebar>,
-    terminal: Rect,
-    settings: &WindowSettings,
+    area: Rect,
+    limits: WindowLimits,
 ) -> WindowLayout {
     let mut layout = WindowLayout::empty();
-    if terminal.is_empty() {
+    if area.is_empty() {
+        layout.hidden_windows = root.window_count();
+        layout.hidden_sidebars = [left, right]
+            .into_iter()
+            .flatten()
+            .filter(|sidebar| sidebar.is_visible())
+            .count();
         return layout;
     }
-    // Carve the left sidebar first, then the right sidebar, so a terminal that
+    // Carve the left sidebar first, then the right sidebar, so a host area that
     // cannot hold both hides them in a deterministic order.
-    let mut editor = terminal;
-    let left = carve_sidebar(&mut editor, left, settings);
-    let right = carve_sidebar(&mut editor, right, settings);
+    let mut windows = area;
+    let mut hidden_sidebars = 0;
+    let left = carve_sidebar(&mut windows, left, limits, &mut hidden_sidebars);
+    let right = carve_sidebar(&mut windows, right, limits, &mut hidden_sidebars);
+    layout.hidden_sidebars = hidden_sidebars;
 
     layout.regions.extend(left);
-    layout_node(root, editor, focused, settings, &mut layout);
+    layout_node(root, windows, focused, limits, &mut layout);
     layout.regions.extend(right);
     layout
 }
@@ -205,47 +248,51 @@ pub(super) fn compute_layout(
 /// The calculation removes the width of every visible sidebar in the same
 /// deterministic order that [`compute_layout`] uses, so both agree on the
 /// extent that the tree divides.
-pub(super) fn editor_area(
+pub(crate) fn editor_area(
     left: Option<Sidebar>,
     right: Option<Sidebar>,
-    terminal: Rect,
-    settings: &WindowSettings,
+    area: Rect,
+    limits: WindowLimits,
 ) -> Rect {
-    let mut editor = terminal;
-    let _ = carve_sidebar(&mut editor, left, settings);
-    let _ = carve_sidebar(&mut editor, right, settings);
-    editor
+    let mut windows = area;
+    let mut hidden_sidebars = 0;
+    let _ = carve_sidebar(&mut windows, left, limits, &mut hidden_sidebars);
+    let _ = carve_sidebar(&mut windows, right, limits, &mut hidden_sidebars);
+    windows
 }
 
-/// Removes the width of one visible sidebar from the editor rectangle.
+/// Removes the width of one visible sidebar from the window rectangle.
 ///
 /// The sidebar stays hidden while the remaining width would fall below the
-/// minimum window width.
+/// minimum window width. A hidden sidebar raises the constrained count, so the
+/// layout never drops it silently.
 fn carve_sidebar(
-    editor: &mut Rect,
+    windows: &mut Rect,
     sidebar: Option<Sidebar>,
-    settings: &WindowSettings,
+    limits: WindowLimits,
+    hidden_sidebars: &mut usize,
 ) -> Option<Region> {
     let sidebar = sidebar.filter(|sidebar| sidebar.is_visible())?;
     let width = sidebar.width_cells();
-    let minimum = settings.min_window_width_cells.max(1);
-    if width == 0 || editor.width < width.saturating_add(minimum) {
+    let minimum = limits.min_width_cells();
+    if width == 0 || windows.width < width.saturating_add(minimum) {
+        *hidden_sidebars += 1;
         return None;
     }
     let area = match sidebar.side() {
         SidebarSide::Left => {
-            let area = Rect::new(editor.x, editor.y, width, editor.height);
-            *editor = Rect::new(
-                editor.x + width,
-                editor.y,
-                editor.width - width,
-                editor.height,
+            let area = Rect::new(windows.x, windows.y, width, windows.height);
+            *windows = Rect::new(
+                windows.x + width,
+                windows.y,
+                windows.width - width,
+                windows.height,
             );
             area
         }
         SidebarSide::Right => {
-            let area = Rect::new(editor.right() - width, editor.y, width, editor.height);
-            *editor = Rect::new(editor.x, editor.y, editor.width - width, editor.height);
+            let area = Rect::new(windows.right() - width, windows.y, width, windows.height);
+            *windows = Rect::new(windows.x, windows.y, windows.width - width, windows.height);
             area
         }
     };
@@ -257,20 +304,21 @@ fn carve_sidebar(
 }
 
 /// Places one subtree inside one rectangle.
-fn layout_node(
-    node: &Node,
+fn layout_node<S>(
+    node: &Node<S>,
     area: Rect,
     focused: WindowId,
-    settings: &WindowSettings,
+    limits: WindowLimits,
     layout: &mut WindowLayout,
 ) {
     if area.is_empty() {
+        layout.hidden_windows += node.window_count();
         return;
     }
     match node {
         Node::Leaf(leaf) => layout.regions.push(Region {
             id: leaf.id,
-            kind: RegionKind::Editor,
+            kind: RegionKind::Surface,
             area,
         }),
         Node::Split {
@@ -280,23 +328,23 @@ fn layout_node(
             first,
             second,
         } => {
-            let (extent, minimum) = match orientation {
-                Orientation::Vertical => (area.width, settings.min_window_width_cells.max(1)),
-                Orientation::Horizontal => (area.height, settings.min_window_height_rows.max(1)),
-            };
-            if extent < minimum.saturating_mul(2) {
-                // The rectangle cannot hold both children. Keep the subtree
+            let extent = axis_extent(*orientation, area);
+            let minimum = limits.axis_minimum(*orientation);
+            let (first_min, second_min) = child_minima(first, second, *orientation, minimum);
+            if extent < first_min.saturating_add(second_min) {
+                // The rectangle cannot hold both subtrees. Keep the subtree
                 // that holds the focused window, so the focus stays visible.
-                let kept = if second.contains(focused) {
-                    second
+                let (kept, dropped) = if second.contains(focused) {
+                    (second, first)
                 } else {
-                    first
+                    (first, second)
                 };
-                layout_node(kept, area, focused, settings, layout);
+                layout.hidden_windows += dropped.window_count();
+                layout_node(kept, area, focused, limits, layout);
                 return;
             }
             layout.splits.push((*id, area));
-            let head = first_extent(extent, *first_weight, minimum);
+            let head = first_extent(extent, *first_weight, first_min, second_min);
             let (first_area, second_area) = match orientation {
                 Orientation::Vertical => (
                     Rect::new(area.x, area.y, head, area.height),
@@ -307,8 +355,8 @@ fn layout_node(
                     Rect::new(area.x, area.y + head, area.width, area.height - head),
                 ),
             };
-            layout_node(first, first_area, focused, settings, layout);
-            layout_node(second, second_area, focused, settings, layout);
+            layout_node(first, first_area, focused, limits, layout);
+            layout_node(second, second_area, focused, limits, layout);
         }
     }
 }

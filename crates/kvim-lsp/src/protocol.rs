@@ -21,6 +21,8 @@ use serde_json::{Value, json};
 use thiserror::Error;
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+
 /// The largest frame header that one message may carry, in bytes.
 pub const LSP_HEADER_BYTES_MAX: usize = 256;
 
@@ -65,6 +67,20 @@ pub enum LspBound {
     ContentChanges,
     /// The diagnostics of one document.
     Diagnostics,
+    /// The merged diagnostics of one changed-file request.
+    MergedDiagnostics,
+    /// The related information entries of one diagnostic.
+    RelatedInformation,
+    /// The size of one declared diagnostic source name, in bytes.
+    SourceBytes,
+    /// The size of one diagnostic message, in bytes.
+    DiagnosticMessageBytes,
+    /// The size of the exact text of one changed document, in bytes.
+    DocumentBytes,
+    /// The protocol bytes that one server spends on one request.
+    RequestBytes,
+    /// The languages that one server declares.
+    Languages,
     /// The locations of one definition answer.
     Locations,
     /// The edits of one formatting answer.
@@ -75,8 +91,14 @@ pub enum LspBound {
     ResultIdBytes,
     /// The sections of one workspace configuration request.
     ConfigurationItems,
-    /// The language-server sessions that one workspace runs together.
+    /// The language-server sessions that one project runs together.
     Sessions,
+    /// The projects that one manager holds open together.
+    Projects,
+    /// The server processes of every open project of one manager.
+    Processes,
+    /// The result queue slots of one project, or of one complete manager.
+    QueueCapacity,
 }
 
 /// A typed language-server transport, protocol, containment, or bounds failure.
@@ -97,6 +119,19 @@ pub enum LspError {
     /// workspace, so it starts no process and holds no session budget.
     #[error("this workspace uses no declared language server for the path")]
     UnusedInWorkspace,
+    /// One project of that identity is already open in the manager.
+    ///
+    /// Project identity is caller-supplied, so two open projects can never take
+    /// one identity and no event can name two projects.
+    #[error("the project identity is already open")]
+    ProjectOpen,
+    /// Two servers of one project take one identity.
+    ///
+    /// Every request correlation reads project identity, server identity, and
+    /// the request number, so two servers of one identity would route the answer
+    /// of one server to the other.
+    #[error("two servers of the project take one identity")]
+    DuplicateServer,
     /// The declared server is not installed on this system.
     #[error("the language server executable is not installed")]
     NotInstalled,
@@ -219,7 +254,7 @@ pub fn enforce(actual: usize, limit: usize, measure: LspBound) -> Result<(), Lsp
 /// # Examples
 ///
 /// ```
-/// use kvim_language::DocumentPosition;
+/// use kvim_lsp::DocumentPosition;
 ///
 /// let position = DocumentPosition::new(3, 8);
 /// assert_eq!(position.line, 3);
@@ -249,38 +284,44 @@ impl DocumentPosition {
 /// value of this type at its own boundary, and no code above the session reads
 /// a protocol column. See `docs/language-services.md`.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ProtocolPosition {
+pub struct ProtocolPosition {
     /// The zero-based line index.
-    pub(crate) line: u32,
+    pub line: u32,
     /// The zero-based column, in the negotiated position encoding.
-    pub(crate) character: u32,
+    pub character: u32,
 }
 
 impl ProtocolPosition {
     /// Creates a position from a line index and a protocol column.
-    pub(crate) const fn new(line: u32, character: u32) -> Self {
+    #[must_use]
+    pub const fn new(line: u32, character: u32) -> Self {
         Self { line, character }
     }
 }
 
 /// One range inside one document, as the protocol measures it.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub(crate) struct ProtocolSpan {
+pub struct ProtocolSpan {
     /// The first position of the range.
-    pub(crate) start: ProtocolPosition,
+    pub start: ProtocolPosition,
     /// The position after the range.
-    pub(crate) end: ProtocolPosition,
+    pub end: ProtocolPosition,
 }
 
 impl ProtocolSpan {
     /// Creates a range from two protocol positions.
-    pub(crate) const fn new(start: ProtocolPosition, end: ProtocolPosition) -> Self {
+    #[must_use]
+    pub const fn new(start: ProtocolPosition, end: ProtocolPosition) -> Self {
         Self { start, end }
     }
 }
 
 /// One ascending range inside one document, as the editor measures it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// The order of two spans is the order of their start position, and then of
+/// their end position, so a sorted list of spans reads from the first line to
+/// the last one.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SourceSpan {
     /// The first position of the range.
     pub start: DocumentPosition,
@@ -346,14 +387,21 @@ fn validate_position(source: &str, position: DocumentPosition) -> Result<(), Lsp
 /// The absolute workspace root that contains every served document.
 ///
 /// The root is the containment boundary of the session. kvim rejects a path or
-/// a `file` URI outside it, in both directions.
+/// a `file` URI outside it, in both directions. Containment names the remainder
+/// below the root as one [`WorktreeRelativePath`], so the path rules and the
+/// path bounds of `kvim-path` decide every served document.
+///
+/// The value is lexical and performs no input and no output, so a caller builds
+/// it before the directory exists. A caller that already holds a filesystem
+/// capability builds the same boundary from its root with
+/// [`WorkspaceRoot::of_worktree`].
 ///
 /// # Examples
 ///
 /// ```
 /// use std::path::{Path, PathBuf};
 ///
-/// use kvim_language::WorkspaceRoot;
+/// use kvim_lsp::WorkspaceRoot;
 ///
 /// let root = WorkspaceRoot::new(PathBuf::from("/work/project")).expect("the path is absolute");
 /// let uri = root.uri(Path::new("/work/project/src/main.rs")).expect("the path is contained");
@@ -379,6 +427,32 @@ impl WorkspaceRoot {
         }
         reject_unsafe_components(&path)?;
         Ok(Self(path))
+    }
+
+    /// Creates the containment boundary of one opened worktree.
+    ///
+    /// The constructor never fails, because [`WorktreeRoot`] holds a
+    /// canonical absolute path that carries no `.` and no `..` component.
+    ///
+    /// # Examples
+    ///
+    /// ```no_run
+    /// use kvim_lsp::WorkspaceRoot;
+    /// use kvim_path::WorktreeRoot;
+    ///
+    /// let worktree = WorktreeRoot::open("/work/project")?;
+    /// let root = WorkspaceRoot::of_worktree(&worktree);
+    /// assert_eq!(root.path(), worktree.as_path());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn of_worktree(root: &WorktreeRoot) -> Self {
+        let path = root.as_path();
+        debug_assert!(
+            path.is_absolute() && reject_unsafe_components(path).is_ok(),
+            "WorktreeRoot canonicalizes its path before it opens the capability"
+        );
+        Self(path.to_path_buf())
     }
 
     /// Returns the root path.
@@ -407,6 +481,34 @@ impl WorkspaceRoot {
         path_to_uri(path)
     }
 
+    /// Returns the `file` URI of one document below this root.
+    ///
+    /// The argument is already validated by `kvim-path`, so the call joins it
+    /// to the root and never reads an ambient absolute path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failures of [`WorkspaceRoot::uri`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    ///
+    /// use kvim_lsp::WorkspaceRoot;
+    /// use kvim_path::WorktreeRelativePath;
+    ///
+    /// let root = WorkspaceRoot::new(PathBuf::from("/work/project")).expect("the path is absolute");
+    /// let document = WorktreeRelativePath::new("src/main.rs").expect("the path is relative");
+    /// assert_eq!(
+    ///     root.relative_uri(&document).expect("the path is contained"),
+    ///     "file:///work/project/src/main.rs"
+    /// );
+    /// ```
+    pub fn relative_uri(&self, path: &WorktreeRelativePath) -> Result<String, LspError> {
+        self.uri(&self.0.join(path.as_path()))
+    }
+
     /// Returns the contained path of one `file` URI.
     ///
     /// # Errors
@@ -419,16 +521,50 @@ impl WorkspaceRoot {
         Ok(path)
     }
 
-    /// Rejects a path outside the root.
-    fn contain(&self, path: &Path) -> Result<(), LspError> {
+    /// Returns the validated worktree-relative path of one contained document.
+    ///
+    /// The result addresses the document below one worktree capability, so a
+    /// caller reaches the file without an ambient absolute path.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LspError::PathEscape`] when the path is relative, names the
+    /// root itself, holds a `.` or `..` component, passes one path bound of
+    /// `kvim-path`, or falls outside the root.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::{Path, PathBuf};
+    ///
+    /// use kvim_lsp::WorkspaceRoot;
+    ///
+    /// let root = WorkspaceRoot::new(PathBuf::from("/work/project")).expect("the path is absolute");
+    /// let relative = root
+    ///     .relative_path(Path::new("/work/project/src/main.rs"))
+    ///     .expect("the path is contained");
+    /// assert_eq!(relative.as_path(), Path::new("src/main.rs"));
+    /// ```
+    pub fn relative_path(&self, path: &Path) -> Result<WorktreeRelativePath, LspError> {
         if !path.is_absolute() {
             return Err(LspError::PathEscape);
         }
-        reject_unsafe_components(path)?;
-        if !path.starts_with(&self.0) {
-            return Err(LspError::PathEscape);
+        let relative = path
+            .strip_prefix(&self.0)
+            .map_err(|_| LspError::PathEscape)?;
+        // Every rejected component, and every path bound, is one containment
+        // failure of this root. The boundary reports one meaning, so no caller
+        // branches on the shape of the rejected component.
+        WorktreeRelativePath::new(relative).map_err(|_| LspError::PathEscape)
+    }
+
+    /// Rejects a path outside the root.
+    fn contain(&self, path: &Path) -> Result<(), LspError> {
+        // The root itself is contained, and it carries no relative remainder.
+        if path == self.0 {
+            return Ok(());
         }
-        Ok(())
+        self.relative_path(path).map(|_| ())
     }
 }
 
@@ -763,7 +899,13 @@ where
 ///
 /// The reader owns the cumulative output budget and the message budget of the
 /// session.
-pub struct ProtocolReader<R> {
+///
+/// The type stays inside this crate. [`ServerProcess`] owns the only reader of
+/// one session, and a consumer that frames its own stream calls [`read_frame`]
+/// with budgets that it owns.
+///
+/// [`ServerProcess`]: crate::ServerProcess
+pub(crate) struct ProtocolReader<R> {
     stream: R,
     output_bytes: usize,
     messages: usize,
@@ -1013,4 +1155,231 @@ where
         .end()
         .map_err(|_| LspError::MalformedResponse)?;
     Ok(values.unwrap_or_default())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    use tokio::io::{AsyncWriteExt, duplex};
+
+    use super::{
+        ArrayBudget, LSP_HEADER_BYTES_MAX, LSP_MESSAGE_BYTES_MAX, LSP_OUTPUT_BYTES_MAX, LspBound,
+        LspError, WorkspaceRoot, deserialize_bounded_array, enforce, read_frame,
+    };
+
+    /// The capacity of the in-memory pipe that stands in for one server stream.
+    const PIPE_BYTES: usize = 1024 * 1024;
+
+    /// The workspace root of the containment tests.
+    const ROOT: &str = "/workspace";
+
+    /// One document inside [`ROOT`].
+    const DOCUMENT: &str = "/workspace/src/main.rs";
+
+    /// The `file` URI of [`DOCUMENT`].
+    const DOCUMENT_URI: &str = "file:///workspace/src/main.rs";
+
+    #[tokio::test]
+    async fn reads_a_frame_that_arrives_in_pieces() {
+        let (mut writer, mut reader) = duplex(PIPE_BYTES);
+        let feeder = tokio::spawn(async move {
+            for piece in ["Content-Le", "ngth: 12\r", "\n\r\n{\"a\"", ":\"bcde\"}"] {
+                writer
+                    .write_all(piece.as_bytes())
+                    .await
+                    .expect("the pipe accepts the piece");
+                writer.flush().await.expect("the pipe flushes");
+                tokio::task::yield_now().await;
+            }
+        });
+
+        let mut output_bytes = 0;
+        let body = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
+            .await
+            .expect("a split header and a split body still form one frame");
+        assert_eq!(body, br#"{"a":"bcde"}"#);
+        // The budget counts the header bytes and the body bytes together.
+        assert_eq!(output_bytes, 34);
+        feeder.await.expect("the feeder ends");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_header_above_its_bound() {
+        let (mut writer, mut reader) = duplex(PIPE_BYTES);
+        let padding = "X".repeat(LSP_HEADER_BYTES_MAX);
+        let feeder = tokio::spawn(async move {
+            let _ = writer
+                .write_all(
+                    format!("Content-Length: 2\r\nPadding: {padding}\r\n\r\n{{}}").as_bytes(),
+                )
+                .await;
+        });
+
+        let mut output_bytes = 0;
+        let error = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
+            .await
+            .expect_err("the header passes its bound");
+        assert!(matches!(
+            error,
+            LspError::Bounds {
+                measure: LspBound::HeaderBytes,
+                limit: LSP_HEADER_BYTES_MAX,
+                ..
+            }
+        ));
+        feeder.await.expect("the feeder ends");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_body_above_its_bound() {
+        let (mut writer, mut reader) = duplex(PIPE_BYTES);
+        let length = LSP_MESSAGE_BYTES_MAX + 1;
+        let feeder = tokio::spawn(async move {
+            let _ = writer
+                .write_all(format!("Content-Length: {length}\r\n\r\n").as_bytes())
+                .await;
+        });
+
+        let mut output_bytes = 0;
+        let error = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
+            .await
+            .expect_err("the body passes its bound");
+        // The bound stops the read before the body arrives, so no allocation
+        // grows with the claimed length.
+        assert!(matches!(
+            error,
+            LspError::Bounds {
+                measure: LspBound::MessageBytes,
+                limit: LSP_MESSAGE_BYTES_MAX,
+                ..
+            }
+        ));
+        assert_eq!(output_bytes, 0);
+        feeder.await.expect("the feeder ends");
+    }
+
+    #[tokio::test]
+    async fn rejects_a_frame_without_a_content_length() {
+        let (mut writer, mut reader) = duplex(PIPE_BYTES);
+        let feeder = tokio::spawn(async move {
+            let _ = writer.write_all(b"Content-Type: json\r\n\r\n{}").await;
+        });
+
+        let mut output_bytes = 0;
+        let error = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
+            .await
+            .expect_err("a frame without a length is malformed");
+        assert!(matches!(error, LspError::MalformedFrame));
+        feeder.await.expect("the feeder ends");
+    }
+
+    #[test]
+    fn nested_arrays_share_one_element_budget() {
+        let outer: Box<serde_json::value::RawValue> =
+            serde_json::from_str("[1, 2, 3]").expect("the test value parses");
+        let mut budget = ArrayBudget::new(4, 4);
+
+        let first: Vec<u8> = deserialize_bounded_array(&outer, 8, LspBound::Locations, &mut budget)
+            .expect("three elements fit the budget");
+        assert_eq!(first, [1, 2, 3]);
+
+        // A hostile server cannot split many elements over many short arrays,
+        // because one budget counts them all.
+        let error = deserialize_bounded_array::<u8>(&outer, 8, LspBound::Locations, &mut budget)
+            .expect_err("the shared budget holds only one further element");
+        assert!(matches!(
+            error,
+            LspError::Bounds {
+                measure: LspBound::Locations,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn one_helper_enforces_every_cumulative_budget() {
+        assert!(enforce(4, 4, LspBound::Requests).is_ok());
+        let error =
+            enforce(5, 4, LspBound::OutputBytes).expect_err("five passes the limit of four");
+        assert!(matches!(
+            error,
+            LspError::Bounds {
+                measure: LspBound::OutputBytes,
+                limit: 4,
+                actual: 5,
+            }
+        ));
+    }
+
+    #[test]
+    fn the_workspace_root_contains_every_path_and_uri() {
+        let root = WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute");
+
+        assert_eq!(
+            root.uri(Path::new(DOCUMENT))
+                .expect("the path is contained"),
+            DOCUMENT_URI
+        );
+        assert_eq!(
+            root.path_from_uri(DOCUMENT_URI)
+                .expect("the URI is contained"),
+            PathBuf::from(DOCUMENT)
+        );
+        assert!(matches!(
+            root.uri(Path::new("/etc/passwd")),
+            Err(LspError::PathEscape)
+        ));
+        assert!(matches!(
+            root.path_from_uri("file:///workspace/../etc/passwd"),
+            Err(LspError::PathEscape)
+        ));
+        assert!(matches!(
+            root.path_from_uri("http://example.com/workspace/src/main.rs"),
+            Err(LspError::PathEscape)
+        ));
+        assert!(matches!(
+            root.path_from_uri("file:///workspace/src/%zz.rs"),
+            Err(LspError::PathEscape)
+        ));
+        assert!(matches!(
+            WorkspaceRoot::new(PathBuf::from("relative")),
+            Err(LspError::PathEscape)
+        ));
+    }
+
+    #[test]
+    fn a_space_in_a_path_survives_the_uri_round_trip() {
+        let root = WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute");
+        let path = PathBuf::from("/workspace/src/my file.rs");
+
+        let uri = root.uri(&path).expect("the path is contained");
+
+        assert_eq!(uri, "file:///workspace/src/my%20file.rs");
+        assert_eq!(
+            root.path_from_uri(&uri).expect("the URI is contained"),
+            path
+        );
+    }
+
+    #[test]
+    fn a_contained_path_names_its_worktree_relative_path() {
+        let root = WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute");
+
+        assert_eq!(
+            root.relative_path(Path::new(DOCUMENT))
+                .expect("the path is contained")
+                .as_path(),
+            Path::new("src/main.rs")
+        );
+        // The root carries no relative remainder, so it names no document.
+        assert!(matches!(
+            root.relative_path(Path::new(ROOT)),
+            Err(LspError::PathEscape)
+        ));
+        assert!(matches!(
+            root.relative_path(Path::new("/workspace/../etc/passwd")),
+            Err(LspError::PathEscape)
+        ));
+    }
 }

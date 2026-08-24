@@ -5,24 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the XML adapter owns.
-///
-/// The table names the extensions that `lemminx` serves. Each one carries an
-/// XML document, so one grammar reads all of them.
-const XML_EXTENSIONS: [&str; 5] = ["svg", "xml", "xsd", "xsl", "xslt"];
-
-/// The language names that the XML adapter answers to.
-const XML_LANGUAGE_NAMES: [&str; 1] = ["xml"];
 
 /// The node kinds whose content takes one more indent level in XML.
 ///
@@ -37,15 +29,6 @@ const XML_INDENT_SCOPES: [&str; 1] = ["element"];
 /// character separates the two. A line that holds an end tag therefore reports
 /// one indent level too many, which is the same limit that HTML carries.
 const XML_CLOSING_DELIMITERS: [char; 0] = [];
-
-/// Returns the XML grammar of the bundled parser.
-///
-/// The crate ships a second grammar for a standalone document type definition.
-/// One adapter carries one grammar, and no registered extension names such a
-/// file, so this build compiles the document grammar alone.
-fn xml_language() -> Language {
-    tree_sitter_xml::LANGUAGE_XML.into()
-}
 
 /// Returns the initialization options of `lemminx`.
 ///
@@ -107,36 +90,21 @@ impl XmlAdapter {
 }
 
 impl LanguageAdapter for XmlAdapter {
-    fn id(&self) -> &'static str {
-        "xml"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("xml").expect("the grammar-xml feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &XML_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &XML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // XML defines a block comment alone, so the metadata carries no line
         // token and the first-release toggle stays disabled.
         CommentStyle::new(None, Some(BlockComment::new("<!--", "-->")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "xml",
-            language: xml_language,
-            highlights_query: tree_sitter_xml::XML_HIGHLIGHT_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

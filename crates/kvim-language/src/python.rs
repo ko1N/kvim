@@ -5,26 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Python adapter owns.
-///
-/// A stub file carries the `pyi` extension and the same grammar, so one adapter
-/// owns both extensions.
-const PYTHON_EXTENSIONS: [&str; 2] = ["py", "pyi"];
-
-/// The language names that the Python adapter answers to.
-///
-/// `py` is the short form that a fence carries beside `python`.
-const PYTHON_LANGUAGE_NAMES: [&str; 2] = ["py", "python"];
 
 /// The node kinds whose content takes one more indent level in Python.
 ///
@@ -80,11 +70,6 @@ const PYTHON_INDENT_SCOPES: [&str; 21] = [
 /// A suite closes with no character, so these three characters close the
 /// bracketed expressions of the table above alone.
 const PYTHON_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the Python grammar of the bundled parser.
-fn python_language() -> Language {
-    tree_sitter_python::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `pyright-langserver`.
 ///
@@ -153,36 +138,22 @@ impl PythonAdapter {
 }
 
 impl LanguageAdapter for PythonAdapter {
-    fn id(&self) -> &'static str {
-        "python"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("python")
+                .expect("the grammar-python feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &PYTHON_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &PYTHON_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // Python defines no block comment. A triple-quoted text is a string
         // expression, so the metadata carries the line token alone.
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "python",
-            language: python_language,
-            highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

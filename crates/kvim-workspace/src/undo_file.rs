@@ -17,7 +17,7 @@ use std::path::{Path, PathBuf};
 use kvim_core::{CharRange, EditTransaction, FinalLineEnding, LineEnding, TextBuffer, TextChange};
 use kvim_settings::FileSettings;
 
-use super::file::render_content;
+use super::file::{FileTarget, render_content};
 
 /// The first bytes of every undo file.
 const UNDO_FILE_MAGIC: [u8; 8] = *b"KVIMUNDO";
@@ -230,7 +230,7 @@ impl UndoRecord {
 ///
 /// Returns `None` when the platform reports no state directory.
 #[must_use]
-pub fn undo_file_path(target: &Path) -> Option<PathBuf> {
+pub fn undo_file_path(target: &FileTarget) -> Option<PathBuf> {
     Some(undo_file_path_in(&state_directory()?, target))
 }
 
@@ -239,10 +239,10 @@ pub fn undo_file_path(target: &Path) -> Option<PathBuf> {
 /// The rule is deterministic, so a caller that holds its own state directory,
 /// such as a test, needs no environment variable.
 #[must_use]
-pub(crate) fn undo_file_path_in(state: &Path, target: &Path) -> PathBuf {
+pub(crate) fn undo_file_path_in(state: &Path, target: &FileTarget) -> PathBuf {
     let name = format!(
         "{:016x}.{UNDO_FILE_EXTENSION}",
-        content_hash_bytes(target.as_os_str().as_encoded_bytes())
+        content_hash_bytes(target.as_path().as_os_str().as_encoded_bytes())
     );
     state.join(UNDO_DIRECTORY).join(name)
 }

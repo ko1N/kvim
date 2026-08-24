@@ -2,15 +2,25 @@
 //!
 //! The file keeps argument parsing pure and testable. It performs input and
 //! output only after the parser returns one action.
+//!
+//! The executable is the composition root of the standalone editor. It builds
+//! the asynchronous runtime, resolves the worktree root, and hands both to the
+//! `editor` module, which owns the terminal for the lifetime of one session.
+//! See `docs/architecture.md`.
+
+mod editor;
 
 use std::error::Error;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
 use kvim_language::LanguageRegistry;
+use kvim_path::WorktreeRoot;
 use kvim_settings::EditorSettings;
-use kvim_tui::{HostReportRequest, HostWorkspace, PanicProbe};
+use kvim_tui::{HostReportRequest, HostWorkspace};
 use thiserror::Error as ErrorDerive;
+
+use crate::editor::PanicProbe;
 
 /// The environment variable that asks the editor to panic after its first
 /// frame.
@@ -87,7 +97,7 @@ fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
         .build()
         .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
     runtime
-        .block_on(kvim_tui::run(
+        .block_on(editor::run(
             EditorSettings::default(),
             root,
             path,
@@ -111,13 +121,13 @@ fn panic_probe() -> PanicProbe {
 /// Returns the workspace root that contains every document of a language server.
 ///
 /// The root is the working directory of the editor, with every symlink
-/// resolved, so it matches the spelling that a loaded buffer holds. A document
-/// outside the root receives no language service and stays fully editable. See
+/// resolved. File operations reject every path outside this root. See
 /// `docs/language-services.md`.
-fn workspace_root() -> Result<PathBuf, String> {
+fn workspace_root() -> Result<WorktreeRoot, String> {
     let current = std::env::current_dir()
         .map_err(|error| format!("cannot read the working directory: {error}"))?;
-    Ok(std::fs::canonicalize(&current).unwrap_or(current))
+    WorktreeRoot::open(current)
+        .map_err(|error| format!("cannot open the working directory as a worktree: {error}"))
 }
 
 /// Returns the host report of this machine as plain text.
@@ -132,7 +142,9 @@ fn workspace_root() -> Result<PathBuf, String> {
 /// bounded worker service instead. See `docs/architecture.md`.
 fn host_report() -> String {
     let workspace = match workspace_root() {
-        Ok(root) => HostWorkspace::Resolved { root },
+        Ok(root) => HostWorkspace::Resolved {
+            root: root.as_path().to_path_buf(),
+        },
         Err(reason) => HostWorkspace::Unresolved { reason },
     };
     HostReportRequest::new(LanguageRegistry::first_release(), workspace).run()

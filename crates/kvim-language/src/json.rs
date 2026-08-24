@@ -4,39 +4,22 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the JSON adapter owns.
-const JSON_EXTENSIONS: [&str; 1] = ["json"];
-
-/// The file names that the JSON adapter owns.
-///
-/// A lock file in the JSON format carries the extension of the tool that wrote
-/// it, not the extension of its format, so the adapter names the file itself.
-/// `flake.lock` is the lock file of this repository.
-const JSON_FILE_NAMES: [&str; 1] = ["flake.lock"];
-
-/// The language names that the JSON adapter answers to.
-const JSON_LANGUAGE_NAMES: [&str; 1] = ["json"];
 
 /// The node kinds whose content takes one more indent level in JSON.
 const JSON_INDENT_SCOPES: [&str; 2] = ["array", "object"];
 
 /// The characters that close a JSON indent scope.
 const JSON_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
-
-/// Returns the JSON grammar of the bundled parser.
-fn json_language() -> Language {
-    tree_sitter_json::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `vscode-json-language-server`.
 ///
@@ -108,40 +91,21 @@ impl JsonAdapter {
 }
 
 impl LanguageAdapter for JsonAdapter {
-    fn id(&self) -> &'static str {
-        "json"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("json").expect("the grammar-json feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &JSON_EXTENSIONS
-    }
-
-    fn file_names(&self) -> &'static [&'static str] {
-        &JSON_FILE_NAMES
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &JSON_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The JSON grammar accepts a comment, but the format defines none, so
         // kvim writes none.
         CommentStyle::none()
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "json",
-            language: json_language,
-            highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

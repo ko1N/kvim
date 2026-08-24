@@ -5,16 +5,80 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+# No grammar is bundled by default. Each feature forwards to the grammar of
+# `kvim-language`, and an adapter exists only while its grammar does, so a
+# consumer compiles the languages that it names and nothing else. See
+# `docs/architecture.md`.
+default = []
+
+grammar-asm = ["kvim-language/grammar-asm"]
+grammar-bash = ["kvim-language/grammar-bash"]
+grammar-c = ["kvim-language/grammar-c"]
+grammar-cpp = ["kvim-language/grammar-cpp"]
+grammar-css = ["kvim-language/grammar-css"]
+grammar-fish = ["kvim-language/grammar-fish"]
+grammar-glsl = ["kvim-language/grammar-glsl"]
+grammar-go = ["kvim-language/grammar-go"]
+grammar-html = ["kvim-language/grammar-html"]
+grammar-javascript = ["kvim-language/grammar-javascript"]
+grammar-json = ["kvim-language/grammar-json"]
+grammar-lua = ["kvim-language/grammar-lua"]
+grammar-markdown = ["kvim-language/grammar-markdown"]
+grammar-nix = ["kvim-language/grammar-nix"]
+grammar-python = ["kvim-language/grammar-python"]
+grammar-rust = ["kvim-language/grammar-rust"]
+grammar-scss = ["kvim-language/grammar-scss"]
+grammar-sql = ["kvim-language/grammar-sql"]
+grammar-terraform = ["kvim-language/grammar-terraform"]
+grammar-toml = ["kvim-language/grammar-toml"]
+grammar-tsx = ["kvim-language/grammar-tsx"]
+grammar-typescript = ["kvim-language/grammar-typescript"]
+grammar-xml = ["kvim-language/grammar-xml"]
+grammar-yaml = ["kvim-language/grammar-yaml"]
+grammar-zig = ["kvim-language/grammar-zig"]
+
+all-grammars = [
+  "grammar-asm",
+  "grammar-bash",
+  "grammar-c",
+  "grammar-cpp",
+  "grammar-css",
+  "grammar-fish",
+  "grammar-glsl",
+  "grammar-go",
+  "grammar-html",
+  "grammar-javascript",
+  "grammar-json",
+  "grammar-lua",
+  "grammar-markdown",
+  "grammar-nix",
+  "grammar-python",
+  "grammar-rust",
+  "grammar-scss",
+  "grammar-sql",
+  "grammar-terraform",
+  "grammar-toml",
+  "grammar-tsx",
+  "grammar-typescript",
+  "grammar-xml",
+  "grammar-yaml",
+  "grammar-zig",
+]
+
 [dependencies]
 # kvim crates
 kvim-clipboard.workspace = true
 kvim-core.workspace = true
 kvim-editor.workspace = true
 kvim-input.workspace = true
+kvim-keymap.workspace = true
 kvim-language.workspace = true
+kvim-path.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true
 kvim-terminal.workspace = true
+kvim-ui.workspace = true
 kvim-workspace.workspace = true
 
 # Basics
@@ -32,7 +96,7 @@ tokio-util.workspace = true
 # kvim crates
 # The editor wiring tests drive the mock language server and the temporary
 # directory helper that these two crates publish behind `test-support`.
-kvim-language = { workspace = true, features = ["test-support"] }
+kvim-language = { workspace = true, features = ["all-grammars", "test-support"] }
 kvim-workspace = { workspace = true, features = ["test-support"] }
 
 # Serialization

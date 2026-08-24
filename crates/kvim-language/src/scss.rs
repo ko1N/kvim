@@ -8,20 +8,13 @@
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the SCSS adapter owns.
-const SCSS_EXTENSIONS: [&str; 1] = ["scss"];
-
-/// The language names that the SCSS adapter answers to.
-const SCSS_LANGUAGE_NAMES: [&str; 1] = ["scss"];
 
 /// The node kinds whose content takes one more indent level in SCSS.
 ///
@@ -33,37 +26,6 @@ const SCSS_INDENT_SCOPES: [&str; 3] = ["arguments", "block", "parameters"];
 
 /// The characters that close an SCSS indent scope.
 const SCSS_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
-
-/// Returns the SCSS grammar of the bundled parser.
-///
-/// The crate predates the `LanguageFn` convention of the newer grammar crates,
-/// so it exports a function that returns the grammar and no `LANGUAGE`
-/// constant.
-fn scss_language() -> Language {
-    tree_sitter_scss::language()
-}
-
-/// The joined highlight query of the SCSS adapter.
-///
-/// The crate ships the SCSS patterns alone, because the upstream query inherits
-/// the CSS patterns. kvim resolves no query inheritance, so the adapter joins
-/// the two texts once. The CSS patterns come first, so an SCSS pattern of the
-/// same node takes precedence. The SCSS grammar is a superset of the CSS
-/// grammar, so every CSS pattern names a node kind that the SCSS grammar holds.
-static SCSS_HIGHLIGHTS_QUERY: OnceLock<String> = OnceLock::new();
-
-/// Returns the joined highlight query of the SCSS adapter.
-fn scss_highlights_query() -> &'static str {
-    SCSS_HIGHLIGHTS_QUERY.get_or_init(|| {
-        let mut query = String::with_capacity(
-            tree_sitter_css::HIGHLIGHTS_QUERY.len() + tree_sitter_scss::HIGHLIGHTS_QUERY.len() + 1,
-        );
-        query.push_str(tree_sitter_css::HIGHLIGHTS_QUERY);
-        query.push('\n');
-        query.push_str(tree_sitter_scss::HIGHLIGHTS_QUERY);
-        query
-    })
-}
 
 /// Returns the initialization options of `vscode-css-language-server`.
 ///
@@ -131,34 +93,19 @@ impl ScssAdapter {
 }
 
 impl LanguageAdapter for ScssAdapter {
-    fn id(&self) -> &'static str {
-        "scss"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("scss").expect("the grammar-scss feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &SCSS_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &SCSS_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "scss",
-            language: scss_language,
-            highlights_query: scss_highlights_query(),
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

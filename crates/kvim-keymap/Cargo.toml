@@ -1,0 +1,10 @@
+[package]
+name = "kvim-keymap"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+# Basics
+thiserror.workspace = true

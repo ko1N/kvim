@@ -6,15 +6,16 @@
 //! worker or process service runs it, and the event loop applies the result as
 //! one state transition. See `docs/files.md` and `docs/responsiveness.md`.
 
-use std::fs::File;
 use std::io::{self, Read};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::str;
+use std::sync::Arc;
 use std::time::Duration;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 
+use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest};
 
 use super::picker::{Candidate, PreviewTarget};
@@ -54,10 +55,44 @@ pub enum PickerSlot {
 /// The file and the region that one preview shows.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreviewKey {
-    /// The absolute path of the previewed file.
-    pub path: PathBuf,
+    /// The root capability used for the preview read.
+    root: Arc<WorktreeRoot>,
+    /// The validated path used for capability access.
+    relative: WorktreeRelativePath,
+    /// The root-derived absolute display path of the previewed file.
+    path: PathBuf,
     /// The region of the file, and the line that the preview marks.
-    pub target: PreviewTarget,
+    target: PreviewTarget,
+}
+
+impl PreviewKey {
+    /// Creates one preview identity below a root capability.
+    #[must_use]
+    pub fn new(
+        root: Arc<WorktreeRoot>,
+        relative: WorktreeRelativePath,
+        target: PreviewTarget,
+    ) -> Self {
+        let path = root.as_path().join(relative.as_path());
+        Self {
+            root,
+            relative,
+            path,
+            target,
+        }
+    }
+
+    /// Returns the root-derived absolute display path.
+    #[must_use]
+    pub fn path(&self) -> &std::path::Path {
+        &self.path
+    }
+
+    /// Returns the region that the preview shows.
+    #[must_use]
+    pub const fn target(&self) -> PreviewTarget {
+        self.target
+    }
 }
 
 /// One bounded region of one file.
@@ -67,11 +102,16 @@ pub struct Preview {
     pub first_line: usize,
     /// The shown rows, bounded by [`PREVIEW_LINES_MAX`].
     pub lines: Vec<String>,
+    /// Reports whether a byte, line, or character bound clipped the preview.
+    pub truncated: bool,
 }
 
 /// A rejected preview read.
 #[derive(Debug, Error)]
 pub enum PreviewError {
+    /// The target did not remain confined to its worktree root.
+    #[error("the preview target is not confined to the worktree")]
+    Confinement(#[from] WorktreeConfinementError),
     /// The file could not be read.
     #[error("the file could not be read")]
     Read(#[source] io::Error),
@@ -85,13 +125,13 @@ pub enum PreviewError {
 pub enum PickerRequest {
     /// Collect the files of one workspace on the bounded worker service.
     Files {
-        /// The workspace root that the walk starts at.
-        root: PathBuf,
+        /// The workspace root capability that the walk starts at.
+        root: Arc<WorktreeRoot>,
     },
     /// Search one workspace through the bounded process service.
     Search {
-        /// The workspace root that the search covers.
-        root: PathBuf,
+        /// The validated workspace root that the search covers.
+        root: Arc<WorktreeRoot>,
         /// The query that the search sends to `rg`.
         query: String,
     },
@@ -157,7 +197,7 @@ impl PickerRequest {
     pub fn run(self, cancellation: &CancellationToken) -> PickerResult {
         match self {
             Self::Files { root } => {
-                let outcome = walk_files(&root, cancellation);
+                let outcome = walk_files(Arc::clone(&root), cancellation);
                 PickerResult::Candidates {
                     query: String::new(),
                     candidates: outcome
@@ -169,7 +209,7 @@ impl PickerRequest {
                 }
             }
             Self::Preview(key) => {
-                let outcome = read_preview(&key.path, key.target.line());
+                let outcome = read_preview(&key.root, &key.relative, key.target.line());
                 PickerResult::Preview { key, outcome }
             }
             Self::Search { query, .. } => {
@@ -221,12 +261,27 @@ impl PickerRequest {
 ///
 /// Returns [`PreviewError::Read`] for an unreadable file and
 /// [`PreviewError::Unsupported`] for a file that holds no UTF-8 text.
-pub fn read_preview(path: &Path, line: usize) -> Result<Preview, PreviewError> {
-    let file = File::open(path).map_err(PreviewError::Read)?;
+pub fn read_preview(
+    root: &WorktreeRoot,
+    path: &WorktreeRelativePath,
+    line: usize,
+) -> Result<Preview, PreviewError> {
+    let resolved = root.resolve(path)?;
+    let file = root
+        .directory()
+        .open(resolved.path().as_path())
+        .map_err(PreviewError::Read)?;
+    let opened = file.metadata().map_err(PreviewError::Read)?;
+    if !opened.is_file() {
+        return Err(PreviewError::Unsupported);
+    }
+    let opened = metadata_identity(&opened);
     let mut bytes = Vec::new();
     file.take(bytes_limit())
         .read_to_end(&mut bytes)
         .map_err(PreviewError::Read)?;
+    let mut truncated = bytes.len() > PREVIEW_BYTES_MAX;
+    bytes.truncate(PREVIEW_BYTES_MAX);
     // A zero byte marks a file that no text editor can show, so the preview
     // reports the kind instead of writing control bytes to the terminal.
     if bytes.contains(&0) {
@@ -236,47 +291,88 @@ pub fn read_preview(path: &Path, line: usize) -> Result<Preview, PreviewError> {
         Ok(text) => text,
         // The bounded read can stop inside one character, which leaves a valid
         // prefix. Every other failure names a file that holds no text.
-        Err(error) if error.error_len().is_none() => {
+        Err(error) if truncated && error.error_len().is_none() => {
             str::from_utf8(&bytes[..error.valid_up_to()]).map_err(|_| PreviewError::Unsupported)?
         }
         Err(_) => return Err(PreviewError::Unsupported),
     };
+    let current = root
+        .directory()
+        .metadata(resolved.path().as_path())
+        .map_err(PreviewError::Read)?;
+    if metadata_identity(&current) != opened {
+        return Err(PreviewError::Confinement(
+            WorktreeConfinementError::Replaced,
+        ));
+    }
+    root.revalidate(path, &resolved)?;
     let first_line = line.saturating_sub(PREVIEW_CONTEXT_LINES);
-    let lines = text
-        .lines()
-        .skip(first_line)
-        .take(PREVIEW_LINES_MAX)
-        .map(|line| line.chars().take(PREVIEW_LINE_CHARS_MAX).collect())
-        .collect();
-    Ok(Preview { first_line, lines })
+    let mut source_lines = text.lines().skip(first_line);
+    let mut lines = Vec::with_capacity(PREVIEW_LINES_MAX);
+    for line in source_lines.by_ref().take(PREVIEW_LINES_MAX) {
+        let mut chars = line.chars();
+        let clipped: String = chars.by_ref().take(PREVIEW_LINE_CHARS_MAX).collect();
+        truncated |= chars.next().is_some();
+        lines.push(clipped);
+    }
+    truncated |= source_lines.next().is_some();
+    Ok(Preview {
+        first_line,
+        lines,
+        truncated,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct MetadataIdentity {
+    device: u64,
+    inode: u64,
+}
+
+fn metadata_identity(metadata: &cap_std::fs::Metadata) -> MetadataIdentity {
+    use cap_std::fs::MetadataExt as _;
+
+    MetadataIdentity {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+    }
 }
 
 /// Returns the read limit of one preview as a file offset.
 fn bytes_limit() -> u64 {
-    u64::try_from(PREVIEW_BYTES_MAX).unwrap_or(u64::MAX)
+    u64::try_from(PREVIEW_BYTES_MAX.saturating_add(1)).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
+    use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
+
     use super::{PREVIEW_CONTEXT_LINES, PREVIEW_LINES_MAX, PreviewError, read_preview};
     use crate::temp::TempDir;
+
+    fn preview(dir: &TempDir, path: &str, line: usize) -> Result<super::Preview, PreviewError> {
+        let root = WorktreeRoot::open(&dir.path).expect("the fixture root exists");
+        let path = WorktreeRelativePath::new(path).expect("the fixture path is valid");
+        read_preview(&root, &path, line)
+    }
 
     #[test]
     fn the_preview_shows_the_region_around_the_line() {
         let dir = TempDir::new("preview-region");
         let text: String = (0..64).map(|index| format!("line {index}\n")).collect();
-        let path = dir.file("src/main.rs", &text);
-        let preview = read_preview(&path, 40).expect("the file holds text");
+        dir.file("src/main.rs", &text);
+        let preview = preview(&dir, "src/main.rs", 40).expect("the file holds text");
         assert_eq!(preview.first_line, 40 - PREVIEW_CONTEXT_LINES);
         assert_eq!(preview.lines.first().map(String::as_str), Some("line 32"));
         assert!(preview.lines.len() <= PREVIEW_LINES_MAX);
+        assert!(!preview.truncated);
     }
 
     #[test]
     fn a_line_above_the_file_end_shows_the_last_region() {
         let dir = TempDir::new("preview-end");
-        let path = dir.file("a.rs", "one\ntwo\n");
-        let preview = read_preview(&path, 900).expect("the file holds text");
+        dir.file("a.rs", "one\ntwo\n");
+        let preview = preview(&dir, "a.rs", 900).expect("the file holds text");
         assert!(preview.lines.is_empty(), "the region starts after the text");
     }
 
@@ -286,7 +382,7 @@ mod tests {
         let path = dir.join("binary");
         std::fs::write(&path, [0_u8, 1, 2, 3]).expect("the temporary directory is writable");
         assert!(matches!(
-            read_preview(&path, 0),
+            preview(&dir, "binary", 0),
             Err(PreviewError::Unsupported)
         ));
     }
@@ -295,7 +391,7 @@ mod tests {
     fn a_missing_file_reports_a_read_failure() {
         let dir = TempDir::new("preview-missing");
         assert!(matches!(
-            read_preview(&dir.join("absent"), 0),
+            preview(&dir, "absent", 0),
             Err(PreviewError::Read(_))
         ));
     }
@@ -307,8 +403,8 @@ mod tests {
         let text: String = (0..PREVIEW_LINES_MAX + 32)
             .map(|_| format!("{long}\n"))
             .collect();
-        let path = dir.file("long.rs", &text);
-        let preview = read_preview(&path, 0).expect("the file holds text");
+        dir.file("long.rs", &text);
+        let preview = preview(&dir, "long.rs", 0).expect("the file holds text");
         assert_eq!(preview.lines.len(), PREVIEW_LINES_MAX);
         assert!(
             preview
@@ -316,5 +412,75 @@ mod tests {
                 .iter()
                 .all(|line| line.chars().count() <= super::PREVIEW_LINE_CHARS_MAX)
         );
+        assert!(preview.truncated);
+    }
+
+    #[test]
+    fn the_preview_reports_byte_clipping() {
+        let dir = TempDir::new("preview-byte-bound");
+        dir.file("large.rs", &"x".repeat(super::PREVIEW_BYTES_MAX + 8));
+
+        let preview = preview(&dir, "large.rs", 0).expect("the file holds text");
+
+        assert!(preview.truncated);
+    }
+
+    #[test]
+    fn the_preview_reports_line_clipping() {
+        let dir = TempDir::new("preview-line-bound");
+        let text = "line\n".repeat(PREVIEW_LINES_MAX + 1);
+        dir.file("lines.rs", &text);
+
+        let preview = preview(&dir, "lines.rs", 0).expect("the file holds text");
+
+        assert_eq!(preview.lines.len(), PREVIEW_LINES_MAX);
+        assert!(preview.truncated);
+    }
+
+    #[test]
+    fn the_preview_reports_character_clipping() {
+        let dir = TempDir::new("preview-character-bound");
+        dir.file("line.rs", &"x".repeat(super::PREVIEW_LINE_CHARS_MAX + 1));
+
+        let preview = preview(&dir, "line.rs", 0).expect("the file holds text");
+
+        assert_eq!(
+            preview.lines[0].chars().count(),
+            super::PREVIEW_LINE_CHARS_MAX
+        );
+        assert!(preview.truncated);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn escaping_dangling_and_looping_preview_links_are_rejected() {
+        let dir = TempDir::new("preview-link-failures");
+        let outside = TempDir::new("preview-link-failures-outside");
+        outside.file("outside.rs", "outside\n");
+        std::os::unix::fs::symlink(outside.join("outside.rs"), dir.join("escape.rs"))
+            .expect("the temporary directory supports links");
+        std::os::unix::fs::symlink("missing.rs", dir.join("dangling.rs"))
+            .expect("the temporary directory supports links");
+        std::os::unix::fs::symlink("loop-b.rs", dir.join("loop-a.rs"))
+            .expect("the temporary directory supports links");
+        std::os::unix::fs::symlink("loop-a.rs", dir.join("loop-b.rs"))
+            .expect("the temporary directory supports links");
+
+        assert!(matches!(
+            preview(&dir, "escape.rs", 0),
+            Err(PreviewError::Confinement(WorktreeConfinementError::Escape))
+        ));
+        assert!(matches!(
+            preview(&dir, "dangling.rs", 0),
+            Err(PreviewError::Confinement(
+                WorktreeConfinementError::DanglingLink
+            ))
+        ));
+        assert!(matches!(
+            preview(&dir, "loop-a.rs", 0),
+            Err(PreviewError::Confinement(
+                WorktreeConfinementError::LinkLoop
+            ))
+        ));
     }
 }

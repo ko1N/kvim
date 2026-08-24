@@ -1,44 +1,21 @@
 //! The Terraform language adapter.
 //!
-//! The highlight query is adapted from nvim-treesitter (Apache-2.0),
-//! runtime/queries/hcl/highlights.scm. The `tree-sitter-hcl` crate ships no
-//! query file, so `queries/hcl/highlights.scm` of this crate vendors that text
-//! and names its origin and its license.
+//! The grammar and its vendored highlight query live in `kvim-syntax`.
 //!
-//! The adapter supplies data only, exactly as the other adapters do: the paths
-//! that it owns, the Tree-sitter grammar with its highlight query, the comment
-//! metadata, the indent rule, the language servers, and the external formatter.
-//! See `docs/language-services.md`.
+//! The adapter supplies data only, exactly as the other adapters do: its
+//! catalog entry, the comment metadata, the indent rule, the language servers,
+//! and the external formatter. See `docs/language-services.md`.
+
+use std::sync::OnceLock;
 
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Terraform adapter owns.
-///
-/// The table names the two extensions of a Terraform configuration. A plain
-/// `hcl` file carries another tool, and `tofu-ls` does not serve it, so the
-/// adapter leaves that extension unclaimed.
-const TERRAFORM_EXTENSIONS: [&str; 2] = ["tf", "tfvars"];
-
-/// The language names that the Terraform adapter answers to.
-///
-/// The adapter leaves `hcl` unclaimed, exactly as it leaves that extension
-/// unclaimed, because a plain HCL file carries another tool.
-const TERRAFORM_LANGUAGE_NAMES: [&str; 2] = ["terraform", "tf"];
-
-/// The highlight query of the Terraform adapter.
-///
-/// The `tree-sitter-hcl` crate ships no query, so this crate vendors the
-/// nvim-treesitter query beside its source. See the module document above for
-/// the origin and the license.
-const TERRAFORM_HIGHLIGHTS_QUERY: &str = include_str!("../queries/hcl/highlights.scm");
 
 /// The node kinds whose content takes one more indent level in Terraform.
 ///
@@ -51,11 +28,6 @@ const TERRAFORM_INDENT_SCOPES: [&str; 4] = ["block", "function_call", "object", 
 
 /// The characters that close a Terraform indent scope.
 const TERRAFORM_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the HCL grammar of the bundled parser.
-fn terraform_language() -> Language {
-    tree_sitter_hcl::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `tofu-ls`.
 ///
@@ -119,36 +91,22 @@ impl TerraformAdapter {
 }
 
 impl LanguageAdapter for TerraformAdapter {
-    fn id(&self) -> &'static str {
-        "terraform"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("terraform")
+                .expect("the grammar-terraform feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &TERRAFORM_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &TERRAFORM_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The language reads `#` and `//` as a line comment. `tofu fmt` writes
         // `#`, so the adapter names that token.
         CommentStyle::new(Some("#"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "terraform",
-            language: terraform_language,
-            highlights_query: TERRAFORM_HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

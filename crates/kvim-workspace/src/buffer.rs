@@ -7,10 +7,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use kvim_core::TextBuffer;
+use kvim_core::{BufferVersion, TextBuffer};
+use kvim_path::WorktreeRoot;
 use kvim_settings::FileSettings;
 
-use super::file::FileIdentity;
+use super::file::{FileIdentity, FileTarget};
 use super::mutation::{BufferPathUpdate, OpenBuffer};
 
 /// The largest number of buffers that one editor keeps loaded.
@@ -65,6 +66,24 @@ pub enum ExternalChange {
     Missing,
 }
 
+/// Whether a successful file write still describes the live buffer text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SaveApplyOutcome {
+    /// The live buffer still holds the saved version and is now clean.
+    Current,
+    /// The live buffer has newer edits and remains dirty.
+    Stale,
+}
+
+/// Whether the text history's saved position still describes the file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum HistoryBaseline {
+    /// The text history and file agree about the saved position.
+    Current,
+    /// A stale save wrote another text version, so no history position is clean.
+    Invalidated,
+}
+
 /// One loaded buffer with its path, its file identity, and its text.
 ///
 /// The file identity is the state that kvim observed at load time or after the
@@ -75,8 +94,10 @@ pub enum ExternalChange {
 pub struct FileBuffer {
     text: TextBuffer,
     path: Option<PathBuf>,
+    target: Option<FileTarget>,
     name: String,
     identity: Option<FileIdentity>,
+    history_baseline: HistoryBaseline,
     /// What another program did to the file that kvim could not follow.
     external: Option<ExternalChange>,
 }
@@ -116,8 +137,10 @@ impl FileBuffer {
         Self {
             text,
             path: None,
+            target: None,
             name: name.into(),
             identity: None,
+            history_baseline: HistoryBaseline::Current,
             external: None,
         }
     }
@@ -127,13 +150,16 @@ impl FileBuffer {
     /// The identity is `None` while the path holds no file yet, so the first
     /// save writes a new file.
     #[must_use]
-    pub fn loaded(text: TextBuffer, path: PathBuf, identity: Option<FileIdentity>) -> Self {
+    pub fn loaded(text: TextBuffer, target: FileTarget, identity: Option<FileIdentity>) -> Self {
+        let path = target.as_path().to_path_buf();
         let name = display_name(&path);
         Self {
             text,
             path: Some(path),
+            target: Some(target),
             name,
             identity,
+            history_baseline: HistoryBaseline::Current,
             external: None,
         }
     }
@@ -155,6 +181,12 @@ impl FileBuffer {
         self.path.as_deref()
     }
 
+    /// Returns the validated file target, or `None` for a scratch buffer.
+    #[must_use]
+    pub const fn target(&self) -> Option<&FileTarget> {
+        self.target.as_ref()
+    }
+
     /// Returns the short name that the winbar and the messages show.
     #[must_use]
     pub fn name(&self) -> &str {
@@ -170,13 +202,13 @@ impl FileBuffer {
     /// Reports whether the buffer differs from the last saved state.
     #[must_use]
     pub fn is_modified(&self) -> bool {
-        self.text.is_modified()
+        self.history_baseline == HistoryBaseline::Invalidated || self.text.is_modified()
     }
 
     /// Returns what another program did to the file that kvim could not follow.
     ///
-    /// The value is `None` while the buffer and its file agree, which every
-    /// buffer that reloaded or saved does.
+    /// The value is `None` while no unresolved external change is recorded.
+    /// A successful reload or save clears the marker.
     #[must_use]
     pub const fn external_change(&self) -> Option<ExternalChange> {
         self.external
@@ -196,16 +228,35 @@ impl FileBuffer {
     /// valid, because a rename or a move keeps the content of the file.
     pub fn set_path(&mut self, path: PathBuf) {
         self.name = display_name(&path);
+        self.target = self
+            .target
+            .as_ref()
+            .and_then(|target| target.retarget(&path));
         self.path = Some(path);
     }
 
-    /// Records one successful save.
-    pub fn mark_saved(&mut self, path: PathBuf, identity: FileIdentity) {
-        self.name = display_name(&path);
-        self.path = Some(path);
+    /// Applies the file state from one successful save.
+    ///
+    /// The target and file identity always advance to the written file. The
+    /// dirty state clears only while the live text still has `saved_version`.
+    pub fn apply_save(
+        &mut self,
+        target: FileTarget,
+        identity: FileIdentity,
+        saved_version: BufferVersion,
+    ) -> SaveApplyOutcome {
+        self.name = display_name(target.as_path());
+        self.path = Some(target.as_path().to_path_buf());
+        self.target = Some(target);
         self.identity = Some(identity);
         self.external = None;
+        if self.text.version() != saved_version {
+            self.history_baseline = HistoryBaseline::Invalidated;
+            return SaveApplyOutcome::Stale;
+        }
+        self.history_baseline = HistoryBaseline::Current;
         self.text.mark_saved();
+        SaveApplyOutcome::Current
     }
 
     /// Replaces the buffer with the text that its file holds now.
@@ -218,6 +269,7 @@ impl FileBuffer {
     pub fn reload(&mut self, text: TextBuffer, identity: Option<FileIdentity>) {
         self.text = text;
         self.identity = identity;
+        self.history_baseline = HistoryBaseline::Current;
         self.external = None;
     }
 }
@@ -295,6 +347,15 @@ impl Buffers {
 
     /// Returns the buffer that already owns one path.
     #[must_use]
+    pub fn find_target(&self, target: &FileTarget) -> Option<BufferId> {
+        self.entries
+            .iter()
+            .find(|(_, buffer)| buffer.target() == Some(target))
+            .map(|(id, _)| *id)
+    }
+
+    /// Returns the buffer whose canonical display path matches `path`.
+    #[must_use]
     pub fn find_path(&self, path: &Path) -> Option<BufferId> {
         self.entries
             .iter()
@@ -314,18 +375,21 @@ impl Buffers {
         }
     }
 
-    /// Returns the mutation view of every loaded buffer.
+    /// Returns the mutation view of every loaded buffer of one root.
     ///
     /// The mutation request holds this list, so the worker validates against
-    /// the buffers without reading editor state.
+    /// the buffers without reading editor state. A scratch buffer and a buffer
+    /// of another worktree root name no contained path of this root, so neither
+    /// can block or follow a mutation of it.
     #[must_use]
-    pub fn open_buffers(&self) -> Vec<OpenBuffer> {
+    pub fn open_buffers(&self, root: &WorktreeRoot) -> Vec<OpenBuffer> {
         self.entries
             .iter()
             .filter_map(|(id, buffer)| {
+                let target = buffer.target().filter(|target| target.root() == root)?;
                 Some(OpenBuffer {
                     id: *id,
-                    path: buffer.path()?.to_path_buf(),
+                    path: target.relative_path().clone(),
                     is_modified: buffer.is_modified(),
                 })
             })

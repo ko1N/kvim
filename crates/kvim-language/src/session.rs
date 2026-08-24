@@ -10,14 +10,19 @@
 //! the program, the arguments, the language identifier, and the initialization
 //! options as data, so no code in this file names one server product.
 //!
+//! `kvim-lsp` owns the neutral half of that work: the child process, the
+//! bounded transport, the standard-error recorder, the handshake, the shutdown
+//! sequence, and the bounded restart of a failed attempt. This file owns the
+//! editor half: the open documents, the buffer versions, the pending requests,
+//! the diagnostic pulls, and the hover markup. It also translates every neutral
+//! [`ProjectEvent`] of the supervisor into one editor [`LanguageOutcome`].
+//!
 //! Every request and every published result carries the buffer version that
 //! produced its input. A result for an obsolete version is rejected before
 //! publication and never applied. See `docs/language-services.md`.
 
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -25,31 +30,28 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::value::RawValue;
 use serde_json::{Map, Value, json};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
-use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
 use tokio_util::sync::CancellationToken;
 
 use kvim_core::BufferVersion;
+use kvim_lsp::{
+    ArrayBudget, Attempt, AttemptEnd, ContentChange, DiagnosticsModel, DocumentMapping,
+    DocumentPosition, Envelopes, Handshake, LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX,
+    LSP_RESULT_ID_BYTES_MAX, LspBound, LspError, PositionEncoding, ProjectEvent, ProjectEvents,
+    ProjectId, ProtocolSpan, ProtocolWriter, RawDiagnostic, RawTextEdit, RpcEnvelope, RpcId,
+    ServerConversation, ServerEvent, ServerId, ServerInput, ServerReport, ServerSupervisor,
+    SessionGeneration, SourceLocation, SynchronizationMode, TextEdit, TransportFactory,
+    WorkspaceRoot, deserialize_bounded_array, enforce,
+};
 use kvim_settings::IndentSettings;
+use kvim_syntax::SyntaxHighlighter;
 
 use super::LanguageRegistry;
-use super::document::{
-    ContentChange, DiagnosticSet, FormatEdits, MarkupKind, MarkupText, RawDiagnostic, RawTextEdit,
-    SourceLocation, TextEdit,
-};
-use super::encoding::{DocumentMapping, PositionEncoding, TextMirroring};
+use super::document::{DiagnosticSet, FormatEdits, MarkupKind, MarkupText};
 use super::markup::MarkupDocument;
-use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
-use super::protocol::{
-    ArrayBudget, DocumentPosition, LspBound, LspError, ProtocolReader, ProtocolSpan,
-    ProtocolWriter, RpcEnvelope, RpcId, WorkspaceRoot, deserialize_bounded_array, enforce,
-};
+use super::progress::{ProgressReport, parse as parse_progress};
 use super::server::{LanguageServerId, ServerFormatting};
-
-/// The documents that one session holds open at the same time.
-pub const LSP_OPEN_DOCUMENTS_MAX: usize = 64;
 
 /// The requests of one session that wait for an answer at the same time.
 pub const LSP_PENDING_REQUESTS_MAX: usize = 32;
@@ -57,14 +59,8 @@ pub const LSP_PENDING_REQUESTS_MAX: usize = 32;
 /// The editor requests that one session queue holds.
 pub const LSP_REQUEST_QUEUE_CAPACITY: usize = 64;
 
-/// The results that the language service holds for the event loop.
-pub const LSP_EVENT_QUEUE_CAPACITY: usize = 256;
-
 /// The content changes of one document synchronization.
 pub const LSP_CONTENT_CHANGES_MAX: usize = 4_096;
-
-/// The diagnostics that one document publishes.
-pub const LSP_DIAGNOSTICS_MAX: usize = 1_024;
 
 /// The locations of one definition answer.
 pub const LSP_LOCATIONS_MAX: usize = 128;
@@ -75,46 +71,11 @@ pub const LSP_FORMAT_EDITS_MAX: usize = 4_096;
 /// The largest hover text that one answer may carry, in bytes.
 pub const LSP_HOVER_BYTES_MAX: usize = 16 * 1024;
 
-/// The bytes of the standard error of one server attempt that the editor
-/// records.
-///
-/// A server that fails names its cause in its first lines, so this bound holds
-/// that cause. The reader drains every further byte of that attempt and records
-/// none of it. A server that writes without limit therefore still runs, and it
-/// costs bounded memory. See `docs/language-services.md`.
-pub const LSP_STDERR_BYTES_MAX: usize = 64 * 1024;
-
-/// The bytes that one recorded standard error line keeps.
-///
-/// One line of a server log names one state. The editor log clips one entry
-/// further, so this bound protects the reader from a stream that carries no
-/// line break.
-pub const LSP_STDERR_LINE_BYTES_MAX: usize = 1024;
-
-/// The bytes that one read of the standard error takes.
-///
-/// The value is the size of one read buffer, not a bound on the recorded text.
-/// [`LSP_STDERR_BYTES_MAX`] and [`LSP_STDERR_LINE_BYTES_MAX`] bound that text.
-const STDERR_CHUNK_BYTES: usize = 4 * 1024;
-
-/// The largest result identifier that one pulled report may carry, in bytes.
-///
-/// The session holds one identifier for each open document of a pull session,
-/// so the bound decides what the session keeps. See
-/// `docs/language-services.md`.
-pub const LSP_RESULT_ID_BYTES_MAX: usize = 256;
-
 /// The sections that one workspace configuration request may ask for.
 ///
 /// The value matches [`LSP_OPEN_DOCUMENTS_MAX`], so a server may ask for every
 /// open document at once and no more.
 pub const LSP_CONFIGURATION_ITEMS_MAX: usize = LSP_OPEN_DOCUMENTS_MAX;
-
-/// The restarts that one session performs after a server failure.
-pub const LSP_RESTARTS_MAX: usize = 3;
-
-/// The deadline of the `initialize` handshake.
-pub const LSP_INITIALIZE_DEADLINE: Duration = Duration::from_secs(30);
 
 /// The deadline of one definition or hover request.
 pub const LSP_REQUEST_DEADLINE: Duration = Duration::from_secs(5);
@@ -133,9 +94,6 @@ pub const LSP_DIAGNOSTIC_DEADLINE: Duration = Duration::from_secs(10);
 /// A typist produces keystrokes far below this interval, so one burst of edits
 /// starts one pull. See `docs/language-services.md`.
 pub const LSP_DIAGNOSTIC_PULL_DELAY: Duration = Duration::from_millis(300);
-
-/// The deadline of the `shutdown` and `exit` sequence.
-pub const LSP_SHUTDOWN_DEADLINE: Duration = Duration::from_millis(250);
 
 /// The notification that publishes the diagnostics of one document.
 const DIAGNOSTICS_METHOD: &str = "textDocument/publishDiagnostics";
@@ -165,26 +123,6 @@ impl LanguageRequestId {
     pub const fn get(self) -> u64 {
         self.0
     }
-}
-
-/// One recorded fact about the server process of one session.
-///
-/// A report changes no buffer text, no cursor, and no message line. The editor
-/// records it in its log, so a reader finds the cause of a failure that the
-/// protocol never names. See `docs/windows.md`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum ServerReport {
-    /// The handshake completed, so the server serves its documents.
-    Started,
-    /// The server wrote one line to its standard error.
-    ///
-    /// The line holds at most [`LSP_STDERR_LINE_BYTES_MAX`] bytes.
-    Output(String),
-    /// The output of one attempt passed [`LSP_STDERR_BYTES_MAX`].
-    ///
-    /// The session records no further line of that attempt. It still drains the
-    /// stream, so the server never blocks on a full pipe.
-    OutputBound,
 }
 
 /// One typed result of one language-server session.
@@ -303,68 +241,6 @@ impl Query {
     }
 }
 
-/// The model that carries the diagnostics of one session.
-///
-/// The handshake selects the model from the `diagnosticProvider` capability of
-/// the server. See `docs/language-services.md`.
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum DiagnosticsModel {
-    /// The server publishes one set without a request.
-    Push,
-    /// The client asks, and the server answers one report.
-    Pull {
-        /// The provider identifier that every request repeats, when the
-        /// capability names one.
-        identifier: Option<String>,
-    },
-}
-
-/// The change notification that one session sends.
-///
-/// The handshake selects the mode from the `textDocumentSync` capability of the
-/// server. See `docs/language-services.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SynchronizationMode {
-    /// The server accepts no change notification.
-    None,
-    /// The server receives the complete text of the document.
-    Full,
-    /// The server receives one range for each change.
-    Incremental,
-}
-
-impl SynchronizationMode {
-    /// The capability value of a full synchronization.
-    const FULL: u64 = 1;
-
-    /// The capability value of an incremental synchronization.
-    const INCREMENTAL: u64 = 2;
-
-    /// Reads the mode that one capability value names.
-    ///
-    /// The protocol defines the value 0 as no synchronization, and it reserves
-    /// no further value, so every other number also sends no change. A wrong
-    /// number must never send a change that the server reads as another shape.
-    const fn from_kind(kind: u64) -> Self {
-        match kind {
-            Self::FULL => Self::Full,
-            Self::INCREMENTAL => Self::Incremental,
-            _ => Self::None,
-        }
-    }
-
-    /// Reports whether one document of this session mirrors its text.
-    ///
-    /// A full synchronization sends the complete text of every change, and the
-    /// session builds that text from the mirror.
-    const fn mirroring(self) -> TextMirroring {
-        match self {
-            Self::Full => TextMirroring::Present,
-            Self::None | Self::Incremental => TextMirroring::Absent,
-        }
-    }
-}
-
 /// One message from the editor to one session.
 #[derive(Debug)]
 enum SessionRequest {
@@ -443,9 +319,11 @@ impl LanguageServerHandle {
 
     /// Synchronizes one applied edit transaction.
     ///
-    /// Build the changes with [`ContentChange::from_transaction`] from the
-    /// buffer as it was before the transaction, and pass the version that the
-    /// transaction produced.
+    /// Build the changes with [`content_changes`] from the buffer as it was
+    /// before the transaction, and pass the version that the transaction
+    /// produced.
+    ///
+    /// [`content_changes`]: super::content_changes
     ///
     /// # Errors
     ///
@@ -550,6 +428,13 @@ impl LanguageServerHandle {
 pub(super) struct SessionConfig {
     /// The server that owns the session.
     pub(super) id: LanguageServerId,
+    /// The neutral address of this session inside its project.
+    ///
+    /// Every neutral record of `kvim-lsp` carries this pair, so the adapter of
+    /// this file translates one project's records and never mixes two projects.
+    pub(super) project: ProjectId,
+    /// The neutral identity of this server inside that project.
+    pub(super) server_id: ServerId,
     /// The protocol language identifier of every document of this session.
     pub(super) language_id: &'static str,
     /// The program that runs the server, which titles one overlay group.
@@ -577,125 +462,6 @@ pub(super) struct SessionConfig {
     /// Tree-sitter highlight that the loop must never run. See
     /// `docs/language-services.md`.
     pub(super) registry: LanguageRegistry,
-}
-
-/// The byte streams of one server attempt.
-///
-/// The streams are trait objects, because a session runs over the pipes of a
-/// child process in the editor and over an in-memory pair in a test.
-///
-/// The type is public because the `mock` test seam hands prepared streams to a
-/// session across the crate boundary. Editor code never names it.
-pub struct Transport {
-    input: Box<dyn AsyncWrite + Send + Unpin>,
-    output: Box<dyn AsyncRead + Send + Unpin>,
-    /// The standard error of the child, which one background task drains.
-    ///
-    /// A prepared stream pair holds no standard error, so a test transport
-    /// carries `None` and the attempt starts no reader.
-    errors: Option<Box<dyn AsyncRead + Send + Unpin>>,
-    child: Option<Child>,
-}
-
-#[cfg(any(test, feature = "test-support"))]
-impl Transport {
-    /// Creates one transport over a prepared stream pair.
-    pub(super) fn prepared(
-        input: impl AsyncWrite + Send + Unpin + 'static,
-        output: impl AsyncRead + Send + Unpin + 'static,
-    ) -> Self {
-        Self {
-            input: Box::new(input),
-            output: Box::new(output),
-            errors: None,
-            child: None,
-        }
-    }
-}
-
-/// Creates the transport of each session attempt.
-pub(super) enum TransportFactory {
-    /// Start the declared executable as a child process.
-    Process {
-        /// The declared executable.
-        program: OsString,
-        /// The declared arguments.
-        args: Vec<OsString>,
-        /// The working directory of the child.
-        root: PathBuf,
-    },
-    /// Take the next prepared stream pair, which only tests supply.
-    #[cfg(any(test, feature = "test-support"))]
-    Prepared(Vec<Transport>),
-}
-
-impl TransportFactory {
-    /// Creates the transport of the next attempt.
-    fn create(&mut self) -> Result<Transport, LspError> {
-        match self {
-            Self::Process {
-                program,
-                args,
-                root,
-            } => {
-                let mut command = Command::new(&*program);
-                command
-                    .args(&*args)
-                    .current_dir(&*root)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    // The server log names the cause of a failure that the
-                    // protocol never reports, so the session captures it. One
-                    // background task drains this pipe from the first byte, so
-                    // the pipe never fills and the child never blocks. See
-                    // `docs/language-services.md`.
-                    .stderr(Stdio::piped())
-                    .kill_on_drop(true);
-                let mut child = command.spawn().map_err(|source| {
-                    if source.kind() == std::io::ErrorKind::NotFound {
-                        LspError::NotInstalled
-                    } else {
-                        LspError::Spawn(source)
-                    }
-                })?;
-                let input = child
-                    .stdin
-                    .take()
-                    .expect("the command configures a piped standard input");
-                let output = child
-                    .stdout
-                    .take()
-                    .expect("the command configures a piped standard output");
-                let errors = child
-                    .stderr
-                    .take()
-                    .expect("the command configures a piped standard error");
-                Ok(Transport {
-                    input: Box::new(input),
-                    output: Box::new(output),
-                    errors: Some(Box::new(errors)),
-                    child: Some(child),
-                })
-            }
-            #[cfg(any(test, feature = "test-support"))]
-            Self::Prepared(prepared) => {
-                if prepared.is_empty() {
-                    return Err(LspError::NotInstalled);
-                }
-                Ok(prepared.remove(0))
-            }
-        }
-    }
-}
-
-/// Why one session attempt ended.
-enum AttemptOutcome {
-    /// The editor closed or cancelled the session.
-    Stopped,
-    /// The declared executable is not installed.
-    NotInstalled,
-    /// The attempt failed, so a bounded restart may follow.
-    Failed(LspError),
 }
 
 /// One document that the session holds open.
@@ -778,268 +544,118 @@ pub(super) fn start(
     (handle, task)
 }
 
-/// Runs one session and restarts it a bounded number of times.
+/// Runs the bounded restart loop of `kvim-lsp` over one editor session.
+///
+/// `kvim-lsp` owns the process, the handshake, the shutdown, and the restart
+/// bounds. This function supplies the editor conversation and the translation of
+/// every neutral record.
 async fn supervise(
-    mut factory: TransportFactory,
+    factory: TransportFactory,
     config: SessionConfig,
-    mut requests: mpsc::Receiver<SessionRequest>,
+    requests: mpsc::Receiver<SessionRequest>,
     events: mpsc::Sender<LanguageEvent>,
     cancellation: CancellationToken,
 ) {
-    let mut restarts = 0_usize;
-    let mut generation = SessionGeneration::FIRST;
-    loop {
-        let outcome = attempt(
-            &mut factory,
-            &config,
-            generation,
-            &mut requests,
-            &events,
-            &cancellation,
-        )
-        .await;
-        match outcome {
-            AttemptOutcome::Stopped => break,
-            AttemptOutcome::NotInstalled => {
-                emit(&events, config.id, LanguageOutcome::Unavailable).await;
-                return;
-            }
-            AttemptOutcome::Failed(error) => {
-                emit(
-                    &events,
-                    config.id,
-                    LanguageOutcome::Failed {
-                        request: None,
-                        error,
-                    },
-                )
-                .await;
-                if restarts >= LSP_RESTARTS_MAX || cancellation.is_cancelled() {
-                    break;
-                }
-                restarts += 1;
-                // The new server assigns its own progress tokens, so the next
-                // attempt reports a later generation and the editor drops every
-                // report of the attempt that failed.
-                generation = generation.next();
-                // The new server holds no document, so the caller must open its
-                // buffers again before it queries them.
-                emit(&events, config.id, LanguageOutcome::Restarted).await;
-            }
-        }
-    }
-    emit(&events, config.id, LanguageOutcome::Stopped).await;
-}
-
-/// Runs one server process from the handshake to its end.
-async fn attempt(
-    factory: &mut TransportFactory,
-    config: &SessionConfig,
-    generation: SessionGeneration,
-    requests: &mut mpsc::Receiver<SessionRequest>,
-    events: &mpsc::Sender<LanguageEvent>,
-    cancellation: &CancellationToken,
-) -> AttemptOutcome {
-    let transport = match factory.create() {
-        Ok(transport) => transport,
-        Err(LspError::NotInstalled) => return AttemptOutcome::NotInstalled,
-        Err(error) => return AttemptOutcome::Failed(error),
-    };
-    let Transport {
-        input,
-        output,
-        errors,
-        mut child,
-    } = transport;
-    // The standard error of the child needs a reader from the first byte,
-    // because a pipe that nobody drains fills and stops the child. See
-    // `docs/language-services.md`.
-    let errors =
-        errors.map(|stream| tokio::spawn(record_errors(stream, config.id, events.clone())));
-    let (envelope_sender, mut envelopes) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
-    // The frame reader owns its stream in one task, so no cancelled future can
-    // drop a partly read frame and desynchronize the stream.
-    let reader = tokio::spawn(read_envelopes(ProtocolReader::new(output), envelope_sender));
-    let mut session = Session {
-        config,
-        generation,
-        encoding: PositionEncoding::Utf16,
-        synchronization: SynchronizationMode::None,
-        diagnostics: DiagnosticsModel::Push,
-        events,
-        writer: ProtocolWriter::new(input),
-        documents: HashMap::new(),
-        pending: HashMap::new(),
-    };
-
-    let outcome = session.serve(&mut envelopes, requests, cancellation).await;
-    if matches!(outcome, AttemptOutcome::Stopped) {
-        let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, session.shutdown(&mut envelopes)).await;
-    }
-    reader.abort();
-    if let Some(child) = child.as_mut() {
-        terminate(child).await;
-    }
-    if let Some(mut task) = errors {
-        // The child ended, so the stream ends and the reader records its last
-        // line. Another process may still hold the write end of that pipe, so
-        // the wait carries the shutdown deadline and the rest stays unrecorded.
-        if time::timeout(LSP_SHUTDOWN_DEADLINE, &mut task)
-            .await
-            .is_err()
-        {
-            task.abort();
-        }
-    }
-    outcome
-}
-
-/// Drains the standard error of one server and records a bounded part of it.
-///
-/// The task drains the stream until the stream ends. A child that writes to a
-/// pipe that nobody reads blocks when the pipe fills. Several servers write to
-/// their standard error while they run correctly.
-///
-/// Draining and recording carry two different bounds. The task records at most
-/// [`LSP_STDERR_BYTES_MAX`] bytes of one attempt, and it drains every further
-/// byte without recording it. See `docs/language-services.md`.
-async fn record_errors<R>(
-    mut stream: R,
-    server: LanguageServerId,
-    events: mpsc::Sender<LanguageEvent>,
-) where
-    R: AsyncRead + Unpin,
-{
-    let mut chunk = [0_u8; STDERR_CHUNK_BYTES];
-    let mut recorder = ErrorRecorder::new(server, events);
-    loop {
-        let read = match stream.read(&mut chunk).await {
-            Ok(0) | Err(_) => break,
-            Ok(count) => count,
-        };
-        debug_assert!(read <= chunk.len(), "one read fills at most the chunk");
-        recorder.take(&chunk[..read]);
-    }
-    recorder.finish();
-}
-
-/// The bounded recorder of the standard error of one server attempt.
-///
-/// The recorder holds one partial line and two counters. It never waits, so the
-/// task that owns it always returns to the stream and the pipe never fills.
-struct ErrorRecorder {
-    /// The server that wrote the stream.
-    server: LanguageServerId,
-    /// The result queue of the editor.
-    events: mpsc::Sender<LanguageEvent>,
-    /// The bytes of the line that no line break ended yet.
-    line: Vec<u8>,
-    /// The bytes that the recorder already recorded.
-    recorded: usize,
-    /// Whether the recorded bytes passed [`LSP_STDERR_BYTES_MAX`].
-    stopped: bool,
-}
-
-impl ErrorRecorder {
-    /// Creates the recorder of one attempt.
-    fn new(server: LanguageServerId, events: mpsc::Sender<LanguageEvent>) -> Self {
-        Self {
+    let server = config.id;
+    let reports = events.clone();
+    let supervisor = ServerSupervisor {
+        address: config.project.server(config.server_id),
+        factory,
+        handshake: Handshake {
+            root: &config.root,
+            options: &config.options,
+            settings: config.workspace_settings.as_ref(),
+        },
+        conversation: LanguageConversation {
+            config: &config,
+            events: &events,
+            requests,
+        },
+        events: LanguageEvents {
             server,
-            events,
-            line: Vec::new(),
-            recorded: 0,
-            stopped: false,
-        }
-    }
-
-    /// Records the complete lines of one chunk and keeps the rest.
-    ///
-    /// The call returns at once after the recorder stopped, so the caller
-    /// drains the stream at full speed.
-    fn take(&mut self, chunk: &[u8]) {
-        for &byte in chunk {
-            if self.stopped {
-                return;
-            }
-            if byte == b'\n' {
-                self.end_line();
-            } else if self.line.len() < LSP_STDERR_LINE_BYTES_MAX {
-                // A longer line loses its tail. The recorded start names the
-                // state that the server reports.
-                self.line.push(byte);
-            }
-        }
-    }
-
-    /// Records the line that the stream ended without a line break.
-    fn finish(&mut self) {
-        if !self.stopped {
-            self.end_line();
-        }
-    }
-
-    /// Records one complete line and starts the next one.
-    fn end_line(&mut self) {
-        debug_assert!(
-            self.line.len() <= LSP_STDERR_LINE_BYTES_MAX,
-            "every earlier byte left the line inside its bound"
-        );
-        let text = String::from_utf8_lossy(&self.line);
-        let text = text.trim_end().to_owned();
-        // The line break counts as one byte, so an empty line still moves the
-        // recorder towards its bound.
-        self.recorded = self.recorded.saturating_add(self.line.len() + 1);
-        self.line.clear();
-        if !text.is_empty() {
-            self.report(ServerReport::Output(text));
-        }
-        if self.recorded >= LSP_STDERR_BYTES_MAX {
-            self.stopped = true;
-            self.report(ServerReport::OutputBound);
-        }
-    }
-
-    /// Sends one report to the editor without waiting.
-    ///
-    /// A full result queue drops the report. The capture is a report, never a
-    /// failure path, and a wait here would stop the drain and fill the pipe.
-    fn report(&self, report: ServerReport) {
-        let _ = self.events.try_send(LanguageEvent {
-            server: self.server,
-            outcome: LanguageOutcome::Reported(report),
-        });
-    }
+            events: events.clone(),
+        },
+        report: move |report| {
+            // A full result queue drops the report. The capture is a report,
+            // never a failure path, and a wait here would stop the drain and
+            // fill the pipe of the child.
+            let _ = reports.try_send(LanguageEvent {
+                server,
+                outcome: LanguageOutcome::Reported(report),
+            });
+        },
+    };
+    supervisor.run(&cancellation).await;
 }
 
-/// Reads frames until the stream ends or one bound stops the session.
-async fn read_envelopes<R>(
-    mut reader: ProtocolReader<R>,
-    sender: mpsc::Sender<Result<RpcEnvelope, LspError>>,
-) where
-    R: AsyncRead + Unpin,
-{
-    loop {
-        let envelope = reader.read_envelope().await;
-        let failed = envelope.is_err();
-        if sender.send(envelope).await.is_err() || failed {
-            return;
-        }
-    }
-}
-
-/// Stops one child process and waits a bounded time for its exit.
-async fn terminate(child: &mut Child) {
-    let _ = child.start_kill();
-    let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, child.wait()).await;
-}
-
-/// Sends one result to the editor.
-async fn emit(
-    events: &mpsc::Sender<LanguageEvent>,
+/// Translates every neutral record of one supervised server.
+///
+/// The record vocabulary of `kvim-lsp` names no editor state. This adapter is
+/// the one place that turns it into the outcome vocabulary of the editor.
+struct LanguageEvents {
+    /// The server that owns the session.
     server: LanguageServerId,
-    outcome: LanguageOutcome,
-) {
-    let _ = events.send(LanguageEvent { server, outcome }).await;
+    /// The result queue of the language service.
+    events: mpsc::Sender<LanguageEvent>,
+}
+
+impl ProjectEvents for LanguageEvents {
+    async fn record(&mut self, event: ProjectEvent) {
+        let outcome = match event.event {
+            ServerEvent::Started => LanguageOutcome::Reported(ServerReport::Started),
+            ServerEvent::Reported(report) => LanguageOutcome::Reported(report),
+            ServerEvent::Unavailable => LanguageOutcome::Unavailable,
+            ServerEvent::Failed(error) => LanguageOutcome::Failed {
+                request: None,
+                error,
+            },
+            // The new server holds no document, so the caller must open its
+            // buffers again before it queries them.
+            ServerEvent::Restarted { .. } => LanguageOutcome::Restarted,
+            ServerEvent::Stopped => LanguageOutcome::Stopped,
+        };
+        let _ = self
+            .events
+            .send(LanguageEvent {
+                server: self.server,
+                outcome,
+            })
+            .await;
+    }
+}
+
+/// The editor conversation that serves every attempt of one session.
+///
+/// The value survives a restart, because the request queue of the editor belongs
+/// to the session and not to one server process. Every other piece of live state
+/// belongs to [`Session`], which one attempt builds and drops.
+struct LanguageConversation<'a> {
+    config: &'a SessionConfig,
+    events: &'a mpsc::Sender<LanguageEvent>,
+    requests: mpsc::Receiver<SessionRequest>,
+}
+
+impl ServerConversation for LanguageConversation<'_> {
+    async fn serve(&mut self, attempt: Attempt<'_>) -> AttemptEnd {
+        // Every negotiated value belongs to one server attempt, so a restart
+        // reads the capabilities of the new server again. See
+        // `docs/language-services.md`.
+        let mut session = Session {
+            config: self.config,
+            generation: attempt.generation,
+            encoding: attempt.capabilities.encoding(),
+            synchronization: attempt.capabilities.synchronization(),
+            diagnostics: attempt.capabilities.diagnostics().clone(),
+            events: self.events,
+            writer: attempt.writer,
+            documents: HashMap::new(),
+            pending: HashMap::new(),
+            highlighter: SyntaxHighlighter::new(),
+        };
+        session
+            .serve(attempt.envelopes, &mut self.requests, attempt.cancellation)
+            .await
+    }
 }
 
 /// The live state of one server attempt.
@@ -1049,15 +665,13 @@ struct Session<'a> {
     generation: SessionGeneration,
     /// The position encoding that the handshake negotiated.
     ///
-    /// The session serves no editor request before the handshake completes, so
-    /// the value always names the encoding that the running server confirmed.
-    /// UTF-16 is the encoding that the protocol defines until a server answers.
+    /// The supervisor completes the handshake before it builds this value, so
+    /// the encoding always names what the running server confirmed.
     encoding: PositionEncoding,
     /// The change notification that the handshake selected.
     ///
     /// The mode belongs to one server attempt, so a restart reads the
-    /// capability again. No change notification for the value that the protocol
-    /// defines for an absent capability. See `docs/language-services.md`.
+    /// capability again. See `docs/language-services.md`.
     synchronization: SynchronizationMode,
     /// The diagnostic model that the handshake selected.
     ///
@@ -1065,188 +679,49 @@ struct Session<'a> {
     /// capability again. See `docs/language-services.md`.
     diagnostics: DiagnosticsModel,
     events: &'a mpsc::Sender<LanguageEvent>,
-    writer: ProtocolWriter<Box<dyn AsyncWrite + Send + Unpin>>,
+    /// The writer of the attempt, which the supervisor keeps for the shutdown.
+    writer: &'a mut ProtocolWriter<ServerInput>,
     documents: HashMap<PathBuf, OpenDocument>,
     pending: HashMap<u64, PendingRequest>,
+    /// The highlighter that names the roles of the fences of a hover answer.
+    ///
+    /// The session owns it, so the compiled query of a language serves every
+    /// later answer of that session and leaves with it.
+    highlighter: SyntaxHighlighter,
 }
 
-type Envelopes = mpsc::Receiver<Result<RpcEnvelope, LspError>>;
-
 impl Session<'_> {
-    /// Runs the handshake and then serves the editor until the session ends.
+    /// Serves the editor until the server or the caller ends the attempt.
     async fn serve(
         &mut self,
         envelopes: &mut Envelopes,
         requests: &mut mpsc::Receiver<SessionRequest>,
         cancellation: &CancellationToken,
-    ) -> AttemptOutcome {
-        let handshake = tokio::select! {
-            biased;
-            () = cancellation.cancelled() => return AttemptOutcome::Stopped,
-            result = time::timeout(LSP_INITIALIZE_DEADLINE, self.initialize(envelopes)) => {
-                result.unwrap_or(Err(LspError::Timeout))
-            }
-        };
-        if let Err(error) = handshake {
-            return AttemptOutcome::Failed(error);
-        }
-        // The server answered the handshake, so it serves its documents from
-        // here. The editor records the start beside the output of the server.
-        emit(
-            self.events,
-            self.config.id,
-            LanguageOutcome::Reported(ServerReport::Started),
-        )
-        .await;
+    ) -> AttemptEnd {
         loop {
             let deadline = self.next_deadline();
             let step = tokio::select! {
                 biased;
-                () = cancellation.cancelled() => return AttemptOutcome::Stopped,
+                () = cancellation.cancelled() => return AttemptEnd::Stopped,
                 envelope = envelopes.recv() => match envelope {
                     Some(Ok(envelope)) => self.dispatch(envelope).await,
-                    Some(Err(error)) => return AttemptOutcome::Failed(error),
-                    None => return AttemptOutcome::Failed(LspError::Stopped),
+                    Some(Err(error)) => return AttemptEnd::Failed(error),
+                    None => return AttemptEnd::Failed(LspError::Stopped),
                 },
                 request = requests.recv() => match request {
                     Some(request) => self.handle(request).await,
-                    None => return AttemptOutcome::Stopped,
+                    None => return AttemptEnd::Stopped,
                 },
                 () = sleep_until(deadline), if deadline.is_some() => self.expire().await,
             };
             if let Err(error) = step {
-                return AttemptOutcome::Failed(error);
+                return AttemptEnd::Failed(error);
             }
             // One step can open a document, apply a change, or complete a pull,
             // and each of those can make one pull due.
             if let Err(error) = self.fire_pulls().await {
-                return AttemptOutcome::Failed(error);
+                return AttemptEnd::Failed(error);
             }
-        }
-    }
-
-    /// Declares the client capabilities and negotiates the position encoding.
-    async fn initialize(&mut self, envelopes: &mut Envelopes) -> Result<(), LspError> {
-        let root_uri = self.config.root.root_uri()?;
-        // kvim declares the configuration capability only while its declaration
-        // names settings, because a session without settings still reports the
-        // request of a server as an unknown method.
-        let configuration = self.config.workspace_settings.is_some();
-        let id = self
-            .writer
-            .request(
-                "initialize",
-                json!({
-                    "processId": Value::Null,
-                    "rootUri": root_uri,
-                    "capabilities": {
-                        "general": {
-                            "positionEncodings":
-                                PositionEncoding::OFFERED.map(PositionEncoding::as_str),
-                        },
-                        // A server sends `$/progress` only after the client
-                        // declares that it shows work-done progress.
-                        "window": { "workDoneProgress": true },
-                        "workspace": {
-                            "configuration": configuration,
-                            "didChangeConfiguration": { "dynamicRegistration": false },
-                            // The session answers the refresh request of a pull
-                            // server and asks for every open document again.
-                            "diagnostics": { "refreshSupport": true },
-                        },
-                        "textDocument": {
-                            "synchronization": {
-                                "dynamicRegistration": false,
-                                "didSave": false,
-                            },
-                            "publishDiagnostics": { "versionSupport": true },
-                            "definition": {
-                                "dynamicRegistration": false,
-                                "linkSupport": true,
-                            },
-                            "hover": {
-                                "dynamicRegistration": false,
-                                // The order names the preference of the client,
-                                // and the float renders markdown.
-                                "contentFormat": ["markdown", "plaintext"],
-                            },
-                            "formatting": { "dynamicRegistration": false },
-                        },
-                    },
-                    "initializationOptions": self.config.options,
-                    "workspaceFolders": [{ "uri": root_uri, "name": "workspace" }],
-                }),
-            )
-            .await?;
-        let result = self.await_response(envelopes, id).await?;
-        let capabilities: Value =
-            serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
-        // kvim measures every column in UTF-8 bytes, and the protocol measures
-        // one column in UTF-16 code units unless the server confirms UTF-8. The
-        // session records the answer and converts every column against it.
-        self.encoding = PositionEncoding::from_result(
-            capabilities
-                .pointer("/capabilities/positionEncoding")
-                .and_then(Value::as_str),
-        )?;
-        // The server decides what one change notification carries. kvim sends
-        // the complete text to a server that asks for a full synchronization,
-        // and one range for each change to a server that asks for an
-        // incremental one.
-        self.synchronization =
-            synchronization_mode(capabilities.pointer("/capabilities/textDocumentSync"));
-        // A server that advertises a diagnostic provider answers the request of
-        // the client instead of publishing a set on its own.
-        self.diagnostics =
-            diagnostics_model(capabilities.pointer("/capabilities/diagnosticProvider"))?;
-        self.writer.notify("initialized", json!({})).await?;
-        if let Some(settings) = self.config.workspace_settings.clone() {
-            self.writer
-                .notify(
-                    "workspace/didChangeConfiguration",
-                    json!({ "settings": settings }),
-                )
-                .await?;
-        }
-        Ok(())
-    }
-
-    /// Sends `shutdown` and `exit` in the order that the protocol requires.
-    async fn shutdown(&mut self, envelopes: &mut Envelopes) -> Result<(), LspError> {
-        let id = self.writer.request("shutdown", Value::Null).await?;
-        let result = self.await_response(envelopes, id).await?;
-        // The protocol requires exactly null here. Another value means that the
-        // server did not accept the shutdown.
-        if result.get().trim() != "null" {
-            return Err(LspError::MalformedResponse);
-        }
-        self.writer.notify("exit", Value::Null).await
-    }
-
-    /// Waits for one response and answers every server request meanwhile.
-    async fn await_response(
-        &mut self,
-        envelopes: &mut Envelopes,
-        expected: u64,
-    ) -> Result<Box<RawValue>, LspError> {
-        loop {
-            let envelope = envelopes.recv().await.ok_or(LspError::Stopped)??;
-            if envelope.method.is_some() {
-                if let Some(id) = envelope.id {
-                    self.writer.reject_server_request(id).await?;
-                }
-                continue;
-            }
-            let Some(RpcId::Unsigned(id)) = envelope.id else {
-                continue;
-            };
-            if id != expected {
-                continue;
-            }
-            if let Some(error) = envelope.error {
-                return Err(LspError::Response { code: error.code });
-            }
-            return envelope.result.ok_or(LspError::MalformedResponse);
         }
     }
 
@@ -1614,7 +1089,7 @@ impl Session<'_> {
 
     /// Converts one answer while its buffer version is still current.
     fn convert(
-        &self,
+        &mut self,
         pending: &PendingRequest,
         result: &RawValue,
     ) -> Result<LanguageOutcome, LspError> {
@@ -1639,7 +1114,7 @@ impl Session<'_> {
             Query::Hover(_) => Ok(LanguageOutcome::Hover {
                 request,
                 version: pending.version,
-                markup: hover_markup(result, self.config.registry)?,
+                markup: hover_markup(result, self.config.registry, &mut self.highlighter)?,
             }),
             Query::Diagnostics => {
                 debug_assert!(
@@ -2020,51 +1495,6 @@ struct ConfigurationItem {
     section: Option<String>,
 }
 
-/// Selects the change notification from the capability of one server.
-///
-/// The protocol carries `textDocumentSync` as one number, or as one object that
-/// names that number in its `change` member. An absent capability, an absent
-/// `change` member, and every number that is not 1 or 2 all name no
-/// synchronization, which is the value that the protocol defines. See
-/// `docs/language-services.md`.
-fn synchronization_mode(capability: Option<&Value>) -> SynchronizationMode {
-    let Some(capability) = capability else {
-        return SynchronizationMode::None;
-    };
-    let kind = match capability {
-        Value::Object(options) => options.get("change").and_then(Value::as_u64),
-        other => other.as_u64(),
-    };
-    kind.map_or(SynchronizationMode::None, SynchronizationMode::from_kind)
-}
-
-/// Selects the diagnostic model from the capability of one server.
-///
-/// A server that advertises a diagnostic provider answers the request of the
-/// client instead of publishing a set on its own. See
-/// `docs/language-services.md`.
-///
-/// # Errors
-///
-/// Returns [`LspError::Bounds`] for a provider identifier above
-/// [`LSP_RESULT_ID_BYTES_MAX`].
-fn diagnostics_model(provider: Option<&Value>) -> Result<DiagnosticsModel, LspError> {
-    let Some(provider) = provider.filter(|provider| !provider.is_null()) else {
-        return Ok(DiagnosticsModel::Push);
-    };
-    let identifier = provider.get("identifier").and_then(Value::as_str);
-    if let Some(identifier) = identifier {
-        enforce(
-            identifier.len(),
-            LSP_RESULT_ID_BYTES_MAX,
-            LspBound::ResultIdBytes,
-        )?;
-    }
-    Ok(DiagnosticsModel::Pull {
-        identifier: identifier.map(str::to_owned),
-    })
-}
-
 /// Reads the bounded items of one workspace configuration request.
 ///
 /// # Errors
@@ -2144,13 +1574,14 @@ impl RawLocation {
 fn hover_markup(
     result: &RawValue,
     registry: LanguageRegistry,
+    highlighter: &mut SyntaxHighlighter,
 ) -> Result<Option<MarkupText>, LspError> {
     let value: Value =
         serde_json::from_str(result.get()).map_err(|_| LspError::MalformedResponse)?;
     let Some(contents) = value.get("contents") else {
         return Ok(None);
     };
-    hover_contents(contents, registry)
+    hover_contents(contents, registry, highlighter)
 }
 
 /// Returns the bounded answer of one hover `contents` value.
@@ -2161,11 +1592,12 @@ fn hover_markup(
 fn hover_contents(
     contents: &Value,
     registry: LanguageRegistry,
+    highlighter: &mut SyntaxHighlighter,
 ) -> Result<Option<MarkupText>, LspError> {
     let mut answer = HoverAnswer::default();
     answer.append(contents);
     enforce(answer.text.len(), LSP_HOVER_BYTES_MAX, LspBound::HoverBytes)?;
-    Ok(answer.finish(registry))
+    Ok(answer.finish(registry, highlighter))
 }
 
 /// The collected parts of one hover answer and the kind that covers them.
@@ -2218,7 +1650,11 @@ impl HoverAnswer {
     ///
     /// A plain text carries an empty document, because a markdown parse of a
     /// plain text removes the characters that mark up a document.
-    fn finish(self, registry: LanguageRegistry) -> Option<MarkupText> {
+    fn finish(
+        self,
+        registry: LanguageRegistry,
+        highlighter: &mut SyntaxHighlighter,
+    ) -> Option<MarkupText> {
         let text = self.text.trim().to_owned();
         if text.is_empty() {
             return None;
@@ -2229,7 +1665,7 @@ impl HoverAnswer {
         );
         let kind = self.kind.unwrap_or(MarkupKind::PlainText);
         let document = match kind {
-            MarkupKind::Markdown => MarkupDocument::parse(&text).highlighted(registry),
+            MarkupKind::Markdown => MarkupDocument::parse(&text).highlighted(registry, highlighter),
             MarkupKind::PlainText => MarkupDocument::default(),
         };
         Some(MarkupText {
@@ -2289,86 +1725,19 @@ fn fence_backticks(value: &str) -> usize {
 mod tests {
     use serde_json::{Value, json};
 
+    use crate::SyntaxHighlighter;
     use crate::markup::MarkupDocument;
 
-    use super::{
-        LanguageRegistry, MarkupKind, MarkupText, SynchronizationMode, hover_contents,
-        synchronization_mode,
-    };
-
-    /// Returns the mode of one `textDocumentSync` capability value.
-    fn mode(capability: &Value) -> SynchronizationMode {
-        synchronization_mode(capability.pointer("/capabilities/textDocumentSync"))
-    }
+    use super::{LanguageRegistry, MarkupKind, MarkupText, hover_contents};
 
     /// Returns the answer of one hover `contents` value.
     fn answer(contents: &Value) -> Option<MarkupText> {
-        hover_contents(contents, LanguageRegistry::first_release())
-            .expect("the text stays under the bound")
-    }
-
-    #[test]
-    fn the_number_form_of_the_capability_names_the_mode() {
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": 1 } })),
-            SynchronizationMode::Full
-        );
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": 2 } })),
-            SynchronizationMode::Incremental
-        );
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": 0 } })),
-            SynchronizationMode::None
-        );
-    }
-
-    #[test]
-    fn the_object_form_of_the_capability_names_the_mode_in_its_change_member() {
-        assert_eq!(
-            mode(&json!({
-                "capabilities": {
-                    "textDocumentSync": { "openClose": true, "change": 1 }
-                }
-            })),
-            SynchronizationMode::Full
-        );
-        assert_eq!(
-            mode(&json!({
-                "capabilities": {
-                    "textDocumentSync": { "openClose": true, "change": 2 }
-                }
-            })),
-            SynchronizationMode::Incremental
-        );
-    }
-
-    #[test]
-    fn every_capability_that_names_no_mode_sends_no_change() {
-        // The protocol defines no synchronization for an absent capability, for
-        // an object without a `change` member, and for the value 0.
-        assert_eq!(
-            mode(&json!({ "capabilities": {} })),
-            SynchronizationMode::None
-        );
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": Value::Null } })),
-            SynchronizationMode::None
-        );
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": { "openClose": true } } })),
-            SynchronizationMode::None
-        );
-        // The protocol reserves no further number and no other type, so both
-        // send no change instead of a shape that the server misreads.
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": 3 } })),
-            SynchronizationMode::None
-        );
-        assert_eq!(
-            mode(&json!({ "capabilities": { "textDocumentSync": "full" } })),
-            SynchronizationMode::None
-        );
+        hover_contents(
+            contents,
+            LanguageRegistry::first_release(),
+            &mut SyntaxHighlighter::new(),
+        )
+        .expect("the text stays under the bound")
     }
 
     #[test]

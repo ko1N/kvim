@@ -2,11 +2,17 @@
 //! Adapted from ReviewGraph (MIT), src/analysis.rs.
 //!
 //! The adapter boundary is the multi-language extension point of kvim. An
-//! adapter supplies data: the paths of its language, the Tree-sitter grammar
-//! with its highlight query, the comment tokens, the indent rule, the language
-//! servers, and the external formatter. Nothing above the trait names a
-//! language, so a release adds a language by registering one more adapter. This
-//! build registers 25 adapters, which `docs/language-services.md` names.
+//! adapter supplies data: one [`LanguageCatalogEntry`], the comment tokens, the
+//! indent rule, the language servers, and the external formatter. Nothing above
+//! the trait names a language, so a release adds a language by registering one
+//! more adapter. This build registers 25 adapters, which
+//! `docs/language-services.md` names.
+//!
+//! The catalog entry owns what selects and parses one language: the language
+//! names, the file extensions, the complete file names, and the Tree-sitter
+//! grammar with its queries. The adapter owns what a grammar cannot answer, so
+//! indentation, formatter, server, and editor-version behavior stays with the
+//! adapter and no lookup table exists twice.
 //!
 //! Only an adapter can select a path by language, by file extension, or by file
 //! name, and only an adapter answers to the name of a language. Generic
@@ -52,10 +58,10 @@
 //!
 //! ```
 //! use std::path::Path;
-//! use std::sync::Arc;
+//! use std::sync::{Arc, OnceLock};
 //!
 //! use kvim_core::TextBuffer;
-//! use kvim_language::{AnalysisInput, LanguageRegistry};
+//! use kvim_language::{AnalysisInput, LanguageRegistry, SyntaxHighlighter};
 //! use kvim_settings::FileSettings;
 //! use tokio_util::sync::CancellationToken;
 //!
@@ -67,7 +73,7 @@
 //!     .expect("the text is small");
 //! let input = AnalysisInput::new(buffer.version(), Arc::from(buffer.to_string()));
 //! let analysis = adapter
-//!     .analyze(&input, &CancellationToken::new())
+//!     .analyze(&input, &mut SyntaxHighlighter::new(), &CancellationToken::new())
 //!     .expect("the source is valid Rust");
 //! assert!(!analysis.highlights().is_empty());
 //! ```
@@ -75,50 +81,78 @@
 use std::ffi::OsStr;
 use std::fmt;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use thiserror::Error;
 use tokio_util::sync::CancellationToken;
-use tree_sitter::{InputEdit, Language, Point, Tree};
+use tree_sitter::{InputEdit, Point, Tree};
 
 use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange};
 
 mod analysis;
+#[cfg(feature = "grammar-asm")]
 mod asm;
+#[cfg(feature = "grammar-bash")]
 mod bash;
+#[cfg(feature = "grammar-c")]
 mod c;
+#[cfg(feature = "grammar-cpp")]
 mod cpp;
+#[cfg(feature = "grammar-css")]
 mod css;
 mod document;
+#[cfg(any(
+    feature = "grammar-javascript",
+    feature = "grammar-tsx",
+    feature = "grammar-typescript",
+))]
 mod ecma;
-mod encoding;
+#[cfg(feature = "grammar-fish")]
 mod fish;
 mod formatter;
+#[cfg(feature = "grammar-glsl")]
 mod glsl;
+#[cfg(feature = "grammar-go")]
 mod go;
+#[cfg(feature = "grammar-html")]
 mod html;
+#[cfg(feature = "grammar-javascript")]
 mod javascript;
+#[cfg(feature = "grammar-json")]
 mod json;
+#[cfg(feature = "grammar-lua")]
 mod lua;
+#[cfg(feature = "grammar-markdown")]
 mod markdown;
 mod markup;
+#[cfg(feature = "grammar-nix")]
 mod nix;
 mod progress;
-mod protocol;
+#[cfg(feature = "grammar-python")]
 mod python;
+#[cfg(feature = "grammar-rust")]
 mod rust;
+#[cfg(feature = "grammar-scss")]
 mod scss;
 mod server;
 mod services;
 mod session;
+#[cfg(feature = "grammar-sql")]
 mod sql;
+#[cfg(feature = "grammar-terraform")]
 mod terraform;
+#[cfg(feature = "grammar-toml")]
 mod toml;
+#[cfg(feature = "grammar-tsx")]
 mod tsx;
+#[cfg(feature = "grammar-typescript")]
 mod typescript;
+#[cfg(feature = "grammar-xml")]
 mod xml;
+#[cfg(feature = "grammar-yaml")]
 mod yaml;
+#[cfg(feature = "grammar-zig")]
 mod zig;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -128,66 +162,97 @@ mod session_tests;
 #[cfg(test)]
 mod tests;
 
+#[cfg(feature = "grammar-asm")]
 pub use asm::AsmAdapter;
+#[cfg(feature = "grammar-bash")]
 pub use bash::BashAdapter;
+#[cfg(feature = "grammar-c")]
 pub use c::CAdapter;
+#[cfg(feature = "grammar-cpp")]
 pub use cpp::CppAdapter;
+#[cfg(feature = "grammar-css")]
 pub use css::CssAdapter;
 pub use document::{
-    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, MarkupKind,
-    MarkupText, SourceLocation, TextEdit,
+    DiagnosticSet, FormatEdits, MarkupKind, MarkupText, buffer_position, buffer_range,
+    content_changes, document_position,
 };
+#[cfg(feature = "grammar-fish")]
 pub use fish::FishAdapter;
 pub use formatter::{
     FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX, FormattedDocument,
     FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest, LanguageFormatter,
 };
+#[cfg(feature = "grammar-glsl")]
 pub use glsl::GlslAdapter;
+#[cfg(feature = "grammar-go")]
 pub use go::GoAdapter;
+#[cfg(feature = "grammar-html")]
 pub use html::HtmlAdapter;
+#[cfg(feature = "grammar-javascript")]
 pub use javascript::JavascriptAdapter;
+#[cfg(feature = "grammar-json")]
 pub use json::JsonAdapter;
+pub use kvim_lsp::{
+    ContentChange, Diagnostic, DiagnosticSeverity, DocumentPosition, LSP_EVENT_QUEUE_CAPACITY,
+    LSP_HEADER_BYTES_MAX, LSP_INITIALIZE_DEADLINE, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
+    LSP_MESSAGES_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX,
+    LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LSP_SESSIONS_MAX, LSP_SHUTDOWN_DEADLINE,
+    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError, ProjectId, ServerId,
+    ServerReport, SessionGeneration, SourceLocation, SourceSpan, TextEdit, WorkspaceRoot,
+};
+pub use kvim_syntax::{
+    Grammar, HighlightLimits, HighlightSpan, Highlighted, LanguageCatalogEntry, LimitKind,
+    SyntaxHighlighter, SyntaxRole, Truncation,
+};
+#[cfg(feature = "grammar-lua")]
 pub use lua::LuaAdapter;
+#[cfg(feature = "grammar-markdown")]
 pub use markdown::MarkdownAdapter;
 pub use markup::{
     MARKUP_BLOCKS_MAX, MARKUP_FENCE_SOURCE_BYTES_MAX, MARKUP_FENCE_SPANS_MAX, MARKUP_FENCES_MAX,
     MARKUP_NESTING_DEPTH_MAX, MARKUP_PIECES_MAX, MARKUP_SOURCE_BYTES_MAX, MarkupBlock, MarkupBody,
     MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole, StyledMarkup,
 };
+#[cfg(feature = "grammar-nix")]
 pub use nix::NixAdapter;
 pub use progress::{
     LSP_PROGRESS_CHARS_MAX, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
-    SessionGeneration,
 };
-pub use protocol::{
-    DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
-    LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError, SourceSpan,
-    WorkspaceRoot,
-};
+#[cfg(feature = "grammar-python")]
 pub use python::PythonAdapter;
+#[cfg(feature = "grammar-rust")]
 pub use rust::RustAdapter;
+#[cfg(feature = "grammar-scss")]
 pub use scss::ScssAdapter;
 pub use server::{
     LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX, LanguageServerDeclaration, LanguageServerId,
     ServerFormatting,
 };
-pub use services::{LSP_SESSIONS_MAX, LanguageServices};
+pub use services::LanguageServices;
+// `kvim-lsp` owns the diagnostic bound, so one constant serves the persistent
+// session of this crate and the changed-file requests of that crate.
+pub use kvim_lsp::LSP_DIAGNOSTICS_MAX;
 pub use session::{
     LSP_CONFIGURATION_ITEMS_MAX, LSP_CONTENT_CHANGES_MAX, LSP_DIAGNOSTIC_DEADLINE,
-    LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_EVENT_QUEUE_CAPACITY, LSP_FORMAT_DEADLINE,
-    LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_INITIALIZE_DEADLINE, LSP_LOCATIONS_MAX,
-    LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE,
-    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LSP_SHUTDOWN_DEADLINE,
-    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LanguageEvent, LanguageOutcome,
-    LanguageRequestId, LanguageServerHandle, ServerReport,
+    LSP_DIAGNOSTIC_PULL_DELAY, LSP_FORMAT_DEADLINE, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
+    LSP_LOCATIONS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE, LSP_REQUEST_QUEUE_CAPACITY,
+    LanguageEvent, LanguageOutcome, LanguageRequestId, LanguageServerHandle,
 };
+#[cfg(feature = "grammar-sql")]
 pub use sql::SqlAdapter;
+#[cfg(feature = "grammar-terraform")]
 pub use terraform::TerraformAdapter;
+#[cfg(feature = "grammar-toml")]
 pub use toml::TomlAdapter;
+#[cfg(feature = "grammar-tsx")]
 pub use tsx::TsxAdapter;
+#[cfg(feature = "grammar-typescript")]
 pub use typescript::TypescriptAdapter;
+#[cfg(feature = "grammar-xml")]
 pub use xml::XmlAdapter;
+#[cfg(feature = "grammar-yaml")]
 pub use yaml::YamlAdapter;
+#[cfg(feature = "grammar-zig")]
 pub use zig::ZigAdapter;
 
 /// The largest source that one analysis reads, in bytes.
@@ -261,6 +326,27 @@ pub enum AnalysisError {
     /// The parser returned a range that the source does not hold.
     #[error("the language adapter returned malformed spans")]
     MalformedOutput,
+}
+
+impl From<kvim_syntax::HighlightFailure> for AnalysisError {
+    /// Maps one highlighter outcome onto the analysis vocabulary.
+    ///
+    /// The editor keeps its own failure names, because a buffer analysis also
+    /// parses and reads an indent rule, which the highlighter never does.
+    fn from(failure: kvim_syntax::HighlightFailure) -> Self {
+        match failure {
+            kvim_syntax::HighlightFailure::UnsupportedLanguage => Self::UnsupportedPath,
+            kvim_syntax::HighlightFailure::SourceTooLarge { bytes, max_bytes } => Self::Bounds {
+                measure: BoundMeasure::Bytes,
+                limit: max_bytes,
+                actual: bytes,
+            },
+            kvim_syntax::HighlightFailure::GrammarSetup => Self::ParserSetup,
+            kvim_syntax::HighlightFailure::ParseFailure => Self::ParseFailure,
+            kvim_syntax::HighlightFailure::Cancelled => Self::Cancelled,
+            kvim_syntax::HighlightFailure::MalformedRanges => Self::MalformedOutput,
+        }
+    }
 }
 
 /// The delimiters of one block comment.
@@ -348,23 +434,6 @@ impl CommentStyle {
     }
 }
 
-/// The Tree-sitter grammar and highlight query of one language.
-///
-/// The value is adapter data. The analysis reads it and knows no language.
-#[derive(Clone, Copy)]
-pub struct Grammar {
-    /// The stable grammar name, which also keys the query cache.
-    pub name: &'static str,
-    /// The entry point of the compiled grammar.
-    pub language: fn() -> Language,
-    /// The highlight query of the grammar.
-    pub highlights_query: &'static str,
-    /// The injection query, or the empty text when the grammar has none.
-    pub injections_query: &'static str,
-    /// The local-variable query, or the empty text when the grammar has none.
-    pub locals_query: &'static str,
-}
-
 /// The indent rule of one language, as syntax-tree data.
 ///
 /// The rule stays a level count over node kinds, so it holds for every
@@ -396,70 +465,6 @@ impl IndentLevel {
     pub const fn get(self) -> u16 {
         self.0
     }
-}
-
-/// One terminal-independent syntax role.
-///
-/// A language adapter emits these roles. A role names what a range of source
-/// is, never how it looks, so the language boundary needs no palette and no
-/// terminal. The interface layer maps each role to one style. See
-/// `docs/language-services.md`.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum SyntaxRole {
-    /// An attribute, such as a Rust derive attribute.
-    Attribute,
-    /// A boolean literal.
-    Boolean,
-    /// A bracket, brace, or parenthesis.
-    Bracket,
-    /// A comment.
-    Comment,
-    /// A named constant.
-    Constant,
-    /// A constructor, such as an enum variant.
-    Constructor,
-    /// A delimiter, such as a comma or a semicolon.
-    Delimiter,
-    /// A function name.
-    Function,
-    /// A language keyword.
-    Keyword,
-    /// A macro name.
-    Macro,
-    /// A numeric literal.
-    Number,
-    /// An operator.
-    Operator,
-    /// A function parameter.
-    Parameter,
-    /// A preprocessor directive.
-    Preprocessor,
-    /// A structure field or a property.
-    Property,
-    /// A statement keyword.
-    Statement,
-    /// A string literal.
-    String,
-    /// A type name.
-    Type,
-    /// A variable name.
-    Variable,
-}
-
-/// One bounded highlight range inside one buffer line.
-///
-/// The range holds byte offsets inside the line, never terminal cells and never
-/// a color. The interface layer maps [`SyntaxRole`] to one theme role.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct HighlightSpan {
-    /// The zero-based line index.
-    pub line: u32,
-    /// The first byte of the range inside the line.
-    pub start_byte: u32,
-    /// The byte after the range inside the line.
-    pub end_byte: u32,
-    /// The terminal-independent role of the range.
-    pub role: SyntaxRole,
 }
 
 /// The syntax tree of one buffer version.
@@ -612,25 +617,40 @@ fn owns(keys: &[&'static str], value: &OsStr) -> bool {
 /// The trait stays object-safe, because the registry holds trait objects. A
 /// later asynchronous method must return a boxed future for the same reason.
 pub trait LanguageAdapter: Send + Sync {
-    /// Returns the stable adapter identifier.
-    fn id(&self) -> &'static str;
+    /// Returns the catalog entry of the language.
+    ///
+    /// The entry owns the lookup keys and the grammar, so an adapter names each
+    /// of them once. The adapter itself owns only what a catalog entry cannot
+    /// answer: the comment tokens, the indent rule, the language servers, the
+    /// external formatter, and the analysis version.
+    fn catalog(&self) -> &'static LanguageCatalogEntry;
 
     /// Returns the analysis implementation version.
     fn version(&self) -> &'static str;
 
+    /// Returns the stable adapter identifier.
+    ///
+    /// The identifier is the one that the catalog entry carries, so an adapter
+    /// and its grammar can never answer to two names.
+    fn id(&self) -> &'static str {
+        self.catalog().id()
+    }
+
     /// Returns the file extensions that this adapter owns.
     ///
     /// The extensions are case-sensitive.
-    fn extensions(&self) -> &'static [&'static str];
+    fn extensions(&self) -> &'static [&'static str] {
+        self.catalog().extensions()
+    }
 
     /// Returns the complete file names that this adapter owns.
     ///
     /// A file name is the second lookup key of the same selection, for a file
     /// whose extension does not name its format. `flake.lock` holds JSON, so
-    /// the JSON adapter names that file here. The names are case-sensitive,
-    /// and they carry no directory. The default answer is the empty table.
+    /// the JSON catalog entry names that file. The names are case-sensitive,
+    /// and they carry no directory.
     fn file_names(&self) -> &'static [&'static str] {
-        &[]
+        self.catalog().file_names()
     }
 
     /// Returns the names of the language that this adapter answers to.
@@ -640,17 +660,19 @@ pub trait LanguageAdapter: Send + Sync {
     /// reaches its adapter through this key alone. The table holds the name of
     /// the language and the aliases that an author or a server writes for it,
     /// for example `rs` beside `rust`. Every name stands in lower case, and
-    /// exactly one adapter of the registry owns each name. The default answer
-    /// is the empty table. See `docs/language-services.md`.
+    /// exactly one adapter of the registry owns each name. See
+    /// `docs/language-services.md`.
     fn language_names(&self) -> &'static [&'static str] {
-        &[]
+        self.catalog().language_names()
     }
 
     /// Returns the comment tokens of the language.
     fn comment(&self) -> CommentStyle;
 
     /// Returns the Tree-sitter grammar and highlight query of the language.
-    fn grammar(&self) -> Grammar;
+    fn grammar(&self) -> Grammar {
+        self.catalog().grammar()
+    }
 
     /// Returns the indent rule of the language.
     fn indent_rule(&self) -> IndentRule;
@@ -734,7 +756,10 @@ pub trait LanguageAdapter: Send + Sync {
     ///
     /// The job runs on the bounded worker service. It checks the cancellation
     /// token before and after the parse. The default implementation serves
-    /// every language through its grammar data.
+    /// every language through its catalog entry.
+    ///
+    /// The caller owns `highlighter`, which keeps the compiled query of each
+    /// language that it served and releases every one of them when it drops.
     ///
     /// # Errors
     ///
@@ -743,9 +768,10 @@ pub trait LanguageAdapter: Send + Sync {
     fn analyze(
         &self,
         input: &AnalysisInput,
+        highlighter: &mut SyntaxHighlighter,
         cancellation: &CancellationToken,
     ) -> Result<Analysis, AnalysisError> {
-        analysis::analyze(self, input, cancellation)
+        analysis::analyze(self, input, highlighter, cancellation)
     }
 }
 
@@ -784,79 +810,104 @@ pub struct LanguageRegistry {
 }
 
 /// The assembly adapter of this build.
-static ASM: AsmAdapter = AsmAdapter::new();
+#[cfg(feature = "grammar-asm")]
+static ASM: &dyn LanguageAdapter = &AsmAdapter::new();
 
 /// The Bash adapter of this build.
-static BASH: BashAdapter = BashAdapter::new();
+#[cfg(feature = "grammar-bash")]
+static BASH: &dyn LanguageAdapter = &BashAdapter::new();
 
 /// The C adapter of this build.
-static C: CAdapter = CAdapter::new();
+#[cfg(feature = "grammar-c")]
+static C: &dyn LanguageAdapter = &CAdapter::new();
 
 /// The C++ adapter of this build.
-static CPP: CppAdapter = CppAdapter::new();
+#[cfg(feature = "grammar-cpp")]
+static CPP: &dyn LanguageAdapter = &CppAdapter::new();
 
 /// The CSS adapter of this build.
-static CSS: CssAdapter = CssAdapter::new();
+#[cfg(feature = "grammar-css")]
+static CSS: &dyn LanguageAdapter = &CssAdapter::new();
 
 /// The fish adapter of this build.
-static FISH: FishAdapter = FishAdapter::new();
+#[cfg(feature = "grammar-fish")]
+static FISH: &dyn LanguageAdapter = &FishAdapter::new();
 
 /// The GLSL adapter of this build.
-static GLSL: GlslAdapter = GlslAdapter::new();
+#[cfg(feature = "grammar-glsl")]
+static GLSL: &dyn LanguageAdapter = &GlslAdapter::new();
 
 /// The Go adapter of this build.
-static GO: GoAdapter = GoAdapter::new();
+#[cfg(feature = "grammar-go")]
+static GO: &dyn LanguageAdapter = &GoAdapter::new();
 
 /// The HTML adapter of this build.
-static HTML: HtmlAdapter = HtmlAdapter::new();
+#[cfg(feature = "grammar-html")]
+static HTML: &dyn LanguageAdapter = &HtmlAdapter::new();
 
 /// The JavaScript adapter of this build.
-static JAVASCRIPT: JavascriptAdapter = JavascriptAdapter::new();
+#[cfg(feature = "grammar-javascript")]
+static JAVASCRIPT: &dyn LanguageAdapter = &JavascriptAdapter::new();
 
 /// The JSON adapter of this build.
-static JSON: JsonAdapter = JsonAdapter::new();
+#[cfg(feature = "grammar-json")]
+static JSON: &dyn LanguageAdapter = &JsonAdapter::new();
 
 /// The Lua adapter of this build.
-static LUA: LuaAdapter = LuaAdapter::new();
+#[cfg(feature = "grammar-lua")]
+static LUA: &dyn LanguageAdapter = &LuaAdapter::new();
 
 /// The Markdown adapter of this build.
-static MARKDOWN: MarkdownAdapter = MarkdownAdapter::new();
+#[cfg(feature = "grammar-markdown")]
+static MARKDOWN: &dyn LanguageAdapter = &MarkdownAdapter::new();
 
 /// The Nix adapter of this build.
-static NIX: NixAdapter = NixAdapter::new();
+#[cfg(feature = "grammar-nix")]
+static NIX: &dyn LanguageAdapter = &NixAdapter::new();
 
 /// The Python adapter of this build.
-static PYTHON: PythonAdapter = PythonAdapter::new();
+#[cfg(feature = "grammar-python")]
+static PYTHON: &dyn LanguageAdapter = &PythonAdapter::new();
 
 /// The Rust adapter of this build.
-static RUST: RustAdapter = RustAdapter::new();
+#[cfg(feature = "grammar-rust")]
+static RUST: &dyn LanguageAdapter = &RustAdapter::new();
 
 /// The SCSS adapter of this build.
-static SCSS: ScssAdapter = ScssAdapter::new();
+#[cfg(feature = "grammar-scss")]
+static SCSS: &dyn LanguageAdapter = &ScssAdapter::new();
 
 /// The SQL adapter of this build.
-static SQL: SqlAdapter = SqlAdapter::new();
+#[cfg(feature = "grammar-sql")]
+static SQL: &dyn LanguageAdapter = &SqlAdapter::new();
 
 /// The Terraform adapter of this build.
-static TERRAFORM: TerraformAdapter = TerraformAdapter::new();
+#[cfg(feature = "grammar-terraform")]
+static TERRAFORM: &dyn LanguageAdapter = &TerraformAdapter::new();
 
 /// The TOML adapter of this build.
-static TOML: TomlAdapter = TomlAdapter::new();
+#[cfg(feature = "grammar-toml")]
+static TOML: &dyn LanguageAdapter = &TomlAdapter::new();
 
 /// The TSX adapter of this build.
-static TSX: TsxAdapter = TsxAdapter::new();
+#[cfg(feature = "grammar-tsx")]
+static TSX: &dyn LanguageAdapter = &TsxAdapter::new();
 
 /// The TypeScript adapter of this build.
-static TYPESCRIPT: TypescriptAdapter = TypescriptAdapter::new();
+#[cfg(feature = "grammar-typescript")]
+static TYPESCRIPT: &dyn LanguageAdapter = &TypescriptAdapter::new();
 
 /// The XML adapter of this build.
-static XML: XmlAdapter = XmlAdapter::new();
+#[cfg(feature = "grammar-xml")]
+static XML: &dyn LanguageAdapter = &XmlAdapter::new();
 
 /// The YAML adapter of this build.
-static YAML: YamlAdapter = YamlAdapter::new();
+#[cfg(feature = "grammar-yaml")]
+static YAML: &dyn LanguageAdapter = &YamlAdapter::new();
 
 /// The Zig adapter of this build.
-static ZIG: ZigAdapter = ZigAdapter::new();
+#[cfg(feature = "grammar-zig")]
+static ZIG: &dyn LanguageAdapter = &ZigAdapter::new();
 
 /// The registered languages of this editor build.
 ///
@@ -868,33 +919,65 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 /// every path of that key an ambiguous failure, which leaves the buffer without
 /// highlighting, without a server, and without a formatter. Exactly one adapter
 /// owns each language name for the same reason.
-static ADAPTERS: [&dyn LanguageAdapter; 25] = [
-    &ASM,
-    &BASH,
-    &C,
-    &CPP,
-    &CSS,
-    &FISH,
-    &GLSL,
-    &GO,
-    &HTML,
-    &JAVASCRIPT,
-    &JSON,
-    &LUA,
-    &MARKDOWN,
-    &NIX,
-    &PYTHON,
-    &RUST,
-    &SCSS,
-    &SQL,
-    &TERRAFORM,
-    &TOML,
-    &TSX,
-    &TYPESCRIPT,
-    &XML,
-    &YAML,
-    &ZIG,
-];
+fn registered_adapters() -> &'static [&'static dyn LanguageAdapter] {
+    static ADAPTERS: OnceLock<Vec<&'static dyn LanguageAdapter>> = OnceLock::new();
+    ADAPTERS.get_or_init(|| {
+        let adapters: Vec<&'static dyn LanguageAdapter> = [
+            #[cfg(feature = "grammar-asm")]
+            ASM,
+            #[cfg(feature = "grammar-bash")]
+            BASH,
+            #[cfg(feature = "grammar-c")]
+            C,
+            #[cfg(feature = "grammar-cpp")]
+            CPP,
+            #[cfg(feature = "grammar-css")]
+            CSS,
+            #[cfg(feature = "grammar-fish")]
+            FISH,
+            #[cfg(feature = "grammar-glsl")]
+            GLSL,
+            #[cfg(feature = "grammar-go")]
+            GO,
+            #[cfg(feature = "grammar-html")]
+            HTML,
+            #[cfg(feature = "grammar-javascript")]
+            JAVASCRIPT,
+            #[cfg(feature = "grammar-json")]
+            JSON,
+            #[cfg(feature = "grammar-lua")]
+            LUA,
+            #[cfg(feature = "grammar-markdown")]
+            MARKDOWN,
+            #[cfg(feature = "grammar-nix")]
+            NIX,
+            #[cfg(feature = "grammar-python")]
+            PYTHON,
+            #[cfg(feature = "grammar-rust")]
+            RUST,
+            #[cfg(feature = "grammar-scss")]
+            SCSS,
+            #[cfg(feature = "grammar-sql")]
+            SQL,
+            #[cfg(feature = "grammar-terraform")]
+            TERRAFORM,
+            #[cfg(feature = "grammar-toml")]
+            TOML,
+            #[cfg(feature = "grammar-tsx")]
+            TSX,
+            #[cfg(feature = "grammar-typescript")]
+            TYPESCRIPT,
+            #[cfg(feature = "grammar-xml")]
+            XML,
+            #[cfg(feature = "grammar-yaml")]
+            YAML,
+            #[cfg(feature = "grammar-zig")]
+            ZIG,
+        ]
+        .to_vec();
+        adapters
+    })
+}
 
 impl LanguageRegistry {
     /// Returns the registry of this build.
@@ -906,8 +989,8 @@ impl LanguageRegistry {
     /// table that this constructor names, or by building a registry with
     /// [`LanguageRegistry::new`].
     #[must_use]
-    pub const fn first_release() -> Self {
-        Self::new(&ADAPTERS)
+    pub fn first_release() -> Self {
+        Self::new(registered_adapters())
     }
 
     /// Creates a registry over an explicit adapter table.

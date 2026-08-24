@@ -4,32 +4,16 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the Markdown adapter owns.
-const MARKDOWN_EXTENSIONS: [&str; 2] = ["markdown", "md"];
-
-/// The language names that the Markdown adapter answers to.
-///
-/// `md` is the short form that a fence carries beside `markdown`.
-const MARKDOWN_LANGUAGE_NAMES: [&str; 2] = ["markdown", "md"];
-
-/// Returns the Markdown block grammar of the bundled parser.
-///
-/// The parser splits Markdown into a block grammar and an inline grammar. kvim
-/// resolves no grammar injection yet, so the block grammar is the whole
-/// analysis, and it carries every structural highlight of a document.
-fn markdown_language() -> Language {
-    tree_sitter_md::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `marksman`.
 ///
@@ -93,36 +77,22 @@ impl MarkdownAdapter {
 }
 
 impl LanguageAdapter for MarkdownAdapter {
-    fn id(&self) -> &'static str {
-        "markdown"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("markdown")
+                .expect("the grammar-markdown feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &MARKDOWN_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &MARKDOWN_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // Markdown defines no comment of its own. An HTML comment is HTML, and
         // the block toggle is deferred, so the adapter carries no token.
         CommentStyle::none()
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "markdown",
-            language: markdown_language,
-            highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

@@ -12,6 +12,7 @@ use std::panic::{self, PanicHookInfo};
 use std::sync::Arc;
 
 use crossterm::cursor::{SetCursorStyle, Show};
+use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -66,6 +67,8 @@ pub enum RestoreStep {
     CursorShape,
     /// Pop the enhanced keyboard reporting flags.
     KeyboardEnhancement,
+    /// Stop bracketed paste reporting.
+    BracketedPaste,
     /// Show the cursor and leave the alternate screen.
     AlternateScreen,
     /// Leave raw mode.
@@ -74,9 +77,10 @@ pub enum RestoreStep {
 
 impl RestoreStep {
     /// Every step, in restoration order.
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::CursorShape,
         Self::KeyboardEnhancement,
+        Self::BracketedPaste,
         Self::AlternateScreen,
         Self::RawMode,
     ];
@@ -97,6 +101,7 @@ impl RestoreStep {
         match self {
             Self::CursorShape => execute!(stdout(), SetCursorStyle::DefaultUserShape),
             Self::KeyboardEnhancement => execute!(stdout(), PopKeyboardEnhancementFlags),
+            Self::BracketedPaste => execute!(stdout(), DisableBracketedPaste),
             Self::AlternateScreen => execute!(stdout(), Show, LeaveAlternateScreen),
             Self::RawMode => disable_raw_mode(),
         }
@@ -304,6 +309,15 @@ impl TerminalControl for CrosstermControl {
                 return Err(error);
             }
             self.record(RestoreStep::KeyboardEnhancement, true);
+        }
+        // Bracketed paste turns one paste into one event instead of a run of
+        // key presses, so one paste becomes one edit transaction and one undo
+        // unit. A terminal that ignores the sequence sends the key run, which
+        // the editor still accepts. See `docs/input-actions.md`.
+        self.record(RestoreStep::BracketedPaste, true);
+        if let Err(error) = execute!(stdout(), EnableBracketedPaste) {
+            let _ = self.cleanup();
+            return Err(error);
         }
         // The editor shows the terminal cursor itself, so the alternate screen
         // keeps it visible. See `docs/windows.md`.

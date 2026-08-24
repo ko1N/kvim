@@ -8,33 +8,30 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tokio::io::{AsyncWriteExt, duplex};
 use tokio::time;
 
 use kvim_core::{BufferVersion, CharRange, EditTransaction, TextBuffer, TextChange};
+use kvim_lsp::{
+    ContentChange, DocumentPosition, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX,
+    LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError, ServerReport, SourceSpan,
+};
 use kvim_settings::{EditorSettings, FileSettings};
 
-use super::document::{ContentChange, MarkupKind};
+use super::document::{MarkupKind, content_changes};
 use super::mock::{
-    self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, PIPE_BYTES,
-    ROOT, TEST_DEADLINE, connected, pipe, session,
+    self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, ROOT,
+    TEST_DEADLINE, connected, pipe, session,
 };
-use super::progress::{ProgressPercentage, ProgressReport, ProgressStage, SessionGeneration};
-use super::protocol::{
-    ArrayBudget, DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
-    LSP_OUTPUT_BYTES_MAX, LspBound, LspError, SourceSpan, WorkspaceRoot, deserialize_bounded_array,
-    enforce, read_frame,
-};
+use super::progress::{ProgressPercentage, ProgressReport, ProgressStage};
 use super::session::{
-    LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
-    LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX,
-    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX,
-    LanguageOutcome, ServerReport,
+    LSP_DIAGNOSTIC_PULL_DELAY, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX,
+    LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome,
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
-    LanguageAdapter, LanguageRegistry, LanguageServerDeclaration, LanguageServerId,
-    LanguageServices, RustAdapter, ServerFormatting,
+    LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX, LanguageAdapter, LanguageCatalogEntry,
+    LanguageRegistry, LanguageServerDeclaration, LanguageServerId, LanguageServices, RustAdapter,
+    ServerFormatting, SessionGeneration,
 };
 
 /// Returns a buffer with the exact test document content.
@@ -64,8 +61,7 @@ async fn edited(
     let cursor = text.char_position(0).expect("the position exists");
     let transaction = EditTransaction::single(cursor, TextChange::insert(cursor, "// note\n"));
     let before = text.clone();
-    let changes =
-        ContentChange::from_transaction(&before, &transaction).expect("one change stays in bounds");
+    let changes = content_changes(&before, &transaction).expect("one change stays in bounds");
     let version = text
         .apply(transaction)
         .expect("the position fits the buffer");
@@ -230,8 +226,7 @@ async fn a_utf16_session_sends_a_converted_position_and_change_range() {
     let cursor = text.char_position(10).expect("the position exists");
     let transaction = EditTransaction::single(cursor, TextChange::insert(cursor, "x"));
     let before = text.clone();
-    let changes =
-        ContentChange::from_transaction(&before, &transaction).expect("one change stays in bounds");
+    let changes = content_changes(&before, &transaction).expect("one change stays in bounds");
     assert_eq!(changes[0].span.start.byte_column, QUOTE_BYTE_COLUMN);
     let version = text
         .apply(transaction)
@@ -326,98 +321,6 @@ async fn a_utf16_session_converts_a_definition_and_a_formatting_range() {
 }
 
 #[tokio::test]
-async fn reads_a_frame_that_arrives_in_pieces() {
-    let (mut writer, mut reader) = duplex(PIPE_BYTES);
-    let feeder = tokio::spawn(async move {
-        for piece in ["Content-Le", "ngth: 12\r", "\n\r\n{\"a\"", ":\"bcde\"}"] {
-            writer
-                .write_all(piece.as_bytes())
-                .await
-                .expect("the pipe accepts the piece");
-            writer.flush().await.expect("the pipe flushes");
-            tokio::task::yield_now().await;
-        }
-    });
-
-    let mut output_bytes = 0;
-    let body = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
-        .await
-        .expect("a split header and a split body still form one frame");
-    assert_eq!(body, br#"{"a":"bcde"}"#);
-    // The budget counts the header bytes and the body bytes together.
-    assert_eq!(output_bytes, 34);
-    feeder.await.expect("the feeder ends");
-}
-
-#[tokio::test]
-async fn rejects_a_header_above_its_bound() {
-    let (mut writer, mut reader) = duplex(PIPE_BYTES);
-    let padding = "X".repeat(LSP_HEADER_BYTES_MAX);
-    let feeder = tokio::spawn(async move {
-        let _ = writer
-            .write_all(format!("Content-Length: 2\r\nPadding: {padding}\r\n\r\n{{}}").as_bytes())
-            .await;
-    });
-
-    let mut output_bytes = 0;
-    let error = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
-        .await
-        .expect_err("the header passes its bound");
-    assert!(matches!(
-        error,
-        LspError::Bounds {
-            measure: LspBound::HeaderBytes,
-            limit: LSP_HEADER_BYTES_MAX,
-            ..
-        }
-    ));
-    feeder.await.expect("the feeder ends");
-}
-
-#[tokio::test]
-async fn rejects_a_body_above_its_bound() {
-    let (mut writer, mut reader) = duplex(PIPE_BYTES);
-    let length = LSP_MESSAGE_BYTES_MAX + 1;
-    let feeder = tokio::spawn(async move {
-        let _ = writer
-            .write_all(format!("Content-Length: {length}\r\n\r\n").as_bytes())
-            .await;
-    });
-
-    let mut output_bytes = 0;
-    let error = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
-        .await
-        .expect_err("the body passes its bound");
-    // The bound stops the read before the body arrives, so no allocation grows
-    // with the claimed length.
-    assert!(matches!(
-        error,
-        LspError::Bounds {
-            measure: LspBound::MessageBytes,
-            limit: LSP_MESSAGE_BYTES_MAX,
-            ..
-        }
-    ));
-    assert_eq!(output_bytes, 0);
-    feeder.await.expect("the feeder ends");
-}
-
-#[tokio::test]
-async fn rejects_a_frame_without_a_content_length() {
-    let (mut writer, mut reader) = duplex(PIPE_BYTES);
-    let feeder = tokio::spawn(async move {
-        let _ = writer.write_all(b"Content-Type: json\r\n\r\n{}").await;
-    });
-
-    let mut output_bytes = 0;
-    let error = read_frame(&mut reader, &mut output_bytes, LSP_OUTPUT_BYTES_MAX)
-        .await
-        .expect_err("a frame without a length is malformed");
-    assert!(matches!(error, LspError::MalformedFrame));
-    feeder.await.expect("the feeder ends");
-}
-
-#[tokio::test]
 async fn synchronizes_open_change_and_close() {
     let (harness, mut server) = connected();
     server.handshake().await;
@@ -428,8 +331,8 @@ async fn synchronizes_open_change_and_close() {
     let range = CharRange::new(start, end).expect("the range ascends");
     let transaction = EditTransaction::single(start, TextChange::replace(range, "run"));
     let before = text.clone();
-    let changes = ContentChange::from_transaction(&before, &transaction)
-        .expect("one change stays inside the bound");
+    let changes =
+        content_changes(&before, &transaction).expect("one change stays inside the bound");
     let version = text.apply(transaction).expect("the range fits the buffer");
 
     harness
@@ -465,8 +368,8 @@ async fn synchronized(
     transaction: EditTransaction,
 ) -> Value {
     let before = text.clone();
-    let changes = ContentChange::from_transaction(&before, &transaction)
-        .expect("the changes stay inside the bound");
+    let changes =
+        content_changes(&before, &transaction).expect("the changes stay inside the bound");
     let version = text.apply(transaction).expect("the changes fit the buffer");
     harness
         .handle()
@@ -637,8 +540,8 @@ async fn a_server_that_asks_for_no_synchronization_receives_no_change() {
 
     let transaction = renaming(&text, "main", "run");
     let before = text.clone();
-    let changes = ContentChange::from_transaction(&before, &transaction)
-        .expect("the changes stay inside the bound");
+    let changes =
+        content_changes(&before, &transaction).expect("the changes stay inside the bound");
     let version = text.apply(transaction).expect("the changes fit the buffer");
     harness
         .handle()
@@ -669,8 +572,7 @@ async fn derives_descending_changes_from_one_transaction() {
     )
     .expect("the changes ascend");
 
-    let changes =
-        ContentChange::from_transaction(&text, &transaction).expect("two changes stay in bounds");
+    let changes = content_changes(&text, &transaction).expect("two changes stay in bounds");
 
     // The protocol applies the changes in order, so the later change must come
     // first. Otherwise the second range would describe text that the first
@@ -1453,29 +1355,57 @@ async fn rejects_more_content_changes_than_the_bound_allows() {
     ));
 }
 
+/// Returns the grammar that every test language reuses.
+///
+/// The tests exercise the session, not a grammar, so each one borrows
+/// the bundled Rust grammar instead of adding a second one.
+fn test_grammar() -> Grammar {
+    RustAdapter::new().grammar()
+}
+
+/// The extensions of the serverless test language.
+static SERVERLESS_EXTENSIONS: [&str; 1] = ["kv"];
+
+/// The catalog entry of the serverless test language.
+static SERVERLESS_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("serverless", &[], &SERVERLESS_EXTENSIONS, &[], test_grammar);
+
+/// The extensions of the two test language.
+static TWO_EXTENSIONS: [&str; 1] = ["two"];
+
+/// The catalog entry of the two test language.
+static TWO_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("two", &[], &TWO_EXTENSIONS, &[], test_grammar);
+
+/// The extensions of the gate test language.
+static GATE_EXTENSIONS: [&str; 1] = ["gate"];
+
+/// The catalog entry of the gate test language.
+static GATE_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("gate", &[], &GATE_EXTENSIONS, &[], test_grammar);
+
+/// The extensions of the unused test language.
+static UNUSED_EXTENSIONS: [&str; 1] = ["unused"];
+
+/// The catalog entry of the unused test language.
+static UNUSED_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("unused", &[], &UNUSED_EXTENSIONS, &[], test_grammar);
+
 /// One adapter that serves a language without a language server.
 #[derive(Clone, Copy, Debug)]
 struct ServerlessAdapter;
 
 impl LanguageAdapter for ServerlessAdapter {
-    fn id(&self) -> &'static str {
-        "serverless"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &SERVERLESS_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["kv"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1550,24 +1480,16 @@ fn no_options(_settings: kvim_settings::LanguageSettings) -> Value {
 }
 
 impl LanguageAdapter for TwoServerAdapter {
-    fn id(&self) -> &'static str {
-        "two"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &TWO_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["two"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1705,24 +1627,16 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
 ];
 
 impl LanguageAdapter for GatedAdapter {
-    fn id(&self) -> &'static str {
-        "gate"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &GATE_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["gate"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1759,24 +1673,16 @@ static UNUSED_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclarati
 }];
 
 impl LanguageAdapter for UnusedAdapter {
-    fn id(&self) -> &'static str {
-        "unused"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &UNUSED_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["unused"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -1848,93 +1754,6 @@ fn a_workspace_without_the_root_marker_starts_no_server_of_its_language() {
     ));
     assert_eq!(services.session_count(), 0);
     assert!(services.try_recv().is_none());
-}
-
-#[test]
-fn nested_arrays_share_one_element_budget() {
-    let outer: Box<serde_json::value::RawValue> =
-        serde_json::from_str("[1, 2, 3]").expect("the test value parses");
-    let mut budget = ArrayBudget::new(4, 4);
-
-    let first: Vec<u8> = deserialize_bounded_array(&outer, 8, LspBound::Locations, &mut budget)
-        .expect("three elements fit the budget");
-    assert_eq!(first, [1, 2, 3]);
-
-    // A hostile server cannot split many elements over many short arrays,
-    // because one budget counts them all.
-    let error = deserialize_bounded_array::<u8>(&outer, 8, LspBound::Locations, &mut budget)
-        .expect_err("the shared budget holds only one further element");
-    assert!(matches!(
-        error,
-        LspError::Bounds {
-            measure: LspBound::Locations,
-            ..
-        }
-    ));
-}
-
-#[test]
-fn one_helper_enforces_every_cumulative_budget() {
-    assert!(enforce(4, 4, LspBound::Requests).is_ok());
-    let error = enforce(5, 4, LspBound::OutputBytes).expect_err("five passes the limit of four");
-    assert!(matches!(
-        error,
-        LspError::Bounds {
-            measure: LspBound::OutputBytes,
-            limit: 4,
-            actual: 5,
-        }
-    ));
-}
-
-#[test]
-fn the_workspace_root_contains_every_path_and_uri() {
-    let root = WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute");
-
-    assert_eq!(
-        root.uri(Path::new(DOCUMENT))
-            .expect("the path is contained"),
-        DOCUMENT_URI
-    );
-    assert_eq!(
-        root.path_from_uri(DOCUMENT_URI)
-            .expect("the URI is contained"),
-        PathBuf::from(DOCUMENT)
-    );
-    assert!(matches!(
-        root.uri(Path::new("/etc/passwd")),
-        Err(LspError::PathEscape)
-    ));
-    assert!(matches!(
-        root.path_from_uri("file:///workspace/../etc/passwd"),
-        Err(LspError::PathEscape)
-    ));
-    assert!(matches!(
-        root.path_from_uri("http://example.com/workspace/src/main.rs"),
-        Err(LspError::PathEscape)
-    ));
-    assert!(matches!(
-        root.path_from_uri("file:///workspace/src/%zz.rs"),
-        Err(LspError::PathEscape)
-    ));
-    assert!(matches!(
-        WorkspaceRoot::new(PathBuf::from("relative")),
-        Err(LspError::PathEscape)
-    ));
-}
-
-#[test]
-fn a_space_in_a_path_survives_the_uri_round_trip() {
-    let root = WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute");
-    let path = PathBuf::from("/workspace/src/my file.rs");
-
-    let uri = root.uri(&path).expect("the path is contained");
-
-    assert_eq!(uri, "file:///workspace/src/my%20file.rs");
-    assert_eq!(
-        root.path_from_uri(&uri).expect("the URI is contained"),
-        path
-    );
 }
 
 /// Sends one `$/progress` notification from the mock server.

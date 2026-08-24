@@ -5,25 +5,16 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the GLSL adapter owns.
-///
-/// The table names the shader stage extensions of the reference configuration
-/// beside the generic extension. Each extension names one stage of the
-/// rendering pipeline.
-const GLSL_EXTENSIONS: [&str; 7] = ["comp", "frag", "geom", "glsl", "tesc", "tese", "vert"];
-
-/// The language names that the GLSL adapter answers to.
-const GLSL_LANGUAGE_NAMES: [&str; 1] = ["glsl"];
 
 /// The node kinds whose content takes one more indent level in GLSL.
 ///
@@ -41,12 +32,6 @@ const GLSL_INDENT_SCOPES: [&str; 6] = [
 
 /// The characters that close a GLSL indent scope.
 const GLSL_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the GLSL grammar of the bundled parser.
-fn glsl_language() -> Language {
-    // The crate holds one grammar and names it after its language.
-    tree_sitter_glsl::LANGUAGE_GLSL.into()
-}
 
 /// Returns the initialization options of `glsl_analyzer`.
 ///
@@ -97,34 +82,19 @@ impl GlslAdapter {
 }
 
 impl LanguageAdapter for GlslAdapter {
-    fn id(&self) -> &'static str {
-        "glsl"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("glsl").expect("the grammar-glsl feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &GLSL_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &GLSL_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("//"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "glsl",
-            language: glsl_language,
-            highlights_query: tree_sitter_glsl::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

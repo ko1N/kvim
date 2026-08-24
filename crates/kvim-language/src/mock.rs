@@ -24,18 +24,18 @@ use tokio_util::sync::CancellationToken;
 use kvim_settings::IndentSettings;
 
 use super::LanguageRegistry;
-use super::protocol::{LSP_OUTPUT_BYTES_MAX, WorkspaceRoot, read_frame};
 use super::server::{LanguageServerId, ServerFormatting};
-use super::session::{
-    LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
-    TransportFactory, start,
+use super::session::{LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start};
+use kvim_lsp::{
+    LSP_EVENT_QUEUE_CAPACITY, LSP_OUTPUT_BYTES_MAX, ProjectId, ServerId, TransportFactory,
+    WorkspaceRoot, read_frame,
 };
 
 /// The prepared byte streams that [`pipe`] hands to one session.
 ///
 /// A caller never builds this value, and it names no protocol detail. It
 /// exists in the signatures of this module, so it must be reachable.
-pub use super::session::Transport;
+pub use kvim_lsp::Transport;
 
 /// The capacity of one test pipe, in bytes.
 pub const PIPE_BYTES: usize = 1024 * 1024;
@@ -278,6 +278,10 @@ pub fn connected_with_settings(settings: Value) -> (Harness, MockServer) {
 fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> SessionConfig {
     SessionConfig {
         id,
+        // Every session of this harness belongs to one project, and the
+        // declaration order of the identity names its server.
+        project: ProjectId::FIRST,
+        server_id: ServerId::new(id.order() as u64),
         language_id: "mock",
         server: "mock-server",
         formatting: ServerFormatting::Enabled,

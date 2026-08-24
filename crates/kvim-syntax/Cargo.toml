@@ -1,0 +1,108 @@
+[package]
+name = "kvim-syntax"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+# Basics
+thiserror.workspace = true
+
+# Parsing
+tree-sitter.workspace = true
+tree-sitter-highlight.workspace = true
+
+# Grammars. Each one belongs to the feature of its language, so a consumer
+# compiles only the languages that it enables.
+tree-sitter-asm = { workspace = true, optional = true }
+tree-sitter-bash = { workspace = true, optional = true }
+tree-sitter-c = { workspace = true, optional = true }
+tree-sitter-cpp = { workspace = true, optional = true }
+tree-sitter-css = { workspace = true, optional = true }
+tree-sitter-fish = { workspace = true, optional = true }
+tree-sitter-glsl = { workspace = true, optional = true }
+tree-sitter-go = { workspace = true, optional = true }
+tree-sitter-hcl = { workspace = true, optional = true }
+tree-sitter-html = { workspace = true, optional = true }
+tree-sitter-javascript = { workspace = true, optional = true }
+tree-sitter-json = { workspace = true, optional = true }
+tree-sitter-lua = { workspace = true, optional = true }
+tree-sitter-md = { workspace = true, optional = true }
+tree-sitter-nix = { workspace = true, optional = true }
+tree-sitter-python = { workspace = true, optional = true }
+tree-sitter-rust = { workspace = true, optional = true }
+tree-sitter-scss = { workspace = true, optional = true }
+tree-sitter-sequel = { workspace = true, optional = true }
+tree-sitter-toml-ng = { workspace = true, optional = true }
+tree-sitter-typescript = { workspace = true, optional = true }
+tree-sitter-xml = { workspace = true, optional = true }
+tree-sitter-yaml = { workspace = true, optional = true }
+tree-sitter-zig = { workspace = true, optional = true }
+
+[features]
+# No grammar is bundled by default, so a consumer pays for the languages that
+# it names and for nothing else.
+default = []
+
+grammar-asm = ["dep:tree-sitter-asm"]
+grammar-bash = ["dep:tree-sitter-bash"]
+grammar-c = ["dep:tree-sitter-c"]
+# The C++ highlight query inherits the C patterns, so the C++ language needs
+# the C grammar crate without enabling the C language itself.
+grammar-cpp = ["dep:tree-sitter-cpp", "dep:tree-sitter-c"]
+grammar-css = ["dep:tree-sitter-css"]
+grammar-fish = ["dep:tree-sitter-fish"]
+grammar-glsl = ["dep:tree-sitter-glsl"]
+grammar-go = ["dep:tree-sitter-go"]
+grammar-html = ["dep:tree-sitter-html"]
+grammar-javascript = ["dep:tree-sitter-javascript"]
+grammar-json = ["dep:tree-sitter-json"]
+grammar-lua = ["dep:tree-sitter-lua"]
+grammar-markdown = ["dep:tree-sitter-md"]
+grammar-nix = ["dep:tree-sitter-nix"]
+grammar-python = ["dep:tree-sitter-python"]
+grammar-rust = ["dep:tree-sitter-rust"]
+# The SCSS highlight query inherits the CSS patterns.
+grammar-scss = ["dep:tree-sitter-scss", "dep:tree-sitter-css"]
+grammar-sql = ["dep:tree-sitter-sequel"]
+grammar-terraform = ["dep:tree-sitter-hcl"]
+grammar-toml = ["dep:tree-sitter-toml-ng"]
+# The TSX and TypeScript highlight queries inherit the JavaScript patterns.
+grammar-tsx = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+grammar-typescript = ["dep:tree-sitter-typescript", "dep:tree-sitter-javascript"]
+grammar-xml = ["dep:tree-sitter-xml"]
+grammar-yaml = ["dep:tree-sitter-yaml"]
+grammar-zig = ["dep:tree-sitter-zig"]
+
+all-grammars = [
+  "grammar-asm",
+  "grammar-bash",
+  "grammar-c",
+  "grammar-cpp",
+  "grammar-css",
+  "grammar-fish",
+  "grammar-glsl",
+  "grammar-go",
+  "grammar-html",
+  "grammar-javascript",
+  "grammar-json",
+  "grammar-lua",
+  "grammar-markdown",
+  "grammar-nix",
+  "grammar-python",
+  "grammar-rust",
+  "grammar-scss",
+  "grammar-sql",
+  "grammar-terraform",
+  "grammar-toml",
+  "grammar-tsx",
+  "grammar-typescript",
+  "grammar-xml",
+  "grammar-yaml",
+  "grammar-zig",
+]
+
+[[example]]
+name = "highlight"
+required-features = ["grammar-rust"]

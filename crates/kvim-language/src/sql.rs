@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the SQL adapter owns.
-const SQL_EXTENSIONS: [&str; 1] = ["sql"];
-
-/// The language names that the SQL adapter answers to.
-const SQL_LANGUAGE_NAMES: [&str; 1] = ["sql"];
 
 /// The node kinds whose content takes one more indent level in SQL.
 ///
@@ -37,11 +32,6 @@ const SQL_INDENT_SCOPES: [&str; 5] = [
 
 /// The characters that close an SQL indent scope.
 const SQL_CLOSING_DELIMITERS: [char; 1] = [')'];
-
-/// Returns the SQL grammar of the bundled parser.
-fn sql_language() -> Language {
-    tree_sitter_sequel::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `sqls`.
 ///
@@ -101,34 +91,19 @@ impl SqlAdapter {
 }
 
 impl LanguageAdapter for SqlAdapter {
-    fn id(&self) -> &'static str {
-        "sql"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("sql").expect("the grammar-sql feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &SQL_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &SQL_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("--"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "sql",
-            language: sql_language,
-            highlights_query: tree_sitter_sequel::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

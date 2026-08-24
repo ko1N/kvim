@@ -120,7 +120,7 @@ pub struct TempRepository {
 }
 
 impl TempRepository {
-    /// Creates one empty repository on the [`INITIAL_BRANCH`] branch.
+    /// Creates one empty repository on the `INITIAL_BRANCH` branch.
     #[must_use]
     pub fn new(label: &str) -> Self {
         let repository = Self {
@@ -158,6 +158,28 @@ impl TempRepository {
     /// development shell and the build sandbox both provide `git`, so either
     /// outcome is a defect of the test or of the environment that runs it.
     pub fn git(&self, args: &[&str]) {
+        let _ = self.answer(args);
+    }
+
+    /// Returns the full object identifier of the current `HEAD` commit.
+    ///
+    /// A review base is one full commit object identifier, so a test that
+    /// captures one worktree diff needs the exact value that Git wrote.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the repository holds no commit, because every caller records
+    /// one first.
+    #[must_use]
+    pub fn head(&self) -> String {
+        String::from_utf8(self.answer(&["rev-parse", "HEAD"]))
+            .expect("git writes one hexadecimal identifier")
+            .trim()
+            .to_owned()
+    }
+
+    /// Runs one `git` command and returns its standard output.
+    fn answer(&self, args: &[&str]) -> Vec<u8> {
         let output = Command::new(GIT_PROGRAM)
             .args(TEST_AUTHOR)
             .args(args)
@@ -172,6 +194,7 @@ impl TempRepository {
             "the git command {args:?} failed: {}",
             String::from_utf8_lossy(&output.stderr)
         );
+        output.stdout
     }
 
     /// Records every current file of the working tree in one commit.

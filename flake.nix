@@ -33,15 +33,17 @@
           overlays = [ rust-overlay.overlays.default ];
         };
 
-      # Single source of truth: the pinned toolchain lives in
-      # rust-toolchain.toml, not hardcoded here.
+      # The development and release toolchain lives in rust-toolchain.toml.
+      # Cargo.toml separately owns the minimum supported Rust version.
       toolchainFor = pkgs: pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
+      msrvToolchainFor = pkgs: pkgs.rust-bin.stable.${cargoToml.workspace.package.rust-version}.minimal;
     in
     {
       devShells = forAllSystems (
         system:
         let
           pkgs = pkgsFor system;
+          msrvToolchain = msrvToolchainFor pkgs;
           rustToolchain = toolchainFor pkgs;
         in
         {
@@ -53,6 +55,13 @@
               # The toolchain supplies Cargo, Rust, rustfmt, Clippy, and
               # `rust-analyzer` at the pinned version.
               rustToolchain
+            ];
+          };
+
+          msrv = pkgs.mkShellNoCC {
+            packages = [
+              pkgs.git
+              msrvToolchain
             ];
           };
         }

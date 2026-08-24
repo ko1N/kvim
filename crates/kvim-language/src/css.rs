@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the CSS adapter owns.
-const CSS_EXTENSIONS: [&str; 1] = ["css"];
-
-/// The language names that the CSS adapter answers to.
-const CSS_LANGUAGE_NAMES: [&str; 1] = ["css"];
 
 /// The node kinds whose content takes one more indent level in CSS.
 ///
@@ -31,11 +26,6 @@ const CSS_INDENT_SCOPES: [&str; 2] = ["arguments", "block"];
 
 /// The characters that close a CSS indent scope.
 const CSS_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
-
-/// Returns the CSS grammar of the bundled parser.
-fn css_language() -> Language {
-    tree_sitter_css::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `vscode-css-language-server`.
 ///
@@ -99,36 +89,21 @@ impl CssAdapter {
 }
 
 impl LanguageAdapter for CssAdapter {
-    fn id(&self) -> &'static str {
-        "css"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("css").expect("the grammar-css feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &CSS_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &CSS_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // CSS defines a block comment alone, so the metadata carries no line
         // token and the first-release toggle stays disabled.
         CommentStyle::new(None, Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "css",
-            language: css_language,
-            highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {
