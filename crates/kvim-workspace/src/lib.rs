@@ -46,6 +46,7 @@
 mod buffer;
 mod clipboard;
 mod diff;
+mod diff_capture;
 mod file;
 mod fuzzy;
 mod git;
@@ -82,6 +83,11 @@ pub use diff::{
     RELOCATION_WINDOWS_MAX, REVIEW_COMMENT_BYTES_MAX, REVIEW_CONTEXT_LINES_MAX, Relocation,
     ReviewAnchor, ReviewAnchorError, SHA1_HEX_CHARS, SHA256_HEX_CHARS, SelectionDigest, TextDiff,
     TextDiffError, UnsupportedMode, WorktreeDiff, WorktreeDiffError, relocate,
+};
+pub use diff_capture::{
+    AuthorityProjection, DIFF_ANSWER_OUTPUT_BYTES_MAX, DIFF_BINARY_SCAN_BYTES,
+    DIFF_CAPTURE_ATTEMPTS_MAX, DIFF_CAPTURE_DEADLINE, DIFF_PROCESS_OUTPUT_BYTES_MAX,
+    DIFF_SOURCE_BYTES_MAX, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
 };
 pub use file::{
     FileChange, FileIdentity, FileTarget, LoadedFile, OpenError, SaveError, SavedFile, identity,

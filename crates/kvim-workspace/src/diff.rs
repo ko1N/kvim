@@ -2138,12 +2138,12 @@ fn context_matches(recorded: &AnchorContext, found: &AnchorContext) -> bool {
 }
 
 /// Absorbs one length-prefixed byte string, so two fields never run together.
-fn absorb(hasher: &mut Hasher, bytes: &[u8]) {
+pub(crate) fn absorb(hasher: &mut Hasher, bytes: &[u8]) {
     absorb_count(hasher, bytes.len());
     hasher.update(bytes);
 }
 
-fn absorb_count(hasher: &mut Hasher, count: usize) {
+pub(crate) fn absorb_count(hasher: &mut Hasher, count: usize) {
     let count = u64::try_from(count).expect("a bounded count fits one u64");
     hasher.update(&count.to_le_bytes());
 }
