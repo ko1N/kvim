@@ -6,6 +6,7 @@
 //! catalog entry, the comment metadata, the indent rule, the language servers,
 //! and the external formatter. See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -13,7 +14,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -24,7 +25,15 @@ use super::{
 /// value. A `function_call` node spans the name and the parentheses of a call.
 /// Each one carries its own opening and closing character, so each one behaves
 /// exactly as the equivalent node of a brace language.
-const TERRAFORM_INDENT_SCOPES: [&str; 4] = ["block", "function_call", "object", "tuple"];
+const TERRAFORM_INDENT_SCOPES: [IndentScope; 4] = [
+    IndentScope::whole("block"),
+    IndentScope::whole("function_call"),
+    IndentScope::whole("object"),
+    IndentScope::whole("tuple"),
+];
+
+/// The number of columns that one Terraform indent level takes.
+const TERRAFORM_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a Terraform indent scope.
 const TERRAFORM_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -112,6 +121,7 @@ impl LanguageAdapter for TerraformAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &TERRAFORM_INDENT_SCOPES,
+            width: TERRAFORM_INDENT_WIDTH,
             closing_delimiters: &TERRAFORM_CLOSING_DELIMITERS,
         }
     }

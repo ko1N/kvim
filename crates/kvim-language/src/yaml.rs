@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,8 +13,8 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
-    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in YAML.
@@ -24,12 +25,15 @@ use super::{
 /// compound statement that owns each suite. A `flow_mapping` node and a
 /// `flow_sequence` node carry their own brackets, so both behave exactly as
 /// the equivalent node of a brace language.
-const YAML_INDENT_SCOPES: [&str; 4] = [
-    "block_mapping_pair",
-    "block_sequence_item",
-    "flow_mapping",
-    "flow_sequence",
+const YAML_INDENT_SCOPES: [IndentScope; 4] = [
+    IndentScope::whole("block_mapping_pair"),
+    IndentScope::whole("block_sequence_item"),
+    IndentScope::whole("flow_mapping"),
+    IndentScope::whole("flow_sequence"),
 ];
+
+/// The number of columns that one YAML indent level takes.
+const YAML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a YAML indent scope.
 ///
@@ -116,6 +120,7 @@ impl LanguageAdapter for YamlAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &YAML_INDENT_SCOPES,
+            width: YAML_INDENT_WIDTH,
             closing_delimiters: &YAML_CLOSING_DELIMITERS,
         }
     }

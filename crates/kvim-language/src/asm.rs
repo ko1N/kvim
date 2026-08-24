@@ -5,6 +5,7 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -15,6 +16,9 @@ use super::{
     BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
     LanguageServerDeclaration, ServerFormatting,
 };
+
+/// The number of columns that one assembly indent level takes.
+const ASM_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// Returns the initialization options of `asm-lsp`.
 ///
@@ -97,6 +101,7 @@ impl LanguageAdapter for AsmAdapter {
         // closes one.
         IndentRule {
             scopes: &[],
+            width: ASM_INDENT_WIDTH,
             closing_delimiters: &[],
         }
     }

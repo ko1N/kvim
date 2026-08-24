@@ -5,6 +5,7 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,8 +13,8 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration,
-    ServerFormatting,
+    CommentStyle, IndentRule, IndentScope, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in Zig.
@@ -23,19 +24,22 @@ use super::{
 /// type. `initializer_list` holds the values of every struct initializer, so
 /// the two initializer nodes above it stay out of the table and count no level
 /// twice.
-const ZIG_INDENT_SCOPES: [&str; 11] = [
-    "arguments",
-    "block",
-    "enum_declaration",
-    "error_set_declaration",
-    "initializer_list",
-    "opaque_declaration",
-    "parameters",
-    "parenthesized_expression",
-    "struct_declaration",
-    "switch_expression",
-    "union_declaration",
+const ZIG_INDENT_SCOPES: [IndentScope; 11] = [
+    IndentScope::whole("arguments"),
+    IndentScope::whole("block"),
+    IndentScope::whole("enum_declaration"),
+    IndentScope::whole("error_set_declaration"),
+    IndentScope::whole("initializer_list"),
+    IndentScope::whole("opaque_declaration"),
+    IndentScope::whole("parameters"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("struct_declaration"),
+    IndentScope::whole("switch_expression"),
+    IndentScope::whole("union_declaration"),
 ];
+
+/// The number of columns that one Zig indent level takes.
+const ZIG_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// The characters that close a Zig indent scope.
 const ZIG_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -110,6 +114,7 @@ impl LanguageAdapter for ZigAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &ZIG_INDENT_SCOPES,
+            width: ZIG_INDENT_WIDTH,
             closing_delimiters: &ZIG_CLOSING_DELIMITERS,
         }
     }

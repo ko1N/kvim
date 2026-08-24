@@ -80,6 +80,7 @@
 
 use std::ffi::OsStr;
 use std::fmt;
+use std::num::NonZeroU8;
 use std::path::Path;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
@@ -434,14 +435,83 @@ impl CommentStyle {
     }
 }
 
+/// One node kind whose content takes one more indent level.
+///
+/// A scope optionally names the field whose subtree it does not indent. A Nix
+/// `let_expression` spans its own `in` body, so without the exclusion that body
+/// would take the level of the `let` in addition to its own level. A scope that
+/// names no body indents the complete node. See `docs/language-services.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct IndentScope {
+    kind: &'static str,
+    body: Option<&'static str>,
+}
+
+impl IndentScope {
+    /// Creates a scope that indents the complete node.
+    ///
+    /// This is the ordinary case. A C `compound_statement` and a Rust `block`
+    /// each hold nothing after their content, so the scope reaches the closing
+    /// token of the node.
+    #[must_use]
+    pub const fn whole(kind: &'static str) -> Self {
+        debug_assert!(
+            !kind.is_empty(),
+            "a grammar names every node kind, so an empty kind matches no node and declares a scope that never applies"
+        );
+        Self { kind, body: None }
+    }
+
+    /// Creates a scope that indents the node only until its body field starts.
+    ///
+    /// Use this for a node that spans a body which carries its own level. The
+    /// Nix `let_expression` names its `in` body in the `body` field, and that
+    /// body indents itself, so the `let` must stop where the body starts.
+    #[must_use]
+    pub const fn until_body(kind: &'static str, body: &'static str) -> Self {
+        debug_assert!(
+            !kind.is_empty(),
+            "a grammar names every node kind, so an empty kind matches no node and declares a scope that never applies"
+        );
+        debug_assert!(
+            !body.is_empty(),
+            "a grammar names every field, so an empty field name excludes nothing and belongs in IndentScope::whole"
+        );
+        Self {
+            kind,
+            body: Some(body),
+        }
+    }
+
+    /// Returns the node kind that this scope indents.
+    #[must_use]
+    pub const fn kind(self) -> &'static str {
+        self.kind
+    }
+
+    /// Returns the field whose subtree this scope does not indent.
+    #[must_use]
+    pub const fn body(self) -> Option<&'static str> {
+        self.body
+    }
+}
+
 /// The indent rule of one language, as syntax-tree data.
 ///
 /// The rule stays a level count over node kinds, so it holds for every
-/// language whose grammar names its nested nodes.
+/// language whose grammar names its nested nodes. The width turns that level
+/// count into columns.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndentRule {
     /// The node kinds whose content takes one more indent level.
-    pub scopes: &'static [&'static str],
+    pub scopes: &'static [IndentScope],
+    /// The number of columns that one indent level takes in this language.
+    ///
+    /// The width is language data, exactly as the comment token is. The
+    /// adapter declares the convention of its language, and `EditorSettings`
+    /// keeps the override and the fallback for a buffer that no adapter serves.
+    /// `docs/settings.md` owns the resolution order.
+    pub width: NonZeroU8,
     /// The characters that close such a node at the start of a new line.
     pub closing_delimiters: &'static [char],
 }

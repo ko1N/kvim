@@ -5,11 +5,12 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -19,22 +20,25 @@ use super::{
 /// behaves exactly as the equivalent node of a brace language. `switch_case`
 /// and `switch_default` stand beside `switch_body`, because a case label takes
 /// one more level than the body that holds it.
-const JAVASCRIPT_INDENT_SCOPES: [&str; 14] = [
-    "arguments",
-    "array",
-    "array_pattern",
-    "class_body",
-    "formal_parameters",
-    "named_imports",
-    "object",
-    "object_pattern",
-    "parenthesized_expression",
-    "statement_block",
-    "switch_body",
-    "switch_case",
-    "switch_default",
-    "template_substitution",
+const JAVASCRIPT_INDENT_SCOPES: [IndentScope; 14] = [
+    IndentScope::whole("arguments"),
+    IndentScope::whole("array"),
+    IndentScope::whole("array_pattern"),
+    IndentScope::whole("class_body"),
+    IndentScope::whole("formal_parameters"),
+    IndentScope::whole("named_imports"),
+    IndentScope::whole("object"),
+    IndentScope::whole("object_pattern"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("statement_block"),
+    IndentScope::whole("switch_body"),
+    IndentScope::whole("switch_case"),
+    IndentScope::whole("switch_default"),
+    IndentScope::whole("template_substitution"),
 ];
+
+/// The number of columns that one JavaScript indent level takes.
+const JAVASCRIPT_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a JavaScript indent scope.
 const JAVASCRIPT_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -135,6 +139,7 @@ impl LanguageAdapter for JavascriptAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &JAVASCRIPT_INDENT_SCOPES,
+            width: JAVASCRIPT_INDENT_WIDTH,
             closing_delimiters: &JAVASCRIPT_CLOSING_DELIMITERS,
         }
     }

@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -21,15 +22,18 @@ use super::{
 /// `compound_statement` is the braced block of a function, of a loop, and of a
 /// condition. The list nodes hold the arguments, the parameters, the fields,
 /// the enumerators, and the initializers of a declaration.
-const C_INDENT_SCOPES: [&str; 7] = [
-    "argument_list",
-    "compound_statement",
-    "enumerator_list",
-    "field_declaration_list",
-    "initializer_list",
-    "parameter_list",
-    "parenthesized_expression",
+const C_INDENT_SCOPES: [IndentScope; 7] = [
+    IndentScope::whole("argument_list"),
+    IndentScope::whole("compound_statement"),
+    IndentScope::whole("enumerator_list"),
+    IndentScope::whole("field_declaration_list"),
+    IndentScope::whole("initializer_list"),
+    IndentScope::whole("parameter_list"),
+    IndentScope::whole("parenthesized_expression"),
 ];
+
+/// The number of columns that one C indent level takes.
+const C_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// The characters that close a C indent scope.
 const C_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -114,6 +118,7 @@ impl LanguageAdapter for CAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &C_INDENT_SCOPES,
+            width: C_INDENT_WIDTH,
             closing_delimiters: &C_CLOSING_DELIMITERS,
         }
     }

@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,8 +13,8 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
-    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in Bash.
@@ -28,16 +29,19 @@ use super::{
 /// holds a `do_group` that already carries the body. `elif_clause` and
 /// `else_clause` stay out of the table, because each one starts at the level of
 /// the `if` statement that holds it.
-const BASH_INDENT_SCOPES: [&str; 8] = [
-    "array",
-    "case_item",
-    "case_statement",
-    "command_substitution",
-    "compound_statement",
-    "do_group",
-    "if_statement",
-    "subshell",
+const BASH_INDENT_SCOPES: [IndentScope; 8] = [
+    IndentScope::whole("array"),
+    IndentScope::whole("case_item"),
+    IndentScope::whole("case_statement"),
+    IndentScope::whole("command_substitution"),
+    IndentScope::whole("compound_statement"),
+    IndentScope::whole("do_group"),
+    IndentScope::whole("if_statement"),
+    IndentScope::whole("subshell"),
 ];
+
+/// The number of columns that one Bash indent level takes.
+const BASH_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a Bash indent scope.
 ///
@@ -128,6 +132,7 @@ impl LanguageAdapter for BashAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &BASH_INDENT_SCOPES,
+            width: BASH_INDENT_WIDTH,
             closing_delimiters: &BASH_CLOSING_DELIMITERS,
         }
     }

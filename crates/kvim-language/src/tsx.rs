@@ -10,11 +10,12 @@
 //! grammar for it. One adapter carries one grammar entry point, so the `tsx`
 //! extension cannot stand in the TypeScript table.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -24,29 +25,32 @@ use super::{
 /// `jsx_element` node spans the opening element, the content, and the closing
 /// element, so one entry names the whole construct. A `jsx_expression` node
 /// spans the braces of an expression inside such an element.
-const TSX_INDENT_SCOPES: [&str; 21] = [
-    "arguments",
-    "array",
-    "array_pattern",
-    "class_body",
-    "enum_body",
-    "formal_parameters",
-    "interface_body",
-    "jsx_element",
-    "jsx_expression",
-    "named_imports",
-    "object",
-    "object_pattern",
-    "object_type",
-    "parenthesized_expression",
-    "statement_block",
-    "switch_body",
-    "switch_case",
-    "switch_default",
-    "template_substitution",
-    "type_arguments",
-    "type_parameters",
+const TSX_INDENT_SCOPES: [IndentScope; 21] = [
+    IndentScope::whole("arguments"),
+    IndentScope::whole("array"),
+    IndentScope::whole("array_pattern"),
+    IndentScope::whole("class_body"),
+    IndentScope::whole("enum_body"),
+    IndentScope::whole("formal_parameters"),
+    IndentScope::whole("interface_body"),
+    IndentScope::whole("jsx_element"),
+    IndentScope::whole("jsx_expression"),
+    IndentScope::whole("named_imports"),
+    IndentScope::whole("object"),
+    IndentScope::whole("object_pattern"),
+    IndentScope::whole("object_type"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("statement_block"),
+    IndentScope::whole("switch_body"),
+    IndentScope::whole("switch_case"),
+    IndentScope::whole("switch_default"),
+    IndentScope::whole("template_substitution"),
+    IndentScope::whole("type_arguments"),
+    IndentScope::whole("type_parameters"),
 ];
+
+/// The number of columns that one TSX indent level takes.
+const TSX_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a TSX indent scope.
 ///
@@ -150,6 +154,7 @@ impl LanguageAdapter for TsxAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &TSX_INDENT_SCOPES,
+            width: TSX_INDENT_WIDTH,
             closing_delimiters: &TSX_CLOSING_DELIMITERS,
         }
     }

@@ -4,6 +4,7 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -11,12 +12,16 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
-    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in JSON.
-const JSON_INDENT_SCOPES: [&str; 2] = ["array", "object"];
+const JSON_INDENT_SCOPES: [IndentScope; 2] =
+    [IndentScope::whole("array"), IndentScope::whole("object")];
+
+/// The number of columns that one JSON indent level takes.
+const JSON_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a JSON indent scope.
 const JSON_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
@@ -111,6 +116,7 @@ impl LanguageAdapter for JsonAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &JSON_INDENT_SCOPES,
+            width: JSON_INDENT_WIDTH,
             closing_delimiters: &JSON_CLOSING_DELIMITERS,
         }
     }

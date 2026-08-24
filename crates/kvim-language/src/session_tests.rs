@@ -4,6 +4,7 @@
 //! The mock server speaks the framing layer, so the tests cover the real
 //! protocol path. No test starts a language server of the host system.
 
+use std::num::NonZeroU8;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -28,11 +29,20 @@ use super::session::{
     LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome,
 };
 use super::{
-    CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
+    CommentStyle, DiagnosticSeverity, Grammar, IndentRule, IndentScope, LSP_CONTENT_CHANGES_MAX,
     LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX, LanguageAdapter, LanguageCatalogEntry,
     LanguageRegistry, LanguageServerDeclaration, LanguageServerId, LanguageServices, RustAdapter,
     ServerFormatting, SessionGeneration,
 };
+
+/// The node kind that a test adapter indents.
+const TEST_INDENT_SCOPES: [IndentScope; 1] = [IndentScope::whole("block")];
+
+/// The number of columns that one indent level takes in a test adapter.
+///
+/// The value matches the four-column default of the settings, so no test
+/// measures a language convention of its own.
+const TEST_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// Returns a buffer with the exact test document content.
 fn buffer(text: &str) -> TextBuffer {
@@ -1410,7 +1420,8 @@ impl LanguageAdapter for ServerlessAdapter {
 
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
-            scopes: &["block"],
+            scopes: &TEST_INDENT_SCOPES,
+            width: TEST_INDENT_WIDTH,
             closing_delimiters: &['}'],
         }
     }
@@ -1494,7 +1505,8 @@ impl LanguageAdapter for TwoServerAdapter {
 
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
-            scopes: &["block"],
+            scopes: &TEST_INDENT_SCOPES,
+            width: TEST_INDENT_WIDTH,
             closing_delimiters: &['}'],
         }
     }
@@ -1641,7 +1653,8 @@ impl LanguageAdapter for GatedAdapter {
 
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
-            scopes: &["block"],
+            scopes: &TEST_INDENT_SCOPES,
+            width: TEST_INDENT_WIDTH,
             closing_delimiters: &['}'],
         }
     }
@@ -1687,7 +1700,8 @@ impl LanguageAdapter for UnusedAdapter {
 
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
-            scopes: &["block"],
+            scopes: &TEST_INDENT_SCOPES,
+            width: TEST_INDENT_WIDTH,
             closing_delimiters: &['}'],
         }
     }

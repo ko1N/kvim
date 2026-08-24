@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -21,7 +22,10 @@ use super::{
 /// An `element` node spans the start tag, the content, and the end tag, so it
 /// supplies the level of its own content, exactly as the HTML node of the same
 /// name does.
-const XML_INDENT_SCOPES: [&str; 1] = ["element"];
+const XML_INDENT_SCOPES: [IndentScope; 1] = [IndentScope::whole("element")];
+
+/// The number of columns that one XML indent level takes.
+const XML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close an XML indent scope.
 ///
@@ -110,6 +114,7 @@ impl LanguageAdapter for XmlAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &XML_INDENT_SCOPES,
+            width: XML_INDENT_WIDTH,
             closing_delimiters: &XML_CLOSING_DELIMITERS,
         }
     }

@@ -4,6 +4,7 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -14,6 +15,9 @@ use super::{
     CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
+
+/// The number of columns that one Markdown indent level takes.
+const MARKDOWN_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// Returns the initialization options of `marksman`.
 ///
@@ -101,6 +105,7 @@ impl LanguageAdapter for MarkdownAdapter {
         // character closes one.
         IndentRule {
             scopes: &[],
+            width: MARKDOWN_INDENT_WIDTH,
             closing_delimiters: &[],
         }
     }

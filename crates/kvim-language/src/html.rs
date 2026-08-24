@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -22,7 +23,14 @@ use super::{
 /// entry names the whole construct. A `script_element` and a `style_element`
 /// carry raw text between the same two tags, and each one indents that text the
 /// same way.
-const HTML_INDENT_SCOPES: [&str; 3] = ["element", "script_element", "style_element"];
+const HTML_INDENT_SCOPES: [IndentScope; 3] = [
+    IndentScope::whole("element"),
+    IndentScope::whole("script_element"),
+    IndentScope::whole("style_element"),
+];
+
+/// The number of columns that one HTML indent level takes.
+const HTML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close an HTML indent scope.
 ///
@@ -114,6 +122,7 @@ impl LanguageAdapter for HtmlAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &HTML_INDENT_SCOPES,
+            width: HTML_INDENT_WIDTH,
             closing_delimiters: &HTML_CLOSING_DELIMITERS,
         }
     }

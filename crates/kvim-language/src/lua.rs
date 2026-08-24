@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, IndentScope, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -31,19 +32,22 @@ use super::{
 /// The remaining kinds are the bracketed constructs: the argument list of a
 /// call, the parameter list of a function, a parenthesized expression, and a
 /// table constructor.
-const LUA_INDENT_SCOPES: [&str; 11] = [
-    "arguments",
-    "do_statement",
-    "for_statement",
-    "function_declaration",
-    "function_definition",
-    "if_statement",
-    "parameters",
-    "parenthesized_expression",
-    "repeat_statement",
-    "table_constructor",
-    "while_statement",
+const LUA_INDENT_SCOPES: [IndentScope; 11] = [
+    IndentScope::whole("arguments"),
+    IndentScope::whole("do_statement"),
+    IndentScope::whole("for_statement"),
+    IndentScope::whole("function_declaration"),
+    IndentScope::whole("function_definition"),
+    IndentScope::whole("if_statement"),
+    IndentScope::whole("parameters"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("repeat_statement"),
+    IndentScope::whole("table_constructor"),
+    IndentScope::whole("while_statement"),
 ];
+
+/// The number of columns that one Lua indent level takes.
+const LUA_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a Lua indent scope.
 ///
@@ -128,6 +132,7 @@ impl LanguageAdapter for LuaAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &LUA_INDENT_SCOPES,
+            width: LUA_INDENT_WIDTH,
             closing_delimiters: &LUA_CLOSING_DELIMITERS,
         }
     }

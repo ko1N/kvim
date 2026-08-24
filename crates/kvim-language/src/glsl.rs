@@ -5,6 +5,7 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    BlockComment, CommentStyle, IndentRule, IndentScope, LanguageAdapter, LanguageCatalogEntry,
     LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -21,14 +22,17 @@ use super::{
 /// The GLSL grammar extends the C grammar, so the node kinds are the node kinds
 /// of C. The enumerator list stays out of the table, because the shading
 /// language defines no enumeration.
-const GLSL_INDENT_SCOPES: [&str; 6] = [
-    "argument_list",
-    "compound_statement",
-    "field_declaration_list",
-    "initializer_list",
-    "parameter_list",
-    "parenthesized_expression",
+const GLSL_INDENT_SCOPES: [IndentScope; 6] = [
+    IndentScope::whole("argument_list"),
+    IndentScope::whole("compound_statement"),
+    IndentScope::whole("field_declaration_list"),
+    IndentScope::whole("initializer_list"),
+    IndentScope::whole("parameter_list"),
+    IndentScope::whole("parenthesized_expression"),
 ];
+
+/// The number of columns that one GLSL indent level takes.
+const GLSL_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// The characters that close a GLSL indent scope.
 const GLSL_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -100,6 +104,7 @@ impl LanguageAdapter for GlslAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &GLSL_INDENT_SCOPES,
+            width: GLSL_INDENT_WIDTH,
             closing_delimiters: &GLSL_CLOSING_DELIMITERS,
         }
     }

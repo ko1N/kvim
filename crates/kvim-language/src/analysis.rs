@@ -182,7 +182,9 @@ pub(super) fn indent_level(
 
 /// Reports whether one node is an indent scope that holds the position inside.
 fn encloses(rule: IndentRule, node: Node<'_>, byte: usize) -> bool {
-    rule.scopes.contains(&node.kind()) && node.start_byte() < byte && byte < node.end_byte()
+    rule.scopes.iter().any(|scope| scope.kind() == node.kind())
+        && node.start_byte() < byte
+        && byte < node.end_byte()
 }
 
 /// Reports whether the new line starts with a closing delimiter.

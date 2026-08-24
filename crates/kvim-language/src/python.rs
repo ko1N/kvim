@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,8 +13,8 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
-    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in Python.
@@ -41,29 +42,32 @@ use super::{
 ///   statement ends at that line and no delimiter follows it.
 /// - A compound statement whose header spans several lines reports one level too
 ///   many, because the statement already supplies the level of its own body.
-const PYTHON_INDENT_SCOPES: [&str; 21] = [
-    "argument_list",
-    "case_clause",
-    "class_definition",
-    "dictionary",
-    "dictionary_comprehension",
-    "for_statement",
-    "function_definition",
-    "generator_expression",
-    "if_statement",
-    "list",
-    "list_comprehension",
-    "match_statement",
-    "parameters",
-    "parenthesized_expression",
-    "set",
-    "set_comprehension",
-    "subscript",
-    "try_statement",
-    "tuple",
-    "while_statement",
-    "with_statement",
+const PYTHON_INDENT_SCOPES: [IndentScope; 21] = [
+    IndentScope::whole("argument_list"),
+    IndentScope::whole("case_clause"),
+    IndentScope::whole("class_definition"),
+    IndentScope::whole("dictionary"),
+    IndentScope::whole("dictionary_comprehension"),
+    IndentScope::whole("for_statement"),
+    IndentScope::whole("function_definition"),
+    IndentScope::whole("generator_expression"),
+    IndentScope::whole("if_statement"),
+    IndentScope::whole("list"),
+    IndentScope::whole("list_comprehension"),
+    IndentScope::whole("match_statement"),
+    IndentScope::whole("parameters"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("set"),
+    IndentScope::whole("set_comprehension"),
+    IndentScope::whole("subscript"),
+    IndentScope::whole("try_statement"),
+    IndentScope::whole("tuple"),
+    IndentScope::whole("while_statement"),
+    IndentScope::whole("with_statement"),
 ];
+
+/// The number of columns that one Python indent level takes.
+const PYTHON_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// The characters that close a Python indent scope.
 ///
@@ -159,6 +163,7 @@ impl LanguageAdapter for PythonAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &PYTHON_INDENT_SCOPES,
+            width: PYTHON_INDENT_WIDTH,
             closing_delimiters: &PYTHON_CLOSING_DELIMITERS,
         }
     }

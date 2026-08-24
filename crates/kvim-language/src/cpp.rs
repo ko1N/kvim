@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -22,19 +23,22 @@ use super::{
 /// namespace and of a linkage specification. `field_initializer_list` holds the
 /// member initializers of a constructor. The two template lists hold the
 /// parameters and the arguments of a template.
-const CPP_INDENT_SCOPES: [&str; 11] = [
-    "argument_list",
-    "compound_statement",
-    "declaration_list",
-    "enumerator_list",
-    "field_declaration_list",
-    "field_initializer_list",
-    "initializer_list",
-    "parameter_list",
-    "parenthesized_expression",
-    "template_argument_list",
-    "template_parameter_list",
+const CPP_INDENT_SCOPES: [IndentScope; 11] = [
+    IndentScope::whole("argument_list"),
+    IndentScope::whole("compound_statement"),
+    IndentScope::whole("declaration_list"),
+    IndentScope::whole("enumerator_list"),
+    IndentScope::whole("field_declaration_list"),
+    IndentScope::whole("field_initializer_list"),
+    IndentScope::whole("initializer_list"),
+    IndentScope::whole("parameter_list"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("template_argument_list"),
+    IndentScope::whole("template_parameter_list"),
 ];
+
+/// The number of columns that one C++ indent level takes.
+const CPP_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// The characters that close a C++ indent scope.
 ///
@@ -127,6 +131,7 @@ impl LanguageAdapter for CppAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &CPP_INDENT_SCOPES,
+            width: CPP_INDENT_WIDTH,
             closing_delimiters: &CPP_CLOSING_DELIMITERS,
         }
     }

@@ -5,11 +5,12 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use super::ecma::{ESLINT_ROOT_MARKERS, eslint_options, eslint_workspace_settings, ts_ls_options};
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -20,27 +21,30 @@ use super::{
 /// so each one behaves exactly as the equivalent node of a brace language.
 /// `switch_case` and `switch_default` stand beside `switch_body`, because a
 /// case label takes one more level than the body that holds it.
-const TYPESCRIPT_INDENT_SCOPES: [&str; 19] = [
-    "arguments",
-    "array",
-    "array_pattern",
-    "class_body",
-    "enum_body",
-    "formal_parameters",
-    "interface_body",
-    "named_imports",
-    "object",
-    "object_pattern",
-    "object_type",
-    "parenthesized_expression",
-    "statement_block",
-    "switch_body",
-    "switch_case",
-    "switch_default",
-    "template_substitution",
-    "type_arguments",
-    "type_parameters",
+const TYPESCRIPT_INDENT_SCOPES: [IndentScope; 19] = [
+    IndentScope::whole("arguments"),
+    IndentScope::whole("array"),
+    IndentScope::whole("array_pattern"),
+    IndentScope::whole("class_body"),
+    IndentScope::whole("enum_body"),
+    IndentScope::whole("formal_parameters"),
+    IndentScope::whole("interface_body"),
+    IndentScope::whole("named_imports"),
+    IndentScope::whole("object"),
+    IndentScope::whole("object_pattern"),
+    IndentScope::whole("object_type"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("statement_block"),
+    IndentScope::whole("switch_body"),
+    IndentScope::whole("switch_case"),
+    IndentScope::whole("switch_default"),
+    IndentScope::whole("template_substitution"),
+    IndentScope::whole("type_arguments"),
+    IndentScope::whole("type_parameters"),
 ];
+
+/// The number of columns that one TypeScript indent level takes.
+const TYPESCRIPT_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a TypeScript indent scope.
 const TYPESCRIPT_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -139,6 +143,7 @@ impl LanguageAdapter for TypescriptAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &TYPESCRIPT_INDENT_SCOPES,
+            width: TYPESCRIPT_INDENT_WIDTH,
             closing_delimiters: &TYPESCRIPT_CLOSING_DELIMITERS,
         }
     }

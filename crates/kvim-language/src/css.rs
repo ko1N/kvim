@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
     LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -22,7 +23,11 @@ use super::{
 /// `arguments` node spans the parentheses of a function call. Each one carries
 /// its own opening and closing character, so each one behaves exactly as the
 /// equivalent node of a brace language.
-const CSS_INDENT_SCOPES: [&str; 2] = ["arguments", "block"];
+const CSS_INDENT_SCOPES: [IndentScope; 2] =
+    [IndentScope::whole("arguments"), IndentScope::whole("block")];
+
+/// The number of columns that one CSS indent level takes.
+const CSS_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a CSS indent scope.
 const CSS_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
@@ -109,6 +114,7 @@ impl LanguageAdapter for CssAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &CSS_INDENT_SCOPES,
+            width: CSS_INDENT_WIDTH,
             closing_delimiters: &CSS_CLOSING_DELIMITERS,
         }
     }

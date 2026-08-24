@@ -1,6 +1,7 @@
 //! Behavior tests for the language registry and the Tree-sitter adapters.
 
 use std::ffi::OsString;
+use std::num::NonZeroU8;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
@@ -19,11 +20,20 @@ use super::{
     ANALYSIS_SOURCE_LINES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax,
     CommentStyle, FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX,
     FormattedDocument, FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest,
-    Grammar, HighlightLimits, IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX,
+    Grammar, HighlightLimits, IndentRule, IndentScope, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX,
     LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageCatalogEntry, LanguageFormatter,
     LanguageRegistry, MarkdownAdapter, NixAdapter, Publication, RustAdapter, ServerFormatting,
     SyntaxHighlighter, SyntaxRole, SyntaxTree,
 };
+
+/// The node kind that a test adapter indents.
+const TEST_INDENT_SCOPES: [IndentScope; 1] = [IndentScope::whole("block")];
+
+/// The number of columns that one indent level takes in a test adapter.
+///
+/// The value matches the four-column default of the settings, so no test
+/// measures a language convention of its own.
+const TEST_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// A second adapter that proves the multi-language seam.
 ///
@@ -63,7 +73,8 @@ impl LanguageAdapter for SecondAdapter {
 
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
-            scopes: &["block"],
+            scopes: &TEST_INDENT_SCOPES,
+            width: TEST_INDENT_WIDTH,
             closing_delimiters: &['}'],
         }
     }

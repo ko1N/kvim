@@ -5,6 +5,7 @@
 //! The analysis itself is language-neutral, so a later adapter adds a language
 //! by supplying the same kinds of data. See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,29 +13,32 @@ use serde_json::{Value, json};
 use kvim_settings::{CheckDepth, LanguageSettings};
 
 use super::{
-    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    BlockComment, CommentStyle, IndentRule, IndentScope, LanguageAdapter, LanguageCatalogEntry,
     LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in Rust.
-const RUST_INDENT_SCOPES: [&str; 16] = [
-    "arguments",
-    "array_expression",
-    "block",
-    "declaration_list",
-    "enum_variant_list",
-    "field_declaration_list",
-    "field_initializer_list",
-    "match_block",
-    "ordered_field_declaration_list",
-    "parameters",
-    "token_tree",
-    "tuple_expression",
-    "tuple_pattern",
-    "type_arguments",
-    "type_parameters",
-    "use_list",
+const RUST_INDENT_SCOPES: [IndentScope; 16] = [
+    IndentScope::whole("arguments"),
+    IndentScope::whole("array_expression"),
+    IndentScope::whole("block"),
+    IndentScope::whole("declaration_list"),
+    IndentScope::whole("enum_variant_list"),
+    IndentScope::whole("field_declaration_list"),
+    IndentScope::whole("field_initializer_list"),
+    IndentScope::whole("match_block"),
+    IndentScope::whole("ordered_field_declaration_list"),
+    IndentScope::whole("parameters"),
+    IndentScope::whole("token_tree"),
+    IndentScope::whole("tuple_expression"),
+    IndentScope::whole("tuple_pattern"),
+    IndentScope::whole("type_arguments"),
+    IndentScope::whole("type_parameters"),
+    IndentScope::whole("use_list"),
 ];
+
+/// The number of columns that one Rust indent level takes.
+const RUST_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
 /// The characters that close a Rust indent scope.
 const RUST_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -109,6 +113,7 @@ impl LanguageAdapter for RustAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &RUST_INDENT_SCOPES,
+            width: RUST_INDENT_WIDTH,
             closing_delimiters: &RUST_CLOSING_DELIMITERS,
         }
     }

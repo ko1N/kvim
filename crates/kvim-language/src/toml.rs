@@ -4,6 +4,7 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -11,15 +12,21 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
-    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, IndentScope,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in TOML.
 ///
 /// A table header starts at the left margin, so only the two bracketed values
 /// nest.
-const TOML_INDENT_SCOPES: [&str; 2] = ["array", "inline_table"];
+const TOML_INDENT_SCOPES: [IndentScope; 2] = [
+    IndentScope::whole("array"),
+    IndentScope::whole("inline_table"),
+];
+
+/// The number of columns that one TOML indent level takes.
+const TOML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a TOML indent scope.
 const TOML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
@@ -103,6 +110,7 @@ impl LanguageAdapter for TomlAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &TOML_INDENT_SCOPES,
+            width: TOML_INDENT_WIDTH,
             closing_delimiters: &TOML_CLOSING_DELIMITERS,
         }
     }

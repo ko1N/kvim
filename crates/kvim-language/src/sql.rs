@@ -5,6 +5,7 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,7 +13,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, IndentScope, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -22,13 +23,16 @@ use super::{
 /// call with its arguments, a value list, a parenthesized predicate, and a
 /// nested query. Each one carries its own opening and closing character, so
 /// each one behaves exactly as the equivalent node of a brace language.
-const SQL_INDENT_SCOPES: [&str; 5] = [
-    "column_definitions",
-    "invocation",
-    "list",
-    "parenthesized_expression",
-    "subquery",
+const SQL_INDENT_SCOPES: [IndentScope; 5] = [
+    IndentScope::whole("column_definitions"),
+    IndentScope::whole("invocation"),
+    IndentScope::whole("list"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("subquery"),
 ];
+
+/// The number of columns that one SQL indent level takes.
+const SQL_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close an SQL indent scope.
 const SQL_CLOSING_DELIMITERS: [char; 1] = [')'];
@@ -109,6 +113,7 @@ impl LanguageAdapter for SqlAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &SQL_INDENT_SCOPES,
+            width: SQL_INDENT_WIDTH,
             closing_delimiters: &SQL_CLOSING_DELIMITERS,
         }
     }

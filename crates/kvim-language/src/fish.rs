@@ -5,6 +5,7 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -12,8 +13,8 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration,
-    ServerFormatting,
+    CommentStyle, IndentRule, IndentScope, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
 
 /// The node kinds whose content takes one more indent level in fish.
@@ -26,16 +27,19 @@ use super::{
 /// one more level than its switch statement. `else_clause` and `else_if_clause`
 /// stay out of the table, because each one starts at the level of the `if`
 /// statement that holds it.
-const FISH_INDENT_SCOPES: [&str; 8] = [
-    "begin_statement",
-    "case_clause",
-    "command_substitution",
-    "for_statement",
-    "function_definition",
-    "if_statement",
-    "switch_statement",
-    "while_statement",
+const FISH_INDENT_SCOPES: [IndentScope; 8] = [
+    IndentScope::whole("begin_statement"),
+    IndentScope::whole("case_clause"),
+    IndentScope::whole("command_substitution"),
+    IndentScope::whole("for_statement"),
+    IndentScope::whole("function_definition"),
+    IndentScope::whole("if_statement"),
+    IndentScope::whole("switch_statement"),
+    IndentScope::whole("while_statement"),
 ];
+
+/// The number of columns that one fish indent level takes.
+const FISH_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a fish indent scope.
 ///
@@ -114,6 +118,7 @@ impl LanguageAdapter for FishAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &FISH_INDENT_SCOPES,
+            width: FISH_INDENT_WIDTH,
             closing_delimiters: &FISH_CLOSING_DELIMITERS,
         }
     }

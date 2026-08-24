@@ -4,6 +4,7 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::num::NonZeroU8;
 use std::sync::OnceLock;
 
 use serde_json::{Value, json};
@@ -11,7 +12,7 @@ use serde_json::{Value, json};
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, LanguageAdapter,
+    BlockComment, CommentStyle, FormatterDeclaration, IndentRule, IndentScope, LanguageAdapter,
     LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
 
@@ -19,17 +20,20 @@ use super::{
 ///
 /// The binding set of an attribute set is not listed, because every node that
 /// holds one already nests its content. Listing both would count one level
-/// twice. A `let` expression holds its bindings and its body, so the body also
-/// takes the level of the bindings.
-const NIX_INDENT_SCOPES: [&str; 7] = [
-    "attrset_expression",
-    "formals",
-    "let_attrset_expression",
-    "let_expression",
-    "list_expression",
-    "parenthesized_expression",
-    "rec_attrset_expression",
+/// twice. A `let` expression spans its bindings and its `in` body, and the body
+/// already carries its own level, so the `let` scope stops at the `body` field.
+const NIX_INDENT_SCOPES: [IndentScope; 7] = [
+    IndentScope::whole("attrset_expression"),
+    IndentScope::whole("formals"),
+    IndentScope::whole("let_attrset_expression"),
+    IndentScope::until_body("let_expression", "body"),
+    IndentScope::whole("list_expression"),
+    IndentScope::whole("parenthesized_expression"),
+    IndentScope::whole("rec_attrset_expression"),
 ];
+
+/// The number of columns that one Nix indent level takes.
+const NIX_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
 /// The characters that close a Nix indent scope.
 const NIX_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
@@ -109,6 +113,7 @@ impl LanguageAdapter for NixAdapter {
     fn indent_rule(&self) -> IndentRule {
         IndentRule {
             scopes: &NIX_INDENT_SCOPES,
+            width: NIX_INDENT_WIDTH,
             closing_delimiters: &NIX_CLOSING_DELIMITERS,
         }
     }
