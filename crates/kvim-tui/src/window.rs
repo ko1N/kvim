@@ -22,16 +22,19 @@ use kvim_ui::{
 use kvim_workspace::BufferId;
 
 use super::buffer_view::WINBAR_ROWS;
+use super::jumps::JumpList;
 
 /// The view that one window keeps for its buffer.
 ///
 /// The tree holds the buffer identity only, so the adapter owns the cursor, the
-/// selection anchor, and the viewport of each window. Two windows that show one
-/// buffer therefore move and scroll independently. See `docs/windows.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// selection anchor, the viewport, and the jump list of each window. Two windows
+/// that show one buffer therefore move, scroll, and walk their recorded
+/// positions independently. See `docs/windows.md`.
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct WindowView {
     id: WindowId,
     state: WindowState,
+    jumps: JumpList,
 }
 
 impl WindowView {
@@ -40,6 +43,7 @@ impl WindowView {
         Self {
             id,
             state: WindowState::new(Viewport::new(NonZeroU16::MIN, NonZeroU16::MIN)),
+            jumps: JumpList::default(),
         }
     }
 }
@@ -197,6 +201,18 @@ impl Windows {
             .map(|view| &mut view.state)
     }
 
+    /// Returns the jump list of the named window for one change.
+    ///
+    /// Every push and every step changes the list, so the adapter hands out no
+    /// shared reference to it. A closed window drops its list with its view, and
+    /// two windows therefore walk independent histories. See `docs/windows.md`.
+    pub(super) fn jumps_mut(&mut self, id: WindowId) -> Option<&mut JumpList> {
+        self.views
+            .iter_mut()
+            .find(|view| view.id == id)
+            .map(|view| &mut view.jumps)
+    }
+
     /// Returns the viewport of the named window.
     #[must_use]
     pub fn viewport(&self, id: WindowId) -> Option<Viewport> {
@@ -259,8 +275,10 @@ impl Windows {
     /// Splits the focused window and focuses the new window.
     ///
     /// The new window shows the same buffer, and it copies the cursor, the
-    /// selection anchor, and the viewport of the source window, so it opens at
-    /// the same place. The settings decide which side receives it.
+    /// selection anchor, the viewport, and the jump list of the source window,
+    /// so it opens at the same place and returns to the same recorded
+    /// positions. Both lists grow apart from that moment, because each window
+    /// owns its own. The settings decide which side receives it.
     ///
     /// # Errors
     ///
@@ -280,11 +298,13 @@ impl Windows {
         let source = self.tree.focused_window();
         let id = self.tree.split(orientation, new_side)?;
         // The new window opens at the same place as its source window.
-        let state = self.state(source).unwrap_or_else(|| {
+        let source_view = self.views.iter().find(|view| view.id == source);
+        let mut view = source_view.cloned().unwrap_or_else(|| {
             debug_assert!(false, "every leaf window of the tree owns one view");
-            WindowView::new(id).state
+            WindowView::new(id)
         });
-        self.views.push(WindowView { id, state });
+        view.id = id;
+        self.views.push(view);
         self.sync_viewports();
         Ok(id)
     }

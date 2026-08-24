@@ -3210,6 +3210,74 @@ fn closing_a_window_discards_its_cursor() {
 }
 
 #[test]
+fn the_jump_commands_walk_the_recorded_positions_of_the_focused_window() {
+    let mut session = with_text(&["one", "two", "three", "four", "five"]);
+    type_keys(&mut session, "jj");
+    assert_eq!(session.cursor().line().get(), 2);
+    // A jump records the position that the cursor held before it moved.
+    session.record_jump();
+    type_keys(&mut session, "jj");
+    assert_eq!(session.cursor().line().get(), 4);
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('o'))), NOW);
+    assert_eq!(
+        session.cursor().line().get(),
+        2,
+        "`Ctrl-O` returns to the recorded position"
+    );
+
+    // A terminal reports `Ctrl-I` as `Tab`.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(
+        session.cursor().line().get(),
+        4,
+        "`Tab` returns to the position that the backward step left"
+    );
+}
+
+#[test]
+fn a_backward_jump_without_a_recorded_position_reports_the_end_of_the_list() {
+    let mut session = with_text(&["one", "two", "three"]);
+    type_keys(&mut session, "j");
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('o'))), NOW);
+    assert_eq!(
+        session.cursor().line().get(),
+        1,
+        "an empty list moves no cursor"
+    );
+    assert!(
+        message(&session).contains("no older position"),
+        "the empty list names the end that it reached: {}",
+        message(&session)
+    );
+}
+
+#[test]
+fn a_recorded_line_past_the_end_of_the_buffer_clamps_to_the_last_line() {
+    let mut session = with_text(&["one", "two", "three", "four", "five"]);
+    type_keys(&mut session, "jjjj");
+    session.record_jump();
+
+    // The buffer shrinks under the recorded position. The editor adjusts no
+    // recorded position while the user types, so the step clamps instead.
+    type_keys(&mut session, "gg");
+    type_keys(&mut session, "dddddd");
+    let last = session.buffer().line_count() - 1;
+    assert!(
+        last < 4,
+        "the buffer holds fewer lines than the record names"
+    );
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('o'))), NOW);
+    assert_eq!(
+        session.cursor().line().get(),
+        last,
+        "the recorded line clamps to the last line of the buffer"
+    );
+}
+
+#[test]
 fn a_reported_deadline_always_reaches_a_transition_that_clears_it() {
     // The event loop runs one catch-up transition for a deadline that already
     // passed. A deadline that no transition can clear would keep the loop out of

@@ -13,14 +13,6 @@
 //! different buffer. The entry keeps the display path beside the identity, so a
 //! jump into a buffer that the session already dropped reopens the file.
 
-// The window state owns one list and the jump commands drive it. Every item
-// here waits for those call sites, so the expectation holds until they exist
-// and then reports itself for removal.
-#![expect(
-    dead_code,
-    reason = "the window state and the jump commands are the only call sites"
-)]
-
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
