@@ -495,12 +495,16 @@ became visible and keeps that record while the sequence continues.
 ## Bracketed Paste And Unsupported Input
 
 The terminal session enables bracketed paste, so one paste arrives as one
-event instead of a run of key presses. The editor applies that block as one
-edit transaction and one undo unit, and it never runs a binding, an auto-indent
+event instead of a run of key presses. A terminal reports a carriage return as
+the line separator inside that event. `PasteText` converts every `\r\n` and
+every remaining `\r` of the block to `\n` before any bound applies. The stored
+block never holds a carriage return. The editor applies that block as one edit
+transaction and one undo unit, and it never runs a binding, an auto-indent
 rule, or an abbreviation over pasted text. `PasteText` carries the bound, so no
-paste exceeds `PASTE_BYTES_MAX`. An open question and an open command line take
-the block first, exactly as they take a typed character. Normal mode owns no
-text fallback, so a paste there changes no buffer.
+paste exceeds `PASTE_BYTES_MAX` after normalization. An open question and an
+open command line take the block first, exactly as they take a typed
+character. Normal mode owns no text fallback, so a paste there changes no
+buffer.
 
 A terminal that ignores the bracketed-paste request sends the key run instead,
 which the editor still accepts.
@@ -926,3 +930,23 @@ the adaptive split rule.
 
 See [`language-services.md`](language-services.md) for the behavior behind these
 commands.
+
+### Jump List
+
+| Keys | Command | Modes |
+|---|---|---|
+| `Ctrl-O` | Jump back to the previous position | Normal |
+| `Tab` | Jump forward to the next position | Normal |
+
+A terminal reports `Ctrl-I` as `Tab`, which is why `Tab` carries the forward
+step. `Tab` keeps its own commands in Insert mode and on the prompt line. See
+[`windows.md`](windows.md) for the jump list that these two commands walk.
+
+A jump records the position that the cursor held before it moved. These
+sources record one jump: a definition jump (`gd`), an accepted picker row of
+the file picker, the ripgrep picker, or the buffer picker, an opened file-tree
+entry, `:<number>`, an accepted search query, `n`, `N`, `gg`, `G`, and `%`.
+Every other motion records nothing. The half-page and the full-page moves
+record nothing. A jump motion that serves as the target of a waiting operator
+records nothing either, because the motion serves one change. The diagnostic
+motions, `]d` and `[d`, record nothing as well.

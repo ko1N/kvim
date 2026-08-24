@@ -1250,6 +1250,29 @@ fn l_on_a_file_opens_it_in_the_editor_window() {
 }
 
 #[test]
+fn opening_a_tree_entry_records_one_jump() {
+    let (_dir, mut session) = workspace();
+    let under = session.active_buffer().name().to_owned();
+    reveal(&mut session);
+
+    // The third row holds `README.md`, and the first read selected the first.
+    type_keys(&mut session, "jj");
+    assert_eq!(selected_name(&session), "README.md");
+    press_code(&mut session, KeyCode::Enter);
+    drain_file(&mut session);
+    assert_eq!(session.active_buffer().name(), "README.md");
+
+    // The opened entry replaced the buffer of the editor window, which Vim
+    // records as a jump.
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.active_buffer().name(),
+        under,
+        "`Ctrl-O` returns to the buffer that the opened entry replaced"
+    );
+}
+
+#[test]
 fn the_tree_paints_one_icon_for_each_entry_and_hides_them_on_request() {
     assert_eq!(
         EditorSettings::default().windows.file_tree_icons,

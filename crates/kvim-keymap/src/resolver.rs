@@ -10,6 +10,7 @@
 //! scope that can extend it owns the pending prefix, and the rest of the
 //! sequence stays in that scope.
 
+use std::borrow::Cow;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,10 +45,16 @@ pub enum PasteError {
 
 /// One bounded, non-empty paste block.
 ///
+/// A terminal reports a carriage return as the line separator inside a
+/// bracketed paste, so [`PasteText::new`] converts every `\r\n` and every
+/// remaining lone `\r` of the supplied text to `\n` before storage. A stored
+/// block therefore never holds a carriage return.
+///
 /// ```
 /// use kvim_keymap::{PasteError, PasteText};
 ///
 /// assert_eq!(PasteText::new("fn main")?.as_str(), "fn main");
+/// assert_eq!(PasteText::new("one\r\ntwo\rthree")?.as_str(), "one\ntwo\nthree");
 /// assert_eq!(PasteText::new(""), Err(PasteError::Empty));
 /// # Ok::<(), PasteError>(())
 /// ```
@@ -57,18 +64,30 @@ pub struct PasteText(String);
 impl PasteText {
     /// Builds a paste block and checks both bounds.
     ///
+    /// Converts every `\r\n` and every remaining lone `\r` of `text` to `\n`
+    /// before either bound applies, so the stored text is exactly the text
+    /// that the editor inserts. A terminal reports a carriage return as the
+    /// line separator inside a bracketed paste, and ropey treats a lone `\r`
+    /// as a line break on its own, so an unconverted block would render as
+    /// separate lines on screen while the buffer held carriage returns; a
+    /// save would then write a file that every other tool reads as one long
+    /// line.
+    ///
     /// # Errors
     ///
     /// Returns [`PasteError::Empty`] for empty text and [`PasteError::TooLong`]
-    /// for text above [`PASTE_BYTES_MAX`].
+    /// for text above [`PASTE_BYTES_MAX`] after normalization.
     pub fn new(text: &str) -> Result<Self, PasteError> {
         if text.is_empty() {
             return Err(PasteError::Empty);
         }
-        if text.len() > PASTE_BYTES_MAX {
-            return Err(PasteError::TooLong { bytes: text.len() });
+        let normalized = Self::normalize_line_separators(text);
+        if normalized.len() > PASTE_BYTES_MAX {
+            return Err(PasteError::TooLong {
+                bytes: normalized.len(),
+            });
         }
-        Ok(Self(text.to_owned()))
+        Ok(Self(normalized.into_owned()))
     }
 
     /// Returns the pasted text.
@@ -76,6 +95,30 @@ impl PasteText {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+
+    /// Converts every `\r\n` and every remaining lone `\r` of `text` to `\n`.
+    ///
+    /// Returns the borrowed text unchanged when it holds no carriage return,
+    /// because that is the common case on a terminal that already sends line
+    /// feeds, and this runs on the terminal event loop.
+    fn normalize_line_separators(text: &str) -> Cow<'_, str> {
+        if !text.contains('\r') {
+            return Cow::Borrowed(text);
+        }
+        let mut normalized = String::with_capacity(text.len());
+        let mut chars = text.chars().peekable();
+        while let Some(current) = chars.next() {
+            if current == '\r' {
+                if chars.peek() == Some(&'\n') {
+                    chars.next();
+                }
+                normalized.push('\n');
+            } else {
+                normalized.push(current);
+            }
+        }
+        Cow::Owned(normalized)
     }
 }
 
@@ -925,6 +968,50 @@ mod tests {
         assert_eq!(
             PasteText::new("x").map(|text| text.as_str().len()),
             Ok(1_usize)
+        );
+    }
+
+    #[test]
+    fn a_paste_block_converts_every_crlf_pair_to_one_line_feed() {
+        assert_eq!(
+            PasteText::new("one\r\ntwo").map(|text| text.as_str().to_owned()),
+            Ok("one\ntwo".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_paste_block_converts_a_lone_carriage_return_to_a_line_feed() {
+        assert_eq!(
+            PasteText::new("one\rtwo").map(|text| text.as_str().to_owned()),
+            Ok("one\ntwo".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_paste_block_converts_mixed_carriage_returns_in_one_block() {
+        assert_eq!(
+            PasteText::new("one\r\ntwo\rthree\nfour").map(|text| text.as_str().to_owned()),
+            Ok("one\ntwo\nthree\nfour".to_owned())
+        );
+    }
+
+    #[test]
+    fn normalization_lets_a_crlf_block_fit_that_would_not_fit_unnormalized() {
+        // Every `\r\n` pair collapses to one `\n`, so a block whose raw
+        // length exceeds the bound can still fit once normalized.
+        let pairs = super::PASTE_BYTES_MAX;
+        let text = "\r\n".repeat(pairs);
+        let pasted = PasteText::new(&text).expect("the normalized block fits the bound");
+        assert_eq!(pasted.as_str().len(), pairs);
+    }
+
+    #[test]
+    fn a_paste_block_above_the_bound_after_normalization_still_reports_too_long() {
+        let pairs = super::PASTE_BYTES_MAX + 1;
+        let text = "\r\n".repeat(pairs);
+        assert_eq!(
+            PasteText::new(&text),
+            Err(PasteError::TooLong { bytes: pairs })
         );
     }
 

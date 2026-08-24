@@ -85,10 +85,12 @@ use super::embed::{
     EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome,
     Refusal, fits,
 };
+use super::jumps::{JumpDirection, JumpEntry, JumpStep};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
-    LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
-    QueryPurpose, QueryState, Refusal as LanguageRefusal, formatter, has_formatter, jump_target,
+    LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump,
+    PendingPosition, PendingQuery, QueryPurpose, QueryState, Refusal as LanguageRefusal, formatter,
+    has_formatter, jump_target,
 };
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
@@ -2016,6 +2018,24 @@ impl Session {
             Command::PreviousDiagnostic => {
                 return self.jump_diagnostic(DiagnosticJump::Previous).or(cleared);
             }
+            // The jump list of the focused window. Both steps read the recorded
+            // positions and start no request of their own.
+            Command::JumpBack => return self.jump(JumpDirection::Backward).or(cleared),
+            Command::JumpForward => return self.jump(JumpDirection::Forward).or(cleared),
+            // The motions that Vim records as jumps. Every other motion, and
+            // every half-page and full-page move, records nothing. The same key
+            // as the target of a waiting operator moves inside one change, so
+            // it records nothing either. See `docs/input-actions.md`.
+            Command::MoveFirstLine
+            | Command::MoveLastLine
+            | Command::MoveMatchingBracket
+            | Command::SearchNext
+            | Command::SearchPrevious => {
+                if self.editing.pending_operator().is_none() {
+                    self.record_jump();
+                }
+                return self.apply_editing_command(command, count).or(cleared);
+            }
             Command::EndSearch => return self.end_search().or(cleared),
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
             Command::RevealInFileTree => return self.reveal_active_file().or(cleared),
@@ -2650,6 +2670,10 @@ impl Session {
             // restores the previous view.
             return Redraw::Needed;
         };
+        // The accepted row moves the cursor, and it can also change the buffer
+        // of the focused window, so the position under the picker joins the
+        // list before either move.
+        self.record_jump();
         match acceptance {
             Acceptance::ShowBuffer { buffer } => self.switch_to(buffer).or(Redraw::Needed),
             Acceptance::OpenFile {
@@ -2661,7 +2685,8 @@ impl Session {
                     u32::try_from(line).unwrap_or(u32::MAX),
                     u32::try_from(byte_column).unwrap_or(0),
                 );
-                self.open_at(path, position).or(Redraw::Needed)
+                self.open_at(path, PendingPosition::Document(position))
+                    .or(Redraw::Needed)
             }
         }
     }
@@ -2920,6 +2945,9 @@ impl Session {
                 return self.close_window(UnsavedChanges::Discard);
             }
             CommandLineCommand::GoToLine(line) => {
+                // `:<number>` is a jump, so the line under the command line
+                // joins the list before the cursor leaves it.
+                self.record_jump();
                 let target = usize::try_from(line.get()).unwrap_or(usize::MAX);
                 self.place_cursor(target - 1, 0);
             }
@@ -3612,20 +3640,27 @@ impl Session {
             self.set_message("no definition found", MessageLevel::Warning);
             return Redraw::Needed;
         };
+        // The answer names a target, so the cursor leaves the call site. The
+        // record runs before both branches move it, so one backward step
+        // returns to that call site in this file and in another file alike.
+        self.record_jump();
         if self.buffers.get(pending.buffer).and_then(FileBuffer::path) == Some(&location.path) {
             return self.move_to_position(location.span.start);
         }
-        self.open_at(location.path.clone(), location.span.start)
+        self.open_at(
+            location.path.clone(),
+            PendingPosition::Document(location.span.start),
+        )
     }
 
     /// Opens one path in the focused window and places the cursor at one
     /// position.
     ///
-    /// A definition jump and an accepted picker row both need this step, so
-    /// both use one path. A buffer that the editor already holds moves the
-    /// cursor at once. Every other path needs one file read, and the recorded
-    /// jump waits for the completed load.
-    fn open_at(&mut self, path: PathBuf, position: DocumentPosition) -> Redraw {
+    /// A definition jump, an accepted picker row, and a step of the jump list
+    /// all need this step, so all of them use one path. A buffer that the editor
+    /// already holds moves the cursor at once. Every other path needs one file
+    /// read, and the recorded jump waits for the completed load.
+    fn open_at(&mut self, path: PathBuf, position: PendingPosition) -> Redraw {
         self.language.jump = Some(PendingJump {
             path: path.clone(),
             position,
@@ -3729,7 +3764,7 @@ impl Session {
             .is_some_and(|file| file.text().version() == version)
     }
 
-    /// Moves the cursor to the recorded definition target of the active buffer.
+    /// Moves the cursor to the recorded jump target of the active buffer.
     fn follow_jump(&mut self) -> Redraw {
         let Some(jump) = self.language.jump.take() else {
             return Redraw::Skipped;
@@ -3739,7 +3774,10 @@ impl Session {
             self.language.jump = Some(jump);
             return Redraw::Skipped;
         }
-        self.move_to_position(jump.position)
+        match jump.position {
+            PendingPosition::Document(position) => self.move_to_position(position),
+            PendingPosition::Recorded { line, column } => self.move_to_recorded(line, column),
+        }
     }
 
     /// Places the cursor at one protocol position of the active buffer.
@@ -3758,6 +3796,112 @@ impl Session {
         self.place_cursor(line, column);
         self.reconcile_viewports();
         Redraw::Needed
+    }
+
+    /// Places the cursor at one recorded line and column of the active buffer.
+    ///
+    /// The position comes from an earlier moment of the same text, so an edit
+    /// may have removed the line that it names. [`Session::place_cursor`] clamps
+    /// through the editor, so a line past the end of the buffer lands on the
+    /// last line and the column lands inside that line. The editor therefore
+    /// adjusts no recorded position while the user types, and the edit path
+    /// stays free of that work. See `docs/windows.md`.
+    fn move_to_recorded(&mut self, line: usize, column: usize) -> Redraw {
+        self.place_cursor(line, column);
+        self.reconcile_viewports();
+        Redraw::Needed
+    }
+
+    /// Returns the entry that names the position of the cursor now.
+    ///
+    /// The entry carries the display path beside the buffer identity, so a step
+    /// back into a buffer that the editor has dropped reopens its file.
+    fn jump_entry(&self) -> JumpEntry {
+        let cursor = self.cursor();
+        let path = self
+            .buffers
+            .get(self.active)
+            .and_then(FileBuffer::path)
+            .map(Path::to_path_buf);
+        JumpEntry::new(
+            self.active,
+            path,
+            cursor.line().get(),
+            cursor.column().get(),
+        )
+    }
+
+    /// Records the position that the cursor holds now in the focused window.
+    ///
+    /// Every jump records its starting position *before* it moves the cursor. A
+    /// record after the move would store the destination, and the backward step
+    /// would then move nothing. The list belongs to the window, so a focus move
+    /// never carries a recorded position into another window. See
+    /// `docs/windows.md`.
+    pub(super) fn record_jump(&mut self) {
+        let entry = self.jump_entry();
+        let window = self.windows.focused_window();
+        let Some(jumps) = self.windows.jumps_mut(window) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return;
+        };
+        jumps.push(entry);
+    }
+
+    /// Walks one entry through the jump list of the focused window.
+    ///
+    /// A backward step from the newest position records the current position
+    /// first, so the matching forward step returns to it. Both ends of the list
+    /// report themselves instead of moving the cursor.
+    fn jump(&mut self, direction: JumpDirection) -> Redraw {
+        let current = self.jump_entry();
+        let window = self.windows.focused_window();
+        let Some(jumps) = self.windows.jumps_mut(window) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return Redraw::Skipped;
+        };
+        let step = jumps.step(direction, current);
+        match step {
+            JumpStep::Moved(entry) => self.follow_jump_entry(&entry),
+            JumpStep::AtOldest => {
+                self.set_message(OLDEST_JUMP_NOTE, MessageLevel::Info);
+                Redraw::Needed
+            }
+            JumpStep::AtNewest => {
+                self.set_message(NEWEST_JUMP_NOTE, MessageLevel::Info);
+                Redraw::Needed
+            }
+        }
+    }
+
+    /// Moves the cursor to one recorded position of the jump list.
+    ///
+    /// A buffer identity never returns after its buffer is gone, so a recorded
+    /// identity either names the same buffer or names none. A loaded buffer
+    /// therefore moves the cursor at once, and the focused window shows it first
+    /// when it holds other text. A buffer that the editor dropped reopens
+    /// through its recorded path, and a dropped buffer without a file reports
+    /// that the position is unreachable.
+    fn follow_jump_entry(&mut self, entry: &JumpEntry) -> Redraw {
+        let line = entry.line();
+        let column = entry.column();
+        if self.buffers.get(entry.buffer()).is_some() {
+            let shown = if entry.buffer() == self.active {
+                Redraw::Skipped
+            } else {
+                self.switch_to(entry.buffer())
+            };
+            return self.move_to_recorded(line, column).or(shown);
+        }
+        let Some(path) = entry.path() else {
+            self.set_message(UNLOADED_JUMP_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        };
+        self.open_at(
+            path.to_path_buf(),
+            PendingPosition::Recorded { line, column },
+        )
+        .or(Redraw::Needed)
     }
 
     /// Moves the cursor to the next or the previous diagnostic of the buffer.
@@ -4025,6 +4169,10 @@ impl Session {
         let Some(path) = selected else {
             return Redraw::Needed;
         };
+        // The sidebar holds the keys, but the file opens in the focused editor
+        // window, so the record names that window and runs before the open
+        // changes the buffer that it shows.
+        self.record_jump();
         let window = self.windows.focused_window();
         self.windows.focus_region(window);
         self.sync_context();
@@ -5417,6 +5565,12 @@ impl Session {
                 return Redraw::Needed;
             }
         };
+        // The query is valid, so the search moves the cursor to its first
+        // match. Vim treats that move as a jump, so the position under the
+        // search prompt joins the list before the move. A query that finds no
+        // match records the line that the cursor already holds, which the list
+        // folds into the entry that names it.
+        self.record_jump();
         let Some(active) = self.buffers.get(self.active) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
             return Redraw::Skipped;
@@ -5656,6 +5810,18 @@ const NO_REVEAL_PATH_NOTE: &str =
 
 /// The message that a server position outside the buffer shows.
 const OUTSIDE_BUFFER_NOTE: &str = "the language server named a position outside the buffer";
+
+/// The message that a backward step at the oldest recorded position shows.
+const OLDEST_JUMP_NOTE: &str = "the jump list holds no older position";
+
+/// The message that a forward step at the newest recorded position shows.
+const NEWEST_JUMP_NOTE: &str = "the jump list holds no newer position";
+
+/// The message that a step into a buffer without a file shows.
+///
+/// The editor dropped the buffer and no file holds its text, so nothing can
+/// bring the recorded position back.
+const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 
 /// The message that a missing `git` command shows once for each session.
 const GIT_MISSING_NOTE: &str =

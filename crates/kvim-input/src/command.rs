@@ -99,6 +99,12 @@ semantic_commands! {
     AlignCursorLineTop => ("align-cursor-line-top", "Align the cursor line to the window top"),
     AlignCursorLineBottom => ("align-cursor-line-bottom", "Align the cursor line to the window bottom"),
 
+    // The jump list. A jump records the position that the cursor held before
+    // it, and these two commands walk the recorded positions of the focused
+    // window. An ordinary motion records nothing.
+    JumpBack => ("jump-back", "Jump back to the previous position"),
+    JumpForward => ("jump-forward", "Jump forward to the next position"),
+
     // Count digits. A digit is a surface command, so it reaches the semantic
     // reducer through the shared registry instead of a second key table. `0` is
     // the first-column motion until a count is already open, so it keeps
@@ -334,6 +340,8 @@ impl Command {
             | Self::CenterCursorLine
             | Self::AlignCursorLineTop
             | Self::AlignCursorLineBottom
+            | Self::JumpBack
+            | Self::JumpForward
             | Self::CountDigitOne
             | Self::CountDigitTwo
             | Self::CountDigitThree
@@ -586,6 +594,8 @@ impl Command {
             | Self::CenterCursorLine
             | Self::AlignCursorLineTop
             | Self::AlignCursorLineBottom
+            | Self::JumpBack
+            | Self::JumpForward
             | Self::DeleteOverMotion
             | Self::ChangeOverMotion
             | Self::YankOverMotion
