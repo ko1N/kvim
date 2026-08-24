@@ -35,21 +35,12 @@ use kvim_settings::EditorSettings;
 use super::server::{
     LanguageServerDeclaration, LanguageServerId, RootMarkers, ServerGate, declarations_are_valid,
 };
-use super::session::{
-    LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
-    start,
-};
+use super::session::{LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start};
 use super::{AnalysisError, LanguageRegistry};
-use kvim_lsp::{LspBound, LspError, TransportFactory, WorkspaceRoot};
-
-/// The language-server sessions that one workspace runs at the same time.
-///
-/// One workspace mixes few languages, and a session starts only when the user
-/// opens a buffer of its language. Sixteen exceeds normal practice and still
-/// bounds the child processes of one editor. A session owns a long-lived child
-/// that no bounded process service starts, so this constant bounds those
-/// children on its own. See `docs/language-services.md`.
-pub const LSP_SESSIONS_MAX: usize = 16;
+use kvim_lsp::{
+    LSP_EVENT_QUEUE_CAPACITY, LSP_SESSIONS_MAX, LspBound, LspError, ProjectId, ServerId,
+    TransportFactory, WorkspaceRoot,
+};
 
 /// The state of one declared server in this workspace.
 enum LanguageService {
@@ -77,6 +68,14 @@ pub struct LanguageServices {
     events: mpsc::Sender<LanguageEvent>,
     results: mpsc::Receiver<LanguageEvent>,
     cancellation: CancellationToken,
+    /// The project that every session of this value belongs to.
+    ///
+    /// The editor edits one workspace, so it owns exactly one project. The
+    /// neutral records of `kvim-lsp` still carry this identity, so a later host
+    /// can run several of these values without mixing their records.
+    project: ProjectId,
+    /// The neutral identity of the next session that this value starts.
+    next_server: u64,
 }
 
 impl LanguageServices {
@@ -128,6 +127,8 @@ impl LanguageServices {
             events,
             results,
             cancellation: CancellationToken::new(),
+            project: ProjectId::FIRST,
+            next_server: 0,
         })
     }
 
@@ -243,7 +244,9 @@ impl LanguageServices {
             if self.services.contains_key(id) {
                 continue;
             }
-            let service = self.start_session(*id, declaration);
+            let server_id = ServerId::new(self.next_server);
+            self.next_server = self.next_server.saturating_add(1);
+            let service = self.start_session(*id, server_id, declaration);
             self.services.insert(*id, service);
         }
         Ok(())
@@ -253,10 +256,13 @@ impl LanguageServices {
     fn start_session(
         &self,
         id: LanguageServerId,
+        server_id: ServerId,
         declaration: &LanguageServerDeclaration,
     ) -> LanguageService {
         let config = SessionConfig {
             id,
+            project: self.project,
+            server_id,
             language_id: declaration.language_id,
             server: declaration.program,
             formatting: declaration.formatting,

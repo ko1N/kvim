@@ -77,8 +77,14 @@ pub enum LspBound {
     ResultIdBytes,
     /// The sections of one workspace configuration request.
     ConfigurationItems,
-    /// The language-server sessions that one workspace runs together.
+    /// The language-server sessions that one project runs together.
     Sessions,
+    /// The projects that one manager holds open together.
+    Projects,
+    /// The server processes of every open project of one manager.
+    Processes,
+    /// The result queue slots of one project, or of one complete manager.
+    QueueCapacity,
 }
 
 /// A typed language-server transport, protocol, containment, or bounds failure.
@@ -99,6 +105,19 @@ pub enum LspError {
     /// workspace, so it starts no process and holds no session budget.
     #[error("this workspace uses no declared language server for the path")]
     UnusedInWorkspace,
+    /// One project of that identity is already open in the manager.
+    ///
+    /// Project identity is caller-supplied, so two open projects can never take
+    /// one identity and no event can name two projects.
+    #[error("the project identity is already open")]
+    ProjectOpen,
+    /// Two servers of one project take one identity.
+    ///
+    /// Every request correlation reads project identity, server identity, and
+    /// the request number, so two servers of one identity would route the answer
+    /// of one server to the other.
+    #[error("two servers of the project take one identity")]
+    DuplicateServer,
     /// The declared server is not installed on this system.
     #[error("the language server executable is not installed")]
     NotInstalled,

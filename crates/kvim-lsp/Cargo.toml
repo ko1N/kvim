@@ -20,6 +20,9 @@ kvim-path.workspace = true
 # Basics
 thiserror.workspace = true
 
+# Concurrency
+futures-util.workspace = true
+
 # Serialization
 serde.workspace = true
 serde_json.workspace = true

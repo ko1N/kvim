@@ -22,16 +22,16 @@ use super::mock::{
     self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, ROOT,
     TEST_DEADLINE, connected, pipe, session,
 };
-use super::progress::{ProgressPercentage, ProgressReport, ProgressStage, SessionGeneration};
+use super::progress::{ProgressPercentage, ProgressReport, ProgressStage};
 use super::session::{
     LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
-    LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX,
-    LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome,
+    LSP_LOCATIONS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome,
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,
-    LanguageAdapter, LanguageCatalogEntry, LanguageRegistry, LanguageServerDeclaration,
-    LanguageServerId, LanguageServices, RustAdapter, ServerFormatting,
+    LSP_OPEN_DOCUMENTS_MAX, LanguageAdapter, LanguageCatalogEntry, LanguageRegistry,
+    LanguageServerDeclaration, LanguageServerId, LanguageServices, RustAdapter, ServerFormatting,
+    SessionGeneration,
 };
 
 /// Returns a buffer with the exact test document content.

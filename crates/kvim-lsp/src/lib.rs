@@ -20,6 +20,15 @@
 //! caller can leave no untracked process. [`initialize`] and [`shutdown`] each
 //! carry their own deadline.
 //!
+//! [`ProjectManager`] opens several projects. The caller names each
+//! [`ProjectId`], so two projects on one root stay independent. Opening returns
+//! one [`ProjectHandle`] and one [`ProjectDriver`], and the host runs that
+//! driver future. The crate creates no runtime and detaches no task.
+//!
+//! [`ServerSupervisor`] owns the bounded restart loop of one server. It records
+//! every step as one [`ProjectEvent`], and every event carries project identity
+//! and server identity.
+//!
 //! [`WorkspaceRoot`] contains every served document. It names each contained
 //! document as one `kvim_path::WorktreeRelativePath`, so one path rule holds
 //! for the URI boundary and for the filesystem boundary.
@@ -46,6 +55,7 @@
 mod document;
 mod encoding;
 mod process;
+mod project;
 mod protocol;
 
 pub use document::{
@@ -59,6 +69,14 @@ pub use process::{
     LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, ServerCapabilities, ServerInput,
     ServerProcess, ServerReport, ServerStreams, SynchronizationMode, Transport, TransportFactory,
     initialize, shutdown,
+};
+pub use project::{
+    Attempt, AttemptEnd, LSP_EVENT_QUEUE_CAPACITY, LSP_MANAGER_DOCUMENTS_MAX,
+    LSP_MANAGER_PROCESSES_MAX, LSP_MANAGER_QUEUE_CAPACITY_MAX, LSP_OPEN_DOCUMENTS_MAX,
+    LSP_PROJECT_CLOSE_DEADLINE, LSP_PROJECTS_MAX, LSP_SESSIONS_MAX, ManagerLimits,
+    ProjectDeclaration, ProjectDriver, ProjectEvent, ProjectEvents, ProjectHandle, ProjectId,
+    ProjectManager, ProjectServer, RequestKey, ServerAddress, ServerConversation,
+    ServerDeclaration, ServerEvent, ServerId, ServerSupervisor, SessionGeneration,
 };
 pub use protocol::{
     ArrayBudget, DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX,

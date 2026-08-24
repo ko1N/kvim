@@ -446,6 +446,29 @@ Closing one project consumes its handle and cannot cancel another project.
 The public project driver returns a future. The host starts and supervises it.
 The library creates no runtime and detaches no task.
 
+`ProjectManager::open` starts nothing. It reserves the budget of one project and
+returns one `ProjectHandle` and one `ProjectDriver`. The manager refuses a second
+project of one identity, and it refuses a project that passes the shared budget
+for projects, processes, open documents, or queue capacity. A refused project
+reserves nothing. The reservation returns to the manager when the handle drops,
+so a closed project, a cancelled project, and a forgotten project all release it.
+
+The handle reads the results of its own project and owns its cancellation.
+`ProjectHandle::close` consumes the handle, cancels that project alone, and waits
+`LSP_PROJECT_CLOSE_DEADLINE` for its driver to end. Dropping the handle instead
+requests best-effort cancellation: it starts the shutdown and waits for nothing.
+Every server of a dropped or cancelled project still ends through its own process
+drop, so no untracked child survives.
+
+`ServerSupervisor` owns the bounded restart loop of one server. It starts the
+process, runs the handshake, hands the live streams to one `ServerConversation`,
+runs `shutdown` and `exit`, ends the process, and starts at most
+`LSP_RESTARTS_MAX` further attempts. It records `Started`, `Unavailable`,
+`Failed`, `Restarted`, and `Stopped` as neutral `ProjectEvent` values, and the
+process reporter records `Reported` without waiting. Every event carries project
+identity and server identity, so a host translates one project's records into its
+own outcome vocabulary and never mixes two projects.
+
 Inside one project, kvim runs one persistent session for each selected server.
 The session speaks JSON-RPC and knows no server product. Rust-analyzer is adapter
 data, not a special case inside the client.
@@ -497,9 +520,11 @@ caller supplies the program, the arguments, the working directory, the
 initialization options, and the workspace settings as data, and it receives
 every recorded process fact through one sink that never waits.
 
-`kvim-language` owns the editor half over that seam: the open documents, the
-buffer versions, the pending requests, the diagnostic pulls, the hover markup,
-and the bounded restart of a failed attempt. It also holds the language
+`kvim-lsp` also owns the bounded restart loop, because that loop names no editor
+state. `kvim-language` owns the editor half over that seam: the open documents,
+the buffer versions, the pending requests, the diagnostic pulls, and the hover
+markup. It implements one `ServerConversation` for that half, and it translates
+every neutral `ProjectEvent` into one editor outcome. It also holds the language
 adapters, so no editor type crosses into `kvim-lsp`.
 
 The handshake offers the UTF-8 position encoding first and the UTF-16 position
@@ -1225,11 +1250,16 @@ a server that no longer runs.
 
 ## Protocol Limits And Deadlines
 
-The `language` module names each bound as one constant. The constant and the row
-below must always agree.
+The `lsp` module names each protocol and project bound as one constant, and the
+`language` module names each editor bound as one constant. The constant and the
+row below must always agree.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
+| Projects of one manager | `LSP_PROJECTS_MAX` | 8 projects | A host edits few worktrees at once, and every project owns child processes of its own. Eight exceeds normal practice and still bounds the processes, the queues, and the documents that one manager can reach. |
+| Processes of one manager | `LSP_MANAGER_PROCESSES_MAX` | 64 processes | The server processes of every open project together. The value is smaller than eight projects of sixteen sessions, because no host runs every language of every project at once, and one project must not spend the budget of every other project. |
+| Documents of one manager | `LSP_MANAGER_DOCUMENTS_MAX` | 256 documents | The open documents of every project together. The value is four times `LSP_OPEN_DOCUMENTS_MAX`, so four projects may each reserve their complete document budget and a fifth project must ask for less. |
+| Queue capacity of one manager | `LSP_MANAGER_QUEUE_CAPACITY_MAX` | 2,048 results | The result queue slots of every project together. The value is `LSP_PROJECTS_MAX` times `LSP_EVENT_QUEUE_CAPACITY`, so every project may reserve the complete result queue and no further project can. |
 | Servers of one adapter | `LANGUAGE_SERVERS_MAX` | 4 servers | One language splits its work over a type checker, a linter, and few other tools. Four declarations cover that practice and still bound the merge of one buffer. |
 | Root markers of one server | `LANGUAGE_ROOT_MARKERS_MAX` | 16 markers | One linter names every file name that can hold its configuration. The reference `eslint` configuration names twelve of them, so sixteen covers that practice and still bounds the probe of one workspace. |
 | Sessions of one project | `LSP_SESSIONS_MAX` | 16 sessions | One project mixes few languages, and a session starts only when a caller opens a document of its language. Sixteen exceeds normal practice and still bounds one project's child processes. |
@@ -1259,6 +1289,7 @@ below must always agree.
 | Formatting deadline | `LSP_FORMAT_DEADLINE` | 10 s | A formatter runs a complete pass over the document, so it needs more time than a position query. The value matches the process deadline of [`responsiveness.md`](responsiveness.md). |
 | Diagnostic pull deadline | `LSP_DIAGNOSTIC_DEADLINE` | 10 s | A pull analyses the complete document, and a cold linter loads its configuration first, so it needs the time of a formatter and not the time of a position query. |
 | Diagnostic pull delay | `LSP_DIAGNOSTIC_PULL_DELAY` | 300 ms | The delay after which a change settles and the session pulls again. A typist produces keystrokes far below this interval, so one burst of edits starts one pull. A reader still sees a new report shortly after the last keystroke. |
+| Project close deadline | `LSP_PROJECT_CLOSE_DEADLINE` | 2 s | Every server of one project ends inside its own shutdown deadline, and the servers of one project end together, so two seconds covers the scheduling of a full project. A driver that never ends cannot hold the caller past this value. |
 | Shutdown deadline | `LSP_SHUTDOWN_DEADLINE` | 250 ms | Editor exit must stay immediate. A server that does not answer `shutdown` in 250 ms is killed instead. |
 
 A received list that passes its bound produces a typed failure. kvim publishes
