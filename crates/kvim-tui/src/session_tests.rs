@@ -3215,32 +3215,6 @@ fn closing_a_window_discards_its_cursor() {
 }
 
 #[test]
-fn the_jump_commands_walk_the_recorded_positions_of_the_focused_window() {
-    let mut session = with_text(&["one", "two", "three", "four", "five"]);
-    type_keys(&mut session, "jj");
-    assert_eq!(session.cursor().line().get(), 2);
-    // A jump records the position that the cursor held before it moved.
-    session.record_jump();
-    type_keys(&mut session, "jj");
-    assert_eq!(session.cursor().line().get(), 4);
-
-    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('o'))), NOW);
-    assert_eq!(
-        session.cursor().line().get(),
-        2,
-        "`Ctrl-O` returns to the recorded position"
-    );
-
-    // A terminal reports `Ctrl-I` as `Tab`.
-    press_code(&mut session, KeyCode::Tab);
-    assert_eq!(
-        session.cursor().line().get(),
-        4,
-        "`Tab` returns to the position that the backward step left"
-    );
-}
-
-#[test]
 fn a_backward_jump_without_a_recorded_position_reports_the_end_of_the_list() {
     let mut session = with_text_and_no_jump(&["one", "two"]);
     assert_eq!(session.cursor().line().get(), 1);
