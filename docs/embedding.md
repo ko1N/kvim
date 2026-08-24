@@ -182,7 +182,13 @@ does not accept, store, or invoke a surface input or render callback.
 
 An open overlay owns input while it stays open, so an overlay key never reaches
 the focused surface below it. The focused region and the focused surface stay
-unchanged while the overlay is open.
+unchanged while the overlay is open. This rule covers the focused scope alone.
+The resolver still evaluates the host-global scope between the overlay and the
+focused scope, so a key that the overlay does not bind can still reach a
+host-global binding while the overlay is open. A host that binds keys in the
+host-global scope must silence that scope itself while an overlay is open,
+with `WorkspaceComposer::set_global_scope(None)`, or a host-global binding
+fires while the overlay waits for its answer.
 
 A focus or overlay transition that needs surface state returns one bounded,
 addressed `CompositionEffect::CancelPending { surface, transition }`. Focus and
@@ -246,6 +252,17 @@ Cargo features let consumers disable unused languages and grammars.
 Public crates support revision-pinned Cargo Git dependencies without a shared
 parent workspace. [`architecture.md`](architecture.md) owns package stability,
 MSRV, ratatui compatibility, and the exact feature matrix.
+
+A consumer of a private repository needs three more settings. It sets
+`net.git-fetch-with-cli = true` in its Cargo configuration, because Cargo's
+built-in libgit2 client fails SSH agent authentication with the error
+`attempted ssh-agent authentication, but no usernames succeeded: 'git'`. That
+setting makes Cargo run the `git` executable itself, so the build environment
+must hold `git` and `openssh`. A hermetic build environment without them fails
+outright. A developer machine can appear to work, because the user profile
+supplies both programs there. The dependency URL must use the
+`ssh://git@github.com/OWNER/REPO.git` form. The scp-style address
+`git@github.com:OWNER/REPO.git` is not a URL, so Cargo rejects it.
 
 ## Public Examples
 

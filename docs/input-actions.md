@@ -236,6 +236,7 @@ action:
 |---|---|
 | A printable key | Add the character to the answer |
 | `Backspace` | Remove the character before the answer cursor |
+| `Ctrl-W` | Remove the word before the answer cursor |
 | `Enter` | Read the answer and close the question |
 | `Esc` | Cancel the action |
 | `Ctrl-C` | Cancel the action |
@@ -583,6 +584,20 @@ while no key sequence and no count wait for completion.
 Every motion row below also applies in Visual Block mode. The tables name the
 three Visual modes separately only where their behavior differs.
 
+### Insert Text Entry
+
+| Keys | Command | Modes |
+|---|---|---|
+| `Enter` | Insert a line break | Insert |
+| `Backspace` | Delete the character before the cursor | Insert |
+| `Ctrl-W` | Delete the word before the cursor | Insert |
+| `Tab` | Insert one indent step | Insert |
+
+Every printable key reaches the text fallback of the Insert scope, so only
+these four keys carry a command there. Vim, readline, and every terminal shell
+delete the word before the cursor on `Ctrl-W`, so Insert mode binds it too. An
+embedded editor must not leave that chord to a host prefix.
+
 ### Motions
 
 | Keys | Command | Modes |
@@ -656,9 +671,25 @@ the pair and the text between them.
 
 macOS sends the `Option` chord as the `Alt` modifier, so `Option-Left` and
 `Option-Right` arrive as `Alt-Left` and `Alt-Right`. The `terminal` module folds
-both onto `Ctrl-Left` and `Ctrl-Right` while it normalizes the key, so the
-registry holds one entry for each word motion. The enhanced keyboard reporting
-flags keep a modified arrow distinct from a plain arrow.
+six `Alt` encodings onto another chord while it normalizes the key, so the
+registry holds one entry for each target chord and needs no separate `Alt`
+binding. Several terminals and terminal multiplexers send `Ctrl-Alt-H`,
+`Ctrl-Alt-J`, `Ctrl-Alt-K`, and `Ctrl-Alt-L` as an `Alt` chord over a control
+byte, or as `Alt-Backspace` and `Alt-Enter`, and the module folds those
+encodings as well. The table below names the reported code that carries the
+`Alt` modifier and the chord it folds onto:
+
+| Reported code | Folded key |
+|---|---|
+| `Left` | `Ctrl-Left` |
+| `Right` | `Ctrl-Right` |
+| `Backspace` or the control byte `\u{8}` | `Ctrl-Alt-H` |
+| `Enter` or the control byte `\n` | `Ctrl-Alt-J` |
+| The control byte `\u{b}` | `Ctrl-Alt-K` |
+| The control byte `\u{c}` | `Ctrl-Alt-L` |
+
+The enhanced keyboard reporting flags keep a modified arrow distinct from a
+plain arrow.
 
 A key that carries a modifier which no binding uses is rejected. The `terminal`
 module never removes the modifier, so a modified key never reaches the binding of
@@ -882,11 +913,16 @@ subset. See [`files.md`](files.md) for the behavior behind them.
 | `Esc` | Close the picker |
 | `Ctrl-C` | Close the picker |
 | `Backspace` | Remove the last character of the query |
+| `Ctrl-W` | Remove the last word of the query |
 
 Every other printable key extends the query. `Backspace` on the empty query
-closes the picker, as it does for every other prompt. A closed picker restores
-the previous view exactly, because the picker changes no editor state until the
-reader accepts one row.
+closes the picker, as it does for every other prompt. `Ctrl-W` on the empty
+query changes nothing and never closes the picker, unlike `Backspace`, because
+a host that binds `Ctrl-W` elsewhere must not close a picker with it. Both keys
+work the same way on the command line, the search prompt, the file-tree
+prompt, and the confirmation. A closed picker restores the previous view
+exactly, because the picker changes no editor state until the reader accepts
+one row.
 
 ### Windows
 
