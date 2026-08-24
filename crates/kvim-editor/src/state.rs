@@ -479,8 +479,12 @@ impl EditingState {
     /// transaction, so one undo reverses the whole block. A line that is shorter
     /// than the block left edge receives no change.
     ///
-    /// The text stays at or below [`INSERT_TEXT_BYTES_MAX`]. A larger text
-    /// returns [`CommandOutcome::Rejected`] and changes nothing.
+    /// The text that a plan actually inserts stays at or below
+    /// [`INSERT_TEXT_BYTES_MAX`]. A larger text returns
+    /// [`CommandOutcome::Rejected`] and changes nothing. A CRLF buffer rewrites
+    /// each `\n` of the supplied text to `\r\n`, so the bound applies after
+    /// that rewrite; a block insert holds no such rewrite, so its bound still
+    /// applies to the supplied text.
     pub fn insert_text(
         &mut self,
         context: &mut EditContext<'_>,
@@ -490,12 +494,24 @@ impl EditingState {
         if text.is_empty() {
             return CommandOutcome::Applied;
         }
-        if text.len() > INSERT_TEXT_BYTES_MAX {
+        // A block insert repeats the supplied text on each selected line and
+        // rewrites no line ending, so its bound applies to that text. The
+        // check runs before the take, so a rejection leaves the pending block
+        // in place.
+        if self.block_insert.is_some() && text.len() > INSERT_TEXT_BYTES_MAX {
             return CommandOutcome::Rejected;
         }
         let plan = match self.block_insert.take() {
             Some(block) => edit::plan_block_insert(context.buffer, window.cursor, block, text),
-            None => edit::plan_insert_text(context.buffer, window.cursor, text),
+            // A CRLF buffer rewrites each `\n` of the supplied text, so the
+            // bound applies to the text that the plan inserts.
+            None => {
+                let plan = edit::plan_insert_text(context.buffer, window.cursor, text);
+                if plan_replacement_bytes(&plan) > INSERT_TEXT_BYTES_MAX {
+                    return CommandOutcome::Rejected;
+                }
+                plan
+            }
         };
         self.commit(context, window, plan)
     }
@@ -1237,6 +1253,22 @@ impl EditingState {
 enum HistoryStep {
     Undo,
     Redo,
+}
+
+/// Returns the total bytes that one plan's transaction inserts or replaces.
+///
+/// [`EditingState::insert_text`] checks this against
+/// [`INSERT_TEXT_BYTES_MAX`], because a CRLF buffer rewrite can grow the
+/// supplied text past the bound after the caller already checked the
+/// supplied text alone.
+fn plan_replacement_bytes(plan: &EditPlan) -> usize {
+    plan.transaction.as_ref().map_or(0, |transaction| {
+        transaction
+            .changes()
+            .iter()
+            .map(|change| change.replacement().len())
+            .sum()
+    })
 }
 
 /// Converts an optional count into a bounded number of repetitions.

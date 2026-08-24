@@ -8,9 +8,11 @@
 //! The module builds no plan that changes text outside one
 //! [`EditTransaction`], which `docs/text-model.md` requires.
 
+use std::borrow::Cow;
+
 use kvim_core::{
-    CharPosition, CharRange, EditTransaction, IndentPolicy, LineIndex, ShiftDirection, TextBuffer,
-    TextChange,
+    CharPosition, CharRange, EditTransaction, IndentPolicy, LineEnding, LineIndex, ShiftDirection,
+    TextBuffer, TextChange,
 };
 use kvim_input::Command;
 
@@ -475,13 +477,34 @@ pub(super) fn plan_delete_backward(buffer: &TextBuffer, cursor: Cursor) -> EditP
     }
 }
 
+/// Rewrites each `\n` of `text` to the line ending of `buffer`.
+///
+/// Returns the borrowed text unchanged when the buffer holds
+/// [`LineEnding::Lf`] or when the text holds no line feed, because both are
+/// the common case for typed input and this runs on the terminal event loop.
+fn rewrite_insert_text<'a>(buffer: &TextBuffer, text: &'a str) -> Cow<'a, str> {
+    if buffer.line_ending() == LineEnding::Lf || !text.contains('\n') {
+        return Cow::Borrowed(text);
+    }
+    Cow::Owned(text.replace('\n', buffer.line_ending().as_str()))
+}
+
 /// Plans one insertion of typed text at the cursor.
+///
+/// Each `\n` of `text` becomes the line ending of `buffer` before the plan
+/// builds the transaction, so a paste into a CRLF buffer inserts `\r\n`
+/// instead of a bare line feed. See `docs/text-model.md`.
 pub(super) fn plan_insert_text(buffer: &TextBuffer, cursor: Cursor, text: &str) -> EditPlan {
     let at = cursor.position(buffer);
+    let text = rewrite_insert_text(buffer, text);
+    let end = at.get() + text.chars().count();
     EditPlan {
-        transaction: Some(EditTransaction::single(at, TextChange::insert(at, text))),
+        transaction: Some(EditTransaction::single(
+            at,
+            TextChange::insert(at, text.into_owned()),
+        )),
         value: None,
-        cursor: CursorTarget::Position(at.get() + text.chars().count()),
+        cursor: CursorTarget::Position(end),
         next_mode: NextMode::Keep,
     }
 }
