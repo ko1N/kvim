@@ -352,7 +352,7 @@ impl<Sid, S> CompositionLayout<Sid, S> {
 /// );
 ///
 /// assert_eq!(
-///     composer.reduce(Input::Key(keys[0]), Duration::ZERO),
+///     composer.reduce(Input::Key(keys[0]), Some(Duration::ZERO)),
 ///     Composition::Surface {
 ///         surface: "chat",
 ///         command: Command::Send
@@ -840,7 +840,12 @@ where
     ///
     /// The overlay scope answers first, the host-global scope answers next, and
     /// the scope of the input-owning surface answers last.
-    pub fn reduce(&mut self, input: Input, now: Duration) -> Composition<C, Sid> {
+    ///
+    /// `now` is the elapsed time that the host measured. It reaches the
+    /// which-key overlay alone. `None` states that the host draws no which-key
+    /// overlay, so pending input arms no timer and a host that reads no clock
+    /// can hold this composer inside pure state.
+    pub fn reduce(&mut self, input: Input, now: Option<Duration>) -> Composition<C, Sid> {
         let surface = self.input_surface().clone();
         let focus = self.published_context(&surface);
         let context = DispatchContext {
@@ -848,7 +853,7 @@ where
             global: self.global,
             focus,
         };
-        match self.resolver.dispatch(&context, input, Some(now)) {
+        match self.resolver.dispatch(&context, input, now) {
             Dispatch::Host { command } => Composition::Host { command },
             Dispatch::Surface { command } => Composition::Surface { surface, command },
             Dispatch::Text { owner, text } => Composition::Text {

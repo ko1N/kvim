@@ -180,6 +180,12 @@ One reduction routes a key or paste to one host command, surface command, typed
 text owner, pending sequence, unsupported input, or unbound result. The composer
 does not accept, store, or invoke a surface input or render callback.
 
+The host supplies the elapsed time with each reduction, and that time reaches
+the which-key overlay alone. `WorkspaceComposer::reduce` therefore takes the
+same `Option<Duration>` that `Resolver::dispatch` takes. `None` states that the
+host draws no which-key overlay, so pending input arms no timer and a host that
+reads no clock holds one composer, and one resolver, inside pure state.
+
 An open overlay owns input while it stays open, so an overlay key never reaches
 the focused surface below it. The focused region and the focused surface stay
 unchanged while the overlay is open. This rule covers the focused scope alone.

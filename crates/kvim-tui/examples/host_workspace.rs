@@ -536,7 +536,7 @@ async fn step(
     editor: &mut EmbeddedEditor,
     input: Input,
 ) -> Result<(), Box<dyn Error>> {
-    match composer.reduce(input, NOW) {
+    match composer.reduce(input, Some(NOW)) {
         Composition::Host { command } => {
             apply_host(composer, host, editor, command).await?;
         }

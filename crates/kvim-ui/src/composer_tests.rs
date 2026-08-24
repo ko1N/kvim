@@ -247,7 +247,7 @@ fn region_of(composer: &Composer, surface: &str) -> crate::WindowId {
 fn the_overlay_scope_answers_before_the_host_and_the_focused_surface() {
     let mut composer = workspace();
     assert_eq!(
-        composer.reduce(Input::Key(ch('q')), NOW),
+        composer.reduce(Input::Key(ch('q')), Some(NOW)),
         Composition::Host {
             command: Action::Quit
         },
@@ -257,7 +257,7 @@ fn the_overlay_scope_answers_before_the_host_and_the_focused_surface() {
     let effect = composer.open_overlay(PALETTE, Table::Palette, AREA, idle(Table::Palette));
     assert_eq!(effect, CompositionEffect::Applied);
     assert_eq!(
-        composer.reduce(Input::Key(ch('q')), NOW),
+        composer.reduce(Input::Key(ch('q')), Some(NOW)),
         Composition::Surface {
             surface: PALETTE,
             command: Action::AcceptPalette
@@ -272,7 +272,7 @@ fn the_overlay_scope_answers_before_the_host_and_the_focused_surface() {
 
     assert_eq!(composer.close_overlay(), CompositionEffect::Applied);
     assert_eq!(
-        composer.reduce(Input::Key(ch('q')), NOW),
+        composer.reduce(Input::Key(ch('q')), Some(NOW)),
         Composition::Host {
             command: Action::Quit
         }
@@ -288,7 +288,7 @@ fn a_host_global_binding_answers_from_every_surface() {
             .focus_region(region)
             .expect("the region is visible");
         assert_eq!(
-            composer.reduce(Input::Key(ch('p')), NOW),
+            composer.reduce(Input::Key(ch('p')), Some(NOW)),
             Composition::Host {
                 command: Action::OpenPalette
             },
@@ -301,7 +301,7 @@ fn a_host_global_binding_answers_from_every_surface() {
 fn each_focused_surface_answers_from_its_own_table() {
     let mut composer = workspace();
     assert_eq!(
-        composer.reduce(Input::Key(ch('j')), NOW),
+        composer.reduce(Input::Key(ch('j')), Some(NOW)),
         Composition::Surface {
             surface: EDITOR,
             command: Action::EditorDown
@@ -313,7 +313,7 @@ fn each_focused_surface_answers_from_its_own_table() {
         .focus_region(review)
         .expect("the review is visible");
     assert_eq!(
-        composer.reduce(Input::Key(ch('n')), NOW),
+        composer.reduce(Input::Key(ch('n')), Some(NOW)),
         Composition::Surface {
             surface: REVIEW,
             command: Action::ReviewNext
@@ -323,7 +323,7 @@ fn each_focused_surface_answers_from_its_own_table() {
     let tree = region_of(&composer, TREE);
     composer.focus_region(tree).expect("the sidebar is visible");
     assert_eq!(
-        composer.reduce(Input::Key(ch('j')), NOW),
+        composer.reduce(Input::Key(ch('j')), Some(NOW)),
         Composition::Surface {
             surface: TREE,
             command: Action::SidebarDown
@@ -336,7 +336,7 @@ fn each_focused_surface_answers_from_its_own_table() {
 fn printable_input_and_one_paste_reach_the_text_owner_of_the_focused_scope() {
     let mut composer = workspace();
     assert_eq!(
-        composer.reduce(Input::Key(ch('z')), NOW),
+        composer.reduce(Input::Key(ch('z')), Some(NOW)),
         Composition::Unbound { surface: EDITOR },
         "the normal scope names no text owner"
     );
@@ -353,7 +353,7 @@ fn printable_input_and_one_paste_reach_the_text_owner_of_the_focused_scope() {
         )
         .expect("the composer shows the editor");
     assert_eq!(
-        composer.reduce(Input::Key(ch('z')), NOW),
+        composer.reduce(Input::Key(ch('z')), Some(NOW)),
         Composition::Text {
             surface: EDITOR,
             owner: CommandOwner::Surface,
@@ -363,7 +363,7 @@ fn printable_input_and_one_paste_reach_the_text_owner_of_the_focused_scope() {
 
     let block = PasteText::new("two lines").expect("the block is bounded");
     assert_eq!(
-        composer.reduce(Input::Paste(block.clone()), NOW),
+        composer.reduce(Input::Paste(block.clone()), Some(NOW)),
         Composition::Text {
             surface: EDITOR,
             owner: CommandOwner::Surface,
@@ -376,7 +376,7 @@ fn printable_input_and_one_paste_reach_the_text_owner_of_the_focused_scope() {
 fn unsupported_terminal_input_reaches_the_surface_that_owns_input() {
     let mut composer = workspace();
     assert_eq!(
-        composer.reduce(Input::Unsupported, NOW),
+        composer.reduce(Input::Unsupported, Some(NOW)),
         Composition::Unsupported { surface: EDITOR }
     );
 }
@@ -385,12 +385,12 @@ fn unsupported_terminal_input_reaches_the_surface_that_owns_input() {
 fn a_pending_prefix_reports_pending_and_then_reaches_its_command() {
     let mut composer = workspace();
     assert_eq!(
-        composer.reduce(Input::Key(ch('g')), NOW),
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
         Composition::Pending
     );
     assert_eq!(composer.resolver().pending_keys().len(), 1);
     assert_eq!(
-        composer.reduce(Input::Key(ch('g')), NOW),
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
         Composition::Host {
             command: Action::FirstLine
         }
@@ -402,7 +402,7 @@ fn a_pending_prefix_reports_pending_and_then_reaches_its_command() {
 fn a_committed_transition_clears_the_pending_key_prefix() {
     let mut composer = workspace();
     assert_eq!(
-        composer.reduce(Input::Key(ch('g')), NOW),
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
         Composition::Pending
     );
     let review = region_of(&composer, REVIEW);
@@ -426,7 +426,7 @@ fn directional_focus_crosses_the_editor_and_review_boundary() {
     );
     assert_eq!(composer.focused_surface(), &REVIEW);
     assert_eq!(
-        composer.reduce(Input::Key(ch('n')), NOW),
+        composer.reduce(Input::Key(ch('n')), Some(NOW)),
         Composition::Surface {
             surface: REVIEW,
             command: Action::ReviewNext
@@ -466,7 +466,7 @@ fn a_split_keeps_the_surface_and_the_host_points_the_new_window_at_another_one()
         .expect("the split created the window");
     assert_eq!(composer.focused_surface(), &CHAT);
     assert_eq!(
-        composer.reduce(Input::Key(Key::plain(KeyCode::Enter)), NOW),
+        composer.reduce(Input::Key(Key::plain(KeyCode::Enter)), Some(NOW)),
         Composition::Surface {
             surface: CHAT,
             command: Action::ChatSend
@@ -753,7 +753,7 @@ fn an_overlay_transition_follows_the_same_reset_protocol() {
     );
     assert_eq!(composer.overlay_owner(), Some((&PALETTE, Table::Palette)));
     assert_eq!(
-        composer.reduce(Input::Key(ch('q')), NOW),
+        composer.reduce(Input::Key(ch('q')), Some(NOW)),
         Composition::Surface {
             surface: PALETTE,
             command: Action::AcceptPalette
@@ -875,7 +875,7 @@ fn reduction_and_layout_invoke_no_host_input_or_render_callback() {
         .expect("the split created the window");
 
     for _ in 0..8 {
-        let _outcome = composer.reduce(Input::Key(Key::plain(KeyCode::Enter)), NOW);
+        let _outcome = composer.reduce(Input::Key(Key::plain(KeyCode::Enter)), Some(NOW));
         let _layout = composer.layout();
     }
     assert_eq!(chat.inputs.get(), 0);
@@ -897,7 +897,7 @@ fn the_which_key_view_reads_the_one_shared_registry() {
     let mut composer = workspace();
     assert_eq!(composer.which_key_deadline(), None);
     assert_eq!(
-        composer.reduce(Input::Key(ch('g')), NOW),
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
         Composition::Pending
     );
     assert_eq!(composer.which_key_deadline(), Some(WHICH_KEY_DELAY));
@@ -906,6 +906,27 @@ fn the_which_key_view_reads_the_one_shared_registry() {
         .expect("the delay passed, so the overlay is visible");
     assert_eq!(view.scope(), Table::Global);
     assert_eq!(view.hints().len(), 1);
+}
+
+#[test]
+fn a_host_that_supplies_no_time_arms_no_overlay() {
+    // A host that draws no which-key overlay reads no clock, so it holds the
+    // composer inside pure state and stamps no elapsed time on its input.
+    let mut composer = workspace();
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), None),
+        Composition::Pending,
+        "the sequence opens without a clock"
+    );
+    assert_eq!(
+        composer.which_key_deadline(),
+        None,
+        "no timer armed, so the host needs no wake"
+    );
+    assert!(
+        composer.which_key(WHICH_KEY_DELAY).is_none(),
+        "no elapsed time reveals an overlay that never armed"
+    );
 }
 
 #[test]
@@ -921,7 +942,7 @@ fn the_host_arms_the_overlay_for_a_grammar_prefix_of_its_own_surface() {
         "an armed overlay without pending input reports no time"
     );
     assert_eq!(
-        composer.reduce(Input::Key(ch('g')), NOW),
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
         Composition::Pending
     );
     assert_eq!(composer.which_key_deadline(), Some(WHICH_KEY_DELAY));
@@ -1080,7 +1101,7 @@ fn an_open_overlay_keeps_input_and_its_state_across_one_close() {
     assert_eq!(composer.input_surface(), &PALETTE);
     assert_eq!(composer.context(&PALETTE), Some(idle(Table::Palette)));
     assert_eq!(
-        composer.reduce(Input::Key(ch('q')), NOW),
+        composer.reduce(Input::Key(ch('q')), Some(NOW)),
         Composition::Surface {
             surface: PALETTE,
             command: Action::AcceptPalette
