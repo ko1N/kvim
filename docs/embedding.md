@@ -20,8 +20,11 @@ The host owns:
 - cursor application and redraw scheduling.
 
 The host constructs the asynchronous runtime and supervises every returned
-driver future. It supplies a bounded worker and process spawner. Capacity is
-isolated for one instance unless the host explicitly supplies a shared capacity
+driver future. It names one `EditorCapacity` for each editor. `Isolated` builds
+the bounded worker and process spawner of that editor alone. `SharedProcessPool`
+builds the worker permits and the result queue of that editor and shares the one
+process pool of the program. `Supplied` accepts the spawner that the host built
+itself. Capacity is isolated for one instance unless the named choice shares a
 pool.
 
 The host can supply clipboard, watcher, and LSP handles. These services are
@@ -70,6 +73,17 @@ changes a file.
 The editor accepts resolved surface commands, literal text, bounded paste, and
 time. It does not run another key-sequence resolver. Input reduction returns an
 `InputContextSnapshot` that the shared resolver uses for the next input.
+
+`EmbeddedEditor` is the public facade of one instance. `EmbeddedEditor::builder`
+takes the validated root and the first rectangle, because both bound what the
+editor can reach. Every other setting has a default. `open` returns a typed
+geometry error for a rectangle without cells, and it builds the model and the
+driver of one instance together. `EmbeddedEditor::shutdown` consumes the editor
+and returns `EditorShutdown`. `Finished` holds every remaining event.
+`Draining` holds one `EditorDrain`, which owns the mandatory events of the
+committed work, and the host keeps its runtime alive until that drain completes.
+`crates/kvim-tui/examples/embedded_editor.rs` is one complete host of one such
+editor.
 
 The host supplies a `ratatui::Rect` and `ratatui::Buffer` for rendering. The
 editor accepts one explicit rectangle first, because the layout, the viewports,
