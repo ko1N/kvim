@@ -194,7 +194,7 @@ pub(super) fn indent_level(
 fn encloses(rule: IndentRule, node: Node<'_>, byte: usize) -> bool {
     rule.scopes
         .iter()
-        .any(|&scope| scope.kind() == node.kind() && indent_range_holds(scope, node, byte))
+        .any(|&scope| scope.kind() == node.kind() && indent_range_holds(rule, scope, node, byte))
 }
 
 /// Reports whether the indent range of one scope holds the position.
@@ -213,8 +213,22 @@ fn encloses(rule: IndentRule, node: Node<'_>, byte: usize) -> bool {
 /// - The undelimited-body span runs from the end of the header through the last
 ///   byte of the node and holds both ends, because no delimiter follows the
 ///   body. A new line at the end of a Python suite therefore keeps the level of
-///   that suite.
-fn indent_range_holds(scope: IndentScope, node: Node<'_>, byte: usize) -> bool {
+///   that suite. The span opens a block for one of three reasons:
+///   1. The body holds no statement yet, so the user is still typing the
+///      header.
+///   2. The body starts on a later row than the header, so the header already
+///      opened a block.
+///   3. The body reaches a later row than the header and carries no scope of
+///      its own, so nothing else supplies its level. A YAML block scalar
+///      (`a: |`) needs this reason: its value node starts on the header row,
+///      but the scalar content follows on a later row, and the value carries
+///      no indent scope of its own. A YAML flow collection (`a: [`) must not
+///      take this reason, because its `flow_sequence` value is a scope in the
+///      same rule and already supplies its own level; counting the header a
+///      second time would double it. Reason 3 therefore reads the complete
+///      scope table of the rule, not the value node alone, because avoiding a
+///      doubled level is a property of the table.
+fn indent_range_holds(rule: IndentRule, scope: IndentScope, node: Node<'_>, byte: usize) -> bool {
     match scope.span() {
         IndentSpan::Whole => node.start_byte() < byte && byte < node.end_byte(),
         IndentSpan::UntilBody(field) => {
@@ -238,9 +252,15 @@ fn indent_range_holds(scope: IndentScope, node: Node<'_>, byte: usize) -> bool {
             // The row comes from the first statement of the body, never from
             // the body node, because a body node can start at the line break
             // and would then report the row of its own header.
-            let opens_block = body
-                .named_child(0)
-                .is_none_or(|first| first.start_position().row > header_row);
+            let opens_block = match body.named_child(0) {
+                // The user has typed the header and nothing else.
+                None => true,
+                Some(first) => {
+                    first.start_position().row > header_row
+                        || (body.end_position().row > header_row
+                            && !rule.scopes.iter().any(|s| s.kind() == first.kind()))
+                }
+            };
             opens_block && header_end <= byte && byte <= node.end_byte()
         }
     }
