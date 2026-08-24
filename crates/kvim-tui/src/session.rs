@@ -555,6 +555,31 @@ fn clip_message_line(text: impl Into<String>) -> String {
     text.chars().take(MESSAGE_CHARS_MAX).collect()
 }
 
+/// Removes the word before the end of one written line.
+///
+/// The prompt line and the answer of a confirmation both end at the cursor, so
+/// the edit works on the end of the text. It removes the run of trailing blanks
+/// first and then the run of trailing non-blanks, which is the rule of Vim, of
+/// readline, and of every terminal shell. An empty text changes nothing.
+fn delete_word_backward(text: &mut String) -> Redraw {
+    if text.is_empty() {
+        return Redraw::Skipped;
+    }
+    let start = text
+        .trim_end()
+        .char_indices()
+        .rev()
+        .find(|&(_, value)| value.is_whitespace())
+        .map_or(0, |(index, value)| index + value.len_utf8());
+    debug_assert!(
+        start < text.len(),
+        "the last character of a written line is a blank or a non-blank, so the walk always \
+         removes at least one character"
+    );
+    text.truncate(start);
+    Redraw::Needed
+}
+
 /// Reports whether one operation can replace the entry of a destination.
 ///
 /// A create writes one new entry, and a delete names no destination, so neither
@@ -2555,6 +2580,7 @@ impl Session {
                 }
                 Redraw::Needed
             }
+            ConfirmEdit::DeleteWordBackward => delete_word_backward(&mut confirmation.answer),
             ConfirmEdit::Accept => self.close_confirmation(ConfirmationClose::Accept),
             ConfirmEdit::Cancel => self.close_confirmation(ConfirmationClose::Cancel),
             ConfirmEdit::Ignore => Redraw::Skipped,
@@ -2876,6 +2902,18 @@ impl Session {
                 if prompt.text.pop().is_none() {
                     self.close_prompt();
                     return Redraw::Needed;
+                }
+                self.sync_picker_query();
+                self.sync_completion_walk();
+                Redraw::Needed
+            }
+            PromptEdit::DeleteWordBackward => {
+                prompt.completion = None;
+                // A host can bind `Ctrl-W` as its own prefix, so a stray chord
+                // must never close a prompt of this editor. Unlike `Backspace`,
+                // the chord therefore leaves the empty line open.
+                if delete_word_backward(&mut prompt.text) == Redraw::Skipped {
+                    return Redraw::Skipped;
                 }
                 self.sync_picker_query();
                 self.sync_completion_walk();

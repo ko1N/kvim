@@ -760,6 +760,10 @@ fn add_prompt_bindings(table: &mut Vec<Binding>) {
             Key::plain(KeyCode::Backspace),
             Command::PromptDeleteBackward,
         ),
+        // Vim, readline, and every terminal shell delete the word before the
+        // cursor on `Ctrl-W` while text is written, so the prompt line must not
+        // leave the chord to a host prefix either. See `docs/input-actions.md`.
+        (ctrl('w'), Command::PromptDeleteWordBackward),
     ];
     for (key, command) in shared {
         add_scoped(table, PROMPT, &[key], command);

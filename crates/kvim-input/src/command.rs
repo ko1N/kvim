@@ -125,6 +125,7 @@ semantic_commands! {
     PromptAccept => ("prompt-accept", "Run the prompt line"),
     PromptCancel => ("prompt-cancel", "Cancel the prompt line"),
     PromptDeleteBackward => ("prompt-delete-backward", "Remove the character before the prompt cursor"),
+    PromptDeleteWordBackward => ("prompt-delete-word-backward", "Remove the word before the prompt cursor"),
     PromptCompleteNext => ("prompt-complete-next", "Write the next completion candidate"),
     PromptCompletePrevious => ("prompt-complete-previous", "Write the previous completion candidate"),
 
@@ -356,6 +357,7 @@ impl Command {
             | Self::PromptAccept
             | Self::PromptCancel
             | Self::PromptDeleteBackward
+            | Self::PromptDeleteWordBackward
             | Self::PromptCompleteNext
             | Self::PromptCompletePrevious
             | Self::SelectRegister
@@ -558,6 +560,7 @@ impl Command {
             | Self::PromptAccept
             | Self::PromptCancel
             | Self::PromptDeleteBackward
+            | Self::PromptDeleteWordBackward
             | Self::PromptCompleteNext
             | Self::PromptCompletePrevious
             | Self::SelectRegister

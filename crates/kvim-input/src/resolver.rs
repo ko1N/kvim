@@ -35,6 +35,13 @@ pub enum PromptEdit {
     Insert(char),
     /// Remove the character before the cursor.
     DeleteBackward,
+    /// Remove the word before the cursor.
+    ///
+    /// The edit removes the blanks before the word as well as the word, like
+    /// Vim, readline, and every terminal shell. An empty line changes nothing
+    /// and keeps the prompt open, so a host that binds `Ctrl-W` for its own
+    /// purpose never cancels a prompt with it. See `docs/input-actions.md`.
+    DeleteWordBackward,
     /// Write the next completion candidate into the prompt line.
     CompleteNext,
     /// Write the previous completion candidate into the prompt line.
@@ -72,6 +79,7 @@ impl PromptEdit {
             Command::PromptAccept => Some(Self::Accept),
             Command::PromptCancel => Some(Self::Cancel),
             Command::PromptDeleteBackward => Some(Self::DeleteBackward),
+            Command::PromptDeleteWordBackward => Some(Self::DeleteWordBackward),
             Command::PromptCompleteNext => Some(Self::CompleteNext),
             Command::PromptCompletePrevious => Some(Self::CompletePrevious),
             _ => None,
@@ -89,6 +97,11 @@ pub enum ConfirmEdit {
     Insert(char),
     /// Remove the character before the cursor.
     DeleteBackward,
+    /// Remove the word before the cursor.
+    ///
+    /// The answer takes the same edit as the prompt line, because the
+    /// confirmation scope binds the same keys.
+    DeleteWordBackward,
     /// Read the answer and close the question.
     Accept,
     /// Cancel the action and close the question.
@@ -122,6 +135,7 @@ impl ConfirmEdit {
             Command::PromptAccept => Some(Self::Accept),
             Command::PromptCancel => Some(Self::Cancel),
             Command::PromptDeleteBackward => Some(Self::DeleteBackward),
+            Command::PromptDeleteWordBackward => Some(Self::DeleteWordBackward),
             _ => None,
         }
     }
@@ -1100,6 +1114,12 @@ mod tests {
             (ch('Y'), ConfirmEdit::Insert('Y')),
             (ch('n'), ConfirmEdit::Insert('n')),
             (Key::plain(KeyCode::Backspace), ConfirmEdit::DeleteBackward),
+            // The answer takes the word delete of the prompt line, because the
+            // confirmation scope binds the same keys.
+            (
+                Key::ctrl(KeyCode::Char('w')),
+                ConfirmEdit::DeleteWordBackward,
+            ),
             (Key::plain(KeyCode::Enter), ConfirmEdit::Accept),
             (Key::plain(KeyCode::Esc), ConfirmEdit::Cancel),
             (Key::ctrl(KeyCode::Char('c')), ConfirmEdit::Cancel),
@@ -1173,6 +1193,12 @@ mod tests {
             (
                 Key::plain(KeyCode::Backspace),
                 Some(PromptEdit::DeleteBackward),
+            ),
+            // `w` writes one character, and the same key with the control chord
+            // removes the word before the cursor.
+            (
+                Key::ctrl(KeyCode::Char('w')),
+                Some(PromptEdit::DeleteWordBackward),
             ),
             (Key::plain(KeyCode::Tab), Some(PromptEdit::CompleteNext)),
             (

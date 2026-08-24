@@ -209,6 +209,31 @@ fn the_query_ranks_the_best_match_next_to_the_prompt() {
 }
 
 #[test]
+fn the_control_w_chord_removes_one_word_from_the_query() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "mode");
+    drain(&mut session);
+    assert_eq!(prompt_row(&session), "> mode");
+    assert!(
+        results(&session)
+            .iter()
+            .all(|row| !row.starts_with("main.rs")),
+        "the query holds the result list to one file"
+    );
+
+    press_ctrl(&mut session, 'w');
+    drain(&mut session);
+    assert_eq!(prompt_row(&session), ">", "the chord removes the word");
+    let rows = results(&session);
+    assert!(
+        rows.iter().any(|row| row.starts_with("main.rs")),
+        "the result list follows the query that the chord shortened: {rows:?}"
+    );
+}
+
+#[test]
 fn the_control_keys_move_the_selection_inside_the_picker() {
     let (_dir, mut session) = workspace();
     open_picker(&mut session, "ff");

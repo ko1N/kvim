@@ -1348,6 +1348,42 @@ fn a_backspace_on_the_empty_prompt_closes_it() {
     assert_eq!(session.mode(), Mode::Insert);
 }
 
+#[test]
+fn the_control_w_chord_removes_one_word_from_the_prompt_line() {
+    let mut session = session(40, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/main.rs");
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(prompt_text(&session), "e ", "the chord removes one word");
+
+    // The blanks between the cursor and the word go with the word, as they do
+    // in Vim, in readline, and in every terminal shell.
+    type_keys(&mut session, "write   ");
+    assert_eq!(prompt_text(&session), "e write   ");
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(
+        prompt_text(&session),
+        "e ",
+        "the trailing blanks go with the word"
+    );
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(prompt_text(&session), "");
+
+    // Unlike `Backspace`, the chord never closes the prompt, because a host can
+    // bind `Ctrl-W` as its own prefix.
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Skipped);
+    assert!(
+        session.visible().prompt.is_some(),
+        "the empty line keeps the prompt open"
+    );
+    assert_eq!(prompt_text(&session), "");
+    // The prompt still owns input, so the next key writes text instead of
+    // reaching the registry.
+    press(&mut session, 'i');
+    assert_eq!(session.mode(), Mode::Normal);
+    assert_eq!(prompt_text(&session), "i");
+}
+
 /// The message that the test action of a confirmation reports.
 const CONFIRMED: &str = "the confirmation reached its action";
 
@@ -1476,6 +1512,19 @@ fn a_question_completes_nothing_and_keeps_its_answer() {
     assert_eq!(typed_answer(&session), "y", "Tab writes no candidate");
     press_code(&mut session, KeyCode::Enter);
     assert_eq!(message(&session), CONFIRMED);
+}
+
+#[test]
+fn the_control_w_chord_removes_one_word_from_the_answer_of_a_question() {
+    let mut session = session(40, 10);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    type_keys(&mut session, "yes");
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(typed_answer(&session), "", "the chord removes the answer");
+
+    // The empty answer keeps the question open, as a `Backspace` does.
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Skipped);
+    assert_eq!(question(&session), "Delete one entry");
 }
 
 #[test]
