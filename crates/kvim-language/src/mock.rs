@@ -27,15 +27,15 @@ use super::LanguageRegistry;
 use super::server::{LanguageServerId, ServerFormatting};
 use super::session::{
     LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
-    TransportFactory, start,
+    start,
 };
-use kvim_lsp::{LSP_OUTPUT_BYTES_MAX, WorkspaceRoot, read_frame};
+use kvim_lsp::{LSP_OUTPUT_BYTES_MAX, TransportFactory, WorkspaceRoot, read_frame};
 
 /// The prepared byte streams that [`pipe`] hands to one session.
 ///
 /// A caller never builds this value, and it names no protocol detail. It
 /// exists in the signatures of this module, so it must be reachable.
-pub use super::session::Transport;
+pub use kvim_lsp::Transport;
 
 /// The capacity of one test pipe, in bytes.
 pub const PIPE_BYTES: usize = 1024 * 1024;

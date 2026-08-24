@@ -37,10 +37,10 @@ use super::server::{
 };
 use super::session::{
     LSP_EVENT_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig,
-    TransportFactory, start,
+    start,
 };
 use super::{AnalysisError, LanguageRegistry};
-use kvim_lsp::{LspBound, LspError, WorkspaceRoot};
+use kvim_lsp::{LspBound, LspError, TransportFactory, WorkspaceRoot};
 
 /// The language-server sessions that one workspace runs at the same time.
 ///

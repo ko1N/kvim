@@ -16,7 +16,10 @@ default = []
 # The editor wiring tests of `kvim-tui` drive the same mock as the protocol
 # tests here, so one mock server covers every layer. The module is a test seam,
 # never editor behavior, so a normal build leaves it out.
-test-support = []
+#
+# The mock hands prepared streams to one session, so it also needs the matching
+# seam of `kvim-lsp`.
+test-support = ["kvim-lsp/test-support"]
 
 grammar-asm = ["kvim-syntax/grammar-asm"]
 grammar-bash = ["kvim-syntax/grammar-bash"]
@@ -96,3 +99,9 @@ tree-sitter.workspace = true
 # Runtime
 tokio.workspace = true
 tokio-util.workspace = true
+
+[dev-dependencies]
+# kvim crates
+# The protocol tests of this crate drive the mock over prepared streams, so the
+# test build needs the stream seam of `kvim-lsp`.
+kvim-lsp = { workspace = true, features = ["test-support"] }
