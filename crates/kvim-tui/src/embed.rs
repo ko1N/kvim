@@ -36,7 +36,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 
-use kvim_input::{Command, PasteText};
+use kvim_input::{BindingScope, Command, InputContextSnapshot, PasteText};
 use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
@@ -875,6 +875,28 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> Reduction {
         self.editor.paste(text, now)
+    }
+
+    /// Returns the input context that this editor publishes.
+    ///
+    /// A host that composes several surfaces supplies this value to the shared
+    /// resolver of its workspace after every input that this editor reduced.
+    /// See `docs/embedding.md`.
+    #[must_use]
+    pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
+        self.editor.input_context()
+    }
+
+    /// Cancels every pending semantic phase of this editor.
+    ///
+    /// A workspace composer proposes this addressed effect before it moves
+    /// focus or overlay ownership. The call resets the count, the operator, the
+    /// register, the text object, and the prompt, so the next
+    /// [`EmbeddedEditor::input_context`] carries an idle context with a new
+    /// generation. The host then resumes the proposed transition.
+    #[must_use]
+    pub fn cancel_pending(&mut self, now: Duration) -> Reduction {
+        self.editor.cancel_pending(now)
     }
 
     /// Returns the next elapsed time at which this editor changes by itself.

@@ -40,7 +40,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
-| `kvim-ui` | Generic ratatui split, sidebar, which-key presentation, and host-workspace composition. |
+| `kvim-ui` | Generic ratatui split, sidebar, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -136,6 +136,11 @@ The dependency direction is one-way, and Cargo enforces it:
 External dependencies do not change the layer number. `kvim-ui` owns ratatui
 geometry and rendering. `kvim-tui` does not depend on terminal lifecycle code.
 No syntax-only consumer compiles LSP, ratatui, or the editor.
+
+`kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
+`Resolver` and reads one published `InputContextSnapshot` for each surface. The
+split tree, the sidebar, and the which-key widget still name no keymap type, so
+a consumer of those parts alone compiles no dispatch code that it does not use.
 
 `kvim-runtime` depends on `kvim-path` only for the portable filesystem watcher.
 The watcher uses one caller-supplied worktree capability for registration reads

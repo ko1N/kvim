@@ -3,10 +3,19 @@
 ## Ownership
 
 `kvim-ui` owns generic split topology, sidebar state, deterministic geometry,
-and domain-neutral ratatui presentation. `kvim-tui` owns editor and review
-presentation adapters, the standalone theme, and the editor log. One host owner
-owns visible state for each composed interface. See
-[`architecture.md`](architecture.md) and [`embedding.md`](embedding.md).
+domain-neutral ratatui presentation, and the workspace composer that joins them.
+`kvim-tui` owns editor and review presentation adapters, the standalone theme,
+and the editor log. One host owner owns visible state for each composed
+interface. See [`architecture.md`](architecture.md) and
+[`embedding.md`](embedding.md).
+
+`WorkspaceComposer<SurfaceId>` is the one composition model. It holds the split
+tree, the sidebar regions, the overlay ownership, the focus, one shared
+resolver, and the which-key state of that resolver. It computes no rectangle of
+its own: one layout pass reads the window layout and publishes the clipped
+placement of every visible surface and of the open overlay.
+[`embedding.md`](embedding.md) owns the transition protocol that moves focus and
+overlay ownership.
 
 `WindowTree<SurfaceId>` contains opaque surface identities, split structure,
 validated ratios, focus, limits, and minimum dimensions. Host surface values,

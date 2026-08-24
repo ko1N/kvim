@@ -11,6 +11,7 @@ kvim-clipboard.workspace = true
 kvim-core.workspace = true
 kvim-editor.workspace = true
 kvim-input.workspace = true
+kvim-keymap.workspace = true
 kvim-language.workspace = true
 kvim-path.workspace = true
 kvim-runtime.workspace = true

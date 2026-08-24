@@ -654,6 +654,70 @@ fn the_last_window_close_reports_the_close_request() {
 }
 
 #[test]
+fn the_published_context_names_the_scope_of_the_editor() {
+    let directory = TempDir::new("embed-context");
+    let mut session = editor(&directory.path);
+    let normal = session.input_context();
+    assert!(normal.phases.is_idle());
+
+    let _ = session.apply_command(Command::InsertBeforeCursor, None, NOW);
+    let insert = session.input_context();
+    assert_ne!(
+        insert.scope, normal.scope,
+        "the mode change publishes a scope"
+    );
+    assert_ne!(
+        insert.generation, normal.generation,
+        "every context change publishes a new generation"
+    );
+    assert_ne!(
+        insert.text_fallback, normal.text_fallback,
+        "Insert mode names the editor as the owner of printable input"
+    );
+}
+
+#[test]
+fn a_cancel_resets_the_prompt_phase_and_publishes_a_new_generation() {
+    let directory = TempDir::new("embed-cancel");
+    let mut session = editor(&directory.path);
+
+    let _ = session.apply_command(Command::OpenCommandLine, None, NOW);
+    let open = session.input_context();
+    assert!(
+        open.phases.prompt.is_pending(),
+        "the open command line holds the prompt phase"
+    );
+
+    // The composer addresses this effect to the editor before it moves focus.
+    let reduction = session.cancel_pending(NOW);
+    assert_eq!(reduction.refusal(), None);
+    let reset = session.input_context();
+    assert!(
+        reset.phases.is_idle(),
+        "every named phase resets, so the composer can commit its transition"
+    );
+    assert_ne!(
+        reset.generation, open.generation,
+        "the reset publishes a new generation, which the composer validates"
+    );
+    assert_eq!(
+        session.input_context().phases.prompt,
+        kvim_input::Phase::Empty
+    );
+}
+
+#[test]
+fn a_cancel_of_an_idle_editor_still_publishes_a_new_generation() {
+    let directory = TempDir::new("embed-cancel-idle");
+    let mut session = editor(&directory.path);
+    let before = session.input_context();
+    let _reduction = session.cancel_pending(NOW);
+    let after = session.input_context();
+    assert!(after.phases.is_idle());
+    assert_ne!(after.generation, before.generation);
+}
+
+#[test]
 fn the_editor_events_hold_no_review_fact() {
     // The match is exhaustive, so a review fact inside `EditorEvent` fails to
     // compile here. A review surface publishes its own typed `ReviewEvent`

@@ -152,10 +152,12 @@ a mandatory event can remain unpublished.
 
 ## Workspace Composition
 
-`WorkspaceComposer<SurfaceId>` combines:
+`WorkspaceComposer<SurfaceId>` lives in `kvim-ui`, because that crate owns
+generic split, sidebar, and which-key presentation and depends on `kvim-keymap`
+alone. The composer combines:
 
 - one generic split tree,
-- generic sidebars,
+- generic sidebar regions,
 - overlay scope and focus,
 - one shared key resolver,
 - which-key state.
@@ -163,26 +165,40 @@ a mandatory event can remain unpublished.
 The composer owns no surface instance, transcript, session, worktree list, host
 command, or host-domain value. The host supplies opaque surface identities,
 minimum dimensions, sidebar row metrics, input contexts, bindings, and styles.
+Every surface enters the composer with the `InputContextSnapshot` that it
+publishes, and the host republishes that snapshot after every input.
 
 One reduction routes a key or paste to one host command, surface command, typed
 text owner, pending sequence, unsupported input, or unbound result. The composer
 does not accept, store, or invoke a surface input or render callback.
 
+An open overlay owns input while it stays open, so an overlay key never reaches
+the focused surface below it. The focused region and the focused surface stay
+unchanged while the overlay is open.
+
 A focus or overlay transition that needs surface state returns one bounded,
 addressed `CompositionEffect::CancelPending { surface, transition }`. Focus and
 overlay ownership remain unchanged. The host applies the effect to that surface
-and returns its reset `InputContextSnapshot`.
+and returns its reset `InputContextSnapshot`. `EmbeddedEditor::cancel_pending`
+is that entry point for one embedded editor, and
+`EmbeddedEditor::input_context` publishes the snapshot that follows it.
 
 `resume_transition` validates the transition identity, surface identity, and
 snapshot generation. It requires empty count, operator, register, text-object,
-and prompt phases before it commits focus or overlay ownership. This protocol
-lets focus cross editor and review boundaries while the host keeps final focus
-policy.
+and prompt phases before it commits focus or overlay ownership. A snapshot that
+carries the generation of the proposal proves that the surface published no new
+context, so the composer refuses it. This protocol lets focus cross editor and
+review boundaries while the host keeps final focus policy.
 
-One layout pass returns sidebar, surface, overlay, and which-key placements
-inside the supplied rectangle. The host renders each owned surface. The composer
-performs no input or output, starts no task, reads no clock, and owns no terminal
-lifecycle.
+A split copies the surface of its source window, so the surface that owns input
+does not change and no reset is needed. Closing a region is not part of this
+protocol yet.
+
+One layout pass returns sidebar, surface, and overlay placements inside the
+supplied rectangle, each one clipped to that rectangle. The which-key hints come
+from the same resolver through one view of the shared registry. The host renders
+each owned surface. The composer performs no input or output, starts no task,
+reads no clock, and owns no terminal lifecycle.
 
 ## External Use
 
