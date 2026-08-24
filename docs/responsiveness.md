@@ -98,6 +98,14 @@ event loop free from backpressure waits.
 Each service owns its permits until the work and the result delivery finish.
 Creating another client of a service does not create more capacity.
 
+The worker spawner accepts two kinds of job. An optional job changes no durable
+state, so a cancellation drops it and the caller keeps its previous visible
+state. A committing job can change durable state, so it masks cancellation once
+it starts and always reports its outcome. Only its deadline still bounds it. A
+caller that reserved the mandatory event of a side effect submits a committing
+job, because a cancelled answer would release that reservation after the
+filesystem already holds the change.
+
 ### Runtime Bounds
 
 The `runtime` module names each bound as one constant. The constant and the row
@@ -263,7 +271,8 @@ result. The previous visible state stays usable.
 
 ## Shutdown
 
-Standalone shutdown runs in this order:
+The standalone binary shuts down through the driver of its own editor, so both
+paths run the same order:
 
 1. Stop the workspace watcher, so it queues no further directory read.
 2. Reject new work.
