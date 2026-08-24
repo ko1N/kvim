@@ -79,7 +79,7 @@ build enables and no more:
 | Grammar | Catalog entry | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Version | Adapter | The stable name of the analysis implementation. |
 | Comment tokens | Adapter | The line-comment token and the block-comment delimiters, each optional. |
-| Indent rule | Adapter | The node kinds that hold their content one level deeper, and the characters that close such a node. |
+| Indent rule | Adapter | The width of one indent level, the node kinds that hold their content one level deeper, the characters that close such a node, and the optional body field that a node does not indent. |
 | Language servers | Adapter | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, the initialization options, and the optional workspace settings. |
 | External formatter | Adapter | The program that formats a buffer of this language, and its arguments in command order. One argument is a literal text, or the place of the document path. |
 
@@ -264,8 +264,9 @@ The indent level answers one question: how many indent levels does a new line at
 this position take? The analysis reads the syntax tree with the node kinds that
 the adapter names. A position inside such a node gains one level over its
 enclosing node. A closing delimiter of that node loses one level. The analysis
-returns a level count, not a column count, so [`settings.md`](settings.md)
-keeps the tab width and the shift width.
+returns a level count, not a column count. The adapter also declares the width
+of one indent level for its language, and [`settings.md`](settings.md) keeps
+the override and the fallback width.
 
 The indent query must answer from the current buffer version without blocking the
 terminal event loop. When the parse result for that version is not yet available,
@@ -277,6 +278,11 @@ because one node then spans the complete block. A C brace, a Bash `fi`, a fish
 `end`, and a Lua `end` each close their node that way. The rule names the node
 that spans the whole construct, and never the inner statement list, because two
 entries would count one level twice.
+
+A scope can name a body field that it does not indent. The Nix `let_expression`
+node spans its own body, so its scope excludes that field. Without the
+exclusion, the body would take the level of the `let` in addition to its own
+level.
 
 Python is the one registered language that closes a block with indentation
 alone. Its `block` node starts at the first token of the suite and ends at the

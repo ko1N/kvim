@@ -46,6 +46,16 @@ structure, not a flat list of primitives.
 | Expand tab to spaces | Enabled |
 | Tab width | 4 columns |
 | Shift width | Follows the tab width |
+| Indent width override | Follows the language |
+
+A language adapter declares the width of one indent level for its language,
+exactly as it declares its comment token. See
+[`language-services.md`](language-services.md). `EditorSettings` resolves one
+indent width for the active buffer, in this order:
+
+1. The indent width override wins, when the user sets an explicit width.
+2. Otherwise, the width that the language adapter declares wins.
+3. Otherwise, the tab width applies, for a buffer that no adapter serves.
 
 [`text-model.md`](text-model.md) owns the indent policy.
 

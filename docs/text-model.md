@@ -197,8 +197,11 @@ the block stays empty.
 The automatic indent is part of the same edit transaction as the new line, or as
 the moved block. One undo reverses both.
 
-All indent values belong to `EditorSettings`. See [`settings.md`](settings.md).
-No other module holds an indent constant.
+The language adapter declares the width of one indent level for its language,
+exactly as it already declares its comment token and its indent scopes.
+`EditorSettings` keeps an override that wins for every language, and keeps the
+fallback width for a buffer that no adapter serves. See
+[`settings.md`](settings.md) for the resolution order.
 
 ## Backward Delete
 
