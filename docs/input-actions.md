@@ -492,6 +492,30 @@ became visible and keeps that record while the sequence continues.
 
 [`windows.md`](windows.md) owns overlay placement and styling.
 
+## Bracketed Paste And Unsupported Input
+
+The terminal session enables bracketed paste, so one paste arrives as one
+event instead of a run of key presses. The editor applies that block as one
+edit transaction and one undo unit, and it never runs a binding, an auto-indent
+rule, or an abbreviation over pasted text. `PasteText` carries the bound, so no
+paste exceeds `PASTE_BYTES_MAX`. An open question and an open command line take
+the block first, exactly as they take a typed character. Normal mode owns no
+text fallback, so a paste there changes no buffer.
+
+A terminal that ignores the bracketed-paste request sends the key run instead,
+which the editor still accepts.
+
+The terminal reports `TerminalEvent::Unsupported` for input that no binding
+accepts: a key that carries an unsupported modifier, and a paste block above
+the bound. The editor never removes the modifier and never inserts part of the
+block. It resets its pending grammar instead, so a rejected chord can never run
+the binding of its unmodified key. A waiting operator lives in the editor as
+well, so the reset reports `ReturnToNormal` for it, exactly as a cancel does.
+
+An event that names no input at all, such as a mouse event or an empty paste
+block, never reaches the editor. `EventSource` skips it, so moving the mouse
+ends no pending sequence.
+
 ## Reset Rules
 
 Pending input resets after:
@@ -499,6 +523,7 @@ Pending input resets after:
 - a completed semantic operation,
 - a sequence mismatch,
 - a cancel with `Esc` or `Ctrl-C`,
+- input that no binding accepts,
 - a mode change,
 - a focus change,
 - an overlay ownership change,

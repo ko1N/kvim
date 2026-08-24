@@ -1688,7 +1688,7 @@ fn a_failed_save_paints_its_failure_and_keeps_the_changed_marker() {
 
 #[test]
 fn a_failed_clipboard_write_paints_its_report_without_a_key_event() {
-    let mut session = save_session(90, 10).with_clipboard(SessionClipboard::deferred());
+    let mut session = save_session(90, 10).with_session_clipboard(SessionClipboard::deferred());
     press(&mut session, 'i');
     type_keys(&mut session, "alpha");
     press_code(&mut session, KeyCode::Esc);

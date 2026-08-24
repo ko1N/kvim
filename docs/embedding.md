@@ -27,8 +27,16 @@ process pool of the program. `Supplied` accepts the spawner that the host built
 itself. Capacity is isolated for one instance unless the named choice shares a
 pool.
 
-The host can supply clipboard, watcher, and LSP handles. These services are
-optional. The standalone `kvim` binary constructs its implementations.
+The host can supply watcher and LSP handles, and it grants one
+`ClipboardAccess` policy. These services are optional. The standalone `kvim`
+binary constructs its implementations and grants `ClipboardAccess::System`. See
+[`clipboard.md`](clipboard.md).
+
+The standalone binary is one such host. It is the only layer that owns raw
+mode, the alternate screen, standard input, standard output, the terminal event
+stream, the termination signals, the panic restoration, the cursor shape, the
+asynchronous runtime, the redraw schedule, and the shutdown order. `kvim-tui`
+owns none of these, and a structural test in each of the two crates proves it.
 
 The host keeps every event loop free from filesystem, process, Git, LSP,
 formatter, and Tree-sitter work. It submits synchronous syntax work through its
@@ -191,8 +199,17 @@ context, so the composer refuses it. This protocol lets focus cross editor and
 review boundaries while the host keeps final focus policy.
 
 A split copies the surface of its source window, so the surface that owns input
-does not change and no reset is needed. Closing a region is not part of this
-protocol yet.
+does not change and no reset is needed.
+
+`close_focused` commits at once and never returns `CancelPending`. A close needs
+no reset handshake, because the surface that would have to reset is the surface
+that goes away: its count, operator, register, text-object, and prompt phases
+die with the region. An open overlay keeps input ownership and its own state,
+because no close removes an overlay. A close ends every waiting proposal, since
+the topology that the proposal addressed changed under it; the host proposes
+again after the close. A tree that holds one window reports
+`CloseOutcome::LastWindow` and changes nothing, so the host decides whether its
+workspace ends. [`windows.md`](windows.md) owns the tree behavior of a close.
 
 One layout pass returns sidebar, surface, and overlay placements inside the
 supplied rectangle, each one clipped to that rectangle. The which-key hints come

@@ -15,7 +15,8 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use kvim_keymap::{
-    Chord, Input, InputContextSnapshot, Key, KeyCode, Resolver as SharedResolver, TypedText,
+    Chord, Dispatch, Input, InputContextSnapshot, Key, KeyCode, Resolver as SharedResolver,
+    TypedText,
 };
 use kvim_settings::InputSettings;
 
@@ -333,6 +334,56 @@ impl Resolver {
         resolution(self.reducer.cancel(), scope)
     }
 
+    /// Reports that the terminal sent input which no binding accepts.
+    ///
+    /// A key with an unsupported modifier and a paste block above the accepted
+    /// bound both reach this path. The reducer resets the count, the operator,
+    /// the register, the text object, and the prompt phase, and the shared
+    /// resolver drops its pending prefix, so the rejected input never degrades
+    /// into the binding of a shorter sequence.
+    ///
+    /// A waiting operator lives in the editor as well, so this path reports
+    /// [`Command::ReturnToNormal`] for it, exactly as [`Resolver::cancel`]
+    /// does. The call changes no buffer text.
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use kvim_input::{Resolution, Resolver};
+    /// use kvim_keymap::{Key, KeyCode};
+    /// use kvim_settings::InputSettings;
+    ///
+    /// let mut resolver = Resolver::new(
+    ///     kvim_input::Registry::first_release(),
+    ///     InputSettings::default(),
+    /// );
+    /// // A decimal count opens one grammar prefix.
+    /// assert_eq!(
+    ///     resolver.resolve(Key::plain(KeyCode::Char('3')), Duration::ZERO),
+    ///     Resolution::Pending
+    /// );
+    ///
+    /// assert_eq!(resolver.unsupported(), Resolution::NoMatch);
+    /// assert!(resolver.snapshot().phases.is_idle());
+    /// ```
+    pub fn unsupported(&mut self) -> Resolution {
+        let scope = self.reducer.active_scope();
+        self.shared.clear_pending();
+        let reduced = self.reducer.reduce(Dispatch::Unsupported);
+        if scope == BindingScope::OperatorPending {
+            // A waiting operator lives in the editor too, so the abort must
+            // reach it. [`Command::ReturnToNormal`] names no motion and no text
+            // object, which aborts the operator and changes nothing else. The
+            // cancel path above uses the same command for the same reason.
+            return Resolution::Command {
+                command: Command::ReturnToNormal,
+                count: None,
+                register: None,
+            };
+        }
+        resolution(reduced, scope)
+    }
+
     /// Resolves one key at the elapsed time `now`.
     ///
     /// A cancel key ends pending input first, at every depth and in every mode.
@@ -368,8 +419,8 @@ fn resolution(reduced: Reduced, scope: BindingScope) -> Resolution {
     match reduced.reduction {
         Reduction::Prefix => Resolution::Pending,
         Reduction::Cancelled => Resolution::Cancelled,
-        // The terminal adapter rejects an unsupported chord before the session
-        // reads it, so the standalone loop never reports one.
+        // The reducer already reset every grammar phase, and no owner takes
+        // input that no binding accepts, so nothing else changes.
         Reduction::Unsupported => Resolution::NoMatch,
         Reduction::Unbound => match scope {
             // An open confirmation owns every key, so an unbound key changes
@@ -385,7 +436,8 @@ fn resolution(reduced: Reduced, scope: BindingScope) -> Resolution {
         Reduction::Text(TypedText::Pasted(_)) => {
             debug_assert!(
                 false,
-                "the standalone adapter submits key input only, so no paste reaches it"
+                "the standalone adapter submits key input only; the editor applies one \
+                 bracketed paste block itself"
             );
             Resolution::NoMatch
         }

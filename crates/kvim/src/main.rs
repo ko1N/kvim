@@ -2,6 +2,13 @@
 //!
 //! The file keeps argument parsing pure and testable. It performs input and
 //! output only after the parser returns one action.
+//!
+//! The executable is the composition root of the standalone editor. It builds
+//! the asynchronous runtime, resolves the worktree root, and hands both to the
+//! `editor` module, which owns the terminal for the lifetime of one session.
+//! See `docs/architecture.md`.
+
+mod editor;
 
 use std::error::Error;
 use std::path::PathBuf;
@@ -10,8 +17,10 @@ use std::process::ExitCode;
 use kvim_language::LanguageRegistry;
 use kvim_path::WorktreeRoot;
 use kvim_settings::EditorSettings;
-use kvim_tui::{HostReportRequest, HostWorkspace, PanicProbe};
+use kvim_tui::{HostReportRequest, HostWorkspace};
 use thiserror::Error as ErrorDerive;
+
+use crate::editor::PanicProbe;
 
 /// The environment variable that asks the editor to panic after its first
 /// frame.
@@ -88,7 +97,7 @@ fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
         .build()
         .map_err(|error| format!("cannot start the editor runtime: {error}"))?;
     runtime
-        .block_on(kvim_tui::run(
+        .block_on(editor::run(
             EditorSettings::default(),
             root,
             path,

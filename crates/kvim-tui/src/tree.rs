@@ -88,10 +88,15 @@ const LINK_SUFFIX: &str = "@";
 /// answer for a workspace that is no repository.
 ///
 /// The workspace watcher ignores exactly these names, so one build writes no
-/// event at all and the two rules can never disagree about one entry. See
+/// event at all and the two rules can never disagree about one entry. A host
+/// that starts a [`FileWatcher`](kvim_runtime::FileWatcher) for one editor
+/// hands this list to it, so the watch and the tree stay one rule. See
 /// `docs/files.md` and `docs/git.md`.
-pub(super) const GENERATED_NAMES: [&str; 5] =
-    [".direnv", ".git", "__pycache__", "node_modules", "target"];
+///
+/// ```
+/// assert!(kvim_tui::GENERATED_NAMES.contains(&"target"));
+/// ```
+pub const GENERATED_NAMES: [&str; 5] = [".direnv", ".git", "__pycache__", "node_modules", "target"];
 
 /// The number of cells that the Git mark reserves at the right edge.
 ///

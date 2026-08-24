@@ -13,11 +13,16 @@ path = "src/main.rs"
 # kvim crates
 kvim-language = { workspace = true, features = ["all-grammars"] }
 kvim-path.workspace = true
+kvim-runtime.workspace = true
 kvim-settings.workspace = true
-kvim-tui.workspace = true
+kvim-terminal.workspace = true
+kvim-tui = { workspace = true, features = ["all-grammars"] }
 
 # Basics
 thiserror.workspace = true
+
+# Terminal
+ratatui.workspace = true
 
 # Runtime
 tokio.workspace = true

@@ -39,6 +39,19 @@ Closing a window replaces its parent split node with the remaining sibling. The
 tree always has at least one leaf window. The closed window discards its view
 with it.
 
+A close of the focused region takes the focused sidebar first: that sidebar
+hides and keeps its surface, so showing it again restores it unchanged. A close
+that reaches the last leaf window reports `CloseOutcome::LastWindow` and changes
+nothing, so the caller above the tree decides what happens next.
+
+`WorkspaceComposer::close_focused` adds the composition rules to that tree
+operation. It commits at once, because the surface that would have to reset its
+semantic phases is the surface that goes away. A surface that no region shows
+any longer leaves the composer with its context, the shared resolver drops its
+pending key prefix, and every waiting focus or overlay proposal ends.
+[`embedding.md`](embedding.md) owns the transition protocol that this close
+bypasses.
+
 ## Window View
 
 A window owns the cursor, the selection anchor, and the viewport. The generic
