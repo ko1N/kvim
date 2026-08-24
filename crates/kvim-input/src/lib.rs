@@ -2,9 +2,9 @@
 //! resolver, which-key generation, and the command line parser.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The crate knows no terminal type except the normalized [`Key`]. It holds no
-//! buffer, file, or rendering concept. `docs/input-actions.md` owns the rules
-//! that this crate implements.
+//! The crate knows no terminal type except the normalized [`Key`] of
+//! `kvim-keymap`. It holds no buffer, file, or rendering concept.
+//! `docs/input-actions.md` owns the rules that this crate implements.
 //!
 //! # Boundaries
 //!
@@ -29,9 +29,8 @@
 //! ```
 //! use std::time::Duration;
 //!
-//! use kvim_input::{Command, Registry, Resolution, Resolver};
+//! use kvim_input::{Command, Key, KeyCode, Registry, Resolution, Resolver};
 //! use kvim_settings::InputSettings;
-//! use kvim_terminal::{Key, KeyCode};
 //!
 //! let mut resolver = Resolver::new(Registry::first_release(), InputSettings::default());
 //! let now = Duration::ZERO;
@@ -45,7 +44,7 @@
 //! ));
 //! ```
 //!
-//! [`Key`]: kvim_terminal::Key
+//! [`Key`]: kvim_keymap::Key
 
 mod command;
 mod command_line;
@@ -57,8 +56,7 @@ pub use command::{Command, CommandGroup};
 pub use command_line::{
     COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError, CommandPathArgument,
 };
+pub use kvim_keymap::{Chord, Key, KeyCode, KeyLabel, KeySequence};
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
-pub use registry::{
-    Binding, KeyLabel, KeySequence, Registry, RegistryError, WhichKeyRow, WhichKeyTarget,
-};
+pub use registry::{Binding, Registry, RegistryError, WhichKeyRow, WhichKeyTarget};
 pub use resolver::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};

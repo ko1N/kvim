@@ -460,8 +460,15 @@ dependencies = [
 name = "kvim-input"
 version = "0.1.0"
 dependencies = [
+ "kvim-keymap",
  "kvim-settings",
- "kvim-terminal",
+ "thiserror",
+]
+
+[[package]]
+name = "kvim-keymap"
+version = "0.1.0"
+dependencies = [
  "thiserror",
 ]
 
@@ -558,6 +565,7 @@ version = "0.1.0"
 dependencies = [
  "crossterm",
  "futures-util",
+ "kvim-keymap",
  "thiserror",
  "tokio",
 ]

@@ -5,6 +5,7 @@ members = [
   "crates/kvim-core",
   "crates/kvim-editor",
   "crates/kvim-input",
+  "crates/kvim-keymap",
   "crates/kvim-language",
   "crates/kvim-lsp",
   "crates/kvim-path",
@@ -29,6 +30,7 @@ kvim-clipboard = { path = "crates/kvim-clipboard" }
 kvim-core = { path = "crates/kvim-core" }
 kvim-editor = { path = "crates/kvim-editor" }
 kvim-input = { path = "crates/kvim-input" }
+kvim-keymap = { path = "crates/kvim-keymap" }
 kvim-language = { path = "crates/kvim-language" }
 kvim-lsp = { path = "crates/kvim-lsp" }
 kvim-path = { path = "crates/kvim-path" }

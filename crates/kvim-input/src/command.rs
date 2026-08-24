@@ -5,6 +5,8 @@
 
 use std::fmt;
 
+use kvim_keymap::CommandMetadata;
+
 /// Declares every semantic command from one table.
 ///
 /// The table is the single source of the variant, the stable identifier, and the
@@ -420,6 +422,21 @@ impl Command {
             self,
             Self::DeleteOverMotion | Self::ChangeOverMotion | Self::YankOverMotion
         )
+    }
+}
+
+impl CommandMetadata for Command {
+    /// Returns the stable identifier that a registry checks and a configuration
+    /// file names.
+    #[inline]
+    fn id(&self) -> &str {
+        (*self).id()
+    }
+
+    /// Returns the short label that a which-key overlay shows.
+    #[inline]
+    fn label(&self) -> &str {
+        (*self).label()
     }
 }
 
