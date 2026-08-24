@@ -49,6 +49,9 @@ thiserror = "2.0"
 # Filesystem confinement
 cap-std = "4.0"
 
+# Review identity
+blake3 = "1.5"
+
 # Text storage
 ropey = "1.6"
 

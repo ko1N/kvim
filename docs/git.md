@@ -77,6 +77,12 @@ The caller supplies one full `BaseRevision` Git commit object identifier. Kvim
 does not discover a review base. An unavailable object or an object that is not
 a commit returns `BaseUnavailable`.
 
+`BaseRevision` accepts the two published object formats: 40 hexadecimal
+characters for SHA-1 and 64 for SHA-256. It accepts either letter case and keeps
+the lowercase form that Git writes. It accepts no abbreviation, because an
+abbreviated identifier can name more than one object, and a review base must
+stay one object for the life of the review.
+
 `DiffTarget` selects the complete worktree or one validated
 `WorktreeRelativePath`. One-path selection matches either side of a rename and
 returns the complete rename pair.
@@ -142,6 +148,13 @@ comment silently.
 
 A pure relocation API compares an anchor with a later candidate. It returns
 `Exact`, `Relocated`, `Missing`, or `Ambiguous`. It never guesses among matches.
+
+The search compares the selected-line digest of every window of the anchored
+side, and then the recorded context outward from the selection. A later
+candidate that publishes a shorter context still matches, and a disagreement
+inside the shared part never does. The search itself is bounded. An exhausted
+bound returns `Ambiguous`, because the part that the search did not compare can
+still hold another match.
 
 ## The Recorded State
 
