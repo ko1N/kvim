@@ -441,13 +441,16 @@ the keys that follow `c`.
 
 A next key that reaches exactly one command shows the label of that command. A
 next key that reaches several commands shows a group marker with the number of
-commands behind it, in the form `+3 commands`. which-key.nvim marks a group the
-same way, with a `+` prefix. The rows follow the key order of the registry, so
-the overlay is deterministic.
+distinct commands behind it, in the form `+3 commands`. Two sequences that reach
+the same command therefore count once. which-key.nvim marks a group the same
+way, with a `+` prefix. The rows follow the key order of the registry, so the
+overlay is deterministic.
 
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written
-list.
+list. `keymap` folds the extensions of the pending prefix into these hints,
+`ui` owns the bounded widget, its column layout, and its clipping, and the
+interface layer supplies the final texts, the icons, and the palette colors.
 
 The overlay lays its rows out in columns that fill the width of the body band.
 Every column keeps the width of the widest row, so the keys and the labels of

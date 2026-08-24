@@ -12,6 +12,15 @@
 //! duplicate sequence and an ambiguous prefix pair are typed errors, so a
 //! conflict fails at composition time instead of at dispatch time.
 //!
+//! [`Resolver`] reads that one registry for dispatch and for which-key hints,
+//! so no presentation layer holds a second table. The crate renders nothing.
+//! `crates/kvim-ui/examples/which_key.rs` builds a registry, feeds it a pending
+//! key, derives the hints of that prefix, and renders them:
+//!
+//! ```sh
+//! cargo run -p kvim-ui --example which_key
+//! ```
+//!
 //! # Example
 //!
 //! ```
@@ -63,6 +72,7 @@
 
 mod binding;
 mod context;
+mod hint;
 mod key;
 mod registry;
 mod resolver;
@@ -73,6 +83,7 @@ pub use binding::{
     CommandOwner, SCOPES_MAX, Scope,
 };
 pub use context::{ContextGeneration, InputContextSnapshot, Phase, SemanticPhases, TextFallback};
+pub use hint::{WhichKeyHint, WhichKeyTarget};
 pub use key::{Chord, KEY_LABEL_BYTES_MAX, Key, KeyCode, KeyLabel};
 pub use registry::{BINDINGS_MAX, Registry, RegistryError};
 pub use resolver::{

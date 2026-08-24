@@ -17,6 +17,7 @@ use thiserror::Error;
 
 use crate::binding::CommandOwner;
 use crate::context::{ContextGeneration, InputContextSnapshot};
+use crate::hint::WhichKeyHint;
 use crate::key::Key;
 use crate::registry::Registry;
 use crate::{BoundCommand, CommandMetadata, KeySequence, Scope};
@@ -268,6 +269,16 @@ where
     /// order.
     pub fn extensions(&self) -> impl Iterator<Item = (&KeySequence, BoundCommand<C>)> {
         self.registry.extensions_of_prefix(self.scope, self.prefix)
+    }
+
+    /// Returns one hint for each distinct next key of the pending prefix.
+    ///
+    /// A presentation layer reads these hints alone. It needs no binding table
+    /// of its own, because the hints come from the registry that dispatch
+    /// reads. `crates/kvim-ui/examples/which_key.rs` renders them.
+    #[must_use]
+    pub fn hints(&self) -> Vec<WhichKeyHint<C>> {
+        self.registry.hints_for_prefix(self.scope, self.prefix)
     }
 }
 

@@ -14,6 +14,7 @@ use crate::binding::{
     Binding, BoundCommand, COMMAND_ID_BYTES_MAX, COMMAND_LABEL_BYTES_MAX, CommandMetadata,
     SCOPES_MAX, Scope,
 };
+use crate::hint::WhichKeyHint;
 use crate::key::Key;
 use crate::sequence::{KeySequence, SEQUENCE_KEYS_MAX, SequenceError};
 
@@ -309,6 +310,28 @@ where
                     .take_while(move |(keys, _)| keys.keys().starts_with(prefix))
                     .map(|(keys, bound)| (keys, *bound))
             })
+    }
+
+    /// Returns one which-key hint for each distinct next key of the prefix.
+    ///
+    /// The overlay shows one level at a time, so every hint holds one key. A
+    /// key that reaches exactly one command carries that command, and a key
+    /// that reaches several carries all of them. The hints keep the
+    /// deterministic key order of the registry.
+    #[must_use]
+    pub fn hints_for_prefix(&self, scope: S, prefix: &[Key]) -> Vec<WhichKeyHint<C>> {
+        let mut hints = Vec::new();
+        for (sequence, bound) in self.extensions_of_prefix(scope, prefix) {
+            let Some(key) = sequence.keys().get(prefix.len()).copied() else {
+                debug_assert!(
+                    false,
+                    "an extension of a prefix holds at least one more key"
+                );
+                continue;
+            };
+            WhichKeyHint::fold(&mut hints, key, bound.command);
+        }
+        hints
     }
 
     /// Returns the number of bindings that the registry holds.
@@ -647,5 +670,39 @@ mod tests {
             .collect();
 
         assert_eq!(reached, vec!["g d".to_owned(), "g g".to_owned()]);
+    }
+
+    #[test]
+    fn one_hint_names_every_distinct_command_behind_its_next_key() {
+        let built = registry(&[
+            // `g d` and `g g` reach one command each, and `f a` and `f b` both
+            // reach `First`, so that group counts one command.
+            Binding::surface(Table::Global, &[ch('f'), ch('a')], Action::First),
+            Binding::surface(Table::Global, &[ch('f'), ch('b')], Action::First),
+            Binding::surface(Table::Global, &[ch('g'), ch('d')], Action::First),
+            Binding::surface(Table::Global, &[ch('g'), ch('g')], Action::Second),
+        ])
+        .expect("no prefix pair collides");
+
+        let hints = built.hints_for_prefix(Table::Global, &[]);
+        let reached: Vec<_> = hints
+            .iter()
+            .map(|hint| (hint.key_label().to_string(), hint.target().to_string()))
+            .collect();
+
+        assert_eq!(
+            reached,
+            vec![
+                ("f".to_owned(), "First".to_owned()),
+                ("g".to_owned(), "+2 commands".to_owned()),
+            ],
+            "the hints keep the key order of the registry"
+        );
+        assert_eq!(
+            hints[0].commands(),
+            [Action::First],
+            "two sequences that reach one command count it once"
+        );
+        assert_eq!(hints[1].commands(), [Action::First, Action::Second]);
     }
 }
