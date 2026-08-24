@@ -1,9 +1,14 @@
-//! Generic split topology, focus, resize, and deterministic geometry.
+//! Generic split topology, focus, resize, sidebars, and deterministic geometry.
 //!
 //! The crate holds no editor state. [`WindowTree`] stores one opaque surface
 //! identity for each leaf window, the split structure, the sidebar widths, and
 //! the host rectangle. The host owns every surface value, so one tree serves an
 //! editor, a chat panel, a review panel, or any other caller-owned surface.
+//!
+//! [`SidebarState`] stores the rows of one sidebar the same way: one opaque row
+//! identity, the terminal rows that the row occupies, the selection, and the
+//! viewport. Rows, heights, styles, labels, and the meaning of every action
+//! stay with the host, and one host callback draws every cell.
 //!
 //! Every value is pure and deterministic. The crate reads no clock, no
 //! filesystem, and no terminal. One layout calculation converts the tree and
@@ -18,10 +23,12 @@
 //! # Examples
 //!
 //! `examples/split_windows.rs` runs the complete flow with caller-owned
-//! surfaces:
+//! surfaces, and `examples/sidebar.rs` renders two-line sidebar rows with state
+//! markers:
 //!
 //! ```sh
 //! cargo run -p kvim-ui --example split_windows
+//! cargo run -p kvim-ui --example sidebar
 //! ```
 //!
 //! ```
@@ -48,12 +55,20 @@
 //! ```
 
 mod layout;
+mod sidebar;
 mod window;
 
+#[cfg(test)]
+mod sidebar_tests;
 #[cfg(test)]
 mod window_tests;
 
 pub use layout::{Region, RegionKind, WindowLayout};
+pub use sidebar::{
+    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DRAWS_MAX,
+    SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas, SidebarError,
+    SidebarEvent, SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow, SidebarState,
+};
 pub use window::{
     ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit, Orientation,
     RegionError, SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX,

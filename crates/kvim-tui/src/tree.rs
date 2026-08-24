@@ -9,6 +9,11 @@
 //! The sidebar runs one workspace operation at a time, as the file operations
 //! do, so a result can never reach a tree state that a newer operation already
 //! replaced.
+//!
+//! The rows, the selection moves, the scroll offset, and the visible placements
+//! belong to the generic [`SidebarState`] of `kvim-ui`. This module keeps every
+//! filesystem, Git, and clipboard meaning, and it hands that state one opaque
+//! identity for each row.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -22,6 +27,9 @@ use kvim_editor::{SearchDirection, Viewport};
 use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
+use kvim_ui::{
+    RowKind, SidebarCanvas, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState,
+};
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
     GitStatusRequest, GitStatusSnapshot, LinkKind, MutateRequest, MutationOutcome, Notice,
@@ -89,7 +97,7 @@ pub(super) const GENERATED_NAMES: [&str; 5] =
 ///
 /// The column stays blank on every row without a Git state, so one mark never
 /// moves a name.
-const GIT_MARK_CELLS: usize = 1;
+const GIT_MARK_CELLS: u16 = 1;
 
 /// Returns the mark of one recorded Git state.
 ///
@@ -281,8 +289,12 @@ pub(super) struct TreeSidebar {
     root: Arc<WorktreeRoot>,
     tree: FileTree,
     clipboard: FileClipboard,
-    /// The first visible row. The reconciliation keeps the selection visible.
-    first_row: usize,
+    /// The generic rows: the selection, the scroll offset, and the placements.
+    ///
+    /// The identity of one row is its position in [`FileTree::rows`], so the
+    /// tree stays the one owner of every path. [`TreeSidebar::sync_rows`]
+    /// copies the current rows and the current selection into this state.
+    view: SidebarState<usize>,
     /// The operation that waits for the bounded worker service.
     outbox: Option<WorkspaceRequest>,
     /// The operation that the sidebar waits for.
@@ -311,7 +323,7 @@ impl TreeSidebar {
             root,
             tree: FileTree::new(root_path),
             clipboard: FileClipboard::default(),
-            first_row: 0,
+            view: SidebarState::default(),
             outbox: None,
             pending: None,
             git_outbox: None,
@@ -349,9 +361,9 @@ impl TreeSidebar {
             .then_some(mode)
     }
 
-    /// Returns the first visible row.
-    pub(super) const fn first_row(&self) -> usize {
-        self.first_row
+    /// Returns the generic rows that the renderer walks.
+    pub(super) const fn view(&self) -> &SidebarState<usize> {
+        &self.view
     }
 
     /// Returns the workspace request that the event loop must submit.
@@ -457,27 +469,22 @@ impl TreeSidebar {
     /// travel, and the nearest one behind it when the direction holds none. An
     /// empty tree keeps its empty selection.
     pub(super) fn move_selection(&mut self, motion: TreeMotion) {
-        let rows = self.tree.rows();
-        let Some(last) = rows.len().checked_sub(1) else {
+        self.sync_rows();
+        let motion = match motion {
+            TreeMotion::Down(step) => SidebarMotion::Down(step),
+            TreeMotion::Up(step) => SidebarMotion::Up(step),
+            TreeMotion::ToRow(row) => SidebarMotion::ToRow(row),
+            TreeMotion::LastRow => SidebarMotion::LastRow,
+        };
+        // An empty tree and a tree whose rows all report a read both leave the
+        // selection where it was, so the reduction reports no event.
+        let Some(SidebarEvent::SelectionChanged { row }) =
+            self.view.reduce(&SidebarInput::Move(motion))
+        else {
             return;
         };
-        let current = self.selected_index().unwrap_or(0);
-        let (target, forward) = match motion {
-            TreeMotion::Down(step) => (current.saturating_add(step).min(last), true),
-            TreeMotion::Up(step) => (current.saturating_sub(step), false),
-            TreeMotion::ToRow(row) => (row.min(last), true),
-            TreeMotion::LastRow => (last, false),
-        };
-        let ahead = rows[target..].iter().find(|row| row.is_selectable());
-        let behind = rows[..=target].iter().rev().find(|row| row.is_selectable());
-        let found = if forward {
-            ahead.or(behind)
-        } else {
-            behind.or(ahead)
-        };
-        let Some(path) = found.map(|row| row.path.clone()) else {
-            // Every row reports a read instead of an entry, so nothing accepts
-            // the selection.
+        let Some(path) = self.tree.rows().get(row).map(|row| row.path.clone()) else {
+            debug_assert!(false, "the selected row comes from the current rows");
             return;
         };
         self.tree.select(&path);
@@ -813,24 +820,50 @@ impl TreeSidebar {
     /// A closed sidebar and an empty tree both show their rows from the first
     /// one.
     pub(super) fn reconcile(&mut self, viewport: Option<Viewport>, margin_rows: usize) {
-        let (Some(viewport), Some(last_row)) = (viewport, self.tree.rows().len().checked_sub(1))
-        else {
-            self.first_row = 0;
+        self.sync_rows();
+        self.view
+            .set_scroll_margin(u16::try_from(margin_rows).unwrap_or(u16::MAX));
+        // The row state never scrolls past its last terminal row, so the
+        // sidebar marks no row after its last entry and fills its region
+        // instead of showing blank rows below that entry. A buffer window keeps
+        // those rows and marks them.
+        self.view
+            .set_height_rows(viewport.map_or(0, |viewport| viewport.height_rows().get()));
+    }
+
+    /// Copies the current rows and the current selection into the row state.
+    ///
+    /// Every row occupies one terminal row and carries its own position as its
+    /// identity, so the renderer reads the tree row of one placement directly.
+    /// A row that reports a bounded or a failed directory read takes no
+    /// selection.
+    fn sync_rows(&mut self) {
+        let rows = self
+            .tree
+            .rows()
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let kind = if row.is_selectable() {
+                    RowKind::Selectable
+                } else {
+                    RowKind::Inert
+                };
+                SidebarRow::single(index, kind)
+            })
+            .collect();
+        if let Err(error) = self.view.set_rows(rows) {
+            debug_assert!(false, "the tree bounds hold every row: {error}");
             return;
-        };
-        let rows_visible = usize::from(viewport.height_rows().get());
-        let selected = self.selected_index().unwrap_or(0);
-        // The sidebar marks no row after its last entry, so it also fills its
-        // region instead of showing blank rows below the last one. A buffer
-        // window keeps those rows and marks them.
-        let last_start = (last_row + 1).saturating_sub(rows_visible);
-        self.first_row = viewport
-            .reconciled_first_row(self.first_row, selected, last_row, margin_rows)
-            .min(last_start);
-        debug_assert!(
-            self.first_row <= selected && selected < self.first_row + rows_visible,
-            "the reconciled offset always keeps the selected row visible"
-        );
+        }
+        // The tree owns the selection, so the row state follows it instead of
+        // keeping a second answer.
+        match self.selected_index() {
+            Some(index) => {
+                self.view.select(&index);
+            }
+            None => self.view.clear_selection(),
+        }
     }
 
     /// Returns the row index of the selection, or `None` while no row holds it.
@@ -1113,17 +1146,11 @@ pub(super) fn render_tree(
     let mut cursor = None;
     let rows = sidebar.tree().rows();
     let selected = sidebar.tree().selected();
-    let width = usize::from(body.width);
-    for (offset, index) in (sidebar.first_row()..rows.len())
-        .take(usize::from(body.height))
-        .enumerate()
-    {
-        let Ok(offset) = u16::try_from(offset) else {
-            debug_assert!(false, "the visible rows never pass the terminal height");
-            return cursor;
+    let outcome = sidebar.view().render(target, body, |canvas, placement| {
+        let Some(row) = rows.get(placement.index()) else {
+            debug_assert!(false, "the row state follows the rows of the tree");
+            return;
         };
-        let row = &rows[index];
-        let y = body.y + offset;
         // A notice row carries the path of its own directory, so it must not
         // borrow the Git state of that directory.
         let git = row
@@ -1136,57 +1163,54 @@ pub(super) fn render_tree(
             .patch(theme.style(state.role()));
         let current = row.is_selectable() && selected == Some(row.path.as_path());
         let style = if current {
-            cursor = Some(Position::new(body.x, y));
+            cursor = Some(Position::new(canvas.area().x, canvas.area().y));
             style.patch(theme.style(ThemeRole::PopupSelection))
         } else {
             style
         };
         // The selection covers the complete row, so the reader finds it at any
         // indent depth.
-        target.set_style(Rect::new(body.x, y, body.width, 1), style);
-        let guides = row_guides(rows, index);
+        canvas.fill(style);
+        let guides = row_guides(rows, placement.index());
         // The Git mark owns the last cell of every row, so a long name never
         // covers it and no mark ever moves a name.
-        target.set_stringn(
-            body.x,
-            y,
-            row_text(row, &guides, state, icons),
-            width.saturating_sub(GIT_MARK_CELLS),
+        let name_cells = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
+        canvas.draw_clipped(
+            0,
+            0,
+            &row_text(row, &guides, state, icons),
+            name_cells,
             style,
         );
         // The guides carry their own color, so they separate from the names
         // without the state of the row changing their meaning.
         paint_span(
-            target,
-            body,
-            y,
+            canvas,
             MARK_CELLS,
             guides.chars().count(),
             style.patch(theme.style(ThemeRole::TreeIndentGuide)),
         );
         if current {
-            target.set_stringn(
-                body.x,
-                y,
+            canvas.draw_clipped(
+                0,
+                0,
                 SELECTION_MARK,
-                MARK_CELLS,
+                mark_cells(),
                 style.patch(theme.style(ThemeRole::TreeSelectionMark)),
             );
         }
         // The icon carries its own color over the row style, so a selected row
         // keeps its background behind the glyph.
-        render_row_icon(target, body, y, row, icons, theme, style);
+        render_row_icon(canvas, row, icons, theme, style);
         if let Some(status) = git {
-            render_git_mark(target, body, y, status, theme, style);
+            render_git_mark(canvas, status, theme, style);
             // The name of a changed file takes the color of its state. A
             // directory keeps the title color, because its state rolls up from
             // the entries below it and names no change of the directory itself.
             // A dimmed row keeps its own color, so a quiet row stays quiet.
             if state == RowState::File {
                 paint_span(
-                    target,
-                    body,
-                    y,
+                    canvas,
                     name_offset_cells(row.depth),
                     row.name().map_or(0, |name| name.chars().count()),
                     style.patch(theme.style(ThemeRole::TreeGit(status))),
@@ -1205,15 +1229,17 @@ pub(super) fn render_tree(
                 ThemeRole::SearchMatch
             };
             paint_span(
-                target,
-                body,
-                y,
+                canvas,
                 name_offset_cells(row.depth).saturating_add(matched.start),
                 matched.len,
                 style.patch(theme.style(role)),
             );
         }
-    }
+    });
+    debug_assert!(
+        outcome.is_ok(),
+        "every sidebar row stays inside the bounds of the canvas"
+    );
     cursor
 }
 
@@ -1234,19 +1260,17 @@ const fn name_offset_cells(depth: usize) -> usize {
     glyph_offset_cells(depth) + ICON_CELLS
 }
 
+/// Returns the width of the selection mark, in cells of the canvas.
+fn mark_cells() -> u16 {
+    u16::try_from(MARK_CELLS).unwrap_or(1)
+}
+
 /// Paints one span of a sidebar row and clips it at the right edge.
 ///
 /// A span that starts outside the sidebar paints nothing, and a span that
 /// reaches the edge stops there, so a narrow sidebar writes no cell outside its
 /// own rectangle.
-fn paint_span(
-    target: &mut CellBuffer,
-    body: Rect,
-    y: u16,
-    start: usize,
-    cells: usize,
-    style: Style,
-) {
+fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: usize, style: Style) {
     let (Ok(start), Ok(cells)) = (u16::try_from(start), u16::try_from(cells)) else {
         debug_assert!(
             false,
@@ -1254,11 +1278,10 @@ fn paint_span(
         );
         return;
     };
-    if start >= body.width {
+    if start >= canvas.width_cells() {
         return;
     }
-    let width = cells.min(body.width - start);
-    target.set_style(Rect::new(body.x + start, y, width, 1), style);
+    canvas.style_span(0, start, cells, style);
 }
 
 /// Paints the Git mark of one row at the right edge of the sidebar.
@@ -1266,24 +1289,13 @@ fn paint_span(
 /// The mark reports the state of the entry, and of every entry below a
 /// directory. A sidebar that holds no cell for the mark paints none, so a very
 /// narrow sidebar still shows its names. See `docs/git.md`.
-fn render_git_mark(
-    target: &mut CellBuffer,
-    body: Rect,
-    y: u16,
-    status: GitStatus,
-    theme: Theme,
-    style: Style,
-) {
-    let Ok(cells) = u16::try_from(GIT_MARK_CELLS) else {
-        debug_assert!(false, "the mark column holds one cell");
+fn render_git_mark(canvas: &mut SidebarCanvas<'_>, status: GitStatus, theme: Theme, style: Style) {
+    let Some(offset) = canvas.width_cells().checked_sub(GIT_MARK_CELLS) else {
         return;
     };
-    let Some(offset) = body.width.checked_sub(cells) else {
-        return;
-    };
-    target.set_stringn(
-        body.x.saturating_add(offset),
-        y,
+    canvas.draw_clipped(
+        0,
+        offset,
         git_mark(status),
         GIT_MARK_CELLS,
         style.patch(theme.style(ThemeRole::TreeGit(status))),
@@ -1296,9 +1308,7 @@ fn render_git_mark(
 /// follows the depth of the row. A row whose icon falls outside the sidebar
 /// keeps the clipped text that the row already wrote.
 fn render_row_icon(
-    target: &mut CellBuffer,
-    body: Rect,
-    y: u16,
+    canvas: &mut SidebarCanvas<'_>,
     row: &TreeRow,
     icons: FileTreeIcons,
     theme: Theme,
@@ -1307,18 +1317,21 @@ fn render_row_icon(
     let Some(icon) = row_icon(row, icons) else {
         return;
     };
-    let Ok(offset) = u16::try_from(glyph_offset_cells(row.depth)) else {
+    let (Ok(offset), Ok(cells)) = (
+        u16::try_from(glyph_offset_cells(row.depth)),
+        u16::try_from(ICON_CELLS),
+    ) else {
         debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
         return;
     };
-    if offset >= body.width {
+    if offset >= canvas.width_cells() {
         return;
     }
-    target.set_stringn(
-        body.x.saturating_add(offset),
-        y,
+    canvas.draw_clipped(
+        0,
+        offset,
         icon.glyph,
-        ICON_CELLS,
+        cells,
         style.patch(theme.style(ThemeRole::Icon(icon.role))),
     );
 }
