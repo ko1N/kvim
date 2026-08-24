@@ -196,6 +196,11 @@ comment silently.
 A pure relocation API compares an anchor with a later candidate. It returns
 `Exact`, `Relocated`, `Missing`, or `Ambiguous`. It never guesses among matches.
 
+`ReviewState` holds one candidate, one cursor over its published hunks, one
+optional anchor, and the bounded event queue. A reload replaces the complete
+candidate and relocates the selection through that API. A missing or an
+ambiguous outcome clears the selection, because the review guesses no place.
+
 The search compares the selected-line digest of every window of the anchored
 side, and then the recorded context outward from the selection. A later
 candidate that publishes a shorter context still matches, and a disagreement
@@ -313,6 +318,9 @@ marks of the last successful read.
 | Output of one short answer | `DIFF_ANSWER_OUTPUT_BYTES_MAX` | 8 KiB | One object identifier or one type name stays far below this value. |
 | Source bytes of one untracked file | `DIFF_SOURCE_BYTES_MAX` | 1 MiB | A larger file publishes no line and reports truncation, so the reader always sees that content is missing. |
 | Binary detection window | `DIFF_BINARY_SCAN_BYTES` | 8000 | Git inspects the same window, so a tracked file and an untracked file take the same answer. |
+| Bytes of one comment | `REVIEW_COMMENT_BYTES_MAX` | 8 KiB | One review comment is prose about one selection, so a larger body names another concern. |
+| Context lines of one anchor | `REVIEW_CONTEXT_LINES_MAX` | 8 | The context proves the identity of a moved selection. A larger window costs more bytes for every stored anchor and relocates no better. |
+| Queued review events | `REVIEW_EVENTS_MAX` | 64 | The host drains the queue after every reduction, so this many comments between two drains is far above the rate of one reader. |
 
 The parser is pure and defensive. It drops a record that names no known type, a
 record with too few fields, a record whose path holds a root component or a

@@ -54,6 +54,7 @@ mod mutation;
 mod picker;
 mod picker_request;
 mod request;
+mod review;
 mod ripgrep;
 mod tree;
 mod tree_request;
@@ -116,6 +117,10 @@ pub use picker_request::{
 pub use request::{
     FileRequest, FileResult, OpenRequest, OpenedFile, RELOAD_TARGETS_MAX, ReloadOutcome,
     ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveRequest, SavedBuffer,
+};
+pub use review::{
+    HunkStep, REVIEW_EVENTS_MAX, ReviewCursor, ReviewEvent, ReviewRow, ReviewSelectError,
+    ReviewState, StaleLocation, SubmitCommentError, TargetAuthority,
 };
 pub use ripgrep::{
     RIPGREP_COLUMNS_MAX, RIPGREP_DEADLINE, RIPGREP_FILE_MATCHES_MAX, RIPGREP_MATCHES_MAX,
