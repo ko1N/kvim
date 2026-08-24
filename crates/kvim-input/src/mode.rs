@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use kvim_keymap::{CommandOwner, Scope, TextFallback};
+
 /// One editor mode.
 ///
 /// The mode is one typed value. A mode change resets pending input. See
@@ -128,11 +130,32 @@ pub enum BindingScope {
     /// the motions and adds the text objects. The resolver selects the scope
     /// from the operator command that it emitted itself.
     OperatorPending,
+    /// One open line prompt owns the keys.
+    ///
+    /// Every prompt reads the same keys, so one table holds them. A printable
+    /// key falls through to the prompt text.
+    Prompt,
+    /// One open confirmation owns the keys.
+    ///
+    /// The confirmation reads its own answer, so it holds a smaller table than
+    /// a prompt and completes nothing.
+    Confirmation,
+    /// The register selection waits for the name of a register.
+    ///
+    /// The scope holds no binding. The next printable key names the register,
+    /// and every other key cancels the selection.
+    RegisterSelection,
 }
+
+/// The number of binding scopes.
+///
+/// The inherent constant and the [`Scope`] constant both read this value, so
+/// the two counts cannot drift apart.
+const SCOPE_COUNT: usize = Mode::COUNT + 6;
 
 impl BindingScope {
     /// The number of scopes. The mapping registry holds one table for each.
-    pub const COUNT: usize = Mode::COUNT + 3;
+    pub const COUNT: usize = SCOPE_COUNT;
 
     /// Every scope, in table order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -144,6 +167,9 @@ impl BindingScope {
         Self::Sidebar,
         Self::Picker,
         Self::OperatorPending,
+        Self::Prompt,
+        Self::Confirmation,
+        Self::RegisterSelection,
     ];
 
     /// Returns the registry table index of the scope.
@@ -157,6 +183,65 @@ impl BindingScope {
             Self::Sidebar => Mode::COUNT,
             Self::Picker => Mode::COUNT + 1,
             Self::OperatorPending => Mode::COUNT + 2,
+            Self::Prompt => Mode::COUNT + 3,
+            Self::Confirmation => Mode::COUNT + 4,
+            Self::RegisterSelection => Mode::COUNT + 5,
+        }
+    }
+
+    /// Reports whether the scope binds the `i` and `a` text objects.
+    ///
+    /// A waiting operator takes the object as its target, and a Visual mode
+    /// takes it as its selection. The semantic reducer reads the answer to
+    /// publish its text-object phase.
+    ///
+    /// ```
+    /// use kvim_input::{BindingScope, Mode};
+    ///
+    /// assert!(BindingScope::OperatorPending.binds_text_objects());
+    /// assert!(BindingScope::Mode(Mode::Visual).binds_text_objects());
+    /// assert!(!BindingScope::Mode(Mode::Normal).binds_text_objects());
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn binds_text_objects(self) -> bool {
+        matches!(
+            self,
+            Self::OperatorPending | Self::Mode(Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
+        )
+    }
+
+    /// Returns the owner that takes printable input as literal text.
+    ///
+    /// Insert mode, a prompt, a confirmation, and the register selection each
+    /// read text. The editor owns every one of them, so the fallback always
+    /// names the focused surface. Every other scope leaves printable input
+    /// unbound.
+    ///
+    /// ```
+    /// use kvim_input::{BindingScope, Mode};
+    /// use kvim_keymap::{CommandOwner, TextFallback};
+    ///
+    /// assert_eq!(
+    ///     BindingScope::Mode(Mode::Insert).text_fallback(),
+    ///     TextFallback::Typed(CommandOwner::Surface)
+    /// );
+    /// assert_eq!(
+    ///     BindingScope::Mode(Mode::Normal).text_fallback(),
+    ///     TextFallback::None
+    /// );
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn text_fallback(self) -> TextFallback {
+        match self {
+            Self::Mode(Mode::Insert)
+            | Self::Prompt
+            | Self::Confirmation
+            | Self::RegisterSelection => TextFallback::Typed(CommandOwner::Surface),
+            Self::Mode(_) | Self::Sidebar | Self::Picker | Self::OperatorPending => {
+                TextFallback::None
+            }
         }
     }
 
@@ -171,7 +256,8 @@ impl BindingScope {
             // The sidebar moves with the buffer navigation keys, so `5j` and
             // `12G` name a row count and a row there as well.
             Self::Sidebar => true,
-            Self::Picker => false,
+            // Each of these scopes reads text, so a digit is part of that text.
+            Self::Picker | Self::Prompt | Self::Confirmation | Self::RegisterSelection => false,
         }
     }
 
@@ -183,23 +269,35 @@ impl BindingScope {
             Self::Sidebar => "File Tree",
             Self::Picker => "Picker",
             Self::OperatorPending => "Operator Pending",
+            Self::Prompt => "Prompt",
+            Self::Confirmation => "Confirmation",
+            Self::RegisterSelection => "Register Selection",
         }
     }
 
     /// Returns the input context in which this scope owns input.
     ///
     /// An operator waits inside Normal mode, and the resolver selects the
-    /// operator-pending table from its own state, never from the context. The
-    /// operator-pending scope therefore answers with Normal mode.
+    /// operator-pending table from its own state, never from the context. A
+    /// prompt, a confirmation, and a register selection all open over another
+    /// scope in the same way. Each of these four scopes therefore answers with
+    /// Normal mode, and none of them is ever the return scope of a prompt.
     #[inline]
     pub const fn context(self) -> InputContext {
         match self {
             Self::Mode(mode) => InputContext::Mode(mode),
             Self::Sidebar => InputContext::Sidebar,
             Self::Picker => InputContext::Picker,
-            Self::OperatorPending => InputContext::NORMAL,
+            Self::OperatorPending | Self::Prompt | Self::Confirmation | Self::RegisterSelection => {
+                InputContext::NORMAL
+            }
         }
     }
+}
+
+impl Scope for BindingScope {
+    /// The mapping registry holds one table for each scope.
+    const COUNT: usize = SCOPE_COUNT;
 }
 
 impl From<Mode> for BindingScope {
@@ -340,6 +438,30 @@ impl InputContext {
             Self::Sidebar => BindingScope::Sidebar,
             Self::Picker => BindingScope::Picker,
             Self::Prompt { return_to, .. } | Self::Confirmation { return_to } => return_to,
+        }
+    }
+
+    /// Returns the scope that owns the keys right now.
+    ///
+    /// A prompt and a confirmation each own one table of their own, so this
+    /// answer differs from [`InputContext::scope`], which names the scope that
+    /// regains input when the prompt or the confirmation closes.
+    ///
+    /// ```
+    /// use kvim_input::{BindingScope, InputContext, PromptKind};
+    ///
+    /// let prompt = InputContext::NORMAL.open_prompt(PromptKind::CommandLine);
+    /// assert_eq!(prompt.owning_scope(), BindingScope::Prompt);
+    /// assert_eq!(prompt.scope(), BindingScope::Mode(kvim_input::Mode::Normal));
+    /// ```
+    #[inline]
+    pub const fn owning_scope(self) -> BindingScope {
+        match self {
+            Self::Mode(mode) => BindingScope::Mode(mode),
+            Self::Sidebar => BindingScope::Sidebar,
+            Self::Picker => BindingScope::Picker,
+            Self::Prompt { .. } => BindingScope::Prompt,
+            Self::Confirmation { .. } => BindingScope::Confirmation,
         }
     }
 

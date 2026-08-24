@@ -2,13 +2,15 @@
 
 ## Ownership
 
-The `input` module owns editor modes, semantic commands, the mapping registry,
-the bounded sequence resolver, and which-key generation. The `terminal` module
-decodes raw terminal events into normalized keys. The `editor`, `workspace`, and
-`tui` modules consume semantic commands.
+`kvim-keymap` owns terminal-neutral key values, generic bindings, the registry,
+one bounded sequence resolver, dispatch ownership, and which-key hints.
+`kvim-input` owns kvim commands, modes, prompts, counts, semantic pending state,
+and the standalone binding preset. `kvim-terminal` converts crossterm events into
+terminal-neutral keys. The editor, workspace, and TUI consume resolved commands.
 
-State and view code must never compare raw keys. A raw key exists only inside
-`terminal` and inside the mapping registry.
+State and view code must never compare crossterm events. Such an event exists
+only inside `kvim-terminal`. Every other input boundary uses a
+`kvim-keymap` value.
 
 ## Editor Modes
 
@@ -44,24 +46,24 @@ confirmation are input contexts too. See the sections below.
 
 ## Binding Scopes
 
-The mapping registry holds one table for each binding scope. A scope is one
-editor mode, the file-tree sidebar, the picker, or a waiting operator. Only one
-scope is active, so one key sequence may reach different commands in different
-scopes.
+The mapping registry is generic over command identity, scope identity, and
+surface identity. One binding names command ownership as host or surface. The
+resolver evaluates the active overlay, host-global, and focused-surface scopes
+in that order. A scope declares whether printable input falls back to typed text
+and which owner receives it.
 
-The operator-pending scope answers while `d`, `c`, or `y` waits for its target.
-The resolver selects it from the operator command that it emitted itself, and the
-next completed command closes it again. The scope repeats the motions, keeps the
-operator keys for the linewise `dd`, `cc`, and `yy`, and adds the text objects.
-`i` and `a` therefore start a text object there instead of Insert mode. It also
-binds `Esc` and `Ctrl-C`, which end the operator and change nothing. Every other
-key reaches no command, so the operator changes nothing.
+The editor context reports when `d`, `c`, or `y` waits for its target. Shared
+dispatch still resolves motions, linewise operator commands, text-object starts,
+and cancellation from the registry. The editor semantic reducer keeps the
+operator through count and motion input. It does not resolve another key
+sequence.
 
-The sidebar scope holds no leader sequence. It does hold a count, because its
-rows move with the buffer navigation keys: `5j` moves five rows and `12G`
-reaches row twelve. The sidebar owns every key while it holds the focus.
+The sidebar scope holds no leader sequence. Count digits are resolved surface
+commands, so its reducer can apply `5j` or `12G`. The sidebar owns focused
+surface commands while it holds focus. Host-global and overlay scopes retain
+their higher precedence.
 
-The picker scope holds no count either, because a digit belongs to the query.
+The picker scope holds no count, because its typed-text fallback owns a digit.
 The picker reads that query through one prompt, and its own table answers before
 the query takes the key. The table holds the chords below alone, so every
 printable key still reaches the query.
@@ -299,33 +301,110 @@ and any help output derive their text from these labels.
 
 ## Mapping Registry
 
-The mapping registry maps a key sequence to a semantic command. The registry is
-keyed by mode. One key sequence can appear in several modes with different
-commands, because only one mode is active.
+The mapping registry maps a bounded key sequence to a generic command identity,
+scope, surface, ownership, label, and metadata. One sequence can appear in
+several scopes with different commands.
 
 The registry validates itself at construction. It rejects a duplicate sequence
-inside one mode. It rejects a sequence that is also a strict prefix of another
-sequence in the same mode when both would resolve, because such a pair makes
-resolution ambiguous. It rejects an empty sequence and a sequence longer than
-the pending-key maximum.
+inside one scope and ownership layer. It rejects a sequence that is also a
+strict prefix of another sequence in the same effective scope when both would
+resolve. It rejects an empty sequence and a sequence above the pending-key
+maximum.
 
-The first release ships one hardcoded registry. It does not parse a
-configuration file. See [`settings.md`](settings.md) for that rule.
+Registry snapshots are immutable and shareable. The registry is the only source
+for dispatch, conflict checks, help, and which-key. Kvim exports its default
+mode bindings as contributions to the shared registry and keeps no private
+mapping table. The standalone executable still loads no configuration file. See
+[`settings.md`](settings.md).
+
+## Shared Dispatch
+
+One resolver belongs to one composed interface instance. Pending static sequence
+state belongs to that resolver, not to an editor. The resolver accepts bounded
+key and paste input, elapsed time, active scopes, and one
+`InputContextSnapshot` for each focused surface.
+
+Resolution returns one of these typed outcomes:
+
+- host command,
+- surface command,
+- typed text for one owner,
+- pending sequence,
+- unsupported input,
+- unbound input.
+
+Unsupported modified terminal input never degrades into an unmodified binding.
+Paste follows the focused scope's typed-text owner and remains bounded. Focused
+unbound and unsupported outcomes remain addressed surface inputs while that
+surface reports semantic pending state.
+
+The resolver evaluates the overlay scope, the host-global scope, and the focused
+scope in that order. The first scope that completes the sequence wins. When no
+scope completes it, the first scope that can extend it owns the pending prefix,
+and every further key of that sequence stays in that scope. One sequence
+therefore never changes owner in the middle, and the which-key hints always come
+from the table that will answer.
+
+A text fallback takes the first key of a sequence only. A key that breaks a
+started sequence types no text.
+
+The scopes that declare a text fallback are Insert mode, the prompt, the
+confirmation, and the register selection. Each one names the focused surface as
+its text owner. The prompt scope and the confirmation scope hold their own small
+binding tables for the keys that type no character, so `Enter`, `Esc`,
+`Ctrl-C`, `Backspace`, `Tab`, and `Shift-Tab` are ordinary bindings. Insert mode
+binds `Enter`, `Backspace`, and `Tab` for the same reason.
+
+After every command, text, paste, unbound, unsupported, or cancellation input,
+the editor returns an `InputContextSnapshot`. It contains mode, operator phase,
+count phase, register phase, text-object phase, prompt phase, text fallback, and
+a generation.
+
+Every context-state change increments the generation. A generation change
+clears a pending static prefix. Focus, mode, or overlay-stack changes also clear
+the resolver's pending sequence.
+
+The text-object phase mirrors the resolver's own pending prefix, so it publishes
+no new generation. A new generation would clear the very prefix that produced
+the phase. Typed text changes no phase, so it keeps the generation as well.
+
+Closing an overlay reveals the previous scope from the same immutable registry.
+It does not rebuild the registry.
+
+Before focus, mode ownership, or overlay ownership changes, the workspace
+composer can return `CompositionEffect::CancelPending { surface, transition }`.
+The host applies it to the addressed surface and returns the reset snapshot.
+Only then can the composer commit the transition. See
+[`embedding.md`](embedding.md).
 
 ## Counts And Sequences
 
-The resolver accepts an optional decimal count before a command sequence. The
-count maximum is 9,999. A count above the maximum is a mismatch and resets
-pending input.
+Count digits are surface commands. The registry binds `1` through `9` in every
+scope that accepts a count, and the editor semantic reducer composes them with
+operators and motions after shared dispatch. `0` carries no count command,
+because it is the first-column motion until a count is already open. The reducer
+reads that motion as the zero digit while a count is open, so `10j` moves ten
+lines and `0` alone still reaches the first column.
+
+A register selection is a surface command as well. `"` reaches it in Normal mode
+and in the three Visual modes, and the register-selection scope then converts
+the next printable key into the register name through its text fallback.
+
+The count maximum is 9,999. Count composition uses checked arithmetic. A count
+above the maximum is invalid and resets semantic pending state.
+
+Count digits, register selection, operator start, and text-object start are
+grammar-prefix transitions. They do not complete a semantic operation. A
+selected register applies to one completed semantic operation.
 
 A count belongs to Normal mode, the three Visual modes, the operator-pending
 scope, and the file-tree sidebar. Insert mode holds no count, because a digit is
 buffer text there. The `input` module owns this rule, so no other module filters
 digit keys.
 
-The operator-pending scope reads its own count, so `d2w` deletes two words. A
-count before the operator multiplies with the count before the motion, so `2d3w`
-deletes six words.
+The semantic reducer keeps operator state through count and motion commands, so
+`d2w` deletes two words. A count before the operator multiplies with the count
+before the motion, so `2d3w` deletes six words.
 
 The resolver classifies each pending sequence as a complete match, a valid
 prefix, a cancel, or no match. A pending sequence holds at most four keys.
@@ -362,12 +441,16 @@ the keys that follow `c`.
 
 A next key that reaches exactly one command shows the label of that command. A
 next key that reaches several commands shows a group marker with the number of
-commands behind it, in the form `+3 commands`. which-key.nvim marks a group the
-same way, with a `+` prefix. The rows follow the key order of the registry, so
-the overlay is deterministic.
+distinct commands behind it, in the form `+3 commands`. Two sequences that reach
+the same command therefore count once. which-key.nvim marks a group the same
+way, with a `+` prefix. The rows follow the key order of the registry, so the
+overlay is deterministic.
 
-The overlay is generated from the active registry for the active mode. It is
-never a separate hand-written list.
+The overlay is generated from the active shared resolver, its pending sequence,
+and the same registry used for dispatch. It is never a separate hand-written
+list. `keymap` folds the extensions of the pending prefix into these hints,
+`ui` owns the bounded widget, its column layout, and its clipping, and the
+interface layer supplies the final texts, the icons, and the palette colors.
 
 The overlay lays its rows out in columns that fill the width of the body band.
 Every column keeps the width of the widest row, so the keys and the labels of
@@ -409,25 +492,60 @@ became visible and keeps that record while the sequence continues.
 
 [`windows.md`](windows.md) owns overlay placement and styling.
 
+## Bracketed Paste And Unsupported Input
+
+The terminal session enables bracketed paste, so one paste arrives as one
+event instead of a run of key presses. The editor applies that block as one
+edit transaction and one undo unit, and it never runs a binding, an auto-indent
+rule, or an abbreviation over pasted text. `PasteText` carries the bound, so no
+paste exceeds `PASTE_BYTES_MAX`. An open question and an open command line take
+the block first, exactly as they take a typed character. Normal mode owns no
+text fallback, so a paste there changes no buffer.
+
+A terminal that ignores the bracketed-paste request sends the key run instead,
+which the editor still accepts.
+
+The terminal reports `TerminalEvent::Unsupported` for input that no binding
+accepts: a key that carries an unsupported modifier, and a paste block above
+the bound. The editor never removes the modifier and never inserts part of the
+block. It resets its pending grammar instead, so a rejected chord can never run
+the binding of its unmodified key. A waiting operator lives in the editor as
+well, so the reset reports `ReturnToNormal` for it, exactly as a cancel does.
+
+An event that names no input at all, such as a mouse event or an empty paste
+block, never reaches the editor. `EventSource` skips it, so moving the mouse
+ends no pending sequence.
+
 ## Reset Rules
 
 Pending input resets after:
 
-- a completed command,
+- a completed semantic operation,
 - a sequence mismatch,
 - a cancel with `Esc` or `Ctrl-C`,
+- input that no binding accepts,
 - a mode change,
+- a focus change,
+- an overlay ownership change,
 - editor shutdown.
 
 Elapsed time is not in this list. A pending sequence has no deadline, so it
 survives until one of the events above ends it.
 
-A reset clears the pending keys, the pending count, and the which-key overlay.
+A static-sequence reset clears pending keys and which-key state. A semantic reset
+clears count, operator, register, text-object, and prompt phases as applicable.
+Count resets after semantic completion, cancellation, invalid or unbound input,
+focus change, mode change, or overlay ownership change. Operator state resets
+after semantic completion, cancellation, invalid input, mode change, or focus
+change. A selected register resets after one semantic operation, invalid
+selection, cancellation, mode change, or focus change.
+
 A reset never changes buffer text and never cancels a running background
 request.
 
-Input processing stays on the terminal event loop. It must remain responsive
-while background work runs. See [`responsiveness.md`](responsiveness.md).
+Input resolution and semantic reduction are pure. The visible-state owner runs
+them on its host event loop, which remains responsive while background work
+runs. See [`responsiveness.md`](responsiveness.md).
 
 ## First-Release Bindings
 
@@ -537,6 +655,13 @@ macOS sends the `Option` chord as the `Alt` modifier, so `Option-Left` and
 both onto `Ctrl-Left` and `Ctrl-Right` while it normalizes the key, so the
 registry holds one entry for each word motion. The enhanced keyboard reporting
 flags keep a modified arrow distinct from a plain arrow.
+
+A key that carries a modifier which no binding uses is rejected. The `terminal`
+module never removes the modifier, so a modified key never reaches the binding of
+the unmodified key. `Alt` without `Ctrl` and without one of the folds above,
+`Super`, `Hyper`, and `Meta` are always rejections. `Shift` is part of the
+character value, and `Shift-Tab` arrives as its own code, so both keep their
+binding. Every other `Shift` combination is a rejection.
 
 ### Operators, Registers, And Repeat
 

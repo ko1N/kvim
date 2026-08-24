@@ -28,6 +28,7 @@
 
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
+#[cfg(test)]
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -42,6 +43,11 @@ use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
+
+use kvim_path::{
+    ResolvedTargetState, WorktreeConfinementError, WorktreeDirectoryPath, WorktreeRelativePath,
+    WorktreeRelativePathError, WorktreeRoot,
+};
 
 /// The time that one burst collects events before the service publishes it.
 ///
@@ -110,10 +116,54 @@ impl WatchKind {
 /// One filesystem change of the watched tree.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WatchEvent {
+    root: Arc<WorktreeRoot>,
     /// The absolute path that changed.
     pub path: PathBuf,
     /// The effect of the change.
     pub kind: WatchKind,
+}
+
+enum RawWatchEvent {
+    Event { path: PathBuf, kind: WatchKind },
+    Dropped,
+}
+
+impl WatchEvent {
+    /// Validates one platform path against its watcher root.
+    ///
+    /// Existing symbolic links must resolve inside the root. Missing paths are
+    /// accepted for removal events after their nearest existing parent passes
+    /// confinement.
+    pub fn new(
+        root: Arc<WorktreeRoot>,
+        path: PathBuf,
+        kind: WatchKind,
+    ) -> Result<Self, WatchEventError> {
+        let relative = path
+            .strip_prefix(root.as_path())
+            .map_err(|_| WatchEventError::OutsideRoot)?;
+        let relative = WorktreeRelativePath::new(relative)?;
+        root.resolve_directory(&WorktreeDirectoryPath::Relative(relative.clone()))?;
+        Ok(Self {
+            path: root.as_path().join(relative.as_path()),
+            root,
+            kind,
+        })
+    }
+}
+
+/// A platform event path rejected by its watcher root.
+#[derive(Debug, Error)]
+pub enum WatchEventError {
+    /// The platform path belongs to another filesystem root.
+    #[error("the watch event lies outside its worktree root")]
+    OutsideRoot,
+    /// The relative event path is structurally invalid.
+    #[error("the watch event path is invalid")]
+    InvalidPath(#[from] WorktreeRelativePathError),
+    /// The event target does not remain confined to the worktree.
+    #[error("the watch event target is not confined to the worktree")]
+    Confinement(#[from] WorktreeConfinementError),
 }
 
 /// Whether one burst holds every event of its window.
@@ -209,26 +259,32 @@ impl WatchCoverage {
 /// # Examples
 ///
 /// ```
-/// use std::path::PathBuf;
+/// use std::sync::Arc;
 ///
+/// use kvim_path::WorktreeRoot;
 /// use kvim_runtime::{WatchBatch, WatchEvent, WatchFidelity, WatchKind};
 ///
+/// let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
 /// let mut batch = WatchBatch::default();
-/// batch.push(&WatchEvent {
-///     path: PathBuf::from("/work/src/main.rs"),
-///     kind: WatchKind::Created,
-/// });
+/// batch.push(&WatchEvent::new(
+///     Arc::clone(&root),
+///     root.as_path().join("src/main.rs"),
+///     WatchKind::Created,
+/// )?);
 /// // A second change of the same directory adds no second read.
-/// batch.push(&WatchEvent {
-///     path: PathBuf::from("/work/src/lib.rs"),
-///     kind: WatchKind::Created,
-/// });
+/// batch.push(&WatchEvent::new(
+///     Arc::clone(&root),
+///     root.as_path().join("src/lib.rs"),
+///     WatchKind::Created,
+/// )?);
 ///
-/// assert_eq!(batch.directories(), [PathBuf::from("/work/src")]);
+/// assert_eq!(batch.directories(), [root.as_path().join("src")]);
 /// assert_eq!(batch.fidelity(), WatchFidelity::Complete);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WatchBatch {
+    root: Option<Arc<WorktreeRoot>>,
     directories: BTreeSet<PathBuf>,
     content_changed: bool,
     fidelity: WatchFidelity,
@@ -236,6 +292,13 @@ pub struct WatchBatch {
 }
 
 impl WatchBatch {
+    fn new(root: Arc<WorktreeRoot>) -> Self {
+        Self {
+            root: Some(root),
+            ..Self::default()
+        }
+    }
+
     /// Adds one event to the burst.
     ///
     /// A change that keeps the entries of its directory records the content
@@ -244,6 +307,14 @@ impl WatchBatch {
     /// directories that it already holds and reports
     /// [`WatchFidelity::Dropped`].
     pub fn push(&mut self, event: &WatchEvent) {
+        match self.root.as_ref() {
+            Some(root) if root != &event.root => {
+                self.fidelity = WatchFidelity::Dropped;
+                return;
+            }
+            Some(_) => {}
+            None => self.root = Some(Arc::clone(&event.root)),
+        }
         if !event.kind.changes_listing() {
             self.content_changed = true;
             return;
@@ -289,6 +360,12 @@ impl WatchBatch {
         self.directories.iter().cloned().collect()
     }
 
+    /// Returns the root that validated this burst, or `None` before any event.
+    #[must_use]
+    pub fn root(&self) -> Option<&WorktreeRoot> {
+        self.root.as_deref()
+    }
+
     /// Reports whether the burst changed the content or metadata of one entry.
     #[must_use]
     pub const fn changed_content(&self) -> bool {
@@ -308,9 +385,6 @@ impl WatchBatch {
 /// and refreshes the tree by hand instead.
 #[derive(Debug, Error)]
 pub enum WatchError {
-    /// The root is not an absolute path, so no relative event could be placed.
-    #[error("the watched root must be an absolute path")]
-    RelativeRoot,
     /// The platform refused the watch.
     #[error("the filesystem watcher could not start")]
     Start(#[source] notify::Error),
@@ -327,6 +401,37 @@ const fn classify(kind: EventKind) -> Option<WatchKind> {
         EventKind::Modify(_) => Some(WatchKind::Modified),
         EventKind::Access(_) => None,
         EventKind::Any | EventKind::Other => Some(WatchKind::Unknown),
+    }
+}
+
+fn enqueue_notify_result(
+    result: notify::Result<notify::Event>,
+    events: &mpsc::Sender<RawWatchEvent>,
+    root: &WorktreeRoot,
+    ignored: &[&str],
+    dropped: &AtomicUsize,
+) {
+    let event = match result {
+        Ok(event) => event,
+        Err(_) => {
+            dropped.fetch_add(1, Ordering::Relaxed);
+            let _ = events.try_send(RawWatchEvent::Dropped);
+            return;
+        }
+    };
+    let Some(kind) = classify(event.kind) else {
+        return;
+    };
+    for path in event.paths {
+        if path.starts_with(root.as_path()) && is_ignored(root.as_path(), &path, ignored) {
+            continue;
+        }
+        if events
+            .try_send(RawWatchEvent::Event { path, kind })
+            .is_err()
+        {
+            dropped.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 
@@ -352,7 +457,7 @@ pub fn is_ignored(root: &Path, path: &Path, ignored: &[&str]) -> bool {
 struct WalkOutcome {
     /// Every kept directory that the walk reached, in the order that it read
     /// them.
-    directories: Vec<PathBuf>,
+    directories: Vec<WorktreeDirectoryPath>,
     /// Whether a bound of this module left a kept directory out of the walk.
     ///
     /// The directory bound, the depth bound, and the scan bound of one
@@ -397,33 +502,33 @@ struct WalkOutcome {
 /// watched root itself when that root disappears, and the burst then names the
 /// directory above the root, which no workspace watch covers.
 fn unregistered_directories(
-    root: &Path,
-    start: &Path,
+    root: &WorktreeRoot,
+    start: &WorktreeDirectoryPath,
     ignored: &[&str],
-    registered: &BTreeSet<PathBuf>,
+    registered: &BTreeSet<WorktreeDirectoryPath>,
     limit: usize,
 ) -> WalkOutcome {
     let mut outcome = WalkOutcome {
         directories: Vec::new(),
         truncated: false,
     };
-    let Ok(relative) = start.strip_prefix(root) else {
-        // A start outside the watched root belongs to no workspace directory.
-        return outcome;
-    };
-    let start_depth = relative.components().count();
+    let start_depth = start
+        .relative_path()
+        .map_or(0, |path| path.as_path().components().count());
     if start_depth > WATCH_DEPTH_MAX || limit == 0 {
         // A bound of this module stops the walk before it reads one directory.
         outcome.truncated = true;
         return outcome;
     }
-    if !registered.contains(start) && !is_ignored(root, start, ignored) {
-        outcome.directories.push(start.to_path_buf());
+    if !registered.contains(start)
+        && !is_ignored(root.as_path(), &start.display_path(root), ignored)
+    {
+        outcome.directories.push(start.clone());
     }
-    let mut queue: VecDeque<(PathBuf, usize)> = VecDeque::new();
-    queue.push_back((start.to_path_buf(), start_depth));
+    let mut queue: VecDeque<(WorktreeDirectoryPath, usize)> = VecDeque::new();
+    queue.push_back((start.clone(), start_depth));
     while let Some((directory, depth)) = queue.pop_front() {
-        let Ok(listing) = fs::read_dir(&directory) else {
+        let Ok(listing) = root.directory().read_dir(directory.capability_path()) else {
             // An unreadable directory reports no change of its own entries, and
             // its parent still reports every change of the directory itself.
             continue;
@@ -448,10 +553,14 @@ fn unregistered_directories(
             if !entry.file_type().is_ok_and(|kind| kind.is_dir()) {
                 continue;
             }
-            let path = entry.path();
+            let Ok(path) = watch_child_path(&directory, &entry.file_name()) else {
+                outcome.truncated = true;
+                continue;
+            };
+            let path = WorktreeDirectoryPath::Relative(path);
             // The registration and the callback ask the same question, so the
             // two filters can never disagree about one entry.
-            if is_ignored(root, &path, ignored) {
+            if is_ignored(root.as_path(), &path.display_path(root), ignored) {
                 continue;
             }
             if registered.contains(&path) {
@@ -472,6 +581,17 @@ fn unregistered_directories(
         }
     }
     outcome
+}
+
+fn watch_child_path(
+    directory: &WorktreeDirectoryPath,
+    name: &std::ffi::OsStr,
+) -> Result<WorktreeRelativePath, WorktreeRelativePathError> {
+    let path = directory.relative_path().map_or_else(
+        || PathBuf::from(name),
+        |directory| directory.as_path().join(name),
+    );
+    WorktreeRelativePath::new(path)
 }
 
 /// Returns the gap that one refused directory adds to the registration.
@@ -510,7 +630,7 @@ struct PendingRegistration {
     /// The platform watcher, which holds no watch yet.
     watcher: RecommendedWatcher,
     /// The absolute workspace root of every watch.
-    root: PathBuf,
+    root: Arc<WorktreeRoot>,
     /// The directory names that carry no watch and produce no event.
     ignored: &'static [&'static str],
 }
@@ -522,14 +642,14 @@ struct PendingRegistration {
 /// the value, so it needs no lock and always returns at once.
 struct Registration {
     /// The absolute workspace root of every watch.
-    root: PathBuf,
+    root: Arc<WorktreeRoot>,
     /// The directory names that carry no watch and produce no event.
     ignored: &'static [&'static str],
     /// Every directory that the registration covers.
     ///
     /// The set also holds a directory that the platform refused, so one refused
     /// directory costs one attempt instead of one attempt for each burst.
-    directories: BTreeSet<PathBuf>,
+    directories: BTreeSet<WorktreeDirectoryPath>,
     /// The platform watcher. Dropping it ends its callback thread.
     watcher: RecommendedWatcher,
 }
@@ -551,12 +671,12 @@ impl Registration {
     /// directory itself.
     fn start(
         watcher: RecommendedWatcher,
-        root: PathBuf,
+        root: Arc<WorktreeRoot>,
         ignored: &'static [&'static str],
     ) -> Result<(Self, WatchCoverage), WatchError> {
         let walk = unregistered_directories(
             &root,
-            &root,
+            &WorktreeDirectoryPath::Root,
             ignored,
             &BTreeSet::new(),
             WATCH_DIRECTORIES_MAX,
@@ -593,23 +713,26 @@ impl Registration {
     /// the same window names every gap that the batch left.
     fn extend(&mut self, changed: &[PathBuf]) -> WatchCoverage {
         let mut coverage = WatchCoverage::default();
-        let mut additions: Vec<PathBuf> = Vec::new();
+        let mut additions: Vec<WorktreeDirectoryPath> = Vec::new();
+        let mut known = self.directories.clone();
         for directory in changed {
-            let held = self.directories.len().saturating_add(additions.len());
-            let limit = WATCH_DIRECTORIES_MAX.saturating_sub(held);
+            let Some(directory) = directory_path(&self.root, directory) else {
+                coverage.truncated = true;
+                continue;
+            };
+            let limit = WATCH_DIRECTORIES_MAX.saturating_sub(known.len());
             if limit == 0 {
                 coverage.truncated = true;
                 break;
             }
-            let walk = unregistered_directories(
-                &self.root,
-                directory,
-                self.ignored,
-                &self.directories,
-                limit,
-            );
+            let walk =
+                unregistered_directories(&self.root, &directory, self.ignored, &known, limit);
             coverage.truncated |= walk.truncated;
-            additions.extend(walk.directories);
+            for directory in walk.directories {
+                if known.insert(directory.clone()) {
+                    additions.push(directory);
+                }
+            }
         }
         // A failed batch adds no directory to the set, so the next burst that
         // names the same parent tries again.
@@ -637,28 +760,86 @@ impl Registration {
     ///
     /// Returns the error of the root, because a root without a watch reports no
     /// change at all, and the error of the applied batch.
-    fn add(&mut self, directories: &[PathBuf]) -> Result<WatchCoverage, notify::Error> {
+    fn add(
+        &mut self,
+        directories: &[WorktreeDirectoryPath],
+    ) -> Result<WatchCoverage, notify::Error> {
         let mut coverage = WatchCoverage::default();
         if directories.is_empty() {
             return Ok(coverage);
         }
         let mut paths = self.watcher.paths_mut();
+        let mut recorded = Vec::with_capacity(directories.len());
         for directory in directories {
-            let Err(error) = paths.add(directory, RecursiveMode::NonRecursive) else {
+            if matches!(directory, WorktreeDirectoryPath::Relative(_)) {
+                match self.root.resolve_directory(directory) {
+                    Ok(resolved)
+                        if resolved.state() == ResolvedTargetState::Existing
+                            && resolved.path() == directory
+                            && !resolved.followed_link() => {}
+                    Ok(resolved) if resolved.state() == ResolvedTargetState::Missing => continue,
+                    Ok(_)
+                    | Err(WorktreeConfinementError::Escape)
+                    | Err(WorktreeConfinementError::DanglingLink)
+                    | Err(WorktreeConfinementError::LinkLoop)
+                    | Err(WorktreeConfinementError::NotDirectory)
+                    | Err(WorktreeConfinementError::Replaced)
+                    | Err(WorktreeConfinementError::InvalidResolvedPath(_)) => {
+                        coverage.truncated = true;
+                        continue;
+                    }
+                    Err(WorktreeConfinementError::Access { source })
+                        if source.kind() == io::ErrorKind::NotFound =>
+                    {
+                        continue;
+                    }
+                    Err(WorktreeConfinementError::Access { .. }) => {
+                        coverage.refused = coverage.refused.saturating_add(1);
+                        continue;
+                    }
+                }
+            }
+            let absolute = directory.display_path(&self.root);
+            if absolute.to_str().is_none() {
+                if matches!(directory, WorktreeDirectoryPath::Root) {
+                    return Err(notify::Error::io(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "the watch root is not UTF-8",
+                    )));
+                }
+                coverage.truncated = true;
+                continue;
+            }
+            let Err(error) = paths.add(&absolute, RecursiveMode::NonRecursive) else {
+                recorded.push(directory.clone());
                 continue;
             };
-            if directory.as_path() == self.root {
+            if matches!(directory, WorktreeDirectoryPath::Root) {
                 return Err(error);
             }
             // Another program may remove one directory between the walk and
             // this call. The parent of that directory still reports the
             // removal, so that directory names no gap.
-            coverage.merge(refusal(&error));
+            let gap = refusal(&error);
+            coverage.merge(gap);
+            if !gap.is_complete() {
+                recorded.push(directory.clone());
+            }
         }
         paths.commit()?;
-        self.directories.extend(directories.iter().cloned());
+        self.directories.extend(recorded);
         Ok(coverage)
     }
+}
+
+fn directory_path(root: &WorktreeRoot, path: &Path) -> Option<WorktreeDirectoryPath> {
+    if path == root.as_path() {
+        return Some(WorktreeDirectoryPath::Root);
+    }
+    let relative = path.strip_prefix(root.as_path()).ok()?;
+    WorktreeRelativePath::new(relative)
+        .ok()
+        .map(WorktreeDirectoryPath::Relative)
 }
 
 /// Watches one directory tree and publishes coalesced bursts of its changes.
@@ -676,8 +857,9 @@ impl Registration {
 /// # Examples
 ///
 /// ```no_run
-/// use std::path::PathBuf;
+/// use std::sync::Arc;
 ///
+/// use kvim_path::WorktreeRoot;
 /// use kvim_runtime::FileWatcher;
 ///
 /// # let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
@@ -686,7 +868,9 @@ impl Registration {
 /// #     .build()
 /// #     .unwrap();
 /// tokio_runtime.block_on(async {
-///     let mut watcher = FileWatcher::start(PathBuf::from("/work"), &["target"])
+///     let current_dir = std::env::current_dir().unwrap();
+///     let root = Arc::new(WorktreeRoot::open(current_dir).unwrap());
+///     let mut watcher = FileWatcher::start(root, &["target"])
 ///         .expect("the root is a readable directory");
 ///
 ///     if let Some(batch) = watcher.recv().await {
@@ -701,7 +885,13 @@ pub struct FileWatcher {
     batches: mpsc::Receiver<WatchBatch>,
     cancellation: CancellationToken,
     /// The coalescing task, which owns the platform watcher and its watches.
-    task: JoinHandle<()>,
+    task: Option<JoinHandle<()>>,
+}
+
+impl Drop for FileWatcher {
+    fn drop(&mut self) {
+        self.cancellation.cancel();
+    }
 }
 
 impl fmt::Debug for FileWatcher {
@@ -742,8 +932,7 @@ impl FileWatcher {
     ///
     /// # Errors
     ///
-    /// Returns [`WatchError::RelativeRoot`] for a root that is not absolute, and
-    /// [`WatchError::Start`] when the platform builds no watcher at all. A
+    /// Returns [`WatchError::Start`] when the platform builds no watcher at all. A
     /// platform that refuses the registration itself ends the published stream,
     /// so [`FileWatcher::recv`] then returns `None`.
     ///
@@ -751,35 +940,17 @@ impl FileWatcher {
     ///
     /// Panics when no Tokio runtime is running, because the coalescing task
     /// needs one.
-    pub fn start(root: PathBuf, ignored: &'static [&'static str]) -> Result<Self, WatchError> {
-        if !root.is_absolute() {
-            return Err(WatchError::RelativeRoot);
-        }
+    pub fn start(
+        root: Arc<WorktreeRoot>,
+        ignored: &'static [&'static str],
+    ) -> Result<Self, WatchError> {
         let (events, raw) = mpsc::channel(WATCH_EVENT_QUEUE_MAX);
         let dropped = Arc::new(AtomicUsize::new(0));
-        let callback_root = root.clone();
+        let callback_root = Arc::clone(&root);
         let callback_dropped = Arc::clone(&dropped);
         let watcher = RecommendedWatcher::new(
             move |result: notify::Result<notify::Event>| {
-                let Ok(event) = result else {
-                    // A failed platform read loses changes that the watch never
-                    // reports, so the next burst names the loss.
-                    callback_dropped.fetch_add(1, Ordering::Relaxed);
-                    return;
-                };
-                let Some(kind) = classify(event.kind) else {
-                    return;
-                };
-                for path in event.paths {
-                    if is_ignored(&callback_root, &path, ignored) {
-                        continue;
-                    }
-                    // The send never waits, because the callback thread of the
-                    // platform must return at once.
-                    if events.try_send(WatchEvent { path, kind }).is_err() {
-                        callback_dropped.fetch_add(1, Ordering::Relaxed);
-                    }
-                }
+                enqueue_notify_result(result, &events, &callback_root, ignored, &callback_dropped);
             },
             Config::default(),
         )
@@ -801,7 +972,7 @@ impl FileWatcher {
         Ok(Self {
             batches,
             cancellation,
-            task,
+            task: Some(task),
         })
     }
 
@@ -828,12 +999,11 @@ impl FileWatcher {
     /// A shutdown during the registration waits for that registration, because
     /// the blocking thread holds the platform watcher until it returns. The
     /// registration is bounded, so the wait is bounded as well.
-    pub async fn shutdown(self) {
-        let Self {
-            cancellation, task, ..
-        } = self;
-        cancellation.cancel();
-        let _ = task.await;
+    pub async fn shutdown(mut self) {
+        self.cancellation.cancel();
+        if let Some(task) = self.task.take() {
+            let _ = task.await;
+        }
     }
 }
 
@@ -859,7 +1029,7 @@ impl FileWatcher {
 /// A registration that the platform refuses ends the task, which closes the
 /// published stream. The consumer then reports that no watcher runs.
 async fn watch(
-    raw: mpsc::Receiver<WatchEvent>,
+    raw: mpsc::Receiver<RawWatchEvent>,
     dropped: Arc<AtomicUsize>,
     publisher: mpsc::Sender<WatchBatch>,
     cancellation: CancellationToken,
@@ -871,7 +1041,7 @@ async fn watch(
         // reads the end of the stream after that thread ended.
         return;
     };
-    let mut opening = WatchBatch::default();
+    let mut opening = WatchBatch::new(Arc::clone(&registration.root));
     opening.drop_events();
     opening.set_coverage(coverage);
     if publisher.try_send(opening).is_err() {
@@ -933,7 +1103,7 @@ async fn register(
 /// watch. The burst carries the coverage of that batch, so a later registration
 /// that the host refuses reaches the consumer as the first one does.
 async fn coalesce(
-    mut raw: mpsc::Receiver<WatchEvent>,
+    mut raw: mpsc::Receiver<RawWatchEvent>,
     dropped: Arc<AtomicUsize>,
     publisher: mpsc::Sender<WatchBatch>,
     cancellation: CancellationToken,
@@ -950,12 +1120,10 @@ async fn coalesce(
         let Some(first) = first else {
             return;
         };
-        let mut batch = WatchBatch {
-            fidelity: carried,
-            ..WatchBatch::default()
-        };
+        let batch_fidelity = carried;
         carried = WatchFidelity::Complete;
-        batch.push(&first);
+        let mut events = Vec::with_capacity(WATCH_BURST_EVENTS_MAX);
+        events.push(first);
 
         let deadline = Instant::now() + WATCH_COALESCE_WINDOW;
         // The bound keeps one window finite even while a build writes without
@@ -966,14 +1134,20 @@ async fn coalesce(
                 () = cancellation.cancelled() => return,
             };
             match next {
-                Ok(Some(event)) => batch.push(&event),
+                Ok(Some(event)) => events.push(event),
                 // The window closed, or the platform watcher ended.
                 Ok(None) | Err(_) => break,
             }
         }
-        if dropped.swap(0, Ordering::Relaxed) > 0 {
-            batch.drop_events();
-        }
+        let queue_dropped = dropped.swap(0, Ordering::Relaxed) > 0;
+        let event_root = Arc::clone(&registration.root);
+        let Ok(mut batch) = tokio::task::spawn_blocking(move || {
+            validate_events(event_root, events, batch_fidelity, queue_dropped)
+        })
+        .await
+        else {
+            return;
+        };
 
         let changed = batch.directories();
         if !changed.is_empty() {
@@ -1002,6 +1176,34 @@ async fn coalesce(
             }
         }
     }
+}
+
+fn validate_events(
+    root: Arc<WorktreeRoot>,
+    events: Vec<RawWatchEvent>,
+    fidelity: WatchFidelity,
+    queue_dropped: bool,
+) -> WatchBatch {
+    let mut batch = WatchBatch {
+        root: Some(Arc::clone(&root)),
+        fidelity,
+        ..WatchBatch::default()
+    };
+    for event in events {
+        match event {
+            RawWatchEvent::Event { path, kind } => {
+                match WatchEvent::new(Arc::clone(&root), path, kind) {
+                    Ok(event) => batch.push(&event),
+                    Err(_) => batch.drop_events(),
+                }
+            }
+            RawWatchEvent::Dropped => batch.drop_events(),
+        }
+    }
+    if queue_dropped {
+        batch.drop_events();
+    }
+    batch
 }
 
 #[cfg(test)]
@@ -1065,6 +1267,10 @@ mod tests {
             path
         }
 
+        fn root(&self) -> Arc<WorktreeRoot> {
+            Arc::new(WorktreeRoot::open(&self.path).expect("the temporary root exists"))
+        }
+
         /// Returns the watched directories below the root, in ascending order.
         ///
         /// The root itself carries the empty name, so a caller reads the whole
@@ -1074,10 +1280,11 @@ mod tests {
         }
 
         /// Returns one complete walk of the root, with its truncation.
-        fn walk(&self, registered: &BTreeSet<PathBuf>) -> WalkOutcome {
+        fn walk(&self, registered: &BTreeSet<WorktreeDirectoryPath>) -> WalkOutcome {
+            let root = self.root();
             unregistered_directories(
-                &self.path,
-                &self.path,
+                &root,
+                &WorktreeDirectoryPath::Root,
                 &IGNORED,
                 registered,
                 WATCH_DIRECTORIES_MAX,
@@ -1088,13 +1295,15 @@ mod tests {
         ///
         /// The names are relative to the root, and the root itself carries the
         /// empty name, so a caller reads the whole addition from one list.
-        fn unregistered(&self, registered: &BTreeSet<PathBuf>) -> Vec<String> {
+        fn unregistered(&self, registered: &BTreeSet<WorktreeDirectoryPath>) -> Vec<String> {
+            let root = self.root();
             let mut names: Vec<String> = self
                 .walk(registered)
                 .directories
                 .iter()
                 .map(|path| {
-                    path.strip_prefix(&self.path)
+                    path.display_path(&root)
+                        .strip_prefix(&self.path)
                         .expect("every watched directory lies below the root")
                         .to_string_lossy()
                         .replace('\\', "/")
@@ -1129,8 +1338,9 @@ mod tests {
     /// The wait also proves that every watch stands before the caller changes
     /// one file.
     async fn opened(root: &Path) -> (FileWatcher, WatchBatch) {
-        let mut watcher = FileWatcher::start(root.to_path_buf(), &IGNORED)
-            .expect("the start accepts an absolute root");
+        let root = Arc::new(WorktreeRoot::open(root).expect("the test root exists"));
+        let mut watcher =
+            FileWatcher::start(root, &IGNORED).expect("the start accepts an absolute root");
         let opening = timeout(EVENT_WAIT, watcher.recv())
             .await
             .expect("the registration finishes")
@@ -1157,17 +1367,30 @@ mod tests {
     }
 
     fn event(path: &str, kind: WatchKind) -> WatchEvent {
-        WatchEvent {
-            path: PathBuf::from(path),
-            kind,
-        }
+        let root = Arc::new(
+            WorktreeRoot::open(std::env::current_dir().expect("the test process has a directory"))
+                .expect("the repository root exists"),
+        );
+        let relative = path
+            .strip_prefix("/work/")
+            .expect("the test path uses /work");
+        WatchEvent::new(Arc::clone(&root), root.as_path().join(relative), kind)
+            .expect("the event lies below its root")
+    }
+
+    fn event_directory(path: &str) -> PathBuf {
+        let root =
+            WorktreeRoot::open(std::env::current_dir().expect("the test process has a directory"))
+                .expect("the repository root exists");
+        root.as_path()
+            .join(path.strip_prefix("/work/").unwrap_or(path))
     }
 
     #[test]
     fn a_created_entry_asks_for_the_read_of_its_directory() {
         let mut batch = WatchBatch::default();
         batch.push(&event("/work/src/main.rs", WatchKind::Created));
-        assert_eq!(batch.directories(), [PathBuf::from("/work/src")]);
+        assert_eq!(batch.directories(), [event_directory("src")]);
         assert!(!batch.changed_content());
     }
 
@@ -1175,7 +1398,7 @@ mod tests {
     fn a_removed_entry_asks_for_the_read_of_its_directory() {
         let mut batch = WatchBatch::default();
         batch.push(&event("/work/src/main.rs", WatchKind::Removed));
-        assert_eq!(batch.directories(), [PathBuf::from("/work/src")]);
+        assert_eq!(batch.directories(), [event_directory("src")]);
     }
 
     #[test]
@@ -1185,7 +1408,7 @@ mod tests {
         batch.push(&event("/work/docs/new.rs", WatchKind::Renamed));
         assert_eq!(
             batch.directories(),
-            [PathBuf::from("/work/docs"), PathBuf::from("/work/src")]
+            [event_directory("docs"), event_directory("src")]
         );
     }
 
@@ -1201,7 +1424,7 @@ mod tests {
     fn an_unnamed_platform_change_still_asks_for_the_directory_read() {
         let mut batch = WatchBatch::default();
         batch.push(&event("/work/src/main.rs", WatchKind::Unknown));
-        assert_eq!(batch.directories(), [PathBuf::from("/work/src")]);
+        assert_eq!(batch.directories(), [event_directory("src")]);
     }
 
     #[test]
@@ -1213,7 +1436,7 @@ mod tests {
                 WatchKind::Created,
             ));
         }
-        assert_eq!(batch.directories(), [PathBuf::from("/work/src")]);
+        assert_eq!(batch.directories(), [event_directory("src")]);
         assert_eq!(batch.fidelity(), WatchFidelity::Complete);
     }
 
@@ -1279,10 +1502,110 @@ mod tests {
     }
 
     #[test]
-    fn a_relative_root_starts_no_watcher() {
-        let error = FileWatcher::start(PathBuf::from("relative/root"), &IGNORED)
-            .expect_err("a relative root places no event");
-        assert!(matches!(error, WatchError::RelativeRoot));
+    fn an_outside_platform_event_is_rejected_by_its_root() {
+        let tree = TempTree::new("outside-event");
+        let other = TempTree::new("outside-event-other");
+        let error = WatchEvent::new(tree.root(), other.path.join("main.rs"), WatchKind::Created)
+            .expect_err("an event of another root is rejected");
+        assert!(matches!(error, WatchEventError::OutsideRoot));
+    }
+
+    #[test]
+    fn one_batch_drops_an_event_from_another_root() {
+        let first = TempTree::new("event-root-first");
+        let second = TempTree::new("event-root-second");
+        first.dir("src");
+        second.dir("src");
+        let first_event = WatchEvent::new(
+            first.root(),
+            first.path.join("src/main.rs"),
+            WatchKind::Created,
+        )
+        .expect("the first event lies below its root");
+        let second_event = WatchEvent::new(
+            second.root(),
+            second.path.join("src/main.rs"),
+            WatchKind::Created,
+        )
+        .expect("the second event lies below its root");
+
+        let mut batch = WatchBatch::default();
+        batch.push(&first_event);
+        batch.push(&second_event);
+
+        assert_eq!(batch.directories(), [first.path.join("src")]);
+        assert_eq!(batch.fidelity(), WatchFidelity::Dropped);
+        assert_eq!(
+            batch.root().map(WorktreeRoot::as_path),
+            Some(first.path.as_path())
+        );
+    }
+
+    #[test]
+    fn an_outside_raw_event_publishes_dropped_fidelity() {
+        let first = TempTree::new("raw-event-root");
+        let second = TempTree::new("raw-event-other");
+        let batch = validate_events(
+            first.root(),
+            vec![RawWatchEvent::Event {
+                path: second.path.join("main.rs"),
+                kind: WatchKind::Created,
+            }],
+            WatchFidelity::Complete,
+            false,
+        );
+
+        assert!(batch.directories().is_empty());
+        assert_eq!(batch.fidelity(), WatchFidelity::Dropped);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_contained_symlink_event_refreshes_its_lexical_parent() {
+        let tree = TempTree::new("symlink-event");
+        tree.dir("target");
+        tree.dir("links");
+        std::os::unix::fs::symlink("../target", tree.path.join("links/alias"))
+            .expect("the temporary directory supports links");
+
+        let event = WatchEvent::new(
+            tree.root(),
+            tree.path.join("links/alias"),
+            WatchKind::Created,
+        )
+        .expect("the link target remains contained");
+        let mut batch = WatchBatch::default();
+        batch.push(&event);
+
+        assert_eq!(event.path, tree.path.join("links/alias"));
+        assert_eq!(batch.directories(), [tree.path.join("links")]);
+    }
+
+    #[test]
+    fn a_callback_error_enqueues_a_dropped_wake_event() {
+        let tree = TempTree::new("callback-error");
+        let (sender, mut receiver) = mpsc::channel(1);
+        let dropped = AtomicUsize::new(0);
+
+        enqueue_notify_result(
+            Err(notify::Error::new(ErrorKind::MaxFilesWatch)),
+            &sender,
+            &tree.root(),
+            &IGNORED,
+            &dropped,
+        );
+
+        assert_eq!(dropped.load(Ordering::Relaxed), 1);
+        let event = receiver
+            .try_recv()
+            .expect("the callback wakes the coalescer");
+        let batch = validate_events(
+            tree.root(),
+            vec![event],
+            WatchFidelity::Complete,
+            dropped.swap(0, Ordering::Relaxed) > 0,
+        );
+        assert_eq!(batch.fidelity(), WatchFidelity::Dropped);
     }
 
     #[test]
@@ -1307,6 +1630,93 @@ mod tests {
             ],
             "the root and every kept directory carry one watch, and no ignored name does"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn the_registration_never_follows_a_directory_link() {
+        let tree = TempTree::new("directory-link");
+        tree.dir("real/inner");
+        std::os::unix::fs::symlink("real", tree.path.join("alias"))
+            .expect("the temporary directory supports links");
+
+        let watched = tree.watched();
+        assert_eq!(watched, vec!["", "real", "real/inner"]);
+        assert!(!watched.iter().any(|path| path.starts_with("alias")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_confinement_skipped_directory_remains_unregistered() {
+        let tree = TempTree::new("registration-confinement-skip");
+        let outside = TempTree::new("registration-confinement-skip-outside");
+        std::os::unix::fs::symlink(&outside.path, tree.path.join("escape"))
+            .expect("the temporary directory supports links");
+        let watcher =
+            RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
+                .expect("the platform builds one watcher");
+        let (mut registration, _) = Registration::start(watcher, tree.root(), &IGNORED)
+            .expect("the platform watches the root");
+        let escaped = WorktreeDirectoryPath::Relative(
+            WorktreeRelativePath::new("escape").expect("the fixture path is valid"),
+        );
+
+        let coverage = registration
+            .add(std::slice::from_ref(&escaped))
+            .expect("a skipped descendant keeps the root registration");
+
+        assert!(coverage.truncated);
+        assert!(!registration.directories.contains(&escaped));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_descendant_is_reported_and_remains_retryable() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let tree = TempTree::new("registration-non-utf8-child");
+        let name = OsString::from_vec(vec![0xff]);
+        if fs::create_dir(tree.path.join(&name)).is_err() {
+            // Some macOS filesystems reject non-UTF-8 names before registration.
+            return;
+        }
+        let watcher =
+            RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
+                .expect("the platform builds one watcher");
+
+        let (registration, coverage) = Registration::start(watcher, tree.root(), &IGNORED)
+            .expect("the UTF-8 root remains watchable");
+
+        assert!(coverage.truncated);
+        assert_eq!(
+            registration.directories,
+            [WorktreeDirectoryPath::Root].into()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_non_utf8_root_returns_the_typed_start_failure() {
+        use std::ffi::OsString;
+        use std::os::unix::ffi::OsStringExt as _;
+
+        let parent = TempTree::new("registration-non-utf8-root");
+        let path = parent.path.join(OsString::from_vec(vec![0xff]));
+        if fs::create_dir(&path).is_err() {
+            // Some macOS filesystems reject non-UTF-8 names before registration.
+            return;
+        }
+        let root = Arc::new(WorktreeRoot::open(&path).expect("the root capability opens"));
+        let watcher =
+            RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
+                .expect("the platform builds one watcher");
+
+        let Err(error) = Registration::start(watcher, root, &IGNORED) else {
+            panic!("notify receives no non-UTF-8 root path");
+        };
+
+        assert!(matches!(error, WatchError::Start(_)));
     }
 
     #[test]
@@ -1341,10 +1751,14 @@ mod tests {
         tree.dir("src/tui/render");
         tree.dir("target/debug");
         tree.dir("docs");
-        let registered: BTreeSet<PathBuf> = [
-            tree.path.clone(),
-            tree.path.join("src"),
-            tree.path.join("src/tui"),
+        let registered: BTreeSet<WorktreeDirectoryPath> = [
+            WorktreeDirectoryPath::Root,
+            WorktreeDirectoryPath::Relative(
+                WorktreeRelativePath::new("src").expect("the fixture path is valid"),
+            ),
+            WorktreeDirectoryPath::Relative(
+                WorktreeRelativePath::new("src/tui").expect("the fixture path is valid"),
+            ),
         ]
         .into_iter()
         .collect();
@@ -1365,15 +1779,7 @@ mod tests {
             .expect("the tree lies below the temporary directory");
 
         assert!(
-            unregistered_directories(
-                &tree.path,
-                above,
-                &IGNORED,
-                &BTreeSet::new(),
-                WATCH_DIRECTORIES_MAX,
-            )
-            .directories
-            .is_empty(),
+            directory_path(&tree.root(), above).is_none(),
             "a removed root names the directory above it, which no watch covers"
         );
     }
@@ -1385,9 +1791,8 @@ mod tests {
         let watcher =
             RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
                 .expect("the platform builds one watcher");
-        let (mut registration, coverage) =
-            Registration::start(watcher, tree.path.clone(), &IGNORED)
-                .expect("the platform watches a readable root");
+        let (mut registration, coverage) = Registration::start(watcher, tree.root(), &IGNORED)
+            .expect("the platform watches a readable root");
         assert!(
             coverage.is_complete(),
             "the platform watches every directory of a small readable tree"
@@ -1408,6 +1813,30 @@ mod tests {
         assert_eq!(
             registration.directories, registered,
             "the set holds every watched directory, so the batch stays empty and no stream rebuilds"
+        );
+    }
+
+    #[test]
+    fn overlapping_changed_directories_add_each_new_watch_once() {
+        let tree = TempTree::new("overlapping-additions");
+        tree.dir("src");
+        let watcher =
+            RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
+                .expect("the platform builds one watcher");
+        let (mut registration, coverage) = Registration::start(watcher, tree.root(), &IGNORED)
+            .expect("the platform watches a readable root");
+        assert!(coverage.is_complete());
+        let nested = tree.dir("src/new/inner");
+        let new = nested.parent().expect("the nested directory has a parent");
+        let src = new.parent().expect("the new directory has a parent");
+
+        let coverage = registration.extend(&[src.to_path_buf(), new.to_path_buf()]);
+
+        assert!(coverage.is_complete());
+        assert_eq!(
+            registration.directories.len(),
+            4,
+            "the root, src, new, and inner directories each hold one watch"
         );
     }
 
@@ -1571,7 +2000,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_root_that_does_not_exist_ends_the_published_stream() {
-        let root = PathBuf::from("/kvim-watch-root-that-never-exists");
+        let tree = TempTree::new("missing-registration");
+        let root = tree.root();
+        fs::remove_dir_all(&tree.path).expect("the fixture root exists");
         let mut watcher = FileWatcher::start(root, &IGNORED)
             .expect("the start places no watch, so it refuses no readable root");
 
@@ -1596,8 +2027,8 @@ mod tests {
             .expect("the test builds one runtime");
         let guard = runtime.enter();
 
-        let mut watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the start accepts an absolute root");
+        let mut watcher =
+            FileWatcher::start(tree.root(), &IGNORED).expect("the start accepts an absolute root");
 
         // The runtime polled no task yet, so the registration cannot have run.
         // A caller therefore reaches its first frame before the first watch.
@@ -1616,6 +2047,25 @@ mod tests {
             "the burst reports the window that no watch covered"
         );
         runtime.block_on(watcher.shutdown());
+    }
+
+    #[test]
+    fn dropping_a_watcher_requests_best_effort_cancellation() {
+        let tree = TempTree::new("drop-cancellation");
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("the test builds one runtime");
+        let guard = runtime.enter();
+        let watcher = FileWatcher::start(tree.root(), &IGNORED)
+            .expect("the start accepts the root capability");
+        let cancellation = watcher.cancellation.clone();
+
+        drop(watcher);
+
+        assert!(cancellation.is_cancelled());
+        drop(guard);
+        runtime.block_on(async { tokio::task::yield_now().await });
     }
 
     #[test]
@@ -1657,7 +2107,14 @@ mod tests {
         tree.dir("one");
         tree.dir("two");
 
-        let walk = unregistered_directories(&tree.path, &tree.path, &IGNORED, &BTreeSet::new(), 2);
+        let root = tree.root();
+        let walk = unregistered_directories(
+            &root,
+            &WorktreeDirectoryPath::Root,
+            &IGNORED,
+            &BTreeSet::new(),
+            2,
+        );
 
         assert_eq!(walk.directories.len(), 2, "the walk stops at its limit");
         assert!(
@@ -1703,14 +2160,15 @@ mod tests {
         let watcher =
             RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
                 .expect("the platform builds one watcher");
-        let (mut registration, coverage) =
-            Registration::start(watcher, tree.path.clone(), &IGNORED)
-                .expect("the platform watches a readable root");
+        let (mut registration, coverage) = Registration::start(watcher, tree.root(), &IGNORED)
+            .expect("the platform watches a readable root");
         assert!(coverage.is_complete());
 
         // The walk found this directory, and another program removed it before
         // the batch. The root still reports that removal.
-        let gone = tree.path.join("gone");
+        let gone = WorktreeDirectoryPath::Relative(
+            WorktreeRelativePath::new("gone").expect("the fixture path is valid"),
+        );
         let coverage = registration
             .add(std::slice::from_ref(&gone))
             .expect("a refused directory below the root keeps the registration");
@@ -1719,6 +2177,7 @@ mod tests {
             coverage.is_complete(),
             "a directory that no longer exists holds no entry to watch"
         );
+        assert!(!registration.directories.contains(&gone));
     }
 
     #[test]
@@ -1809,8 +2268,8 @@ mod tests {
         tree.dir("src/tui/render");
         // The start returns before the registration runs, so this shutdown
         // reaches the watcher while that registration is still open.
-        let watcher = FileWatcher::start(tree.path.clone(), &IGNORED)
-            .expect("the start accepts an absolute root");
+        let watcher =
+            FileWatcher::start(tree.root(), &IGNORED).expect("the start accepts an absolute root");
 
         timeout(EVENT_WAIT, watcher.shutdown())
             .await

@@ -1,235 +1,30 @@
 //! The mapping registry that binds a key sequence to a semantic command.
 //!
-//! The registry is the only place outside `terminal` that holds a raw key. It
-//! validates itself at construction, so the resolver never meets a duplicate
-//! sequence or an ambiguous prefix pair.
+//! `kvim-keymap` owns the generic registry, its bounds, and its conflict checks.
+//! This module names the kvim command type, the kvim scope type, and the
+//! first-release binding table. Every kvim binding is a surface contribution:
+//! the editor executes the command, and a host contributes its own bindings
+//! beside them.
 
-use std::borrow::Borrow;
-use std::collections::BTreeMap;
-use std::collections::btree_map::Entry;
-use std::fmt;
-use std::ops::Bound;
+use std::sync::Arc;
 
-use thiserror::Error;
-
+use kvim_keymap::{Key, KeyCode, KeySequence, Registry as KeymapRegistry, WhichKeyHint};
 use kvim_settings::PENDING_KEYS_MAX;
-use kvim_terminal::{Chord, Key, KeyCode};
 
 use super::command::{Command, CommandGroup};
 use super::mode::{BindingScope, Mode};
 
-/// A non-empty key sequence that fits the pending-key maximum.
-///
-/// The type holds both bounds, so the registry cannot store a sequence that the
-/// resolver could never complete.
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct KeySequence(Vec<Key>);
-
-impl KeySequence {
-    /// Returns the keys of the sequence.
-    #[inline]
-    pub fn keys(&self) -> &[Key] {
-        &self.0
-    }
-
-    /// Builds a sequence and checks both bounds.
-    fn new(keys: &[Key], keys_max: u8) -> Result<Self, SequenceBound> {
-        if keys.is_empty() {
-            return Err(SequenceBound::Empty);
-        }
-        if keys.len() > usize::from(keys_max) {
-            return Err(SequenceBound::TooLong {
-                keys: keys.len(),
-                keys_max,
-            });
-        }
-        Ok(Self(keys.to_vec()))
-    }
-}
-
-impl Borrow<[Key]> for KeySequence {
-    /// Lets a lookup use a plain key slice.
-    ///
-    /// The ordering of `[Key]` equals the ordering of the wrapped `Vec<Key>`, so
-    /// the borrowed form keeps the map ordering valid.
-    #[inline]
-    fn borrow(&self) -> &[Key] {
-        &self.0
-    }
-}
-
-impl fmt::Display for KeySequence {
-    /// Writes the keys separated by one space.
-    ///
-    /// A named key such as `Space` is several characters wide, so a separator
-    /// keeps `Space f` distinct from a single key.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for (index, key) in self.0.iter().enumerate() {
-            if index > 0 {
-                formatter.write_str(" ")?;
-            }
-            write!(formatter, "{}", KeyLabel(*key))?;
-        }
-        Ok(())
-    }
-}
-
-/// One key in the help form that the which-key overlay shows.
-///
-/// The form names a chord prefix and a key name, such as `C-d`, `Space`, or
-/// `Enter`. It is help text, never a value that code compares.
-///
-/// ```
-/// use kvim_input::{Mode, Registry};
-/// use kvim_terminal::{Key, KeyCode};
-///
-/// let registry = Registry::first_release();
-/// let rows = registry.rows_for_prefix(Mode::Normal, &[Key::plain(KeyCode::Char(' '))]);
-/// let first = rows.first().expect("the leader reaches several commands");
-/// assert_eq!(first.key_label().to_string(), "/");
-/// ```
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct KeyLabel(Key);
-
-impl fmt::Display for KeyLabel {
-    /// Writes one key in its help form.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.0.chord() {
-            Chord::Plain => {}
-            Chord::Ctrl => formatter.write_str("C-")?,
-            Chord::CtrlAlt => formatter.write_str("C-A-")?,
-        }
-        let name = match self.0.code() {
-            KeyCode::Char(' ') => "Space",
-            KeyCode::Char(value) => return write!(formatter, "{value}"),
-            KeyCode::Up => "Up",
-            KeyCode::Down => "Down",
-            KeyCode::Left => "Left",
-            KeyCode::Right => "Right",
-            KeyCode::Enter => "Enter",
-            KeyCode::Tab => "Tab",
-            KeyCode::BackTab => "S-Tab",
-            KeyCode::Backspace => "BS",
-            KeyCode::Delete => "Del",
-            KeyCode::Home => "Home",
-            KeyCode::End => "End",
-            KeyCode::PageUp => "PgUp",
-            KeyCode::PageDown => "PgDn",
-            KeyCode::Esc => "Esc",
-        };
-        formatter.write_str(name)
-    }
-}
-
-/// The bound that one candidate sequence broke.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SequenceBound {
-    Empty,
-    TooLong { keys: usize, keys_max: u8 },
-}
-
 /// One mapping from a key sequence to a semantic command.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Binding {
-    /// The scope that owns the mapping.
-    pub scope: BindingScope,
-    /// The key sequence that reaches the command.
-    pub keys: Vec<Key>,
-    /// The command that the sequence reaches.
-    pub command: Command,
-}
+pub type Binding = kvim_keymap::Binding<Command, BindingScope>;
 
 /// A rejected registry construction.
-#[derive(Clone, Debug, Eq, Error, PartialEq)]
-pub enum RegistryError {
-    /// A binding held no key.
-    #[error("the {scope} binding for `{command}` holds no key")]
-    EmptySequence {
-        /// The scope of the rejected binding.
-        scope: BindingScope,
-        /// The command of the rejected binding.
-        command: Command,
-    },
-    /// A binding held more keys than one pending sequence can hold.
-    #[error(
-        "the {scope} binding for `{command}` holds {keys} keys, but the pending-key maximum is {keys_max}"
-    )]
-    SequenceTooLong {
-        /// The scope of the rejected binding.
-        scope: BindingScope,
-        /// The command of the rejected binding.
-        command: Command,
-        /// The number of keys in the rejected binding.
-        keys: usize,
-        /// The pending-key maximum.
-        keys_max: u8,
-    },
-    /// Two bindings of one scope held the same sequence.
-    #[error("the {scope} sequence `{keys}` reaches both `{first}` and `{second}`")]
-    DuplicateSequence {
-        /// The scope that holds both bindings.
-        scope: BindingScope,
-        /// The repeated sequence.
-        keys: KeySequence,
-        /// The command of the first binding.
-        first: Command,
-        /// The command of the second binding.
-        second: Command,
-    },
-    /// One sequence was a strict prefix of another sequence in the same scope.
-    #[error(
-        "the {scope} sequence `{prefix}` for `{prefix_command}` is a strict prefix of `{longer}` for `{longer_command}`"
-    )]
-    AmbiguousPrefix {
-        /// The scope that holds both bindings.
-        scope: BindingScope,
-        /// The shorter sequence.
-        prefix: KeySequence,
-        /// The command of the shorter sequence.
-        prefix_command: Command,
-        /// The longer sequence.
-        longer: KeySequence,
-        /// The command of the longer sequence.
-        longer_command: Command,
-    },
-}
+pub type RegistryError = kvim_keymap::RegistryError<Command, BindingScope>;
 
 /// What one next key of the which-key overlay reaches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WhichKeyTarget {
-    /// The key completes exactly one command, and the row shows its label.
-    Command(Command),
-    /// The key opens a group of commands.
-    ///
-    /// which-key.nvim marks such a key with a `+` prefix. The count names the
-    /// commands that the group holds.
-    Group {
-        /// The number of commands behind the key. The value is at least two.
-        commands: usize,
-    },
-}
-
-impl WhichKeyTarget {
-    /// Returns the target that one more command behind the same key produces.
-    fn grown(self) -> Self {
-        match self {
-            Self::Command(_) => Self::Group { commands: 2 },
-            Self::Group { commands } => Self::Group {
-                commands: commands.saturating_add(1),
-            },
-        }
-    }
-}
-
-impl fmt::Display for WhichKeyTarget {
-    /// Writes the overlay text of one row.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Command(command) => formatter.write_str(command.label()),
-            Self::Group { commands } => write!(formatter, "+{commands} commands"),
-        }
-    }
-}
+///
+/// `kvim-keymap` owns the fold that counts the distinct commands behind one
+/// key, so the overlay and dispatch always read one table.
+pub type WhichKeyTarget = kvim_keymap::WhichKeyTarget<Command>;
 
 /// One which-key overlay row.
 ///
@@ -251,20 +46,45 @@ pub struct WhichKeyRow {
 
 impl WhichKeyRow {
     /// Returns the key in its help form.
+    ///
+    /// ```
+    /// use kvim_input::{Mode, Registry};
+    /// use kvim_keymap::{Key, KeyCode};
+    ///
+    /// let registry = Registry::first_release();
+    /// let rows = registry.rows_for_prefix(Mode::Normal, &[Key::plain(KeyCode::Char(' '))]);
+    /// let first = rows.first().expect("the leader reaches several commands");
+    /// assert_eq!(first.key_label().to_string(), "/");
+    /// ```
     #[inline]
-    pub const fn key_label(&self) -> KeyLabel {
-        KeyLabel(self.key)
+    #[must_use]
+    pub const fn key_label(&self) -> kvim_keymap::KeyLabel {
+        self.key.label()
+    }
+
+    /// Adds the kvim command group to one shared which-key hint.
+    ///
+    /// The group selects the icon of the row. A key that reaches commands of
+    /// several groups carries [`CommandGroup::Other`].
+    pub(crate) fn of(hint: &WhichKeyHint<Command>) -> Self {
+        let mut commands = hint.commands().iter().map(|command| command.group());
+        let group = commands.next().unwrap_or(CommandGroup::Other);
+        Self {
+            key: hint.key(),
+            target: hint.target(),
+            group: commands.fold(group, CommandGroup::merged),
+        }
     }
 }
 
-/// The validated mapping registry, keyed by binding scope.
+/// The validated kvim mapping registry, keyed by binding scope.
 ///
 /// One key sequence may appear in several scopes with different commands,
 /// because only one scope is active.
 ///
 /// ```
 /// use kvim_input::{Command, Mode, Registry};
-/// use kvim_terminal::{Key, KeyCode};
+/// use kvim_keymap::{Key, KeyCode};
 ///
 /// let registry = Registry::first_release();
 /// let keys = [Key::plain(KeyCode::Char('d'))];
@@ -278,52 +98,28 @@ impl WhichKeyRow {
 /// );
 /// ```
 #[derive(Clone, Debug)]
-pub struct Registry {
-    by_scope: [BTreeMap<KeySequence, Command>; BindingScope::COUNT],
-}
+pub struct Registry(Arc<KeymapRegistry<Command, BindingScope>>);
 
 impl Registry {
     /// Builds the registry from a binding list and validates it.
     ///
     /// # Errors
     ///
-    /// Returns [`RegistryError`] for an empty sequence, a sequence longer than
-    /// `keys_max`, a duplicate sequence inside one scope, or a strict prefix
-    /// pair inside one scope.
+    /// Returns [`RegistryError`] for every rule that `kvim-keymap` checks,
+    /// including an empty sequence, a sequence longer than `keys_max`, a
+    /// duplicate sequence inside one scope, and a strict prefix pair inside one
+    /// scope.
     pub fn from_bindings(bindings: &[Binding], keys_max: u8) -> Result<Self, RegistryError> {
-        let mut by_scope: [BTreeMap<KeySequence, Command>; BindingScope::COUNT] =
-            std::array::from_fn(|_| BTreeMap::new());
-        for binding in bindings {
-            let keys = KeySequence::new(&binding.keys, keys_max).map_err(|bound| match bound {
-                SequenceBound::Empty => RegistryError::EmptySequence {
-                    scope: binding.scope,
-                    command: binding.command,
-                },
-                SequenceBound::TooLong { keys, keys_max } => RegistryError::SequenceTooLong {
-                    scope: binding.scope,
-                    command: binding.command,
-                    keys,
-                    keys_max,
-                },
-            })?;
-            match by_scope[binding.scope.index()].entry(keys) {
-                Entry::Vacant(slot) => {
-                    slot.insert(binding.command);
-                }
-                Entry::Occupied(slot) => {
-                    return Err(RegistryError::DuplicateSequence {
-                        scope: binding.scope,
-                        keys: slot.key().clone(),
-                        first: *slot.get(),
-                        second: binding.command,
-                    });
-                }
-            }
-        }
-        for scope in BindingScope::ALL {
-            check_prefix_pairs(scope, &by_scope[scope.index()])?;
-        }
-        Ok(Self { by_scope })
+        KeymapRegistry::from_bindings(bindings, keys_max).map(|registry| Self(Arc::new(registry)))
+    }
+
+    /// Returns the shared snapshot that the resolver dispatches against.
+    ///
+    /// The snapshot is immutable, so one clone serves dispatch, conflict
+    /// reports, help, and the which-key overlay of every composed interface.
+    #[must_use]
+    pub fn shared(&self) -> Arc<KeymapRegistry<Command, BindingScope>> {
+        Arc::clone(&self.0)
     }
 
     /// Builds the hardcoded first-release registry.
@@ -347,20 +143,13 @@ impl Registry {
     /// Returns the command that the exact sequence reaches in the scope.
     #[must_use]
     pub fn command(&self, scope: impl Into<BindingScope>, keys: &[Key]) -> Option<Command> {
-        self.by_scope[scope.into().index()].get(keys).copied()
+        self.0.command(scope.into(), keys)
     }
 
     /// Reports whether the scope holds a sequence that extends the prefix.
-    ///
-    /// The map orders sequences lexicographically, so every extension of the
-    /// prefix sorts directly after it. The smallest sequence above the prefix is
-    /// therefore an extension whenever one exists.
     #[must_use]
     pub fn has_longer_sequence(&self, scope: impl Into<BindingScope>, prefix: &[Key]) -> bool {
-        self.by_scope[scope.into().index()]
-            .range::<[Key], _>((Bound::Excluded(prefix), Bound::Unbounded))
-            .next()
-            .is_some_and(|(sequence, _)| sequence.keys().starts_with(prefix))
+        self.0.has_longer_sequence(scope.into(), prefix)
     }
 
     /// Returns the distinct next keys that the prefix can still reach.
@@ -369,35 +158,20 @@ impl Registry {
     /// key that reaches exactly one command carries that command. A key that
     /// reaches several carries a group marker with the command count.
     ///
-    /// The map orders sequences lexicographically, so every sequence behind one
-    /// next key is contiguous, and the rows keep the deterministic key order of
-    /// the registry.
+    /// The registry returns every extension of the prefix in sequence order, so
+    /// the sequences behind one next key are contiguous and the rows keep the
+    /// deterministic key order of the registry.
     #[must_use]
     pub fn rows_for_prefix(
         &self,
         scope: impl Into<BindingScope>,
         prefix: &[Key],
     ) -> Vec<WhichKeyRow> {
-        let mut rows: Vec<WhichKeyRow> = Vec::new();
-        for (sequence, command) in self.by_scope[scope.into().index()]
-            .range::<[Key], _>((Bound::Included(prefix), Bound::Unbounded))
-            .take_while(|(sequence, _)| sequence.keys().starts_with(prefix))
-            .filter(|(sequence, _)| sequence.keys().len() > prefix.len())
-        {
-            let key = sequence.keys()[prefix.len()];
-            match rows.last_mut() {
-                Some(last) if last.key == key => {
-                    last.target = last.target.grown();
-                    last.group = last.group.merged(command.group());
-                }
-                _ => rows.push(WhichKeyRow {
-                    key,
-                    target: WhichKeyTarget::Command(*command),
-                    group: command.group(),
-                }),
-            }
-        }
-        rows
+        self.0
+            .hints_for_prefix(scope.into(), prefix)
+            .iter()
+            .map(WhichKeyRow::of)
+            .collect()
     }
 
     /// Returns every binding of one scope in sequence order.
@@ -405,36 +179,10 @@ impl Registry {
         &self,
         scope: impl Into<BindingScope>,
     ) -> impl Iterator<Item = (&KeySequence, Command)> {
-        self.by_scope[scope.into().index()]
-            .iter()
-            .map(|(keys, command)| (keys, *command))
+        self.0
+            .bindings(scope.into())
+            .map(|(keys, bound)| (keys, bound.command))
     }
-}
-
-/// Rejects a strict prefix pair inside one scope table.
-///
-/// Adjacent entries are enough: every extension of one sequence sorts directly
-/// after it, so a prefix pair always appears as neighbours.
-fn check_prefix_pairs(
-    scope: BindingScope,
-    table: &BTreeMap<KeySequence, Command>,
-) -> Result<(), RegistryError> {
-    let mut previous: Option<(&KeySequence, Command)> = None;
-    for (keys, command) in table {
-        if let Some((earlier, earlier_command)) = previous
-            && keys.keys().starts_with(earlier.keys())
-        {
-            return Err(RegistryError::AmbiguousPrefix {
-                scope,
-                prefix: earlier.clone(),
-                prefix_command: earlier_command,
-                longer: keys.clone(),
-                longer_command: *command,
-            });
-        }
-        previous = Some((keys, *command));
-    }
-    Ok(())
 }
 
 fn ch(value: char) -> Key {
@@ -466,6 +214,37 @@ const MOTION_MODES: &[Mode] = &[
 
 /// The three Visual modes.
 const VISUAL_MODES: &[Mode] = &[Mode::Visual, Mode::VisualLine, Mode::VisualBlock];
+
+/// Every scope that accepts a decimal count before a command.
+///
+/// A count digit is a surface command, so the shared registry holds it and no
+/// second key table reads digits. Insert mode and the text scopes stay out,
+/// because a digit is text there.
+const COUNT_SCOPES: &[BindingScope] = &[
+    BindingScope::Mode(Mode::Normal),
+    BindingScope::Mode(Mode::Visual),
+    BindingScope::Mode(Mode::VisualLine),
+    BindingScope::Mode(Mode::VisualBlock),
+    BindingScope::Sidebar,
+    BindingScope::OperatorPending,
+];
+
+/// The nine count digits that open or extend a count.
+///
+/// `0` is absent: it names the first-column motion until a count is already
+/// open, so it keeps [`Command::MoveFirstColumn`] and the semantic reducer
+/// reads it as the zero digit.
+const COUNT_DIGITS: &[(char, Command)] = &[
+    ('1', Command::CountDigitOne),
+    ('2', Command::CountDigitTwo),
+    ('3', Command::CountDigitThree),
+    ('4', Command::CountDigitFour),
+    ('5', Command::CountDigitFive),
+    ('6', Command::CountDigitSix),
+    ('7', Command::CountDigitSeven),
+    ('8', Command::CountDigitEight),
+    ('9', Command::CountDigitNine),
+];
 
 /// Every scope in which a text object names a range.
 ///
@@ -544,11 +323,7 @@ const ALL_MODES: &[Mode] = &[
 
 fn add(bindings: &mut Vec<Binding>, modes: &[Mode], keys: &[Key], command: Command) {
     for &mode in modes {
-        bindings.push(Binding {
-            scope: BindingScope::Mode(mode),
-            keys: keys.to_vec(),
-            command,
-        });
+        bindings.push(Binding::surface(BindingScope::Mode(mode), keys, command));
     }
 }
 
@@ -563,11 +338,7 @@ fn add_scoped(
     command: Command,
 ) {
     for &scope in scopes {
-        bindings.push(Binding {
-            scope,
-            keys: keys.to_vec(),
-            command,
-        });
+        bindings.push(Binding::surface(scope, keys, command));
     }
 }
 
@@ -578,11 +349,7 @@ fn add_tree(bindings: &mut Vec<Binding>, key: Key, command: Command) {
 
 /// Adds one binding of the file-tree sidebar over a key sequence.
 fn add_tree_keys(bindings: &mut Vec<Binding>, keys: &[Key], command: Command) {
-    bindings.push(Binding {
-        scope: BindingScope::Sidebar,
-        keys: keys.to_vec(),
-        command,
-    });
+    bindings.push(Binding::surface(BindingScope::Sidebar, keys, command));
 }
 
 /// Builds the complete first-release binding table.
@@ -900,11 +667,96 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::ToggleFormatOnSave,
     );
 
+    // Insert-mode text entry. Every printable key reaches the text fallback of
+    // the Insert scope, so only these three keys carry a command there.
+    add(
+        table,
+        &[Mode::Insert],
+        &[Key::plain(KeyCode::Enter)],
+        Command::InsertLineBreak,
+    );
+    add(
+        table,
+        &[Mode::Insert],
+        &[Key::plain(KeyCode::Backspace)],
+        Command::DeleteCharacterBefore,
+    );
+    add(
+        table,
+        &[Mode::Insert],
+        &[Key::plain(KeyCode::Tab)],
+        Command::InsertIndent,
+    );
+
+    add_count_and_register_bindings(table);
+    add_prompt_bindings(table);
     add_text_object_bindings(table);
     add_operator_pending_bindings(table);
     add_tree_bindings(table);
     add_picker_bindings(table);
     bindings
+}
+
+/// Adds the count digits and the register selection.
+///
+/// Both are grammar prefixes, so they complete no operation. The semantic
+/// reducer composes them with the operator and the motion that follow.
+fn add_count_and_register_bindings(table: &mut Vec<Binding>) {
+    for &(key, command) in COUNT_DIGITS {
+        add_scoped(table, COUNT_SCOPES, &[ch(key)], command);
+    }
+    // A register qualifies one completed operation. Vim reads `\"ayy` in Normal
+    // mode and `\"ay` over a selection, and it reads no register between an
+    // operator and its target.
+    add(
+        table,
+        &[
+            Mode::Normal,
+            Mode::Visual,
+            Mode::VisualLine,
+            Mode::VisualBlock,
+        ],
+        &[ch('"')],
+        Command::SelectRegister,
+    );
+}
+
+/// Adds the binding tables of the prompt line and of the confirmation.
+///
+/// Every prompt reads the same keys, so one table serves the command line, the
+/// search prompt, the file-tree prompts, and the picker query. A printable key
+/// reaches no binding and falls through to the text of the scope.
+///
+/// The confirmation completes nothing, so it holds no completion key. Every key
+/// that its table does not hold stays unbound, and the open question keeps it.
+fn add_prompt_bindings(table: &mut Vec<Binding>) {
+    const PROMPT: &[BindingScope] = &[BindingScope::Prompt];
+    const CONFIRMATION: &[BindingScope] = &[BindingScope::Confirmation];
+    let shared = [
+        (Key::plain(KeyCode::Enter), Command::PromptAccept),
+        (Key::plain(KeyCode::Esc), Command::PromptCancel),
+        (ctrl('c'), Command::PromptCancel),
+        (
+            Key::plain(KeyCode::Backspace),
+            Command::PromptDeleteBackward,
+        ),
+    ];
+    for (key, command) in shared {
+        add_scoped(table, PROMPT, &[key], command);
+        add_scoped(table, CONFIRMATION, &[key], command);
+    }
+    add_scoped(
+        table,
+        PROMPT,
+        &[Key::plain(KeyCode::Tab)],
+        Command::PromptCompleteNext,
+    );
+    add_scoped(
+        table,
+        PROMPT,
+        &[Key::plain(KeyCode::BackTab)],
+        Command::PromptCompletePrevious,
+    );
 }
 
 /// Adds the `i` and `a` text objects to every scope that takes one.
@@ -973,11 +825,7 @@ fn add_picker_bindings(table: &mut Vec<Binding>) {
         (ctrl('j'), Command::PickerSelectNext),
         (ctrl('k'), Command::PickerSelectPrevious),
     ] {
-        table.push(Binding {
-            scope: BindingScope::Picker,
-            keys: vec![key],
-            command,
-        });
+        table.push(Binding::surface(BindingScope::Picker, &[key], command));
     }
 }
 
@@ -1037,20 +885,23 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
 
 #[cfg(test)]
 mod tests {
+    use kvim_keymap::KeySequence;
+
     use super::{
         Binding, BindingScope, Command, CommandGroup, Key, KeyCode, Mode, Registry, RegistryError,
-        WhichKeyTarget, ch, ctrl, leader,
+        WhichKeyTarget, ch, ctrl, ctrl_alt, leader,
     };
+
+    /// Builds the sequence of a rejection case.
+    fn sequence(keys: &[Key]) -> KeySequence {
+        KeySequence::new(keys, 4).expect("the test sequence is bounded")
+    }
 
     /// The scope of Normal mode, which most rejection cases use.
     const NORMAL_SCOPE: BindingScope = BindingScope::Mode(Mode::Normal);
 
     fn binding(mode: Mode, keys: &[Key], command: Command) -> Binding {
-        Binding {
-            scope: BindingScope::Mode(mode),
-            keys: keys.to_vec(),
-            command,
-        }
+        Binding::surface(BindingScope::Mode(mode), keys, command)
     }
 
     #[test]
@@ -1095,7 +946,7 @@ mod tests {
                 ],
                 RegistryError::DuplicateSequence {
                     scope: NORMAL_SCOPE,
-                    keys: super::KeySequence(vec![ch('u')]),
+                    keys: sequence(&[ch('u')]),
                     first: Command::Undo,
                     second: Command::Redo,
                 },
@@ -1108,9 +959,9 @@ mod tests {
                 ],
                 RegistryError::AmbiguousPrefix {
                     scope: NORMAL_SCOPE,
-                    prefix: super::KeySequence(vec![ch('g')]),
+                    prefix: sequence(&[ch('g')]),
                     prefix_command: Command::Undo,
-                    longer: super::KeySequence(vec![ch('g'), ch('g')]),
+                    longer: sequence(&[ch('g'), ch('g')]),
                     longer_command: Command::MoveFirstLine,
                 },
             ),
@@ -1169,7 +1020,7 @@ mod tests {
                     registry.command(mode, &[key]),
                     Some(expected),
                     "{mode} `{}` must reach `{expected}`",
-                    super::KeyLabel(key)
+                    key.label()
                 );
             }
         }
@@ -1197,7 +1048,7 @@ mod tests {
                 registry.command(BindingScope::Picker, &[key]),
                 Some(expected),
                 "picker `{}` must reach `{expected}`",
-                super::KeyLabel(key)
+                key.label()
             );
         }
     }
@@ -1400,10 +1251,10 @@ mod tests {
         // scope holds never reaches the focused file tree.
         let registry = Registry::first_release();
         let cases = [
-            (super::ctrl_alt('h'), Command::ResizeWindowLeft),
-            (super::ctrl_alt('j'), Command::ResizeWindowDown),
-            (super::ctrl_alt('k'), Command::ResizeWindowUp),
-            (super::ctrl_alt('l'), Command::ResizeWindowRight),
+            (ctrl_alt('h'), Command::ResizeWindowLeft),
+            (ctrl_alt('j'), Command::ResizeWindowDown),
+            (ctrl_alt('k'), Command::ResizeWindowUp),
+            (ctrl_alt('l'), Command::ResizeWindowRight),
         ];
         for (key, expected) in cases {
             assert_eq!(
@@ -1420,13 +1271,12 @@ mod tests {
             (vec![ch('g'), ch('g')], "g g"),
             (vec![leader(), ch('f'), ch('/')], "Space f /"),
             (vec![ctrl('d')], "C-d"),
-            (vec![super::ctrl_alt('h')], "C-A-h"),
+            (vec![ctrl_alt('h')], "C-A-h"),
             (vec![Key::ctrl(KeyCode::Enter)], "C-Enter"),
             (vec![Key::plain(KeyCode::Esc)], "Esc"),
         ];
         for (keys, expected) in cases {
-            let sequence = super::KeySequence::new(&keys, 4).expect("the test sequence is bounded");
-            assert_eq!(sequence.to_string(), expected);
+            assert_eq!(sequence(&keys).to_string(), expected);
         }
     }
 }

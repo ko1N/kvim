@@ -378,3 +378,101 @@ async fn the_process_deadline_and_the_shared_output_limit_are_typed() {
 
     runtime.shutdown().await;
 }
+
+/// The job that one masking test runs and then releases.
+///
+/// The pair reports when the blocking job entered its commit and holds it there
+/// until the test releases it, so a cancellation always reaches a running job.
+struct CommitSeam {
+    entered: std::sync::mpsc::Receiver<()>,
+    release: std::sync::mpsc::Sender<()>,
+}
+
+/// Creates one paused job and the seam that controls it.
+fn paused_job() -> (
+    CommitSeam,
+    impl FnOnce(CancellationToken) -> u32 + Send + 'static,
+) {
+    let (entered_sender, entered) = std::sync::mpsc::channel();
+    let (release, released) = std::sync::mpsc::channel();
+    let job = move |_cancellation: CancellationToken| {
+        entered_sender
+            .send(())
+            .expect("the test waits for this report");
+        released.recv().expect("the test releases this job");
+        COMMITTED_VALUE
+    };
+    (CommitSeam { entered, release }, job)
+}
+
+/// The value that one released job returns.
+const COMMITTED_VALUE: u32 = 7;
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_committing_job_reports_the_value_that_it_committed() {
+    let (runtime, mut events) = Runtime::<u32>::with_limits(RuntimeLimits::new(8, 2, 2).unwrap());
+    let gate = PublicationGate::default();
+    let request = gate.begin(RequestSlot::new(1), &runtime.cancellation_root());
+    let (seam, job) = paused_job();
+
+    runtime
+        .submit_committing_worker(request.clone(), Duration::from_secs(30), job)
+        .unwrap();
+    seam.entered.recv().expect("the job entered its commit");
+    // The cancellation reaches a job that already changed durable state, so the
+    // caller must still learn its outcome.
+    request.cancel();
+    seam.release.send(()).unwrap();
+
+    let event = events.recv().await.expect("the request keeps its slot");
+    assert_eq!(event.result.unwrap(), COMMITTED_VALUE);
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_optional_job_loses_the_value_that_a_cancellation_displaced() {
+    let (runtime, mut events) = Runtime::<u32>::with_limits(RuntimeLimits::new(8, 2, 2).unwrap());
+    let gate = PublicationGate::default();
+    let request = gate.begin(RequestSlot::new(1), &runtime.cancellation_root());
+    let (seam, job) = paused_job();
+
+    runtime
+        .submit_worker(request.clone(), Duration::from_secs(30), job)
+        .unwrap();
+    seam.entered.recv().expect("the job entered its work");
+    request.cancel();
+    seam.release.send(()).unwrap();
+
+    let event = events.recv().await.expect("the request keeps its slot");
+    assert!(matches!(event.result, Err(RuntimeError::Cancelled)));
+    assert_eq!(event.kind, WorkKind::Worker);
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_started_shutdown_keeps_the_tracked_tasks_of_its_drain() {
+    let (runtime, mut events) = Runtime::<u32>::with_limits(RuntimeLimits::new(8, 2, 2).unwrap());
+    let gate = PublicationGate::default();
+    let request = gate.begin(RequestSlot::new(1), &runtime.cancellation_root());
+    let (seam, job) = paused_job();
+
+    runtime
+        .submit_committing_worker(request, Duration::from_secs(30), job)
+        .unwrap();
+    seam.entered.recv().expect("the job entered its commit");
+    let drain = runtime.begin_shutdown();
+
+    // The deadline expires while the job still holds its commit, and the drain
+    // keeps that job for the caller that returns to the wait.
+    assert!(
+        tokio::time::timeout(Duration::ZERO, drain.wait())
+            .await
+            .is_err()
+    );
+    assert!(!drain.is_empty(), "the drain still owns the paused job");
+    seam.release.send(()).unwrap();
+    drain.wait().await;
+
+    let event = events.recv().await.expect("the request keeps its slot");
+    assert_eq!(event.result.unwrap(), COMMITTED_VALUE);
+}

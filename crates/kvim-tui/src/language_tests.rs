@@ -22,7 +22,8 @@ use kvim_language::mock::{
 };
 use kvim_language::{
     FormatterFailure, LanguageOutcome, LanguageRegistry, LanguageServerHandle, LspError,
-    MARKUP_SOURCE_BYTES_MAX, MarkupDocument, MarkupKind, MarkupRole, MarkupText, SyntaxRole,
+    MARKUP_SOURCE_BYTES_MAX, MarkupDocument, MarkupKind, MarkupRole, MarkupText, SyntaxHighlighter,
+    SyntaxRole,
 };
 use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
@@ -34,7 +35,7 @@ use super::language::{
 };
 use super::markup::{FloatLine, FloatStyle};
 use super::overlay::float_lines;
-use super::session::{MessageLevel, Redraw, Session};
+use super::session::{MessageLevel, Redraw, Session, test_root};
 
 /// The elapsed time of every transition. The session reads no clock.
 const NOW: Duration = Duration::ZERO;
@@ -134,7 +135,7 @@ impl Editor {
         let mut settings = EditorSettings::default();
         settings.files.undo_file = false;
         Self {
-            session: Session::new(AREA, settings, PathBuf::from("/workspace")),
+            session: Session::new(AREA, settings, test_root(root.clone())),
             harness,
             server,
             spare,
@@ -1153,9 +1154,10 @@ async fn the_hover_float_paints_the_code_of_a_fence_in_its_syntax_roles() {
 /// answer arrives, so the helper builds the value that reaches the float.
 fn hover_answer(kind: MarkupKind, text: &str) -> MarkupText {
     let document = match kind {
-        MarkupKind::Markdown => {
-            MarkupDocument::parse(text).highlighted(LanguageRegistry::first_release())
-        }
+        MarkupKind::Markdown => MarkupDocument::parse(text).highlighted(
+            LanguageRegistry::first_release(),
+            &mut SyntaxHighlighter::new(),
+        ),
         MarkupKind::PlainText => MarkupDocument::default(),
     };
     MarkupText {
@@ -1656,7 +1658,7 @@ async fn the_log_names_the_cause_of_a_server_that_cannot_start() {
     let directory = TempDir::new("log_broken_server");
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
-    let mut session = Session::new(AREA, settings, directory.path.clone());
+    let mut session = Session::new(AREA, settings, test_root(directory.path.clone()));
     // The child repeats the failure that this capture exists for. It is no
     // language server: it names its cause on the standard error and exits.
     let mut harness = mock::process_session(

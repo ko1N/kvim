@@ -6,6 +6,7 @@
 
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::Terminal;
@@ -16,18 +17,19 @@ use ratatui::style::{Modifier, Style};
 
 use kvim_input::Mode;
 use kvim_language::LspError;
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{
-    FileWatcher, WATCH_COALESCE_WINDOW, WatchBatch, WatchCoverage, WatchEvent, WatchFidelity,
-    WatchKind,
+    FileWatcher, ProcessOutput, WATCH_COALESCE_WINDOW, WatchBatch, WatchCoverage, WatchEvent,
+    WatchFidelity, WatchKind,
 };
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
-    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusSnapshot, TREE_PENDING_READS_MAX,
-    TakenDestination, temp::TempDir,
+    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusRead, GitStatusRequest,
+    TREE_PENDING_READS_MAX, TakenDestination, temp::TempDir,
 };
 
-use super::session::{FileRequestFailure, Redraw, Session, watch_coverage_note};
+use super::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
 use super::theme::{Theme, ThemeRole};
 use super::tree::{
     GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
@@ -73,7 +75,7 @@ fn workspace_with_icons(icons: FileTreeIcons) -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = icons;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     (dir, session)
 }
@@ -581,7 +583,7 @@ fn a_delete_without_a_selection_reports_the_refusal_and_asks_nothing() {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
 
@@ -605,7 +607,7 @@ fn a_delete_of_an_entry_that_disappeared_reports_it_and_removes_nothing() {
     // follows the change, which proves that the editor stays usable.
     let removed = dir.join("README.md");
     fs::remove_file(&removed).expect("the temporary directory is writable");
-    let _ = session.apply_watch_batch(&watch_batch(&removed, WatchKind::Removed));
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &removed, WatchKind::Removed));
     drain(&mut session);
     assert!(!shows_readme(&session), "the tree followed the removal");
 
@@ -641,13 +643,13 @@ fn a_delete_question_names_one_entry_or_the_count_of_several() {
 
 #[test]
 fn an_overwrite_question_names_one_entry_or_the_count_of_several() {
-    let one = [taken("/workspace/docs/README.md")];
+    let one = [taken("docs/README.md")];
     assert_eq!(overwrite_question(&one), "Overwrite README.md");
 
     let several = [
-        taken("/workspace/docs/README.md"),
-        taken("/workspace/src/main.rs"),
-        taken("/workspace/notes.txt"),
+        taken("docs/README.md"),
+        taken("src/main.rs"),
+        taken("notes.txt"),
     ];
     assert_eq!(overwrite_question(&several), "Overwrite 3 entries");
 }
@@ -655,7 +657,7 @@ fn an_overwrite_question_names_one_entry_or_the_count_of_several() {
 /// Returns one taken destination that holds a file.
 fn taken(path: &str) -> TakenDestination {
     TakenDestination {
-        path: PathBuf::from(path),
+        path: WorktreeRelativePath::new(path).expect("the fixture path is contained"),
         kind: EntryKind::File,
     }
 }
@@ -870,8 +872,8 @@ fn a_refused_mutation_reports_it_and_changes_nothing() {
 
     assert_eq!(
         message(&session),
-        format!("{} exists already", dir.join("src").display()),
-        "a destination collision reports the typed rejection"
+        "src exists already",
+        "a destination collision reports the typed rejection, against the workspace root"
     );
     assert!(dir.join("src").is_dir());
 }
@@ -939,7 +941,7 @@ fn search_workspace() -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     // `closed` is the first row, so one step down reaches `open`.
@@ -1457,7 +1459,7 @@ fn flat_workspace(entries: usize) -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     (dir, session)
@@ -1705,7 +1707,7 @@ fn appearance_workspace(icons: FileTreeIcons) -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = icons;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     (dir, session)
@@ -1973,7 +1975,7 @@ fn a_narrow_sidebar_clips_every_row_at_its_own_edge() {
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
     settings.windows.file_tree_width_cells = 10;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     press(&mut session, 'l');
@@ -2021,7 +2023,7 @@ fn git_workspace() -> (TempDir, Session) {
     let root = dir.path.clone();
     let mut settings = EditorSettings::default();
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, root);
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
     drain(&mut session);
     reveal(&mut session);
     (dir, session)
@@ -2046,18 +2048,43 @@ fn git_output() -> String {
     )
 }
 
-/// Publishes one recorded status output, as the event loop does.
-fn publish_git(session: &mut Session, root: &Path, output: &str) {
+/// Answers one command of the status read with a recorded output.
+///
+/// The read takes one prefix command and one status command, so the session
+/// receives one answer for each and publishes after the second.
+fn answer_git(session: &mut Session, root: &Path, stdout: &[u8]) {
     let request = session
         .take_git_request()
         .expect("the sidebar asks for one status read");
-    assert_eq!(request.root(), root, "the read names the workspace root");
     assert_eq!(
-        request.command().program,
-        GIT_PROGRAM,
+        request.root().as_path(),
+        root,
+        "the read names the workspace root"
+    );
+    let command = request.command();
+    assert_eq!(
+        command.program, GIT_PROGRAM,
         "the read leaves the session as one external command"
     );
-    let _ = session.apply_git_result(Ok(GitStatusSnapshot::parse(root, root, output.as_bytes())));
+    assert_eq!(
+        command.current_dir.as_deref(),
+        Some(root),
+        "the child receives the canonical root as its working directory"
+    );
+    let output = ProcessOutput {
+        status_code: Some(0),
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    };
+    let _ = session.apply_git_result(request.publish(&output));
+}
+
+/// Publishes one recorded status output, as the event loop does.
+fn publish_git(session: &mut Session, root: &Path, output: &str) {
+    // The workspace root of every test is its own repository top level, so the
+    // prefix command reports an empty prefix.
+    answer_git(session, root, b"\n");
+    answer_git(session, root, output.as_bytes());
 }
 
 /// Returns the Git mark at the right edge of one sidebar row.
@@ -2151,7 +2178,7 @@ fn the_refresh_command_asks_for_the_repository_state_again() {
     assert_eq!(
         session
             .take_git_request()
-            .map(|request| request.root().to_path_buf()),
+            .map(|request| request.root().as_path().to_path_buf()),
         Some(dir.path.clone())
     );
 }
@@ -2173,7 +2200,11 @@ fn a_save_asks_for_the_repository_state_again() {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
     settings.windows.file_tree_icons = FileTreeIcons::Hidden;
-    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, dir.path.clone());
+    let mut session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        settings,
+        test_root(dir.path.clone()),
+    );
     drain(&mut session);
     let _opening_read = session.take_git_request();
 
@@ -2225,12 +2256,23 @@ fn a_workspace_mutation_asks_for_the_repository_state_again() {
 #[test]
 fn a_snapshot_of_another_workspace_never_reaches_the_rows() {
     let (dir, mut session) = git_workspace();
-    let elsewhere = Path::new("/elsewhere");
-    let _ = session.apply_git_result(Ok(GitStatusSnapshot::parse(
-        elsewhere,
-        elsewhere,
-        b"? new.rs\0",
-    )));
+    let elsewhere = TempDir::new("git-elsewhere");
+    let root = Arc::new(WorktreeRoot::open(&elsewhere.path).expect("the fixture root exists"));
+    let answered = |stdout: &[u8]| ProcessOutput {
+        status_code: Some(0),
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    };
+    let GitStatusRead::Pending(records) = GitStatusRequest::new(root)
+        .publish(&answered(b"\n"))
+        .expect("the prefix command answered")
+    else {
+        panic!("the first stage never publishes one snapshot");
+    };
+    let published = records
+        .publish(&answered(b"? new.rs\0"))
+        .expect("the status command answered");
+    let _ = session.apply_git_result(Ok(published));
 
     assert_eq!(
         git_mark(&session, 4),
@@ -2299,12 +2341,12 @@ fn a_missing_git_command_reaches_the_message_line_once() {
 }
 
 /// Builds one coalesced burst that names the change of a single path.
-fn watch_batch(path: &Path, kind: WatchKind) -> WatchBatch {
+fn watch_batch(root: &Path, path: &Path, kind: WatchKind) -> WatchBatch {
     let mut batch = WatchBatch::default();
-    batch.push(&WatchEvent {
-        path: path.to_path_buf(),
-        kind,
-    });
+    batch.push(
+        &WatchEvent::new(test_root(root.to_path_buf()), path.to_path_buf(), kind)
+            .expect("the fixture event lies below its worktree root"),
+    );
     batch
 }
 
@@ -2329,7 +2371,7 @@ fn a_watched_change_reads_only_the_directory_that_it_named() {
     // The `docs` directory stays closed, so its listing must not appear.
     dir.file("docs/guide.md", "guide\n");
 
-    let redraw = session.apply_watch_batch(&watch_batch(&created, WatchKind::Created));
+    let redraw = session.apply_watch_batch(&watch_batch(&dir.path, &created, WatchKind::Created));
     assert_eq!(
         redraw,
         Redraw::Skipped,
@@ -2367,7 +2409,7 @@ fn a_watched_removal_drops_the_entry_and_keeps_the_expansion() {
     let removed = dir.join("src/main.rs");
     fs::remove_file(&removed).expect("the temporary directory is writable");
 
-    let _ = session.apply_watch_batch(&watch_batch(&removed, WatchKind::Removed));
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &removed, WatchKind::Removed));
     drain(&mut session);
 
     assert_eq!(
@@ -2391,7 +2433,7 @@ fn a_watched_burst_that_lost_events_reads_every_expanded_directory() {
     // bound dropped events, so the sidebar must not trust the named set.
     let elsewhere = dir.file("src/added.rs", "fn added() {}\n");
     dir.file("late.txt", "late\n");
-    let mut batch = watch_batch(&elsewhere, WatchKind::Created);
+    let mut batch = watch_batch(&dir.path, &elsewhere, WatchKind::Created);
     batch.drop_events();
 
     let _ = session.apply_watch_batch(&batch);
@@ -2418,7 +2460,7 @@ fn a_watched_content_change_reads_no_directory() {
     // Another program rewrites one file. Its directory keeps the same entries,
     // so the burst asks for no read at all.
     let modified = dir.file("README.md", "changed\n");
-    let _ = session.apply_watch_batch(&watch_batch(&modified, WatchKind::Modified));
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &modified, WatchKind::Modified));
 
     assert!(
         session.take_workspace_request().is_none(),
@@ -2565,8 +2607,8 @@ fn a_created_file_reaches_the_editor_through_the_workspace_watcher() {
         .build()
         .expect("the test host provides a Tokio runtime");
     let batch = tokio.block_on(async {
-        let mut watcher =
-            FileWatcher::start(root, &GENERATED_NAMES).expect("the root is a readable directory");
+        let mut watcher = FileWatcher::start(test_root(root), &GENERATED_NAMES)
+            .expect("the root is a readable directory");
         // The registration runs after the start, so the first burst reports the
         // window that no watch covered. The write follows that burst, so every
         // watch of the workspace already stands.

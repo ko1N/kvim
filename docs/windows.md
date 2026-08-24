@@ -2,19 +2,31 @@
 
 ## Ownership
 
-The `tui` module owns the window tree, layout, focus, resize, rendering, the
-theme, and the editor log. It is the sole owner of visible editor state. See
-[`architecture.md`](architecture.md).
+`kvim-ui` owns generic split topology, sidebar state, deterministic geometry,
+domain-neutral ratatui presentation, and the workspace composer that joins them.
+`kvim-tui` owns editor and review presentation adapters, the standalone theme,
+and the editor log. One host owner owns visible state for each composed
+interface. See [`architecture.md`](architecture.md) and
+[`embedding.md`](embedding.md).
 
-The window tree contains no buffer text and no terminal colors. It contains
-window identities, split structure, and validated dimensions.
+`WorkspaceComposer<SurfaceId>` is the one composition model. It holds the split
+tree, the sidebar regions, the overlay ownership, the focus, one shared
+resolver, and the which-key state of that resolver. It computes no rectangle of
+its own: one layout pass reads the window layout and publishes the clipped
+placement of every visible surface and of the open overlay.
+[`embedding.md`](embedding.md) owns the transition protocol that moves focus and
+overlay ownership.
+
+`WindowTree<SurfaceId>` contains opaque surface identities, split structure,
+validated ratios, focus, limits, and minimum dimensions. Host surface values,
+buffer text, and terminal colors stay outside the tree.
 
 ## Window Tree
 
 The window tree is a binary tree with two node kinds:
 
-- A leaf window shows one buffer. It has a stable window identity and one view
-  into that buffer.
+- A leaf holds one opaque surface identity. The standalone adapter associates
+  that identity with one editor window and its buffer view.
 - A split node has an orientation and two children. A horizontal split node
   stacks its children top and bottom. A vertical split node places its children
   left and right.
@@ -27,9 +39,24 @@ Closing a window replaces its parent split node with the remaining sibling. The
 tree always has at least one leaf window. The closed window discards its view
 with it.
 
+A close of the focused region takes the focused sidebar first: that sidebar
+hides and keeps its surface, so showing it again restores it unchanged. A close
+that reaches the last leaf window reports `CloseOutcome::LastWindow` and changes
+nothing, so the caller above the tree decides what happens next.
+
+`WorkspaceComposer::close_focused` adds the composition rules to that tree
+operation. It commits at once, because the surface that would have to reset its
+semantic phases is the surface that goes away. A surface that no region shows
+any longer leaves the composer with its context, the shared resolver drops its
+pending key prefix, and every waiting focus or overlay proposal ends.
+[`embedding.md`](embedding.md) owns the transition protocol that this close
+bypasses.
+
 ## Window View
 
-A window owns the cursor, the selection anchor, and the viewport. Only the
+A window owns the cursor, the selection anchor, and the viewport. The generic
+tree holds none of them: the standalone adapter in `kvim-tui` owns one view for
+each window identity and discards that view when the window closes. Only the
 buffer text is shared. Two windows that show one buffer therefore move and
 scroll independently: a scroll in one window moves no other window, and a move
 in one window moves no other cursor.
@@ -48,25 +75,35 @@ the buffer of that window. See the scroll margin in
 
 The viewport covers the text rows of the window rectangle, never the complete
 rectangle. The winbar row belongs to the rectangle and shows no buffer line, so
-the window tree removes it. The gutter width depends on the buffer, which the
-window tree never holds, so the session narrows the viewport width after every
+the standalone adapter removes it. The gutter width depends on the buffer, which
+the adapter never holds, so the session narrows the viewport width after every
 layout change. The viewport therefore always reports the cells that the renderer
 paints with buffer text.
 
 ## Layout
 
-One layout calculation converts the window tree and the terminal size into the
-exact rectangle for every window and sidebar. Rendering, scrolling, focus,
-resize, and tests all use these rectangles. No other code computes a rectangle.
+One layout calculation converts the window tree and a caller-supplied rectangle
+into the exact placement of each surface and sidebar. Rendering, scrolling,
+focus, resize, and tests all use these rectangles. No other code computes a
+rectangle.
 
 Layout is deterministic. Equal tree, equal ratios, and equal terminal size
 produce equal rectangles.
+
+Layout returns complete or explicitly constrained output. It never silently
+hides a surface. A constrained layout keeps the focused surface visible and
+names every constraint. Leaf count, tree depth, ratio precision, minimum
+dimensions, and identity allocation are bounded and validated.
 
 ## Split Creation
 
 A new horizontal split opens the new window below the current window. A new
 vertical split opens the new window to the right of the current window. Both
 defaults belong to `EditorSettings`. See [`settings.md`](settings.md).
+
+An explicit split succeeds only when both new subtrees fit the supplied area.
+Recursive child minima decide that fit. A refused split leaves topology and
+focus unchanged.
 
 The new window shows the same buffer as the source window, and it copies the
 cursor, the selection anchor, and the viewport of that window, so it opens at
@@ -175,10 +212,9 @@ rules into one.
 Every window has a minimum width and a minimum height. The layout calculation
 enforces the minimum before it publishes rectangles.
 
-A terminal resize recomputes the layout from the same tree. It does not change
-the tree structure and it does not change window identities. If the terminal
-becomes too small for the current tree, the layout hides windows in a
-deterministic order and keeps the focused window visible.
+A host-area resize recomputes the layout from the same tree. It does not change
+tree structure or surface identities. If the area becomes too small, layout
+returns an explicitly constrained result and keeps the focused surface visible.
 
 The default minimum window width is 20 cells. It keeps a line number column, a
 sign column, and readable text visible. The default minimum window height is 3
@@ -191,6 +227,18 @@ publishes 20 cells and 3 rows as the smallest window. A rectangle that is too
 small keeps the subtree that holds the focused window instead.
 
 ## Sidebars
+
+`SidebarState<RowId>` owns selection and viewport state only. Rows, actions,
+styles, labels, and semantic meaning are borrowed host inputs. Each row supplies
+a bounded, variable height in terminal rows.
+
+Selection and scrolling count terminal rows, not only item indexes. Layout
+publishes clipped visible row placements. A host callback renders each placement
+inside its clipped rectangle, so one row can use several lines, arbitrary cells,
+styled spans, markers, and host semantic state.
+
+Sidebar row, height, line, cell, label, action, and output counts are bounded.
+A full component event queue returns `Saturated` and drops no event silently.
 
 A sidebar is a fixed-width region at the edge of the terminal. The right-side
 file tree is a sidebar. A sidebar is not an ordinary editor window:
@@ -249,12 +297,11 @@ One winbar row sits above the text of every window. It shows, from the left, one
 blank, the path of the buffer, and a marker for a modified buffer. It shows the
 scroll position at the right edge.
 
-The path is relative to the directory that kvim started in, which is the
-workspace root that the file tree shows. A file outside that root keeps its
-complete path, because no relative path reaches it. A buffer that holds no file
+The path is relative to the explicit worktree root that the file tree shows. An
+outside path is rejected before a buffer opens. A buffer that holds no file
 shows its short name. A path that is too long for the row loses its start, and a
-`<` marks the cut, so the file name always stays visible. The cut counts
-terminal cells, so it never splits a wide character and never overflows the row.
+`<` marks the cut, so the file name always stays visible. The cut counts terminal
+cells, so it never splits a wide character or overflows the row.
 
 The scroll position reports where the visible rows sit inside the buffer, in
 three cells: `ALL` while the complete buffer fits, `TOP` while the first line is
@@ -451,6 +498,24 @@ because the editor reported nothing. See [`input-actions.md`](input-actions.md).
 
 ## Theme
 
+Public `kvim-ui` widgets accept explicit ratatui styles and semantic roles. They
+do not depend on the standalone `Theme` or on host-domain state. Which-key
+presentation consumes hints from the active shared resolver.
+
+Every render validates that its rectangle fits the supplied
+`ratatui::Buffer`. Invalid geometry returns a typed error before any cell
+changes. Rendering performs no input or output and writes only inside its area.
+
+`WhichKeyOverlay::render` therefore returns `Result<(), WhichKeyError>` and
+reports `WhichKeyError::Area`, and `SidebarState::render` reports
+`SidebarError::Area`, for a rectangle that names one cell outside the buffer.
+An empty rectangle names no cell, so every buffer accepts it. The check runs
+before the first write, because `ratatui::Buffer` panics on a cell outside its
+own rectangle, and a host that keeps a stale rectangle must read a typed error
+instead of a stopped process. One crate-private `fits` function in
+`crates/kvim-ui/src/layout.rs` owns the check, so both widgets and every later
+widget answer the same question once.
+
 The theme maps semantic roles to terminal styles. Call sites request a role,
 such as normal text, selection, search match, line number, active line number,
 window title, status text, or a syntax role. Call sites never name a raw color.
@@ -534,8 +599,8 @@ the same surface band.
 
 ### Syntax Roles
 
-Syntax roles are terminal-independent at the language boundary, so
-`kvim-language` owns the role set. The theme maps each role to one style. See
+Syntax roles are terminal-independent, so `kvim-syntax` owns the non-exhaustive
+role set. The standalone theme maps each current role to one style. See
 [`language-services.md`](language-services.md).
 
 The role set is: Attribute, Boolean, Bracket, Comment, Constant, Constructor,
@@ -543,7 +608,7 @@ Delimiter, Function, Keyword, Macro, Number, Operator, Parameter, Preprocessor,
 Property, Statement, String, Type, and Variable. The comment role and the
 keyword role also carry the italic modifier of the reference configuration.
 
-Add a new syntax role in `kvim-language`, then add its style here. The theme
+Add a new syntax role in `kvim-syntax`, then add its standalone style here. The theme
 holds the color; it never defines the role.
 
 ### Markup Roles

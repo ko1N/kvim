@@ -1,0 +1,18 @@
+[package]
+name = "kvim-ui"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[dependencies]
+# kvim crates
+kvim-keymap.workspace = true
+
+# Basics
+thiserror.workspace = true
+
+# Terminal
+ratatui.workspace = true
+unicode-width.workspace = true
+

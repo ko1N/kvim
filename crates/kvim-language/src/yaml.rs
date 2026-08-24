@@ -5,29 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the YAML adapter owns.
-const YAML_EXTENSIONS: [&str; 2] = ["yaml", "yml"];
-
-/// The complete file names that the YAML adapter owns.
-///
-/// Each name is a tool configuration that holds YAML and carries no extension,
-/// so the file-name key is the only key that selects it.
-const YAML_FILE_NAMES: [&str; 2] = [".clang-format", ".clang-tidy"];
-
-/// The language names that the YAML adapter answers to.
-///
-/// `yml` is the short form that a fence carries beside `yaml`.
-const YAML_LANGUAGE_NAMES: [&str; 2] = ["yaml", "yml"];
 
 /// The node kinds whose content takes one more indent level in YAML.
 ///
@@ -49,11 +36,6 @@ const YAML_INDENT_SCOPES: [&str; 4] = [
 /// A block collection closes with indentation alone, so the table names the
 /// brackets of the flow collections.
 const YAML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
-
-/// Returns the YAML grammar of the bundled parser.
-fn yaml_language() -> Language {
-    tree_sitter_yaml::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `yaml-language-server`.
 ///
@@ -115,39 +97,20 @@ impl YamlAdapter {
 }
 
 impl LanguageAdapter for YamlAdapter {
-    fn id(&self) -> &'static str {
-        "yaml"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("yaml").expect("the grammar-yaml feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &YAML_EXTENSIONS
-    }
-
-    fn file_names(&self) -> &'static [&'static str] {
-        &YAML_FILE_NAMES
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &YAML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // YAML defines a line comment alone.
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "yaml",
-            language: yaml_language,
-            highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

@@ -32,6 +32,32 @@ The composition root selects the implementation once, at startup, and injects
 it. The platform branch stays inside the `clipboard` module. The editor and the
 register logic contain no platform condition.
 
+## The Host Grants The Access
+
+A host names the clipboard policy, never the implementation. `ClipboardAccess`
+holds the two policies:
+
+- `ClipboardAccess::None` reaches no clipboard command at all. Every yank and
+  every put stays inside the registers of that editor. This is the default, so
+  no test and no host reaches the platform clipboard by accident.
+- `ClipboardAccess::System` reaches the clipboard command of this platform.
+
+`Session::with_clipboard` and `EmbeddedEditorBuilder::clipboard` accept the
+policy. The selection runs once, inside that call, because it reads the target
+platform and the executable search path. The `SessionClipboard` value stays
+private, so no host names a clipboard command, a selection, or an executor.
+
+The standalone `kvim` binary grants `ClipboardAccess::System`, which keeps the
+behavior that the editor always had. An embedded editor keeps the default until
+its host grants more.
+
+`Session` keeps the granted policy in one `clipboard_access` field, and
+`Session::clipboard_access` returns it. The field is not a second copy of a
+readable fact: `SessionClipboard` holds a boxed platform boundary and can report
+no policy, so this field is the only record of what the host granted. The
+accessor mirrors `Session::access` for the editor access policy, so a host reads
+back both grants through the same shape. Both stay.
+
 A later implementation, for example an OSC 52 clipboard for a remote terminal,
 joins the same trait and needs no change outside this module.
 

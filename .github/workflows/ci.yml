@@ -27,11 +27,9 @@ jobs:
         with:
           components: clippy, rustfmt
 
-      # The repository holds a rust-toolchain.toml that pins the development
-      # toolchain for the Nix shell. Rustup reads that file and it overrides
-      # the toolchain of this job. The variable keeps this job on the minimum
-      # supported version.
-      - name: Keep the job on the minimum supported Rust version
+      # Rustup reads rust-toolchain.toml and can override the toolchain selected
+      # by the action. Keep this job on the development and release version.
+      - name: Keep the job on the development Rust version
         run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
 
       - name: Check formatting
@@ -45,3 +43,161 @@ jobs:
 
       - name: Build release executable
         run: cargo build --release --all-features --locked
+
+  examples:
+    name: Examples (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Keep the job on the development Rust version
+        run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
+
+      # `docs/embedding.md` names these eight examples. Each one owns one public
+      # feature, needs no installed server, no network, and no terminal, and
+      # returns a failure exit code when its own assertions do not hold.
+      - name: Run every dedicated feature example
+        run: |
+          set -euo pipefail
+          cargo run --locked -p kvim-syntax --example highlight \
+            --no-default-features --features grammar-rust
+          cargo run --locked -p kvim-lsp --example lsp_diagnostics
+          cargo run --locked -p kvim-ui --example sidebar
+          cargo run --locked -p kvim-ui --example split_windows
+          cargo run --locked -p kvim-ui --example which_key
+          cargo run --locked -p kvim-tui --example embedded_editor
+          cargo run --locked -p kvim-tui --example host_workspace
+          cargo run --locked -p kvim-tui --example worktree_diff_review
+
+      - name: Check that every feature module names its own example
+        run: cargo test --locked -p kvim --test repository_policy
+
+      # Every module link to an example is a plain path, so `cargo doc` cannot
+      # resolve it. The policy test above owns that resolution. This step owns
+      # the intra-doc links of the same documentation.
+      - name: Check that every rustdoc link resolves
+        env:
+          RUSTDOCFLAGS: -D warnings
+        run: cargo doc --locked --workspace --no-deps --all-features
+
+  boundaries:
+    name: Boundaries (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Keep the job on the development Rust version
+        run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
+
+      # The script reads the layer table of `docs/architecture.md`, so the
+      # architecture stays the only source of the permitted edges.
+      - name: Reject every forbidden dependency edge
+        run: ./scripts/check-dependency-edges.sh
+
+      # `docs/architecture.md` requires a syntax-only consumer to compile no
+      # LSP, no ratatui, and no editor. These builds prove that the crate stays
+      # usable with no grammar and with one grammar alone.
+      - name: Check the syntax package without a grammar and with one grammar
+        run: |
+          set -euo pipefail
+          cargo check --locked -p kvim-syntax --no-default-features
+          cargo check --locked -p kvim-syntax --no-default-features --features grammar-rust
+          cargo check --locked -p kvim-syntax --no-default-features --features all-grammars
+
+      # `docs/architecture.md` keeps `kvim-lsp` at layer 2. A consumer that wants
+      # diagnostics alone must therefore compile no terminal interface and no
+      # editor state.
+      - name: Prove the LSP package compiles no interface and no full editor
+        run: >-
+          ./scripts/check-dependency-edges.sh --reject kvim-lsp
+          crossterm kvim-core kvim-editor kvim-tui kvim-ui ratatui
+
+      # `kvim-ui` owns geometry, sidebars, which-key presentation, and host
+      # composition. It stores one opaque surface identity, never buffer text.
+      - name: Prove the interface package compiles no editor buffer
+        run: >-
+          ./scripts/check-dependency-edges.sh --reject kvim-ui
+          kvim-core kvim-editor kvim-language kvim-lsp kvim-workspace
+
+  external-consumer:
+    name: External consumer (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      # Cargo clones the checkout as one Git dependency, so the checkout must
+      # hold complete history rather than one shallow commit.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Rust 1.97.1
+        uses: dtolnay/rust-toolchain@1.97.1
+
+      - name: Keep the job on the development Rust version
+        run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
+
+      # The fixture is its own workspace root and reaches the packages through
+      # one revision-pinned Git dependency, exactly like an outside repository.
+      - name: Compile the external consumer over the public feature matrix
+        run: ./scripts/check-external-consumer.sh
+
+  msrv:
+    name: MSRV (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      # The consumer check below clones this checkout as one Git dependency, so
+      # the checkout must hold complete history rather than one shallow commit.
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Check workspace with the minimum supported Rust version
+        run: nix develop .#msrv -c cargo check --workspace --all-targets --locked
+
+      - name: Test workspace libraries with the minimum supported Rust version
+        run: nix develop .#msrv -c cargo test --workspace --lib --tests --locked
+
+      # The declared minimum only holds when an outside repository can also
+      # build the packages with it.
+      - name: Compile the external consumer with the minimum supported Rust version
+        run: nix develop .#msrv -c ./scripts/check-external-consumer.sh

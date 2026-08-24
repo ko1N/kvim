@@ -4,21 +4,16 @@
 //! that it owns, the Tree-sitter grammar with its highlight query, the comment
 //! metadata, and the indent rule. See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule, LanguageAdapter,
-    LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule, LanguageAdapter,
+    LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the TOML adapter owns.
-const TOML_EXTENSIONS: [&str; 1] = ["toml"];
-
-/// The language names that the TOML adapter answers to.
-const TOML_LANGUAGE_NAMES: [&str; 1] = ["toml"];
 
 /// The node kinds whose content takes one more indent level in TOML.
 ///
@@ -28,11 +23,6 @@ const TOML_INDENT_SCOPES: [&str; 2] = ["array", "inline_table"];
 
 /// The characters that close a TOML indent scope.
 const TOML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
-
-/// Returns the TOML grammar of the bundled parser.
-fn toml_language() -> Language {
-    tree_sitter_toml_ng::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `taplo`.
 ///
@@ -95,34 +85,19 @@ impl TomlAdapter {
 }
 
 impl LanguageAdapter for TomlAdapter {
-    fn id(&self) -> &'static str {
-        "toml"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("toml").expect("the grammar-toml feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &TOML_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &TOML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "toml",
-            language: toml_language,
-            highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

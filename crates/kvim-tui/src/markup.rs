@@ -455,7 +455,8 @@ mod tests {
 
     use kvim_core::TextBuffer;
     use kvim_language::{
-        AnalysisInput, HighlightSpan, LanguageRegistry, MarkupDocument, MarkupRole, SyntaxRole,
+        AnalysisInput, HighlightSpan, LanguageRegistry, MarkupDocument, MarkupRole,
+        SyntaxHighlighter, SyntaxRole,
     };
     use kvim_settings::FileSettings;
 
@@ -476,7 +477,9 @@ mod tests {
     /// reaches this crate, so the helper takes the document that the float
     /// paints and never the parse alone.
     fn rows(source: &str, cells: usize) -> Vec<FloatLine> {
-        let document = MarkupDocument::parse(source).highlighted(LanguageRegistry::first_release());
+        let mut highlighter = SyntaxHighlighter::new();
+        let document = MarkupDocument::parse(source)
+            .highlighted(LanguageRegistry::first_release(), &mut highlighter);
         markup_lines(&document, cells)
     }
 
@@ -501,6 +504,7 @@ mod tests {
             .expect("the Rust adapter owns a .rs path")
             .analyze(
                 &AnalysisInput::new(version, Arc::from(source)),
+                &mut SyntaxHighlighter::new(),
                 &CancellationToken::new(),
             )
             .expect("the test source stays inside every bound")

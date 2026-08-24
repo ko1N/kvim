@@ -10,6 +10,8 @@
 use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+
 use super::buffer::BufferId;
 use super::fuzzy::score_candidate;
 
@@ -142,6 +144,8 @@ pub struct Candidate {
     name: String,
     /// The directory of the file, relative to the workspace root.
     directory: String,
+    /// The validated worktree path used by a file preview.
+    relative: Option<WorktreeRelativePath>,
     /// What the accepted row opens.
     target: CandidateTarget,
 }
@@ -149,11 +153,13 @@ pub struct Candidate {
 impl Candidate {
     /// Creates one candidate for one workspace file.
     #[must_use]
-    pub fn file(root: &Path, path: PathBuf) -> Self {
-        let (name, directory) = split_path(root, &path);
+    pub fn file(root: &WorktreeRoot, relative: WorktreeRelativePath) -> Self {
+        let path = root.as_path().join(relative.as_path());
+        let (name, directory) = split_path(root.as_path(), &path);
         Self {
             name,
             directory,
+            relative: Some(relative),
             target: CandidateTarget::File { path },
         }
     }
@@ -163,16 +169,18 @@ impl Candidate {
     /// The line and the column are zero-based, as every editor position is.
     #[must_use]
     pub fn matched(
-        root: &Path,
-        path: PathBuf,
+        root: &WorktreeRoot,
+        relative: WorktreeRelativePath,
         line: usize,
         byte_column: usize,
         text: &str,
     ) -> Self {
-        let (name, directory) = split_path(root, &path);
+        let path = root.as_path().join(relative.as_path());
+        let (name, directory) = split_path(root.as_path(), &path);
         Self {
             name,
             directory,
+            relative: Some(relative),
             target: CandidateTarget::Match {
                 path,
                 line,
@@ -189,6 +197,7 @@ impl Candidate {
         Self {
             name: name.to_owned(),
             directory,
+            relative: None,
             target: CandidateTarget::Buffer { buffer },
         }
     }
@@ -214,13 +223,18 @@ impl Candidate {
     /// # Examples
     ///
     /// ```
-    /// use std::path::{Path, PathBuf};
+    /// use std::path::Path;
     ///
+    /// use kvim_path::{WorktreeRelativePath, WorktreeRoot};
     /// use kvim_workspace::Candidate;
     ///
-    /// let root = Path::new("/workspace");
-    /// let candidate = Candidate::file(root, PathBuf::from("/workspace/src/main.rs"));
+    /// let root = WorktreeRoot::open(std::env::current_dir()?)?;
+    /// let candidate = Candidate::file(
+    ///     &root,
+    ///     WorktreeRelativePath::new("src/main.rs")?,
+    /// );
     /// assert_eq!(candidate.relative_path(), Path::new("src").join("main.rs"));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     #[must_use]
     pub fn relative_path(&self) -> PathBuf {
@@ -259,12 +273,17 @@ impl Candidate {
 
     /// Returns the file and the region that the preview of this row shows.
     #[must_use]
-    pub fn preview(&self) -> Option<(&Path, PreviewTarget)> {
+    pub fn preview(&self) -> Option<(&WorktreeRelativePath, &Path, PreviewTarget)> {
+        let relative = self.relative.as_ref()?;
         match &self.target {
-            CandidateTarget::File { path } => Some((path.as_path(), PreviewTarget::Start)),
-            CandidateTarget::Match { path, line, .. } => {
-                Some((path.as_path(), PreviewTarget::Match { line: *line }))
+            CandidateTarget::File { path } => {
+                Some((relative, path.as_path(), PreviewTarget::Start))
             }
+            CandidateTarget::Match { path, line, .. } => Some((
+                relative,
+                path.as_path(),
+                PreviewTarget::Match { line: *line },
+            )),
             // A loaded buffer already holds its text, so it needs no file read.
             CandidateTarget::Buffer { .. } => None,
         }
@@ -338,16 +357,15 @@ enum Step {
 /// # Examples
 ///
 /// ```
-/// use std::path::{Path, PathBuf};
-///
+/// use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 /// use kvim_workspace::{Candidate, Picker, PickerKind};
 ///
-/// let root = Path::new("/workspace");
-/// let mut picker = Picker::new(PickerKind::Files, root.to_path_buf());
+/// let root = WorktreeRoot::open(std::env::current_dir()?)?;
+/// let mut picker = Picker::new(PickerKind::Files, root.as_path().to_path_buf());
 /// picker.set_candidates(
 ///     vec![
-///         Candidate::file(root, PathBuf::from("/workspace/src/main.rs")),
-///         Candidate::file(root, PathBuf::from("/workspace/README.md")),
+///         Candidate::file(&root, WorktreeRelativePath::new("src/main.rs")?),
+///         Candidate::file(&root, WorktreeRelativePath::new("README.md")?),
 ///     ],
 ///     false,
 /// );
@@ -357,6 +375,7 @@ enum Step {
 /// let selected = picker.selected().expect("one candidate holds the query");
 /// assert_eq!(selected.name(), "main.rs");
 /// assert_eq!(selected.directory(), "src");
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[derive(Debug)]
 pub struct Picker {
@@ -534,17 +553,17 @@ impl Picker {
 /// # Examples
 ///
 /// ```
-/// use std::path::{Path, PathBuf};
-///
+/// use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 /// use kvim_workspace::{Candidate, rank_candidates};
 ///
-/// let root = Path::new("/workspace");
+/// let root = WorktreeRoot::open(std::env::current_dir()?)?;
 /// let candidates = [
-///     Candidate::file(root, PathBuf::from("/workspace/src/session.rs")),
-///     Candidate::file(root, PathBuf::from("/workspace/src/main.rs")),
+///     Candidate::file(&root, WorktreeRelativePath::new("src/session.rs")?),
+///     Candidate::file(&root, WorktreeRelativePath::new("src/main.rs")?),
 /// ];
 /// assert_eq!(rank_candidates("main", &candidates), [1]);
 /// assert_eq!(rank_candidates("", &candidates), [0, 1]);
+/// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[must_use]
 pub fn rank_candidates(query: &str, candidates: &[Candidate]) -> Vec<usize> {
@@ -568,22 +587,28 @@ pub fn rank_candidates(query: &str, candidates: &[Candidate]) -> Vec<usize> {
 
 #[cfg(test)]
 mod tests {
-    use std::path::{Path, PathBuf};
+    use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 
     use super::{Acceptance, BufferId, Candidate, Picker, PickerKind, PreviewTarget};
+    use crate::temp::TempDir;
 
-    /// The workspace root of every test picker.
-    fn root() -> PathBuf {
-        PathBuf::from("/workspace")
+    fn root(label: &str) -> (TempDir, WorktreeRoot) {
+        let directory = TempDir::new(label);
+        let root = WorktreeRoot::open(&directory.path).expect("the fixture root exists");
+        (directory, root)
+    }
+
+    fn file(root: &WorktreeRoot, path: &str) -> Candidate {
+        Candidate::file(
+            root,
+            WorktreeRelativePath::new(path).expect("the fixture path is valid"),
+        )
     }
 
     fn picker(names: &[&str]) -> Picker {
-        let root = root();
-        let mut picker = Picker::new(PickerKind::Files, root.clone());
-        let candidates = names
-            .iter()
-            .map(|name| Candidate::file(&root, root.join(name)))
-            .collect();
+        let (_directory, root) = root("picker");
+        let mut picker = Picker::new(PickerKind::Files, root.as_path().to_path_buf());
+        let candidates = names.iter().map(|name| file(&root, name)).collect();
         picker.set_candidates(candidates, false);
         picker
     }
@@ -599,7 +624,8 @@ mod tests {
 
     #[test]
     fn the_row_shows_the_filename_before_its_directory() {
-        let candidate = Candidate::file(&root(), root().join("src/tui/picker.rs"));
+        let (_directory, root) = root("picker-row");
+        let candidate = file(&root, "src/tui/picker.rs");
         assert_eq!(candidate.row(), "picker.rs  src/tui");
         assert_eq!(candidate.name(), "picker.rs");
         assert_eq!(candidate.directory(), "src/tui");
@@ -607,13 +633,19 @@ mod tests {
 
     #[test]
     fn a_matched_row_shows_the_line_and_its_text() {
-        let candidate =
-            Candidate::matched(&root(), root().join("src/main.rs"), 41, 4, "  fn main()");
+        let (_directory, root) = root("picker-match");
+        let candidate = Candidate::matched(
+            &root,
+            WorktreeRelativePath::new("src/main.rs").expect("the fixture path is valid"),
+            41,
+            4,
+            "  fn main()",
+        );
         assert_eq!(candidate.row(), "main.rs:42  src  fn main()");
         assert_eq!(
             candidate.acceptance(),
             Acceptance::OpenFile {
-                path: root().join("src/main.rs"),
+                path: root.as_path().join("src/main.rs"),
                 line: 41,
                 byte_column: 4,
             }
@@ -693,10 +725,10 @@ mod tests {
 
     #[test]
     fn a_candidate_list_above_the_bound_reports_the_truncation() {
-        let root = root();
-        let mut picker = Picker::new(PickerKind::Files, root.clone());
+        let (_directory, root) = root("picker-bound");
+        let mut picker = Picker::new(PickerKind::Files, root.as_path().to_path_buf());
         let candidates = (0..super::PICKER_CANDIDATES_MAX + 8)
-            .map(|index| Candidate::file(&root, root.join(format!("file{index}.rs"))))
+            .map(|index| file(&root, &format!("file{index}.rs")))
             .collect();
         picker.set_candidates(candidates, false);
         assert!(picker.is_truncated());
@@ -715,23 +747,31 @@ mod tests {
 
     #[test]
     fn a_file_candidate_previews_the_start_and_marks_no_line() {
-        let candidate = Candidate::file(&root(), root().join("a.rs"));
-        let (path, target) = candidate.preview().expect("a file row shows a preview");
-        assert_eq!(path, root().join("a.rs"));
+        let (_directory, root) = root("picker-preview");
+        let candidate = file(&root, "a.rs");
+        let (_, path, target) = candidate.preview().expect("a file row shows a preview");
+        assert_eq!(path, root.as_path().join("a.rs"));
         assert_eq!(target, PreviewTarget::Start);
         assert!(!target.marks(0), "a file row marks no line");
 
-        let matched = Candidate::matched(&root(), root().join("a.rs"), 4, 0, "text");
-        let (_, target) = matched.preview().expect("a match row shows a preview");
+        let matched = Candidate::matched(
+            &root,
+            WorktreeRelativePath::new("a.rs").expect("the fixture path is valid"),
+            4,
+            0,
+            "text",
+        );
+        let (_, _, target) = matched.preview().expect("a match row shows a preview");
         assert!(target.marks(4), "a match row marks its own line");
     }
 
     #[test]
     fn a_buffer_candidate_needs_no_file_read() {
+        let (_directory, root) = root("picker-buffer");
         let candidate = Candidate::buffer(
-            &root(),
+            root.as_path(),
             BufferId::new(3),
-            Some(Path::new("/workspace/src/main.rs")),
+            Some(&root.as_path().join("src/main.rs")),
             "main.rs",
         );
         assert_eq!(candidate.preview(), None);

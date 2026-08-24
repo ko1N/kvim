@@ -7,6 +7,9 @@
 //! `docs/responsiveness.md`.
 
 use std::path::PathBuf;
+use std::sync::Arc;
+
+use kvim_path::{WorktreeDirectoryPath, WorktreeRoot};
 
 use super::mutation::{
     FileOperation, MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite,
@@ -18,8 +21,8 @@ use super::tree::{self, DirectoryListing, ReadError};
 pub struct MutateRequest {
     /// The operation that the user asked for.
     pub operation: FileOperation,
-    /// The workspace root. Every affected path must stay inside it.
-    pub root: PathBuf,
+    /// The capability root that owns every affected path.
+    pub root: Arc<WorktreeRoot>,
     /// The loaded buffers that the mutation can affect.
     pub buffers: Vec<OpenBuffer>,
     /// The destinations that one confirmed answer approved.
@@ -34,8 +37,10 @@ pub struct MutateRequest {
 pub enum WorkspaceRequest {
     /// Read one directory for the file tree.
     ReadDirectory {
-        /// The directory to read.
-        path: PathBuf,
+        /// The root capability used for this read.
+        root: Arc<WorktreeRoot>,
+        /// The validated directory at or below the root.
+        path: WorktreeDirectoryPath,
     },
     /// Validate and apply one workspace mutation.
     Mutate(MutateRequest),
@@ -59,15 +64,28 @@ pub enum WorkspaceResult {
 }
 
 impl WorkspaceRequest {
+    /// Reports whether the operation changes the workspace.
+    ///
+    /// A caller that reserved the mandatory event of a durable change submits a
+    /// committing request, so a cancellation can never release that reservation
+    /// after the mutation reached the filesystem. See `docs/embedding.md`.
+    #[must_use]
+    pub const fn commits(&self) -> bool {
+        match self {
+            Self::Mutate(_) => true,
+            Self::ReadDirectory { .. } => false,
+        }
+    }
+
     /// Runs the operation and returns its complete typed result.
     ///
     /// The call blocks. Run it on the bounded worker service only.
     #[must_use]
     pub fn run(self) -> WorkspaceResult {
         match self {
-            Self::ReadDirectory { path } => WorkspaceResult::Directory {
-                outcome: tree::read_directory(&path),
-                path,
+            Self::ReadDirectory { root, path } => WorkspaceResult::Directory {
+                outcome: tree::read_directory(&root, &path),
+                path: path.display_path(&root),
             },
             Self::Mutate(request) => WorkspaceResult::Mutated {
                 outcome: MutationPlan::stage_with(

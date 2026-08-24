@@ -5,24 +5,39 @@
 //! session. See `docs/responsiveness.md`.
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer as CellBuffer;
+use ratatui::layout::Position;
 
 use kvim_editor::{Cursor, WindowState};
 use kvim_input::Mode;
+use kvim_ui::RegionKind;
 
 use super::buffer_view::{BracketHighlight, WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
-use super::layout::RegionKind;
 use super::overlay::{render_completion, render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::session::Visible;
 use super::theme::ThemeRole;
 use super::tree::render_tree;
 
-/// Renders one complete frame.
+/// Renders one complete frame and applies the cursor of that frame.
+///
+/// The terminal owns its cursor, so the standalone adapter applies the request
+/// that [`draw`] returns.
 pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
+    if let Some(position) = draw(frame.buffer_mut(), view) {
+        frame.set_cursor_position(position);
+    }
+}
+
+/// Renders one complete frame into the supplied cells.
+///
+/// The caller validated that every band of `view.area` fits inside the buffer,
+/// so this function writes no cell outside that rectangle. It returns the one
+/// cursor cell of the frame instead of moving a terminal cursor.
+pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Position> {
     let bands = shell_areas(view.area);
     let theme = view.theme;
-    let target = frame.buffer_mut();
     target.set_style(view.area, theme.style(ThemeRole::Text));
 
     let focused = view.windows.focused_window();
@@ -43,7 +58,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         .map_or(0, |search| search.query.text().chars().count());
     for region in view.windows.layout().regions() {
         match region.kind {
-            RegionKind::Editor => {
+            RegionKind::Surface => {
                 let Some(state) = view.windows.state(region.id) else {
                     debug_assert!(false, "every editor region belongs to one leaf window");
                     continue;
@@ -190,7 +205,5 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
     let picker_cursor = view
         .picker
         .and_then(|picker| render_picker(target, view.area, theme, picker));
-    if let Some(position) = picker_cursor.or(sidebar_cursor).or(cursor_at) {
-        frame.set_cursor_position(position);
-    }
+    picker_cursor.or(sidebar_cursor).or(cursor_at)
 }

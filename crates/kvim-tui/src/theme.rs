@@ -357,6 +357,9 @@ impl Theme {
 ///
 /// The comment role and the keyword role carry the italic modifier of the
 /// reference configuration. Every other role carries a color only.
+///
+/// The role vocabulary is non-exhaustive, so a role that a later release of
+/// `kvim-syntax` adds paints as plain text until this theme names it.
 fn syntax_style(role: SyntaxRole) -> Style {
     let style = Style::new();
     match role {
@@ -375,6 +378,7 @@ fn syntax_style(role: SyntaxRole) -> Style {
         SyntaxRole::String => style.fg(SYNTAX_STRING),
         SyntaxRole::Type => style.fg(SYNTAX_TYPE),
         SyntaxRole::Variable => style.fg(TEXT),
+        _ => style.fg(TEXT),
     }
 }
 

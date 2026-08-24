@@ -5,21 +5,16 @@
 //! metadata, the indent rule, the language servers, and the external formatter.
 //! See `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, Grammar, IndentRule,
-    LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    BlockComment, CommentStyle, FormatterArgument, FormatterDeclaration, IndentRule,
+    LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the HTML adapter owns.
-const HTML_EXTENSIONS: [&str; 2] = ["htm", "html"];
-
-/// The language names that the HTML adapter answers to.
-const HTML_LANGUAGE_NAMES: [&str; 1] = ["html"];
 
 /// The node kinds whose content takes one more indent level in HTML.
 ///
@@ -36,11 +31,6 @@ const HTML_INDENT_SCOPES: [&str; 3] = ["element", "script_element", "style_eleme
 /// that holds an end tag reports one indent level too many. The user corrects
 /// that line, exactly as the documented limit of the Python indent rule works.
 const HTML_CLOSING_DELIMITERS: [char; 0] = [];
-
-/// Returns the HTML grammar of the bundled parser.
-fn html_language() -> Language {
-    tree_sitter_html::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `vscode-html-language-server`.
 ///
@@ -104,36 +94,21 @@ impl HtmlAdapter {
 }
 
 impl LanguageAdapter for HtmlAdapter {
-    fn id(&self) -> &'static str {
-        "html"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("html").expect("the grammar-html feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &HTML_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &HTML_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // HTML defines a block comment alone, so the metadata carries no line
         // token and the first-release toggle stays disabled.
         CommentStyle::new(None, Some(BlockComment::new("<!--", "-->")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "html",
-            language: html_language,
-            highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

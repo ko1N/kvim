@@ -5,32 +5,16 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    BlockComment, CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration,
-    ServerFormatting,
+    BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry,
+    LanguageServerDeclaration, ServerFormatting,
 };
-
-/// The file extensions that the assembly adapter owns.
-///
-/// The two source extensions are distinct files by convention: the C
-/// preprocessor runs over `S` and never over `s`. The match is case-sensitive,
-/// so the adapter names both.
-const ASM_EXTENSIONS: [&str; 3] = ["S", "asm", "s"];
-
-/// The language names that the assembly adapter answers to.
-///
-/// `assembly` is the long form of the same name.
-const ASM_LANGUAGE_NAMES: [&str; 2] = ["asm", "assembly"];
-
-/// Returns the assembly grammar of the bundled parser.
-fn asm_language() -> Language {
-    tree_sitter_asm::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `asm-lsp`.
 ///
@@ -87,20 +71,15 @@ impl AsmAdapter {
 }
 
 impl LanguageAdapter for AsmAdapter {
-    fn id(&self) -> &'static str {
-        "asm"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("asm").expect("the grammar-asm feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
-    }
-
-    fn extensions(&self) -> &'static [&'static str] {
-        &ASM_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &ASM_LANGUAGE_NAMES
     }
 
     fn comment(&self) -> CommentStyle {
@@ -110,16 +89,6 @@ impl LanguageAdapter for AsmAdapter {
         // token of that assembler. The same assembler reads the C block
         // comment on every target.
         CommentStyle::new(Some("#"), Some(BlockComment::new("/*", "*/")))
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "asm",
-            language: asm_language,
-            highlights_query: tree_sitter_asm::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {

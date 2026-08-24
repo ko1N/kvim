@@ -17,11 +17,18 @@ test-support = []
 [dependencies]
 # kvim crates
 kvim-core.workspace = true
+kvim-path.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true
 
 # Basics
 thiserror.workspace = true
+
+# Filesystem confinement
+cap-std.workspace = true
+
+# Review identity
+blake3.workspace = true
 
 # Runtime
 tokio-util.workspace = true

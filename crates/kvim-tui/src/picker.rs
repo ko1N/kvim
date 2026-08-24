@@ -14,13 +14,14 @@
 //! [`PREVIEW_WIDTH_PERCENT`] of the width. No region carries a divider glyph.
 //! One blank row and one blank column separate them. See `docs/windows.md`.
 
-use std::path::PathBuf;
+use std::sync::Arc;
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use kvim_input::PromptKind;
+use kvim_path::WorktreeRoot;
 use kvim_workspace::{
     Acceptance, Candidate, Picker, PickerKind, PickerRequest, PickerResult, PickerSlot, Preview,
     PreviewKey,
@@ -61,6 +62,9 @@ const TRUNCATED_NOTE: &str = "the result list stops at an editor limit";
 
 /// The message that a failed preview shows.
 const NO_PREVIEW_NOTE: &str = "no preview";
+
+/// The message that a clipped preview shows.
+const PREVIEW_TRUNCATED_NOTE: &str = "preview stops at an editor limit";
 
 /// The message that a missing ripgrep command shows.
 pub(super) const RIPGREP_MISSING_NOTE: &str =
@@ -150,6 +154,7 @@ pub(super) fn picker_areas(area: Rect) -> PickerAreas {
 /// The open picker of one editor.
 #[derive(Debug)]
 pub(super) struct PickerState {
+    root: Arc<WorktreeRoot>,
     picker: Picker,
     /// The candidate request that waits for the event loop.
     source_outbox: Option<PickerRequest>,
@@ -171,9 +176,11 @@ impl PickerState {
     /// The buffer picker receives its candidates at once, because the loaded
     /// buffer list needs no filesystem work. The file picker asks for one
     /// workspace walk, and the search picker waits for the first query.
-    pub(super) fn open(kind: PickerKind, root: PathBuf, buffers: Vec<Candidate>) -> Self {
+    pub(super) fn open(kind: PickerKind, root: Arc<WorktreeRoot>, buffers: Vec<Candidate>) -> Self {
+        let root_path = root.as_path().to_path_buf();
         let mut state = Self {
-            picker: Picker::new(kind, root.clone()),
+            root: Arc::clone(&root),
+            picker: Picker::new(kind, root_path),
             source_outbox: None,
             preview_outbox: None,
             preview: None,
@@ -271,7 +278,14 @@ impl PickerState {
                 }
                 self.preview_pending = None;
                 match outcome {
-                    Ok(preview) => self.preview = Some((key, preview)),
+                    Ok(preview) => {
+                        let truncated = preview.truncated;
+                        self.preview = Some((key, preview));
+                        self.publish_notice();
+                        if truncated && self.notice.is_none() {
+                            self.notice = Some(PREVIEW_TRUNCATED_NOTE);
+                        }
+                    }
                     Err(_) => {
                         self.preview = None;
                         self.notice = Some(NO_PREVIEW_NOTE);
@@ -334,7 +348,7 @@ impl PickerState {
             return;
         }
         self.source_outbox = Some(PickerRequest::Search {
-            root: self.picker.root().to_path_buf(),
+            root: Arc::clone(&self.root),
             query,
         });
     }
@@ -344,14 +358,13 @@ impl PickerState {
     /// A selection that already holds its preview, and a selection whose
     /// preview already runs, need no further request.
     fn refresh_preview(&mut self) {
-        let key = self
-            .picker
-            .selected()
-            .and_then(Candidate::preview)
-            .map(|(path, target)| PreviewKey {
-                path: path.to_path_buf(),
-                target,
-            });
+        let key =
+            self.picker
+                .selected()
+                .and_then(Candidate::preview)
+                .map(|(relative, _, target)| {
+                    PreviewKey::new(Arc::clone(&self.root), relative.clone(), target)
+                });
         let Some(key) = key else {
             self.preview = None;
             self.preview_pending = None;
@@ -521,8 +534,8 @@ fn render_preview(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
     let Some((key, preview)) = state.preview() else {
         return;
     };
-    let name = key.path.file_name().map_or_else(
-        || key.path.display().to_string(),
+    let name = key.path().file_name().map_or_else(
+        || key.path().display().to_string(),
         |name| name.to_string_lossy().into_owned(),
     );
     let title = format!(" {name} ");
@@ -552,7 +565,7 @@ fn render_preview(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
         };
         let number = preview.first_line.saturating_add(usize::from(offset));
         // Only a search row marks one line, so a file preview shows plain text.
-        let style = if key.target.marks(number) {
+        let style = if key.target().marks(number) {
             theme
                 .style(ThemeRole::Text)
                 .patch(theme.style(ThemeRole::CurrentSearchMatch))

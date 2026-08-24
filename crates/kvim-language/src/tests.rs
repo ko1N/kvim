@@ -11,15 +11,18 @@ use kvim_runtime::{ProcessOutput, PublicationGate, RequestSlot, Runtime, Runtime
 use kvim_settings::FileSettings;
 
 use super::formatter::declaration_is_valid;
+use kvim_syntax::NeverCancelled;
+
 use super::server::declarations_are_valid;
 use super::{
     ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_SOURCE_BYTES_MAX,
     ANALYSIS_SOURCE_LINES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax,
     CommentStyle, FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX,
     FormattedDocument, FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest,
-    Grammar, IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX,
-    LanguageAdapter, LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter, Publication,
-    RustAdapter, ServerFormatting, SyntaxRole, SyntaxTree,
+    Grammar, HighlightLimits, IndentRule, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX,
+    LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageCatalogEntry, LanguageFormatter,
+    LanguageRegistry, MarkdownAdapter, NixAdapter, Publication, RustAdapter, ServerFormatting,
+    SyntaxHighlighter, SyntaxRole, SyntaxTree,
 };
 
 /// A second adapter that proves the multi-language seam.
@@ -30,25 +33,32 @@ use super::{
 #[derive(Clone, Copy, Debug)]
 struct SecondAdapter;
 
+/// The extensions of the second language.
+static SECOND_EXTENSIONS: [&str; 1] = ["kv"];
+
+/// The catalog entry of the second language.
+static SECOND_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("second", &[], &SECOND_EXTENSIONS, &[], second_grammar);
+
+/// Returns the grammar of the second language.
+///
+/// The language reuses the bundled Rust grammar, because this release adds no
+/// second grammar.
+fn second_grammar() -> Grammar {
+    RustAdapter::new().grammar()
+}
+
 impl LanguageAdapter for SecondAdapter {
-    fn id(&self) -> &'static str {
-        "second"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        &SECOND_CATALOG
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &["kv"]
-    }
-
     fn comment(&self) -> CommentStyle {
         CommentStyle::new(Some("#"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        RustAdapter::new().grammar()
     }
 
     fn indent_rule(&self) -> IndentRule {
@@ -84,14 +94,22 @@ fn buffer(text: &str) -> TextBuffer {
 fn analyze(buffer: &TextBuffer) -> Analysis {
     let input = AnalysisInput::new(buffer.version(), Arc::from(buffer.to_string()));
     rust()
-        .analyze(&input, &CancellationToken::new())
+        .analyze(
+            &input,
+            &mut SyntaxHighlighter::new(),
+            &CancellationToken::new(),
+        )
         .expect("the test source stays inside every bound")
 }
 
 /// Analyzes one source text and returns the typed failure.
 fn analysis_error(source: &str) -> AnalysisError {
     let input = AnalysisInput::new(buffer("").version(), Arc::from(source));
-    match rust().analyze(&input, &CancellationToken::new()) {
+    match rust().analyze(
+        &input,
+        &mut SyntaxHighlighter::new(),
+        &CancellationToken::new(),
+    ) {
         Err(error) => error,
         Ok(_) => panic!("the test source must pass one bound"),
     }
@@ -104,7 +122,11 @@ fn analyze_path(path: &str, source: &str) -> Analysis {
     LanguageRegistry::first_release()
         .adapter(Path::new(path))
         .expect("the registry serves the path")
-        .analyze(&input, &CancellationToken::new())
+        .analyze(
+            &input,
+            &mut SyntaxHighlighter::new(),
+            &CancellationToken::new(),
+        )
         .expect("the test source stays inside every bound")
 }
 
@@ -183,12 +205,14 @@ fn an_incremental_reparse_reuses_the_unchanged_part_of_the_tree() {
     let incremental = rust()
         .analyze(
             &AnalysisInput::new(text.version(), Arc::clone(&source)).reusing(moved),
+            &mut SyntaxHighlighter::new(),
             &CancellationToken::new(),
         )
         .expect("the source stays inside every bound");
     let complete = rust()
         .analyze(
             &AnalysisInput::new(text.version(), source),
+            &mut SyntaxHighlighter::new(),
             &CancellationToken::new(),
         )
         .expect("the source stays inside every bound");
@@ -365,7 +389,9 @@ fn a_cancelled_request_returns_no_result() {
     cancellation.cancel();
 
     assert_eq!(
-        rust().analyze(&input, &cancellation).unwrap_err(),
+        rust()
+            .analyze(&input, &mut SyntaxHighlighter::new(), &cancellation)
+            .unwrap_err(),
         AnalysisError::Cancelled
     );
 }
@@ -436,7 +462,7 @@ async fn the_worker_service_runs_one_analysis_off_the_event_loop() {
 
     runtime
         .submit_worker(request, ANALYSIS_DEADLINE, move |cancellation| {
-            adapter.analyze(&input, &cancellation)
+            adapter.analyze(&input, &mut SyntaxHighlighter::new(), &cancellation)
         })
         .expect("the worker service holds one free permit");
     let event = events
@@ -474,7 +500,11 @@ fn a_second_adapter_adds_a_language_without_a_change_above_the_trait() {
     let text = buffer("fn main() {\n}\n");
     let input = AnalysisInput::new(text.version(), Arc::from(text.to_string()));
     let analysis = second
-        .analyze(&input, &CancellationToken::new())
+        .analyze(
+            &input,
+            &mut SyntaxHighlighter::new(),
+            &CancellationToken::new(),
+        )
         .expect("the source stays inside every bound");
     assert!(!analysis.highlights().is_empty());
     assert_eq!(analysis.indent_level(11).unwrap().get(), 1);
@@ -549,6 +579,36 @@ fn every_registered_adapter_declares_a_valid_server_table() {
             "the {id} adapter names at most one server that formats its buffers",
         );
     }
+}
+
+#[test]
+fn every_registered_adapter_highlights_through_its_catalog_entry() {
+    // One highlighter serves every adapter of the registry, so this sweep
+    // proves that each grammar of the build still compiles and that the shared
+    // cache keeps one compiled query for each language.
+    let mut highlighter = SyntaxHighlighter::new();
+    let adapters = LanguageRegistry::first_release().adapters();
+    for adapter in adapters {
+        let entry = adapter.catalog();
+        let id = entry.id();
+        assert_eq!(
+            id,
+            adapter.id(),
+            "the {id} adapter and its catalog entry answer to one identifier",
+        );
+        // Every grammar reads an empty fragment, so the sweep compiles the
+        // query of each language without depending on its syntax.
+        highlighter
+            .highlight(entry, "", &HighlightLimits::default(), &NeverCancelled)
+            .unwrap_or_else(|failure| {
+                panic!("the {id} grammar compiles its highlight query: {failure}")
+            });
+    }
+    assert_eq!(
+        highlighter.cached_languages(),
+        adapters.len(),
+        "the shared cache keeps one compiled query for each registered language",
+    );
 }
 
 #[test]

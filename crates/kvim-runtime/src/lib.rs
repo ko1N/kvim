@@ -38,8 +38,8 @@ mod tests;
 pub use watch::{
     FileWatcher, WATCH_BATCH_DIRECTORIES_MAX, WATCH_BATCH_QUEUE_MAX, WATCH_BURST_EVENTS_MAX,
     WATCH_COALESCE_WINDOW, WATCH_DEPTH_MAX, WATCH_DIRECTORIES_MAX, WATCH_DIRECTORY_SCAN_MAX,
-    WATCH_EVENT_QUEUE_MAX, WatchBatch, WatchCoverage, WatchError, WatchEvent, WatchFidelity,
-    WatchKind, is_ignored, watch_limit_setting,
+    WATCH_EVENT_QUEUE_MAX, WatchBatch, WatchCoverage, WatchError, WatchEvent, WatchEventError,
+    WatchFidelity, WatchKind, is_ignored, watch_limit_setting,
 };
 
 /// The number of results that the runtime holds for the event loop.
@@ -411,6 +411,15 @@ pub struct ProcessRequest {
     pub args: Vec<OsString>,
     /// The working directory of the child.
     pub current_dir: Option<PathBuf>,
+    /// The variables that the child must not inherit from this process.
+    ///
+    /// A caller drops every name that could redirect the command or make it
+    /// start another program. The runtime drops these names before it applies
+    /// [`ProcessRequest::child_variables`], so a name in both lists keeps the
+    /// value that the caller chose.
+    pub dropped_variables: Vec<OsString>,
+    /// The variables that the child receives with an explicit value.
+    pub child_variables: Vec<(OsString, OsString)>,
     /// The bytes that the runtime writes to standard input.
     pub stdin: Vec<u8>,
     /// The shared limit over standard output and standard error.
@@ -427,6 +436,8 @@ impl ProcessRequest {
             program: program.into(),
             args: Vec::new(),
             current_dir: None,
+            dropped_variables: Vec::new(),
+            child_variables: Vec::new(),
             stdin: Vec::new(),
             output_bytes_max: PROCESS_OUTPUT_BYTES_DEFAULT,
             deadline: PROCESS_DEADLINE_DEFAULT,
@@ -560,6 +571,86 @@ where
     where
         F: FnOnce(CancellationToken) -> T + Send + 'static,
     {
+        self.accept_worker(request, deadline, Commit::Optional, job)
+    }
+
+    /// Accepts one worker job that can commit a durable side effect.
+    ///
+    /// The job masks cancellation once it starts, so the caller always learns
+    /// its outcome. A cancelled answer would release the reserved event slot of
+    /// a write that the filesystem already holds. Only the deadline still bounds
+    /// the job. Shutdown therefore waits for an accepted job of this kind and
+    /// never aborts it. See `docs/embedding.md`.
+    ///
+    /// Use [`Runtime::submit_worker`] for every job that changes no durable
+    /// state, because a cancellation may drop that job without a loss.
+    ///
+    /// # Errors
+    ///
+    /// Returns the saturation and shutdown reasons of
+    /// [`Runtime::submit_worker`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::sync::mpsc::channel;
+    /// use std::time::Duration;
+    ///
+    /// use kvim_runtime::{PublicationGate, RequestSlot, Runtime};
+    ///
+    /// # let tokio_runtime = tokio::runtime::Builder::new_multi_thread()
+    /// #     .worker_threads(2)
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// tokio_runtime.block_on(async {
+    ///     let (runtime, mut events) = Runtime::new();
+    ///     let gate = PublicationGate::default();
+    ///     let request = gate.begin(RequestSlot::new(1), &runtime.cancellation_root());
+    ///     let (entered, started) = channel();
+    ///     let (release, released) = channel();
+    ///
+    ///     runtime
+    ///         .submit_committing_worker(request.clone(), Duration::from_secs(30), move |_| {
+    ///             entered.send(()).unwrap();
+    ///             released.recv().unwrap();
+    ///             7
+    ///         })
+    ///         .unwrap();
+    ///
+    ///     // The cancellation reaches a job that already changed durable state,
+    ///     // so the job still reports the value that it committed.
+    ///     started.recv().unwrap();
+    ///     request.cancel();
+    ///     release.send(()).unwrap();
+    ///
+    ///     let event = events.recv().await.unwrap();
+    ///     assert_eq!(event.result.unwrap(), 7);
+    ///     runtime.shutdown().await;
+    /// });
+    /// ```
+    pub fn submit_committing_worker<F>(
+        &self,
+        request: RequestHandle,
+        deadline: Duration,
+        job: F,
+    ) -> Result<(), SubmitError>
+    where
+        F: FnOnce(CancellationToken) -> T + Send + 'static,
+    {
+        self.accept_worker(request, deadline, Commit::Masked, job)
+    }
+
+    fn accept_worker<F>(
+        &self,
+        request: RequestHandle,
+        deadline: Duration,
+        commit: Commit,
+        job: F,
+    ) -> Result<(), SubmitError>
+    where
+        F: FnOnce(CancellationToken) -> T + Send + 'static,
+    {
         self.ensure_running()?;
         // Reserve delivery before capacity, so every accepted request keeps one
         // guaranteed result slot for its whole run.
@@ -572,6 +663,7 @@ where
         self.tasks.spawn(run_worker_job(
             request,
             deadline,
+            commit,
             job,
             worker_permit,
             result_slot,
@@ -651,10 +743,44 @@ where
     ///
     /// The operation consumes the runtime, so no caller can submit after it.
     pub async fn shutdown(self) {
-        self.shutting_down.store(true, Ordering::Release);
-        self.tasks.close();
-        self.shutdown.cancel();
-        self.tasks.wait().await;
+        self.begin_shutdown().wait().await;
+    }
+
+    /// Rejects new work and cancels owned work, but waits for nothing.
+    ///
+    /// The operation consumes the runtime, so no caller can submit after it.
+    /// The returned value owns the tracked tasks, so a caller that must bound
+    /// its wait can observe its own deadline over [`RuntimeDrain::wait`]. A
+    /// caller that returns to the wait later loses no task, because the drain
+    /// keeps the tracker alive. See `docs/responsiveness.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use kvim_runtime::Runtime;
+    ///
+    /// # let tokio_runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .unwrap();
+    /// tokio_runtime.block_on(async {
+    ///     let (runtime, _results) = Runtime::<u8>::new();
+    ///     let drain = runtime.begin_shutdown();
+    ///     let bounded = tokio::time::timeout(Duration::from_secs(1), drain.wait()).await;
+    ///     assert!(bounded.is_ok());
+    /// });
+    /// ```
+    #[must_use = "the tracked tasks must finish before the host stops its runtime"]
+    pub fn begin_shutdown(self) -> RuntimeDrain {
+        // The tracker shares its state with every clone, so the drain observes
+        // the tasks that this runtime spawned.
+        let tasks = self.tasks.clone();
+        // The drop rejects new work, closes the tracker, and cancels every
+        // request of this runtime.
+        drop(self);
+        RuntimeDrain { tasks }
     }
 
     fn ensure_running(&self) -> Result<(), SubmitError> {
@@ -677,9 +803,52 @@ where
     }
 }
 
+/// The tracked tasks of one runtime that already rejected new work.
+///
+/// A task that entered its commit masks its cancellation, so the drain is the
+/// one owner that can report when every committed side effect finished. See
+/// `docs/responsiveness.md`.
+#[must_use = "the tracked tasks must finish before the host stops its runtime"]
+#[derive(Clone, Debug)]
+pub struct RuntimeDrain {
+    tasks: TaskTracker,
+}
+
+impl RuntimeDrain {
+    /// Waits until every tracked task finished.
+    ///
+    /// The wait borrows the drain, so a caller that bounds it with a deadline
+    /// can wait again after the deadline expired.
+    pub async fn wait(&self) {
+        self.tasks.wait().await;
+    }
+
+    /// Reports whether every tracked task already finished.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.tasks.is_empty()
+    }
+}
+
+/// Whether one accepted worker job can lose its outcome to a cancellation.
+///
+/// The distinction is the commit boundary of `docs/embedding.md`: a caller that
+/// reserved the mandatory event of a durable side effect must learn the outcome
+/// of the job that produces it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Commit {
+    /// The job changes no durable state, so a cancellation drops it and the
+    /// caller keeps its previous visible state.
+    Optional,
+    /// The job can commit a durable side effect, so it reports its outcome even
+    /// after a cancellation reached it.
+    Masked,
+}
+
 async fn run_worker_job<T, F>(
     request: RequestHandle,
     deadline: Duration,
+    commit: Commit,
     job: F,
     _worker_permit: OwnedSemaphorePermit,
     result_slot: mpsc::OwnedPermit<RuntimeEvent<T>>,
@@ -701,23 +870,36 @@ async fn run_worker_job<T, F>(
     }
     let worker_cancellation = cancellation.clone();
     let mut worker = tokio::task::spawn_blocking(move || job(worker_cancellation));
-    let result = tokio::select! {
-        biased;
-        () = shutdown.cancelled() => {
-            cancellation.cancel();
-            Err(RuntimeError::Cancelled)
+    let result = match commit {
+        Commit::Optional => tokio::select! {
+            biased;
+            () = shutdown.cancelled() => {
+                cancellation.cancel();
+                Err(RuntimeError::Cancelled)
+            },
+            () = cancellation.cancelled() => Err(RuntimeError::Cancelled),
+            result = time::timeout(deadline, &mut worker) => match result {
+                // A value that finished after cancellation is obsolete by decision,
+                // even though the worker produced it.
+                Ok(Ok(_)) if cancellation.is_cancelled() => Err(RuntimeError::Cancelled),
+                Ok(Ok(value)) => Ok(value),
+                Ok(Err(source)) => Err(RuntimeError::WorkerFailure(source)),
+                Err(_) => {
+                    cancellation.cancel();
+                    Err(RuntimeError::Timeout)
+                },
+            },
         },
-        () = cancellation.cancelled() => Err(RuntimeError::Cancelled),
-        result = time::timeout(deadline, &mut worker) => match result {
-            // A value that finished after cancellation is obsolete by decision,
-            // even though the worker produced it.
-            Ok(Ok(_)) if cancellation.is_cancelled() => Err(RuntimeError::Cancelled),
+        // The job started, so it can already hold a durable side effect. A
+        // cancelled answer would release the reserved event slot of that side
+        // effect, so the deadline alone bounds this job.
+        Commit::Masked => match time::timeout(deadline, &mut worker).await {
             Ok(Ok(value)) => Ok(value),
             Ok(Err(source)) => Err(RuntimeError::WorkerFailure(source)),
             Err(_) => {
                 cancellation.cancel();
                 Err(RuntimeError::Timeout)
-            },
+            }
         },
     };
     result_slot.send(RuntimeEvent {
@@ -787,6 +969,12 @@ async fn execute_process(process: ProcessRequest) -> Result<ProcessOutput, Runti
         .kill_on_drop(true);
     if let Some(current_dir) = &process.current_dir {
         command.current_dir(current_dir);
+    }
+    for name in &process.dropped_variables {
+        command.env_remove(name);
+    }
+    for (name, value) in &process.child_variables {
+        command.env(name, value);
     }
     let mut child = command.spawn().map_err(RuntimeError::ProcessSpawn)?;
     let mut stdin = child

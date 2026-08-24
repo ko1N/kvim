@@ -44,10 +44,11 @@
 //! replace it must occupy one terminal width. See `docs/language-services.md`.
 
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
-use tokio_util::sync::CancellationToken;
+
+use kvim_syntax::{HighlightLimits, NeverCancelled, SyntaxHighlighter, Truncation};
 
 use crate::session::LSP_HOVER_BYTES_MAX;
-use crate::{HighlightSpan, LanguageRegistry, analysis};
+use crate::{HighlightSpan, LanguageRegistry};
 
 /// The source bytes that one parse reads.
 ///
@@ -370,7 +371,9 @@ impl MarkupBlock {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{LanguageRegistry, MarkupBody, MarkupDocument, SyntaxRole};
+/// use kvim_language::{
+///     LanguageRegistry, MarkupBody, MarkupDocument, SyntaxHighlighter, SyntaxRole,
+/// };
 ///
 /// let document = MarkupDocument::parse("```rust\nfn main() {}\n```");
 /// let MarkupBody::Code { info, lines, highlights } = document.blocks()[0].body() else {
@@ -381,7 +384,8 @@ impl MarkupBlock {
 /// // The parse alone names no role, so the fence reads as plain code.
 /// assert!(highlights.is_empty());
 ///
-/// let document = document.highlighted(LanguageRegistry::first_release());
+/// let mut highlighter = SyntaxHighlighter::new();
+/// let document = document.highlighted(LanguageRegistry::first_release(), &mut highlighter);
 /// let MarkupBody::Code { highlights, .. } = document.blocks()[0].body() else {
 ///     panic!("the fence stays a code block");
 /// };
@@ -447,13 +451,21 @@ impl MarkupDocument {
     ///
     /// The highlight is Tree-sitter work, so the caller must run this pass off
     /// the terminal event loop. See `docs/responsiveness.md`.
+    ///
+    /// The caller owns `highlighter`, which keeps the compiled query of each
+    /// language that a fence named.
     #[must_use]
-    pub fn highlighted(mut self, registry: LanguageRegistry) -> Self {
-        // The bounds above hold this pass below one frame, and the caller runs
+    pub fn highlighted(
+        mut self,
+        registry: LanguageRegistry,
+        highlighter: &mut SyntaxHighlighter,
+    ) -> Self {
+        // The bounds below hold this pass under one frame, and the caller runs
         // it off the terminal event loop, so it needs no cancellation owner of
-        // its own. The shared highlighter takes one token, and this token
-        // stays uncancelled.
-        let cancellation = CancellationToken::new();
+        // its own.
+        let limits = HighlightLimits::default()
+            .with_source_bytes_max(MARKUP_FENCE_SOURCE_BYTES_MAX)
+            .with_spans_max(MARKUP_FENCE_SPANS_MAX);
         let mut fences = 0_usize;
 
         for block in &mut self.blocks {
@@ -479,14 +491,13 @@ impl MarkupDocument {
             fences += 1;
             // A failed parse, a malformed span, and a fence above the span
             // bound all leave the fence plain, exactly as an unknown language
-            // does. kvim publishes no partial result.
-            if let Ok(spans) = analysis::collect_highlights(
-                adapter.grammar(),
-                &source,
-                MARKUP_FENCE_SPANS_MAX,
-                &cancellation,
-            ) {
-                *highlights = spans;
+            // does. kvim publishes no partial result, so a truncated fence
+            // carries no span at all.
+            if let Ok(highlighted) =
+                highlighter.highlight(adapter.catalog(), &source, &limits, &NeverCancelled)
+                && highlighted.truncation() == Truncation::Complete
+            {
+                *highlights = highlighted.spans().to_vec();
             }
 
             debug_assert!(
@@ -1016,7 +1027,7 @@ mod tests {
         MarkupBlock, MarkupBody, MarkupContainer, MarkupDocument, MarkupMarker, MarkupRole,
         fence_language,
     };
-    use crate::{AnalysisInput, HighlightSpan, LanguageRegistry};
+    use crate::{AnalysisInput, HighlightSpan, LanguageRegistry, SyntaxHighlighter};
 
     /// The answer that rust-analyzer sends for one function of kvim.
     ///
@@ -1053,7 +1064,10 @@ mod tests {
 
     /// Returns the document of one source with the code of each fence named.
     fn highlighted(source: &str) -> MarkupDocument {
-        MarkupDocument::parse(source).highlighted(LanguageRegistry::first_release())
+        MarkupDocument::parse(source).highlighted(
+            LanguageRegistry::first_release(),
+            &mut SyntaxHighlighter::new(),
+        )
     }
 
     /// Returns the spans of the code block at one index.
@@ -1077,6 +1091,7 @@ mod tests {
             .expect("the Rust adapter owns a .rs path")
             .analyze(
                 &AnalysisInput::new(version, Arc::from(source)),
+                &mut SyntaxHighlighter::new(),
                 &CancellationToken::new(),
             )
             .expect("the test source stays inside every bound")

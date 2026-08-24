@@ -15,30 +15,38 @@
 //! # Examples
 //!
 //! ```
+//! use std::sync::Arc;
+//!
+//! use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 //! use kvim_settings::FileSettings;
 //! use kvim_workspace::{Buffers, FileBuffer, FileRequest, FileResult, OpenRequest};
 //!
 //! let files = FileSettings::default();
 //! let (mut buffers, scratch) = Buffers::new(FileBuffer::scratch(&files));
+//! let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
 //!
 //! // The request holds every value that the worker needs.
 //! let request = FileRequest::Open(OpenRequest {
-//!     path: "Cargo.toml".into(),
+//!     root,
+//!     path: WorktreeRelativePath::new("Cargo.toml")?,
 //!     files,
 //! });
 //!
 //! // The worker runs the blocking step and returns one complete candidate.
 //! if let FileResult::Opened { outcome: Ok(file), .. } = request.run() {
 //!     let id = buffers
-//!         .insert(FileBuffer::loaded(file.text, file.path, file.identity))
+//!         .insert(FileBuffer::loaded(file.text, file.target, file.identity))
 //!         .expect("the list holds fewer buffers than the limit");
 //!     assert_ne!(id, scratch);
 //!     assert_eq!(buffers.len(), 2);
 //! }
+//! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
 mod buffer;
 mod clipboard;
+mod diff;
+mod diff_capture;
 mod file;
 mod fuzzy;
 mod git;
@@ -46,6 +54,7 @@ mod mutation;
 mod picker;
 mod picker_request;
 mod request;
+mod review;
 mod ripgrep;
 mod tree;
 mod tree_request;
@@ -59,16 +68,37 @@ mod tests;
 #[cfg(test)]
 mod tree_tests;
 
-pub use buffer::{BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME};
+pub use buffer::{
+    BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME,
+    SaveApplyOutcome,
+};
 pub use clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
+pub use diff::{
+    AmbiguityReason, AnchorContext, AnchorContextError, AnchorLocation, BaseRevision,
+    BaseRevisionError, CandidateAuthority, CommentBody, CommentBodyError, DIFF_FILE_HUNKS_MAX,
+    DIFF_FILES_MAX, DIFF_HUNK_LINES_MAX, DIFF_LINE_BYTES_MAX, DIFF_LINE_NUMBER_MAX, DIGEST_BYTES,
+    DiffChange, DiffContent, DiffLimit, DiffLine, DiffLineText, DiffLineTextError, DiffRevision,
+    DiffSide, DiffTarget, DiffTruncation, FILE_MODE_DIGITS, FileDiff, FileDiffError, FileMode,
+    FileModeError, FileSide, HeadAuthority, Hunk, HunkError, HunkId, IndexAuthority, LineEnding,
+    LineNumberError, LineOrigin, LineRangeError, NewLine, NewLineRange, OldLine, OldLineRange,
+    RELOCATION_WINDOWS_MAX, REVIEW_COMMENT_BYTES_MAX, REVIEW_CONTEXT_LINES_MAX, Relocation,
+    ReviewAnchor, ReviewAnchorError, SHA1_HEX_CHARS, SHA256_HEX_CHARS, SelectionDigest, TextDiff,
+    TextDiffError, UnsupportedMode, WorktreeDiff, WorktreeDiffError, relocate,
+};
+pub use diff_capture::{
+    AuthorityProjection, DIFF_ANSWER_OUTPUT_BYTES_MAX, DIFF_BINARY_SCAN_BYTES,
+    DIFF_CAPTURE_ATTEMPTS_MAX, DIFF_CAPTURE_DEADLINE, DIFF_PROCESS_OUTPUT_BYTES_MAX,
+    DIFF_SOURCE_BYTES_MAX, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
+};
 pub use file::{
-    FileChange, FileIdentity, LoadedFile, OpenError, SaveError, SavedFile, identity, load,
-    render_content, save,
+    FileChange, FileIdentity, FileTarget, LoadedFile, OpenError, SaveError, SavedFile, identity,
+    load, render_content, save,
 };
 pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use git::{
-    GIT_PATH_DEPTH_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE, GIT_STATUS_ENTRIES_MAX,
-    GIT_STATUS_OUTPUT_BYTES_MAX, GitStatus, GitStatusFailure, GitStatusRequest, GitStatusSnapshot,
+    GIT_PATH_DEPTH_MAX, GIT_PREFIX_OUTPUT_BYTES_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE,
+    GIT_STATUS_ENTRIES_MAX, GIT_STATUS_OUTPUT_BYTES_MAX, GitExecutionPolicy, GitStatus,
+    GitStatusFailure, GitStatusRead, GitStatusRequest, GitStatusSnapshot,
 };
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
@@ -88,15 +118,20 @@ pub use request::{
     FileRequest, FileResult, OpenRequest, OpenedFile, RELOAD_TARGETS_MAX, ReloadOutcome,
     ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveRequest, SavedBuffer,
 };
+pub use review::{
+    HunkStep, REVIEW_EVENTS_MAX, ReviewCursor, ReviewEvent, ReviewRow, ReviewSelectError,
+    ReviewState, StaleLocation, SubmitCommentError, TargetAuthority,
+};
 pub use ripgrep::{
     RIPGREP_COLUMNS_MAX, RIPGREP_DEADLINE, RIPGREP_FILE_MATCHES_MAX, RIPGREP_MATCHES_MAX,
     RIPGREP_OUTPUT_BYTES_MAX, RIPGREP_PROGRAM, parse_matches, ripgrep_command,
 };
 pub use tree::{
-    DirectoryListing, EntryKind, Expansion, FileTree, HIDDEN_NAMES, HiddenPolicy, LinkKind,
-    NameMatch, Notice, ReadError, RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX,
-    TREE_DIRECTORY_SCAN_MAX, TREE_ENTRIES_MAX, TREE_PENDING_READS_MAX, TREE_SEARCH_CHARS_MAX,
-    TREE_SEARCH_MATCHES_MAX, TREE_SEARCH_READS_MAX, TreeEntry, TreeRow, Truncation, read_directory,
+    DirectoryIdentity, DirectoryListing, EntryKind, Expansion, FileTree, HIDDEN_NAMES,
+    HiddenPolicy, LinkKind, NameMatch, Notice, ReadError, RowContent, TREE_DEPTH_MAX,
+    TREE_DIRECTORY_ENTRIES_MAX, TREE_DIRECTORY_SCAN_MAX, TREE_ENTRIES_MAX, TREE_PENDING_READS_MAX,
+    TREE_SEARCH_CHARS_MAX, TREE_SEARCH_MATCHES_MAX, TREE_SEARCH_READS_MAX, TreeEntry, TreeRow,
+    Truncation, read_directory,
 };
 pub use tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 pub use undo_file::{

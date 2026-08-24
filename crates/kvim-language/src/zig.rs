@@ -5,20 +5,16 @@
 //! metadata, the indent rule, and the language servers. See
 //! `docs/language-services.md`.
 
+use std::sync::OnceLock;
+
 use serde_json::{Value, json};
-use tree_sitter::Language;
 
 use kvim_settings::LanguageSettings;
 
 use super::{
-    CommentStyle, Grammar, IndentRule, LanguageAdapter, LanguageServerDeclaration, ServerFormatting,
+    CommentStyle, IndentRule, LanguageAdapter, LanguageCatalogEntry, LanguageServerDeclaration,
+    ServerFormatting,
 };
-
-/// The file extensions that the Zig adapter owns.
-const ZIG_EXTENSIONS: [&str; 1] = ["zig"];
-
-/// The language names that the Zig adapter answers to.
-const ZIG_LANGUAGE_NAMES: [&str; 1] = ["zig"];
 
 /// The node kinds whose content takes one more indent level in Zig.
 ///
@@ -43,11 +39,6 @@ const ZIG_INDENT_SCOPES: [&str; 11] = [
 
 /// The characters that close a Zig indent scope.
 const ZIG_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
-
-/// Returns the Zig grammar of the bundled parser.
-fn zig_language() -> Language {
-    tree_sitter_zig::LANGUAGE.into()
-}
 
 /// Returns the initialization options of `zls`.
 ///
@@ -99,36 +90,21 @@ impl ZigAdapter {
 }
 
 impl LanguageAdapter for ZigAdapter {
-    fn id(&self) -> &'static str {
-        "zig"
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        static ENTRY: OnceLock<&'static LanguageCatalogEntry> = OnceLock::new();
+        ENTRY.get_or_init(|| {
+            kvim_syntax::language("zig").expect("the grammar-zig feature bundles this language")
+        })
     }
 
     fn version(&self) -> &'static str {
         "1"
     }
 
-    fn extensions(&self) -> &'static [&'static str] {
-        &ZIG_EXTENSIONS
-    }
-
-    fn language_names(&self) -> &'static [&'static str] {
-        &ZIG_LANGUAGE_NAMES
-    }
-
     fn comment(&self) -> CommentStyle {
         // The Zig language defines no block comment, so the adapter carries the
         // line token alone.
         CommentStyle::new(Some("//"), None)
-    }
-
-    fn grammar(&self) -> Grammar {
-        Grammar {
-            name: "zig",
-            language: zig_language,
-            highlights_query: tree_sitter_zig::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
     }
 
     fn indent_rule(&self) -> IndentRule {
