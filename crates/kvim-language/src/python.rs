@@ -22,26 +22,22 @@ use super::{
 /// Python closes a suite with indentation alone, so the grammar has no node
 /// that carries both a suite and its closing delimiter. The `block` node of the
 /// grammar starts at the first token of the suite and ends at its last token,
-/// so a new line at the end of the header line stands before that node, and a
-/// new line at the end of the last statement stands behind it. The table
-/// therefore names the compound statement that owns each suite, and never the
-/// `block` node itself. One statement then supplies the level of its own body.
+/// so no node spans the header line and the body together. The table therefore
+/// names the compound statement that owns each suite, and never the `block`
+/// node itself. Each of these nine kinds uses the undelimited-body indent span
+/// of its named field, so its scope indents from the end of the header, which
+/// is the `:` token before the field, through the last byte of the node. A
+/// one-line suite opens no indented block, so its scope then holds no
+/// position.
 ///
 /// `case_clause` stands beside `match_statement`, because a case label takes one
 /// more level than its match statement. `elif_clause`, `else_clause`,
 /// `except_clause`, and `finally_clause` stay out of the table, because each one
 /// starts at the level of the statement that holds it.
 ///
-/// The remaining kinds are the bracketed expressions. Each one carries its own
-/// opening and closing character, so each one behaves exactly as the equivalent
-/// node of a brace language.
-///
-/// Two limits follow from this model, and the user corrects each affected line:
-///
-/// - The last line of a suite reports one level too few, because the compound
-///   statement ends at that line and no delimiter follows it.
-/// - A compound statement whose header spans several lines reports one level too
-///   many, because the statement already supplies the level of its own body.
+/// The remaining twelve kinds are the bracketed expressions. Each one carries
+/// its own opening and closing character, so each one keeps the whole indent
+/// span and behaves exactly as the equivalent node of a brace language.
 const PYTHON_INDENT_SCOPES: [IndentScope; 21] = [
     IndentScope::whole("argument_list"),
     IndentScope::undelimited_body("case_clause", "consequence"),

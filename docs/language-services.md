@@ -279,22 +279,28 @@ because one node then spans the complete block. A C brace, a Bash `fi`, a fish
 that spans the whole construct, and never the inner statement list, because two
 entries would count one level twice.
 
-A scope can name a body field that it does not indent. The Nix `let_expression`
-node spans its own body, so its scope excludes that field. Without the
-exclusion, the body would take the level of the `let` in addition to its own
-level.
+Every scope names one indent span, which is the part of its node that takes the
+level. The rule above describes the whole span: it reaches between the first
+and the last byte of the node, and a closing delimiter ends it. The until-body
+span reaches from the first byte of the node until the named body field
+starts, so the scope excludes a body that indents itself. The Nix
+`let_expression` node spans its own body, so its scope excludes that field.
+Without the exclusion, the body would take the level of the `let` in addition
+to its own level. The undelimited-body span reaches from the end of the
+header, which is the sibling before the named field, through the last byte of
+the node, and it holds both ends, because no delimiter follows the body. The
+Python paragraph below names the scopes that use this span.
 
 Python is the one registered language that closes a block with indentation
 alone. Its `block` node starts at the first token of the suite and ends at the
 last one, so no node spans the header line and the body together. The Python
-adapter therefore names the compound statement that owns each suite, and one
-statement supplies the level of its own body. Two limits follow from that model,
-and the user corrects each affected line:
-
-- The last line of a suite reports one level too few, because the compound
-  statement ends on that line and no token follows it.
-- A compound statement whose header spans several lines reports one level too
-  many, because the statement already supplies the level of its own body.
+adapter therefore names the compound statement that owns each suite, and that
+scope carries the undelimited-body indent span: it indents from the end of the
+header, which is the `:` token before the suite, through the end of the node.
+The indent walk starts at the character before the position, so a position at
+the end of a suite still reaches the node that owns it and gains its level. A
+one-line suite, such as `if a: x = 1`, opens no indented block, so the scope
+then holds no position.
 
 A bracketed Python expression carries its own opening and closing character, so
 a list, a call, and a parameter list each behave exactly as the equivalent node
