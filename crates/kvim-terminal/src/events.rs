@@ -5,12 +5,33 @@ use std::io;
 use crossterm::event::{Event as CrosstermEvent, EventStream};
 use futures_util::stream::{Stream, StreamExt};
 
-use super::{Key, TerminalError};
+use kvim_keymap::Key;
+use thiserror::Error;
+
+use super::TerminalError;
+use crate::key::{KeyRejection, normalize_key_event};
 
 /// The maximum number of consecutive terminal events without a normalized form
 /// that one read attempt skips. The bound keeps a read attempt finite when a
 /// terminal sends unsupported events continuously.
 pub const UNMAPPED_EVENT_SKIP_MAX: usize = 64;
+
+/// The reason that one crossterm event carries no normalized form.
+///
+/// The reason stays typed up to the event source, so a rejected modifier never
+/// looks like a missing event.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum EventRejection {
+    /// The key event carried no normalized key.
+    #[error("the terminal key event carries no normalized key")]
+    Key(#[from] KeyRejection),
+    /// A mouse event carries no normalized form.
+    #[error("the terminal reported a mouse event, which kvim does not read")]
+    Mouse,
+    /// A bracketed paste carries no normalized form.
+    #[error("the terminal reported a paste event, which kvim does not read")]
+    Paste,
+}
 
 /// The terminal focus transition that the terminal reported.
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
@@ -42,8 +63,10 @@ pub enum TerminalEvent {
 impl TerminalEvent {
     /// Normalizes one crossterm event.
     ///
-    /// The function returns `None` for a mouse event, a paste event, a key
-    /// release, and any key that kvim does not use.
+    /// # Errors
+    ///
+    /// Returns [`EventRejection`] for a mouse event, a paste event, and every
+    /// key event without a normalized key.
     ///
     /// ```
     /// use crossterm::event::Event;
@@ -52,16 +75,17 @@ impl TerminalEvent {
     /// let resize = Event::Resize(120, 40);
     /// assert_eq!(
     ///     TerminalEvent::from_crossterm(resize),
-    ///     Some(TerminalEvent::Resize { columns: 120, rows: 40 }),
+    ///     Ok(TerminalEvent::Resize { columns: 120, rows: 40 }),
     /// );
     /// ```
-    pub fn from_crossterm(event: CrosstermEvent) -> Option<Self> {
+    pub fn from_crossterm(event: CrosstermEvent) -> Result<Self, EventRejection> {
         match event {
-            CrosstermEvent::Key(key) => Key::from_key_event(key).map(Self::Key),
-            CrosstermEvent::Resize(columns, rows) => Some(Self::Resize { columns, rows }),
-            CrosstermEvent::FocusGained => Some(Self::Focus(FocusChange::Gained)),
-            CrosstermEvent::FocusLost => Some(Self::Focus(FocusChange::Lost)),
-            CrosstermEvent::Mouse(_) | CrosstermEvent::Paste(_) => None,
+            CrosstermEvent::Key(key) => Ok(Self::Key(normalize_key_event(key)?)),
+            CrosstermEvent::Resize(columns, rows) => Ok(Self::Resize { columns, rows }),
+            CrosstermEvent::FocusGained => Ok(Self::Focus(FocusChange::Gained)),
+            CrosstermEvent::FocusLost => Ok(Self::Focus(FocusChange::Lost)),
+            CrosstermEvent::Mouse(_) => Err(EventRejection::Mouse),
+            CrosstermEvent::Paste(_) => Err(EventRejection::Paste),
         }
     }
 }
@@ -117,7 +141,7 @@ where
                 Ok(event) => event,
                 Err(error) => return Some(Err(TerminalError::Read(error))),
             };
-            if let Some(normalized) = TerminalEvent::from_crossterm(event) {
+            if let Ok(normalized) = TerminalEvent::from_crossterm(event) {
                 return Some(Ok(normalized));
             }
         }
@@ -130,8 +154,9 @@ mod tests {
     use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyModifiers, MouseEvent};
     use futures_util::stream;
 
+    use kvim_keymap::KeyCode;
+
     use super::*;
-    use crate::KeyCode;
 
     fn source(
         events: Vec<CrosstermEvent>,

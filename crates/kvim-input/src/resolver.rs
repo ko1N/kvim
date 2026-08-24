@@ -9,8 +9,8 @@
 use std::num::NonZeroU32;
 use std::time::Duration;
 
+use kvim_keymap::{Chord, Key, KeyCode};
 use kvim_settings::InputSettings;
-use kvim_terminal::{Chord, Key, KeyCode};
 
 use super::command::Command;
 use super::mode::{BindingScope, InputContext};
@@ -191,7 +191,7 @@ enum OperatorInput {
 ///
 /// use kvim_input::{Command, Registry, Resolution, Resolver};
 /// use kvim_settings::InputSettings;
-/// use kvim_terminal::{Key, KeyCode};
+/// use kvim_keymap::{Key, KeyCode};
 ///
 /// let mut resolver = Resolver::new(Registry::first_release(), InputSettings::default());
 /// let now = Duration::ZERO;
@@ -601,8 +601,8 @@ mod tests {
     use std::time::Duration;
 
     use crate::{BindingScope, Command, InputContext, Mode, PromptKind, Registry};
+    use kvim_keymap::{Key, KeyCode};
     use kvim_settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
-    use kvim_terminal::{Key, KeyCode};
 
     use super::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};
 

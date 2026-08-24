@@ -2,6 +2,8 @@
 
 use std::fmt;
 
+use kvim_keymap::Scope;
+
 /// One editor mode.
 ///
 /// The mode is one typed value. A mode change resets pending input. See
@@ -130,9 +132,15 @@ pub enum BindingScope {
     OperatorPending,
 }
 
+/// The number of binding scopes.
+///
+/// The inherent constant and the [`Scope`] constant both read this value, so
+/// the two counts cannot drift apart.
+const SCOPE_COUNT: usize = Mode::COUNT + 3;
+
 impl BindingScope {
     /// The number of scopes. The mapping registry holds one table for each.
-    pub const COUNT: usize = Mode::COUNT + 3;
+    pub const COUNT: usize = SCOPE_COUNT;
 
     /// Every scope, in table order.
     pub const ALL: [Self; Self::COUNT] = [
@@ -200,6 +208,11 @@ impl BindingScope {
             Self::OperatorPending => InputContext::NORMAL,
         }
     }
+}
+
+impl Scope for BindingScope {
+    /// The mapping registry holds one table for each scope.
+    const COUNT: usize = SCOPE_COUNT;
 }
 
 impl From<Mode> for BindingScope {

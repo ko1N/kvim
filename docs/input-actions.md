@@ -598,6 +598,13 @@ both onto `Ctrl-Left` and `Ctrl-Right` while it normalizes the key, so the
 registry holds one entry for each word motion. The enhanced keyboard reporting
 flags keep a modified arrow distinct from a plain arrow.
 
+A key that carries a modifier which no binding uses is rejected. The `terminal`
+module never removes the modifier, so a modified key never reaches the binding of
+the unmodified key. `Alt` without `Ctrl` and without one of the folds above,
+`Super`, `Hyper`, and `Meta` are always rejections. `Shift` is part of the
+character value, and `Shift-Tab` arrives as its own code, so both keep their
+binding. Every other `Shift` combination is a rejection.
+
 ### Operators, Registers, And Repeat
 
 | Keys | Command | Modes |

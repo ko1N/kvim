@@ -3,9 +3,13 @@
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
 //! The crate is the only place that uses crossterm. It converts raw terminal
-//! events into the terminal-independent [`Key`] and [`TerminalEvent`] values that
-//! the rest of kvim consumes. It holds no editor concept: modes, mappings, and
-//! commands belong to `kvim-input`.
+//! events into the terminal-neutral [`Key`] values of `kvim-keymap` and into
+//! [`TerminalEvent`]. It holds no editor concept: modes, mappings, and commands
+//! belong to `kvim-input`.
+//!
+//! [`normalize_key_event`] rejects an unsupported modifier with a typed
+//! [`KeyRejection`]. It never removes the modifier, so a modified key never
+//! reaches the binding of the unmodified key.
 //!
 //! [`TerminalSession`] owns the setup steps and restores them on every exit path,
 //! including a panic. Restoration never depends on unwinding: the session
@@ -25,8 +29,11 @@ use std::io;
 
 use thiserror::Error;
 
-pub use events::{EventSource, FocusChange, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX};
-pub use key::{Chord, Key, KeyCode};
+pub use events::{
+    EventRejection, EventSource, FocusChange, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX,
+};
+pub use key::{KeyRejection, UnsupportedModifier, normalize_key_event};
+pub use kvim_keymap::{Chord, Key, KeyCode};
 pub use lifecycle::{CrosstermControl, CursorShape, RestoreStep, TerminalControl, TerminalSession};
 pub use signal::{TerminationSignal, TerminationSource};
 
