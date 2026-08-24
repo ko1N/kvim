@@ -60,58 +60,59 @@ pub const BUNDLED_LANGUAGES_MAX: usize = 32;
 pub fn bundled() -> &'static [&'static LanguageCatalogEntry] {
     static REGISTRY: OnceLock<Vec<&'static LanguageCatalogEntry>> = OnceLock::new();
     REGISTRY.get_or_init(|| {
-        #[allow(unused_mut)]
-        let mut entries: Vec<&'static LanguageCatalogEntry> = Vec::new();
-        #[cfg(feature = "grammar-asm")]
-        entries.push(&ASM);
-        #[cfg(feature = "grammar-bash")]
-        entries.push(&BASH);
-        #[cfg(feature = "grammar-c")]
-        entries.push(&C);
-        #[cfg(feature = "grammar-cpp")]
-        entries.push(&CPP);
-        #[cfg(feature = "grammar-css")]
-        entries.push(&CSS);
-        #[cfg(feature = "grammar-fish")]
-        entries.push(&FISH);
-        #[cfg(feature = "grammar-glsl")]
-        entries.push(&GLSL);
-        #[cfg(feature = "grammar-go")]
-        entries.push(&GO);
-        #[cfg(feature = "grammar-html")]
-        entries.push(&HTML);
-        #[cfg(feature = "grammar-javascript")]
-        entries.push(&JAVASCRIPT);
-        #[cfg(feature = "grammar-json")]
-        entries.push(&JSON);
-        #[cfg(feature = "grammar-lua")]
-        entries.push(&LUA);
-        #[cfg(feature = "grammar-markdown")]
-        entries.push(&MARKDOWN);
-        #[cfg(feature = "grammar-nix")]
-        entries.push(&NIX);
-        #[cfg(feature = "grammar-python")]
-        entries.push(&PYTHON);
-        #[cfg(feature = "grammar-rust")]
-        entries.push(&RUST);
-        #[cfg(feature = "grammar-scss")]
-        entries.push(&SCSS);
-        #[cfg(feature = "grammar-sql")]
-        entries.push(&SQL);
-        #[cfg(feature = "grammar-terraform")]
-        entries.push(&TERRAFORM);
-        #[cfg(feature = "grammar-toml")]
-        entries.push(&TOML);
-        #[cfg(feature = "grammar-tsx")]
-        entries.push(&TSX);
-        #[cfg(feature = "grammar-typescript")]
-        entries.push(&TYPESCRIPT);
-        #[cfg(feature = "grammar-xml")]
-        entries.push(&XML);
-        #[cfg(feature = "grammar-yaml")]
-        entries.push(&YAML);
-        #[cfg(feature = "grammar-zig")]
-        entries.push(&ZIG);
+        let entries: Vec<&'static LanguageCatalogEntry> = [
+            #[cfg(feature = "grammar-asm")]
+            &ASM,
+            #[cfg(feature = "grammar-bash")]
+            &BASH,
+            #[cfg(feature = "grammar-c")]
+            &C,
+            #[cfg(feature = "grammar-cpp")]
+            &CPP,
+            #[cfg(feature = "grammar-css")]
+            &CSS,
+            #[cfg(feature = "grammar-fish")]
+            &FISH,
+            #[cfg(feature = "grammar-glsl")]
+            &GLSL,
+            #[cfg(feature = "grammar-go")]
+            &GO,
+            #[cfg(feature = "grammar-html")]
+            &HTML,
+            #[cfg(feature = "grammar-javascript")]
+            &JAVASCRIPT,
+            #[cfg(feature = "grammar-json")]
+            &JSON,
+            #[cfg(feature = "grammar-lua")]
+            &LUA,
+            #[cfg(feature = "grammar-markdown")]
+            &MARKDOWN,
+            #[cfg(feature = "grammar-nix")]
+            &NIX,
+            #[cfg(feature = "grammar-python")]
+            &PYTHON,
+            #[cfg(feature = "grammar-rust")]
+            &RUST,
+            #[cfg(feature = "grammar-scss")]
+            &SCSS,
+            #[cfg(feature = "grammar-sql")]
+            &SQL,
+            #[cfg(feature = "grammar-terraform")]
+            &TERRAFORM,
+            #[cfg(feature = "grammar-toml")]
+            &TOML,
+            #[cfg(feature = "grammar-tsx")]
+            &TSX,
+            #[cfg(feature = "grammar-typescript")]
+            &TYPESCRIPT,
+            #[cfg(feature = "grammar-xml")]
+            &XML,
+            #[cfg(feature = "grammar-yaml")]
+            &YAML,
+            #[cfg(feature = "grammar-zig")]
+            &ZIG,
+        ]
+        .to_vec();
         debug_assert!(
             entries.len() <= BUNDLED_LANGUAGES_MAX,
             "the catalog holds at most BUNDLED_LANGUAGES_MAX languages",

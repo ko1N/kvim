@@ -217,6 +217,25 @@ from the same resolver through one view of the shared registry. The host renders
 each owned surface. The composer performs no input or output, starts no task,
 reads no clock, and owns no terminal lifecycle.
 
+### The Standalone Editor Does Not Use The Composer
+
+Standalone kvim is one whole workspace inside one `Session`, so the composer is
+not on its path. The binary adapts `Session`, `EditorDriver`, and
+`kvim-terminal`, and `Session` owns its own splits through `Windows`.
+
+Two facts make the composer unusable for the binary today. `EmbeddedEditor`
+publishes no key-sequence resolver, and `Resolution::Prompt` and
+`Resolution::Confirmation` reach private `Session` methods. A binary that sat
+above the embedded facade alone could therefore open neither the command line
+nor a confirmation. The composer stays the facade for a host that owns several
+surfaces, and the binary stays the adapter for one workspace.
+
+`WorkspaceComposer::close_focused` and `WorkspaceComposer::arm_which_key`
+therefore have no in-tree production caller. `crates/kvim-tui/examples/host_workspace.rs`
+is their only in-tree driver, and that is the intended shape: the composer is a
+library facade for an external host, and its dedicated example is the in-tree
+proof that the facade composes. Both methods stay public.
+
 ## External Use
 
 An external host can consume syntax, LSP, keymap, UI, or the embedded editor

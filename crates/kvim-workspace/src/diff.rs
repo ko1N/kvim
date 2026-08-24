@@ -800,8 +800,10 @@ pub enum LineOrigin {
 
 impl LineOrigin {
     /// Returns the line number on the old side.
+    ///
+    /// An added line exists on the new side alone, so it returns `None`.
     #[must_use]
-    pub const fn old(self) -> Option<OldLine> {
+    pub const fn old_line(self) -> Option<OldLine> {
         match self {
             Self::Context { old, .. } | Self::Removed { old } => Some(old),
             Self::Added { .. } => None,
@@ -809,8 +811,10 @@ impl LineOrigin {
     }
 
     /// Returns the line number on the new side.
+    ///
+    /// A removed line exists on the old side alone, so it returns `None`.
     #[must_use]
-    pub const fn new(self) -> Option<NewLine> {
+    pub const fn new_line(self) -> Option<NewLine> {
         match self {
             Self::Context { new, .. } | Self::Added { new } => Some(new),
             Self::Removed { .. } => None,
@@ -867,11 +871,11 @@ impl DiffLine {
     #[must_use]
     pub const fn number(&self, side: DiffSide) -> Option<u32> {
         match side {
-            DiffSide::Old => match self.origin.old() {
+            DiffSide::Old => match self.origin.old_line() {
                 Some(old) => Some(old.get()),
                 None => None,
             },
-            DiffSide::New => match self.origin.new() {
+            DiffSide::New => match self.origin.new_line() {
                 Some(new) => Some(new.get()),
                 None => None,
             },

@@ -811,103 +811,103 @@ pub struct LanguageRegistry {
 
 /// The assembly adapter of this build.
 #[cfg(feature = "grammar-asm")]
-static ASM: AsmAdapter = AsmAdapter::new();
+static ASM: &dyn LanguageAdapter = &AsmAdapter::new();
 
 /// The Bash adapter of this build.
 #[cfg(feature = "grammar-bash")]
-static BASH: BashAdapter = BashAdapter::new();
+static BASH: &dyn LanguageAdapter = &BashAdapter::new();
 
 /// The C adapter of this build.
 #[cfg(feature = "grammar-c")]
-static C: CAdapter = CAdapter::new();
+static C: &dyn LanguageAdapter = &CAdapter::new();
 
 /// The C++ adapter of this build.
 #[cfg(feature = "grammar-cpp")]
-static CPP: CppAdapter = CppAdapter::new();
+static CPP: &dyn LanguageAdapter = &CppAdapter::new();
 
 /// The CSS adapter of this build.
 #[cfg(feature = "grammar-css")]
-static CSS: CssAdapter = CssAdapter::new();
+static CSS: &dyn LanguageAdapter = &CssAdapter::new();
 
 /// The fish adapter of this build.
 #[cfg(feature = "grammar-fish")]
-static FISH: FishAdapter = FishAdapter::new();
+static FISH: &dyn LanguageAdapter = &FishAdapter::new();
 
 /// The GLSL adapter of this build.
 #[cfg(feature = "grammar-glsl")]
-static GLSL: GlslAdapter = GlslAdapter::new();
+static GLSL: &dyn LanguageAdapter = &GlslAdapter::new();
 
 /// The Go adapter of this build.
 #[cfg(feature = "grammar-go")]
-static GO: GoAdapter = GoAdapter::new();
+static GO: &dyn LanguageAdapter = &GoAdapter::new();
 
 /// The HTML adapter of this build.
 #[cfg(feature = "grammar-html")]
-static HTML: HtmlAdapter = HtmlAdapter::new();
+static HTML: &dyn LanguageAdapter = &HtmlAdapter::new();
 
 /// The JavaScript adapter of this build.
 #[cfg(feature = "grammar-javascript")]
-static JAVASCRIPT: JavascriptAdapter = JavascriptAdapter::new();
+static JAVASCRIPT: &dyn LanguageAdapter = &JavascriptAdapter::new();
 
 /// The JSON adapter of this build.
 #[cfg(feature = "grammar-json")]
-static JSON: JsonAdapter = JsonAdapter::new();
+static JSON: &dyn LanguageAdapter = &JsonAdapter::new();
 
 /// The Lua adapter of this build.
 #[cfg(feature = "grammar-lua")]
-static LUA: LuaAdapter = LuaAdapter::new();
+static LUA: &dyn LanguageAdapter = &LuaAdapter::new();
 
 /// The Markdown adapter of this build.
 #[cfg(feature = "grammar-markdown")]
-static MARKDOWN: MarkdownAdapter = MarkdownAdapter::new();
+static MARKDOWN: &dyn LanguageAdapter = &MarkdownAdapter::new();
 
 /// The Nix adapter of this build.
 #[cfg(feature = "grammar-nix")]
-static NIX: NixAdapter = NixAdapter::new();
+static NIX: &dyn LanguageAdapter = &NixAdapter::new();
 
 /// The Python adapter of this build.
 #[cfg(feature = "grammar-python")]
-static PYTHON: PythonAdapter = PythonAdapter::new();
+static PYTHON: &dyn LanguageAdapter = &PythonAdapter::new();
 
 /// The Rust adapter of this build.
 #[cfg(feature = "grammar-rust")]
-static RUST: RustAdapter = RustAdapter::new();
+static RUST: &dyn LanguageAdapter = &RustAdapter::new();
 
 /// The SCSS adapter of this build.
 #[cfg(feature = "grammar-scss")]
-static SCSS: ScssAdapter = ScssAdapter::new();
+static SCSS: &dyn LanguageAdapter = &ScssAdapter::new();
 
 /// The SQL adapter of this build.
 #[cfg(feature = "grammar-sql")]
-static SQL: SqlAdapter = SqlAdapter::new();
+static SQL: &dyn LanguageAdapter = &SqlAdapter::new();
 
 /// The Terraform adapter of this build.
 #[cfg(feature = "grammar-terraform")]
-static TERRAFORM: TerraformAdapter = TerraformAdapter::new();
+static TERRAFORM: &dyn LanguageAdapter = &TerraformAdapter::new();
 
 /// The TOML adapter of this build.
 #[cfg(feature = "grammar-toml")]
-static TOML: TomlAdapter = TomlAdapter::new();
+static TOML: &dyn LanguageAdapter = &TomlAdapter::new();
 
 /// The TSX adapter of this build.
 #[cfg(feature = "grammar-tsx")]
-static TSX: TsxAdapter = TsxAdapter::new();
+static TSX: &dyn LanguageAdapter = &TsxAdapter::new();
 
 /// The TypeScript adapter of this build.
 #[cfg(feature = "grammar-typescript")]
-static TYPESCRIPT: TypescriptAdapter = TypescriptAdapter::new();
+static TYPESCRIPT: &dyn LanguageAdapter = &TypescriptAdapter::new();
 
 /// The XML adapter of this build.
 #[cfg(feature = "grammar-xml")]
-static XML: XmlAdapter = XmlAdapter::new();
+static XML: &dyn LanguageAdapter = &XmlAdapter::new();
 
 /// The YAML adapter of this build.
 #[cfg(feature = "grammar-yaml")]
-static YAML: YamlAdapter = YamlAdapter::new();
+static YAML: &dyn LanguageAdapter = &YamlAdapter::new();
 
 /// The Zig adapter of this build.
 #[cfg(feature = "grammar-zig")]
-static ZIG: ZigAdapter = ZigAdapter::new();
+static ZIG: &dyn LanguageAdapter = &ZigAdapter::new();
 
 /// The registered languages of this editor build.
 ///
@@ -922,58 +922,59 @@ static ZIG: ZigAdapter = ZigAdapter::new();
 fn registered_adapters() -> &'static [&'static dyn LanguageAdapter] {
     static ADAPTERS: OnceLock<Vec<&'static dyn LanguageAdapter>> = OnceLock::new();
     ADAPTERS.get_or_init(|| {
-        #[allow(unused_mut)]
-        let mut adapters: Vec<&'static dyn LanguageAdapter> = Vec::new();
-        #[cfg(feature = "grammar-asm")]
-        adapters.push(&ASM as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-bash")]
-        adapters.push(&BASH as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-c")]
-        adapters.push(&C as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-cpp")]
-        adapters.push(&CPP as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-css")]
-        adapters.push(&CSS as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-fish")]
-        adapters.push(&FISH as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-glsl")]
-        adapters.push(&GLSL as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-go")]
-        adapters.push(&GO as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-html")]
-        adapters.push(&HTML as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-javascript")]
-        adapters.push(&JAVASCRIPT as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-json")]
-        adapters.push(&JSON as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-lua")]
-        adapters.push(&LUA as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-markdown")]
-        adapters.push(&MARKDOWN as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-nix")]
-        adapters.push(&NIX as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-python")]
-        adapters.push(&PYTHON as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-rust")]
-        adapters.push(&RUST as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-scss")]
-        adapters.push(&SCSS as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-sql")]
-        adapters.push(&SQL as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-terraform")]
-        adapters.push(&TERRAFORM as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-toml")]
-        adapters.push(&TOML as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-tsx")]
-        adapters.push(&TSX as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-typescript")]
-        adapters.push(&TYPESCRIPT as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-xml")]
-        adapters.push(&XML as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-yaml")]
-        adapters.push(&YAML as &dyn LanguageAdapter);
-        #[cfg(feature = "grammar-zig")]
-        adapters.push(&ZIG as &dyn LanguageAdapter);
+        let adapters: Vec<&'static dyn LanguageAdapter> = [
+            #[cfg(feature = "grammar-asm")]
+            ASM,
+            #[cfg(feature = "grammar-bash")]
+            BASH,
+            #[cfg(feature = "grammar-c")]
+            C,
+            #[cfg(feature = "grammar-cpp")]
+            CPP,
+            #[cfg(feature = "grammar-css")]
+            CSS,
+            #[cfg(feature = "grammar-fish")]
+            FISH,
+            #[cfg(feature = "grammar-glsl")]
+            GLSL,
+            #[cfg(feature = "grammar-go")]
+            GO,
+            #[cfg(feature = "grammar-html")]
+            HTML,
+            #[cfg(feature = "grammar-javascript")]
+            JAVASCRIPT,
+            #[cfg(feature = "grammar-json")]
+            JSON,
+            #[cfg(feature = "grammar-lua")]
+            LUA,
+            #[cfg(feature = "grammar-markdown")]
+            MARKDOWN,
+            #[cfg(feature = "grammar-nix")]
+            NIX,
+            #[cfg(feature = "grammar-python")]
+            PYTHON,
+            #[cfg(feature = "grammar-rust")]
+            RUST,
+            #[cfg(feature = "grammar-scss")]
+            SCSS,
+            #[cfg(feature = "grammar-sql")]
+            SQL,
+            #[cfg(feature = "grammar-terraform")]
+            TERRAFORM,
+            #[cfg(feature = "grammar-toml")]
+            TOML,
+            #[cfg(feature = "grammar-tsx")]
+            TSX,
+            #[cfg(feature = "grammar-typescript")]
+            TYPESCRIPT,
+            #[cfg(feature = "grammar-xml")]
+            XML,
+            #[cfg(feature = "grammar-yaml")]
+            YAML,
+            #[cfg(feature = "grammar-zig")]
+            ZIG,
+        ]
+        .to_vec();
         adapters
     })
 }

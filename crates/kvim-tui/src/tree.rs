@@ -359,11 +359,7 @@ impl TreeSidebar {
     pub(super) fn held_mode(&self, path: &Path) -> Option<TransferMode> {
         let mode = self.clipboard.mode()?;
         let contained = self.contained(path)?;
-        self.clipboard
-            .paths()
-            .iter()
-            .any(|held| *held == contained)
-            .then_some(mode)
+        self.clipboard.paths().contains(&contained).then_some(mode)
     }
 
     /// Returns the generic rows that the renderer walks.

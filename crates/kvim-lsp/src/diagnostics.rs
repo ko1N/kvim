@@ -1412,21 +1412,21 @@ impl ServerConversation for DiagnosticsConversation {
         self.open = None;
         loop {
             let active = self.jobs.borrow_and_update().clone();
-            if let Some(job) = active {
-                if let Some(index) = job.open_slot(self.server) {
-                    match self.produce(&mut attempt, &job).await {
-                        Ok(Some(outcome)) => job.fill(index, outcome),
-                        // The job ended, or the caller cancelled the project.
-                        // Neither publishes an outcome for this revision.
-                        Ok(None) => {}
-                        // A fatal failure leaves the message stream unusable.
-                        // The supervisor restarts the server, and the next
-                        // attempt serves this job again. The restart bound ends
-                        // the session, and the stopped record then fills the
-                        // slot, so the request still reaches one outcome.
-                        Err(error) if error.is_fatal() => return AttemptEnd::Failed(error),
-                        Err(error) => job.fill(index, SlotOutcome::Failed(error)),
-                    }
+            if let Some(job) = active
+                && let Some(index) = job.open_slot(self.server)
+            {
+                match self.produce(&mut attempt, &job).await {
+                    Ok(Some(outcome)) => job.fill(index, outcome),
+                    // The job ended, or the caller cancelled the project.
+                    // Neither publishes an outcome for this revision.
+                    Ok(None) => {}
+                    // A fatal failure leaves the message stream unusable.
+                    // The supervisor restarts the server, and the next
+                    // attempt serves this job again. The restart bound ends
+                    // the session, and the stopped record then fills the
+                    // slot, so the request still reaches one outcome.
+                    Err(error) if error.is_fatal() => return AttemptEnd::Failed(error),
+                    Err(error) => job.fill(index, SlotOutcome::Failed(error)),
                 }
             }
             tokio::select! {
