@@ -1642,24 +1642,121 @@ fn yaml_source_produces_terminal_independent_roles() {
     assert!(roles(&analysis, 3).contains(&SyntaxRole::Boolean));
 }
 
+/// Returns the indent-level query of one YAML source.
+///
+/// Every YAML indent case asks the same question that the Python cases ask: a
+/// new line starts at the end of one line, so the query names the last text of
+/// that line and reads the level of the position behind it.
+fn yaml_level_after(source: &'static str) -> impl Fn(&str) -> u16 {
+    let analysis = analyze_path("deploy/values.yaml", source);
+    move |needle| {
+        let end = source.find(needle).expect("the test source holds the text") + needle.len();
+        analysis
+            .indent_level(end)
+            .expect("the position stays inside the source")
+            .get()
+    }
+}
+
 #[test]
 fn the_yaml_indent_level_follows_the_block_entries() {
-    let analysis = analyze_path("deploy/values.yaml", YAML_SOURCE);
-    let byte = |needle: &str| {
-        YAML_SOURCE
-            .find(needle)
-            .expect("the test source holds the text")
-    };
+    let level = yaml_level_after(YAML_SOURCE);
 
-    // An entry that owns a nested block supplies the level of that block, so
-    // the first line of the block is exact.
-    assert_eq!(analysis.indent_level(byte("\n  a: 1")).unwrap().get(), 1);
-    assert_eq!(analysis.indent_level(byte("\n  b: true")).unwrap().get(), 1);
-    assert_eq!(
-        analysis.indent_level(byte("\n  - name: x")).unwrap().get(),
-        1
-    );
-    assert_eq!(analysis.indent_level(byte("\n    id: 2")).unwrap().get(), 2);
+    // An entry that owns a nested block supplies the level of that block, and
+    // the block closes with indentation alone, so the entry holds every line of
+    // the block through the last one.
+    assert_eq!(level("root:"), 1);
+    assert_eq!(level("  a: 1"), 1);
+    assert_eq!(level("  b: true"), 1);
+    assert_eq!(level("list:"), 1);
+    assert_eq!(level("  - one"), 1);
+    assert_eq!(level("  - name: x"), 2);
+    assert_eq!(level("    id: 2"), 2);
+}
+
+#[test]
+fn a_yaml_block_mapping_keeps_its_level_through_its_last_line() {
+    let level = yaml_level_after("a:\n  b: 1\n  c: 2\nd: 3\n");
+
+    // The entry opens the mapping, and every line of the mapping keeps that
+    // level, because no delimiter closes the mapping behind its last entry.
+    assert_eq!(level("a:"), 1);
+    assert_eq!(level("  b: 1"), 1);
+    assert_eq!(level("  c: 2"), 1);
+    // The next entry stands outside the mapping, so it takes no level from it.
+    assert_eq!(level("d: 3"), 0);
+}
+
+#[test]
+fn a_yaml_entry_with_a_scalar_value_opens_no_block() {
+    let level = yaml_level_after("a: 1\nb: 2\n");
+
+    // The complete value stands on the entry line, so the entry opens no block.
+    assert_eq!(level("a: 1"), 0);
+}
+
+#[test]
+fn a_yaml_block_sequence_keeps_its_level_through_its_last_item() {
+    let level = yaml_level_after("a:\n  - x\n  - y\nb: 1\n");
+
+    // The entry that owns the sequence supplies the level of every item, so an
+    // item needs no scope of its own.
+    assert_eq!(level("  - x"), 1);
+    assert_eq!(level("  - y"), 1);
+    assert_eq!(level("b: 1"), 0);
+}
+
+#[test]
+fn a_nested_yaml_mapping_takes_one_level_for_each_entry() {
+    let level = yaml_level_after("a:\n  b:\n    c: 1\n");
+
+    assert_eq!(level("  b:"), 2);
+    assert_eq!(level("    c: 1"), 2);
+}
+
+#[test]
+fn a_yaml_block_scalar_takes_the_level_of_its_entry() {
+    let level = yaml_level_after("a: |\n  one\n  two\nb: 2\n");
+
+    // The value node starts on the entry line, but the scalar content follows
+    // on a later row and carries no scope of its own, so the entry is the one
+    // source of its level.
+    assert_eq!(level("a: |"), 1);
+    assert_eq!(level("  one"), 1);
+    assert_eq!(level("  two"), 1);
+    assert_eq!(level("b: 2"), 0);
+}
+
+#[test]
+fn a_multi_line_yaml_flow_value_takes_one_level_only() {
+    let level = yaml_level_after("a: [\n  1,\n]\n");
+
+    // The flow sequence carries its own brackets and supplies its own level, so
+    // the entry that holds it adds no second one.
+    assert_eq!(level("a: ["), 1);
+    assert_eq!(level("  1,"), 1);
+}
+
+#[test]
+fn a_yaml_sequence_of_mappings_indents_each_entry_once() {
+    let under_key = yaml_level_after("steps:\n  - name: a\n    run: b\n");
+
+    // The entry supplies the level of the sequence, and the item supplies the
+    // level of the mapping that it holds.
+    assert_eq!(under_key("steps:"), 1);
+    assert_eq!(under_key("  - name: a"), 2);
+    assert_eq!(under_key("    run: b"), 2);
+
+    let top_level = yaml_level_after("- a: 1\n  b: 2\n");
+
+    // A top-level item holds a mapping, so its own whole span supplies the one
+    // level that the mapping needs.
+    assert_eq!(top_level("- a: 1"), 1);
+    assert_eq!(top_level("  b: 2"), 1);
+
+    let scalars = yaml_level_after("- a\n- b\n");
+
+    assert_eq!(scalars("- a"), 0);
 }
 
 #[test]

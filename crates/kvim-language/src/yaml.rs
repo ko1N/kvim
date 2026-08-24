@@ -21,12 +21,18 @@ use super::{
 ///
 /// YAML closes a block collection with indentation alone, so no node spans the
 /// key line and the nested block together. The table therefore names the entry
-/// that owns each nested collection, exactly as the Python table names the
-/// compound statement that owns each suite. A `flow_mapping` node and a
-/// `flow_sequence` node carry their own brackets, so both behave exactly as
-/// the equivalent node of a brace language.
+/// that owns each nested collection and gives it the undelimited-body span of
+/// its `value` field, exactly as the Python table names the compound statement
+/// that owns each suite. The span reaches the last byte of the entry, so the
+/// last line of a nested collection keeps the level of that collection. A
+/// `block_sequence_item` node names no field, so it keeps the whole span, and
+/// the entry that holds the sequence supplies the level of every item. A
+/// `flow_mapping` node and a `flow_sequence` node carry their own brackets, so
+/// both keep the whole span and supply their own level, and the entry that
+/// holds one adds no second level. A block scalar carries no scope of its own,
+/// so it takes its level from the entry that holds it.
 const YAML_INDENT_SCOPES: [IndentScope; 4] = [
-    IndentScope::whole("block_mapping_pair"),
+    IndentScope::undelimited_body("block_mapping_pair", "value"),
     IndentScope::whole("block_sequence_item"),
     IndentScope::whole("flow_mapping"),
     IndentScope::whole("flow_sequence"),
