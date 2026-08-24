@@ -61,7 +61,7 @@
 //! use std::sync::{Arc, OnceLock};
 //!
 //! use kvim_core::TextBuffer;
-//! use kvim_language::{AnalysisInput, LanguageRegistry};
+//! use kvim_language::{AnalysisInput, LanguageRegistry, SyntaxHighlighter};
 //! use kvim_settings::FileSettings;
 //! use tokio_util::sync::CancellationToken;
 //!
@@ -73,7 +73,7 @@
 //!     .expect("the text is small");
 //! let input = AnalysisInput::new(buffer.version(), Arc::from(buffer.to_string()));
 //! let analysis = adapter
-//!     .analyze(&input, &CancellationToken::new())
+//!     .analyze(&input, &mut SyntaxHighlighter::new(), &CancellationToken::new())
 //!     .expect("the source is valid Rust");
 //! assert!(!analysis.highlights().is_empty());
 //! ```
@@ -108,7 +108,6 @@ mod document;
     feature = "grammar-typescript",
 ))]
 mod ecma;
-mod encoding;
 #[cfg(feature = "grammar-fish")]
 mod fish;
 mod formatter;
@@ -130,7 +129,6 @@ mod markup;
 #[cfg(feature = "grammar-nix")]
 mod nix;
 mod progress;
-mod protocol;
 #[cfg(feature = "grammar-python")]
 mod python;
 #[cfg(feature = "grammar-rust")]
@@ -175,8 +173,8 @@ pub use cpp::CppAdapter;
 #[cfg(feature = "grammar-css")]
 pub use css::CssAdapter;
 pub use document::{
-    ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, FormatEdits, MarkupKind,
-    MarkupText, SourceLocation, TextEdit,
+    DiagnosticSet, FormatEdits, MarkupKind, MarkupText, buffer_position, buffer_range,
+    content_changes, document_position,
 };
 #[cfg(feature = "grammar-fish")]
 pub use fish::FishAdapter;
@@ -194,6 +192,11 @@ pub use html::HtmlAdapter;
 pub use javascript::JavascriptAdapter;
 #[cfg(feature = "grammar-json")]
 pub use json::JsonAdapter;
+pub use kvim_lsp::{
+    ContentChange, Diagnostic, DiagnosticSeverity, DocumentPosition, LSP_HEADER_BYTES_MAX,
+    LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX, LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX,
+    LSP_REQUESTS_MAX, LspBound, LspError, SourceLocation, SourceSpan, TextEdit, WorkspaceRoot,
+};
 pub use kvim_syntax::{
     Grammar, HighlightLimits, HighlightSpan, Highlighted, LanguageCatalogEntry, LimitKind,
     SyntaxHighlighter, SyntaxRole, Truncation,
@@ -212,11 +215,6 @@ pub use nix::NixAdapter;
 pub use progress::{
     LSP_PROGRESS_CHARS_MAX, ProgressPercentage, ProgressReport, ProgressStage, ProgressToken,
     SessionGeneration,
-};
-pub use protocol::{
-    DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX, LSP_MESSAGE_BYTES_MAX,
-    LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound, LspError, SourceSpan,
-    WorkspaceRoot,
 };
 #[cfg(feature = "grammar-python")]
 pub use python::PythonAdapter;

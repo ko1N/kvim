@@ -32,7 +32,6 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_settings::EditorSettings;
 
-use super::protocol::{LspBound, LspError, WorkspaceRoot};
 use super::server::{
     LanguageServerDeclaration, LanguageServerId, RootMarkers, ServerGate, declarations_are_valid,
 };
@@ -41,6 +40,7 @@ use super::session::{
     TransportFactory, start,
 };
 use super::{AnalysisError, LanguageRegistry};
+use kvim_lsp::{LspBound, LspError, WorkspaceRoot};
 
 /// The language-server sessions that one workspace runs at the same time.
 ///

@@ -32,21 +32,19 @@ use tokio::time::{self, Instant};
 use tokio_util::sync::CancellationToken;
 
 use kvim_core::BufferVersion;
+use kvim_lsp::{
+    ArrayBudget, ContentChange, DocumentMapping, DocumentPosition, LspBound, LspError,
+    PositionEncoding, ProtocolReader, ProtocolSpan, ProtocolWriter, RawDiagnostic, RawTextEdit,
+    RpcEnvelope, RpcId, SourceLocation, TextEdit, TextMirroring, WorkspaceRoot,
+    deserialize_bounded_array, enforce,
+};
 use kvim_settings::IndentSettings;
 use kvim_syntax::SyntaxHighlighter;
 
 use super::LanguageRegistry;
-use super::document::{
-    ContentChange, DiagnosticSet, FormatEdits, MarkupKind, MarkupText, RawDiagnostic, RawTextEdit,
-    SourceLocation, TextEdit,
-};
-use super::encoding::{DocumentMapping, PositionEncoding, TextMirroring};
+use super::document::{DiagnosticSet, FormatEdits, MarkupKind, MarkupText};
 use super::markup::MarkupDocument;
 use super::progress::{ProgressReport, SessionGeneration, parse as parse_progress};
-use super::protocol::{
-    ArrayBudget, DocumentPosition, LspBound, LspError, ProtocolReader, ProtocolSpan,
-    ProtocolWriter, RpcEnvelope, RpcId, WorkspaceRoot, deserialize_bounded_array, enforce,
-};
 use super::server::{LanguageServerId, ServerFormatting};
 
 /// The documents that one session holds open at the same time.

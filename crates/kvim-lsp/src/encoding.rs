@@ -19,12 +19,12 @@
 
 use std::ops::Range;
 
-use super::document::ContentChange;
-use super::protocol::{DocumentPosition, LspError, ProtocolPosition, ProtocolSpan, SourceSpan};
+use crate::document::ContentChange;
+use crate::protocol::{DocumentPosition, LspError, ProtocolPosition, ProtocolSpan, SourceSpan};
 
 /// The unit that one server counts a protocol column in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum PositionEncoding {
+pub enum PositionEncoding {
     /// One column is one UTF-8 byte offset inside its line.
     Utf8,
     /// One column is one UTF-16 code-unit offset inside its line.
@@ -36,10 +36,11 @@ impl PositionEncoding {
     ///
     /// UTF-8 stands first, so a server that supports UTF-8 still selects it and
     /// its session converts nothing.
-    pub(crate) const OFFERED: [Self; 2] = [Self::Utf8, Self::Utf16];
+    pub const OFFERED: [Self; 2] = [Self::Utf8, Self::Utf16];
 
     /// Returns the protocol name of this encoding.
-    pub(crate) const fn as_str(self) -> &'static str {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::Utf8 => "utf-8",
             Self::Utf16 => "utf-16",
@@ -52,7 +53,7 @@ impl PositionEncoding {
     ///
     /// Returns [`LspError::UnsupportedEncoding`] for a name that kvim never
     /// offered.
-    pub(crate) fn from_result(answer: Option<&str>) -> Result<Self, LspError> {
+    pub fn from_result(answer: Option<&str>) -> Result<Self, LspError> {
         // The protocol defines UTF-16 for a result that names no encoding, so
         // an absent field is a valid answer and starts the server.
         let Some(name) = answer else {
@@ -72,7 +73,7 @@ impl PositionEncoding {
 /// synchronization sends the complete text of every change, so its session
 /// builds that text from the mirror. See `docs/language-services.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum TextMirroring {
+pub enum TextMirroring {
     /// The session needs no mirror of this document.
     Absent,
     /// The session mirrors the exact text that the server holds.
@@ -83,7 +84,7 @@ pub(crate) enum TextMirroring {
 ///
 /// The variant follows the negotiated encoding and the mirror that the session
 /// needs, so a UTF-16 session cannot lose its mirror.
-pub(crate) enum DocumentMapping {
+pub enum DocumentMapping {
     /// The server confirmed UTF-8 and the session needs no mirror, so one
     /// protocol column is already one byte column and the session converts
     /// nothing and mirrors nothing.
@@ -102,7 +103,8 @@ impl DocumentMapping {
     /// A UTF-16 session always mirrors the text, because every conversion reads
     /// the line that its column indexes. A UTF-8 session mirrors the text only
     /// when `mirroring` asks for it.
-    pub(crate) fn new(encoding: PositionEncoding, mirroring: TextMirroring, text: &str) -> Self {
+    #[must_use]
+    pub fn new(encoding: PositionEncoding, mirroring: TextMirroring, text: &str) -> Self {
         match (encoding, mirroring) {
             (PositionEncoding::Utf8, TextMirroring::Absent) => Self::Direct,
             (PositionEncoding::Utf8, TextMirroring::Present) => {
@@ -122,7 +124,7 @@ impl DocumentMapping {
     /// Returns [`LspError::InvalidPosition`] when one change does not address
     /// the exact mirrored text. The caller must then drop the document, because
     /// the mirror and the server copy hold different text.
-    pub(crate) fn apply(&mut self, changes: &[ContentChange]) -> Result<(), LspError> {
+    pub fn apply(&mut self, changes: &[ContentChange]) -> Result<(), LspError> {
         match self {
             Self::Direct => Ok(()),
             Self::Mirrored(mirror) | Self::Utf16(mirror) => mirror.apply(changes),
@@ -140,7 +142,7 @@ impl DocumentMapping {
     ///
     /// Returns [`LspError::InvalidPosition`] when one change does not address
     /// the exact mirrored text, and for a mapping that mirrors no text.
-    pub(crate) fn projected(&self, changes: &[ContentChange]) -> Result<String, LspError> {
+    pub fn projected(&self, changes: &[ContentChange]) -> Result<String, LspError> {
         match self {
             Self::Direct => {
                 debug_assert!(false, "a full synchronization always mirrors its text");
@@ -156,10 +158,7 @@ impl DocumentMapping {
     ///
     /// Returns [`LspError::InvalidPosition`] for a position that the mirrored
     /// text does not hold.
-    pub(crate) fn to_protocol(
-        &self,
-        position: DocumentPosition,
-    ) -> Result<ProtocolPosition, LspError> {
+    pub fn to_protocol(&self, position: DocumentPosition) -> Result<ProtocolPosition, LspError> {
         match self {
             Self::Direct | Self::Mirrored(_) => {
                 Ok(ProtocolPosition::new(position.line, position.byte_column))
@@ -177,10 +176,7 @@ impl DocumentMapping {
     /// # Errors
     ///
     /// Returns the failures of [`DocumentMapping::to_protocol`].
-    pub(crate) fn to_document(
-        &self,
-        position: ProtocolPosition,
-    ) -> Result<DocumentPosition, LspError> {
+    pub fn to_document(&self, position: ProtocolPosition) -> Result<DocumentPosition, LspError> {
         match self {
             Self::Direct | Self::Mirrored(_) => {
                 Ok(DocumentPosition::new(position.line, position.character))
@@ -198,7 +194,7 @@ impl DocumentMapping {
     /// # Errors
     ///
     /// Returns the failures of [`DocumentMapping::to_protocol`].
-    pub(crate) fn span_to_protocol(&self, span: SourceSpan) -> Result<ProtocolSpan, LspError> {
+    pub fn span_to_protocol(&self, span: SourceSpan) -> Result<ProtocolSpan, LspError> {
         Ok(ProtocolSpan::new(
             self.to_protocol(span.start)?,
             self.to_protocol(span.end)?,
@@ -210,7 +206,7 @@ impl DocumentMapping {
     /// # Errors
     ///
     /// Returns the failures of [`DocumentMapping::to_protocol`].
-    pub(crate) fn span_to_document(&self, span: ProtocolSpan) -> Result<SourceSpan, LspError> {
+    pub fn span_to_document(&self, span: ProtocolSpan) -> Result<SourceSpan, LspError> {
         Ok(SourceSpan::new(
             self.to_document(span.start)?,
             self.to_document(span.end)?,
@@ -222,7 +218,7 @@ impl DocumentMapping {
 ///
 /// The mirror holds the text that the session sent to its server, so every
 /// conversion reads the content of the revision that the column names.
-pub(crate) struct DocumentMirror {
+pub struct DocumentMirror {
     text: String,
     /// The byte offset of the first byte of each line.
     ///

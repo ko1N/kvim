@@ -6,6 +6,7 @@ members = [
   "crates/kvim-editor",
   "crates/kvim-input",
   "crates/kvim-language",
+  "crates/kvim-lsp",
   "crates/kvim-path",
   "crates/kvim-runtime",
   "crates/kvim-settings",
@@ -29,6 +30,7 @@ kvim-core = { path = "crates/kvim-core" }
 kvim-editor = { path = "crates/kvim-editor" }
 kvim-input = { path = "crates/kvim-input" }
 kvim-language = { path = "crates/kvim-language" }
+kvim-lsp = { path = "crates/kvim-lsp" }
 kvim-path = { path = "crates/kvim-path" }
 kvim-runtime = { path = "crates/kvim-runtime" }
 kvim-settings = { path = "crates/kvim-settings" }
