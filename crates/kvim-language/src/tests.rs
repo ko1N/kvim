@@ -1103,54 +1103,114 @@ fn python_source_produces_terminal_independent_roles() {
     assert!(roles(&analysis, 3).contains(&SyntaxRole::Number));
 }
 
+/// Returns the indent-level query of one Python source.
+///
+/// Every Python indent case asks the same question: a new line starts at the
+/// end of one line, so the query names the last text of that line and reads
+/// the level of the position behind it.
+fn python_level_after(source: &'static str) -> impl Fn(&str) -> u16 {
+    let analysis = analyze_path("src/main.py", source);
+    move |needle| {
+        let end = source.find(needle).expect("the test source holds the text") + needle.len();
+        analysis
+            .indent_level(end)
+            .expect("the position stays inside the source")
+            .get()
+    }
+}
+
 #[test]
 fn the_python_indent_level_follows_the_compound_statements() {
-    let analysis = analyze_path("src/main.py", PYTHON_SOURCE);
-    let byte = |needle: &str| {
-        PYTHON_SOURCE
-            .find(needle)
-            .expect("the test source holds the text")
-    };
+    let level = python_level_after(PYTHON_SOURCE);
 
     // A line that opens a suite gains one level, because the compound statement
-    // that owns the suite already encloses the end of its own header line.
-    assert_eq!(analysis.indent_level(byte("\n    if")).unwrap().get(), 1);
-    assert_eq!(
-        analysis
-            .indent_level(byte("\n        value"))
-            .unwrap()
-            .get(),
-        2
-    );
-    // Python closes a suite with no delimiter, so the compound statement ends at
-    // the last line of its suite. Both rows below therefore report one level too
-    // few, which is the documented limit of the Python indent rule.
-    assert_eq!(
-        analysis.indent_level(byte("\n    return")).unwrap().get(),
-        1
-    );
-    assert_eq!(
-        analysis
-            .indent_level(PYTHON_SOURCE.len() - 1)
-            .unwrap()
-            .get(),
-        0
-    );
+    // that owns the suite reaches the end of its own header line.
+    assert_eq!(level("def main():"), 1);
+    assert_eq!(level("    if True:"), 2);
+    // A suite ends with indentation alone, so its scope holds the end of its
+    // last line and every line of the suite keeps the same level.
+    assert_eq!(level("        value = 1"), 2);
+    assert_eq!(level("    return 0"), 1);
+}
+
+#[test]
+fn a_python_suite_keeps_its_level_through_its_last_line() {
+    let level = python_level_after("def f():\n    x = 1\n");
+
+    // The header opens the suite, and the last statement of the suite keeps
+    // that level, because no delimiter closes the suite behind it.
+    assert_eq!(level("def f():"), 1);
+    assert_eq!(level("    x = 1"), 1);
+}
+
+#[test]
+fn a_python_header_without_a_body_still_opens_its_suite() {
+    // The user has typed the header and nothing else, so the suite holds no
+    // statement yet. The new line still takes the level of that suite.
+    assert_eq!(python_level_after("def f():\n")("def f():"), 1);
+    assert_eq!(python_level_after("if True:\n")("if True:"), 1);
+}
+
+#[test]
+fn a_multi_line_python_header_indents_its_suite_once() {
+    let level = python_level_after("def f(\n    a,\n):\n    x = 1\n");
+
+    // The parameter list carries the level of its own lines, and the suite
+    // starts one level in, because the header supplies that level once.
+    assert_eq!(level("def f("), 1);
+    assert_eq!(level("):"), 1);
+    assert_eq!(level("    x = 1"), 1);
+}
+
+#[test]
+fn a_python_method_takes_the_level_of_its_class() {
+    let level = python_level_after("class C:\n    def m(self):\n        return 1\n");
+
+    assert_eq!(level("    def m(self):"), 2);
+    assert_eq!(level("        return 1"), 2);
+}
+
+#[test]
+fn a_python_clause_keeps_the_level_of_the_statement_that_holds_it() {
+    let alternative = python_level_after("if a:\n    x = 1\nelse:\n    y = 2\n");
+
+    // `else_clause` and `except_clause` hold no scope of their own, so the
+    // statement that spans them supplies the one level of their suites.
+    assert_eq!(alternative("else:"), 1);
+    assert_eq!(alternative("    y = 2"), 1);
+
+    let handler = python_level_after("try:\n    x = 1\nexcept E:\n    y = 2\n");
+
+    assert_eq!(handler("    y = 2"), 1);
+}
+
+#[test]
+fn a_python_case_label_takes_one_more_level_than_its_match() {
+    let level = python_level_after("match a:\n    case 1:\n        x = 1\n");
+
+    assert_eq!(level("    case 1:"), 2);
+    assert_eq!(level("        x = 1"), 2);
+}
+
+#[test]
+fn a_one_line_python_suite_opens_no_block() {
+    // The complete body stands on the header line, so the statement opens no
+    // indented block and the next line starts at the level of the statement.
+    assert_eq!(python_level_after("if a: x = 1\n")("if a: x = 1"), 0);
 }
 
 #[test]
 fn a_bracketed_python_expression_indents_like_a_brace_language() {
-    let analysis = analyze_path("src/main.py", PYTHON_LIST_SOURCE);
-    let byte = |needle: &str| {
-        PYTHON_LIST_SOURCE
-            .find(needle)
-            .expect("the test source holds the text")
-    };
+    let level = python_level_after(PYTHON_LIST_SOURCE);
 
     // A bracket carries its own opening and closing character, so the list
-    // behaves exactly as the equivalent node of a brace language.
-    assert_eq!(analysis.indent_level(byte("\n    1,")).unwrap().get(), 1);
-    assert_eq!(analysis.indent_level(byte("]")).unwrap().get(), 0);
+    // behaves exactly as the equivalent node of a brace language. The list
+    // therefore keeps the half-open range of the whole span.
+    assert_eq!(level("values = ["), 1);
+    assert_eq!(level("    1,"), 1);
+    // The needle ends with the line break, so this position stands at the start
+    // of the line that closes the list, and that line loses the level again.
+    assert_eq!(level("    1,\n"), 0);
 }
 
 #[test]

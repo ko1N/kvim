@@ -437,14 +437,32 @@ impl CommentStyle {
 
 /// One node kind whose content takes one more indent level.
 ///
-/// A scope optionally names the field whose subtree it does not indent. A Nix
-/// `let_expression` spans its own `in` body, so without the exclusion that body
-/// would take the level of the `let` in addition to its own level. A scope that
-/// names no body indents the complete node. See `docs/language-services.md`.
+/// A scope also names the span of the node that it indents. One constructor
+/// establishes each span, so a scope can never name a field that its span
+/// ignores. See `docs/language-services.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndentScope {
     kind: &'static str,
-    body: Option<&'static str>,
+    span: IndentSpan,
+}
+
+/// The part of one node that an indent scope indents.
+///
+/// The three spans differ in more than one bound, so a field name alone cannot
+/// tell them apart. The enum stays crate-internal, because only the
+/// constructors of [`IndentScope`] create it and only the indent query reads
+/// it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum IndentSpan {
+    /// The complete node, between its first byte and its last byte.
+    Whole,
+    /// The node from its first byte until the named field starts.
+    UntilBody(&'static str),
+    /// The named field of a node that no delimiter closes.
+    ///
+    /// The span runs from the end of the header, which is the sibling before
+    /// the field, through the last byte of the node, and it holds both ends.
+    UndelimitedBody(&'static str),
 }
 
 impl IndentScope {
@@ -459,7 +477,10 @@ impl IndentScope {
             !kind.is_empty(),
             "a grammar names every node kind, so an empty kind matches no node and declares a scope that never applies"
         );
-        Self { kind, body: None }
+        Self {
+            kind,
+            span: IndentSpan::Whole,
+        }
     }
 
     /// Creates a scope that indents the node only until its body field starts.
@@ -479,7 +500,31 @@ impl IndentScope {
         );
         Self {
             kind,
-            body: Some(body),
+            span: IndentSpan::UntilBody(body),
+        }
+    }
+
+    /// Creates a scope that indents the body of a node that no delimiter closes.
+    ///
+    /// Use this for a node whose body ends with indentation alone. A Python
+    /// `function_definition` ends at the last token of its suite, so the span
+    /// runs from the end of the header through that token and holds both ends.
+    /// A new line at the end of the suite therefore keeps the level of the
+    /// body. A header that carries its complete body on the header line opens
+    /// no block, so the span then holds no position at all.
+    #[must_use]
+    pub const fn undelimited_body(kind: &'static str, body: &'static str) -> Self {
+        debug_assert!(
+            !kind.is_empty(),
+            "a grammar names every node kind, so an empty kind matches no node and declares a scope that never applies"
+        );
+        debug_assert!(
+            !body.is_empty(),
+            "a grammar names every field, so an empty field name finds no body and declares a scope that never applies"
+        );
+        Self {
+            kind,
+            span: IndentSpan::UndelimitedBody(body),
         }
     }
 
@@ -489,10 +534,9 @@ impl IndentScope {
         self.kind
     }
 
-    /// Returns the field whose subtree this scope does not indent.
-    #[must_use]
-    pub const fn body(self) -> Option<&'static str> {
-        self.body
+    /// Returns the part of the node that this scope indents.
+    pub(crate) const fn span(self) -> IndentSpan {
+        self.span
     }
 }
 

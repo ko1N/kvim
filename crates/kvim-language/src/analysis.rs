@@ -22,7 +22,7 @@ use super::LanguageAdapter;
 use super::{
     ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_NODES_MAX,
     ANALYSIS_SOURCE_BYTES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, IndentLevel,
-    IndentRule, IndentScope, analysis, enforce_count, previous_tree, validate_source,
+    IndentRule, IndentScope, IndentSpan, analysis, enforce_count, previous_tree, validate_source,
 };
 
 /// Returns the bounds that one buffer analysis gives the highlighter.
@@ -199,23 +199,51 @@ fn encloses(rule: IndentRule, node: Node<'_>, byte: usize) -> bool {
 
 /// Reports whether the indent range of one scope holds the position.
 ///
-/// The range starts at the first byte of the node and ends where the body of
-/// the scope starts. A scope that names no body ends at the node itself.
+/// Each span of [`IndentScope`] names one range:
 ///
-/// The body bound keeps a scope from indenting its own body a second time. A
-/// Nix `let_expression` spans the attribute set after its `in` keyword, and
-/// that attribute set is an indent scope of its own. A `let` that reached its
-/// own end would therefore add one level to every line of that body, and the
-/// last `};` of the file would take two levels instead of one.
+/// - The whole span runs between the first and the last byte of the node and
+///   holds neither end. A closing delimiter therefore ends the range, exactly
+///   as a brace language expects.
+/// - The until-body span ends where the named field starts, which keeps a scope
+///   from indenting its own body a second time. A Nix `let_expression` spans
+///   the attribute set after its `in` keyword, and that attribute set is an
+///   indent scope of its own. A `let` that reached its own end would add one
+///   level to every line of that body, and the last `};` of the file would take
+///   two levels instead of one.
+/// - The undelimited-body span runs from the end of the header through the last
+///   byte of the node and holds both ends, because no delimiter follows the
+///   body. A new line at the end of a Python suite therefore keeps the level of
+///   that suite.
 fn indent_range_holds(scope: IndentScope, node: Node<'_>, byte: usize) -> bool {
-    let body = scope
-        .body()
-        .and_then(|field| node.child_by_field_name(field));
-    let end = match body {
-        Some(body) => body.start_byte(),
-        None => node.end_byte(),
-    };
-    node.start_byte() < byte && byte < end
+    match scope.span() {
+        IndentSpan::Whole => node.start_byte() < byte && byte < node.end_byte(),
+        IndentSpan::UntilBody(field) => {
+            let end = node
+                .child_by_field_name(field)
+                .map_or(node.end_byte(), |body| body.start_byte());
+            node.start_byte() < byte && byte < end
+        }
+        IndentSpan::UndelimitedBody(field) => {
+            let Some(body) = node.child_by_field_name(field) else {
+                return false;
+            };
+            // The sibling before the body is the token that ends the header,
+            // which is the `:` of every Python suite.
+            let header = body.prev_sibling();
+            let header_end = header.map_or(node.start_byte(), |header| header.end_byte());
+            let header_row = header.map_or(node.start_position().row, |header| {
+                header.end_position().row
+            });
+            // A one-line suite such as `if a: x = 1` opens no indented block.
+            // The row comes from the first statement of the body, never from
+            // the body node, because a body node can start at the line break
+            // and would then report the row of its own header.
+            let opens_block = body
+                .named_child(0)
+                .is_none_or(|first| first.start_position().row > header_row);
+            opens_block && header_end <= byte && byte <= node.end_byte()
+        }
+    }
 }
 
 /// Reports whether the new line starts with a closing delimiter.
