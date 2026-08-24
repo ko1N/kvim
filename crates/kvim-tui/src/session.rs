@@ -60,6 +60,7 @@ use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, TerminalEvent};
+use kvim_ui::{RegionKind, SidebarSide, WindowId};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
     FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure, GitStatusRead,
@@ -82,7 +83,6 @@ use super::language::{
     LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
     QueryPurpose, QueryState, Refusal, formatter, has_formatter, jump_target,
 };
-use super::layout::RegionKind;
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
@@ -91,7 +91,7 @@ use super::tree::{
     GitPublication, TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
     TreeRefusal, TreeSidebar, delete_question, overwrite_question,
 };
-use super::window::{SidebarSide, WindowId, WindowOutcome, Windows};
+use super::window::{WindowOutcome, Windows};
 
 /// The largest message that the message line keeps, in characters.
 ///
@@ -3153,20 +3153,21 @@ impl Session {
     /// Shows the file-tree sidebar and returns its region.
     ///
     /// The sidebar keeps one identity for the complete session, so hiding and
-    /// showing it never builds a second region.
-    fn show_sidebar(&mut self) -> WindowId {
+    /// showing it never builds a second region. Returns `None` when the window
+    /// tree cannot issue a region identity.
+    fn show_sidebar(&mut self) -> Option<WindowId> {
         match self.tree_region {
             Some(id) => {
                 self.windows.set_sidebar_visible(SidebarSide::Right, true);
-                id
+                Some(id)
             }
             None => {
                 let id = self.windows.open_sidebar(
                     SidebarSide::Right,
                     self.settings.windows.file_tree_width_cells,
-                );
+                )?;
                 self.tree_region = Some(id);
-                id
+                Some(id)
             }
         }
     }
@@ -3184,7 +3185,9 @@ impl Session {
             Some(path) => self.tree.reveal(&path),
             None => self.set_message(NO_REVEAL_PATH_NOTE, MessageLevel::Info),
         }
-        self.windows.focus_region(region);
+        if let Some(region) = region {
+            self.windows.focus_region(region);
+        }
         self.sync_context();
         Redraw::Needed
     }
@@ -4808,7 +4811,7 @@ impl Session {
             .layout()
             .regions()
             .iter()
-            .filter(|region| region.kind == RegionKind::Editor)
+            .filter(|region| region.kind == RegionKind::Surface)
             .map(|region| (region.id, region.area.width, region.area.height))
             .collect();
         for (id, area_width, area_height) in regions {

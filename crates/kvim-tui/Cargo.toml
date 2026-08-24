@@ -16,6 +16,7 @@ kvim-path.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true
 kvim-terminal.workspace = true
+kvim-ui.workspace = true
 kvim-workspace.workspace = true
 
 # Basics

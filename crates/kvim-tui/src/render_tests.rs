@@ -23,7 +23,7 @@ use kvim_workspace::temp::TempDir;
 use super::buffer_view::WINBAR_ROWS;
 use super::clipboard::SessionClipboard;
 use super::session::{ConfirmedAction, MessageLevel, Redraw, Session, test_root};
-use super::window::WindowId;
+use kvim_ui::WindowId;
 
 const NOW: Duration = Duration::ZERO;
 
