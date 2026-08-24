@@ -239,7 +239,12 @@ pub(super) fn render_which_key(
         );
         return;
     };
-    overlay.render(target, body);
+    if overlay.render(target, body).is_err() {
+        debug_assert!(
+            false,
+            "the body band of one frame names cells of the cell buffer of that frame"
+        );
+    }
 }
 
 /// Returns the rectangle that one float of `desired` size occupies.

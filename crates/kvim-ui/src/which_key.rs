@@ -20,6 +20,8 @@ use ratatui::style::Style;
 use thiserror::Error;
 use unicode_width::UnicodeWidthChar;
 
+use crate::layout::fits;
+
 /// The largest number of hints that one overlay accepts.
 ///
 /// One level of a binding table names far fewer next keys than this bound. The
@@ -84,6 +86,14 @@ pub enum WhichKeyError {
         chars: usize,
         /// The bound that the text passed.
         max: usize,
+    },
+    /// The body band names cells that the supplied buffer does not hold.
+    #[error("the overlay band {body:?} names cells outside the buffer {buffer:?}")]
+    Area {
+        /// The body band that the caller supplied.
+        body: Rect,
+        /// The rectangle that the supplied buffer covers.
+        buffer: Rect,
     },
 }
 
@@ -182,8 +192,8 @@ pub struct WhichKeyStyles {
 /// One validated which-key overlay.
 ///
 /// The value borrows the hints and the title, so the caller keeps the final
-/// texts. Construction checks every bound once, and the render then paints
-/// without a further failure path.
+/// texts. Construction checks every bound of the content once, so the render
+/// then checks its geometry alone.
 ///
 /// # Examples
 ///
@@ -201,7 +211,7 @@ pub struct WhichKeyStyles {
 /// ];
 ///
 /// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
-/// overlay.render(&mut target, body);
+/// overlay.render(&mut target, body)?;
 /// assert_eq!(target.cell((1, 5)).map(|cell| cell.symbol()), Some("W"));
 /// assert_eq!(target.cell((1, 6)).map(|cell| cell.symbol()), Some("f"));
 /// # Ok::<(), kvim_ui::WhichKeyError>(())
@@ -257,9 +267,20 @@ impl<'a> WhichKeyOverlay<'a> {
     ///
     /// The render writes no cell outside `body` and performs no input and no
     /// output beyond the cell buffer.
-    pub fn render(&self, target: &mut Buffer, body: Rect) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WhichKeyError::Area`] when `body` names one cell that `target`
+    /// does not hold. The buffer keeps every cell in that case, so a host that
+    /// supplies a stale rectangle reads no partial overlay. An empty band names
+    /// no cell, so every buffer accepts it and the render paints nothing.
+    pub fn render(&self, target: &mut Buffer, body: Rect) -> Result<(), WhichKeyError> {
+        let buffer = *target.area();
+        if !fits(body, buffer) {
+            return Err(WhichKeyError::Area { body, buffer });
+        }
         if body.is_empty() || self.hints.is_empty() {
-            return;
+            return Ok(());
         }
         // Every column keeps the width of the widest hint. A hidden icon
         // reserves no cell, which keeps that alignment without a patched font.
@@ -282,11 +303,11 @@ impl<'a> WhichKeyOverlay<'a> {
         let layout = column_layout(self.hints.len(), column_cells, cells, rows_max);
         let shown = layout.shown(self.hints.len());
         if shown == 0 {
-            return;
+            return Ok(());
         }
         let Ok(height) = u16::try_from(layout.rows_per_column) else {
             debug_assert!(false, "the row bound keeps the overlay height small");
-            return;
+            return Ok(());
         };
         let height = height.saturating_add(TITLE_ROWS);
         let area = Rect::new(body.x, body.bottom() - height, body.width, height);
@@ -328,6 +349,7 @@ impl<'a> WhichKeyOverlay<'a> {
                 self.styles.surface,
             );
         }
+        Ok(())
     }
 
     /// Renders the title row of the overlay.

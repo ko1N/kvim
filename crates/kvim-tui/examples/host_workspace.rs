@@ -770,7 +770,7 @@ fn render(
                 key: accent,
             },
         )?
-        .render(cells, HOST_AREA);
+        .render(cells, HOST_AREA)?;
     }
     Ok(())
 }
