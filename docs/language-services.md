@@ -1182,6 +1182,12 @@ encoding changes a line index, and the column stays exact for a line of ASCII
 text. The target moves the cursor and changes no buffer content, so a line with
 text above the Basic Multilingual Plane can place the cursor a few columns away.
 
+One backward step of the jump list opens a document through this same path. The
+two targets keep different position rules. A server position stays exact,
+because the answer describes the document that the server read. A recorded
+position of the jump list clamps into the loaded document, because the file can
+shrink after the editor records it. See [`windows.md`](windows.md).
+
 ## Workspace Root Markers
 
 One language server serves a workspace only when the workspace uses its tool. A
