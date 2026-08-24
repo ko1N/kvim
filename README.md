@@ -14,7 +14,8 @@ TSX, TypeScript, XML, YAML, and Zig.
 
 ## Install
 
-kvim needs Rust 1.85 or newer when you build it with Cargo.
+kvim needs Rust 1.94.1 or newer when you build it with Cargo. That version is
+the minimum supported Rust version (MSRV) of every crate in this repository.
 
 ### With Nix
 
@@ -54,7 +55,7 @@ the exact Rust version, and the shell supplies that version.
 ### With Cargo
 
 ```sh
-cargo install --git https://github.com/patrickjeremic/kvim.git --locked kvim
+cargo install --git https://github.com/ko1N/kvim.git --locked kvim
 ```
 
 The command installs the `kvim` executable into the binary directory of Cargo,
@@ -84,6 +85,74 @@ overlay in the bottom-right corner reports language-server progress, and nothing
 else.
 
 Run `kvim --help` for the command forms, and `kvim --version` for the version.
+
+## Use kvim As A Library
+
+The `kvim` executable is one consumer of the same public packages that this
+repository publishes. Another program can embed the parts that it needs and
+compose the rest itself.
+
+### Entry points
+
+| Package | Entry point | It gives you |
+|---|---|---|
+| `kvim-path` | `WorktreeRoot`, `WorktreeRelativePath` | One canonical worktree root and safe relative paths below it. |
+| `kvim-syntax` | `SyntaxHighlighter` | Bounded Tree-sitter highlighting of one fragment, with no editor, no language server, and no asynchronous runtime. |
+| `kvim-lsp` | `ProjectManager`, `ChangedFile` | Project-scoped language servers and bounded diagnostics for one changed file. |
+| `kvim-keymap` | `Registry`, `Resolver` | Terminal-neutral keys, one shared binding table, and which-key hints. |
+| `kvim-ui` | `WindowTree`, `SidebarState`, `WhichKeyOverlay`, `WorkspaceComposer` | Generic ratatui splits, sidebars, overlays, and host workspace composition. |
+| `kvim-tui` | `EmbeddedEditor`, `EditorDriver` | One embedded modal editor and review surface for one worktree. |
+
+The standalone entry point is the `kvim` executable of the `kvim` binary crate.
+It owns the terminal, the signals, the asynchronous runtime, and the
+application loop, and it reaches every editor behavior through the packages
+above.
+
+Each package carries one dedicated example that needs no installed server, no
+network, and no terminal:
+
+```sh
+cargo run -p kvim-syntax --example highlight --no-default-features --features grammar-rust
+cargo run -p kvim-lsp --example lsp_diagnostics
+cargo run -p kvim-ui --example sidebar
+cargo run -p kvim-ui --example split_windows
+cargo run -p kvim-ui --example which_key
+cargo run -p kvim-tui --example embedded_editor
+cargo run -p kvim-tui --example host_workspace
+cargo run -p kvim-tui --example worktree_diff_review
+```
+
+### Depend on a revision
+
+The packages are not on crates.io yet. Name them as revision-pinned Git
+dependencies. They need no shared parent workspace:
+
+```toml
+[dependencies]
+kvim-syntax = { git = "https://github.com/ko1N/kvim.git", rev = "<commit>" }
+kvim-ui = { git = "https://github.com/ko1N/kvim.git", rev = "<commit>" }
+ratatui = "0.29"
+```
+
+`fixtures/consumer` is one complete consumer of this form, and CI compiles it
+on macOS and on Linux for every supported feature combination.
+
+### Compatibility
+
+- **Minimum supported Rust version.** Rust 1.94.1. `[workspace.package].rust-version`
+  records it, and CI compiles and tests the workspace with that exact version.
+  The development and release toolchain stays at the version in
+  `rust-toolchain.toml`.
+- **ratatui.** Public signatures use ratatui 0.29 types. A consumer builds
+  against that same compatible release.
+- **Grammars.** No package bundles a grammar by default. Enable
+  `grammar-<language>` for each language that you need, or `all-grammars` for
+  all 25. The standalone executable enables `all-grammars`.
+- **Stability.** The public packages stay at version `0.1`. A breaking change to
+  a documented facade needs a workspace minor-version increase, a migration
+  note, updated documentation, and an updated example. A patch release never
+  intentionally breaks a documented facade. A `test-support` feature is private
+  and is not part of any supported combination.
 
 ## Diagnostics
 

@@ -17,6 +17,9 @@ members = [
   "crates/kvim-ui",
   "crates/kvim-workspace",
 ]
+# The consumer fixture must compile exactly like an outside repository, so it
+# stays outside this workspace and pins its kvim packages by Git revision.
+exclude = ["fixtures"]
 resolver = "3"
 
 [workspace.package]

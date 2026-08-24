@@ -76,6 +76,10 @@
 //! assert_eq!(tree.focus_direction(Direction::Left), LayoutChange::Changed);
 //! ```
 
+// The crate is one supported external package. Every published item names
+// its own contract, so no implementation API can reach a consumer by accident.
+#![deny(missing_docs)]
+
 mod composer;
 mod layout;
 mod sidebar;

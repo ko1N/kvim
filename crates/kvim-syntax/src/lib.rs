@@ -25,8 +25,8 @@
 //!
 //! # Examples
 //!
-//! The `highlight` example is one complete consumer that needs no editor and no
-//! language server:
+//! `crates/kvim-syntax/examples/highlight.rs` is one complete consumer that
+//! needs no editor and no language server:
 //!
 //! ```text
 //! cargo run -p kvim-syntax --example highlight \
@@ -47,6 +47,10 @@
 //! assert!(highlighted.errors().is_empty());
 //! # }
 //! ```
+
+// The crate is one supported external package. Every published item names
+// its own contract, so no implementation API can reach a consumer by accident.
+#![deny(missing_docs)]
 
 use std::path::Path;
 

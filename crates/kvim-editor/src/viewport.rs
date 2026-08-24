@@ -111,7 +111,7 @@ impl Viewport {
 
     /// Returns the number of lines that `Ctrl-F` and `Ctrl-B` move.
     ///
-    /// The value is the window height less [`FULL_PAGE_OVERLAP_ROWS`], so two
+    /// The value is the window height less `FULL_PAGE_OVERLAP_ROWS`, so two
     /// lines of the previous view stay visible. The overlap keeps the reader
     /// oriented across a page move. Vim uses the same rule.
     #[must_use]

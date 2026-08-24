@@ -57,20 +57,33 @@ impl Chord {
 pub enum KeyCode {
     /// A printable character. Shift is folded into the character value.
     Char(char),
+    /// The up arrow key.
     Up,
+    /// The down arrow key.
     Down,
+    /// The left arrow key.
     Left,
+    /// The right arrow key.
     Right,
+    /// The `Enter` key, which some terminals report as `Return`.
     Enter,
+    /// The `Tab` key.
     Tab,
     /// The `Shift-Tab` key, which terminals report as one code.
     BackTab,
+    /// The `Backspace` key, which removes the character before the cursor.
     Backspace,
+    /// The `Delete` key, which removes the character under the cursor.
     Delete,
+    /// The `Home` key.
     Home,
+    /// The `End` key.
     End,
+    /// The `Page Up` key.
     PageUp,
+    /// The `Page Down` key.
     PageDown,
+    /// The `Esc` key, which cancels the current input.
     Esc,
 }
 

@@ -899,7 +899,13 @@ where
 ///
 /// The reader owns the cumulative output budget and the message budget of the
 /// session.
-pub struct ProtocolReader<R> {
+///
+/// The type stays inside this crate. [`ServerProcess`] owns the only reader of
+/// one session, and a consumer that frames its own stream calls [`read_frame`]
+/// with budgets that it owns.
+///
+/// [`ServerProcess`]: crate::ServerProcess
+pub(crate) struct ProtocolReader<R> {
     stream: R,
     output_bytes: usize,
     messages: usize,

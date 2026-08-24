@@ -9,6 +9,9 @@
 //! no task, reads no clock, and reaches no runtime. A consumer submits it to a
 //! bounded worker of its own, and that scheduler owns the deadline and the
 //! cancellation signal.
+//!
+//! `crates/kvim-syntax/examples/highlight.rs` is the dedicated example of this
+//! feature. It highlights one Rust fragment and prints the role of each range.
 
 use tree_sitter::{ParseOptions, ParseState, Parser, Tree};
 use tree_sitter_highlight::{

@@ -256,3 +256,9 @@ resolver. Editor, composition, and review examples use temporary worktrees.
 
 No example requires a user-installed server, network access, terminal ownership,
 or this repository as input.
+
+`crates/kvim/tests/repository_policy.rs` enforces this policy. It checks that
+every public feature module names an example file that exists, that no other
+example replaces a feature example, and that every example link of the published
+documentation resolves. [`architecture.md`](architecture.md) names the complete
+set of release gates.
