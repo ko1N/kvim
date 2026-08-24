@@ -11,15 +11,18 @@ use std::time::Duration;
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
+use tokio::time::timeout;
+
 use kvim_input::{Command, CommandAuthority, PasteText};
 use kvim_path::WorktreeRelativePath;
+use kvim_runtime::{RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
 use kvim_settings::EditorSettings;
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode, WorkspaceRequest};
 
 use super::embed::{
-    CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorEvent, GeometryError, InputRequest,
-    PublishedEvent, Refusal,
+    CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorShutdown,
+    EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
 };
 use super::session::{Redraw, RunState, Session, test_root};
 
@@ -744,4 +747,275 @@ fn an_accepted_area_change_reports_one_frame() {
             .count(),
         1
     );
+}
+
+#[test]
+fn a_saturated_editor_leaves_the_outbox_of_its_neighbour_free() {
+    let directory = TempDir::new("embed-saturated-neighbour");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut first = editor(&directory.path);
+    let mut second = editor(&directory.path);
+    assert_ne!(
+        first.instance(),
+        second.instance(),
+        "two editors of one process never share an identity"
+    );
+    first.open_path(first_path);
+    settle(&mut first);
+    second.open_path(second_path);
+    settle(&mut second);
+
+    saturate(&mut first);
+    assert_eq!(
+        first
+            .apply_command(Command::SaveBuffer, None, NOW)
+            .refusal(),
+        Some(Refusal::Saturated)
+    );
+
+    // The queue of the second editor holds every slot of its own bound, so the
+    // saturated neighbour refuses nothing here.
+    let reduction = second.apply_command(Command::SaveBuffer, None, NOW);
+    assert_eq!(reduction.refusal(), None);
+    settle(&mut second);
+    let written = relative("second.rs");
+    assert!(
+        drain_events(&mut second).iter().any(|published| {
+            published.instance == second.instance()
+                && published.event
+                    == EditorEvent::FileWritten {
+                        path: written.clone(),
+                    }
+        }),
+        "the neighbour publishes the fact of its own completed write"
+    );
+}
+
+/// The steps that one embedded test loop runs before it reports a defect.
+///
+/// One step hands every queued request to the spawner and applies one result,
+/// so this bound covers every chain that one command of these tests starts.
+const DRIVE_STEPS_MAX: usize = 64;
+
+/// The time that one step of an embedded test loop waits for a result.
+const STEP_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The time that an embedded test gives the background work of one editor.
+const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
+
+/// The results that the spawner of one embedded test editor holds.
+const RESULT_QUEUE: usize = 64;
+
+/// The external processes of one embedded test editor that run together.
+const PROCESSES: usize = 4;
+
+/// Builds one embedded editor that owns every permit of its own.
+///
+/// A shared pool would let the work of one editor wait for the work of
+/// another, so every test below names its own capacity.
+fn embedded(root: &Path, area: Rect) -> EmbeddedEditor {
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let limits = RuntimeLimits::new(RESULT_QUEUE, WORKER_CONCURRENCY_LIMIT_MAX, PROCESSES)
+        .expect("every capacity is nonzero");
+    EmbeddedEditor::builder(test_root(root.to_path_buf()), area)
+        .settings(settings)
+        .capacity(EditorCapacity::Isolated(limits))
+        .open()
+        .expect("the rectangle holds cells")
+}
+
+/// Drives one embedded editor until it publishes the wanted event.
+///
+/// The loop is the host: it hands every queued request to the spawner, reads
+/// every published event, and applies every result.
+async fn drive_until(
+    editor: &mut EmbeddedEditor,
+    wanted: fn(&EditorEvent) -> bool,
+) -> Vec<PublishedEvent> {
+    let mut seen = Vec::new();
+    for _ in 0..DRIVE_STEPS_MAX {
+        let _redraw = editor.dispatch();
+        while let Some(published) = editor.take_event() {
+            let found = wanted(&published.event);
+            seen.push(published);
+            if found {
+                return seen;
+            }
+        }
+        let completed = timeout(STEP_DEADLINE, editor.recv())
+            .await
+            .expect("one step of one editor answers inside its deadline");
+        let _redraw = editor.apply(completed, NOW);
+    }
+    panic!("one editor publishes its event inside the step bound: {seen:?}");
+}
+
+/// Reports whether one event names the file that an editor now shows.
+fn is_active_file(event: &EditorEvent) -> bool {
+    matches!(event, EditorEvent::ActiveFileChanged { .. })
+}
+
+/// Reports whether one event names one completed write.
+fn is_file_written(event: &EditorEvent) -> bool {
+    matches!(event, EditorEvent::FileWritten { .. })
+}
+
+/// Returns the text of every row inside one rectangle of the host cells.
+fn rendered_text(cells: &CellBuffer, area: Rect) -> String {
+    let mut text = String::new();
+    for row in 0..area.height {
+        for column in 0..area.width {
+            text.push_str(cells[(area.x + column, area.y + row)].symbol());
+        }
+        text.push('\n');
+    }
+    text
+}
+
+/// Types one run of text into one embedded editor and returns to Normal mode.
+fn type_text(editor: &mut EmbeddedEditor, text: &str) {
+    let _ = editor.command(Command::InsertBeforeCursor, None, NOW);
+    let _ = editor.insert_literal(text, NOW);
+    let _ = editor.command(Command::ReturnToNormal, None, NOW);
+}
+
+#[test]
+fn an_editor_rectangle_without_cells_returns_a_typed_error() {
+    let directory = TempDir::new("embedded-empty-area");
+    let area = Rect::new(0, 0, 0, 24);
+    let refused = EmbeddedEditor::builder(test_root(directory.path.clone()), area)
+        .open()
+        .expect_err("a rectangle without cells builds no editor");
+    assert_eq!(refused, GeometryError::Empty { area });
+}
+
+#[tokio::test]
+async fn two_editors_on_one_root_publish_only_their_own_facts() {
+    let directory = TempDir::new("embedded-one-root");
+    directory.file("first.rs", "one\n");
+    directory.file("second.rs", "two\n");
+    let mut first = embedded(&directory.path, AREA);
+    let mut second = embedded(&directory.path, AREA);
+    assert_ne!(
+        first.instance(),
+        second.instance(),
+        "two editors of one root never share an identity"
+    );
+
+    let _redraw = first.open_file(relative("first.rs"));
+    let _redraw = second.open_file(relative("second.rs"));
+    let opened_first = drive_until(&mut first, is_active_file).await;
+    let opened_second = drive_until(&mut second, is_active_file).await;
+
+    assert!(
+        opened_first
+            .iter()
+            .all(|published| published.instance == first.instance()),
+        "every fact of one editor carries its identity: {opened_first:?}"
+    );
+    assert!(
+        opened_second
+            .iter()
+            .all(|published| published.instance == second.instance()),
+        "every fact of one editor carries its identity: {opened_second:?}"
+    );
+    assert!(opened_first.iter().any(|published| published.event
+        == EditorEvent::ActiveFileChanged {
+            path: Some(relative("first.rs"))
+        }));
+    assert!(opened_second.iter().any(|published| published.event
+        == EditorEvent::ActiveFileChanged {
+            path: Some(relative("second.rs"))
+        }));
+
+    assert!(matches!(
+        first.shutdown(SHUTDOWN_DEADLINE).await,
+        EditorShutdown::Finished { .. }
+    ));
+    assert!(matches!(
+        second.shutdown(SHUTDOWN_DEADLINE).await,
+        EditorShutdown::Finished { .. }
+    ));
+}
+
+#[tokio::test]
+async fn two_editors_on_different_roots_edit_render_and_shut_down_independently() {
+    const LEFT_AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 40,
+        height: 24,
+    };
+    const RIGHT_AREA: Rect = Rect {
+        x: 40,
+        y: 0,
+        width: 40,
+        height: 24,
+    };
+    const LEFT_TEXT: &str = "leftward";
+    const RIGHT_TEXT: &str = "rightward";
+
+    let left_root = TempDir::new("embedded-left-root");
+    left_root.file("note.rs", "one\n");
+    let right_root = TempDir::new("embedded-right-root");
+    right_root.file("note.rs", "two\n");
+    let mut left = embedded(&left_root.path, LEFT_AREA);
+    let mut right = embedded(&right_root.path, RIGHT_AREA);
+
+    let _redraw = left.open_file(relative("note.rs"));
+    let _redraw = right.open_file(relative("note.rs"));
+    let _opened = drive_until(&mut left, is_active_file).await;
+    let _opened = drive_until(&mut right, is_active_file).await;
+
+    type_text(&mut left, LEFT_TEXT);
+    type_text(&mut right, RIGHT_TEXT);
+
+    // One host buffer holds both editors. Each one writes only inside the
+    // rectangle that it accepted.
+    let mut cells = CellBuffer::empty(AREA);
+    let _cursor = left
+        .draw(&mut cells, LEFT_AREA)
+        .expect("the left half fits");
+    let _cursor = right
+        .draw(&mut cells, RIGHT_AREA)
+        .expect("the right half fits");
+    let left_text = rendered_text(&cells, LEFT_AREA);
+    let right_text = rendered_text(&cells, RIGHT_AREA);
+    assert!(left_text.contains(LEFT_TEXT), "{left_text}");
+    assert!(!left_text.contains(RIGHT_TEXT), "{left_text}");
+    assert!(right_text.contains(RIGHT_TEXT), "{right_text}");
+    assert!(!right_text.contains(LEFT_TEXT), "{right_text}");
+
+    // The shutdown of one editor cancels the pre-commit work of that editor
+    // alone, so the other editor still writes its file and publishes its fact.
+    assert!(matches!(
+        left.shutdown(SHUTDOWN_DEADLINE).await,
+        EditorShutdown::Finished { .. }
+    ));
+
+    let _reduction = right.command(Command::SaveBuffer, None, NOW);
+    let written = drive_until(&mut right, is_file_written).await;
+    assert!(
+        written
+            .iter()
+            .all(|published| published.instance == right.instance()),
+        "the surviving editor publishes its own facts: {written:?}"
+    );
+    assert!(
+        std::fs::read_to_string(right_root.join("note.rs"))
+            .expect("the save wrote the file")
+            .contains(RIGHT_TEXT)
+    );
+    assert!(
+        std::fs::read_to_string(left_root.join("note.rs")).expect("the left file stays readable")
+            == "one\n",
+        "the closed editor wrote no file of its own root"
+    );
+
+    assert!(matches!(
+        right.shutdown(SHUTDOWN_DEADLINE).await,
+        EditorShutdown::Finished { .. }
+    ));
 }
