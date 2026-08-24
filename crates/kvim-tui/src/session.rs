@@ -2040,10 +2040,11 @@ impl Session {
             Command::EndSearch => return self.end_search().or(cleared),
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
             Command::RevealInFileTree => return self.reveal_active_file().or(cleared),
-            // Insert-mode text entry. The Insert scope binds these three keys,
+            // Insert-mode text entry. The Insert scope binds these four keys,
             // because none of them types a character.
             Command::InsertLineBreak => return self.insert_line_break().or(cleared),
             Command::DeleteCharacterBefore => return self.delete_character_before().or(cleared),
+            Command::DeleteWordBefore => return self.delete_word_before().or(cleared),
             Command::InsertIndent => return self.insert_indent().or(cleared),
             _ => {}
         }
@@ -2454,6 +2455,16 @@ impl Session {
     fn delete_character_before(&mut self) -> Redraw {
         let outcome =
             self.edit(|editing, context, window| editing.delete_backward(context, window));
+        self.report(outcome)
+    }
+
+    /// Removes the word before the cursor.
+    ///
+    /// The delete also removes the blanks between the cursor and that word, so
+    /// `Ctrl-W` matches Vim, readline, and every terminal shell.
+    fn delete_word_before(&mut self) -> Redraw {
+        let outcome =
+            self.edit(|editing, context, window| editing.delete_word_backward(context, window));
         self.report(outcome)
     }
 

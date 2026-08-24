@@ -679,7 +679,7 @@ fn first_release_bindings() -> Vec<Binding> {
     );
 
     // Insert-mode text entry. Every printable key reaches the text fallback of
-    // the Insert scope, so only these three keys carry a command there.
+    // the Insert scope, so only these four keys carry a command there.
     add(
         table,
         &[Mode::Insert],
@@ -691,6 +691,15 @@ fn first_release_bindings() -> Vec<Binding> {
         &[Mode::Insert],
         &[Key::plain(KeyCode::Backspace)],
         Command::DeleteCharacterBefore,
+    );
+    // Vim, readline, and every terminal shell delete the word before the
+    // cursor on `Ctrl-W` while text is written, so an embedded editor must not
+    // leave the chord to a host prefix. See `docs/input-actions.md`.
+    add(
+        table,
+        &[Mode::Insert],
+        &[ctrl('w')],
+        Command::DeleteWordBefore,
     );
     add(
         table,

@@ -98,6 +98,19 @@ impl Session {
         self.state.delete_backward(&mut context, &mut self.view)
     }
 
+    fn delete_word_backward(&mut self) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            language_indent_width: self.language_indent_width,
+            registers: &mut self.registers,
+            applied: Vec::new(),
+        };
+        self.state
+            .delete_word_backward(&mut context, &mut self.view)
+    }
+
     /// Enters Insert mode, which `Enter` and `Backspace` both need.
     fn enter_insert(&mut self) {
         self.state
@@ -573,6 +586,45 @@ fn a_backward_delete_at_column_zero_removes_a_complete_crlf_ending() {
     session.enter_insert();
     assert_eq!(session.delete_backward(), CommandOutcome::Changed);
     assert_eq!(session.text(), "alphabeta\r\n");
+}
+
+#[test]
+fn a_backward_word_delete_removes_the_word_and_the_blanks_before_the_cursor() {
+    // `A` enters Insert mode after the last character, where `Ctrl-W` acts.
+    let mut session = Session::new("alpha beta\n");
+    session.apply(Command::InsertAtLineEnd, None);
+    assert_eq!(session.position(), (0, 10));
+    assert_eq!(session.delete_word_backward(), CommandOutcome::Changed);
+    assert_eq!(session.text(), "alpha \n");
+    assert_eq!(session.position(), (0, 6));
+
+    // One undo reverses the complete delete.
+    session.apply(Command::Undo, None);
+    assert_eq!(session.text(), "alpha beta\n");
+
+    // The blanks between the cursor and the word go with the word, because `b`
+    // walks over them.
+    let mut blanks = Session::new("alpha beta   \n");
+    blanks.apply(Command::InsertAtLineEnd, None);
+    assert_eq!(blanks.position(), (0, 13));
+    assert_eq!(blanks.delete_word_backward(), CommandOutcome::Changed);
+    assert_eq!(blanks.text(), "alpha \n");
+    assert_eq!(blanks.position(), (0, 6));
+
+    // The delete crosses a line boundary, exactly as `b` does.
+    let mut joined = Session::new("alpha\nbeta\n");
+    place(&mut joined, 1, 0);
+    joined.enter_insert();
+    assert_eq!(joined.delete_word_backward(), CommandOutcome::Changed);
+    assert_eq!(joined.text(), "beta\n");
+    assert_eq!(joined.position(), (0, 0));
+
+    // The start of the buffer holds no word before the cursor.
+    let mut start = Session::new("alpha\n");
+    start.enter_insert();
+    assert_eq!(start.delete_word_backward(), CommandOutcome::Applied);
+    assert_eq!(start.text(), "alpha\n");
+    assert_eq!(start.position(), (0, 0));
 }
 
 #[test]

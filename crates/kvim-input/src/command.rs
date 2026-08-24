@@ -74,6 +74,7 @@ semantic_commands! {
     // scope, so only the keys that type no character carry a command.
     InsertLineBreak => ("insert-line-break", "Insert a line break"),
     DeleteCharacterBefore => ("delete-character-before", "Delete the character before the cursor"),
+    DeleteWordBefore => ("delete-word-before", "Delete the word before the cursor"),
     InsertIndent => ("insert-indent", "Insert one indent step"),
 
     // Motions.
@@ -285,6 +286,7 @@ impl Command {
             | Self::OpenLineAbove
             | Self::InsertLineBreak
             | Self::DeleteCharacterBefore
+            | Self::DeleteWordBefore
             | Self::InsertIndent
             | Self::DeleteOverMotion
             | Self::ChangeOverMotion
@@ -561,6 +563,7 @@ impl Command {
             | Self::SelectRegister
             | Self::InsertLineBreak
             | Self::DeleteCharacterBefore
+            | Self::DeleteWordBefore
             | Self::InsertIndent
             | Self::InsertBeforeCursor
             | Self::InsertAtFirstNonBlank

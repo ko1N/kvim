@@ -207,6 +207,19 @@ fn insert_mode_wires_enter_and_backspace_to_the_editor_entry_points() {
 }
 
 #[test]
+fn insert_mode_wires_the_control_w_chord_to_the_word_delete() {
+    let mut session = session(40, 10);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha beta");
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(
+        session.buffer().to_string(),
+        "alpha \n",
+        "`Ctrl-W` reaches the word delete instead of no binding"
+    );
+}
+
+#[test]
 fn the_tab_key_follows_the_indent_settings() {
     let mut soft = session(40, 10);
     press(&mut soft, 'i');

@@ -611,6 +611,27 @@ impl EditingState {
         self.commit(context, window, plan)
     }
 
+    /// Deletes the word before the cursor.
+    ///
+    /// `Ctrl-W` in Insert mode reaches this entry point. The delete reaches
+    /// back to the previous word start, so it removes the blanks before the
+    /// word as well as the word itself, and it crosses a line boundary when
+    /// the word start stands on an earlier line. At the start of the buffer it
+    /// changes nothing. The delete is one transaction, so one undo reverses it,
+    /// and it writes no register.
+    pub fn delete_word_backward(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+    ) -> CommandOutcome {
+        // The delete moves the text after the cursor, so a pending block
+        // rectangle no longer describes the buffer.
+        self.block_insert = None;
+        let plan =
+            edit::plan_delete_word_backward(context.buffer, self.column_limit(), window.cursor);
+        self.commit(context, window, plan)
+    }
+
     /// Applies one transaction that another module built.
     ///
     /// The accepted formatter answer of a language server reaches this entry

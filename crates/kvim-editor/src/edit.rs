@@ -16,7 +16,8 @@ use kvim_core::{
 };
 use kvim_input::Command;
 
-use super::cursor::Cursor;
+use super::cursor::{ColumnLimit, Cursor};
+use super::motion;
 use super::register::{RegisterShape, RegisterValue};
 use super::selection::Selection;
 
@@ -470,6 +471,40 @@ pub(super) fn plan_delete_backward(buffer: &TextBuffer, cursor: Cursor) -> EditP
     } else {
         return EditPlan::unchanged();
     };
+    EditPlan {
+        transaction: Some(EditTransaction::single(at, TextChange::delete(range))),
+        value: None,
+        cursor: CursorTarget::Position(range.start().get()),
+        next_mode: NextMode::Keep,
+    }
+}
+
+/// Plans one delete of the word before the cursor.
+///
+/// The range reaches from the cursor back to the previous word start, which
+/// [`motion::move_previous_word_start`] selects. `Ctrl-W` and `b` therefore
+/// agree on where a word starts, and the range also removes the blanks between
+/// the cursor and that word, because `b` walks over them.
+///
+/// The range crosses a line boundary when the previous word start stands on an
+/// earlier line, exactly as `b` does. At the start of the buffer the plan
+/// changes nothing. The plan writes no register value, because a backward
+/// delete does not fill a register in Vim.
+pub(super) fn plan_delete_word_backward(
+    buffer: &TextBuffer,
+    limit: ColumnLimit,
+    cursor: Cursor,
+) -> EditPlan {
+    let at = cursor.position(buffer);
+    if at.get() == 0 {
+        return EditPlan::unchanged();
+    }
+    let start = motion::move_previous_word_start(buffer, cursor, limit, 1).position(buffer);
+    debug_assert!(
+        start.get() < at.get(),
+        "the walk starts one position back, so a cursor past the buffer start always moves"
+    );
+    let range = char_range(buffer, start.get(), at.get());
     EditPlan {
         transaction: Some(EditTransaction::single(at, TextChange::delete(range))),
         value: None,
