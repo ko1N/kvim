@@ -361,7 +361,7 @@ impl<Sid, S> CompositionLayout<Sid, S> {
 /// assert_eq!(composer.layout().surfaces().len(), 1);
 /// # Ok::<(), kvim_keymap::RegistryError<Command, Chat>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkspaceComposer<Sid, C, S> {
     tree: WindowTree<Sid>,
     resolver: Resolver<C, S>,

@@ -414,7 +414,7 @@ pub(crate) struct Leaf<S> {
 }
 
 /// One node of the window tree.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum Node<S> {
     /// One window that shows one host surface.
     Leaf(Leaf<S>),
@@ -831,7 +831,7 @@ enum Focus {
 /// assert_eq!(tree.focus_direction(Direction::Left), LayoutChange::Changed);
 /// assert_eq!(tree.focus_direction(Direction::Left), LayoutChange::Unchanged);
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WindowTree<S> {
     root: Node<S>,
     /// The focused window. The value stays valid while a sidebar holds the
