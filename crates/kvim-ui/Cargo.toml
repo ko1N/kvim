@@ -11,3 +11,10 @@ thiserror.workspace = true
 
 # Terminal
 ratatui.workspace = true
+unicode-width.workspace = true
+
+[dev-dependencies]
+# kvim crates
+# The which-key example builds one shared registry and one resolver, so the
+# example derives its hints exactly as a host does.
+kvim-keymap.workspace = true

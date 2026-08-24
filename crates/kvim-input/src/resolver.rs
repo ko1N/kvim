@@ -260,10 +260,7 @@ impl Resolver {
     /// key reaches.
     pub fn which_key(&mut self, now: Duration) -> Option<Vec<WhichKeyRow>> {
         let view = self.shared.which_key(now)?;
-        Some(WhichKeyRow::from_extensions(
-            view.prefix().len(),
-            view.extensions(),
-        ))
+        Some(view.hints().iter().map(WhichKeyRow::of).collect())
     }
 
     /// Resolves one key at the elapsed time `now`.

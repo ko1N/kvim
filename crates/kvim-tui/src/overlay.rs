@@ -31,42 +31,20 @@ use ratatui::style::Style;
 use kvim_input::WhichKeyRow;
 use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
+use kvim_ui::{WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles};
 
 use super::cells::{text_cells, truncate_cells_left, wrap_cells};
 use super::completion::{CompletionOutcome, LineCompletion};
-use super::icons::{ICON_CELLS, Icon};
+use super::icons::Icon;
 use super::language::{FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, FloatContent, FloatRow};
 use super::markup::{FloatLine, FloatStyle, markup_lines};
 use super::notify::NotificationRow;
 use super::theme::{Theme, ThemeRole};
 
-/// The largest number of binding rows that one overlay column holds.
-///
-/// The bound keeps the overlay short for a prefix that reaches many commands,
-/// even in a tall terminal. The overlay reports the rows that it drops.
-const WHICH_KEY_COLUMN_ROWS_MAX: usize = 10;
-
-/// The share of the body band that the overlay may cover.
-///
-/// The overlay answers a pending key while the reader still needs the text
-/// around the cursor, so it never covers more than one part of the body out of
-/// this many. The value two therefore keeps at least half of the buffer
-/// visible, title row included.
-const BODY_SHARE: u16 = 2;
-
 /// The number of rows that the overlay title occupies.
 const TITLE_ROWS: u16 = 1;
 
-/// The number of cells between the key column and the label column.
-const KEY_GAP_CELLS: usize = 2;
-
-/// The number of cells that the overlay keeps left of its first column.
-const LEFT_PAD_CELLS: usize = 1;
-
-/// The number of cells between two overlay columns.
-const COLUMN_GAP_CELLS: usize = 2;
-
-/// The title of the overlay.
+/// The title of the which-key overlay.
 const OVERLAY_TITLE: &str = " Which Key ";
 
 /// The number of cells that a float keeps beside its widest row.
@@ -206,78 +184,12 @@ fn row_width(row: &[(String, ThemeRole)]) -> u16 {
     u16::try_from(cells).unwrap_or(u16::MAX)
 }
 
-/// How the overlay spreads its rows over columns.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-struct ColumnLayout {
-    /// The number of columns that the overlay paints.
-    columns: usize,
-    /// The number of rows that each column holds.
-    ///
-    /// Every column except the last one is full, because the overlay fills one
-    /// column from top to bottom before it starts the next one.
-    rows_per_column: usize,
-}
-
-impl ColumnLayout {
-    /// The layout that paints nothing.
-    const EMPTY: Self = Self {
-        columns: 0,
-        rows_per_column: 0,
-    };
-
-    /// Returns the number of rows that the layout shows out of `rows`.
-    const fn shown(self, rows: usize) -> usize {
-        let capacity = self.columns.saturating_mul(self.rows_per_column);
-        if capacity < rows { capacity } else { rows }
-    }
-}
-
-/// Returns the column layout of one which-key overlay.
-///
-/// The function is pure: `rows` counts the generated rows, `column_cells` is the
-/// width of one column with its gap, `cells` is the width that the overlay may
-/// use, and `rows_max` is the height bound of one column.
-///
-/// The overlay fills the width: it takes as many columns as `cells` holds, and
-/// it then spreads the rows evenly over them, so no column stays empty. A
-/// terminal that is narrower than one column still shows one column, which
-/// clips at the body edge, because a single column is the readable minimum.
-fn column_layout(rows: usize, column_cells: usize, cells: usize, rows_max: usize) -> ColumnLayout {
-    debug_assert!(
-        column_cells >= 1,
-        "one column holds at least the key of one row"
-    );
-    if rows == 0 || rows_max == 0 || cells == 0 || column_cells == 0 {
-        return ColumnLayout::EMPTY;
-    }
-    let fitting = (cells / column_cells).max(1);
-    let columns = fitting.min(rows);
-    let rows_per_column = rows.div_ceil(columns).min(rows_max);
-    debug_assert!(rows_per_column >= 1, "a non-empty overlay holds one row");
-    // An even spread can leave the last columns empty, for example four rows in
-    // three fitting columns. The recount drops those columns.
-    let columns = rows.div_ceil(rows_per_column).min(columns);
-    ColumnLayout {
-        columns,
-        rows_per_column,
-    }
-}
-
-/// One painted which-key row: its icon, its key, and its label.
-struct PaintedRow {
-    /// The icon of the command group, or `None` while the icons are hidden.
-    icon: Option<Icon>,
-    /// The key in its help form.
-    key: String,
-    /// The label of the command, or the group marker.
-    label: String,
-}
-
 /// Renders the which-key overlay at the bottom of the body band.
 ///
-/// The overlay covers the buffer text, so it blanks its rectangle first. It lays
-/// the rows out in columns that fill the body width, and it keeps one icon for
-/// each row, which the command group of that row selects. The one file-tree icon
+/// `kvim-ui` owns the bounded overlay, its column layout, and its clipping.
+/// This function is the theme adapter: it resolves every row into its final
+/// texts, it selects the icon of the command group, and it names the palette
+/// colors of the surface, of the title, and of the keys. The one file-tree icon
 /// setting also turns these icons off, and the columns stay aligned without
 /// them. See `docs/input-actions.md`.
 pub(super) fn render_which_key(
@@ -287,160 +199,47 @@ pub(super) fn render_which_key(
     rows: &[WhichKeyRow],
     icons: FileTreeIcons,
 ) {
-    if body.is_empty() || rows.is_empty() {
-        return;
-    }
-    let painted: Vec<PaintedRow> = rows
+    let texts: Vec<(String, String, Option<Icon>)> = rows
         .iter()
-        .map(|row| PaintedRow {
-            icon: (icons == FileTreeIcons::Shown).then(|| Icon::of_group(row.group)),
-            key: row.key_label().to_string(),
-            label: row.target.to_string(),
+        .map(|row| {
+            (
+                row.key_label().to_string(),
+                row.target.to_string(),
+                (icons == FileTreeIcons::Shown).then(|| Icon::of_group(row.group)),
+            )
         })
         .collect();
-    // Every column keeps the width of the widest row, so the keys and the labels
-    // of all columns align. The hidden icons reserve no cell, which keeps that
-    // alignment without a patched font.
-    let icon_cells = if icons == FileTreeIcons::Shown {
-        ICON_CELLS
-    } else {
-        0
-    };
-    let key_cells = painted
-        .iter()
-        .map(|row| text_cells(&row.key))
-        .max()
-        .unwrap_or(0);
-    let label_cells = painted
-        .iter()
-        .map(|row| text_cells(&row.label))
-        .max()
-        .unwrap_or(0);
-    let content_cells = icon_cells + key_cells + KEY_GAP_CELLS + label_cells;
-    let column_cells = content_cells.saturating_add(COLUMN_GAP_CELLS);
-
-    // The height bound keeps the overlay over one part of the body only, so the
-    // buffer text around the cursor stays visible while the reader chooses.
-    let rows_max = usize::from((body.height / BODY_SHARE).saturating_sub(TITLE_ROWS))
-        .min(WHICH_KEY_COLUMN_ROWS_MAX);
-    let cells = usize::from(body.width).saturating_sub(LEFT_PAD_CELLS);
-    let layout = column_layout(painted.len(), column_cells, cells, rows_max);
-    let shown = layout.shown(painted.len());
-    if shown == 0 {
-        return;
-    }
-    let Ok(height) = u16::try_from(layout.rows_per_column) else {
-        debug_assert!(false, "the row bound keeps the overlay height small");
-        return;
-    };
-    let height = height.saturating_add(TITLE_ROWS);
-    let area = Rect::new(body.x, body.bottom() - height, body.width, height);
     let surface = theme.style(ThemeRole::Surface);
-    fill(target, area, " ");
-    target.set_style(area, surface);
-    render_which_key_title(target, area, theme, painted.len() - shown);
-
+    let hints: Vec<WhichKeyHint<'_>> = texts
+        .iter()
+        .map(|(key, label, icon)| {
+            let hint = WhichKeyHint::new(key, label);
+            match icon {
+                // The icon keeps the surface background, so only its foreground
+                // color separates one command group from the next.
+                Some(icon) => hint.with_icon(WhichKeyIcon {
+                    glyph: icon.glyph,
+                    style: surface.patch(theme.style(ThemeRole::Icon(icon.role))),
+                }),
+                None => hint,
+            }
+        })
+        .collect();
+    // The keys carry the title color, so a reader finds the next key first.
     let title = theme.style(ThemeRole::Title);
-    for (index, row) in painted.iter().take(shown).enumerate() {
-        let column = index / layout.rows_per_column;
-        let offset = index % layout.rows_per_column;
-        let Some(x) = column_start(area, column, column_cells) else {
-            // A column that starts outside the body paints nothing, which the
-            // one-column minimum only reaches on a terminal narrower than one
-            // column.
-            continue;
-        };
-        let Ok(offset) = u16::try_from(offset) else {
-            debug_assert!(false, "the row bound keeps the index small");
-            break;
-        };
-        let y = area.y + TITLE_ROWS + offset;
-        let mut cursor = x;
-        if let Some(icon) = row.icon {
-            write_cells(
-                target,
-                area,
-                &mut cursor,
-                y,
-                icon.glyph,
-                surface.patch(theme.style(ThemeRole::Icon(icon.role))),
-            );
-            write_cells(target, area, &mut cursor, y, " ", surface);
-        }
-        // The keys carry the title color, so a reader finds the next key first.
-        write_cells(target, area, &mut cursor, y, &row.key, title);
-        let padding = " ".repeat(key_cells - text_cells(&row.key) + KEY_GAP_CELLS);
-        write_cells(target, area, &mut cursor, y, &padding, surface);
-        write_cells(target, area, &mut cursor, y, &row.label, surface);
-    }
-}
-
-/// Renders the title row of the which-key overlay.
-///
-/// A prefix that reaches more rows than the bounded overlay holds loses the last
-/// ones. The title row names how many rows the overlay dropped, so a reader
-/// never believes an incomplete list, and the reader reaches those commands by
-/// typing the next key instead.
-fn render_which_key_title(target: &mut CellBuffer, area: Rect, theme: Theme, dropped: usize) {
-    let title = theme.style(ThemeRole::Title);
-    target.set_stringn(
-        area.x,
-        area.y,
-        OVERLAY_TITLE,
-        usize::from(area.width),
+    let styles = WhichKeyStyles {
+        surface,
         title,
-    );
-    if dropped == 0 {
-        return;
-    }
-    let note = format!("+{dropped} more ");
-    let width = usize::from(area.width);
-    // The note never covers the title, so a narrow overlay keeps its name and
-    // drops the count instead.
-    if text_cells(OVERLAY_TITLE) + text_cells(&note) > width {
-        return;
-    }
-    let Ok(offset) = u16::try_from(width - text_cells(&note)) else {
-        debug_assert!(false, "the terminal width fits into a u16");
+        key: title,
+    };
+    let Ok(overlay) = WhichKeyOverlay::new(OVERLAY_TITLE, &hints, styles) else {
+        debug_assert!(
+            false,
+            "the registry bounds every command label, so one level of hints stays inside the overlay bounds"
+        );
         return;
     };
-    target.set_stringn(
-        area.x.saturating_add(offset),
-        area.y,
-        &note,
-        text_cells(&note),
-        title,
-    );
-}
-
-/// Returns the first cell of one overlay column, or `None` outside the body.
-fn column_start(area: Rect, column: usize, column_cells: usize) -> Option<u16> {
-    let offset = LEFT_PAD_CELLS.checked_add(column.checked_mul(column_cells)?)?;
-    let offset = u16::try_from(offset).ok()?;
-    let x = area.x.checked_add(offset)?;
-    (x < area.right()).then_some(x)
-}
-
-/// Writes one text at `cursor` and moves the cursor past it.
-///
-/// The text clips at the right edge of the overlay, so no cell ever reaches
-/// outside the body band. One column never reaches into the next one, because
-/// every column carries the width of the widest row.
-fn write_cells(
-    target: &mut CellBuffer,
-    area: Rect,
-    cursor: &mut u16,
-    y: u16,
-    text: &str,
-    style: Style,
-) {
-    if *cursor >= area.right() {
-        return;
-    }
-    let remaining = usize::from(area.right() - *cursor);
-    target.set_stringn(*cursor, y, text, remaining, style);
-    let written = u16::try_from(text_cells(text).min(remaining)).unwrap_or(u16::MAX);
-    *cursor = cursor.saturating_add(written);
+    overlay.render(target, body);
 }
 
 /// Returns the rectangle that one float of `desired` size occupies.
@@ -792,8 +591,8 @@ mod tests {
     use crate::theme::{Theme, ThemeRole};
 
     use super::{
-        COMPLETION_ROWS_MAX, ColumnLayout, OVERFLOW_NOTE, column_layout, completion_first_row,
-        float_area, render_completion, text_cells,
+        COMPLETION_ROWS_MAX, OVERFLOW_NOTE, completion_first_row, float_area, render_completion,
+        text_cells,
     };
 
     /// One editor window that starts at the top left corner.
@@ -873,74 +672,6 @@ mod tests {
         let single = Rect::new(0, 0, 40, 1);
         let area = float_area(single, Position::new(0, 0), Size::new(12, 4));
         assert_eq!(area.height, 0, "no row remains beside the cursor line");
-    }
-
-    #[test]
-    fn a_wide_terminal_spreads_the_rows_over_columns() {
-        // Five columns of twenty cells fit into one hundred cells, so ten rows
-        // need two rows in each column.
-        let layout = column_layout(10, 20, 100, 10);
-        assert_eq!(
-            layout,
-            ColumnLayout {
-                columns: 5,
-                rows_per_column: 2,
-            }
-        );
-        assert_eq!(layout.shown(10), 10, "every row fits");
-    }
-
-    #[test]
-    fn a_narrow_terminal_keeps_one_column() {
-        let layout = column_layout(6, 40, 30, 10);
-        assert_eq!(
-            layout,
-            ColumnLayout {
-                columns: 1,
-                rows_per_column: 6,
-            }
-        );
-        // A terminal narrower than the widest row still shows that one column,
-        // which clips at the body edge.
-        assert_eq!(column_layout(3, 40, 5, 10).columns, 1);
-    }
-
-    #[test]
-    fn the_height_bound_drops_the_rows_that_no_column_holds() {
-        let layout = column_layout(30, 20, 100, 4);
-        assert_eq!(
-            layout,
-            ColumnLayout {
-                columns: 5,
-                rows_per_column: 4,
-            }
-        );
-        assert_eq!(
-            layout.shown(30),
-            20,
-            "ten rows stay out of the bounded overlay"
-        );
-    }
-
-    #[test]
-    fn no_column_of_the_overlay_stays_empty() {
-        // Three columns fit, but four rows spread over three columns would
-        // leave the third one empty, so two columns of two rows remain.
-        let layout = column_layout(4, 20, 70, 10);
-        assert_eq!(
-            layout,
-            ColumnLayout {
-                columns: 2,
-                rows_per_column: 2,
-            }
-        );
-    }
-
-    #[test]
-    fn an_overlay_without_rows_or_without_space_paints_nothing() {
-        assert_eq!(column_layout(0, 20, 100, 10).shown(0), 0);
-        assert_eq!(column_layout(5, 20, 100, 0).shown(5), 0, "no row fits");
-        assert_eq!(column_layout(5, 20, 0, 10).shown(5), 0, "no cell is free");
     }
 
     /// The character bound of a prompt that accepts every test candidate.

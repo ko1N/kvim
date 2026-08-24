@@ -10,6 +10,11 @@
 //! viewport. Rows, heights, styles, labels, and the meaning of every action
 //! stay with the host, and one host callback draws every cell.
 //!
+//! [`WhichKeyOverlay`] renders the keys that may follow a pending key sequence.
+//! It holds no binding table: the caller derives its hints from the one shared
+//! registry of `kvim-keymap` and supplies final texts, optional icons, and its
+//! own styles.
+//!
 //! Every value is pure and deterministic. The crate reads no clock, no
 //! filesystem, and no terminal. One layout calculation converts the tree and
 //! the host rectangle into the exact rectangle of every visible region, so no
@@ -23,12 +28,14 @@
 //! # Examples
 //!
 //! `examples/split_windows.rs` runs the complete flow with caller-owned
-//! surfaces, and `examples/sidebar.rs` renders two-line sidebar rows with state
-//! markers:
+//! surfaces, `examples/sidebar.rs` renders two-line sidebar rows with state
+//! markers, and `examples/which_key.rs` derives overlay hints from one shared
+//! registry and renders them:
 //!
 //! ```sh
 //! cargo run -p kvim-ui --example split_windows
 //! cargo run -p kvim-ui --example sidebar
+//! cargo run -p kvim-ui --example which_key
 //! ```
 //!
 //! ```
@@ -56,10 +63,13 @@
 
 mod layout;
 mod sidebar;
+mod which_key;
 mod window;
 
 #[cfg(test)]
 mod sidebar_tests;
+#[cfg(test)]
+mod which_key_tests;
 #[cfg(test)]
 mod window_tests;
 
@@ -68,6 +78,10 @@ pub use sidebar::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DRAWS_MAX,
     SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas, SidebarError,
     SidebarEvent, SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow, SidebarState,
+};
+pub use which_key::{
+    WHICH_KEY_BODY_SHARE, WHICH_KEY_COLUMN_ROWS_MAX, WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX,
+    WhichKeyError, WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles,
 };
 pub use window::{
     ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit, Orientation,

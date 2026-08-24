@@ -6,10 +6,9 @@
 //! the editor executes the command, and a host contributes its own bindings
 //! beside them.
 
-use std::fmt;
 use std::sync::Arc;
 
-use kvim_keymap::{BoundCommand, Key, KeyCode, KeySequence, Registry as KeymapRegistry};
+use kvim_keymap::{Key, KeyCode, KeySequence, Registry as KeymapRegistry, WhichKeyHint};
 use kvim_settings::PENDING_KEYS_MAX;
 
 use super::command::{Command, CommandGroup};
@@ -22,41 +21,10 @@ pub type Binding = kvim_keymap::Binding<Command, BindingScope>;
 pub type RegistryError = kvim_keymap::RegistryError<Command, BindingScope>;
 
 /// What one next key of the which-key overlay reaches.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WhichKeyTarget {
-    /// The key completes exactly one command, and the row shows its label.
-    Command(Command),
-    /// The key opens a group of commands.
-    ///
-    /// which-key.nvim marks such a key with a `+` prefix. The count names the
-    /// commands that the group holds.
-    Group {
-        /// The number of commands behind the key. The value is at least two.
-        commands: usize,
-    },
-}
-
-impl WhichKeyTarget {
-    /// Returns the target that one more command behind the same key produces.
-    fn grown(self) -> Self {
-        match self {
-            Self::Command(_) => Self::Group { commands: 2 },
-            Self::Group { commands } => Self::Group {
-                commands: commands.saturating_add(1),
-            },
-        }
-    }
-}
-
-impl fmt::Display for WhichKeyTarget {
-    /// Writes the overlay text of one row.
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Command(command) => formatter.write_str(command.label()),
-            Self::Group { commands } => write!(formatter, "+{commands} commands"),
-        }
-    }
-}
+///
+/// `kvim-keymap` owns the fold that counts the distinct commands behind one
+/// key, so the overlay and dispatch always read one table.
+pub type WhichKeyTarget = kvim_keymap::WhichKeyTarget<Command>;
 
 /// One which-key overlay row.
 ///
@@ -94,36 +62,18 @@ impl WhichKeyRow {
         self.key.label()
     }
 
-    /// Folds the extensions of one prefix into one row for each next key.
+    /// Adds the kvim command group to one shared which-key hint.
     ///
-    /// The registry returns every extension in sequence order, so the sequences
-    /// behind one next key are contiguous and the rows keep the deterministic
-    /// key order of the registry.
-    pub(crate) fn from_extensions<'a>(
-        prefix_keys: usize,
-        extensions: impl Iterator<Item = (&'a KeySequence, BoundCommand<Command>)>,
-    ) -> Vec<Self> {
-        let mut rows: Vec<Self> = Vec::new();
-        for (sequence, bound) in extensions {
-            debug_assert!(
-                sequence.keys().len() > prefix_keys,
-                "an extension of a prefix holds at least one more key"
-            );
-            let key = sequence.keys()[prefix_keys];
-            let command = bound.command;
-            match rows.last_mut() {
-                Some(last) if last.key == key => {
-                    last.target = last.target.grown();
-                    last.group = last.group.merged(command.group());
-                }
-                _ => rows.push(Self {
-                    key,
-                    target: WhichKeyTarget::Command(command),
-                    group: command.group(),
-                }),
-            }
+    /// The group selects the icon of the row. A key that reaches commands of
+    /// several groups carries [`CommandGroup::Other`].
+    pub(crate) fn of(hint: &WhichKeyHint<Command>) -> Self {
+        let mut commands = hint.commands().iter().map(|command| command.group());
+        let group = commands.next().unwrap_or(CommandGroup::Other);
+        Self {
+            key: hint.key(),
+            target: hint.target(),
+            group: commands.fold(group, CommandGroup::merged),
         }
-        rows
     }
 }
 
@@ -217,10 +167,11 @@ impl Registry {
         scope: impl Into<BindingScope>,
         prefix: &[Key],
     ) -> Vec<WhichKeyRow> {
-        WhichKeyRow::from_extensions(
-            prefix.len(),
-            self.0.extensions_of_prefix(scope.into(), prefix),
-        )
+        self.0
+            .hints_for_prefix(scope.into(), prefix)
+            .iter()
+            .map(WhichKeyRow::of)
+            .collect()
     }
 
     /// Returns every binding of one scope in sequence order.
