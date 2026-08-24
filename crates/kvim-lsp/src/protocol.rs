@@ -67,6 +67,20 @@ pub enum LspBound {
     ContentChanges,
     /// The diagnostics of one document.
     Diagnostics,
+    /// The merged diagnostics of one changed-file request.
+    MergedDiagnostics,
+    /// The related information entries of one diagnostic.
+    RelatedInformation,
+    /// The size of one declared diagnostic source name, in bytes.
+    SourceBytes,
+    /// The size of one diagnostic message, in bytes.
+    DiagnosticMessageBytes,
+    /// The size of the exact text of one changed document, in bytes.
+    DocumentBytes,
+    /// The protocol bytes that one server spends on one request.
+    RequestBytes,
+    /// The languages that one server declares.
+    Languages,
     /// The locations of one definition answer.
     Locations,
     /// The edits of one formatting answer.
@@ -303,7 +317,11 @@ impl ProtocolSpan {
 }
 
 /// One ascending range inside one document, as the editor measures it.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+///
+/// The order of two spans is the order of their start position, and then of
+/// their end position, so a sorted list of spans reads from the first line to
+/// the last one.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub struct SourceSpan {
     /// The first position of the range.
     pub start: DocumentPosition,
@@ -461,6 +479,34 @@ impl WorkspaceRoot {
     pub fn uri(&self, path: &Path) -> Result<String, LspError> {
         self.contain(path)?;
         path_to_uri(path)
+    }
+
+    /// Returns the `file` URI of one document below this root.
+    ///
+    /// The argument is already validated by `kvim-path`, so the call joins it
+    /// to the root and never reads an ambient absolute path.
+    ///
+    /// # Errors
+    ///
+    /// Returns the failures of [`WorkspaceRoot::uri`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    ///
+    /// use kvim_lsp::WorkspaceRoot;
+    /// use kvim_path::WorktreeRelativePath;
+    ///
+    /// let root = WorkspaceRoot::new(PathBuf::from("/work/project")).expect("the path is absolute");
+    /// let document = WorktreeRelativePath::new("src/main.rs").expect("the path is relative");
+    /// assert_eq!(
+    ///     root.relative_uri(&document).expect("the path is contained"),
+    ///     "file:///work/project/src/main.rs"
+    /// );
+    /// ```
+    pub fn relative_uri(&self, path: &WorktreeRelativePath) -> Result<String, LspError> {
+        self.uri(&self.0.join(path.as_path()))
     }
 
     /// Returns the contained path of one `file` URI.
