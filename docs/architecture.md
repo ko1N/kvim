@@ -125,7 +125,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 1 | `kvim-terminal` | `kvim-keymap` |
 | 2 | `kvim-clipboard` | `kvim-runtime` |
 | 2 | `kvim-input` | `kvim-keymap`, `kvim-settings` |
-| 2 | `kvim-lsp` | `kvim-path`, `kvim-runtime` |
+| 2 | `kvim-lsp` | `kvim-path` |
 | 2 | `kvim-ui` | `kvim-keymap` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
@@ -137,12 +137,21 @@ External dependencies do not change the layer number. `kvim-ui` owns ratatui
 geometry and rendering. No syntax-only consumer compiles LSP, ratatui, or the
 editor.
 
-`kvim-tui` reads `TerminalEvent` from `kvim-terminal`, because the standalone
-editor applies one normalized event as one pure transition. It owns no terminal
-lifecycle code: no raw mode, no alternate screen, no event stream, no signal
-handler, no panic hook, and no write to standard output. A structural test in
-`kvim-tui` proves that no module of that crate names such an owner, and a
-structural test in `kvim` proves that its terminal loop holds every one of them.
+`kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
+`TerminalEvent` value alone, because `Session`, the standalone presentation
+adapter, applies one normalized event as one pure transition. `kvim-tui` owns no
+terminal lifecycle code: no raw mode, no alternate screen, no event stream, no
+signal handler, no panic hook, and no write to standard output. A structural
+test in `kvim-tui` proves that no module of that crate names such an owner, and
+a structural test in `kvim` proves that its terminal loop holds every one of
+them.
+
+The alternative was to move `TerminalEvent` down into `kvim-keymap` and leave
+the crossterm conversion in `kvim-terminal`. That move is refused, because the
+value carries `Resize` and `Focus`, which are terminal facts and not key facts.
+A keymap crate that named them would own two charters. The accepted cost is that
+an external host of the embedded facade also compiles `kvim-terminal` and
+crossterm, although `EmbeddedEditor` names no terminal type.
 
 `kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
 `Resolver` and reads one published `InputContextSnapshot` for each surface. The
@@ -272,26 +281,31 @@ imperative boundary.
     the visible window content.
 - `unicode-width`
   - Replaces: local terminal-cell width tables.
-  - May run: in `kvim-tui` only. `kvim-core` defines the terminal-column
-    coordinate type, but it does not measure cell width, and `kvim-terminal`
-    normalizes events rather than laying out cells.
+  - May run: in `kvim-ui` and `kvim-tui`, which lay out cells. `kvim-core`
+    defines the terminal-column coordinate type, but it does not measure cell
+    width, and `kvim-terminal` normalizes events rather than laying out cells.
   - Cost: small. Work stays bounded to visible or otherwise bounded text.
 - `futures-util`
-  - Replaces: a local polling loop over terminal events.
-  - May run: in `kvim-terminal` only, which owns the event stream.
-  - Cost: one small stream extension API.
+  - Replaces: a local polling loop over terminal events, and a local join over
+    the shutdown futures of several language servers.
+  - May run: in `kvim-terminal`, which owns the event stream, and in `kvim-lsp`,
+    which awaits every server of one project together.
+  - Cost: one small stream extension API and one bounded join.
 - `tokio`
   - Replaces: local thread pools, channels, deadlines, and child-process
     handling.
-  - May run: in `kvim-runtime`, `kvim-lsp`, `kvim-terminal`, `kvim-tui`, and the
-    standalone composition root. Public drivers return futures and create no
-    runtime. Every task starts through a caller-supplied bounded spawner.
+  - May run: in `kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-terminal`,
+    `kvim-tui`, and the standalone composition root. Public drivers return
+    futures and create no runtime. Every task starts through a caller-supplied
+    bounded spawner.
   - Cost: compile time, supply-chain size, and a worker thread pool.
 - `tokio-util`
   - Replaces: local cancellation flags and shared shutdown state.
   - May run: in `kvim-runtime`, and in crates that own cancellable requests:
-    `kvim-lsp`, `kvim-language`, `kvim-syntax`, `kvim-tui`, and
-    `kvim-workspace`. A token crosses the boundary with its request.
+    `kvim-language`, `kvim-lsp`, `kvim-tui`, and `kvim-workspace`. A token
+    crosses the boundary with its request. `kvim-syntax` names no token. It
+    reads one `CancellationSignal` trait instead, so a consumer without an
+    asynchronous runtime still cancels a highlight walk.
   - Cost: small. It adds owned cancellation tokens.
 - `notify`
   - Replaces: local inotify and FSEvents code for external change hints.
@@ -351,7 +365,9 @@ These dependencies run only on the bounded worker service.
 - `tree-sitter`
   - Replaces: a local Rust parser and incremental reparse logic.
   - May run: in `kvim-syntax`, when a direct consumer or editor driver submits
-    synchronous highlight work through its bounded worker spawner.
+    synchronous highlight work through its bounded worker spawner, and in the
+    analysis module of `kvim-language`, which owns the parse that the indent
+    query and the next incremental reparse also read.
   - Cost: compile time, native code, and bounded parse memory for each buffer.
 - `tree-sitter-highlight`
   - Replaces: local highlight-query execution and capture mapping.
@@ -400,11 +416,14 @@ These dependencies run only in the bounded language-server task.
 
 - `serde`
   - Replaces: hand-written JSON-RPC envelope parsing.
-  - May run: in bounded language-server tasks inside `kvim-lsp`.
+  - May run: in bounded language-server tasks inside `kvim-lsp`, and in
+    `kvim-language`, which builds the initialization data and reads the answers
+    that its adapters declare.
   - Cost: derive macros and compile time.
 - `serde_json`
   - Replaces: a local JSON parser and serializer.
-  - May run: in bounded language-server tasks inside `kvim-lsp`.
+  - May run: in bounded language-server tasks inside `kvim-lsp`, and in
+    `kvim-language`, for the same declarations and answers.
   - Cost: compile time. Allocation stays inside the bounded task.
 
 ### The Markup Of One Answer

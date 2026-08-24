@@ -30,7 +30,7 @@ use kvim_lsp::{
 use kvim_path::WorktreeRelativePath;
 use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, stdin, stdout};
-use tokio::time::{Duration as TokioDuration, Instant, sleep};
+use tokio::time::{Instant, sleep};
 
 /// The argument that starts this program as the fixture server.
 const FIXTURE_FLAG: &str = "--fixture-server";
@@ -178,7 +178,7 @@ async fn serve_fixture() -> Result<(), Box<dyn Error>> {
         match method {
             "initialize" => {
                 // The delay stands for the index pass of a cold server.
-                sleep(TokioDuration::from(STARTUP_DELAY)).await;
+                sleep(STARTUP_DELAY).await;
                 answer(
                     &mut output,
                     &message["id"],

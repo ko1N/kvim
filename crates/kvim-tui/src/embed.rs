@@ -585,6 +585,10 @@ pub enum EditorCapacity {
     ///
     /// Use this choice for an editor that must not wait for the processes of
     /// another editor.
+    ///
+    /// Give the limits more than two worker permits. One directory read and
+    /// one buffer analysis hold two permits together, and a save that finds no
+    /// free permit returns [`Saturated`] instead of writing the file.
     Isolated(RuntimeLimits),
     /// The host built the spawner, so the host chose the capacity.
     Supplied {

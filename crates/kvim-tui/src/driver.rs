@@ -1054,7 +1054,6 @@ const fn job_level(error: &RuntimeError) -> MessageLevel {
 }
 
 /// Applies one result of the bounded worker service.
-
 fn complete(
     editor: &mut Session,
     gate: &PublicationGate,

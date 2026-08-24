@@ -30,9 +30,10 @@ use crate::role::{HighlightSpan, SyntaxRole, highlight_role};
 pub const HIGHLIGHT_CACHE_ENTRIES_MAX: usize = 32;
 
 /// Whether the highlighter reported everything that it found.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum Truncation {
     /// Every span and every syntax error of the fragment is present.
+    #[default]
     Complete,
     /// One bound stopped the walk, so the report omits later data.
     Truncated {
@@ -61,12 +62,6 @@ pub struct Highlighted {
     spans: Vec<HighlightSpan>,
     errors: Vec<SyntaxError>,
     truncation: Truncation,
-}
-
-impl Default for Truncation {
-    fn default() -> Self {
-        Self::Complete
-    }
 }
 
 impl Highlighted {

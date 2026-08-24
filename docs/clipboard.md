@@ -51,6 +51,13 @@ The standalone `kvim` binary grants `ClipboardAccess::System`, which keeps the
 behavior that the editor always had. An embedded editor keeps the default until
 its host grants more.
 
+`Session` keeps the granted policy in one `clipboard_access` field, and
+`Session::clipboard_access` returns it. The field is not a second copy of a
+readable fact: `SessionClipboard` holds a boxed platform boundary and can report
+no policy, so this field is the only record of what the host granted. The
+accessor mirrors `Session::access` for the editor access policy, so a host reads
+back both grants through the same shape. Both stay.
+
 A later implementation, for example an OSC 52 clipboard for a remote terminal,
 joins the same trait and needs no change outside this module.
 
