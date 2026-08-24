@@ -527,13 +527,33 @@ enum FormatStage {
     Running,
 }
 
-/// The definition target that waits for its document to load.
+/// The jump target that waits for its document to load.
 #[derive(Debug)]
 pub(super) struct PendingJump {
     /// The document that holds the target.
     pub(super) path: PathBuf,
     /// The position of the target inside that document.
-    pub(super) position: DocumentPosition,
+    pub(super) position: PendingPosition,
+}
+
+/// The position that one pending jump lands on.
+///
+/// The two kinds of target read their position differently. A definition answer
+/// and an accepted picker row name one protocol position, and the loaded
+/// document must hold it exactly. A recorded position of the jump list names one
+/// cursor line and column instead, and it clamps into the loaded document,
+/// because the file may have shrunk since the editor recorded it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PendingPosition {
+    /// One protocol position that the document must hold.
+    Document(DocumentPosition),
+    /// One recorded cursor line and column that clamps into the document.
+    Recorded {
+        /// The recorded line index.
+        line: usize,
+        /// The recorded source column inside that line.
+        column: usize,
+    },
 }
 
 /// One normal language-service state that the editor reports once.

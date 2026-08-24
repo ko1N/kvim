@@ -515,6 +515,17 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::AlignCursorLineBottom,
     );
 
+    // The jump list. A terminal reports `Ctrl-I` as `Tab`, so `Tab` carries the
+    // forward step in Normal mode. It keeps its own commands in Insert mode and
+    // on the prompt line, where a jump reaches nothing.
+    add(table, NORMAL, &[ctrl('o')], Command::JumpBack);
+    add(
+        table,
+        NORMAL,
+        &[Key::plain(KeyCode::Tab)],
+        Command::JumpForward,
+    );
+
     // Operators, registers, and repeat.
     add(table, NORMAL, &[ch('d')], Command::DeleteOverMotion);
     add(table, NORMAL, &[ch('c')], Command::ChangeOverMotion);
