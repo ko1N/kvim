@@ -122,8 +122,9 @@ movement when a later release needs it.
 kvim detects the line ending of the loaded file. It records that line ending
 with the buffer. It writes the same line ending on save. A file with mixed line
 endings uses the first detected line ending for new lines and keeps existing
-lines unchanged. The buffer model treats a line ending as a line terminator, not
-as text inside the line.
+lines unchanged. A paste follows the same rule, so the buffer line ending
+applies to every line that the pasted text opens. The buffer model treats a
+line ending as a line terminator, not as text inside the line.
 
 ## Lines And The File End
 
