@@ -181,7 +181,7 @@ fn main() {
     // host supplies the elapsed time of every step.
     let mut resolver = Resolver::new(Arc::new(registry), KEYS_MAX, WHICH_KEY_DELAY);
     let context = DispatchContext::focused(InputContextSnapshot::idle(Global));
-    let pending = resolver.dispatch(&context, Input::Key(leader), Duration::ZERO);
+    let pending = resolver.dispatch(&context, Input::Key(leader), Some(Duration::ZERO));
     println!("the leader key answers: {pending:?}");
     assert_eq!(pending, Dispatch::Pending, "the leader opens a sequence");
     println!(

@@ -848,7 +848,7 @@ where
             global: self.global,
             focus,
         };
-        match self.resolver.dispatch(&context, input, now) {
+        match self.resolver.dispatch(&context, input, Some(now)) {
             Dispatch::Host { command } => Composition::Host { command },
             Dispatch::Surface { command } => Composition::Surface { surface, command },
             Dispatch::Text { owner, text } => Composition::Text {

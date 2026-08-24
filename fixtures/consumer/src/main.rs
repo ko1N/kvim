@@ -139,7 +139,9 @@ fn check_keymap() {
     let registry = Registry::from_bindings(&bindings, KEYS_MAX).expect("the table validates");
     let mut resolver = Resolver::new(Arc::new(registry), KEYS_MAX, WHICH_KEY_DELAY);
     let context = DispatchContext::focused(InputContextSnapshot::idle(Global));
-    let pending = resolver.dispatch(&context, Input::Key(leader), Duration::ZERO);
+    // This consumer draws no which-key overlay and holds no clock, so it
+    // supplies no elapsed time and arms no timer.
+    let pending = resolver.dispatch(&context, Input::Key(leader), None);
     assert_eq!(pending, Dispatch::Pending, "the leader opens a sequence");
     println!("the leader key answers {pending:?}");
 }

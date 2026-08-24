@@ -136,6 +136,9 @@ pub enum RegistryError<C, S> {
 /// because only one scope owns input at a time. A snapshot is immutable, so a
 /// composed interface can share it.
 ///
+/// Equality compares every binding of every scope, so a caller keeps the
+/// comparison out of a hot path.
+///
 /// ```
 /// use std::fmt;
 ///
@@ -180,7 +183,7 @@ pub enum RegistryError<C, S> {
 /// assert_eq!(registry.command(Global, &keys), Some(Action::Quit));
 /// # Ok::<(), kvim_keymap::RegistryError<Action, Global>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Registry<C, S> {
     by_scope: BTreeMap<S, BTreeMap<KeySequence, BoundCommand<C>>>,
 }

@@ -3,7 +3,8 @@
 //! The resolver owns exactly one pending key sequence. It reads the registry
 //! for dispatch and for which-key hints, so no second binding table exists. It
 //! reads no clock and holds no surface state: the caller supplies the context,
-//! the input, and the elapsed time as values.
+//! the input, and the elapsed time as values. A caller that draws no which-key
+//! overlay supplies no time at all.
 //!
 //! Scope order is overlay, host-global, and focused surface. The first scope
 //! that completes the sequence wins. When no scope completes it, the first
@@ -329,7 +330,12 @@ where
 ///
 /// The resolver holds one immutable registry snapshot, one pending key prefix,
 /// and one which-key overlay state. It reads no clock: the caller measures the
-/// elapsed time and supplies it.
+/// elapsed time and supplies it. A caller that draws no which-key overlay
+/// supplies no time at all.
+///
+/// A host can hold the resolver inside a value that derives [`PartialEq`] and
+/// [`Eq`]. Equality reads through the shared registry, so one comparison walks
+/// every binding of every scope. Keep the comparison out of a hot path.
 ///
 /// ```
 /// use std::sync::Arc;
@@ -379,7 +385,7 @@ where
 /// let registry = Registry::from_bindings(&[Binding::surface(Editor, &keys, Action::First)], 4)?;
 /// let mut resolver = Resolver::new(Arc::new(registry), 4, Duration::from_millis(500));
 /// let context = DispatchContext::focused(InputContextSnapshot::idle(Editor));
-/// let now = Duration::ZERO;
+/// let now = Some(Duration::ZERO);
 ///
 /// assert_eq!(
 ///     resolver.dispatch(&context, Input::Key(keys[0]), now),
@@ -393,7 +399,7 @@ where
 /// );
 /// # Ok::<(), kvim_keymap::RegistryError<Action, Editor>>(())
 /// ```
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Resolver<C, S> {
     registry: Arc<Registry<C, S>>,
     keys_max: u8,
@@ -513,11 +519,16 @@ where
     /// The function evaluates the overlay scope, the host-global scope, and the
     /// focused scope in that order. A pending prefix keeps the scope that armed
     /// it, so a sequence never changes owner in the middle.
+    ///
+    /// `now` is the elapsed time that the caller measured. It reaches the
+    /// which-key overlay alone. `None` states that the caller draws no
+    /// which-key overlay, so pending input arms no timer and the overlay stays
+    /// hidden.
     pub fn dispatch(
         &mut self,
         context: &DispatchContext<S>,
         input: Input,
-        now: Duration,
+        now: Option<Duration>,
     ) -> Dispatch<C> {
         let identity = ContextIdentity::of(context);
         if let PendingPrefix::Active {
@@ -546,7 +557,7 @@ where
         context: &DispatchContext<S>,
         identity: ContextIdentity<S>,
         key: Key,
-        now: Duration,
+        now: Option<Duration>,
     ) -> Dispatch<C> {
         match std::mem::replace(&mut self.pending, PendingPrefix::Idle) {
             PendingPrefix::Active {
@@ -569,7 +580,7 @@ where
         context: &DispatchContext<S>,
         identity: ContextIdentity<S>,
         key: Key,
-        now: Duration,
+        now: Option<Duration>,
     ) -> Dispatch<C> {
         let keys = [key];
         for scope in scope_order(context) {
@@ -580,7 +591,9 @@ where
         }
         for scope in scope_order(context) {
             if self.registry.has_longer_sequence(scope, &keys) {
-                self.arm_overlay(now);
+                if let Some(now) = now {
+                    self.arm_overlay(now);
+                }
                 self.pending = PendingPrefix::Active {
                     identity,
                     scope,
@@ -607,14 +620,16 @@ where
         identity: ContextIdentity<S>,
         scope: S,
         keys: Vec<Key>,
-        now: Duration,
+        now: Option<Duration>,
     ) -> Dispatch<C> {
         if let Some(bound) = self.registry.bound_command(scope, &keys) {
             self.overlay = OverlayState::Hidden;
             return dispatch_of(bound);
         }
         if self.registry.has_longer_sequence(scope, &keys) {
-            self.arm_overlay(now);
+            if let Some(now) = now {
+                self.arm_overlay(now);
+            }
             self.pending = PendingPrefix::Active {
                 identity,
                 scope,
@@ -794,7 +809,7 @@ mod tests {
             focus: InputContextSnapshot::idle(Table::Normal),
         };
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('j')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('j')), Some(NOW)),
             Dispatch::Surface {
                 command: Action::PickNext
             }
@@ -810,14 +825,18 @@ mod tests {
             focus: InputContextSnapshot::idle(Table::Normal),
         };
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('j')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('j')), Some(NOW)),
             Dispatch::Host {
                 command: Action::Close
             },
             "a host binding wins over the focused surface"
         );
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(Key::ctrl(KeyCode::Char('q'))), NOW),
+            resolver.dispatch(
+                &context,
+                Input::Key(Key::ctrl(KeyCode::Char('q'))),
+                Some(NOW)
+            ),
             Dispatch::Host {
                 command: Action::Quit
             }
@@ -835,7 +854,7 @@ mod tests {
             focus: InputContextSnapshot::idle(Table::Normal),
         };
         assert_eq!(
-            resolver.dispatch(&with_overlay, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&with_overlay, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Surface {
                 command: Action::Close
             }
@@ -843,12 +862,12 @@ mod tests {
 
         let context = normal();
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending
         );
         assert_eq!(resolver.pending_keys(), [ch('g')]);
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Surface {
                 command: Action::FirstLine
             }
@@ -862,7 +881,7 @@ mod tests {
         let context = insert();
         // Insert holds no binding, so a printable key types text at once.
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('a')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('a')), Some(NOW)),
             Dispatch::Text {
                 owner: CommandOwner::Surface,
                 text: TypedText::Typed('a')
@@ -873,11 +892,11 @@ mod tests {
         normal_focus.text_fallback = TextFallback::Typed(CommandOwner::Surface);
         let context = DispatchContext::focused(normal_focus);
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending
         );
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('a')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('a')), Some(NOW)),
             Dispatch::Unbound,
             "the second key of a started sequence types nothing"
         );
@@ -888,14 +907,14 @@ mod tests {
         let mut resolver = resolver();
         let context = normal();
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending
         );
 
         let mut changed = normal();
         changed.focus.generation = ContextGeneration::FIRST.advanced();
         assert_eq!(
-            resolver.dispatch(&changed, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&changed, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending,
             "the cleared prefix starts the sequence again"
         );
@@ -904,7 +923,7 @@ mod tests {
         let mut focused_elsewhere = changed;
         focused_elsewhere.focus.scope = Table::Insert;
         assert_eq!(
-            resolver.dispatch(&focused_elsewhere, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&focused_elsewhere, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Unbound,
             "a focus change clears the prefix and Insert binds no `g`"
         );
@@ -912,11 +931,11 @@ mod tests {
         let mut overlay_opened = normal();
         overlay_opened.overlay = Some(Table::Overlay);
         assert_eq!(
-            resolver.dispatch(&normal(), Input::Key(ch('g')), NOW),
+            resolver.dispatch(&normal(), Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending
         );
         assert_eq!(
-            resolver.dispatch(&overlay_opened, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&overlay_opened, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Surface {
                 command: Action::Close
             },
@@ -929,11 +948,11 @@ mod tests {
         let mut resolver = resolver();
         let context = normal();
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending
         );
         assert_eq!(
-            resolver.dispatch(&context, Input::Unsupported, NOW),
+            resolver.dispatch(&context, Input::Unsupported, Some(NOW)),
             Dispatch::Unsupported
         );
         assert!(resolver.pending_keys().is_empty());
@@ -944,14 +963,14 @@ mod tests {
         let mut resolver = resolver();
         let block = PasteText::new("two words").expect("the block is bounded");
         assert_eq!(
-            resolver.dispatch(&insert(), Input::Paste(block.clone()), NOW),
+            resolver.dispatch(&insert(), Input::Paste(block.clone()), Some(NOW)),
             Dispatch::Text {
                 owner: CommandOwner::Surface,
                 text: TypedText::Pasted(block.clone())
             }
         );
         assert_eq!(
-            resolver.dispatch(&normal(), Input::Paste(block), NOW),
+            resolver.dispatch(&normal(), Input::Paste(block), Some(NOW)),
             Dispatch::Unbound,
             "a scope without a text fallback takes no paste"
         );
@@ -1020,7 +1039,7 @@ mod tests {
         let mut resolver = resolver();
         let context = normal();
         assert_eq!(
-            resolver.dispatch(&context, Input::Key(ch('g')), NOW),
+            resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
             Dispatch::Pending
         );
         assert_eq!(resolver.overlay_deadline(), Some(DELAY));
@@ -1056,7 +1075,7 @@ mod tests {
             "the hints list the keys that follow a sequence, and none is pending"
         );
         assert_eq!(
-            resolver.dispatch(&normal(), Input::Key(ch('g')), DELAY),
+            resolver.dispatch(&normal(), Input::Key(ch('g')), Some(DELAY)),
             Dispatch::Pending
         );
         assert!(
@@ -1066,15 +1085,47 @@ mod tests {
     }
 
     #[test]
+    fn a_caller_that_supplies_no_time_arms_no_overlay() {
+        let context = normal();
+
+        let mut without_clock = resolver();
+        assert_eq!(
+            without_clock.dispatch(&context, Input::Key(ch('g')), None),
+            Dispatch::Pending,
+            "the sequence opens without a clock"
+        );
+        assert_eq!(
+            without_clock.overlay_deadline(),
+            None,
+            "no timer armed, so the host needs no wake"
+        );
+        assert!(
+            without_clock.which_key(DELAY).is_none(),
+            "no elapsed time reveals an overlay that never armed"
+        );
+
+        let mut with_clock = resolver();
+        assert_eq!(
+            with_clock.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+            Dispatch::Pending
+        );
+        assert_eq!(
+            with_clock.overlay_deadline(),
+            Some(DELAY),
+            "a supplied time still arms the overlay"
+        );
+    }
+
+    #[test]
     fn a_completed_command_and_a_cleared_prefix_both_hide_the_overlay() {
         let mut resolver = resolver();
         let context = normal();
-        resolver.dispatch(&context, Input::Key(ch('g')), NOW);
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW));
         assert!(resolver.which_key(DELAY).is_some());
-        resolver.dispatch(&context, Input::Key(ch('g')), DELAY);
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(DELAY));
         assert!(resolver.which_key(DELAY).is_none());
 
-        resolver.dispatch(&context, Input::Key(ch('g')), NOW);
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW));
         assert!(resolver.which_key(DELAY).is_some());
         resolver.clear_pending();
         assert!(resolver.which_key(DELAY).is_none());

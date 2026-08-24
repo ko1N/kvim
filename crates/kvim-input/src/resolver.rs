@@ -395,7 +395,7 @@ impl Resolver {
         }
         let context = self.reducer.dispatch_context();
         let scope = context.focus.scope;
-        let dispatch = self.shared.dispatch(&context, Input::Key(key), now);
+        let dispatch = self.shared.dispatch(&context, Input::Key(key), Some(now));
         let reduced = self.reducer.reduce(dispatch);
         if self.reducer.holds_grammar_prefix() {
             // The reducer opened its own prefix, such as a count, so the
