@@ -126,6 +126,53 @@ also has explicit source-byte, process-output, file, hunk, line, deadline, and
 cancellation bounds. Every limit returns a typed outcome and reports
 truncation where partial display is safe.
 
+## The Capture Read
+
+One capture runs the same command sequence three times. The first pass reads the
+authority, the second pass collects the candidate that the capture may publish,
+and the third pass reads the authority again. Every pass builds one complete
+candidate and derives one projection from it, so the three values compare
+directly and the content digest of one selected worktree file is the digest of
+the exact side bytes that the candidate publishes. The collection therefore sits
+between two independent reads, which is the only arrangement that rejects a
+change that returns to its first value.
+
+The final authority of a refused attempt becomes the initial authority of the
+next one, because it names the state that the retry starts from.
+
+One pass runs six commands, all under the execution policy above and all with a
+fixed locale, so every marker of the patch format stays the same on every host:
+
+| Command | Answer |
+|---|---|
+| `rev-parse --verify --quiet HEAD` | The commit of `HEAD`. Git separates an unborn branch from every other refusal by its exit code, so the capture reads no message text. |
+| `ls-files --stage -z` | The index authority. The staged listing names every stage of every entry, so an unresolved merge changes it exactly as a staged change does. |
+| `status --porcelain=v2 -z --ignored=no --untracked-files=all` | The status records of the fingerprint. |
+| `ls-files --others --exclude-standard -z` | Every untracked file. The listing writes paths against the working directory, so the capture needs no repository prefix. |
+| `diff --raw -z --relative <base>` | The paths, modes, and kinds of every changed file. NUL separation keeps every name one field. |
+| `diff --patch --unified=3 --relative <base>` | The exact lines of every changed file. |
+
+Both diff reads carry `--no-ext-diff`, `--no-textconv`, `--find-renames`, and
+`--ignore-submodules=none`, so their file order is one order and the capture
+joins them by that order. A Git blob holds no kind, so Git publishes a type
+change as one removal section and one creation section while the raw listing
+names one record. A listing that does not account for every section publishes
+nothing, because the capture must never attach the lines of one file to another.
+
+One further rule follows from rename detection: both diff reads always cover the
+complete worktree root, even for a one-path target. Rename detection inside one
+pathspec would split the pair that a one-path target must publish whole. The
+publication filters the parsed records instead, so a one-path capture still
+names only its own file and its own rename partner.
+
+Git publishes no patch for an untracked file. The capture reads the exact source
+bytes of such a file through the confined worktree root and publishes them as one
+run of added lines. The published mode comes from the entry itself, never from
+the target of a link.
+
+An unborn `HEAD` is a state of the authority, not a refusal. A caller-supplied
+base that the repository still holds stays reviewable against it.
+
 ## Review Anchors And Events
 
 A `ReviewAnchor` names:
@@ -260,6 +307,12 @@ marks of the last successful read.
 | Records of one snapshot | `GIT_STATUS_ENTRIES_MAX` | 4096 | A larger set of changes leaves the remaining entries unmarked, and the marks are decoration. |
 | Deadline of one read | `GIT_STATUS_DEADLINE` | 5 s | One status read of a large repository finishes far below this value. |
 | Levels of one path walk | `GIT_PATH_DEPTH_MAX` | 64 | The search for the repository, the roll-up, and the inherited lookup each stop here, so no malformed path costs unbounded time. |
+| Attempts of one capture | `DIFF_CAPTURE_ATTEMPTS_MAX` | 3 | A repository that changes through three attempts is under active work, and a fourth read would cost more without a better chance. |
+| Deadline of one capture command | `DIFF_CAPTURE_DEADLINE` | 15 s | One diff of a large repository finishes far below this value. |
+| Output of one capture command | `DIFF_PROCESS_OUTPUT_BYTES_MAX` | 8 MiB | The bound covers one process. It is separate from the source bound below. |
+| Output of one short answer | `DIFF_ANSWER_OUTPUT_BYTES_MAX` | 8 KiB | One object identifier or one type name stays far below this value. |
+| Source bytes of one untracked file | `DIFF_SOURCE_BYTES_MAX` | 1 MiB | A larger file publishes no line and reports truncation, so the reader always sees that content is missing. |
+| Binary detection window | `DIFF_BINARY_SCAN_BYTES` | 8000 | Git inspects the same window, so a tracked file and an untracked file take the same answer. |
 
 The parser is pure and defensive. It drops a record that names no known type, a
 record with too few fields, a record whose path holds a root component or a
