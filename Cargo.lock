@@ -583,6 +583,7 @@ dependencies = [
  "kvim-runtime",
  "kvim-settings",
  "kvim-terminal",
+ "kvim-ui",
  "kvim-workspace",
  "ratatui",
  "serde_json",
@@ -590,6 +591,14 @@ dependencies = [
  "tokio",
  "tokio-util",
  "unicode-width 0.2.0",
+]
+
+[[package]]
+name = "kvim-ui"
+version = "0.1.0"
+dependencies = [
+ "ratatui",
+ "thiserror",
 ]
 
 [[package]]

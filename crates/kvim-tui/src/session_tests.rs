@@ -31,7 +31,7 @@ use super::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
     Redraw, RunState, Session, test_root,
 };
-use super::window::{SidebarSide, WindowId};
+use kvim_ui::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
 

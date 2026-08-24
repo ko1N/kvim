@@ -32,7 +32,9 @@ with it.
 
 ## Window View
 
-A window owns the cursor, the selection anchor, and the viewport. Only the
+A window owns the cursor, the selection anchor, and the viewport. The generic
+tree holds none of them: the standalone adapter in `kvim-tui` owns one view for
+each window identity and discards that view when the window closes. Only the
 buffer text is shared. Two windows that show one buffer therefore move and
 scroll independently: a scroll in one window moves no other window, and a move
 in one window moves no other cursor.
@@ -51,8 +53,8 @@ the buffer of that window. See the scroll margin in
 
 The viewport covers the text rows of the window rectangle, never the complete
 rectangle. The winbar row belongs to the rectangle and shows no buffer line, so
-the window tree removes it. The gutter width depends on the buffer, which the
-window tree never holds, so the session narrows the viewport width after every
+the standalone adapter removes it. The gutter width depends on the buffer, which
+the adapter never holds, so the session narrows the viewport width after every
 layout change. The viewport therefore always reports the cells that the renderer
 paints with buffer text.
 

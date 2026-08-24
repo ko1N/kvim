@@ -8,10 +8,10 @@ use ratatui::Frame;
 
 use kvim_editor::{Cursor, WindowState};
 use kvim_input::Mode;
+use kvim_ui::RegionKind;
 
 use super::buffer_view::{BracketHighlight, WindowFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
-use super::layout::RegionKind;
 use super::overlay::{render_completion, render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::session::Visible;
@@ -43,7 +43,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
         .map_or(0, |search| search.query.text().chars().count());
     for region in view.windows.layout().regions() {
         match region.kind {
-            RegionKind::Editor => {
+            RegionKind::Surface => {
                 let Some(state) = view.windows.state(region.id) else {
                     debug_assert!(false, "every editor region belongs to one leaf window");
                     continue;
