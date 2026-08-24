@@ -40,7 +40,8 @@ fn painted(hints: &[WhichKeyHint<'_>], width: u16, height: u16) -> Buffer {
     let mut target = Buffer::empty(body);
     WhichKeyOverlay::new(TITLE, hints, styles())
         .expect("the hints stay inside every bound")
-        .render(&mut target, body);
+        .render(&mut target, body)
+        .expect("the band covers the whole cell buffer");
     target
 }
 
@@ -248,4 +249,25 @@ fn a_wide_key_reserves_two_cells_of_the_key_column() {
         Some("b".to_owned()),
         "every key starts at the same cell"
     );
+}
+
+#[test]
+fn a_band_outside_the_buffer_returns_the_error_and_changes_no_cell() {
+    let hints = [
+        WhichKeyHint::new("a", "First"),
+        WhichKeyHint::new("b", "Second"),
+    ];
+    let buffer = Rect::new(0, 0, 30, 8);
+    let mut target = Buffer::empty(buffer);
+    let untouched = target.clone();
+    let overlay = WhichKeyOverlay::new(TITLE, &hints, styles()).expect("the hints stay in bounds");
+
+    // The band starts inside the buffer and reaches past its last row, which
+    // is the shape that a host produces from a stale frame size.
+    let body = Rect::new(0, 4, 30, 8);
+    assert_eq!(
+        overlay.render(&mut target, body).unwrap_err(),
+        WhichKeyError::Area { body, buffer }
+    );
+    assert_eq!(target, untouched, "a refused band paints no cell");
 }

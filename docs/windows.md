@@ -506,6 +506,16 @@ Every render validates that its rectangle fits the supplied
 `ratatui::Buffer`. Invalid geometry returns a typed error before any cell
 changes. Rendering performs no input or output and writes only inside its area.
 
+`WhichKeyOverlay::render` therefore returns `Result<(), WhichKeyError>` and
+reports `WhichKeyError::Area`, and `SidebarState::render` reports
+`SidebarError::Area`, for a rectangle that names one cell outside the buffer.
+An empty rectangle names no cell, so every buffer accepts it. The check runs
+before the first write, because `ratatui::Buffer` panics on a cell outside its
+own rectangle, and a host that keeps a stale rectangle must read a typed error
+instead of a stopped process. One crate-private `fits` function in
+`crates/kvim-ui/src/layout.rs` owns the check, so both widgets and every later
+widget answer the same question once.
+
 The theme maps semantic roles to terminal styles. Call sites request a role,
 such as normal text, selection, search match, line number, active line number,
 window title, status text, or a syntax role. Call sites never name a raw color.

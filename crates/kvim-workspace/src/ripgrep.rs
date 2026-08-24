@@ -96,15 +96,25 @@ pub fn ripgrep_command(root: &WorktreeRoot, query: &str) -> ProcessRequest {
 /// # Examples
 ///
 /// ```
+/// use std::fs;
+///
 /// use kvim_path::WorktreeRoot;
 /// use kvim_workspace::parse_matches;
 ///
+/// // The parser keeps only a match that names an existing file under the
+/// // root, so the example owns one small worktree of its own.
+/// let directory = std::env::temp_dir()
+///     .join(format!("kvim-doc-parse-matches-{}", std::process::id()));
+/// fs::create_dir_all(directory.join("src"))?;
+/// fs::write(directory.join("src").join("main.rs"), "let value = 1;\n")?;
+/// let root = WorktreeRoot::open(&directory)?;
+///
 /// let output = b"./src/main.rs:12:5:let value = 1;\nbroken line\n";
-/// let root = WorktreeRoot::open(std::env::current_dir()?)?;
 /// let (candidates, truncated) = parse_matches(&root, output);
 /// assert_eq!(candidates.len(), 1, "the malformed line is dropped");
 /// assert_eq!(candidates[0].row(), "main.rs:12  src  let value = 1;");
 /// assert!(!truncated);
+/// # fs::remove_dir_all(&directory)?;
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
 #[must_use]

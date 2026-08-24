@@ -868,7 +868,8 @@ fn directory_path(root: &WorktreeRoot, path: &Path) -> Option<WorktreeDirectoryP
 /// #     .build()
 /// #     .unwrap();
 /// tokio_runtime.block_on(async {
-///     let root = Arc::new(WorktreeRoot::open(std::env::current_dir()).unwrap());
+///     let current_dir = std::env::current_dir().unwrap();
+///     let root = Arc::new(WorktreeRoot::open(current_dir).unwrap());
 ///     let mut watcher = FileWatcher::start(root, &["target"])
 ///         .expect("the root is a readable directory");
 ///

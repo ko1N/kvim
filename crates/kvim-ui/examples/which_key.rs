@@ -237,7 +237,8 @@ fn painted(hints: &[KeyHint<Command>]) -> Buffer {
     let mut target = Buffer::empty(BODY);
     WhichKeyOverlay::new(" Which Key ", &rows, styles)
         .expect("one level of hints stays inside every bound")
-        .render(&mut target, BODY);
+        .render(&mut target, BODY)
+        .expect("the band covers the cell buffer of this example");
     target
 }
 

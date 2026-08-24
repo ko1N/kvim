@@ -2,7 +2,7 @@
 //! selection kind, search matches, chrome, overlays, and narrow terminals.
 
 use std::collections::BTreeSet;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use ratatui::Terminal;
@@ -1583,14 +1583,15 @@ fn a_later_attempt_clears_the_rows_of_the_attempt_that_failed() {
 /// Creates a session that writes no undo file, over one terminal size.
 ///
 /// A save must reach the file alone, so the test reads the one write that it
-/// asked for.
-fn save_session(width: u16, height: u16) -> Session {
+/// asked for. `root` holds the file that the test saves, because the session
+/// opens and writes no path outside its own worktree root.
+fn save_session(width: u16, height: u16, root: &Path) -> Session {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
     Session::new(
         Rect::new(0, 0, width, height),
         settings,
-        test_root(workspace_root()),
+        test_root(root.to_path_buf()),
     )
 }
 
@@ -1624,7 +1625,7 @@ fn a_completed_save_paints_its_report_and_clears_the_changed_marker() {
     let path = directory.write("main.rs", "one\ntwo\n");
     // The report names the absolute path of the temporary directory, so the
     // terminal must be wide enough to paint the complete message.
-    let mut session = save_session(200, 10);
+    let mut session = save_session(200, 10, &directory.path);
     open_file(&mut session, path.clone());
 
     // One typed character leaves the buffer with an unsaved change.
@@ -1661,7 +1662,7 @@ fn a_completed_save_paints_its_report_and_clears_the_changed_marker() {
 #[test]
 fn a_failed_save_paints_its_failure_and_keeps_the_changed_marker() {
     let directory = TempDir::new("render-save-failure");
-    let mut session = save_session(60, 10);
+    let mut session = save_session(60, 10, &directory.path);
     // The path holds no file yet, so the open starts a new empty buffer. Its
     // directory is missing, so no write can succeed.
     open_file(&mut session, directory.join("missing").join("main.rs"));
@@ -1688,7 +1689,8 @@ fn a_failed_save_paints_its_failure_and_keeps_the_changed_marker() {
 
 #[test]
 fn a_failed_clipboard_write_paints_its_report_without_a_key_event() {
-    let mut session = save_session(90, 10).with_session_clipboard(SessionClipboard::deferred());
+    let mut session = save_session(90, 10, &workspace_root())
+        .with_session_clipboard(SessionClipboard::deferred());
     press(&mut session, 'i');
     type_keys(&mut session, "alpha");
     press_code(&mut session, KeyCode::Esc);

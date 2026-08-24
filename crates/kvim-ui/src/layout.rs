@@ -15,6 +15,19 @@ use crate::window::{
     WindowId, WindowLimits, axis_extent, child_minima,
 };
 
+/// Reports whether one rectangle names only cells that a buffer holds.
+///
+/// Every public render checks its rectangle with this function before it writes
+/// one cell, because `ratatui::Buffer` panics on a cell outside its own
+/// rectangle. An empty rectangle names no cell at all, so every buffer holds it.
+pub(crate) fn fits(area: Rect, buffer: Rect) -> bool {
+    area.is_empty()
+        || (area.x >= buffer.x
+            && area.y >= buffer.y
+            && area.right() <= buffer.right()
+            && area.bottom() <= buffer.bottom())
+}
+
 /// The purpose of one region of the host area.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RegionKind {

@@ -2113,19 +2113,23 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
 ///
 /// A content change names no path at all, so one burst asks the session to
 /// check every loaded buffer against its file.
-fn report_watch_change(session: &mut Session) -> Redraw {
-    let root = test_root(workspace_root());
+///
+/// `root` is the worktree root of the session under test. The session drops a
+/// burst of another root, so a burst that names the working directory of the
+/// test process would reach no buffer of a session over a temporary directory.
+fn report_watch_change(session: &mut Session, root: &Path) -> Redraw {
+    let watched = test_root(root.to_path_buf());
     let mut batch = WatchBatch::default();
     batch.push(
-        &WatchEvent::new(root, workspace_root().join("changed"), WatchKind::Modified)
+        &WatchEvent::new(watched, root.join("changed"), WatchKind::Modified)
             .expect("the event lies below the session root"),
     );
     session.apply_watch_batch(&batch)
 }
 
 /// Runs the reload check that one workspace change queued.
-fn run_watch_reload(session: &mut Session) {
-    let _ = report_watch_change(session);
+fn run_watch_reload(session: &mut Session, root: &Path) {
+    let _ = report_watch_change(session, root);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -2149,7 +2153,7 @@ fn opened_file(label: &str, name: &str, text: &str) -> (TempDir, PathBuf, Sessio
 
 #[test]
 fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
-    let (_directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
 
     press(&mut session, 'i');
     type_keys(&mut session, "edited ");
@@ -2158,7 +2162,7 @@ fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
 
     std::fs::write(&path, "another program wrote a much longer line\n")
         .expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(
         session.buffer().to_string(),
@@ -2176,20 +2180,20 @@ fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
     // often never fills the message line.
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(message(&session), "");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
     assert_eq!(message(&session), "");
     assert_eq!(session.buffer().to_string(), "edited one\n");
 }
 
 #[test]
 fn a_clean_buffer_reloads_after_an_external_change() {
-    let (_directory, path, mut session) = opened_file("session-reload-clean", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-clean", "main.rs", "one\n");
 
     // A file that keeps its length reports no change, so the test changes it.
     std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(message(&session), "", "the open message is cleared");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(session.buffer().to_string(), "one\ntwo\n");
     assert!(!session.buffer().is_modified());
@@ -2221,7 +2225,7 @@ fn a_buffer_that_no_window_shows_reloads_in_the_background() {
     assert_ne!(session.active(), background);
 
     std::fs::write(&second, "second, and changed\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     let reloaded = session
         .buffers()
@@ -2233,7 +2237,7 @@ fn a_buffer_that_no_window_shows_reloads_in_the_background() {
 
 #[test]
 fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
-    let (_directory, path, mut session) = opened_file(
+    let (directory, path, mut session) = opened_file(
         "session-reload-cursor",
         "main.rs",
         "one\ntwo\nthree\nfour\nfive\n",
@@ -2244,12 +2248,12 @@ fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
 
     // A file that keeps the cursor line keeps the cursor.
     std::fs::write(&path, "one\ntwo\nthree, longer\nfour\nfive\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
     assert_eq!(session.cursor().line().get(), 2);
 
     // A file that became shorter clamps the cursor and the viewport.
     std::fs::write(&path, "one\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
     assert_eq!(session.buffer().to_string(), "one\n");
     assert_eq!(session.cursor().line().get(), 0);
     assert_eq!(
@@ -2264,10 +2268,10 @@ fn a_reload_keeps_the_cursor_and_clamps_it_into_a_shorter_file() {
 
 #[test]
 fn a_deleted_file_keeps_its_buffer_editable_and_reports_it() {
-    let (_directory, path, mut session) = opened_file("session-reload-deleted", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-deleted", "main.rs", "one\n");
 
     std::fs::remove_file(&path).expect("the file exists");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(
         session.buffer().to_string(),
@@ -2299,7 +2303,7 @@ fn a_renamed_file_reaches_the_same_missing_state() {
     let (directory, path, mut session) = opened_file("session-reload-renamed", "main.rs", "one\n");
 
     std::fs::rename(&path, directory.join("other.rs")).expect("the file exists");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(session.buffer().to_string(), "one\n");
     assert_eq!(external(&session), Some(ExternalChange::Missing));
@@ -2308,11 +2312,11 @@ fn a_renamed_file_reaches_the_same_missing_state() {
 
 #[test]
 fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
-    let (_directory, path, mut session) =
+    let (directory, path, mut session) =
         opened_file("session-reload-language", "main.rs", "fn main() {}\n");
 
     std::fs::write(&path, "fn main() { println!(); }\n").expect("the file is writable");
-    let _ = report_watch_change(&mut session);
+    let _ = report_watch_change(&mut session, &directory.path);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -2337,11 +2341,10 @@ fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
 
 #[test]
 fn an_obsolete_reload_result_never_replaces_the_buffer() {
-    let (_directory, path, mut session) =
-        opened_file("session-reload-obsolete", "main.rs", "one\n");
+    let (directory, path, mut session) = opened_file("session-reload-obsolete", "main.rs", "one\n");
 
     std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
-    let _ = report_watch_change(&mut session);
+    let _ = report_watch_change(&mut session, &directory.path);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -2364,7 +2367,7 @@ fn a_reload_result_for_a_moved_target_is_obsolete() {
     let buffer = session.active();
 
     std::fs::write(&path, "one\ntwo\n").expect("the file is writable");
-    let _ = report_watch_change(&mut session);
+    let _ = report_watch_change(&mut session, &directory.path);
     let request = session
         .take_file_request()
         .expect("the burst queued one reload check");
@@ -2407,7 +2410,7 @@ fn a_file_that_grew_past_the_size_limit_keeps_its_buffer() {
     assert_eq!(session.buffer().to_string(), "one\n");
 
     std::fs::write(&path, "far above the limit\n").expect("the file is writable");
-    run_watch_reload(&mut session);
+    run_watch_reload(&mut session, &directory.path);
 
     assert_eq!(session.buffer().to_string(), "one\n");
     assert_eq!(external(&session), Some(ExternalChange::Changed));
@@ -2816,7 +2819,9 @@ fn an_unsupported_target_is_rejected_and_leaves_the_editor_usable() {
     let directory = TempDir::new("session-reject");
     let mut session = file_session(&directory.path);
 
-    session.open_path(directory.path.clone());
+    // The target is a directory below the root, because the root itself names
+    // no worktree-relative path and the transition rejects it before the read.
+    session.open_path(directory.dir("nested"));
     run_file_request(&mut session);
     assert_eq!(
         session.message().map(|message| message.level()),

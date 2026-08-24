@@ -21,6 +21,8 @@ use ratatui::layout::Rect;
 use ratatui::style::Style;
 use thiserror::Error;
 
+use crate::layout::fits;
+
 /// The largest number of rows that one sidebar holds.
 ///
 /// The bound stops a host that reads a very large directory, a very large
@@ -114,6 +116,14 @@ pub enum SidebarError {
     VisibleOutput {
         /// The bound that the callback passed.
         max: usize,
+    },
+    /// The sidebar rectangle names cells that the supplied buffer does not hold.
+    #[error("the sidebar rectangle {area:?} names cells outside the buffer {buffer:?}")]
+    Area {
+        /// The rectangle that the host supplied.
+        area: Rect,
+        /// The rectangle that the supplied buffer covers.
+        buffer: Rect,
     },
 }
 
@@ -652,9 +662,13 @@ impl<R: Clone + Eq> SidebarState<R> {
     ///
     /// # Errors
     ///
-    /// Returns the first bound that a callback passed. Every other draw of the
-    /// same frame still reaches the buffer, so one refused draw hides no other
-    /// row.
+    /// Returns [`SidebarError::Area`] when `area` names one cell that `target`
+    /// does not hold. The buffer keeps every cell in that case, so a host that
+    /// supplies a stale rectangle reads no partial sidebar.
+    ///
+    /// Returns otherwise the first bound that a callback passed. Every other
+    /// draw of the same frame still reaches the buffer, so one refused draw
+    /// hides no other row.
     ///
     /// # Examples
     ///
@@ -691,6 +705,10 @@ impl<R: Clone + Eq> SidebarState<R> {
     where
         F: FnMut(&mut SidebarCanvas<'_>, &SidebarPlacement<R>),
     {
+        let buffer = *target.area();
+        if !fits(area, buffer) {
+            return Err(SidebarError::Area { area, buffer });
+        }
         let mut failure = None;
         if area.is_empty() {
             return Ok(());

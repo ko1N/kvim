@@ -457,3 +457,20 @@ fn a_draw_reports_the_cell_the_label_and_the_visible_output_bounds() {
         }),
     );
 }
+
+#[test]
+fn a_rectangle_outside_the_buffer_returns_the_error_and_changes_no_cell() {
+    let buffer = Rect::new(0, 0, 6, 2);
+    let mut target = Buffer::empty(buffer);
+    let untouched = target.clone();
+    let sidebar = single_rows(2, 2);
+
+    // The rectangle starts below the last buffer row, which is the shape that
+    // a host produces from a stale frame size.
+    let area = Rect::new(0, 4, 6, 2);
+    let outcome = sidebar.render(&mut target, area, |canvas, _placement| {
+        canvas.draw(0, 0, "x", Style::default());
+    });
+    assert_eq!(outcome, Err(SidebarError::Area { area, buffer }));
+    assert_eq!(target, untouched, "a refused rectangle paints no cell");
+}
