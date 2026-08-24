@@ -99,13 +99,68 @@ impl Default for SessionClipboard {
     }
 }
 
+/// What one editor may reach of the system clipboard.
+///
+/// The host names the policy, not the implementation. The clipboard boundary,
+/// the platform selection, and the transfer bound all stay inside this crate,
+/// so no host names a clipboard command. See `docs/clipboard.md`.
+///
+/// # Examples
+///
+/// ```
+/// use ratatui::layout::Rect;
+///
+/// use kvim_settings::EditorSettings;
+/// use kvim_tui::{ClipboardAccess, Session};
+///
+/// let root = std::sync::Arc::new(
+///     kvim_path::WorktreeRoot::open(
+///         std::env::current_dir().expect("the process holds a working directory"),
+///     )
+///     .expect("the working directory is a worktree"),
+/// );
+/// // An editor without this call reaches no clipboard command at all.
+/// let session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root)
+///     .with_clipboard(ClipboardAccess::None);
+/// assert_eq!(session.clipboard_access(), ClipboardAccess::None);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum ClipboardAccess {
+    /// The editor reaches no clipboard command.
+    ///
+    /// Every yank and every put stays inside the registers of the editor.
+    /// This is the default, so no test and no host reaches the platform
+    /// clipboard by accident.
+    #[default]
+    None,
+    /// The editor reaches the clipboard command of this platform.
+    ///
+    /// [`Session::with_clipboard`] performs the selection once, because it
+    /// reads the target platform and the executable search path. The editor
+    /// runs the selected command through its bounded process service, never on
+    /// the event loop.
+    ///
+    /// [`Session::with_clipboard`]: super::Session::with_clipboard
+    System,
+}
+
+impl ClipboardAccess {
+    /// Returns the clipboard boundary that this policy names.
+    pub(super) fn realize(self) -> SessionClipboard {
+        match self {
+            Self::None => SessionClipboard::default(),
+            Self::System => SessionClipboard::detect(),
+        }
+    }
+}
+
 impl SessionClipboard {
     /// Selects the clipboard implementation of this host.
     ///
     /// The selection reads the target platform and the executable search path,
     /// so it runs once at startup and never per operation.
     #[must_use]
-    pub(super) fn detect() -> Self {
+    fn detect() -> Self {
         let deferred = DeferredExecutor::default();
         Self {
             clipboard: Clipboard::detect(deferred.clone()),

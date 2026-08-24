@@ -457,8 +457,11 @@ version = "0.1.0"
 dependencies = [
  "kvim-language",
  "kvim-path",
+ "kvim-runtime",
  "kvim-settings",
+ "kvim-terminal",
  "kvim-tui",
+ "ratatui",
  "thiserror",
  "tokio",
 ]

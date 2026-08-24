@@ -44,6 +44,7 @@ use kvim_settings::EditorSettings;
 use kvim_ui::Direction;
 use kvim_workspace::FileOperation;
 
+use super::clipboard::ClipboardAccess;
 use super::driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
 use super::session::{Redraw, RunState, Session};
 
@@ -648,6 +649,7 @@ pub struct EmbeddedEditorBuilder {
     area: Rect,
     settings: EditorSettings,
     access: EditorAccess,
+    clipboard: ClipboardAccess,
     capacity: EditorCapacity,
     language: Option<LanguageServices>,
     watcher: Option<FileWatcher>,
@@ -665,6 +667,18 @@ impl EmbeddedEditorBuilder {
     #[must_use]
     pub fn access(mut self, access: EditorAccess) -> Self {
         self.access = access;
+        self
+    }
+
+    /// Sets what this editor may reach of the system clipboard.
+    ///
+    /// The default is [`ClipboardAccess::None`], so an embedded editor keeps
+    /// every yank and every put inside its own registers until the host grants
+    /// more. [`ClipboardAccess::System`] performs the platform selection once,
+    /// inside [`EmbeddedEditorBuilder::open`]. See `docs/clipboard.md`.
+    #[must_use]
+    pub fn clipboard(mut self, clipboard: ClipboardAccess) -> Self {
+        self.clipboard = clipboard;
         self
     }
 
@@ -708,6 +722,7 @@ impl EmbeddedEditorBuilder {
             area,
             settings,
             access,
+            clipboard,
             capacity,
             language,
             watcher,
@@ -715,7 +730,9 @@ impl EmbeddedEditorBuilder {
         if area.width == 0 || area.height == 0 {
             return Err(GeometryError::Empty { area });
         }
-        let editor = Session::new(area, settings, root).with_access(access);
+        let editor = Session::new(area, settings, root)
+            .with_access(access)
+            .with_clipboard(clipboard);
         let (spawner, results) = capacity.realize();
         let mut driver = EditorDriver::new(editor.instance(), spawner, results);
         if let Some(language) = language {
@@ -811,6 +828,7 @@ impl EmbeddedEditor {
             area,
             settings: EditorSettings::default(),
             access: EditorAccess::default(),
+            clipboard: ClipboardAccess::default(),
             capacity: EditorCapacity::default(),
             language: None,
             watcher: None,

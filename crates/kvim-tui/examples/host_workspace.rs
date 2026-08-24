@@ -55,8 +55,8 @@ use kvim_runtime::{
 use kvim_settings::EditorSettings;
 use kvim_tui::{EditorEvent, EditorShutdown, EmbeddedEditor};
 use kvim_ui::{
-    ChildSide, Composition, CompositionEffect, Direction, Orientation, RegionKind, RowKind,
-    SidebarInput, SidebarMotion, SidebarRow, SidebarSide, SidebarState, SurfacePlacement,
+    ChildSide, CloseOutcome, Composition, CompositionEffect, Direction, Orientation, RegionKind,
+    RowKind, SidebarInput, SidebarMotion, SidebarRow, SidebarSide, SidebarState, SurfacePlacement,
     WhichKeyHint, WhichKeyOverlay, WhichKeyStyles, WindowLimits, WorkspaceComposer,
 };
 use kvim_workspace::temp::TempRepository;
@@ -129,6 +129,7 @@ enum Surface {
 /// The commands that this host binds.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 enum Action {
+    CloseFocused,
     FocusLeft,
     FocusRight,
     FocusUp,
@@ -152,6 +153,7 @@ impl fmt::Display for Action {
 impl CommandMetadata for Action {
     fn id(&self) -> &str {
         match self {
+            Self::CloseFocused => "close-focused",
             Self::FocusLeft => "focus-left",
             Self::FocusRight => "focus-right",
             Self::FocusUp => "focus-up",
@@ -169,6 +171,7 @@ impl CommandMetadata for Action {
 
     fn label(&self) -> &str {
         match self {
+            Self::CloseFocused => "Close the focused region",
             Self::FocusLeft => "Focus the surface on the left",
             Self::FocusRight => "Focus the surface on the right",
             Self::FocusUp => "Focus the surface above",
@@ -275,6 +278,7 @@ fn shared_resolver() -> Resolver<Action, Table> {
         Binding::host(Table::Global, &[ctrl('j')], Action::FocusDown),
         Binding::host(Table::Global, &[leader, ch('h')], Action::FocusLeft),
         Binding::host(Table::Global, &[leader, ch('l')], Action::FocusRight),
+        Binding::host(Table::Global, &[leader, ch('q')], Action::CloseFocused),
         Binding::surface(Table::Chat, &[Key::plain(KeyCode::Enter)], Action::ChatSend),
         Binding::surface(Table::EditorNormal, &[ch('i')], Action::EditorInsert),
         Binding::surface(
@@ -463,6 +467,28 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .unwrap_or_default();
     println!("which-key rows: {hints:?}");
 
+    // The leader key above still waits, so one more key completes that
+    // sequence and closes the focused region. The focused sidebar hides first
+    // and keeps its surface, so the host can show it again unchanged.
+    step(&mut composer, &mut host, &mut editor, Input::Key(ch('q'))).await?;
+    println!(
+        "the workspace shows {} regions, focus: {:?}",
+        composer.layout().surfaces().len(),
+        composer.focused_surface()
+    );
+
+    // A close from a window removes that window. It goes away with its own
+    // semantic state, so the composer asks for no reset and the focus lands on
+    // a surviving region at once.
+    for key in [ch(' '), ch('q')] {
+        step(&mut composer, &mut host, &mut editor, Input::Key(key)).await?;
+    }
+    println!(
+        "the workspace shows {} regions, focus: {:?}",
+        composer.layout().surfaces().len(),
+        composer.focused_surface()
+    );
+
     // One layout pass, one host cell buffer, one frame.
     let mut cells = CellBuffer::empty(HOST_AREA);
     render(&composer, &host, &mut editor, &hints, &mut cells)?;
@@ -541,6 +567,16 @@ async fn apply_host(
     editor: &mut EmbeddedEditor,
     command: Action,
 ) -> Result<(), Box<dyn Error>> {
+    if command == Action::CloseFocused {
+        // A close needs no reset handshake. The surface that would have to
+        // reset is the surface that goes away, so the composer commits at
+        // once. One remaining window returns the decision to this host.
+        match composer.close_focused() {
+            CloseOutcome::Closed(region) => println!("the host closed the region {region:?}"),
+            CloseOutcome::LastWindow => println!("one window remains, so the host would exit"),
+        }
+        return Ok(());
+    }
     let direction = match command {
         Action::FocusLeft => Direction::Left,
         Action::FocusRight => Direction::Right,

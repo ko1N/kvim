@@ -75,7 +75,7 @@ use kvim_workspace::{
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
 use super::chrome::shell_areas;
-use super::clipboard::{ClipboardStep, SessionClipboard, register_value};
+use super::clipboard::{ClipboardAccess, ClipboardStep, SessionClipboard, register_value};
 use super::completion::{
     CompletionCycle, CompletionOutcome, LineCompletion, command_line_candidates,
 };
@@ -1044,6 +1044,8 @@ pub struct Session {
     registers: Registers,
     /// The system clipboard boundary that the composition root selected.
     clipboard: SessionClipboard,
+    /// The policy that the host granted for the system clipboard.
+    clipboard_access: ClipboardAccess,
     /// The clipboard operation that runs now, and how far it progressed.
     clipboard_activity: ClipboardActivity,
     /// The unnamed-register revision that the system clipboard already holds.
@@ -1152,6 +1154,7 @@ impl Session {
             editing: EditingState::new(),
             registers: Registers::default(),
             clipboard: SessionClipboard::default(),
+            clipboard_access: ClipboardAccess::None,
             clipboard_activity: ClipboardActivity::Idle,
             clipboard_revision: 0,
             resolver: Resolver::new(Registry::first_release(), settings.input),
@@ -1176,12 +1179,53 @@ impl Session {
         session
     }
 
-    /// Injects the system clipboard that the composition root selected.
+    /// Grants what this editor may reach of the system clipboard.
     ///
-    /// A session without this call reaches no clipboard command at all, which
-    /// keeps every test free from the host clipboard. See `docs/clipboard.md`.
+    /// [`ClipboardAccess::System`] performs the platform selection once, here,
+    /// because it reads the target platform and the executable search path. A
+    /// session without this call keeps [`ClipboardAccess::None`] and reaches no
+    /// clipboard command at all, which keeps every test free from the host
+    /// clipboard. See `docs/clipboard.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::{ClipboardAccess, Session};
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root)
+    ///     .with_clipboard(ClipboardAccess::System);
+    /// assert_eq!(session.clipboard_access(), ClipboardAccess::System);
+    /// ```
     #[must_use]
-    pub(super) fn with_clipboard(mut self, clipboard: SessionClipboard) -> Self {
+    pub fn with_clipboard(mut self, access: ClipboardAccess) -> Self {
+        self.clipboard = access.realize();
+        self.clipboard_access = access;
+        self
+    }
+
+    /// Returns what this editor may reach of the system clipboard.
+    #[inline]
+    #[must_use]
+    pub const fn clipboard_access(&self) -> ClipboardAccess {
+        self.clipboard_access
+    }
+
+    /// Injects one explicit clipboard boundary.
+    ///
+    /// The tests of this crate drive the deferred boundary without a platform
+    /// command, so no test reaches the host clipboard.
+    #[cfg(test)]
+    #[must_use]
+    pub(super) fn with_session_clipboard(mut self, clipboard: SessionClipboard) -> Self {
         self.clipboard = clipboard;
         self
     }
@@ -1749,13 +1793,53 @@ impl Session {
     }
 
     /// Applies one normalized terminal event.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
+    /// use kvim_tui::Session;
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    ///
+    /// let insert = TerminalEvent::Key(Key::plain(KeyCode::Char('i')));
+    /// let _ = session.handle_event(insert, Duration::ZERO);
+    /// let block =
+    ///     TerminalEvent::Paste(PasteText::new("two words").expect("the block is bounded"));
+    /// let _ = session.handle_event(block, Duration::ZERO);
+    /// assert_eq!(session.buffer().to_string(), "two words\n");
+    /// ```
     pub fn handle_event(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
         self.begin_input(now);
         let redraw = match event {
             TerminalEvent::Key(key) => self.handle_key(key, now),
+            // One paste block is one input, so it becomes one edit transaction
+            // and one undo unit. A float is decoration of one answer, so the
+            // paste closes it exactly as a key does.
+            TerminalEvent::Paste(text) => {
+                let closed = self.close_float();
+                self.insert_owned_text(text.as_str()).or(closed)
+            }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
             // A focus change moves no cursor and shows no new text.
             TerminalEvent::Focus(_) => Redraw::Skipped,
+            // Input that no binding accepts resets every pending grammar phase,
+            // so a rejected chord never runs the binding of its unmodified key.
+            TerminalEvent::Unsupported => {
+                let resolution = self.resolver.unsupported();
+                self.apply_resolution(resolution)
+            }
         };
         let settled = self.settle(now).or(redraw);
         self.note_redraw(settled);
@@ -1844,7 +1928,13 @@ impl Session {
 
     /// Resolves one key and applies what it names.
     fn resolve_key(&mut self, key: Key, now: Duration) -> Redraw {
-        match self.resolver.resolve(key, now) {
+        let resolution = self.resolver.resolve(key, now);
+        self.apply_resolution(resolution)
+    }
+
+    /// Applies what one resolution names.
+    fn apply_resolution(&mut self, resolution: Resolution) -> Redraw {
+        match resolution {
             // The first-release editing state holds no register selection, so
             // the qualified register reaches no operation yet.
             Resolution::Command {
@@ -2939,7 +3029,33 @@ impl Session {
     /// that a user typed, so this boundary turns that path into one contained
     /// path and hands it to [`Session::open`]. A path outside the worktree
     /// root reports its refusal and opens nothing.
-    pub(super) fn open_path(&mut self, path: PathBuf) -> Redraw {
+    ///
+    /// A host that already holds one validated [`WorktreeRelativePath`] calls
+    /// [`Session::open`] instead, because that path needs no repair.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::path::PathBuf;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::{Redraw, Session};
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    ///
+    /// // A path above the worktree root opens nothing and reports its refusal.
+    /// assert_eq!(session.open_path(PathBuf::from("../outside.rs")), Redraw::Needed);
+    /// assert!(session.message().is_some());
+    /// ```
+    pub fn open_path(&mut self, path: PathBuf) -> Redraw {
         let relative = if path.is_absolute() {
             path.strip_prefix(self.root.as_path())
         } else {

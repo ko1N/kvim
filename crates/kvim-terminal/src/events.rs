@@ -5,7 +5,7 @@ use std::io;
 use crossterm::event::{Event as CrosstermEvent, EventStream};
 use futures_util::stream::{Stream, StreamExt};
 
-use kvim_keymap::Key;
+use kvim_keymap::{Key, PasteError, PasteText};
 use thiserror::Error;
 
 use super::TerminalError;
@@ -28,9 +28,9 @@ pub enum EventRejection {
     /// A mouse event carries no normalized form.
     #[error("the terminal reported a mouse event, which kvim does not read")]
     Mouse,
-    /// A bracketed paste carries no normalized form.
-    #[error("the terminal reported a paste event, which kvim does not read")]
-    Paste,
+    /// A bracketed paste carried no bounded, non-empty block.
+    #[error("the terminal paste block carries no bounded input")]
+    Paste(#[from] PasteError),
 }
 
 /// The terminal focus transition that the terminal reported.
@@ -45,10 +45,15 @@ pub enum FocusChange {
 /// One normalized terminal event.
 ///
 /// The event loop consumes these values. It never inspects a crossterm event.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum TerminalEvent {
     /// A key press or a key repeat.
     Key(Key),
+    /// One bounded bracketed-paste block.
+    ///
+    /// The block is one input, so the editor applies it as one edit
+    /// transaction and one undo unit. See `docs/input-actions.md`.
+    Paste(PasteText),
     /// The terminal window changed size.
     Resize {
         /// The new terminal width in cells.
@@ -58,6 +63,13 @@ pub enum TerminalEvent {
     },
     /// The terminal window gained or lost the focus.
     Focus(FocusChange),
+    /// The terminal reported input that no binding accepts.
+    ///
+    /// A key with an unsupported modifier and a paste block above
+    /// [`PASTE_BYTES_MAX`](kvim_keymap::PASTE_BYTES_MAX) both reach this
+    /// event. The editor resets its pending grammar instead of running the
+    /// binding of the unmodified key or inserting part of the block.
+    Unsupported,
 }
 
 impl TerminalEvent {
@@ -65,8 +77,10 @@ impl TerminalEvent {
     ///
     /// # Errors
     ///
-    /// Returns [`EventRejection`] for a mouse event, a paste event, and every
-    /// key event without a normalized key.
+    /// Returns [`EventRejection`] for a mouse event, for a paste block that
+    /// carries no bounded input, and for every key event without a normalized
+    /// key. [`EventSource`] turns the rejections that still name input into
+    /// [`TerminalEvent::Unsupported`].
     ///
     /// ```
     /// use crossterm::event::Event;
@@ -81,11 +95,11 @@ impl TerminalEvent {
     pub fn from_crossterm(event: CrosstermEvent) -> Result<Self, EventRejection> {
         match event {
             CrosstermEvent::Key(key) => Ok(Self::Key(normalize_key_event(key)?)),
+            CrosstermEvent::Paste(text) => Ok(Self::Paste(PasteText::new(&text)?)),
             CrosstermEvent::Resize(columns, rows) => Ok(Self::Resize { columns, rows }),
             CrosstermEvent::FocusGained => Ok(Self::Focus(FocusChange::Gained)),
             CrosstermEvent::FocusLost => Ok(Self::Focus(FocusChange::Lost)),
             CrosstermEvent::Mouse(_) => Err(EventRejection::Mouse),
-            CrosstermEvent::Paste(_) => Err(EventRejection::Paste),
         }
     }
 }
@@ -131,8 +145,14 @@ where
 
     /// Returns the next normalized terminal event.
     ///
-    /// The function returns `None` after the stream ends. It skips an event
-    /// without a normalized form, up to [`UNMAPPED_EVENT_SKIP_MAX`] events, and
+    /// The function returns `None` after the stream ends. A rejection that
+    /// still names input becomes [`TerminalEvent::Unsupported`], so a key with
+    /// an unsupported modifier never degrades into the binding of the
+    /// unmodified key, and an over-long paste block never inserts a part of
+    /// itself. A rejection that names no input at all, such as a mouse event
+    /// or an empty paste block, carries nothing to report and is skipped.
+    ///
+    /// The function skips up to [`UNMAPPED_EVENT_SKIP_MAX`] such events and
     /// then reports [`TerminalError::UnmappedEventBurst`]. The source stays
     /// usable after either error, so the caller may read again.
     pub async fn next_event(&mut self) -> Option<Result<TerminalEvent, TerminalError>> {
@@ -141,8 +161,12 @@ where
                 Ok(event) => event,
                 Err(error) => return Some(Err(TerminalError::Read(error))),
             };
-            if let Ok(normalized) = TerminalEvent::from_crossterm(event) {
-                return Some(Ok(normalized));
+            match TerminalEvent::from_crossterm(event) {
+                Ok(normalized) => return Some(Ok(normalized)),
+                Err(EventRejection::Key(_) | EventRejection::Paste(PasteError::TooLong { .. })) => {
+                    return Some(Ok(TerminalEvent::Unsupported));
+                }
+                Err(EventRejection::Mouse | EventRejection::Paste(PasteError::Empty)) => continue,
             }
         }
         Some(Err(TerminalError::UnmappedEventBurst))
@@ -154,7 +178,7 @@ mod tests {
     use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyModifiers, MouseEvent};
     use futures_util::stream;
 
-    use kvim_keymap::KeyCode;
+    use kvim_keymap::{KeyCode, PASTE_BYTES_MAX};
 
     use super::*;
 
@@ -174,11 +198,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_source_skips_events_without_a_normalized_form() {
+    async fn the_source_skips_an_event_that_names_no_input() {
+        // A mouse event and an empty paste block carry nothing to report, so
+        // the pending grammar of the editor must not see them at all.
         let key = KeyEvent::new(CrosstermKeyCode::Esc, KeyModifiers::NONE);
         let mut source = source(vec![
             mouse_event(),
-            CrosstermEvent::Paste("text".to_owned()),
+            CrosstermEvent::Paste(String::new()),
             CrosstermEvent::Key(key),
         ]);
 
@@ -188,6 +214,51 @@ mod tests {
             event,
             Some(Ok(TerminalEvent::Key(key))) if key == Key::plain(KeyCode::Esc)
         ));
+    }
+
+    #[tokio::test]
+    async fn the_source_normalizes_one_bounded_paste_block() {
+        let mut source = source(vec![CrosstermEvent::Paste("two words".to_owned())]);
+
+        let event = source.next_event().await;
+
+        assert_eq!(
+            event.map(|event| event.expect("the block is bounded")),
+            Some(TerminalEvent::Paste(
+                PasteText::new("two words").expect("the block is bounded")
+            ))
+        );
+    }
+
+    #[tokio::test]
+    async fn a_rejected_key_reaches_the_editor_as_unsupported_input() {
+        // A rejected chord must never degrade into the binding of its
+        // unmodified key, so the editor resets its pending grammar instead.
+        let rejected = KeyEvent::new(
+            CrosstermKeyCode::Char('d'),
+            KeyModifiers::SUPER | KeyModifiers::CONTROL,
+        );
+        let mut source = source(vec![CrosstermEvent::Key(rejected)]);
+
+        let event = source.next_event().await;
+
+        assert_eq!(
+            event.map(|event| event.expect("a rejected key names input")),
+            Some(TerminalEvent::Unsupported)
+        );
+    }
+
+    #[tokio::test]
+    async fn a_paste_block_above_the_bound_reaches_the_editor_as_unsupported_input() {
+        let long = "x".repeat(PASTE_BYTES_MAX + 1);
+        let mut source = source(vec![CrosstermEvent::Paste(long)]);
+
+        let event = source.next_event().await;
+
+        assert_eq!(
+            event.map(|event| event.expect("an over-long block names input")),
+            Some(TerminalEvent::Unsupported)
+        );
     }
 
     #[tokio::test]

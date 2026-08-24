@@ -1,4 +1,4 @@
-//! The window tree, layout, rendering, the theme, and the event loop.
+//! The window tree, layout, rendering, the theme, and the visible editor state.
 //!
 //! The crate is the sole owner of visible editor state.
 //!
@@ -11,9 +11,11 @@
 //!
 //! [`Session`] owns the visible editor state and applies one pure transition
 //! for each normalized terminal event. [`Theme`] maps a semantic role to one
-//! terminal style, so no call site names a color. [`run`] is the imperative
-//! shell: it owns the terminal, reads events, and renders only after a visible
-//! state change. See `docs/responsiveness.md`.
+//! terminal style, so no call site names a color. The crate owns no terminal
+//! and no event loop: the `kvim` binary is the imperative shell of the
+//! standalone editor, and `crates/kvim-tui/examples/embedded_editor.rs` is the
+//! imperative shell of one embedded editor. See `docs/responsiveness.md` and
+//! `docs/embedding.md`.
 //!
 //! # Examples
 //!
@@ -44,7 +46,6 @@
 //! assert_eq!(after.width, before.width + 6);
 //! ```
 
-mod app;
 mod buffer_view;
 mod cells;
 mod chrome;
@@ -81,7 +82,7 @@ mod tests;
 #[cfg(test)]
 mod tree_tests;
 
-pub use app::{EVENT_ERRORS_MAX, EditorError, PanicProbe, run};
+pub use clipboard::ClipboardAccess;
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
 pub use driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
 pub use embed::{
@@ -104,4 +105,5 @@ pub use session::{
     HostProbeFailure, MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
 };
 pub use theme::{IconRole, Theme, ThemeRole};
+pub use tree::GENERATED_NAMES;
 pub use window::{AdaptiveSplit, WindowOutcome, Windows};

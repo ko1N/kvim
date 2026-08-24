@@ -1589,20 +1589,55 @@ mod tests {
     }
 
     #[test]
-    fn the_terminal_event_loop_runs_no_syntax_work() {
+    fn no_module_of_this_crate_owns_the_terminal() {
+        // The `kvim` binary is the only terminal owner. This crate holds the
+        // visible state and the presentation of one editor, so it never enters
+        // raw mode, never enters the alternate screen, never reads the terminal
+        // event stream, never installs a signal handler or a panic hook, and
+        // never writes to standard output. See `docs/architecture.md` and
+        // `docs/embedding.md`.
+        const TERMINAL_OWNERS: [&str; 8] = [
+            "TerminalSession",
+            "CrosstermControl",
+            "TerminationSource",
+            "EventSource",
+            "CrosstermBackend",
+            "enable_raw_mode",
+            "EnterAlternateScreen",
+            "set_hook",
+        ];
+        let mut checked = 0;
+        for entry in
+            std::fs::read_dir(source_directory()).expect("the crate holds its own source directory")
+        {
+            let path = entry
+                .expect("the source directory lists its entries")
+                .path();
+            if path.extension().is_none_or(|extension| extension != "rs")
+                || path.file_name().is_some_and(|name| name == "driver.rs")
+            {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("every module is readable text");
+            for owner in TERMINAL_OWNERS {
+                assert!(
+                    !source.contains(owner),
+                    "{} names {owner}, but the binary owns the terminal",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 1, "the check read the modules of this crate");
+    }
+
+    #[test]
+    fn the_session_builds_the_analysis_request_and_never_runs_it() {
         // `session.rs` owns the inert `AnalysisRequest` value and calls the
         // adapter once, inside `AnalysisRequest::run`. The worker service is the
         // only caller of that method, and the check above proves that the driver
-        // owns every submission. The terminal event loop therefore names no
-        // syntax value at all.
-        let loop_source = std::fs::read_to_string(source_directory().join("app.rs"))
-            .expect("the terminal event loop is readable text");
-        for name in ["analyze(", "SyntaxHighlighter", "AnalysisRequest"] {
-            assert!(
-                !loop_source.contains(name),
-                "the terminal event loop names {name}, so syntax work can reach it"
-            );
-        }
+        // owns every submission. The terminal event loop of the `kvim` binary
+        // therefore names no syntax value at all, and its own guard proves that.
         let owner = std::fs::read_to_string(source_directory().join("session.rs"))
             .expect("the session module is readable text");
         assert_eq!(

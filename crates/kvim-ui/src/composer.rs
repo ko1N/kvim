@@ -38,8 +38,8 @@ use kvim_keymap::{
 
 use crate::layout::RegionKind;
 use crate::window::{
-    ChildSide, Direction, IdentityError, LayoutChange, LayoutFit, Orientation, RegionError,
-    SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLimits, WindowTree,
+    ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit, Orientation,
+    RegionError, SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLimits, WindowTree,
 };
 
 /// The largest number of surface identities that one composer addresses.
@@ -547,6 +547,91 @@ where
         let window = self.tree.split(orientation, new_side)?;
         self.resolver.clear_pending();
         Ok(window)
+    }
+
+    /// Closes the focused region.
+    ///
+    /// A close needs no reset handshake, so it commits at once and never
+    /// returns [`CompositionEffect::CancelPending`]. The surface that would
+    /// have to reset is the surface that goes away, so its count, operator,
+    /// register, text object, and prompt phases die with the region. An open
+    /// overlay keeps input ownership and its own state, because no close
+    /// removes an overlay.
+    ///
+    /// The focused sidebar closes first, exactly as it does in
+    /// [`WindowTree::close_focused`]. A hidden sidebar keeps its surface, so
+    /// [`WorkspaceComposer::set_sidebar_visible`] shows it again unchanged.
+    /// A surface that no region shows any longer leaves the composer with its
+    /// context.
+    ///
+    /// A tree that holds one window reports [`CloseOutcome::LastWindow`] and
+    /// changes nothing. The host then decides whether its workspace ends.
+    ///
+    /// A close ends every waiting proposal, because the topology that the
+    /// proposal addressed changed under it. The host proposes again after the
+    /// close.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::fmt;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use ratatui::layout::Rect;
+    /// # use kvim_keymap::{
+    /// #     CommandMetadata, InputContextSnapshot, Registry, Resolver, Scope,
+    /// # };
+    /// # use kvim_ui::{ChildSide, CloseOutcome, Orientation, WindowLimits, WorkspaceComposer};
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # struct Send;
+    /// # impl fmt::Display for Send {
+    /// #     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         formatter.write_str("send")
+    /// #     }
+    /// # }
+    /// # impl CommandMetadata for Send {
+    /// #     fn id(&self) -> &str { "send" }
+    /// #     fn label(&self) -> &str { "Send the message" }
+    /// # }
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # struct Chat;
+    /// # impl fmt::Display for Chat {
+    /// #     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         formatter.write_str("Chat")
+    /// #     }
+    /// # }
+    /// # impl Scope for Chat {
+    /// #     const COUNT: usize = 1;
+    /// # }
+    /// # let registry: Registry<Send, Chat> = Registry::from_bindings(&[], 2)?;
+    /// let mut composer = WorkspaceComposer::new(
+    ///     "left",
+    ///     InputContextSnapshot::idle(Chat),
+    ///     Rect::new(0, 0, 80, 24),
+    ///     WindowLimits::default(),
+    ///     Resolver::new(Arc::new(registry), 2, Duration::from_millis(500)),
+    /// );
+    /// let right = composer.split(Orientation::Vertical, ChildSide::Second)?;
+    ///
+    /// // The focus follows the new window, so the close removes that window.
+    /// assert_eq!(composer.close_focused(), CloseOutcome::Closed(right));
+    /// assert_eq!(composer.layout().surfaces().len(), 1);
+    ///
+    /// // One window remains, so the host owns the decision.
+    /// assert_eq!(composer.close_focused(), CloseOutcome::LastWindow);
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn close_focused(&mut self) -> CloseOutcome {
+        let outcome = self.tree.close_focused();
+        if outcome == CloseOutcome::LastWindow {
+            return outcome;
+        }
+        // The input owner changed, so the pending key prefix of the shared
+        // resolver ends here, exactly as it does for a committed transition.
+        self.resolver.clear_pending();
+        self.pending = None;
+        self.forget_unaddressed();
+        outcome
     }
 
     /// Points the named window at another surface.

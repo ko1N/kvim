@@ -16,7 +16,7 @@ use kvim_language::LspError;
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
-use kvim_terminal::{FocusChange, Key, KeyCode, TerminalEvent};
+use kvim_terminal::{FocusChange, Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
     BUFFERS_MAX, BufferPathUpdate, Candidate, ExternalChange, FileResult, MutationOutcome,
@@ -328,6 +328,75 @@ fn the_which_key_deadline_is_the_only_time_driven_change() {
     );
 }
 
+/// Feeds one bounded bracketed-paste block.
+fn paste(session: &mut Session, text: &str) -> Redraw {
+    let block = PasteText::new(text).expect("the block is bounded");
+    session.handle_event(TerminalEvent::Paste(block), NOW)
+}
+
+#[test]
+fn one_paste_block_inserts_as_one_undo_unit() {
+    // The terminal reports one bracketed paste as one event, so the editor
+    // applies it as one edit transaction. A run of key presses would need one
+    // undo for every character. See `docs/input-actions.md`.
+    let mut session = with_text(&["alpha"]);
+    press(&mut session, 'i');
+
+    assert_eq!(paste(&mut session, "one two"), Redraw::Needed);
+    assert_eq!(session.buffer().to_string(), "one twoalpha\n");
+
+    press_code(&mut session, KeyCode::Esc);
+    type_keys(&mut session, "u");
+    assert_eq!(session.buffer().to_string(), "alpha\n");
+}
+
+#[test]
+fn a_paste_block_outside_insert_mode_changes_no_text() {
+    // Normal mode owns no text fallback, so a paste block reaches no buffer.
+    let mut session = with_text(&["alpha"]);
+
+    assert_eq!(paste(&mut session, "one two"), Redraw::Skipped);
+    assert_eq!(session.buffer().to_string(), "alpha\n");
+}
+
+#[test]
+fn a_paste_block_reaches_the_open_prompt_line() {
+    let mut session = session(60, 20);
+    press(&mut session, ':');
+
+    let _ = paste(&mut session, "write");
+
+    assert_eq!(prompt_text(&session), "write");
+}
+
+#[test]
+fn unsupported_input_resets_every_pending_grammar_phase() {
+    // A rejected chord must never run the binding of its unmodified key, so
+    // the pending count and the pending operator both end here.
+    let mut session = with_text(&["alpha beta", "gamma delta", "epsilon zeta"]);
+    type_keys(&mut session, "2d");
+
+    let _ = session.handle_event(TerminalEvent::Unsupported, NOW);
+
+    // The operator is gone, so `d` opens a new one and `d` completes it. One
+    // line leaves the buffer, not the two that the abandoned count named.
+    type_keys(&mut session, "dd");
+    assert_eq!(session.buffer().to_string(), "gamma delta\nepsilon zeta\n");
+}
+
+#[test]
+fn unsupported_input_changes_no_text_and_no_mode() {
+    let mut session = with_text(&["alpha"]);
+    press(&mut session, 'i');
+
+    assert_eq!(
+        session.handle_event(TerminalEvent::Unsupported, NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.mode(), Mode::Insert);
+    assert_eq!(session.buffer().to_string(), "alpha\n");
+}
+
 #[test]
 fn a_cancel_key_hides_the_overlay_and_keeps_the_mode() {
     for cancel in [
@@ -340,7 +409,7 @@ fn a_cancel_key_hides_the_overlay_and_keeps_the_mode() {
         assert_eq!(session.tick(WHICH_KEY_DELAY), Redraw::Needed);
         assert_eq!(session.next_deadline(), None);
 
-        assert_eq!(session.handle_event(cancel, NOW), Redraw::Needed);
+        assert_eq!(session.handle_event(cancel.clone(), NOW), Redraw::Needed);
         assert_eq!(
             session.mode(),
             Mode::Visual,
@@ -376,11 +445,11 @@ fn the_visual_modes_switch_between_each_other_and_keep_the_anchor() {
     // `Ctrl-V` completes the matrix and repeats into Normal mode.
     let mut session = with_text(&["alpha beta", "gamma delta"]);
     type_keys(&mut session, "v");
-    session.handle_event(control_v, NOW);
+    session.handle_event(control_v.clone(), NOW);
     assert_eq!(session.mode(), Mode::VisualBlock);
     type_keys(&mut session, "V");
     assert_eq!(session.mode(), Mode::VisualLine);
-    session.handle_event(control_v, NOW);
+    session.handle_event(control_v.clone(), NOW);
     assert_eq!(session.mode(), Mode::VisualBlock);
     session.handle_event(control_v, NOW);
     assert_eq!(session.mode(), Mode::Normal);
@@ -3180,7 +3249,7 @@ fn a_pending_count_reports_no_deadline_at_all() {
 /// The command never runs. Each test returns its output through
 /// [`Session::apply_clipboard_result`], exactly as the event loop does.
 fn clipboard_session(lines: &[&str]) -> Session {
-    with_text(lines).with_clipboard(SessionClipboard::deferred())
+    with_text(lines).with_session_clipboard(SessionClipboard::deferred())
 }
 
 /// Returns the standard input of the clipboard command that waits.

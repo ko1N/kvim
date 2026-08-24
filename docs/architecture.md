@@ -47,9 +47,9 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
-| `kvim-tui` | The embedded editor and review presentation models and standalone presentation adapters. It owns visible state for one supplied editor instance. |
+| `kvim-tui` | The embedded editor and review presentation models and standalone presentation adapters. It owns visible state for one supplied editor instance. It owns no terminal and no event loop. |
 | `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers. It owns no host worktree list or focus policy. |
-| `kvim` | Terminal setup, terminal events, signals, runtime startup, and the standalone application loop. |
+| `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
 and file code must not contain language-specific path rules. Only a language
@@ -130,12 +130,19 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings` |
-| 4 | `kvim-tui` | every library above except `kvim-terminal` |
-| 5 | `kvim` | `kvim-clipboard`, `kvim-language`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
+| 4 | `kvim-tui` | every library above, including `kvim-terminal` for the normalized event value alone |
+| 5 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
 
 External dependencies do not change the layer number. `kvim-ui` owns ratatui
-geometry and rendering. `kvim-tui` does not depend on terminal lifecycle code.
-No syntax-only consumer compiles LSP, ratatui, or the editor.
+geometry and rendering. No syntax-only consumer compiles LSP, ratatui, or the
+editor.
+
+`kvim-tui` reads `TerminalEvent` from `kvim-terminal`, because the standalone
+editor applies one normalized event as one pure transition. It owns no terminal
+lifecycle code: no raw mode, no alternate screen, no event stream, no signal
+handler, no panic hook, and no write to standard output. A structural test in
+`kvim-tui` proves that no module of that crate names such an owner, and a
+structural test in `kvim` proves that its terminal loop holds every one of them.
 
 `kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
 `Resolver` and reads one published `InputContextSnapshot` for each surface. The
@@ -150,7 +157,9 @@ portable boundary.
 `kvim-clipboard` has one consumer. `kvim-tui` mirrors the unnamed register into
 the system clipboard, and it reads the selected commands for the host report.
 Both reach the platform through the same selection, so no module above the
-crate names a clipboard command. See [`clipboard.md`](clipboard.md).
+crate names a clipboard command. A host grants one `ClipboardAccess` policy
+instead, and the binary grants `ClipboardAccess::System`. See
+[`clipboard.md`](clipboard.md).
 
 The binary is the standalone composition root. An external host is another
 composition root and constructs only the public capabilities that it uses.
@@ -239,7 +248,9 @@ imperative boundary.
   - Cost: compile time and platform-specific transitive code.
 - `ratatui`
   - Replaces: a local widget set, cell buffer, and layout implementation.
-  - May run: in `kvim-ui` and `kvim-tui` only.
+  - May run: in `kvim-ui`, `kvim-tui`, and the standalone composition root,
+    which owns the terminal backend, the cell buffer of the process terminal,
+    and the draw call.
   - Cost: compile time. Rendering cost stays bounded by the terminal buffer and
     the visible window content.
 - `unicode-width`

@@ -1,11 +1,16 @@
-//! The terminal event loop.
+//! The terminal event loop of the standalone editor.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The loop is the imperative shell of the editor. It owns the terminal, reads
-//! normalized events, applies pure transitions to one [`Session`], and renders
-//! after a visible state change. It runs no unconditional frame loop, and it
-//! performs no filesystem, process, or language work. See
-//! `docs/responsiveness.md`.
+//! The loop is the imperative shell of the standalone editor, and the binary is
+//! its only owner. It owns raw mode, the alternate screen, standard input,
+//! standard output, the terminal event stream, the termination signals, the
+//! panic restoration, the cursor shape, the asynchronous runtime, the redraw
+//! schedule, and the shutdown order. `kvim-tui` owns none of these.
+//!
+//! The loop reads normalized events, applies pure transitions to one
+//! [`Session`], and renders after a visible state change. It runs no
+//! unconditional frame loop, and it performs no filesystem, process, or
+//! language work. See `docs/responsiveness.md` and `docs/embedding.md`.
 
 use std::io::{self, stdout};
 use std::path::PathBuf;
@@ -26,12 +31,10 @@ use kvim_terminal::{
     CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
     TerminalSession, TerminationSource,
 };
-
-use super::clipboard::SessionClipboard;
-use super::driver::{Completed, EditorDriver, EditorWork};
-use super::embed::CursorShape as EditorCursorShape;
-use super::session::{Redraw, RunState, Session};
-use super::tree::GENERATED_NAMES;
+use kvim_tui::{
+    ClipboardAccess, Completed, CursorShape as EditorCursorShape, EditorDriver, EditorWork,
+    GENERATED_NAMES, Redraw, RunState, Session,
+};
 
 /// The number of consecutive terminal read failures that ends the editor.
 ///
@@ -161,7 +164,7 @@ async fn drive<C: TerminalControl>(
         settings,
         Arc::clone(&root),
     )
-    .with_clipboard(SessionClipboard::detect());
+    .with_clipboard(ClipboardAccess::System);
     let mut events = EventSource::from_terminal();
     // The binary is the host of its own editor, so it builds the bounded
     // spawner and the driver itself. The file operations, the buffer analysis,
@@ -326,5 +329,92 @@ fn apply(
         Some(Ok(event)) => Step::Handled(editor.handle_event(event, now)),
         Some(Err(error)) => Step::Failed(error),
         None => Step::Stop,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::path::{Path, PathBuf};
+
+    /// Returns the source directory of this crate.
+    fn source_directory() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    /// Returns the source directory of the presentation crate.
+    fn presentation_directory() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../kvim-tui/src")
+    }
+
+    /// Returns the terminal event loop without the tests below it.
+    ///
+    /// The checks name the very strings that they look for, so a check that
+    /// read the complete file would always find its own list.
+    fn loop_body() -> String {
+        let source = std::fs::read_to_string(source_directory().join("editor.rs"))
+            .expect("the terminal event loop is readable text");
+        source
+            .split_once("#[cfg(test)]")
+            .expect("this test module follows the loop")
+            .0
+            .to_owned()
+    }
+
+    #[test]
+    fn the_terminal_event_loop_runs_no_syntax_work() {
+        // `kvim-tui` owns the inert `AnalysisRequest` value and hands it to the
+        // bounded worker service through the driver. The loop below therefore
+        // names no syntax value at all. See `docs/responsiveness.md`.
+        let body = loop_body();
+        for name in ["analyze(", "SyntaxHighlighter", "AnalysisRequest"] {
+            assert!(
+                !body.contains(name),
+                "the terminal event loop names {name}, so syntax work can reach it"
+            );
+        }
+    }
+
+    #[test]
+    fn this_binary_is_the_only_terminal_owner() {
+        // The acceptance of the standalone editor is that exactly one layer
+        // owns raw mode, the alternate screen, standard output, the event
+        // stream, the signals, and the panic restoration. This check proves
+        // both halves: the loop below holds every owner, and the presentation
+        // crate holds none of them. See `docs/architecture.md`.
+        const TERMINAL_OWNERS: [&str; 5] = [
+            "TerminalSession::enter",
+            "TerminationSource::from_process",
+            "EventSource::from_terminal",
+            "CrosstermBackend::new",
+            "set_cursor_shape",
+        ];
+        let body = loop_body();
+        for owner in TERMINAL_OWNERS {
+            assert!(
+                body.contains(owner),
+                "the terminal event loop of this binary must own {owner}"
+            );
+        }
+        let mut checked = 0;
+        for entry in std::fs::read_dir(presentation_directory())
+            .expect("the presentation crate holds its own source directory")
+        {
+            let path = entry
+                .expect("the source directory lists its entries")
+                .path();
+            if path.extension().is_none_or(|extension| extension != "rs") {
+                continue;
+            }
+            let source = std::fs::read_to_string(&path).expect("every module is readable text");
+            for owner in TERMINAL_OWNERS {
+                assert!(
+                    !source.contains(owner),
+                    "{} names {owner}, but this binary owns the terminal",
+                    path.display()
+                );
+            }
+            checked += 1;
+        }
+        assert!(checked > 1, "the check read the presentation modules");
     }
 }

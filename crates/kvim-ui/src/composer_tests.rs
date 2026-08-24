@@ -20,8 +20,8 @@ use kvim_keymap::{
 use crate::composer::{Composition, CompositionEffect, ResumeError, UnknownSurface};
 use crate::layout::RegionKind;
 use crate::window::{
-    ChildSide, Direction, LayoutChange, LayoutFit, Orientation, RegionError, SidebarSide,
-    WindowLimits,
+    ChildSide, CloseOutcome, Direction, LayoutChange, LayoutFit, Orientation, RegionError,
+    SidebarSide, WindowLimits,
 };
 use crate::{RowKind, SidebarRow, SidebarState, WorkspaceComposer};
 
@@ -952,4 +952,139 @@ fn the_host_clips_its_two_line_sidebar_rows_inside_the_published_rectangle() {
         assert_eq!(area.width, SIDEBAR_CELLS);
         assert_eq!(sidebar.area.union(area), sidebar.area);
     }
+}
+
+#[test]
+fn a_close_commits_at_once_even_while_the_focused_surface_holds_state() {
+    // The surface that would have to reset is the surface that goes away, so
+    // a close never returns `CancelPending`. See `docs/embedding.md`.
+    let mut composer = workspace();
+    let review = region_of(&composer, REVIEW);
+    let effect = composer
+        .focus_region(review)
+        .expect("the review window is visible");
+    assert_eq!(effect, CompositionEffect::Applied);
+    composer
+        .set_context(
+            &REVIEW,
+            pending(
+                Table::Review,
+                SemanticPhases {
+                    count: Phase::Pending,
+                    ..SemanticPhases::IDLE
+                },
+            ),
+        )
+        .expect("the composer shows the review surface");
+
+    assert_eq!(composer.close_focused(), CloseOutcome::Closed(review));
+
+    assert_eq!(
+        composer.pending_transition(),
+        None,
+        "a close asks the host for no reset"
+    );
+    assert_eq!(
+        composer.context(&REVIEW),
+        None,
+        "the state of the closed surface left with its region"
+    );
+    assert_eq!(composer.focused_surface(), &EDITOR);
+}
+
+#[test]
+fn a_close_ends_every_waiting_proposal() {
+    let mut composer = workspace();
+    composer
+        .set_context(
+            &EDITOR,
+            pending(
+                Table::EditorNormal,
+                SemanticPhases {
+                    operator: Phase::Pending,
+                    ..SemanticPhases::IDLE
+                },
+            ),
+        )
+        .expect("the composer shows the editor surface");
+    let review = region_of(&composer, REVIEW);
+    let effect = composer
+        .focus_region(review)
+        .expect("the review window is visible");
+    let transition = match effect {
+        CompositionEffect::CancelPending { transition, .. } => transition,
+        other => panic!("the focused surface holds one phase: {other:?}"),
+    };
+    assert_eq!(composer.pending_transition(), Some(transition));
+
+    let editor = region_of(&composer, EDITOR);
+    assert_eq!(composer.close_focused(), CloseOutcome::Closed(editor));
+
+    assert_eq!(composer.pending_transition(), None);
+    assert_eq!(
+        composer.resume_transition(transition, &EDITOR, idle(Table::EditorNormal)),
+        Err(ResumeError::Idle),
+        "the topology that the proposal addressed is gone"
+    );
+}
+
+#[test]
+fn a_close_that_reaches_the_last_window_changes_nothing() {
+    let mut composer = workspace();
+    let review = region_of(&composer, REVIEW);
+    let effect = composer
+        .focus_region(review)
+        .expect("the review window is visible");
+    assert_eq!(effect, CompositionEffect::Applied);
+    assert_eq!(composer.close_focused(), CloseOutcome::Closed(review));
+
+    // The sidebar is no window of the split tree, so one window remains.
+    assert_eq!(composer.close_focused(), CloseOutcome::LastWindow);
+
+    assert_eq!(composer.focused_surface(), &EDITOR);
+    assert_eq!(composer.context(&EDITOR), Some(idle(Table::EditorNormal)));
+}
+
+#[test]
+fn a_closed_sidebar_keeps_its_surface_and_its_context() {
+    let mut composer = workspace();
+    let tree = region_of(&composer, TREE);
+    let effect = composer.focus_region(tree).expect("the sidebar is visible");
+    assert_eq!(effect, CompositionEffect::Applied);
+
+    assert_eq!(composer.close_focused(), CloseOutcome::Closed(tree));
+
+    assert_eq!(
+        composer.context(&TREE),
+        Some(idle(Table::Sidebar)),
+        "a hidden sidebar keeps the surface that the host opened"
+    );
+    assert_eq!(
+        composer.set_sidebar_visible(SidebarSide::Left, true),
+        LayoutChange::Changed
+    );
+    assert_eq!(region_of(&composer, TREE), tree);
+}
+
+#[test]
+fn an_open_overlay_keeps_input_and_its_state_across_one_close() {
+    // No close removes an overlay, so the overlay surface never resets and it
+    // still owns every key below it.
+    let mut composer = workspace();
+    let effect = composer.open_overlay(PALETTE, Table::Palette, AREA, idle(Table::Palette));
+    assert_eq!(effect, CompositionEffect::Applied);
+    let editor = region_of(&composer, EDITOR);
+
+    assert_eq!(composer.close_focused(), CloseOutcome::Closed(editor));
+
+    assert_eq!(composer.input_surface(), &PALETTE);
+    assert_eq!(composer.context(&PALETTE), Some(idle(Table::Palette)));
+    assert_eq!(
+        composer.reduce(Input::Key(ch('q')), NOW),
+        Composition::Surface {
+            surface: PALETTE,
+            command: Action::AcceptPalette
+        },
+        "the overlay still answers before the host-global table"
+    );
 }

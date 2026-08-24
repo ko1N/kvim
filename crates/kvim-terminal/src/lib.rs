@@ -9,7 +9,9 @@
 //!
 //! [`normalize_key_event`] rejects an unsupported modifier with a typed
 //! [`KeyRejection`]. It never removes the modifier, so a modified key never
-//! reaches the binding of the unmodified key.
+//! reaches the binding of the unmodified key. [`EventSource`] reports that
+//! rejection as [`TerminalEvent::Unsupported`], so the editor resets its
+//! pending grammar instead of running a shorter sequence.
 //!
 //! [`TerminalSession`] owns the setup steps and restores them on every exit path,
 //! including a panic. Restoration never depends on unwinding: the session
@@ -33,7 +35,7 @@ pub use events::{
     EventRejection, EventSource, FocusChange, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX,
 };
 pub use key::{KeyRejection, UnsupportedModifier, normalize_key_event};
-pub use kvim_keymap::{Chord, Key, KeyCode};
+pub use kvim_keymap::{Chord, Key, KeyCode, PASTE_BYTES_MAX, PasteError, PasteText};
 pub use lifecycle::{CrosstermControl, CursorShape, RestoreStep, TerminalControl, TerminalSession};
 pub use signal::{TerminationSignal, TerminationSource};
 
