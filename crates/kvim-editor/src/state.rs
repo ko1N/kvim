@@ -15,7 +15,7 @@
 //! filesystem, and no process. The system clipboard stays outside: the caller
 //! passes the register value in and out. See `docs/clipboard.md`.
 
-use std::num::NonZeroU32;
+use std::num::{NonZeroU8, NonZeroU32};
 
 use kvim_core::{EditTransaction, IndentPolicy, ShiftDirection, TextBuffer};
 use kvim_input::{Command, Mode};
@@ -74,6 +74,15 @@ pub struct EditContext<'a> {
     pub settings: &'a EditorSettings,
     /// The query of the last search, when the user ran one.
     pub search: Option<&'a SearchQuery>,
+    /// The number of cells that one indent level takes in the language of the
+    /// buffer.
+    ///
+    /// Only a language adapter knows the width of its language, and this module
+    /// names no adapter, so the caller resolves the value and passes it in,
+    /// exactly as it passes the comment token. `None` means that no adapter
+    /// serves the buffer, so the settings width applies. See
+    /// `docs/settings.md`.
+    pub language_indent_width: Option<NonZeroU8>,
     /// The registers of the editor session.
     pub registers: &'a mut Registers,
     /// The transactions that the command applied, in application order.
@@ -97,7 +106,7 @@ impl EditContext<'_> {
     }
 
     fn indent(&self) -> IndentPolicy {
-        IndentPolicy::from_settings(&self.settings.indent)
+        IndentPolicy::for_language(&self.settings.indent, self.language_indent_width)
     }
 }
 
@@ -191,6 +200,7 @@ enum MotionResult {
 ///     buffer: &mut buffer,
 ///     settings: &settings,
 ///     search: None,
+///     language_indent_width: None,
 ///     registers: &mut registers,
 ///     applied: Vec::new(),
 /// };

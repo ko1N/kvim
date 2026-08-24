@@ -2781,6 +2781,54 @@ fn the_syntax_indent_opens_a_line_one_level_deeper_inside_a_block() {
     );
 }
 
+/// One attribute set inside another, so one level and two levels both appear.
+///
+/// The text names no `let`, so every level follows from the attribute sets
+/// alone.
+const NESTED_ATTRIBUTE_SETS: &str = "{\n  a = {\n    b = 1;\n  };\n}\n";
+
+#[test]
+fn the_language_adapter_declares_the_width_of_one_indent_level() {
+    // Nix indents with two columns, while the settings tab width is four.
+    let (_directory, mut session) = opened("one.nix", NESTED_ATTRIBUTE_SETS);
+    run_analysis(&mut session);
+    type_keys(&mut session, "gg");
+    press(&mut session, 'o');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(
+        session.buffer().to_string(),
+        "{\n  x\n  a = {\n    b = 1;\n  };\n}\n"
+    );
+
+    // Two levels take twice the width of the language.
+    let (_directory, mut session) = opened("two.nix", NESTED_ATTRIBUTE_SETS);
+    run_analysis(&mut session);
+    type_keys(&mut session, "ggj");
+    press(&mut session, 'o');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(
+        session.buffer().to_string(),
+        "{\n  a = {\n    x\n    b = 1;\n  };\n}\n"
+    );
+}
+
+#[test]
+fn one_shift_step_takes_the_width_of_the_language_or_of_the_settings() {
+    // The width of one level is also the step of `>` and `<`, as it is in Vim.
+    let (_directory, mut session) = opened("shift.nix", "a = 1;\n");
+    type_keys(&mut session, "V>");
+    assert_eq!(session.buffer().to_string(), "  a = 1;\n");
+    type_keys(&mut session, "<");
+    assert_eq!(session.buffer().to_string(), "a = 1;\n");
+
+    // A buffer that no adapter serves keeps the settings width.
+    let (_directory, mut session) = opened("shift.txt", "a = 1;\n");
+    type_keys(&mut session, "V>");
+    assert_eq!(session.buffer().to_string(), "    a = 1;\n");
+}
+
 #[test]
 fn every_window_paints_its_own_buffer_and_only_the_focused_one_holds_the_cursor() {
     let directory = TempDir::new("session-splits");

@@ -32,6 +32,7 @@
 //!     buffer: &mut buffer,
 //!     settings: &settings,
 //!     search: None,
+//!     language_indent_width: None,
 //!     registers: &mut registers,
 //!     applied: Vec::new(),
 //! };

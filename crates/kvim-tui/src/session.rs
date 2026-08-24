@@ -28,6 +28,7 @@
 
 use std::collections::BTreeMap;
 use std::mem;
+use std::num::NonZeroU8;
 use std::num::NonZeroU16;
 use std::num::NonZeroU32;
 use std::path::{Component, Path, PathBuf};
@@ -2253,6 +2254,21 @@ impl Session {
         self.report(outcome)
     }
 
+    /// Returns the number of cells that one indent level takes in the active
+    /// buffer.
+    ///
+    /// Only a language adapter knows the width of its language, so the session
+    /// reads it here and hands it to the editor, exactly as it does for the
+    /// comment token. A buffer that no adapter serves answers `None`, so the
+    /// settings width applies. `EditorSettings` owns the resolution order. See
+    /// `docs/settings.md`.
+    fn language_indent_width(&self) -> Option<NonZeroU8> {
+        self.active_buffer()
+            .path()
+            .and_then(|path| self.languages.adapter(path).ok())
+            .map(|adapter| adapter.indent_rule().width)
+    }
+
     /// Runs one change against the buffer, the registers, and the focused
     /// viewport.
     ///
@@ -2262,6 +2278,7 @@ impl Session {
     where
         F: FnOnce(&mut EditingState, &mut EditContext<'_>, &mut WindowState) -> CommandOutcome,
     {
+        let language_indent_width = self.language_indent_width();
         let window = self.windows.focused_window();
         let Some(mut state) = self.windows.state(window) else {
             debug_assert!(false, "the focused window is always a leaf of the tree");
@@ -2279,6 +2296,7 @@ impl Session {
             buffer: active.text_mut(),
             settings: &self.settings,
             search: self.search.as_ref().map(|search| &search.query),
+            language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };

@@ -1,6 +1,6 @@
 //! Behavior tests for operators, registers, paste, selection edits, and repeat.
 
-use std::num::{NonZeroU16, NonZeroU32};
+use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 
 use super::{
     AutoIndent, CommandOutcome, EditContext, EditingState, Operator, RegisterShape, RegisterValue,
@@ -14,6 +14,11 @@ use kvim_settings::{EditorSettings, FileSettings};
 struct Session {
     buffer: TextBuffer,
     settings: EditorSettings,
+    /// The width that the language adapter of the buffer declares.
+    ///
+    /// The session of the terminal reads it from the adapter. A test buffer
+    /// has no language, so the default is `None`.
+    language_indent_width: Option<NonZeroU8>,
     registers: Registers,
     state: EditingState,
     view: WindowState,
@@ -26,6 +31,7 @@ impl Session {
         Self {
             buffer,
             settings: EditorSettings::default(),
+            language_indent_width: None,
             registers: Registers::default(),
             state: EditingState::new(),
             view: WindowState::new(Viewport::new(
@@ -40,6 +46,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -60,6 +67,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -71,6 +79,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -82,6 +91,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -100,6 +110,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -113,6 +124,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -126,6 +138,7 @@ impl Session {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
+            language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
             applied: Vec::new(),
         };
@@ -1223,6 +1236,38 @@ fn the_syntax_indent_replaces_the_previous_line_rule() {
     place(&mut closing, 1, 0);
     closing.apply_indented(Command::OpenLineBelow, AutoIndent::Levels(0));
     assert_eq!(closing.text(), "fn main() {\n    let value = 1;\n\n}\n");
+}
+
+#[test]
+fn the_language_width_sizes_one_indent_level_and_one_shift_step() {
+    let two = NonZeroU8::new(2).expect("the literal 2 is not zero");
+
+    // The settings tab width is four columns, but a two-column language
+    // renders one level as two columns and two levels as four.
+    let mut session = Session::new("{\n}\n");
+    session.language_indent_width = Some(two);
+    place(&mut session, 0, 0);
+    session.apply_indented(Command::OpenLineBelow, AutoIndent::Levels(1));
+    assert_eq!(session.text(), "{\n  \n}\n");
+
+    let mut nested = Session::new("{\n}\n");
+    nested.language_indent_width = Some(two);
+    place(&mut nested, 0, 0);
+    nested.apply_indented(Command::OpenLineBelow, AutoIndent::Levels(2));
+    assert_eq!(nested.text(), "{\n    \n}\n");
+
+    // One level is also one shift step, as it is in Vim.
+    let mut shifted = Session::new("one\n");
+    shifted.language_indent_width = Some(two);
+    shifted.apply(Command::EnterVisualLine, None);
+    shifted.apply(Command::ShiftSelectionRight, None);
+    assert_eq!(shifted.text(), "  one\n");
+
+    // A buffer that no adapter serves keeps the settings width.
+    let mut plain = Session::new("{\n}\n");
+    place(&mut plain, 0, 0);
+    plain.apply_indented(Command::OpenLineBelow, AutoIndent::Levels(1));
+    assert_eq!(plain.text(), "{\n    \n}\n");
 }
 
 #[test]

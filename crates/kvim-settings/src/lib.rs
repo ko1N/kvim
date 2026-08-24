@@ -61,6 +61,40 @@ pub enum SignColumn {
     Never,
 }
 
+/// The number of cells that one indent level occupies.
+///
+/// A language adapter declares the width of one indent level for its language,
+/// exactly as it declares its comment token, so the default follows the
+/// language. An explicit width overrides every language.
+/// [`IndentSettings::indent_columns`] owns the complete resolution order. See
+/// `docs/settings.md`.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum IndentWidth {
+    /// Indent by the width that the language adapter of the buffer declares.
+    #[default]
+    FollowLanguage,
+    /// Indent by an explicit number of cells, in every language.
+    Cells(NonZeroU8),
+}
+
+impl IndentWidth {
+    /// Resolves the indent width against the language of the buffer.
+    ///
+    /// `language` is the width that the language adapter of the buffer
+    /// declares, or `None` for a buffer that no adapter serves. `fallback`
+    /// answers that buffer.
+    #[must_use]
+    pub const fn resolve(self, language: Option<NonZeroU8>, fallback: NonZeroU8) -> NonZeroU8 {
+        match self {
+            Self::FollowLanguage => match language {
+                Some(cells) => cells,
+                None => fallback,
+            },
+            Self::Cells(cells) => cells,
+        }
+    }
+}
+
 /// The number of cells that one shift operator moves.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum ShiftWidth {
@@ -217,6 +251,44 @@ pub struct IndentSettings {
     pub tab_width: NonZeroU8,
     /// The number of cells that one shift operator moves.
     pub shift_width: ShiftWidth,
+    /// The number of cells that one indent level occupies.
+    ///
+    /// The default follows the language of the buffer. See
+    /// [`IndentSettings::indent_columns`] for the resolution order.
+    pub indent_width: IndentWidth,
+}
+
+impl IndentSettings {
+    /// Resolves the number of cells that one indent level takes in one buffer.
+    ///
+    /// `language` is the width that the language adapter of the buffer
+    /// declares, or `None` for a buffer that no adapter serves. The resolution
+    /// order is:
+    ///
+    /// 1. An explicit [`IndentWidth::Cells`] override wins for every language.
+    /// 2. Otherwise, the width that the language adapter declares wins.
+    /// 3. Otherwise, the shift width applies, which follows the tab width by
+    ///    default.
+    ///
+    /// See `docs/settings.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::num::NonZeroU8;
+    ///
+    /// use kvim_settings::IndentSettings;
+    ///
+    /// let cells = NonZeroU8::new(2).expect("the literal 2 is not zero");
+    /// let settings = IndentSettings::default();
+    /// assert_eq!(settings.indent_columns(Some(cells)), cells);
+    /// assert_eq!(settings.indent_columns(None), settings.tab_width);
+    /// ```
+    #[must_use]
+    pub const fn indent_columns(&self, language: Option<NonZeroU8>) -> NonZeroU8 {
+        self.indent_width
+            .resolve(language, self.shift_width.resolve(self.tab_width))
+    }
 }
 
 impl Default for IndentSettings {
@@ -225,6 +297,7 @@ impl Default for IndentSettings {
             expand_tab: true,
             tab_width: NonZeroU8::new(4).expect("the literal 4 is not zero"),
             shift_width: ShiftWidth::FollowTabWidth,
+            indent_width: IndentWidth::FollowLanguage,
         }
     }
 }
@@ -435,7 +508,7 @@ pub struct EditorSettings {
 mod tests {
     use std::num::NonZeroU8;
 
-    use super::{ShiftWidth, SplitRatio};
+    use super::{IndentSettings, IndentWidth, ShiftWidth, SplitRatio};
 
     fn cells(value: u8) -> NonZeroU8 {
         NonZeroU8::new(value).expect("the test value is not zero")
@@ -450,6 +523,39 @@ mod tests {
     #[test]
     fn explicit_cells_resolve_to_themselves() {
         assert_eq!(ShiftWidth::Cells(cells(2)).resolve(cells(8)), cells(2));
+    }
+
+    #[test]
+    fn the_language_width_wins_while_no_override_exists() {
+        let settings = IndentSettings::default();
+        assert_eq!(settings.indent_width, IndentWidth::FollowLanguage);
+        assert_eq!(settings.indent_columns(Some(cells(2))), cells(2));
+        assert_eq!(settings.indent_columns(Some(cells(4))), cells(4));
+    }
+
+    #[test]
+    fn a_buffer_without_a_language_takes_the_settings_width() {
+        let settings = IndentSettings::default();
+        assert_eq!(settings.indent_columns(None), cells(4));
+
+        // The shift width is the settings width, so an explicit shift width
+        // answers a buffer that no adapter serves.
+        let shifted = IndentSettings {
+            shift_width: ShiftWidth::Cells(cells(3)),
+            ..IndentSettings::default()
+        };
+        assert_eq!(shifted.indent_columns(None), cells(3));
+    }
+
+    #[test]
+    fn an_explicit_override_beats_every_language() {
+        let settings = IndentSettings {
+            indent_width: IndentWidth::Cells(cells(8)),
+            ..IndentSettings::default()
+        };
+        assert_eq!(settings.indent_columns(Some(cells(2))), cells(8));
+        assert_eq!(settings.indent_columns(Some(cells(4))), cells(8));
+        assert_eq!(settings.indent_columns(None), cells(8));
     }
 
     #[test]

@@ -72,6 +72,7 @@ fn apply(
         buffer: text,
         settings: &settings,
         search: None,
+        language_indent_width: None,
         registers: &mut registers,
         applied: Vec::new(),
     };
@@ -95,6 +96,7 @@ fn search(
         buffer: text,
         settings: &settings,
         search: Some(query),
+        language_indent_width: None,
         registers: &mut registers,
         applied: Vec::new(),
     };

@@ -363,8 +363,9 @@ pub(super) fn fallback_indent_columns(
 
 /// Returns the indent width of one syntax-tree level count.
 ///
-/// A level count from the language adapter becomes a column count here, so the
-/// shift width of `EditorSettings` stays the only source of the indent size.
+/// A level count from the language adapter becomes a column count here. The
+/// policy already carries the resolved width of one level, so this function
+/// holds no indent size of its own. See `docs/settings.md`.
 fn level_columns(indent: IndentPolicy, levels: u16) -> usize {
     usize::from(levels).saturating_mul(usize::from(indent.shift_width().get()))
 }
