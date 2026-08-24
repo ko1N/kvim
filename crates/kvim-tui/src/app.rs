@@ -18,7 +18,6 @@ use ratatui::layout::Rect;
 use thiserror::Error;
 use tokio::time::sleep;
 
-use kvim_input::Mode;
 use kvim_language::{
     ANALYSIS_DEADLINE, FormattedDocument, FormatterFailure, LanguageEvent, LanguageRegistry,
     LanguageServices, LspError,
@@ -39,6 +38,7 @@ use kvim_workspace::{
 };
 
 use super::clipboard::{SessionClipboard, command_failure, refused_submission};
+use super::embed::CursorShape as EditorCursorShape;
 use super::language::{LANGUAGE_OUTBOX_MAX, Refusal, send_request};
 use super::picker::PickerFailure;
 use super::session::{
@@ -248,14 +248,15 @@ pub async fn run(
     outcome
 }
 
-/// Returns the cursor shape that one editor mode shows.
+/// Returns the terminal sequence of one editor cursor request.
 ///
-/// Insert mode shows a vertical bar, and every other mode shows a block. See
-/// `docs/windows.md`.
-const fn cursor_shape(mode: Mode) -> CursorShape {
-    match mode {
-        Mode::Insert => CursorShape::Bar,
-        Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => CursorShape::Block,
+/// The editor names the shape that its mode asks for, and this adapter is the
+/// one place that turns that request into a terminal sequence. See
+/// `docs/embedding.md`.
+const fn terminal_shape(shape: EditorCursorShape) -> CursorShape {
+    match shape {
+        EditorCursorShape::Bar => CursorShape::Bar,
+        EditorCursorShape::Block => CursorShape::Block,
     }
 }
 
@@ -329,7 +330,7 @@ async fn drive<C: TerminalControl>(
     // The shape follows the mode, so the editor writes it once at the start and
     // then only after a mode change. The sequence is decoration: a terminal that
     // ignores it still shows its own cursor.
-    let mut shape = cursor_shape(editor.mode());
+    let mut shape = terminal_shape(editor.cursor_shape());
     let _ = session.set_cursor_shape(shape);
     terminal
         .draw(|frame| editor.render(frame))
@@ -387,7 +388,7 @@ async fn drive<C: TerminalControl>(
         // dispatch owns a visible change of its own and the frame must follow
         // it as well as the transition above.
         let dispatched = dispatch(&mut editor, &runtime, &gate, &mut language);
-        let next_shape = cursor_shape(editor.mode());
+        let next_shape = terminal_shape(editor.cursor_shape());
         if next_shape != shape {
             shape = next_shape;
             let _ = session.set_cursor_shape(shape);
@@ -562,6 +563,11 @@ fn dispatch(
         redraw = redraw.or(submit_background_work(editor, runtime, gate));
         redraw = redraw.or(submit_language_work(editor, language.as_mut()));
     }
+    // The standalone binary is the host of its own editor. It owns the
+    // terminal, the file tree, and the shutdown order itself, so it reads the
+    // published facts and keeps the bounded outbox free. See
+    // `docs/embedding.md`.
+    while editor.take_event().is_some() {}
     redraw
 }
 

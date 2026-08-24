@@ -35,6 +35,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use ratatui::Frame;
+use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
@@ -46,8 +47,9 @@ use kvim_editor::{
     SearchDirection, SearchQuery, Selection, Viewport, WindowState, selection_move_indent_line,
 };
 use kvim_input::{
-    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandLineCommand, ConfirmAnswer, ConfirmEdit,
-    Mode, PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
+    BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandAuthority, CommandLineCommand,
+    ConfirmAnswer, ConfirmEdit, Mode, PasteText, PromptEdit, PromptKind, Registry, Resolution,
+    Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
@@ -60,7 +62,7 @@ use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, TerminalEvent};
-use kvim_ui::{RegionKind, SidebarSide, WindowId};
+use kvim_ui::{Direction, RegionKind, SidebarSide, WindowId};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
     FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure, GitStatusRead,
@@ -78,10 +80,15 @@ use super::completion::{
     CompletionCycle, CompletionOutcome, LineCompletion, command_line_candidates,
 };
 use super::diagnostics::{HOST_BUFFER_NAME, HostReportRequest, HostWorkspace};
+use super::embed::{
+    CursorRequest, CursorShape, EditorAccess, EditorEvent, EditorInstanceId, EditorOutbox,
+    EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome,
+    Refusal, fits,
+};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
     LanguageQuery, LanguageRequest, LanguageRequestKind, LanguageState, PendingJump, PendingQuery,
-    QueryPurpose, QueryState, Refusal, formatter, has_formatter, jump_target,
+    QueryPurpose, QueryState, Refusal as LanguageRefusal, formatter, has_formatter, jump_target,
 };
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
@@ -556,6 +563,31 @@ fn replaces_an_entry(operation: &FileOperation) -> bool {
     )
 }
 
+/// Returns the cursor shape that one editor mode asks for.
+///
+/// Insert mode asks for a vertical bar, and every other mode asks for a block.
+/// The host decides whether to apply the request. See `docs/windows.md`.
+const fn cursor_shape(mode: Mode) -> CursorShape {
+    match mode {
+        Mode::Insert => CursorShape::Bar,
+        Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock => CursorShape::Block,
+    }
+}
+
+/// Returns the direction that one focus command names.
+///
+/// Only a focus command can reach the outer edge of this editor, so the window
+/// commands that resize, split, and close name no direction here.
+const fn focus_direction(command: Command) -> Option<Direction> {
+    match command {
+        Command::FocusWindowLeft => Some(Direction::Left),
+        Command::FocusWindowDown => Some(Direction::Down),
+        Command::FocusWindowUp => Some(Direction::Up),
+        Command::FocusWindowRight => Some(Direction::Right),
+        _ => None,
+    }
+}
+
 /// One message-line entry.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Message {
@@ -939,6 +971,26 @@ pub(super) fn test_root(path: PathBuf) -> Arc<WorktreeRoot> {
 /// assert_eq!(session.buffer().to_string(), "x\n");
 /// ```
 pub struct Session {
+    /// The identity that every published event of this editor carries.
+    instance: EditorInstanceId,
+    /// What the host granted this editor.
+    access: EditorAccess,
+    /// The bounded facts that the host still has to read.
+    events: EditorOutbox,
+    /// What the running input reduction reports to the host.
+    ///
+    /// A focus boundary, a close request, and a refusal leave the editor with
+    /// the answer of the input that produced them, so none of them needs a
+    /// queue slot. See `docs/embedding.md`.
+    outcome: ReductionOutcome,
+    /// The outbox slot that the running save owns.
+    ///
+    /// The editor runs one file operation at a time, so one slot covers every
+    /// save. The reservation exists before the write starts, so a completed
+    /// write always owns the slot of its `FileWritten` fact.
+    write_slot: Option<EventReservation>,
+    /// The outbox slot that the running workspace mutation owns.
+    mutation_slot: Option<EventReservation>,
     area: Rect,
     settings: EditorSettings,
     theme: Theme,
@@ -1072,7 +1124,14 @@ impl Session {
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings, root: Arc<WorktreeRoot>) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
+        let instance = EditorInstanceId::allocate();
         let mut session = Self {
+            instance,
+            access: EditorAccess::ReadWrite,
+            events: EditorOutbox::new(instance),
+            outcome: ReductionOutcome::Applied,
+            write_slot: None,
+            mutation_slot: None,
             area,
             settings,
             theme: Theme::new(),
@@ -1127,10 +1186,434 @@ impl Session {
         self
     }
 
+    /// Grants the access that the host decided for this editor.
+    ///
+    /// [`EditorAccess::ViewOnly`] refuses every text change, every save, every
+    /// format, and every workspace mutation. The default is
+    /// [`EditorAccess::ReadWrite`], which keeps the standalone behavior. See
+    /// `docs/embedding.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::{EditorAccess, Session};
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root)
+    ///     .with_access(EditorAccess::ViewOnly);
+    /// assert_eq!(session.access(), EditorAccess::ViewOnly);
+    /// ```
+    #[must_use]
+    pub fn with_access(mut self, access: EditorAccess) -> Self {
+        self.access = access;
+        self
+    }
+
+    /// Returns the identity that every published event of this editor carries.
+    #[must_use]
+    pub const fn instance(&self) -> EditorInstanceId {
+        self.instance
+    }
+
+    /// Returns what the host granted this editor.
+    #[must_use]
+    pub const fn access(&self) -> EditorAccess {
+        self.access
+    }
+
+    /// Returns the cursor shape that the current mode asks for.
+    ///
+    /// The host owns the terminal, so it decides whether to apply the request.
+    #[must_use]
+    pub const fn cursor_shape(&self) -> CursorShape {
+        cursor_shape(self.editing.mode())
+    }
+
+    /// Takes the next fact or request that the host must read.
+    ///
+    /// The mandatory facts of the durable operations leave first, then the
+    /// active file, then the coalesced redraw request. See `docs/embedding.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_input::Command;
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::{EditorEvent, Session};
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    /// let reduction = session.apply_command(Command::SplitAdaptive, None, Duration::ZERO);
+    /// assert_eq!(reduction.instance, session.instance());
+    ///
+    /// let published = session.take_event().expect("the split needs one frame");
+    /// assert_eq!(published.instance, session.instance());
+    /// assert_eq!(published.event, EditorEvent::RedrawRequested);
+    /// ```
+    #[must_use]
+    pub fn take_event(&mut self) -> Option<PublishedEvent> {
+        self.events.take()
+    }
+
     /// Returns the terminal rectangle that the session renders into.
     #[must_use]
     pub const fn area(&self) -> Rect {
         self.area
+    }
+
+    /// Accepts one new rectangle for this editor.
+    ///
+    /// The layout, the viewports, and the cursor all follow the accepted
+    /// rectangle, so a host changes the geometry with this call and renders
+    /// into the same rectangle afterwards.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeometryError::Empty`] for a rectangle without a cell. The
+    /// editor keeps the rectangle that it accepted before.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::Session;
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    /// let area = Rect::new(4, 2, 40, 12);
+    /// session.set_area(area).expect("the rectangle holds cells");
+    /// assert_eq!(session.area(), area);
+    /// assert!(session.set_area(Rect::new(4, 2, 0, 12)).is_err());
+    /// ```
+    pub fn set_area(&mut self, area: Rect) -> Result<Redraw, GeometryError> {
+        if area.width == 0 || area.height == 0 {
+            return Err(GeometryError::Empty { area });
+        }
+        let redraw = self.resize(area);
+        self.reconcile_viewports();
+        self.reconcile_tree();
+        self.reconcile_picker();
+        self.note_redraw(redraw);
+        Ok(redraw)
+    }
+
+    /// Renders one frame into the supplied cells.
+    ///
+    /// The editor writes only inside `area` and returns the cursor that the
+    /// frame asks for. The host decides whether to apply that request.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`GeometryError::Empty`] for a rectangle without a cell,
+    /// [`GeometryError::OutsideBuffer`] for a rectangle that leaves the cell
+    /// buffer, and [`GeometryError::Unreconciled`] for a rectangle that the
+    /// editor did not accept through [`Session::set_area`]. Every error leaves
+    /// every cell of the buffer unchanged.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::buffer::Buffer;
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::Session;
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let area = Rect::new(2, 1, 40, 12);
+    /// let mut session = Session::new(area, EditorSettings::default(), root);
+    /// let mut cells = Buffer::empty(Rect::new(0, 0, 60, 20));
+    /// let cursor = session.draw(&mut cells, area).expect("the rectangle fits");
+    /// assert!(cursor.position.is_some());
+    ///
+    /// // A rectangle that leaves the buffer changes no cell.
+    /// let before = cells.clone();
+    /// assert!(session.draw(&mut cells, Rect::new(40, 1, 40, 12)).is_err());
+    /// assert_eq!(cells, before);
+    /// ```
+    pub fn draw(
+        &self,
+        buffer: &mut CellBuffer,
+        area: Rect,
+    ) -> Result<CursorRequest, GeometryError> {
+        if area.width == 0 || area.height == 0 {
+            return Err(GeometryError::Empty { area });
+        }
+        if area != self.area {
+            return Err(GeometryError::Unreconciled {
+                area,
+                accepted: self.area,
+            });
+        }
+        if !fits(area, buffer.area) {
+            return Err(GeometryError::OutsideBuffer {
+                area,
+                buffer: buffer.area,
+            });
+        }
+        let position = super::render::draw(buffer, &self.visible());
+        Ok(CursorRequest {
+            position,
+            shape: cursor_shape(self.editing.mode()),
+        })
+    }
+
+    /// Opens one file of this worktree.
+    ///
+    /// The path is relative to the root that the host supplied, so the editor
+    /// reaches no file outside that root. The open leaves the editor as one
+    /// file request, because the editor reads no file itself. See
+    /// `docs/embedding.md` and `docs/files.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_path::WorktreeRelativePath;
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::Session;
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    /// let path = WorktreeRelativePath::new("Cargo.toml").expect("the path is contained");
+    /// let _ = session.open(path);
+    ///
+    /// // The host hands the request to its bounded worker service.
+    /// let request = session.take_file_request().expect("the open needs one file read");
+    /// session.apply_file_result(request.run());
+    /// assert_eq!(session.buffers().len(), 2);
+    /// ```
+    #[must_use]
+    pub fn open(&mut self, path: WorktreeRelativePath) -> Redraw {
+        let display_path = self.root.as_path().join(path.as_path());
+        if let Some(id) = self.buffers.find_path(&display_path) {
+            let redraw = self.switch_to(id);
+            self.note_redraw(redraw);
+            return redraw;
+        }
+        let files = self.settings.files;
+        let redraw = self.start_file_request(
+            FileRequest::Open(OpenRequest {
+                root: Arc::clone(&self.root),
+                path,
+                files,
+            }),
+            PendingFile::Open,
+        );
+        self.note_redraw(redraw);
+        redraw
+    }
+
+    /// Applies one resolved command.
+    ///
+    /// The host owns the key resolver, so the editor receives the command and
+    /// its count instead of a key. See `docs/embedding.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_input::Command;
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::{EditorAccess, Refusal, Session};
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root)
+    ///     .with_access(EditorAccess::ViewOnly);
+    /// let reduction = session.apply_command(Command::DeleteLine, None, Duration::ZERO);
+    /// assert_eq!(reduction.refusal(), Some(Refusal::ViewOnly));
+    /// ```
+    #[must_use]
+    pub fn apply_command(
+        &mut self,
+        command: Command,
+        count: Option<NonZeroU32>,
+        now: Duration,
+    ) -> Reduction {
+        self.begin_input(now);
+        let redraw = self.dispatch_command(command, count);
+        self.finish_input(redraw, now)
+    }
+
+    /// Inserts one run of literal text.
+    ///
+    /// The host owns the text fallback of its focused scope, so it hands the
+    /// literal characters to the editor. An open question and an open prompt
+    /// line take them first. Insert mode is the only buffer mode that takes
+    /// them.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_input::Command;
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::Session;
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    /// session.apply_command(Command::InsertBeforeCursor, None, Duration::ZERO);
+    /// session.insert_literal("hi", Duration::ZERO);
+    /// assert_eq!(session.buffer().to_string(), "hi\n");
+    /// ```
+    #[must_use]
+    pub fn insert_literal(&mut self, text: &str, now: Duration) -> Reduction {
+        self.begin_input(now);
+        let redraw = self.insert_owned_text(text);
+        self.finish_input(redraw, now)
+    }
+
+    /// Applies one bounded paste as literal text.
+    ///
+    /// [`PasteText`] carries the bound, so no paste can exceed it. See
+    /// `docs/embedding.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_input::{Command, PasteText};
+    /// use kvim_settings::EditorSettings;
+    /// use kvim_tui::Session;
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
+    /// session.apply_command(Command::InsertBeforeCursor, None, Duration::ZERO);
+    /// let block = PasteText::new("pasted").expect("the block is bounded");
+    /// session.paste(&block, Duration::ZERO);
+    /// assert_eq!(session.buffer().to_string(), "pasted\n");
+    /// ```
+    #[must_use]
+    pub fn paste(&mut self, text: &PasteText, now: Duration) -> Reduction {
+        self.begin_input(now);
+        let redraw = self.insert_owned_text(text.as_str());
+        self.finish_input(redraw, now)
+    }
+
+    /// Starts one input reduction.
+    fn begin_input(&mut self, now: Duration) {
+        self.advance_clock(now);
+        self.outcome = ReductionOutcome::Applied;
+    }
+
+    /// Settles the editor and reports what the input produced.
+    fn finish_input(&mut self, redraw: Redraw, now: Duration) -> Reduction {
+        let settled = self.settle(now).or(redraw);
+        self.note_redraw(settled);
+        Reduction {
+            instance: self.instance,
+            outcome: mem::replace(&mut self.outcome, ReductionOutcome::Applied),
+        }
+    }
+
+    /// Latches the redraw request of one transition.
+    fn note_redraw(&mut self, redraw: Redraw) {
+        if redraw == Redraw::Needed {
+            self.events.request_redraw();
+        }
+    }
+
+    /// Refuses one durable change and reports the reason.
+    ///
+    /// The refusal reaches the host through the reduction and the message
+    /// line, so no durable change ever fails without a report. See
+    /// `docs/embedding.md`.
+    fn refuse(&mut self, refusal: Refusal) -> Redraw {
+        self.outcome = ReductionOutcome::Refused(refusal);
+        self.set_message(refusal.note(), MessageLevel::Warning);
+        Redraw::Needed
+    }
+
+    /// Records the one request that this input hands to the host.
+    fn note_request(&mut self, request: InputRequest) {
+        self.outcome = ReductionOutcome::Request(request);
+    }
+
+    /// Publishes the mandatory fact of one completed write.
+    fn publish_write(&mut self, slot: Option<EventReservation>, path: WorktreeRelativePath) {
+        match slot {
+            Some(slot) => self.events.commit(slot, EditorEvent::FileWritten { path }),
+            None => debug_assert!(
+                false,
+                "every save reserves its slot before the write starts"
+            ),
+        }
+    }
+
+    /// Returns the slot of one operation that produced no durable change.
+    fn release_slot(&mut self, slot: Option<EventReservation>) {
+        if let Some(slot) = slot {
+            self.events.release(slot);
+        }
+    }
+
+    /// Ends this editor after its last window closed.
+    ///
+    /// The standalone loop reads [`Session::run_state`], and an embedding host
+    /// reads the close request of the input that produced it. See
+    /// `docs/embedding.md`.
+    fn close_editor(&mut self) {
+        self.run = RunState::Finished;
+        self.note_request(InputRequest::CloseRequested);
     }
 
     /// Returns the text of the active buffer.
@@ -1224,14 +1707,16 @@ impl Session {
 
     /// Applies one normalized terminal event.
     pub fn handle_event(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
-        self.advance_clock(now);
+        self.begin_input(now);
         let redraw = match event {
             TerminalEvent::Key(key) => self.handle_key(key, now),
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
             // A focus change moves no cursor and shows no new text.
             TerminalEvent::Focus(_) => Redraw::Skipped,
         };
-        self.settle(now).or(redraw)
+        let settled = self.settle(now).or(redraw);
+        self.note_redraw(settled);
+        settled
     }
 
     /// Applies the state changes that the elapsed time alone causes.
@@ -1239,8 +1724,10 @@ impl Session {
     /// The which-key overlay and the notification overlay reach this path,
     /// because the pending sequence itself never expires.
     pub fn tick(&mut self, now: Duration) -> Redraw {
-        self.advance_clock(now);
-        self.settle(now)
+        self.begin_input(now);
+        let settled = self.settle(now);
+        self.note_redraw(settled);
+        settled
     }
 
     /// Renders one frame of the visible state.
@@ -1321,7 +1808,7 @@ impl Session {
                 command,
                 count,
                 register: _,
-            } => self.apply_command(command, count),
+            } => self.dispatch_command(command, count),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
             Resolution::Confirmation(edit) => self.edit_confirmation(edit),
             // A pending sequence and a cancelled sequence both change only the
@@ -1339,7 +1826,18 @@ impl Session {
     ///
     /// The window tree sees every command first, because it owns the split,
     /// focus, resize, and close commands. The editing state sees the rest.
-    fn apply_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+    fn dispatch_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+        // The access of the instance decides before any owner sees the command,
+        // so no view-only editor reaches a text change or a workspace write.
+        // See `docs/embedding.md`.
+        if self.access == EditorAccess::ViewOnly && command.authority() != CommandAuthority::Read {
+            return self.refuse(Refusal::ViewOnly);
+        }
+        // An open question and an open prompt line own the input, exactly as
+        // they do for one resolved key. See `docs/input-actions.md`.
+        if let Some(redraw) = self.route_to_open_line(command) {
+            return redraw;
+        }
         let cleared = self.clear_message();
         // An open picker owns every key, so a picker key never reaches the
         // buffer of an editor window.
@@ -1403,13 +1901,52 @@ impl Session {
                 self.sync_context();
                 return Redraw::Needed;
             }
-            WindowOutcome::Unchanged => return cleared,
+            WindowOutcome::Unchanged => {
+                // A focus move that changes nothing reached the outer edge of
+                // this editor, so the host decides what lies beyond it.
+                if let Some(direction) = focus_direction(command) {
+                    self.note_request(InputRequest::FocusBoundary(direction));
+                }
+                return cleared;
+            }
             WindowOutcome::LastWindow => {
-                self.run = RunState::Finished;
+                self.close_editor();
                 return cleared;
             }
         }
         self.apply_editing_command(command, count).or(cleared)
+    }
+
+    /// Routes one command to the open question or the open prompt line.
+    ///
+    /// The standalone key resolver performs the identical mapping for its own
+    /// binding scope, so a host-supplied command reaches the same owner as the
+    /// key that names it. A command that no open line owns returns `None` and
+    /// continues to the ordinary owners.
+    fn route_to_open_line(&mut self, command: Command) -> Option<Redraw> {
+        if self.confirmation.is_some() {
+            // A question owns every key below it, so an unnamed command edits
+            // nothing and reaches no owner under the question.
+            let edit = match command {
+                Command::PromptAccept => ConfirmEdit::Accept,
+                Command::PromptCancel => ConfirmEdit::Cancel,
+                Command::PromptDeleteBackward => ConfirmEdit::DeleteBackward,
+                _ => ConfirmEdit::Ignore,
+            };
+            return Some(self.edit_confirmation(edit));
+        }
+        // An open picker owns its own chords above the query line, so only the
+        // prompt commands reach the line itself.
+        let edit = match command {
+            Command::PromptAccept => PromptEdit::Accept,
+            Command::PromptCancel => PromptEdit::Cancel,
+            Command::PromptDeleteBackward => PromptEdit::DeleteBackward,
+            Command::PromptCompleteNext => PromptEdit::CompleteNext,
+            Command::PromptCompletePrevious => PromptEdit::CompletePrevious,
+            _ => return None,
+        };
+        self.prompt.as_ref()?;
+        Some(self.apply_prompt(edit))
     }
 
     /// Applies one command to the buffer of the focused window.
@@ -1444,6 +1981,12 @@ impl Session {
             return;
         }
         self.active = buffer;
+        let path = self
+            .buffers
+            .get(buffer)
+            .and_then(FileBuffer::target)
+            .map(|target| target.relative_path().clone());
+        self.events.note_active_file(path);
         // The mode, the pending operator, and the repeat description describe
         // the buffer that the keys changed.
         self.editing = EditingState::new();
@@ -1600,6 +2143,13 @@ impl Session {
         };
         let outcome = change(&mut self.editing, &mut context, &mut state);
         let applied = std::mem::take(&mut context.applied);
+        // Every text change passes one access gate before it reaches this
+        // point, so a view-only editor produces no transaction at all. See
+        // `docs/embedding.md`.
+        debug_assert!(
+            self.access == EditorAccess::ReadWrite || applied.is_empty(),
+            "view-only access refuses every text change before the buffer sees it"
+        );
         let after = context.buffer.version();
         if let Some(slot) = self.windows.state_mut(window) {
             *slot = state;
@@ -1689,10 +2239,38 @@ impl Session {
     /// The shared resolver routes every printable key of the Insert scope to
     /// this text owner, so the session compares no key.
     fn insert_typed(&mut self, value: char) -> Redraw {
+        let mut text = [0_u8; 4];
+        self.insert_owned_text(value.encode_utf8(&mut text))
+    }
+
+    /// Inserts one run of literal text while Insert mode is active.
+    ///
+    /// One typed key, one bounded paste, and one host-supplied literal all
+    /// reach this owner, so all three follow the identical rule.
+    fn insert_owned_text(&mut self, text: &str) -> Redraw {
+        if text.is_empty() {
+            return Redraw::Skipped;
+        }
+        // The open question and the open prompt line own literal text before
+        // the buffer does, exactly as they do for one resolved key. Neither
+        // one changes a file, so view-only access reaches both.
+        if self.confirmation.is_some() {
+            return text.chars().fold(Redraw::Skipped, |redraw, value| {
+                redraw.or(self.edit_confirmation(ConfirmEdit::Insert(value)))
+            });
+        }
+        if self.prompt.is_some() {
+            return text.chars().fold(Redraw::Skipped, |redraw, value| {
+                redraw.or(self.apply_prompt(PromptEdit::Insert(value)))
+            });
+        }
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
         if self.editing.mode() != Mode::Insert {
             return Redraw::Skipped;
         }
-        let text = value.to_string();
+        let text = text.to_owned();
         let outcome =
             self.edit(|editing, context, window| editing.insert_text(context, window, &text));
         self.report(outcome)
@@ -2324,36 +2902,13 @@ impl Session {
         );
     }
 
-    /// Opens one path in the focused window.
+    /// Opens one host path in the focused window.
     ///
-    /// A path that a loaded buffer already owns needs no filesystem work, so
-    /// the editor switches to that buffer at once. Every other path becomes one
-    /// bounded request, because the event loop reads no file. See
-    /// `docs/responsiveness.md`.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use ratatui::layout::Rect;
-    ///
-    /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
-    ///
-    /// let root = std::sync::Arc::new(
-    ///     kvim_path::WorktreeRoot::open(
-    ///         std::env::current_dir().expect("the process holds a working directory"),
-    ///     )
-    ///     .expect("the working directory is a worktree"),
-    /// );
-    /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
-    /// session.open_path("Cargo.toml".into());
-    ///
-    /// // The event loop hands the request to the bounded worker service.
-    /// let request = session.take_file_request().expect("the open needs one file read");
-    /// session.apply_file_result(request.run());
-    /// assert_eq!(session.buffers().len(), 2);
-    /// ```
-    pub fn open_path(&mut self, path: PathBuf) -> Redraw {
+    /// The command line and the standalone start argument both name a path
+    /// that a user typed, so this boundary turns that path into one contained
+    /// path and hands it to [`Session::open`]. A path outside the worktree
+    /// root reports its refusal and opens nothing.
+    pub(super) fn open_path(&mut self, path: PathBuf) -> Redraw {
         let relative = if path.is_absolute() {
             path.strip_prefix(self.root.as_path())
         } else {
@@ -2380,19 +2935,7 @@ impl Session {
                 return Redraw::Needed;
             }
         };
-        let display_path = self.root.as_path().join(relative.as_path());
-        if let Some(id) = self.buffers.find_path(&display_path) {
-            return self.switch_to(id);
-        }
-        let files = self.settings.files;
-        self.start_file_request(
-            FileRequest::Open(OpenRequest {
-                root: Arc::clone(&self.root),
-                path: relative,
-                files,
-            }),
-            PendingFile::Open,
-        )
+        self.open(relative)
     }
 
     /// Takes the file request that the event loop must submit.
@@ -2561,7 +3104,7 @@ impl Session {
     /// nothing drifted and nothing opens again. See
     /// `docs/language-services.md`.
     fn repair_document(&mut self, request: &LanguageRequest, error: &LspError) -> Redraw {
-        if Refusal::of(error) == Refusal::NoCopyHeld {
+        if LanguageRefusal::of(error) == LanguageRefusal::NoCopyHeld {
             return Redraw::Skipped;
         }
         let Some(buffer) = request.buffer() else {
@@ -2965,6 +3508,9 @@ impl Session {
     /// An obsolete answer, a malformed range, and a buffer that already matches
     /// the formatter all leave the buffer as it is. The save follows either way.
     fn apply_format_edits(&mut self, buffer: BufferId, edits: &FormatEdits) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
         if buffer != self.active {
             return Redraw::Skipped;
         }
@@ -2996,6 +3542,9 @@ impl Session {
     /// An obsolete answer leaves the buffer as it is, because the user typed
     /// while the formatter ran and the save writes what the user typed.
     fn commit_format(&mut self, buffer: BufferId, document: &FormattedDocument) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
         if buffer != self.active {
             return Redraw::Skipped;
         }
@@ -3297,7 +3846,12 @@ impl Session {
                 debug_assert!(false, "closing a focused sidebar keeps every editor window");
                 Redraw::Skipped
             }
-            WindowOutcome::Ignored | WindowOutcome::Unchanged => Redraw::Skipped,
+            WindowOutcome::Ignored | WindowOutcome::Unchanged => {
+                if let Some(direction) = focus_direction(command) {
+                    self.note_request(InputRequest::FocusBoundary(direction));
+                }
+                Redraw::Skipped
+            }
         }
     }
 
@@ -3404,12 +3958,27 @@ impl Session {
 
     /// Hands one operation to the bounded worker service.
     fn queue_tree_mutation(&mut self, operation: FileOperation, overwrite: Overwrite) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
+        // The mutation owns the slot of its `WorkspaceChanged` fact before the
+        // filesystem sees it. See `docs/embedding.md`.
+        debug_assert!(
+            self.mutation_slot.is_none(),
+            "the editor runs one workspace mutation at a time"
+        );
+        let Ok(slot) = self.events.reserve() else {
+            return self.refuse(Refusal::Saturated);
+        };
         // The worker validates the operation against the loaded buffers, so it
         // receives the complete list with the request.
         let buffers = self.buffers.open_buffers(&self.root);
         if let Err(refusal) = self.tree.start_mutation(operation, overwrite, buffers) {
+            self.events.release(slot);
             self.set_message(refusal.message(), MessageLevel::Warning);
+            return Redraw::Needed;
         }
+        self.mutation_slot = Some(slot);
         Redraw::Needed
     }
 
@@ -3610,6 +4179,8 @@ impl Session {
     /// request, so the user can repeat the operation.
     #[must_use]
     pub fn abandon_workspace_request(&mut self, failure: FileRequestFailure) -> Redraw {
+        let slot = self.mutation_slot.take();
+        self.release_slot(slot);
         self.tree.abandon_request();
         self.set_message(failure.message(), MessageLevel::Error);
         Redraw::Needed
@@ -3620,17 +4191,38 @@ impl Session {
     /// The buffer paths, the affected directories, and the new selection change
     /// together, so no window shows a path that the workspace no longer holds.
     fn publish_mutation(&mut self, outcome: Result<MutationOutcome, MutationError>) -> Redraw {
+        let slot = self.mutation_slot.take();
+        // The pending operation names what the workspace performed, so the
+        // fact reads it before the tree releases its request.
+        let operation = self.tree.pending_mutation();
         let outcome = match outcome {
             Ok(outcome) => outcome,
             Err(MutationError::Collision { entries }) => {
+                self.release_slot(slot);
                 return self.report_collision(entries);
             }
             Err(error) => {
+                self.release_slot(slot);
                 self.tree.abandon_request();
                 self.set_message(error.to_string(), MessageLevel::Error);
                 return Redraw::Needed;
             }
         };
+        match (slot, operation) {
+            // The workspace changed, so its mandatory fact publishes through
+            // the slot that the mutation reserved. See `docs/embedding.md`.
+            (Some(slot), Some(operation)) => {
+                self.events
+                    .commit(slot, EditorEvent::WorkspaceChanged { operation });
+            }
+            (slot, _) => {
+                debug_assert!(
+                    slot.is_none(),
+                    "a queued mutation keeps its operation until its result arrives"
+                );
+                self.release_slot(slot);
+            }
+        }
         // The language server holds each document by its path, so the previous
         // path closes before the buffer takes the new one.
         let closed: Vec<PathBuf> = outcome
@@ -3771,6 +4363,8 @@ impl Session {
     #[must_use]
     pub fn abandon_file_request(&mut self, failure: FileRequestFailure) -> Redraw {
         let pending = self.file_pending.take();
+        let slot = self.write_slot.take();
+        self.release_slot(slot);
         self.file_outbox = None;
         let background = matches!(
             pending,
@@ -3940,13 +4534,18 @@ impl Session {
     /// for a buffer state that a newer operation already replaced.
     fn start_file_request(&mut self, request: FileRequest, pending: PendingFile) -> Redraw {
         if self.file_pending.is_some() {
-            self.set_message(
-                "one file operation is already running",
-                MessageLevel::Warning,
-            );
-            return Redraw::Needed;
+            return self.refuse_running_file_operation();
         }
         self.queue_file_request(request, pending);
+        Redraw::Needed
+    }
+
+    /// Reports that one file operation still runs.
+    fn refuse_running_file_operation(&mut self) -> Redraw {
+        self.set_message(
+            "one file operation is already running",
+            MessageLevel::Warning,
+        );
         Redraw::Needed
     }
 
@@ -4103,6 +4702,15 @@ impl Session {
     /// the buffer, so the user never loses work to a language server. See
     /// `docs/language-services.md`.
     fn save_active(&mut self, then: AfterSave) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
+        // A save can format first, so the capacity check runs here, before the
+        // operation starts. The write itself reserves the slot that publishes
+        // its fact. See `docs/embedding.md`.
+        if !self.events.has_free_slot() {
+            return self.refuse(Refusal::Saturated);
+        }
         if self.awaits_format() {
             self.set_message("one save is already running", MessageLevel::Warning);
             return Redraw::Needed;
@@ -4150,6 +4758,9 @@ impl Session {
     /// adapter of the path decides which path runs. See
     /// `docs/language-services.md`.
     fn request_format(&mut self, then: AfterSave) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
         let buffer = self.active;
         let Some(file) = self.buffers.get(buffer) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
@@ -4192,6 +4803,9 @@ impl Session {
     /// `format` names what a format before this save produced, and the save
     /// report names that state beside its own result.
     fn start_save(&mut self, then: AfterSave, format: FormatBeforeSave) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
         let buffer = self.active;
         // Build the complete request before the operation starts, so a rejected
         // save never changes the buffer.
@@ -4211,14 +4825,30 @@ impl Session {
             self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
             return Redraw::Needed;
         };
-        self.start_file_request(
+        // The write owns the slot of its `FileWritten` fact before the write
+        // starts, so a completed write can never lose that fact. A saturated
+        // outbox refuses the save before the filesystem sees it. See
+        // `docs/embedding.md`.
+        debug_assert!(
+            self.write_slot.is_none(),
+            "the editor runs one file operation at a time"
+        );
+        if self.file_pending.is_some() {
+            return self.refuse_running_file_operation();
+        }
+        let Ok(slot) = self.events.reserve() else {
+            return self.refuse(Refusal::Saturated);
+        };
+        let redraw = self.start_file_request(
             FileRequest::Save(request),
             PendingFile::Save {
                 buffer,
                 then,
                 format,
             },
-        )
+        );
+        self.write_slot = Some(slot);
+        redraw
     }
 
     /// Publishes one loaded buffer.
@@ -4463,11 +5093,14 @@ impl Session {
         then: AfterSave,
         format: FormatBeforeSave,
     ) -> Redraw {
+        let slot = self.write_slot.take();
         let saved = match outcome {
             Ok(saved) => saved,
             // A failed save keeps the buffer dirty and usable, so the user can
-            // repeat it.
+            // repeat it. The write produced no durable change, so its reserved
+            // slot returns to the outbox.
             Err(error) => {
+                self.release_slot(slot);
                 self.set_message(
                     format!("cannot save {}: {error}", requested.display()),
                     MessageLevel::Error,
@@ -4475,6 +5108,9 @@ impl Session {
                 return Redraw::Needed;
             }
         };
+        // The write reached the filesystem, so its mandatory fact publishes
+        // through the slot that the save reserved. See `docs/embedding.md`.
+        self.publish_write(slot, saved.target.relative_path().clone());
         let Some(target) = self.buffers.get_mut(buffer) else {
             // The buffer left the list while the save ran.
             return Redraw::Skipped;
@@ -4521,7 +5157,7 @@ impl Session {
         }
         match self.windows.apply(Command::CloseWindow) {
             WindowOutcome::LastWindow => {
-                self.run = RunState::Finished;
+                self.close_editor();
                 Redraw::Needed
             }
             WindowOutcome::Changed => Redraw::Needed,

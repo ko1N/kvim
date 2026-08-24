@@ -58,17 +58,29 @@ drain completes.
 `EditorAccess::ViewOnly` rejects text and filesystem mutation.
 `EditorAccess::ReadWrite` permits normal editing and bounded workspace writes.
 
+Every command carries one `CommandAuthority`: `Read`, `Text`, or `Workspace`.
+`kvim-input` owns that classification, and its match is exhaustive, so a new
+command cannot reach an editor without an authority decision. A view-only
+editor refuses every command above `Read` before any owner sees it. It refuses
+literal text, paste, save, format, and workspace mutation at their own entry
+points as well, so no second path reaches the buffer or the filesystem. An open
+question and an open prompt line still accept literal text, because neither one
+changes a file.
+
 The editor accepts resolved surface commands, literal text, bounded paste, and
 time. It does not run another key-sequence resolver. Input reduction returns an
 `InputContextSnapshot` that the shared resolver uses for the next input.
 
 The host supplies a `ratatui::Rect` and `ratatui::Buffer` for rendering. The
-editor writes only inside that rectangle. It validates that the rectangle fits
-the buffer before changing any cell. Invalid geometry returns a typed error and
-leaves the buffer unchanged.
+editor accepts one explicit rectangle first, because the layout, the viewports,
+and the cursor all follow that rectangle. It writes only inside that rectangle.
+It validates that the rectangle holds cells, matches the accepted rectangle, and
+fits the buffer before changing any cell. Invalid geometry returns a typed error
+and leaves the buffer unchanged.
 
 Rendering returns an optional cursor position and cursor-shape request. The
-host decides whether to apply either request.
+host decides whether to apply either request. The editor names its own cursor
+shape and owns no terminal sequence.
 
 ## Editor Events
 
@@ -85,9 +97,16 @@ Review uses separate typed `ReviewEvent` variants. The host decides the effect
 of every editor and review event. Kvim assigns no host meaning to a review
 comment.
 
-`RedrawRequested` is a coalesced latch. Focus-boundary and close outcomes return
-from the synchronous input reduction that produced them. A full optional event
-queue returns a typed `Saturated` outcome and drops no event silently.
+`RedrawRequested` and `ActiveFileChanged` are coalesced latches. Each one
+reports current state instead of a history, so a burst consumes no queue slot
+and can never saturate the queue. The bounded queue therefore holds the
+mandatory facts of the durable operations alone.
+
+Focus-boundary and close outcomes return from the synchronous input reduction
+that produced them. One reduction reports one outcome: applied, one host
+request, or one typed refusal. A refused operation performs no side effect. A
+full event queue returns a typed `Saturated` refusal and drops no event
+silently.
 
 ## Mandatory Event Lifecycle
 
@@ -101,7 +120,8 @@ A successful durable side effect has one mandatory event:
 
 The driver reserves one bounded outbox slot before it accepts an operation with
 a side effect. If no slot is available, it returns `Saturated` before starting
-the side effect.
+the side effect. A save can format first, so the save entry point checks the
+capacity before that format starts and the write itself holds the reservation.
 
 Every accepted operation follows this state sequence:
 

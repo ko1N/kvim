@@ -51,6 +51,7 @@ mod chrome;
 mod clipboard;
 mod completion;
 mod diagnostics;
+mod embed;
 mod icons;
 mod language;
 mod log;
@@ -64,6 +65,8 @@ mod theme;
 mod tree;
 mod window;
 
+#[cfg(test)]
+mod embed_tests;
 #[cfg(test)]
 mod language_tests;
 #[cfg(test)]
@@ -79,6 +82,10 @@ mod tree_tests;
 
 pub use app::{EVENT_ERRORS_MAX, EditorError, PanicProbe, run};
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
+pub use embed::{
+    CursorRequest, CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorEvent, EditorInstanceId,
+    GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal, Saturated,
+};
 pub use kvim_ui::{
     CloseOutcome, Direction, LayoutChange, LayoutFit, Orientation, Region, RegionKind,
     SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX, SPLIT_WEIGHT_TOTAL, Sidebar,

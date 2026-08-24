@@ -227,6 +227,191 @@ semantic_commands! {
     ToggleFormatOnSave => ("toggle-format-on-save", "Toggle format-on-save for the active buffer"),
 }
 
+/// What one command can durably change.
+///
+/// The authority is a property of the command, not of one editor instance. An
+/// embedded editor with view-only access refuses every command above
+/// [`CommandAuthority::Read`] before that command reaches the buffer or the
+/// workspace. See `docs/embedding.md`.
+///
+/// The match is exhaustive, so a new command cannot reach an editor without an
+/// authority decision.
+///
+/// ```
+/// use kvim_input::{Command, CommandAuthority};
+///
+/// assert_eq!(Command::MoveLeft.authority(), CommandAuthority::Read);
+/// assert_eq!(Command::DeleteLine.authority(), CommandAuthority::Text);
+/// assert_eq!(Command::SaveBuffer.authority(), CommandAuthority::Workspace);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum CommandAuthority {
+    /// The command changes no buffer text and no workspace entry.
+    Read,
+    /// The command can change the text of a buffer.
+    Text,
+    /// The command can write a file or change a workspace entry.
+    Workspace,
+}
+
+impl Command {
+    /// Returns what the command can durably change.
+    ///
+    /// A mode switch that opens Insert mode counts as [`CommandAuthority::Text`],
+    /// because the mode exists only to type text into the buffer.
+    ///
+    /// ```
+    /// use kvim_input::{Command, CommandAuthority};
+    ///
+    /// assert_eq!(Command::YankLine.authority(), CommandAuthority::Read);
+    /// assert_eq!(Command::InsertBeforeCursor.authority(), CommandAuthority::Text);
+    /// assert_eq!(Command::TreeDelete.authority(), CommandAuthority::Workspace);
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn authority(self) -> CommandAuthority {
+        match self {
+            Self::InsertBeforeCursor
+            | Self::InsertAtFirstNonBlank
+            | Self::InsertAfterCursor
+            | Self::InsertAtLineEnd
+            | Self::OpenLineBelow
+            | Self::OpenLineAbove
+            | Self::InsertLineBreak
+            | Self::DeleteCharacterBefore
+            | Self::InsertIndent
+            | Self::DeleteOverMotion
+            | Self::ChangeOverMotion
+            | Self::DeleteSelection
+            | Self::ChangeSelection
+            | Self::BlockInsertBefore
+            | Self::BlockInsertAfter
+            | Self::DeleteLine
+            | Self::ChangeLine
+            | Self::DeleteToLineEnd
+            | Self::ChangeToLineEnd
+            | Self::PasteAfter
+            | Self::PasteBefore
+            | Self::Undo
+            | Self::Redo
+            | Self::RepeatChange
+            | Self::MoveSelectionDown
+            | Self::MoveSelectionUp
+            | Self::ShiftSelectionLeft
+            | Self::ShiftSelectionRight
+            | Self::ToggleComment => CommandAuthority::Text,
+
+            Self::SaveBuffer
+            | Self::TreeAddFile
+            | Self::TreeAddDirectory
+            | Self::TreeDelete
+            | Self::TreeRename
+            | Self::TreePasteEntries => CommandAuthority::Workspace,
+
+            Self::EnterVisual
+            | Self::EnterVisualLine
+            | Self::EnterVisualBlock
+            | Self::OpenCommandLine
+            | Self::ReturnToNormal
+            | Self::MoveLeft
+            | Self::MoveDown
+            | Self::MoveUp
+            | Self::MoveRight
+            | Self::MoveNextWordStart
+            | Self::MovePreviousWordStart
+            | Self::MoveNextWordEnd
+            | Self::MoveFirstColumn
+            | Self::MoveFirstNonBlank
+            | Self::MoveLastNonBlank
+            | Self::MoveLineEnd
+            | Self::MoveMatchingBracket
+            | Self::MoveFirstLine
+            | Self::MoveLastLine
+            | Self::MoveHalfPageDown
+            | Self::MoveHalfPageUp
+            | Self::MoveFullPageDown
+            | Self::MoveFullPageUp
+            | Self::CenterCursorLine
+            | Self::AlignCursorLineTop
+            | Self::AlignCursorLineBottom
+            | Self::CountDigitOne
+            | Self::CountDigitTwo
+            | Self::CountDigitThree
+            | Self::CountDigitFour
+            | Self::CountDigitFive
+            | Self::CountDigitSix
+            | Self::CountDigitSeven
+            | Self::CountDigitEight
+            | Self::CountDigitNine
+            | Self::PromptAccept
+            | Self::PromptCancel
+            | Self::PromptDeleteBackward
+            | Self::PromptCompleteNext
+            | Self::PromptCompletePrevious
+            | Self::SelectRegister
+            | Self::YankOverMotion
+            | Self::YankSelection
+            | Self::YankLine
+            | Self::SelectInnerWord
+            | Self::SelectAroundWord
+            | Self::SelectInnerLongWord
+            | Self::SelectAroundLongWord
+            | Self::SelectInnerParen
+            | Self::SelectAroundParen
+            | Self::SelectInnerBracket
+            | Self::SelectAroundBracket
+            | Self::SelectInnerBrace
+            | Self::SelectAroundBrace
+            | Self::SelectInnerAngle
+            | Self::SelectAroundAngle
+            | Self::SelectInnerDoubleQuote
+            | Self::SelectAroundDoubleQuote
+            | Self::SelectInnerSingleQuote
+            | Self::SelectAroundSingleQuote
+            | Self::SelectInnerBacktick
+            | Self::SelectAroundBacktick
+            | Self::OpenSearchPrompt
+            | Self::SearchNext
+            | Self::SearchPrevious
+            | Self::EndSearch
+            | Self::RevealInFileTree
+            | Self::OpenBufferPicker
+            | Self::UnloadBuffer
+            | Self::OpenFilePicker
+            | Self::OpenRipgrepPicker
+            | Self::TreeOpenEntry
+            | Self::TreeToggleEntry
+            | Self::TreeExpandEntry
+            | Self::TreeCollapseEntry
+            | Self::TreeSelectParent
+            | Self::TreeRefresh
+            | Self::TreeCopyEntry
+            | Self::TreeCutEntry
+            | Self::TreeToggleHidden
+            | Self::TreeSearch
+            | Self::PickerSelectNext
+            | Self::PickerSelectPrevious
+            | Self::FocusWindowLeft
+            | Self::FocusWindowDown
+            | Self::FocusWindowUp
+            | Self::FocusWindowRight
+            | Self::ResizeWindowLeft
+            | Self::ResizeWindowDown
+            | Self::ResizeWindowUp
+            | Self::ResizeWindowRight
+            | Self::SplitAdaptive
+            | Self::SplitInverseAdaptive
+            | Self::CloseWindow
+            | Self::GoToDefinition
+            | Self::ShowHover
+            | Self::ShowDiagnosticFloat
+            | Self::NextDiagnostic
+            | Self::PreviousDiagnostic
+            | Self::ToggleFormatOnSave => CommandAuthority::Read,
+        }
+    }
+}
+
 /// The group that one command belongs to.
 ///
 /// The group is a property of the command, not of one view. The which-key
