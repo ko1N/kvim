@@ -120,7 +120,7 @@ pub struct TempRepository {
 }
 
 impl TempRepository {
-    /// Creates one empty repository on the [`INITIAL_BRANCH`] branch.
+    /// Creates one empty repository on the `INITIAL_BRANCH` branch.
     #[must_use]
     pub fn new(label: &str) -> Self {
         let repository = Self {

@@ -59,6 +59,10 @@
 //! # Ok::<(), LspError>(())
 //! ```
 
+// The crate is one supported external package. Every published item names
+// its own contract, so no implementation API can reach a consumer by accident.
+#![deny(missing_docs)]
+
 mod diagnostics;
 mod document;
 mod encoding;
@@ -98,6 +102,6 @@ pub use project::{
 pub use protocol::{
     ArrayBudget, DocumentPosition, LSP_HEADER_BYTES_MAX, LSP_INPUT_BYTES_MAX,
     LSP_MESSAGE_BYTES_MAX, LSP_MESSAGES_MAX, LSP_OUTPUT_BYTES_MAX, LSP_REQUESTS_MAX, LspBound,
-    LspError, ProtocolPosition, ProtocolReader, ProtocolSpan, ProtocolWriter, RpcEnvelope, RpcId,
-    RpcResponseError, SourceSpan, WorkspaceRoot, deserialize_bounded_array, enforce, read_frame,
+    LspError, ProtocolPosition, ProtocolSpan, ProtocolWriter, RpcEnvelope, RpcId, RpcResponseError,
+    SourceSpan, WorkspaceRoot, deserialize_bounded_array, enforce, read_frame,
 };

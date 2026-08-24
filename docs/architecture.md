@@ -208,6 +208,23 @@ The `kvim` binary enables `all-grammars`. Private `test-support` features are
 not external combinations. Record an architectural reason before excluding any
 future combination.
 
+## Enforced Policy
+
+Continuous integration turns each rule above into a release gate. It runs every
+gate on macOS and on Linux.
+
+| Gate | Command | It proves |
+|---|---|---|
+| Feature examples | `cargo run -p <package> --example <name>` for all eight examples | Every dedicated example still runs and still asserts its own facts. |
+| Example policy | `cargo test -p kvim --test repository_policy` | Every public feature module names an example file that exists, no extra example replaces a feature example, and every documented example link resolves. |
+| Rustdoc links | `cargo doc --workspace --no-deps --all-features` under `RUSTDOCFLAGS=-D warnings` | Every intra-doc link of the published documentation resolves. |
+| Dependency edges | `scripts/check-dependency-edges.sh` | Every direct and transitive kvim edge appears in the layer table above, each isolation charter reaches none of the external crates that it refuses, and every dependency of a supported package is reachable from the same revision or from crates.io. |
+| Syntax isolation | `cargo check -p kvim-syntax --no-default-features [--features …]` | The syntax package builds with no grammar, with one grammar, and with every grammar. |
+| External consumer | `scripts/check-external-consumer.sh` | `fixtures/consumer` compiles every combination of the matrix above as a revision-pinned Git dependency, without a shared parent workspace, with the development toolchain and with the minimum supported Rust version. |
+
+The dependency gate reads the layer table of this document, so the policy and
+the architecture cannot disagree. A new charter row changes both at once.
+
 ## State Ownership
 
 One host event-loop owner owns the visible state of each editor instance. The

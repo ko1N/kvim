@@ -70,6 +70,10 @@
 //! # Ok::<(), kvim_keymap::RegistryError<Action, Global>>(())
 //! ```
 
+// The crate is one supported external package. Every published item names
+// its own contract, so no implementation API can reach a consumer by accident.
+#![deny(missing_docs)]
+
 mod binding;
 mod context;
 mod hint;

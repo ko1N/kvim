@@ -17,6 +17,32 @@
 //! imperative shell of one embedded editor. See `docs/responsiveness.md` and
 //! `docs/embedding.md`.
 //!
+//! # Public facades
+//!
+//! The crate publishes two facades, and every exported item belongs to one of
+//! them. No other item leaves the crate.
+//!
+//! The embedded facade is the supported external package. It holds
+//! [`EmbeddedEditor`], [`EmbeddedEditorBuilder`], [`EditorDriver`],
+//! [`EditorAccess`], [`EditorCapacity`], [`EditorInstanceId`], [`EditorEvent`],
+//! [`PublishedEvent`], [`Reduction`], [`ReductionOutcome`], [`Refusal`],
+//! [`Saturated`], [`CursorRequest`], [`CursorShape`], [`GeometryError`],
+//! [`InputRequest`], [`EditorShutdown`], [`EditorDrain`], [`ShutdownDrain`],
+//! [`Completed`], [`EditorWork`], [`ClipboardAccess`], the forwarded `kvim-ui`
+//! geometry values, and the bounds of each one. A host composes one editor from
+//! these values alone. `crates/kvim-tui/examples/embedded_editor.rs` uses
+//! nothing else.
+//!
+//! The standalone facade serves the `kvim` binary, which is the terminal
+//! adapter of this repository. It holds [`Session`], [`Windows`],
+//! [`AdaptiveSplit`], [`WindowOutcome`], [`Redraw`], [`RunState`],
+//! [`AnalysisRequest`], [`AnalysisResult`], [`Message`], [`MessageLevel`],
+//! [`Theme`], [`ThemeRole`], [`IconRole`], [`HostWorkspace`],
+//! [`HostReportRequest`], [`GENERATED_NAMES`], the language request values, and
+//! the failure values that the message line reports. These items compose one
+//! whole editor application. An external host composes its own workspace
+//! instead and uses the embedded facade.
+//!
 //! # Examples
 //!
 //! ```
@@ -45,6 +71,10 @@
 //! let after = windows.layout().area(right).expect("the window is visible");
 //! assert_eq!(after.width, before.width + 6);
 //! ```
+
+// The crate is one supported external package. Every published item names
+// its own contract, so no implementation API can reach a consumer by accident.
+#![deny(missing_docs)]
 
 mod buffer_view;
 mod cells;

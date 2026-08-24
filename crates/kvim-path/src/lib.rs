@@ -16,6 +16,10 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+// The crate is one supported external package. Every published item names
+// its own contract, so no implementation API can reach a consumer by accident.
+#![deny(missing_docs)]
+
 use std::collections::VecDeque;
 use std::ffi::OsString;
 use std::fmt;
