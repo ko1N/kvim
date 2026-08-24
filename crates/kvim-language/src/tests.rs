@@ -1731,6 +1731,76 @@ fn the_sql_indent_level_follows_the_parenthesized_scopes() {
     );
 }
 
+/// One Nix module that carries a `let ... in`, a list, and a nested attribute
+/// set.
+///
+/// The shape repeats a reported home-manager module, which is the smallest
+/// source that reproduces the `let` body defect.
+const NIX_LET_SOURCE: &str = concat!(
+    "{ config, pkgs, ... }:\n",
+    "\n",
+    "let\n",
+    "  guard = 1;\n",
+    "in\n",
+    "{\n",
+    "  home.packages = [\n",
+    "    pkgs.opencode\n",
+    "  ];\n",
+    "\n",
+    "  xdg.configFile.\"keel\" = {\n",
+    "    source = ./files/opencode;\n",
+    "    recursive = true;\n",
+    "  };\n",
+    "}\n",
+);
+
+#[test]
+fn the_nix_let_body_takes_no_level_from_the_let() {
+    let analysis = analyze_path("home.nix", NIX_LET_SOURCE);
+    // A new line starts at the end of one line, so every row below queries the
+    // last byte of the named text.
+    let end_of = |line: &str| {
+        NIX_LET_SOURCE
+            .find(line)
+            .expect("the test source holds the line")
+            + line.len()
+    };
+
+    // A Nix `let_expression` spans the attribute set after its `in` keyword,
+    // and that attribute set carries its own level. The `let` therefore indents
+    // its bindings only, and every row of the body counts one level less than
+    // the whole node would give it.
+    assert_eq!(
+        analysis.indent_level(end_of("  guard = 1;")).unwrap().get(),
+        1
+    );
+    assert_eq!(
+        analysis
+            .indent_level(end_of("  home.packages = ["))
+            .unwrap()
+            .get(),
+        2
+    );
+    assert_eq!(
+        analysis
+            .indent_level(end_of("    pkgs.opencode"))
+            .unwrap()
+            .get(),
+        2
+    );
+    assert_eq!(analysis.indent_level(end_of("  ];")).unwrap().get(), 1);
+    assert_eq!(
+        analysis
+            .indent_level(end_of("    recursive = true;"))
+            .unwrap()
+            .get(),
+        2
+    );
+    // The reported case. A new line after the last `};` of the file takes one
+    // level, not two.
+    assert_eq!(analysis.indent_level(end_of("  };")).unwrap().get(), 1);
+}
+
 #[test]
 fn a_language_without_a_comment_keeps_the_toggle_disabled() {
     let registry = LanguageRegistry::first_release();

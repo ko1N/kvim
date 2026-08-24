@@ -22,7 +22,7 @@ use super::LanguageAdapter;
 use super::{
     ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_NODES_MAX,
     ANALYSIS_SOURCE_BYTES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, IndentLevel,
-    IndentRule, analysis, enforce_count, previous_tree, validate_source,
+    IndentRule, IndentScope, analysis, enforce_count, previous_tree, validate_source,
 };
 
 /// Returns the bounds that one buffer analysis gives the highlighter.
@@ -182,9 +182,30 @@ pub(super) fn indent_level(
 
 /// Reports whether one node is an indent scope that holds the position inside.
 fn encloses(rule: IndentRule, node: Node<'_>, byte: usize) -> bool {
-    rule.scopes.iter().any(|scope| scope.kind() == node.kind())
-        && node.start_byte() < byte
-        && byte < node.end_byte()
+    rule.scopes
+        .iter()
+        .any(|&scope| scope.kind() == node.kind() && indent_range_holds(scope, node, byte))
+}
+
+/// Reports whether the indent range of one scope holds the position.
+///
+/// The range starts at the first byte of the node and ends where the body of
+/// the scope starts. A scope that names no body ends at the node itself.
+///
+/// The body bound keeps a scope from indenting its own body a second time. A
+/// Nix `let_expression` spans the attribute set after its `in` keyword, and
+/// that attribute set is an indent scope of its own. A `let` that reached its
+/// own end would therefore add one level to every line of that body, and the
+/// last `};` of the file would take two levels instead of one.
+fn indent_range_holds(scope: IndentScope, node: Node<'_>, byte: usize) -> bool {
+    let body = scope
+        .body()
+        .and_then(|field| node.child_by_field_name(field));
+    let end = match body {
+        Some(body) => body.start_byte(),
+        None => node.end_byte(),
+    };
+    node.start_byte() < byte && byte < end
 }
 
 /// Reports whether the new line starts with a closing delimiter.
