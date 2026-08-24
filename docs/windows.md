@@ -54,12 +54,30 @@ bypasses.
 
 ## Window View
 
-A window owns the cursor, the selection anchor, and the viewport. The generic
-tree holds none of them: the standalone adapter in `kvim-tui` owns one view for
-each window identity and discards that view when the window closes. Only the
-buffer text is shared. Two windows that show one buffer therefore move and
-scroll independently: a scroll in one window moves no other window, and a move
-in one window moves no other cursor.
+A window owns the cursor, the selection anchor, the viewport, and the jump
+list. The generic tree holds none of them: the standalone adapter in `kvim-tui`
+owns one view for each window identity and discards that view when the window
+closes. Only the buffer text is shared. Two windows that show one buffer
+therefore move and scroll independently: a scroll in one window moves no other
+window, and a move in one window moves no other cursor.
+
+Each window owns one jump list, so two windows walk independent histories. A
+closed window discards its list with its view. A split copies the jump list of
+the source window, so the new window returns to the same recorded positions,
+and both lists grow apart from that moment. This matches the rule that a new
+window opens at the same place as its source. See
+[Split Creation](#split-creation).
+
+The list holds at most `JUMPS_MAX` positions, which is 100, and a push past
+that bound drops the oldest entry. A recorded position clamps when the buffer
+shrank under it. The editor adjusts no recorded position while the user types,
+which keeps that work off the edit path.
+
+The jump list lives in `kvim-tui` and not in `kvim-editor`, because one entry
+names a `BufferId`, and `kvim-workspace` owns that type. The layer table in
+[`architecture.md`](architecture.md) gives `kvim-editor` a dependency on
+`kvim-core`, `kvim-input`, and `kvim-settings` only, so `kvim-editor` cannot
+name a `BufferId`.
 
 The mode is global. Vim holds one mode, not one mode for each window, so the
 editor keeps the mode, the operator-pending state, and the repeat description
@@ -106,9 +124,10 @@ Recursive child minima decide that fit. A refused split leaves topology and
 focus unchanged.
 
 The new window shows the same buffer as the source window, and it copies the
-cursor, the selection anchor, and the viewport of that window, so it opens at
-the same place. Both windows then move independently. The new window receives
-focus.
+cursor, the selection anchor, the viewport, and the jump list of that window,
+so it opens at the same place and returns to the same recorded positions. Both
+windows then move independently, and both jump lists grow apart from that
+moment. The new window receives focus.
 
 ## Adaptive Split
 
