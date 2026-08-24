@@ -439,3 +439,32 @@ fn the_buffer_picker_lists_the_loaded_buffers() {
         "the scratch buffer is one row: {rows:?}"
     );
 }
+
+#[test]
+fn an_accepted_picker_row_records_the_position_that_it_left() {
+    let (_dir, mut session) = workspace();
+    assert_eq!(session.active_buffer().name(), "[Scratch]");
+
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "main");
+    drain(&mut session);
+    press_code(&mut session, KeyCode::Enter);
+    drain_file(&mut session);
+    assert_eq!(session.active_buffer().name(), "main.rs");
+
+    press_ctrl(&mut session, 'o');
+    assert_eq!(
+        session.active_buffer().name(),
+        "[Scratch]",
+        "`Ctrl-O` returns to the buffer that the accepted row left"
+    );
+
+    // A terminal reports `Ctrl-I` as `Tab`.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(
+        session.active_buffer().name(),
+        "main.rs",
+        "`Tab` returns to the accepted row"
+    );
+}
