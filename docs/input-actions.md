@@ -930,3 +930,23 @@ the adaptive split rule.
 
 See [`language-services.md`](language-services.md) for the behavior behind these
 commands.
+
+### Jump List
+
+| Keys | Command | Modes |
+|---|---|---|
+| `Ctrl-O` | Jump back to the previous position | Normal |
+| `Tab` | Jump forward to the next position | Normal |
+
+A terminal reports `Ctrl-I` as `Tab`, which is why `Tab` carries the forward
+step. `Tab` keeps its own commands in Insert mode and on the prompt line. See
+[`windows.md`](windows.md) for the jump list that these two commands walk.
+
+A jump records the position that the cursor held before it moved. These
+sources record one jump: a definition jump (`gd`), an accepted picker row of
+the file picker, the ripgrep picker, or the buffer picker, an opened file-tree
+entry, `:<number>`, an accepted search query, `n`, `N`, `gg`, `G`, and `%`.
+Every other motion records nothing. The half-page and the full-page moves
+record nothing. A jump motion that serves as the target of a waiting operator
+records nothing either, because the motion serves one change. The diagnostic
+motions, `]d` and `[d`, record nothing as well.
