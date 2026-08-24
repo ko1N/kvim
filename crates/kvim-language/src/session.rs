@@ -37,12 +37,12 @@ use tokio_util::sync::CancellationToken;
 use kvim_core::BufferVersion;
 use kvim_lsp::{
     ArrayBudget, Attempt, AttemptEnd, ContentChange, DiagnosticsModel, DocumentMapping,
-    DocumentPosition, Envelopes, Handshake, LSP_OPEN_DOCUMENTS_MAX, LSP_RESULT_ID_BYTES_MAX,
-    LspBound, LspError, PositionEncoding, ProjectEvent, ProjectEvents, ProjectId, ProtocolSpan,
-    ProtocolWriter, RawDiagnostic, RawTextEdit, RpcEnvelope, RpcId, ServerConversation,
-    ServerEvent, ServerId, ServerInput, ServerReport, ServerSupervisor, SessionGeneration,
-    SourceLocation, SynchronizationMode, TextEdit, TransportFactory, WorkspaceRoot,
-    deserialize_bounded_array, enforce,
+    DocumentPosition, Envelopes, Handshake, LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX,
+    LSP_RESULT_ID_BYTES_MAX, LspBound, LspError, PositionEncoding, ProjectEvent, ProjectEvents,
+    ProjectId, ProtocolSpan, ProtocolWriter, RawDiagnostic, RawTextEdit, RpcEnvelope, RpcId,
+    ServerConversation, ServerEvent, ServerId, ServerInput, ServerReport, ServerSupervisor,
+    SessionGeneration, SourceLocation, SynchronizationMode, TextEdit, TransportFactory,
+    WorkspaceRoot, deserialize_bounded_array, enforce,
 };
 use kvim_settings::IndentSettings;
 use kvim_syntax::SyntaxHighlighter;
@@ -61,9 +61,6 @@ pub const LSP_REQUEST_QUEUE_CAPACITY: usize = 64;
 
 /// The content changes of one document synchronization.
 pub const LSP_CONTENT_CHANGES_MAX: usize = 4_096;
-
-/// The diagnostics that one document publishes.
-pub const LSP_DIAGNOSTICS_MAX: usize = 1_024;
 
 /// The locations of one definition answer.
 pub const LSP_LOCATIONS_MAX: usize = 128;

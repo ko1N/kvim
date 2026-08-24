@@ -9,6 +9,7 @@
 use std::path::PathBuf;
 
 use serde::Deserialize;
+use serde_json::value::RawValue;
 
 use crate::encoding::DocumentMapping;
 use crate::protocol::{LspError, ProtocolSpan, SourceSpan};
@@ -86,9 +87,24 @@ pub struct RawDiagnostic {
     message: String,
     #[serde(default)]
     source: Option<String>,
+    /// The unparsed related information of the diagnostic.
+    ///
+    /// The member stays unparsed here, because only a caller that holds the
+    /// exact document text can validate the ranges that it carries.
+    #[serde(default, rename = "relatedInformation")]
+    related: Option<Box<RawValue>>,
 }
 
 impl RawDiagnostic {
+    /// Returns the unparsed related information of this diagnostic.
+    ///
+    /// A caller reads this member before it converts the diagnostic, because
+    /// the conversion consumes the value.
+    #[must_use]
+    pub fn related(&self) -> Option<&RawValue> {
+        self.related.as_deref()
+    }
+
     /// Converts one received diagnostic into its editor value.
     ///
     /// `server` is the declaration identifier of the session that received the
@@ -104,7 +120,7 @@ impl RawDiagnostic {
     /// does not hold.
     pub fn into_diagnostic(
         self,
-        server: &'static str,
+        server: &str,
         mapping: &DocumentMapping,
     ) -> Result<Diagnostic, LspError> {
         let source = self

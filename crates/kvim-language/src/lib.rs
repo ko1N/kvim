@@ -229,12 +229,14 @@ pub use server::{
     ServerFormatting,
 };
 pub use services::LanguageServices;
+// `kvim-lsp` owns the diagnostic bound, so one constant serves the persistent
+// session of this crate and the changed-file requests of that crate.
+pub use kvim_lsp::LSP_DIAGNOSTICS_MAX;
 pub use session::{
     LSP_CONFIGURATION_ITEMS_MAX, LSP_CONTENT_CHANGES_MAX, LSP_DIAGNOSTIC_DEADLINE,
-    LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_DEADLINE, LSP_FORMAT_EDITS_MAX,
-    LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE,
-    LSP_REQUEST_QUEUE_CAPACITY, LanguageEvent, LanguageOutcome, LanguageRequestId,
-    LanguageServerHandle,
+    LSP_DIAGNOSTIC_PULL_DELAY, LSP_FORMAT_DEADLINE, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
+    LSP_LOCATIONS_MAX, LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_DEADLINE, LSP_REQUEST_QUEUE_CAPACITY,
+    LanguageEvent, LanguageOutcome, LanguageRequestId, LanguageServerHandle,
 };
 #[cfg(feature = "grammar-sql")]
 pub use sql::SqlAdapter;

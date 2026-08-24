@@ -1045,6 +1045,27 @@ deadline. Typed errors keep protocol, process, invalid-response, timeout,
 cancellation, and availability causes distinct. No classification inspects
 error text.
 
+One diagnostics hub owns the request side of one project. It creates one
+conversation for each declared server, and the caller hands those conversations
+to the project declaration. The project driver keeps every server warm, so a
+later request reuses one running session.
+
+The hub holds one active request. A conversation reads that request as soon as
+its server answers the handshake, so a request that a caller sent before the
+process started still reaches that server. A server that is not installed never
+serves an attempt, so the supervisor also shows every recorded step to its
+conversation. The liveness of that server then answers the request with an
+ordinary unavailable or cancelled outcome.
+
+One request closes the document that the attempt holds and opens the requested
+revision again. One open notification carries the complete text, so the sequence
+serves every synchronization mode and it triggers a fresh analysis of a push
+server.
+
+The report keeps the related information that names the changed document. kvim
+holds the exact text of that document only, so a range of another document has
+no text to validate against and that entry leaves the report.
+
 ### The Settings Channel
 
 Some servers read their behavior from the workspace configuration of the client
@@ -1275,6 +1296,14 @@ row below must always agree.
 | Result queue | `LSP_EVENT_QUEUE_CAPACITY` | 256 results | The queue matches the runtime result queue of [`responsiveness.md`](responsiveness.md), so one slow frame does not stall a session. |
 | Content changes | `LSP_CONTENT_CHANGES_MAX` | 4,096 changes | The transaction bound of [`text-model.md`](text-model.md). Every transaction that the buffer accepts can therefore synchronize. |
 | Diagnostics | `LSP_DIAGNOSTICS_MAX` | 1,024 diagnostics | The bound counts the diagnostics that one server publishes for one document, and the items that one pulled report carries. One file with more than a thousand diagnostics is already unreadable. The renderer shows the diagnostics of the visible lines only. |
+| Merged diagnostics | `LSP_MERGED_DIAGNOSTICS_MAX` | 4,096 diagnostics | The diagnostics of one merged changed-file report. The value is `LANGUAGE_SERVERS_MAX` times `LSP_DIAGNOSTICS_MAX`, so four servers may each contribute a full result and the merge still holds one bounded list. |
+| Related information | `LSP_RELATED_INFORMATION_MAX` | 64 entries | The entries that one diagnostic keeps. One diagnostic names few other places of the same document, so a longer list means a wrong or hostile answer. |
+| Diagnostic message | `LSP_DIAGNOSTIC_MESSAGE_BYTES_MAX` | 8 KiB | The bytes of one diagnostic message and of one related information message. One message names one problem, and the bound applies to every entry of the merge. |
+| Changed document text | `LSP_DOCUMENT_BYTES_MAX` | 4 MiB | The exact text that one changed-file request supplies. The value matches the file bound of [`text-model.md`](text-model.md), so every buffer that the editor holds also reaches a language server. |
+| Request traffic | `LSP_REQUEST_BYTES_MAX` | 16 MiB | The protocol bytes that one server spends on one changed-file request. The bound counts the parameters and the results of every message of that server, so a server that never completes cannot allocate without limit before its deadline passes. |
+| Languages of one server | `LSP_SERVER_LANGUAGES_MAX` | 16 languages | The languages that one server declares, which select it for a changed-file request. One server serves one language family, and sixteen covers a server that reads several dialects. |
+| Language identifier | `LSP_LANGUAGE_BYTES_MAX` | 64 B | The bytes of one language identifier of the protocol, such as `rust` or `typescriptreact`. |
+| Diagnostic source name | `LSP_SERVER_SOURCE_BYTES_MAX` | 64 B | The declared name that every diagnostic of one server carries when the server sends no `source` field. A short name keeps the merged report readable. |
 | Result identifier | `LSP_RESULT_ID_BYTES_MAX` | 256 B | The bound measures the result identifier of each open document of a pull session, and the provider identifier of that session. A server writes a counter or a hash there, so 256 bytes covers that practice and bounds what the session keeps. |
 | Configuration items | `LSP_CONFIGURATION_ITEMS_MAX` | 64 items | One `workspace/configuration` request asks for the sections of few documents. The value matches `LSP_OPEN_DOCUMENTS_MAX`, so a server may ask for every open document at once and no more. |
 | Definition locations | `LSP_LOCATIONS_MAX` | 128 locations | One definition query answers with one target, or with few candidates. A larger list means a wrong or hostile answer. |

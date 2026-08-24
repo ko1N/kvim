@@ -29,6 +29,13 @@
 //! every step as one [`ProjectEvent`], and every event carries project identity
 //! and server identity.
 //!
+//! [`DiagnosticsHub`] serves the changed-file diagnostics of one project. The
+//! caller supplies one validated path, the exact text of one revision, and one
+//! wait policy. [`WaitPolicy::Until`] keeps that exact request alive through
+//! server startup and diagnostic completion, so the caller needs no watcher, no
+//! polling, and no resubmission. See
+//! `crates/kvim-lsp/examples/lsp_diagnostics.rs`.
+//!
 //! [`WorkspaceRoot`] contains every served document. It names each contained
 //! document as one `kvim_path::WorktreeRelativePath`, so one path rule holds
 //! for the URI boundary and for the filesystem boundary.
@@ -52,12 +59,22 @@
 //! # Ok::<(), LspError>(())
 //! ```
 
+mod diagnostics;
 mod document;
 mod encoding;
 mod process;
 mod project;
 mod protocol;
 
+pub use diagnostics::{
+    ChangedFile, ChangedFileReport, CompletionPolicy, DiagnosticsConversation, DiagnosticsHub,
+    DiagnosticsLimits, DiagnosticsOutcome, DiagnosticsServer, DocumentRevision,
+    LSP_DIAGNOSTIC_DEADLINE, LSP_DIAGNOSTIC_MESSAGE_BYTES_MAX, LSP_DIAGNOSTICS_MAX,
+    LSP_DOCUMENT_BYTES_MAX, LSP_LANGUAGE_BYTES_MAX, LSP_MERGED_DIAGNOSTICS_MAX,
+    LSP_RELATED_INFORMATION_MAX, LSP_REQUEST_BYTES_MAX, LSP_SERVER_LANGUAGES_MAX,
+    LSP_SERVER_SOURCE_BYTES_MAX, LanguageId, RelatedInformation, ReportedDiagnostic,
+    RevisionPolicy, ServerDiagnostics, ServerOutcome, Truncation, WaitPolicy,
+};
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSeverity, RawDiagnostic, RawTextEdit, SourceLocation,
     TextEdit,

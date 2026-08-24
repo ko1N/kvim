@@ -369,6 +369,8 @@ pub struct Attempt<'a> {
     pub generation: SessionGeneration,
     /// What the server confirmed in its handshake.
     pub capabilities: ServerCapabilities,
+    /// The containment boundary of every path and every `file` URI.
+    pub root: &'a WorkspaceRoot,
     /// The writer of every request and every notification.
     pub writer: &'a mut ProtocolWriter<ServerInput>,
     /// The frames that the reader task delivers.
@@ -395,6 +397,20 @@ pub enum AttemptEnd {
 pub trait ServerConversation: Send {
     /// Serves one attempt until the server or the caller ends it.
     fn serve(&mut self, attempt: Attempt<'_>) -> impl Future<Output = AttemptEnd> + Send;
+
+    /// Observes one recorded step of this server.
+    ///
+    /// [`ServerSupervisor`] calls this before it records the step, so a
+    /// conversation learns every step that [`ServerConversation::serve`] cannot
+    /// see. A server that is not installed never serves one attempt, and a
+    /// caller that waits for its result must still receive one terminal
+    /// outcome.
+    ///
+    /// The call must not wait, because the supervisor records the step next.
+    /// The default implementation ignores every step.
+    fn observe(&mut self, event: &ServerEvent) {
+        let _ = event;
+    }
 }
 
 /// Why one attempt of the supervisor ended, including the start failures.
@@ -563,8 +579,9 @@ where
         outcome
     }
 
-    /// Records one step of this server.
+    /// Records one step of this server and shows it to its conversation.
     async fn record(&mut self, event: ServerEvent) {
+        self.conversation.observe(&event);
         self.events
             .record(ProjectEvent::new(self.address, event))
             .await;
@@ -600,6 +617,7 @@ where
         Err(error) => return AttemptOutcome::Failed(error),
     };
     // The server answered the handshake, so it serves its documents from here.
+    conversation.observe(&ServerEvent::Started);
     events
         .record(ProjectEvent::new(address, ServerEvent::Started))
         .await;
@@ -608,6 +626,7 @@ where
             address,
             generation,
             capabilities,
+            root: handshake.root,
             writer,
             envelopes,
             cancellation,
