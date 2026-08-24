@@ -149,8 +149,9 @@ where
     /// still names input becomes [`TerminalEvent::Unsupported`], so a key with
     /// an unsupported modifier never degrades into the binding of the
     /// unmodified key, and an over-long paste block never inserts a part of
-    /// itself. A rejection that names no input at all, such as a mouse event
-    /// or an empty paste block, carries nothing to report and is skipped.
+    /// itself. A rejection that names no input at all, such as a mouse event,
+    /// an empty paste block, or a key release, carries nothing to report and
+    /// is skipped.
     ///
     /// The function skips up to [`UNMAPPED_EVENT_SKIP_MAX`] such events and
     /// then reports [`TerminalError::UnmappedEventBurst`]. The source stays
@@ -163,10 +164,19 @@ where
             };
             match TerminalEvent::from_crossterm(event) {
                 Ok(normalized) => return Some(Ok(normalized)),
+                // A key release is the other half of a press that already
+                // reported its input, so it names no input of its own.
+                // `REPORT_EVENT_TYPES` makes a terminal send one after every
+                // key, so reporting it as unsupported would clear the pending
+                // sequence between the two presses of every multi-key binding.
+                Err(
+                    EventRejection::Key(KeyRejection::Release)
+                    | EventRejection::Mouse
+                    | EventRejection::Paste(PasteError::Empty),
+                ) => continue,
                 Err(EventRejection::Key(_) | EventRejection::Paste(PasteError::TooLong { .. })) => {
                     return Some(Ok(TerminalEvent::Unsupported));
                 }
-                Err(EventRejection::Mouse | EventRejection::Paste(PasteError::Empty)) => continue,
             }
         }
         Some(Err(TerminalError::UnmappedEventBurst))
@@ -175,7 +185,9 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyModifiers, MouseEvent};
+    use crossterm::event::{
+        KeyCode as CrosstermKeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseEvent,
+    };
     use futures_util::stream;
 
     use kvim_keymap::{KeyCode, PASTE_BYTES_MAX};
@@ -199,12 +211,21 @@ mod tests {
 
     #[tokio::test]
     async fn the_source_skips_an_event_that_names_no_input() {
-        // A mouse event and an empty paste block carry nothing to report, so
-        // the pending grammar of the editor must not see them at all.
+        // A mouse event, an empty paste block, and a key release carry nothing
+        // to report, so the pending grammar of the editor must not see them at
+        // all. A release that reached the editor would clear the pending
+        // sequence between the two presses of `gg`, because
+        // `REPORT_EVENT_TYPES` makes the terminal send one after every key.
+        let released = KeyEvent::new_with_kind(
+            CrosstermKeyCode::Char('g'),
+            KeyModifiers::NONE,
+            KeyEventKind::Release,
+        );
         let key = KeyEvent::new(CrosstermKeyCode::Esc, KeyModifiers::NONE);
         let mut source = source(vec![
             mouse_event(),
             CrosstermEvent::Paste(String::new()),
+            CrosstermEvent::Key(released),
             CrosstermEvent::Key(key),
         ]);
 

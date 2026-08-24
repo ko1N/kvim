@@ -10,6 +10,7 @@ use std::fmt;
 use std::io::{self, stdout};
 use std::panic::{self, PanicHookInfo};
 use std::sync::Arc;
+use std::thread;
 
 use crossterm::cursor::{SetCursorStyle, Show};
 use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
@@ -176,8 +177,16 @@ impl PanicRestore {
 
     /// Removes the hook and installs the hook that it replaced.
     ///
-    /// The operation is repeatable. A second call performs no work.
+    /// The operation is repeatable. A second call performs no work. A call
+    /// from a panicking thread performs no work either: [`panic::take_hook`]
+    /// panics there, and a panic inside a [`Drop`] that an unwind runs ends the
+    /// process without the message of the first panic. The hook has already
+    /// written every restore step by then, so it stays installed for the rest
+    /// of the unwind and the terminal is usable in any case.
     fn remove(&mut self) {
+        if thread::panicking() {
+            return;
+        }
         let Some(previous) = self.previous.take() else {
             return;
         };
