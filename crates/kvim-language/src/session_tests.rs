@@ -11,7 +11,10 @@ use serde_json::{Value, json};
 use tokio::time;
 
 use kvim_core::{BufferVersion, CharRange, EditTransaction, TextBuffer, TextChange};
-use kvim_lsp::{ContentChange, DocumentPosition, LspBound, LspError, SourceSpan};
+use kvim_lsp::{
+    ContentChange, DocumentPosition, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX,
+    LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError, ServerReport, SourceSpan,
+};
 use kvim_settings::{EditorSettings, FileSettings};
 
 use super::document::{MarkupKind, content_changes};
@@ -23,8 +26,7 @@ use super::progress::{ProgressPercentage, ProgressReport, ProgressStage, Session
 use super::session::{
     LSP_DIAGNOSTIC_PULL_DELAY, LSP_DIAGNOSTICS_MAX, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX,
     LSP_LOCATIONS_MAX, LSP_OPEN_DOCUMENTS_MAX, LSP_PENDING_REQUESTS_MAX,
-    LSP_REQUEST_QUEUE_CAPACITY, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX,
-    LanguageOutcome, ServerReport,
+    LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome,
 };
 use super::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, LSP_CONTENT_CHANGES_MAX,

@@ -487,6 +487,21 @@ bounded requests through one queue and reads typed results from another queue.
 No event loop reads, writes, or waits for a server. A full request queue returns
 a typed saturated result at once, and the caller keeps its previous state.
 
+That work splits over two crates at one seam. `kvim-lsp` owns the neutral half:
+the child process, the bounded transport, the standard-error recorder, the
+`initialize` handshake with its deadline and cancellation, the negotiated
+capabilities, and the `shutdown` and `exit` sequence with its deadline. One
+`ServerProcess` value owns the child and both reader tasks, so dropping or
+cancelling a session kills the child and leaves no untracked process. The
+caller supplies the program, the arguments, the working directory, the
+initialization options, and the workspace settings as data, and it receives
+every recorded process fact through one sink that never waits.
+
+`kvim-language` owns the editor half over that seam: the open documents, the
+buffer versions, the pending requests, the diagnostic pulls, the hover markup,
+and the bounded restart of a failed attempt. It also holds the language
+adapters, so no editor type crosses into `kvim-lsp`.
+
 The handshake offers the UTF-8 position encoding first and the UTF-16 position
 encoding second. The Position Encoding section owns the negotiation and the
 conversion. kvim also answers every unsolicited server request, so an

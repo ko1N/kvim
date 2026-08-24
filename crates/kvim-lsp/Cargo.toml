@@ -5,6 +5,14 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[features]
+# Publishes the prepared stream pair of one session.
+#
+# A test drives one session over an in-memory pair instead of a child process,
+# so no test starts a language server of the host system. The feature is a test
+# seam, never library behavior, so a normal build leaves it out.
+test-support = []
+
 [dependencies]
 # kvim crates
 kvim-path.workspace = true
@@ -18,3 +26,4 @@ serde_json.workspace = true
 
 # Runtime
 tokio.workspace = true
+tokio-util.workspace = true
