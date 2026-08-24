@@ -2459,12 +2459,15 @@ impl Session {
 
     /// Inserts one indent step.
     ///
-    /// The indent settings decide between one tab character and the configured
-    /// number of spaces.
+    /// The indent settings decide between one tab character and the spaces of
+    /// one indent level. `EditorSettings` resolves that width against the
+    /// language of the buffer, so the tab key steps by the same width as the
+    /// automatic indent and the `<` and `>` commands. See `docs/settings.md`.
     fn insert_indent(&mut self) -> Redraw {
         let indent = self.settings.indent;
         let text = if indent.expand_tab {
-            " ".repeat(usize::from(indent.tab_width.get()))
+            let columns = indent.indent_columns(self.language_indent_width());
+            " ".repeat(usize::from(columns.get()))
         } else {
             "\t".to_owned()
         };

@@ -765,6 +765,9 @@ async fn applies_formatting_as_one_undoable_transaction() {
         .format(Path::new(DOCUMENT), text.version())
         .expect("the queue is empty");
     let sent = server.expect("textDocument/formatting").await;
+    // The mock server serves no adapter, so the request carries the settings
+    // width. See `a_formatting_request_carries_the_indent_width_of_its_language`
+    // for a language that declares its own width.
     assert_eq!(sent["params"]["options"]["tabSize"], 4);
     assert_eq!(sent["params"]["options"]["insertSpaces"], true);
     server
@@ -792,6 +795,27 @@ async fn applies_formatting_as_one_undoable_transaction() {
     // One undo reverses the complete format.
     text.undo().expect("the transaction is undoable");
     assert_eq!(text.to_string(), "fn  main() {}\n");
+}
+
+#[tokio::test]
+async fn a_formatting_request_carries_the_indent_width_of_its_language() {
+    // The session serves a language that indents with two columns, while the
+    // settings tab width stays at four.
+    let columns = NonZeroU8::new(2).expect("the literal 2 is not zero");
+    let (harness, mut server) = mock::connected_with_indent_columns(columns);
+    server.handshake().await;
+    let text = opened(&harness, &mut server, "fn  main() {}\n").await;
+
+    harness
+        .handle()
+        .format(Path::new(DOCUMENT), text.version())
+        .expect("the queue is empty");
+    let sent = server.expect("textDocument/formatting").await;
+    assert_eq!(sent["params"]["options"]["tabSize"], 2);
+    assert_eq!(
+        sent["params"]["options"]["insertSpaces"], true,
+        "the language declares the width alone, so the settings keep the tab rule"
+    );
 }
 
 #[test]

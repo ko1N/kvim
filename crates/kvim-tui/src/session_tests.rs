@@ -2815,6 +2815,45 @@ fn the_language_adapter_declares_the_width_of_one_indent_level() {
 }
 
 #[test]
+fn the_tab_key_takes_the_width_of_the_language_or_of_the_settings() {
+    // Nix indents with two columns, while the settings tab width is four.
+    let (_directory, mut session) = opened("tab.nix", "a = 1;\n");
+    press(&mut session, 'i');
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(session.buffer().to_string(), "  a = 1;\n");
+
+    // Rust indents with four columns.
+    let (_directory, mut session) = opened("tab.rs", "let x = 1;\n");
+    press(&mut session, 'i');
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(session.buffer().to_string(), "    let x = 1;\n");
+
+    // A buffer that no adapter serves keeps the settings width.
+    let (_directory, mut session) = opened("tab.txt", "a = 1;\n");
+    press(&mut session, 'i');
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(session.buffer().to_string(), "    a = 1;\n");
+
+    // A language declares a column count, never a tab character, so a session
+    // that keeps hard tabs inserts one tab in every language.
+    let directory = TempDir::new("session-hard-tab");
+    let path = directory.write("tab.nix", "a = 1;\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    settings.indent.expand_tab = false;
+    let mut hard = Session::new(
+        Rect::new(0, 0, 80, 24),
+        settings,
+        test_root(directory.path.clone()),
+    );
+    hard.open_path(path);
+    run_file_request(&mut hard);
+    press(&mut hard, 'i');
+    press_code(&mut hard, KeyCode::Tab);
+    assert_eq!(hard.buffer().to_string(), "\ta = 1;\n");
+}
+
+#[test]
 fn one_shift_step_takes_the_width_of_the_language_or_of_the_settings() {
     // The width of one level is also the step of `>` and `<`, as it is in Vim.
     let (_directory, mut session) = opened("shift.nix", "a = 1;\n");

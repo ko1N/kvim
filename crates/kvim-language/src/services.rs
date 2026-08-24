@@ -35,7 +35,9 @@ use kvim_settings::EditorSettings;
 use super::server::{
     LanguageServerDeclaration, LanguageServerId, RootMarkers, ServerGate, declarations_are_valid,
 };
-use super::session::{LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start};
+use super::session::{
+    FormatIndent, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start,
+};
 use super::{AnalysisError, LanguageRegistry};
 use kvim_lsp::{
     LSP_EVENT_QUEUE_CAPACITY, LSP_SESSIONS_MAX, LspBound, LspError, ProjectId, ServerId,
@@ -204,7 +206,12 @@ impl LanguageServices {
         if used.is_empty() {
             return Err(LspError::UnusedInWorkspace);
         }
-        self.start_missing(&used)?;
+        // Only the adapter knows the indent width of its language, and every
+        // session of this adapter serves that one language, so the width is
+        // resolved once here.
+        let indent =
+            FormatIndent::for_language(&self.settings.indent, Some(adapter.indent_rule().width));
+        self.start_missing(&used, indent)?;
         let running: Vec<&LanguageServerHandle> = used
             .iter()
             .filter_map(|(id, _)| match self.services.get(id) {
@@ -227,6 +234,7 @@ impl LanguageServices {
     fn start_missing(
         &mut self,
         used: &[(LanguageServerId, &LanguageServerDeclaration)],
+        indent: FormatIndent,
     ) -> Result<(), LspError> {
         let missing = used
             .iter()
@@ -246,18 +254,22 @@ impl LanguageServices {
             }
             let server_id = ServerId::new(self.next_server);
             self.next_server = self.next_server.saturating_add(1);
-            let service = self.start_session(*id, server_id, declaration);
+            let service = self.start_session(*id, server_id, declaration, indent);
             self.services.insert(*id, service);
         }
         Ok(())
     }
 
     /// Starts one session over the declared child process.
+    ///
+    /// `indent` is the resolved indent of the language that the session serves,
+    /// because the caller reads the adapter and the session holds no adapter.
     fn start_session(
         &self,
         id: LanguageServerId,
         server_id: ServerId,
         declaration: &LanguageServerDeclaration,
+        indent: FormatIndent,
     ) -> LanguageService {
         let config = SessionConfig {
             id,
@@ -269,7 +281,7 @@ impl LanguageServices {
             root: self.root.clone(),
             options: declaration.options(self.settings.language),
             workspace_settings: declaration.settings(self.settings.language),
-            indent: self.settings.indent,
+            indent,
             diagnostics_enabled: self.settings.language.diagnostics_enabled,
             registry: self.registry,
         };

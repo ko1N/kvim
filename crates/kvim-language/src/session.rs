@@ -22,6 +22,7 @@
 //! publication and never applied. See `docs/language-services.md`.
 
 use std::collections::HashMap;
+use std::num::NonZeroU8;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -424,6 +425,34 @@ impl LanguageServerHandle {
     }
 }
 
+/// The indent that one formatting request sends.
+///
+/// The width is resolved before the session starts. One session serves one
+/// language, and only the adapter of that language declares its width, so
+/// `LanguageServices` reads the adapter once and hands the resolved width to
+/// the session. `EditorSettings` owns the resolution order, and the session
+/// holds no unresolved indent value. See `docs/settings.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct FormatIndent {
+    /// The number of cells that one indent level takes.
+    pub(super) columns: NonZeroU8,
+    /// Insert spaces instead of one tab character.
+    pub(super) expand_tab: bool,
+}
+
+impl FormatIndent {
+    /// Resolves the formatting indent of one language.
+    ///
+    /// `language` is the width that the adapter of the session declares, or
+    /// `None` for a session that no adapter serves.
+    pub(super) fn for_language(settings: &IndentSettings, language: Option<NonZeroU8>) -> Self {
+        Self {
+            columns: settings.indent_columns(language),
+            expand_tab: settings.expand_tab,
+        }
+    }
+}
+
 /// The stable data of one session, which every restart reuses.
 pub(super) struct SessionConfig {
     /// The server that owns the session.
@@ -452,8 +481,8 @@ pub(super) struct SessionConfig {
     /// one notification, and it answers the request of the server. See
     /// `docs/language-services.md`.
     pub(super) workspace_settings: Option<Value>,
-    /// The indent settings that one formatting request sends.
-    pub(super) indent: IndentSettings,
+    /// The resolved indent that one formatting request sends.
+    pub(super) indent: FormatIndent,
     /// Whether the session parses and publishes diagnostics.
     pub(super) diagnostics_enabled: bool,
     /// The adapters that name the code of one fence of a hover answer.
@@ -1076,7 +1105,7 @@ impl Session<'_> {
             Query::Format => json!({
                 "textDocument": { "uri": uri },
                 "options": {
-                    "tabSize": u32::from(self.config.indent.tab_width.get()),
+                    "tabSize": u32::from(self.config.indent.columns.get()),
                     "insertSpaces": self.config.indent.expand_tab,
                 },
             }),

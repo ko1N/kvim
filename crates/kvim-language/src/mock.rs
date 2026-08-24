@@ -11,6 +11,7 @@
 //! `kvim-tui`.
 
 use std::ffi::OsString;
+use std::num::NonZeroU8;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -25,7 +26,9 @@ use kvim_settings::IndentSettings;
 
 use super::LanguageRegistry;
 use super::server::{LanguageServerId, ServerFormatting};
-use super::session::{LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start};
+use super::session::{
+    FormatIndent, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start,
+};
 use kvim_lsp::{
     LSP_EVENT_QUEUE_CAPACITY, LSP_OUTPUT_BYTES_MAX, ProjectId, ServerId, TransportFactory,
     WorkspaceRoot, read_frame,
@@ -274,6 +277,30 @@ pub fn connected_with_settings(settings: Value) -> (Harness, MockServer) {
     (harness, server)
 }
 
+/// Starts one session whose language indents with the given number of cells.
+///
+/// A real session resolves that width from its language adapter. The mock
+/// server serves no adapter, so a test that drives the formatting options of
+/// one language names the width here. See `docs/settings.md`.
+pub fn connected_with_indent_columns(columns: NonZeroU8) -> (Harness, MockServer) {
+    let (transport, server) = pipe();
+    let mut config = config(SERVER, PathBuf::from(ROOT), true);
+    config.indent = FormatIndent::for_language(&IndentSettings::default(), Some(columns));
+    let (events, receiver) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
+    let (handle, task) = start(
+        TransportFactory::Prepared(vec![transport]),
+        config,
+        events,
+        CancellationToken::new(),
+    );
+    let harness = Harness {
+        handle: Some(handle),
+        events: receiver,
+        task,
+    };
+    (harness, server)
+}
+
 /// Creates the stable configuration of one session under test.
 fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> SessionConfig {
     SessionConfig {
@@ -288,7 +315,10 @@ fn config(id: LanguageServerId, root: PathBuf, diagnostics_enabled: bool) -> Ses
         root: WorkspaceRoot::new(root).expect("the root is absolute"),
         options: json!({}),
         workspace_settings: None,
-        indent: IndentSettings::default(),
+        // The mock server serves no adapter, so its width is the settings
+        // fallback. A test that needs the width of a language names
+        // [`connected_with_indent_columns`].
+        indent: FormatIndent::for_language(&IndentSettings::default(), None),
         diagnostics_enabled,
         // A mock session answers for a real path of the workspace, so it names
         // the code of a fence exactly as a declared server does.
