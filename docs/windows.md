@@ -2,8 +2,9 @@
 
 ## Ownership
 
-`kvim-ui` owns generic split topology, sidebar state, deterministic geometry,
-domain-neutral ratatui presentation, and the workspace composer that joins them.
+`kvim-ui` owns generic split topology, sidebar state, the domain-neutral
+selector, deterministic geometry, domain-neutral ratatui presentation, and the
+workspace composer that joins them.
 `kvim-tui` owns editor and review presentation adapters, the standalone theme,
 and the editor log. One host owner owns visible state for each composed
 interface. See [`architecture.md`](architecture.md) and
@@ -284,6 +285,29 @@ region and keeps that identity, so a later reveal shows the same sidebar. One
 title row above the rows names the workspace root, and it carries the focused or
 the unfocused title color. The terminal draws its own cursor on the selected row
 while the sidebar holds the focus, so one frame still reports one cursor cell.
+
+## Selector
+
+`Selector<R>` owns a bounded query, a bounded candidate list, a ranked match
+list, and a selection, generic over one opaque host identity `R`. It names no
+path, no buffer, and no file. A host offers each candidate as a name and a
+container string, and the selector ranks the two through `kvim-fuzzy`, the
+same way that `kvim_workspace::Picker` ranks a file candidate against its name
+and its directory. A tied score breaks by the combined character width of the
+name and the container, then by the earlier candidate of the source list.
+
+The candidate list stops at `SELECTOR_CANDIDATES_MAX`, which is 4096, and a
+longer list reports the truncation. The query stops at
+`SELECTOR_QUERY_CHARS_MAX`, which is 128 characters. Both bounds match the
+bounds that `PICKER_CANDIDATES_MAX` and `PICKER_QUERY_CHARS_MAX` state in
+`kvim-workspace`.
+
+The selection follows its candidate across one refiltering while the query
+still matches it, so a further character never moves the reader to another
+row. A query that drops the selected candidate falls back to the best
+remaining match. A move past the first or the last matched row stays on that
+row, because a wrap would move the reader past the best match without a key
+that says so.
 
 ## Chrome
 

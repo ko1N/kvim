@@ -41,7 +41,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
-| `kvim-ui` | Generic ratatui split, sidebar, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
+| `kvim-ui` | Generic ratatui split, sidebar, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -128,7 +128,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-clipboard` | `kvim-runtime` |
 | 2 | `kvim-input` | `kvim-keymap`, `kvim-settings` |
 | 2 | `kvim-lsp` | `kvim-path` |
-| 2 | `kvim-ui` | `kvim-keymap` |
+| 2 | `kvim-ui` | `kvim-keymap`, `kvim-fuzzy` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings` |
@@ -159,6 +159,11 @@ crossterm, although `EmbeddedEditor` names no terminal type.
 `Resolver` and reads one published `InputContextSnapshot` for each surface. The
 split tree, the sidebar, and the which-key widget still name no keymap type, so
 a consumer of those parts alone compiles no dispatch code that it does not use.
+
+`kvim-ui` depends on `kvim-fuzzy` because `Selector<R>` ranks its candidates
+through `kvim_fuzzy::score_candidate`. `kvim-fuzzy` is layer 0 and depends on
+no other kvim crate, so the edge adds no cycle and no other module of
+`kvim-ui` compiles ranking code that it does not use.
 
 `kvim-runtime` depends on `kvim-path` only for the portable filesystem watcher.
 The watcher uses one caller-supplied worktree capability for registration reads
@@ -192,7 +197,10 @@ buffer behind its own text field without the terminal session.
 
 `kvim-fuzzy` holds the ranking rule alone. A host that ranks a list of its own
 values takes the score without the file, buffer, and picker charter of
-`kvim-workspace`, which is not a supported package.
+`kvim-workspace`, which is not a supported package. `kvim-ui` publishes
+`Selector<R>` over that same rule, so a host that also wants the bounded
+query, candidate, match, and selection mechanics takes `kvim-ui` instead of
+calling `kvim-fuzzy` directly.
 
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and

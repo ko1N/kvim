@@ -10,6 +10,12 @@
 //! viewport. Rows, heights, styles, labels, and the meaning of every action
 //! stay with the host, and one host callback draws every cell.
 //!
+//! [`Selector`] holds the mechanism that narrows a bounded candidate list
+//! through a query: the query, the ranked matches, and a selection that
+//! survives a refiltering while the query still matches it. It names no path,
+//! no buffer, and no file, so any host that ranks a list of its own values
+//! through a name and a container string can hold it.
+//!
 //! [`WorkspaceComposer`] joins those parts into one composition model of a
 //! complete host-owned workspace: split geometry, sidebar regions, overlay
 //! ownership, focus, one shared resolver, and which-key state. It owns no
@@ -82,6 +88,7 @@
 
 mod composer;
 mod layout;
+mod selector;
 mod sidebar;
 mod tabs;
 mod which_key;
@@ -92,6 +99,9 @@ pub use composer::{
     ResumeError, SurfacePlacement, TransitionId, UnknownSurface, WorkspaceComposer,
 };
 pub use layout::{Region, RegionKind, WindowLayout};
+pub use selector::{
+    SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
+};
 pub use sidebar::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DRAWS_MAX,
     SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas, SidebarError,

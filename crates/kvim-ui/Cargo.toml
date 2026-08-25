@@ -7,6 +7,7 @@ version.workspace = true
 
 [dependencies]
 # kvim crates
+kvim-fuzzy.workspace = true
 kvim-keymap.workspace = true
 
 # Basics
