@@ -469,6 +469,25 @@ list shows an extension of the pending prefix only. A complete one-key binding
 in another scope, such as a host-global escape, does not extend this prefix.
 It does not appear here.
 
+`Resolver::idle_which_key` publishes a second list for that gap. A host calls
+it with no pending prefix. The list answers before the reader presses any key.
+
+The list holds one entry for each distinct first key of every scope of the
+context. The entries follow scope order. Each entry names its scope.
+
+The list does not fold a key across two scopes. A key bound in two scopes
+yields two entries. The earlier scope in the order answers when the reader
+presses that key. A key that only starts a longer sequence still gets one
+entry, because the reader can still press it.
+
+The idle list ignores the which-key delay. It also ignores the overlay state
+of the pending view. A reader can ask what to press at any time, not only
+after a wait.
+
+The list names a host-global escape, such as the key that returns focus to an
+embedding host. A complete one-key binding never extends any prefix. Only the
+idle list shows it.
+
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written
 list. `keymap` folds the extensions of the pending prefix into these hints,

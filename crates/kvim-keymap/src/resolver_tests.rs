@@ -7,6 +7,7 @@ use super::{
 };
 use crate::binding::{Binding, CommandMetadata, CommandOwner, Scope};
 use crate::context::{ContextGeneration, InputContextSnapshot, TextFallback};
+use crate::hint::ScopedWhichKeyHint;
 use crate::key::{Key, KeyCode};
 use crate::registry::Registry;
 
@@ -439,6 +440,143 @@ fn which_key_hints_span_the_host_and_the_focused_scope() {
     );
     assert_eq!(hints[0].hint().key(), ch('x'));
     assert_eq!(hints[1].hint().key(), ch('g'));
+}
+
+#[test]
+fn idle_which_key_lists_one_entry_per_distinct_first_key_of_one_scope() {
+    let resolver = resolver();
+    let context = normal();
+
+    let hints = resolver.idle_which_key(&context);
+    let entries: Vec<_> = hints
+        .iter()
+        .map(|hint| (hint.scope(), hint.hint().key()))
+        .collect();
+    assert_eq!(
+        entries,
+        vec![(Table::Normal, ch('g')), (Table::Normal, ch('j'))],
+        "the focused scope alone answers, one entry for each distinct first key"
+    );
+}
+
+#[test]
+fn idle_which_key_surfaces_a_host_global_escape_that_the_leader_never_reaches() {
+    // A host binds Ctrl-E, Ctrl-N, and Ctrl-P as complete one-key bindings in
+    // its global scope, the way a host reserves the keys that leave its
+    // embedded editor. None of the three extends the focused scope's own
+    // leader sequence, so a pending-prefix view can never surface them. This
+    // is the reported gap: a reader inside the focused scope had no way to
+    // learn that the three keys return to the host.
+    let bindings = vec![
+        Binding::host(
+            Table::Global,
+            &[Key::ctrl(KeyCode::Char('e'))],
+            Action::Close,
+        ),
+        Binding::host(
+            Table::Global,
+            &[Key::ctrl(KeyCode::Char('n'))],
+            Action::Down,
+        ),
+        Binding::host(
+            Table::Global,
+            &[Key::ctrl(KeyCode::Char('p'))],
+            Action::Quit,
+        ),
+        Binding::surface(Table::Normal, &[ch(' '), ch('c')], Action::FirstLine),
+    ];
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    let resolver = Resolver::new(Arc::new(registry), 4, DELAY);
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    let hints = resolver.idle_which_key(&context);
+    let escapes: Vec<_> = hints
+        .iter()
+        .filter(|hint| hint.scope() == Table::Global)
+        .map(|hint| hint.hint().key())
+        .collect();
+    assert_eq!(
+        escapes,
+        vec![
+            Key::ctrl(KeyCode::Char('e')),
+            Key::ctrl(KeyCode::Char('n')),
+            Key::ctrl(KeyCode::Char('p')),
+        ],
+        "every host-global escape is a complete one-key binding, so the idle view lists it with no pending prefix"
+    );
+    assert!(
+        hints
+            .iter()
+            .any(|hint| hint.scope() == Table::Normal && hint.hint().key() == ch(' ')),
+        "the focused scope's own leader still appears beside the host-global escapes"
+    );
+}
+
+#[test]
+fn idle_which_key_does_not_fold_a_shared_key_across_two_scopes() {
+    // Both scopes bind their own sequence under the same first key `j`. The
+    // idle view keeps that key as two entries, one for each scope, because
+    // pressing it resolves to only one of them: the earlier scope in
+    // evaluation order.
+    let resolver = resolver();
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    let hints = resolver.idle_which_key(&context);
+    let j_entries: Vec<_> = hints
+        .iter()
+        .filter(|hint| hint.hint().key() == ch('j'))
+        .map(ScopedWhichKeyHint::scope)
+        .collect();
+    assert_eq!(
+        j_entries,
+        vec![Table::Global, Table::Normal],
+        "the host-global scope's entry precedes the focused scope's entry, and neither is dropped"
+    );
+}
+
+#[test]
+fn idle_which_key_leaves_the_pending_prefix_view_of_slice_6_unchanged() {
+    // A call to the idle view must change no resolver state, so the
+    // pending-prefix view that slice 6 built keeps every result it reported
+    // before the idle view existed.
+    let mut resolver = resolver();
+    let context = normal();
+
+    let _ = resolver.idle_which_key(&context);
+    assert_eq!(
+        resolver.overlay_deadline(),
+        None,
+        "an idle call arms no overlay, because it changes no pending state"
+    );
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    let _ = resolver.idle_which_key(&context);
+    assert!(
+        resolver
+            .which_key(DELAY - Duration::from_millis(1))
+            .is_none(),
+        "an idle call between two keys still leaves the which-key delay intact"
+    );
+
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    assert_eq!(view.scope(), Table::Normal);
+    assert_eq!(view.prefix(), [ch('g')]);
+    let hints = view.hints();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].scope(), Table::Normal);
+    assert_eq!(hints[0].hint().key(), ch('g'));
+    assert_eq!(hints[0].hint().commands(), [Action::FirstLine]);
 }
 
 #[test]

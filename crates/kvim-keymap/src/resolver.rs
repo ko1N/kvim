@@ -12,6 +12,9 @@
 //! The owning scope can change from one key to the next, because the walk
 //! runs again for every key. The which-key hints of the pending prefix walk
 //! the same order. Every hinted key resolves to some scope's binding.
+//! [`Resolver::idle_which_key`] walks the same order with no pending prefix.
+//! A host uses it to list a complete one-key binding of another scope, such
+//! as a host-global escape, which never extends the focused scope's prefix.
 //!
 //! `crates/kvim-keymap/examples/dispatch_keys.rs` is the dedicated example of
 //! this feature. It composes one registry, dispatches a one-key binding and a
@@ -663,6 +666,117 @@ where
             scope: *scope,
             prefix: keys,
         })
+    }
+
+    /// Returns one hint for each distinct first key of every scope of
+    /// `context`, with no pending prefix.
+    ///
+    /// [`Resolver::which_key`] hints an extension of the pending prefix. This
+    /// function hints the idle state instead, before any key of a sequence
+    /// arrives. A complete one-key binding, such as a host-global escape, is
+    /// never an extension of a pending prefix, so only this function surfaces
+    /// it. A reader asks "what can I press", so this function answers at
+    /// once. It reads no clock, waits out no which-key delay, and changes no
+    /// overlay state.
+    ///
+    /// The hints come from every scope of `context`, in scope order, without
+    /// repetition. This function does not fold hints across scopes. A key
+    /// bound in two scopes yields two entries, one for each scope. The
+    /// earlier scope in the order is the one that answers when the reader
+    /// presses it.
+    ///
+    /// A key that only starts a longer sequence is still one entry, because
+    /// the reader can still press it. Each hint's `target` method reports
+    /// whether the key completes one command or opens a group of several.
+    ///
+    /// The list is longer than the list of one pending prefix, because it
+    /// holds every first key of up to three scopes. The preset of the
+    /// standalone editor holds 81 distinct first keys in Normal mode, 56 in
+    /// Visual mode, and 48 in the sidebar. A host that draws the result
+    /// through `kvim_ui::WhichKeyOverlay` must therefore respect
+    /// `WHICH_KEY_HINTS_MAX`, which refuses a longer list instead of cutting
+    /// it. Bound or page the list before the overlay takes it.
+    ///
+    /// # Examples
+    ///
+    /// The registry below binds `Ctrl-E` as a complete one-key binding in the
+    /// host-global scope, the way a host binds the key that returns focus to
+    /// its own surface. The focused editor scope binds its own leader
+    /// sequence. `Ctrl-E` never extends that leader, so only the idle view
+    /// surfaces it, marked with the host-global scope.
+    ///
+    /// ```
+    /// # use std::fmt;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use kvim_keymap::{
+    /// #     Binding, CommandMetadata, DispatchContext, InputContextSnapshot, Key,
+    /// #     KeyCode, Registry, Resolver, Scope,
+    /// # };
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # enum Action { LeaveToChat, OpenFiles }
+    /// # impl fmt::Display for Action {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.id()) }
+    /// # }
+    /// # impl CommandMetadata for Action {
+    /// #     fn id(&self) -> &str {
+    /// #         match self {
+    /// #             Self::LeaveToChat => "leave-to-chat",
+    /// #             Self::OpenFiles => "open-files",
+    /// #         }
+    /// #     }
+    /// #     fn label(&self) -> &str {
+    /// #         match self {
+    /// #             Self::LeaveToChat => "Leave to chat",
+    /// #             Self::OpenFiles => "Open the file picker",
+    /// #         }
+    /// #     }
+    /// # }
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # enum HostScope { Global, Editor }
+    /// # impl fmt::Display for HostScope {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         f.write_str(match self { Self::Global => "Global", Self::Editor => "Editor" })
+    /// #     }
+    /// # }
+    /// # impl Scope for HostScope { const COUNT: usize = 2; }
+    /// let escape = Key::ctrl(KeyCode::Char('e'));
+    /// let leader = Key::plain(KeyCode::Char(' '));
+    /// let registry = Registry::from_bindings(
+    ///     &[
+    ///         Binding::host(HostScope::Global, &[escape], Action::LeaveToChat),
+    ///         Binding::surface(
+    ///             HostScope::Editor,
+    ///             &[leader, Key::plain(KeyCode::Char('f'))],
+    ///             Action::OpenFiles,
+    ///         ),
+    ///     ],
+    ///     4,
+    /// )?;
+    /// let resolver = Resolver::new(Arc::new(registry), 4, Duration::from_millis(500));
+    /// let context = DispatchContext {
+    ///     overlay: None,
+    ///     global: Some(HostScope::Global),
+    ///     focus: InputContextSnapshot::idle(HostScope::Editor),
+    /// };
+    ///
+    /// let hints = resolver.idle_which_key(&context);
+    /// assert_eq!(hints.len(), 2, "the escape and the leader are each one entry");
+    /// assert_eq!(hints[0].scope(), HostScope::Global, "the host-global scope answers first");
+    /// assert_eq!(hints[0].hint().key(), escape);
+    /// assert_eq!(hints[1].scope(), HostScope::Editor);
+    /// assert_eq!(hints[1].hint().key(), leader);
+    /// # Ok::<(), kvim_keymap::RegistryError<Action, HostScope>>(())
+    /// ```
+    #[must_use]
+    pub fn idle_which_key(&self, context: &DispatchContext<S>) -> Vec<ScopedWhichKeyHint<C, S>> {
+        let mut hints = Vec::new();
+        for scope in scope_order(context) {
+            for hint in self.registry.hints_for_prefix(scope, &[]) {
+                hints.push(ScopedWhichKeyHint::new(scope, hint));
+            }
+        }
+        hints
     }
 
     /// Resolves one input against the supplied context at the elapsed time.
