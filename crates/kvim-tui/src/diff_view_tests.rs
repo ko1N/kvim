@@ -164,7 +164,7 @@ fn the_two_columns_share_the_width_and_keep_one_gap() {
     let area = Rect::new(0, 0, 61, 1);
     let mut cells = CellBuffer::empty(area);
 
-    draw_side_rows(&mut cells, area, Theme::default(), &rows);
+    draw_side_rows(&mut cells, area, Theme::default(), &rows, RowBand::Plain);
 
     // The old column starts at the left edge and the new column starts after
     // the gap, so both hold the same number of cells.
@@ -186,7 +186,7 @@ fn a_text_that_passes_its_column_clips_instead_of_wrapping() {
     let area = Rect::new(0, 0, 61, 2);
     let mut cells = CellBuffer::empty(area);
 
-    draw_side_rows(&mut cells, area, Theme::default(), &rows);
+    draw_side_rows(&mut cells, area, Theme::default(), &rows, RowBand::Plain);
 
     // The second row stays empty, so the clipped text wrapped onto no row.
     let second: String = (0..area.width)
@@ -202,7 +202,7 @@ fn the_inline_view_draws_the_marker_before_the_text() {
     let area = Rect::new(0, 0, 40, 1);
     let mut cells = CellBuffer::empty(area);
 
-    draw_inline_rows(&mut cells, area, Theme::default(), &rows);
+    draw_inline_rows(&mut cells, area, Theme::default(), &rows, RowBand::Plain);
 
     let row: String = (0..area.width)
         .map(|x| cells[(x, 0)].symbol().chars().next().unwrap_or(' '))
@@ -210,4 +210,35 @@ fn the_inline_view_draws_the_marker_before_the_text() {
     let marker = row.find('+').expect("the row drew its marker");
     let text = row.find("fresh").expect("the row drew its text");
     assert!(marker < text, "the marker stands before the text");
+}
+
+#[test]
+fn a_selected_row_carries_its_band_across_the_whole_width() {
+    // The cursor row reads like a Visual-line selection, so the band reaches
+    // every cell instead of marking one edge.
+    let hunk = hunk(vec![added(1, "fresh")]);
+    let rows = side_rows(&hunk);
+    let area = Rect::new(0, 0, 61, 1);
+    let mut plain = CellBuffer::empty(area);
+    let mut selected = CellBuffer::empty(area);
+
+    draw_side_rows(&mut plain, area, Theme::default(), &rows, RowBand::Plain);
+    draw_side_rows(
+        &mut selected,
+        area,
+        Theme::default(),
+        &rows,
+        RowBand::Selected,
+    );
+
+    let band = Theme::default().style(ThemeRole::PopupSelection).bg;
+    for x in 0..area.width {
+        assert_eq!(
+            selected[(x, 0)].bg,
+            band.expect("the selection names one background"),
+            "the band covers cell {x}"
+        );
+    }
+    // The foreground still names the change, so an added line reads as added.
+    assert_eq!(selected[(0, 0)].fg, plain[(0, 0)].fg);
 }

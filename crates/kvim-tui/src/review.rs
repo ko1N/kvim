@@ -20,7 +20,9 @@ use ratatui::layout::Rect;
 
 use crate::cells::clip_cells;
 use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh};
-use crate::diff_view::{draw_inline_rows, draw_side_rows, inline_rows, side_rows, view_of};
+use crate::diff_view::{
+    RowBand, draw_inline_rows, draw_side_rows, inline_rows, side_rows, view_of,
+};
 use crate::theme::{Theme, ThemeRole};
 
 /// The region of the review that owns the keys.
@@ -108,6 +110,11 @@ pub(super) struct ReviewSurface {
     focus: ReviewFocus,
     /// The rows of the diff body, for the selected file.
     body: Vec<BodyRow>,
+    /// The file that the body rows belong to.
+    ///
+    /// A hunk identity is unique inside its own file alone, so the body names
+    /// its file and no lookup reaches another one.
+    body_path: Option<WorktreeRelativePath>,
     /// The row of the body that the cursor stands on.
     cursor: usize,
     /// The first row of the body that the viewport shows.
@@ -143,6 +150,7 @@ impl ReviewSurface {
             changes: SidebarState::new(height_rows),
             focus: ReviewFocus::default(),
             body: Vec::new(),
+            body_path: None,
             cursor: 0,
             first_row: 0,
             height_rows: usize::from(height_rows),
@@ -193,6 +201,11 @@ impl ReviewSurface {
         &self.body
     }
 
+    /// Returns the file that the body rows belong to.
+    pub(super) const fn body_path(&self) -> Option<&WorktreeRelativePath> {
+        self.body_path.as_ref()
+    }
+
     /// Returns the body row that the cursor stands on.
     pub(super) const fn cursor_row(&self) -> usize {
         self.cursor
@@ -225,8 +238,10 @@ impl ReviewSurface {
                 };
                 ReviewOutcome::Changed
             }
-            Command::FocusWindowLeft => self.focus_region(ReviewFocus::Panel),
-            Command::FocusWindowRight => self.focus_region(ReviewFocus::Diff),
+            // The panel sits at the right edge, so `Ctrl-L` reaches it and
+            // `Ctrl-H` returns to the diff.
+            Command::FocusWindowLeft => self.focus_region(ReviewFocus::Diff),
+            Command::FocusWindowRight => self.focus_region(ReviewFocus::Panel),
             Command::MoveDown => self.move_focused(Motion::Down(repeat)),
             Command::MoveUp => self.move_focused(Motion::Up(repeat)),
             Command::MoveHalfPageDown => self.move_focused(Motion::Down(self.half_page() * repeat)),
@@ -493,6 +508,7 @@ impl ReviewSurface {
     /// Rebuilds the rows of the diff body from the file at the review cursor.
     fn rebuild_body(&mut self) {
         self.body.clear();
+        self.body_path = None;
         self.cursor = 0;
         self.first_row = 0;
         let Some(review) = self.active() else {
@@ -519,6 +535,7 @@ impl ReviewSurface {
             }
         }
         self.body = rows;
+        self.body_path = Some(path);
         // The cursor opens on the hunk that the review names, so a walk that
         // reaches this file lands where the reader expects.
         self.cursor = self
@@ -534,39 +551,16 @@ impl ReviewSurface {
         let Some(hunk) = self.body.get(self.cursor).map(BodyRow::hunk) else {
             return;
         };
+        let Some(path) = self.body_path.clone() else {
+            return;
+        };
         let Some(review) = self.active_mut() else {
             return;
         };
-        if review
-            .cursor()
-            .is_some_and(|cursor| cursor.hunk.id() == hunk)
-        {
-            return;
-        }
-        // Every hunk of the body belongs to the file at the review cursor, so
-        // one of the two walks reaches it.
-        for _ in 0..FILE_WALK_STEPS_MAX {
-            if review
-                .cursor()
-                .is_some_and(|cursor| cursor.hunk.id() == hunk)
-            {
-                return;
-            }
-            if review.next_hunk() == HunkStep::AtBorder {
-                break;
-            }
-        }
-        for _ in 0..FILE_WALK_STEPS_MAX {
-            if review
-                .cursor()
-                .is_some_and(|cursor| cursor.hunk.id() == hunk)
-            {
-                return;
-            }
-            if review.previous_hunk() == HunkStep::AtBorder {
-                return;
-            }
-        }
+        // A hunk identity is unique inside its own file alone. A walk over the
+        // hunks would cross into another file, where the same identity names
+        // another hunk, so the review places the cursor instead of walking.
+        let _ = review.select_hunk(&path, hunk);
     }
 
     /// Shows the file that the panel selected.
@@ -578,17 +572,9 @@ impl ReviewSurface {
         let Some(review) = self.active_mut() else {
             return;
         };
-        for _ in 0..FILE_WALK_STEPS_MAX {
-            if review
-                .cursor()
-                .is_some_and(|cursor| cursor.file.path() == &path)
-            {
-                break;
-            }
-            if review.next_hunk() == HunkStep::AtBorder {
-                break;
-            }
-        }
+        // The cursor reaches the named file in either direction, so a reader
+        // who walks down the list and back up returns to the file they left.
+        let _ = review.select_file(&path);
         self.rebuild_body();
     }
 
@@ -637,17 +623,23 @@ pub(super) fn draw_review(
     if area.width == 0 || area.height == 0 {
         return;
     }
+    // kvim keeps its sidebar at the right edge, so the changes panel sits there
+    // as well and the diff fills the rest. See `docs/windows.md`.
     let panel_width = area.width.min(CHANGES_PANEL_CELLS);
-    let panel = Rect::new(area.x, area.y, panel_width, area.height);
+    let body_width = area.width.saturating_sub(panel_width);
+    let panel = Rect::new(
+        area.x.saturating_add(body_width),
+        area.y,
+        panel_width,
+        area.height,
+    );
     target.set_style(panel, theme.style(ThemeRole::Surface));
     draw_changes(target, panel, theme, review);
 
-    let body_x = area.x.saturating_add(panel_width);
-    let body_width = area.width.saturating_sub(panel_width);
     if body_width == 0 {
         return;
     }
-    let body = Rect::new(body_x, area.y, body_width, area.height);
+    let body = Rect::new(area.x, area.y, body_width, area.height);
     target.set_style(body, theme.style(ThemeRole::DiffContext));
     draw_body(target, body, theme, settings, review);
 }
@@ -660,10 +652,19 @@ fn draw_body(
     settings: DiffSettings,
     review: &ReviewSurface,
 ) {
-    let Some(cursor) = review.active().and_then(ReviewState::cursor) else {
+    // The body names its own file, so the lookup of one hunk never reaches
+    // another file, whose hunks carry the same identities.
+    let Some(path) = review.body_path() else {
         return;
     };
-    let DiffContent::Text(text) = cursor.file.content() else {
+    let Some(file) = review
+        .active()
+        .map(ReviewState::candidate)
+        .and_then(|candidate| candidate.file(path))
+    else {
+        return;
+    };
+    let DiffContent::Text(text) = file.content() else {
         return;
     };
     let view = view_of(settings_with(settings, review.view()), area.width);
@@ -676,9 +677,15 @@ fn draw_body(
         };
         let y = area.y + u16::try_from(offset).unwrap_or(u16::MAX);
         let line = Rect::new(area.x, y, area.width, 1);
-        // The cursor row of the focused region carries the selection band, so
-        // a reader always sees where the keys act.
-        if focused && index == review.cursor_row() {
+        // The cursor row of the focused region carries the selection band over
+        // its whole width, so it reads like a Visual-line selection instead of
+        // a mark at one edge.
+        let band = if focused && index == review.cursor_row() {
+            RowBand::Selected
+        } else {
+            RowBand::Plain
+        };
+        if band == RowBand::Selected {
             target.set_style(line, theme.style(ThemeRole::PopupSelection));
         }
         match row {
@@ -697,7 +704,7 @@ fn draw_body(
                     y,
                     clip_cells(&header, usize::from(line.width)),
                     usize::from(line.width),
-                    theme.style(role),
+                    band.apply(theme, role),
                 );
             }
             BodyRow::Line {
@@ -711,13 +718,13 @@ fn draw_body(
                     DiffView::SideBySide => {
                         let rows = side_rows(hunk);
                         if let Some(row) = rows.get(*row_index) {
-                            draw_side_rows(target, line, theme, std::slice::from_ref(row));
+                            draw_side_rows(target, line, theme, std::slice::from_ref(row), band);
                         }
                     }
                     DiffView::Inline => {
                         let rows = inline_rows(hunk);
                         if let Some(row) = rows.get(*row_index) {
-                            draw_inline_rows(target, line, theme, std::slice::from_ref(row));
+                            draw_inline_rows(target, line, theme, std::slice::from_ref(row), band);
                         }
                     }
                 }
@@ -792,12 +799,6 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
 
 /// The width of the changes panel, in cells.
 const CHANGES_PANEL_CELLS: u16 = 34;
-
-/// The largest number of hunk steps that one walk over the hunks takes.
-///
-/// The diff bounds already limit the published hunks, so the guard names a
-/// value above any candidate and stops a walk that finds nothing.
-const FILE_WALK_STEPS_MAX: usize = 4096;
 
 /// One motion of one region of the review.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

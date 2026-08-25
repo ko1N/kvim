@@ -320,18 +320,18 @@ fn the_focus_moves_between_the_two_regions() {
     assert_eq!(review.focus(), ReviewFocus::Diff);
 
     assert_eq!(
-        review.apply(Command::FocusWindowLeft, None),
+        review.apply(Command::FocusWindowRight, None),
         ReviewOutcome::Changed
     );
     assert_eq!(review.focus(), ReviewFocus::Panel);
     // The region that already owns the keys changes nothing.
     assert_eq!(
-        review.apply(Command::FocusWindowLeft, None),
+        review.apply(Command::FocusWindowRight, None),
         ReviewOutcome::Unchanged
     );
 
     assert_eq!(
-        review.apply(Command::FocusWindowRight, None),
+        review.apply(Command::FocusWindowLeft, None),
         ReviewOutcome::Changed
     );
     assert_eq!(review.focus(), ReviewFocus::Diff);
@@ -427,7 +427,7 @@ fn a_motion_moves_the_region_that_owns_the_keys_alone() {
 
     // The panel owns the keys, so `j` moves its selection to the next file.
     assert_eq!(
-        review.apply(Command::FocusWindowLeft, None),
+        review.apply(Command::FocusWindowRight, None),
         ReviewOutcome::Changed
     );
     assert_eq!(
@@ -451,7 +451,7 @@ fn selecting_a_file_in_the_panel_shows_that_file() {
     ]);
     review.set_height_rows(10);
 
-    review.apply(Command::FocusWindowLeft, None);
+    review.apply(Command::FocusWindowRight, None);
     // The heading takes no selection, so two steps reach the second file.
     review.apply(Command::MoveDown, None);
     review.apply(Command::MoveDown, None);
@@ -489,4 +489,76 @@ fn the_hunk_walk_reaches_the_header_of_every_hunk() {
         ReviewOutcome::Changed
     );
     assert_eq!(review.cursor_row(), headers[0]);
+}
+
+#[test]
+fn the_panel_returns_to_a_file_that_it_already_showed() {
+    // Walking down the list and back up must show every file again. The cursor
+    // reaches a file in either direction, so no diff is shown only once.
+    let mut review = surface(vec![
+        added("a.txt", 1, &["one"]),
+        added("b.txt", 1, &["two"]),
+        added("c.txt", 1, &["three"]),
+    ]);
+    review.set_height_rows(10);
+    review.apply(Command::FocusWindowRight, None);
+
+    let shown = |review: &ReviewSurface| {
+        review
+            .active()
+            .and_then(ReviewState::cursor)
+            .map(|cursor| cursor.file.path().clone())
+            .expect("the review holds one cursor")
+    };
+
+    // Down to the last file.
+    review.apply(Command::MoveDown, None);
+    review.apply(Command::MoveDown, None);
+    review.apply(Command::MoveDown, None);
+    assert_eq!(shown(&review), path("c.txt"));
+
+    // Back up, one file at a time.
+    review.apply(Command::MoveUp, None);
+    assert_eq!(shown(&review), path("b.txt"));
+    review.apply(Command::MoveUp, None);
+    assert_eq!(shown(&review), path("a.txt"));
+
+    // And down again, which must show the same files once more.
+    review.apply(Command::MoveDown, None);
+    assert_eq!(shown(&review), path("b.txt"));
+}
+
+#[test]
+fn a_page_jump_keeps_the_body_on_its_own_file() {
+    // A hunk identity restarts in every file, so a jump that crosses hunks must
+    // never place the review cursor in another file. The body would then draw
+    // rows that it looked up in the wrong one.
+    let mut review = surface(vec![two_hunk_file("a.txt"), two_hunk_file("b.txt")]);
+    review.set_height_rows(4);
+    let rows = review.body().len();
+
+    for _ in 0..8 {
+        review.apply(Command::MoveHalfPageDown, None);
+        assert_eq!(
+            review.body_path(),
+            Some(&path("a.txt")),
+            "the body stays on the file that it drew"
+        );
+        assert_eq!(review.body().len(), rows, "the rows stay the rows of a.txt");
+        let cursor = review
+            .active()
+            .and_then(ReviewState::cursor)
+            .expect("the review holds one cursor");
+        assert_eq!(
+            cursor.file.path(),
+            &path("a.txt"),
+            "the review cursor stays inside the file of the body"
+        );
+    }
+
+    // The same holds walking back up.
+    for _ in 0..8 {
+        review.apply(Command::MoveHalfPageUp, None);
+        assert_eq!(review.body_path(), Some(&path("a.txt")));
+    }
 }

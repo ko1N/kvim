@@ -498,6 +498,48 @@ impl ReviewState {
         Ok(self.selection.insert(anchor))
     }
 
+    /// Moves the cursor to the first published hunk of one file.
+    ///
+    /// The call reaches a file in either direction, so a reader who walks down
+    /// a list of files and back up returns to the file that they left. It
+    /// answers `false` when the candidate publishes no hunk for that path.
+    pub fn select_file(&mut self, path: &WorktreeRelativePath) -> bool {
+        let Some(file) = self
+            .candidate
+            .files()
+            .iter()
+            .position(|file| file.change().names(path) && !hunks_of(file).is_empty())
+        else {
+            return false;
+        };
+        self.place(HunkCursor { file, hunk: 0 });
+        true
+    }
+
+    /// Moves the cursor to one named hunk of one named file.
+    ///
+    /// A hunk identity is unique inside its own file alone, so a caller that
+    /// names a hunk must name its file as well. The call answers `false` when
+    /// the candidate publishes no such hunk, and it moves no cursor then.
+    pub fn select_hunk(&mut self, path: &WorktreeRelativePath, hunk: HunkId) -> bool {
+        let Some(file) = self
+            .candidate
+            .files()
+            .iter()
+            .position(|file| file.change().names(path))
+        else {
+            return false;
+        };
+        let Some(index) = hunks_of(&self.candidate.files()[file])
+            .iter()
+            .position(|published| published.id() == hunk)
+        else {
+            return false;
+        };
+        self.place(HunkCursor { file, hunk: index });
+        true
+    }
+
     /// Drops the selection and keeps the cursor.
     pub fn clear_selection(&mut self) {
         self.selection = None;

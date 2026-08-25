@@ -14,6 +14,7 @@ use kvim_workspace::{AlignedRow, DiffLine, DiffLineText, DiffSide, Hunk, align_h
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 use crate::cells::clip_cells;
 use crate::theme::{Theme, ThemeRole};
@@ -34,6 +35,39 @@ const COLUMN_GAP_CELLS: u16 = 1;
 const CONTEXT_MARKER: char = ' ';
 const ADDED_MARKER: char = '+';
 const REMOVED_MARKER: char = '-';
+
+/// The band that one drawn row carries.
+///
+/// The cursor row of the focused region takes the selection band over its whole
+/// width, so it reads like a Visual-line selection instead of a mark at one
+/// edge. Every other row keeps the colors of its own change.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum RowBand {
+    /// The row keeps the colors of its own change.
+    #[default]
+    Plain,
+    /// The row carries the selection band across its whole width.
+    Selected,
+}
+
+impl RowBand {
+    /// Returns the style of one role under this band.
+    ///
+    /// A selected row keeps the foreground of its role, so an added line still
+    /// reads as added, and takes the background of the selection.
+    pub(super) fn apply(self, theme: Theme, role: ThemeRole) -> Style {
+        match self {
+            Self::Plain => theme.style(role),
+            Self::Selected => {
+                let selection = theme.style(ThemeRole::PopupSelection);
+                match selection.bg {
+                    Some(background) => theme.style(role).bg(background),
+                    None => selection,
+                }
+            }
+        }
+    }
+}
 
 /// One column of one drawn diff row.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -152,16 +186,31 @@ pub(super) const fn two_column_cells_min(settings: DiffSettings) -> u16 {
 /// The caller supplies the rows that the viewport shows, so this function
 /// scrolls nothing and reads no state. Each column takes half of the width that
 /// stays after the gap, and a text that passes its column clips.
-pub(super) fn draw_side_rows(target: &mut CellBuffer, area: Rect, theme: Theme, rows: &[SideRow]) {
+pub(super) fn draw_side_rows(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    rows: &[SideRow],
+    band: RowBand,
+) {
     let columns = column_width(area.width);
     for (offset, row) in rows.iter().take(usize::from(area.height)).enumerate() {
         let y = area.y + u16::try_from(offset).unwrap_or(u16::MAX);
+        // The gap between the two columns belongs to the row, so the band
+        // covers it as well and the selection holds no hole.
+        if band == RowBand::Selected {
+            target.set_style(
+                Rect::new(area.x, y, area.width, 1),
+                band.apply(theme, ThemeRole::DiffContext),
+            );
+        }
         draw_cell(
             target,
             Rect::new(area.x, y, columns, 1),
             theme,
             &row.old,
             None,
+            band,
         );
         let right = area
             .x
@@ -173,6 +222,7 @@ pub(super) fn draw_side_rows(target: &mut CellBuffer, area: Rect, theme: Theme, 
             theme,
             &row.new,
             None,
+            band,
         );
     }
 }
@@ -183,6 +233,7 @@ pub(super) fn draw_inline_rows(
     area: Rect,
     theme: Theme,
     rows: &[InlineRow],
+    band: RowBand,
 ) {
     for (offset, row) in rows.iter().take(usize::from(area.height)).enumerate() {
         let y = area.y + u16::try_from(offset).unwrap_or(u16::MAX);
@@ -192,6 +243,7 @@ pub(super) fn draw_inline_rows(
             theme,
             &row.cell,
             Some(row.marker),
+            band,
         );
     }
 }
@@ -208,11 +260,13 @@ fn draw_cell(
     theme: Theme,
     cell: &DiffCell,
     marker: Option<char>,
+    band: RowBand,
 ) {
     if area.width == 0 {
         return;
     }
-    target.set_style(area, theme.style(cell.role));
+    let style = |role: ThemeRole| band.apply(theme, role);
+    target.set_style(area, style(cell.role));
 
     let number_cells = NUMBER_CELLS.min(area.width);
     if number_cells > 0 {
@@ -224,7 +278,7 @@ fn draw_cell(
             area.y,
             &text,
             usize::from(number_cells),
-            theme.style(ThemeRole::DiffLineNumber),
+            style(ThemeRole::DiffLineNumber),
         );
     }
 
@@ -240,7 +294,7 @@ fn draw_cell(
             area.y,
             &*marker.encode_utf8(&mut scratch),
             1,
-            theme.style(cell.role),
+            style(cell.role),
         );
         x = x.saturating_add(1);
         left = left.saturating_sub(1);
@@ -253,7 +307,7 @@ fn draw_cell(
         area.y,
         clip_cells(&cell.text, usize::from(left)),
         usize::from(left),
-        theme.style(cell.role),
+        style(cell.role),
     );
 }
 
