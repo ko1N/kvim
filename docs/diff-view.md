@@ -92,3 +92,23 @@ unified diff writes.
 A capture publishes exact bytes, and not every byte sequence is text. A line
 that holds none draws its state instead of guessed characters, so a reader never
 mistakes a repaired byte for the content of the file.
+
+## The Changes Panel
+
+The panel lists the changed files of the captured candidates, never of the live
+status. The panel and the diff therefore always agree, because both read one
+value. A status read that happens between them cannot make them disagree.
+
+Each section holds its own capture: the staged half compares the commit against
+the index, and the unstaged half compares the index against the working tree.
+The panel never merges them. A section without a change publishes no heading, so
+a workspace with nothing staged shows one section instead of an empty one.
+
+One row names its file, the marker of its change kind, its added and removed
+line counts, and the number of hunks that stay unread. A file reads as complete
+when no hunk stays unread and no bound truncated it. A truncated file never
+reads as complete, because the candidate holds content that the reader cannot
+reach.
+
+A heading takes no selection. Selecting a file row moves the review cursor to
+the first hunk of that file.

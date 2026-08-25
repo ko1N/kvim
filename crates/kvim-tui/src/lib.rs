@@ -78,6 +78,7 @@
 
 mod buffer_view;
 mod cells;
+mod changes;
 mod chrome;
 mod clipboard;
 mod completion;
