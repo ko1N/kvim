@@ -38,7 +38,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
 | `kvim-keymap` | Terminal-neutral keys, generic bindings, the shared resolver with its one pending sequence, published input contexts, dispatch ownership, and which-key hints. |
 | `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
-| `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query. Names no path, no buffer, and no editor concept. Depends on no other crate. |
+| `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
 | `kvim-ui` | Generic ratatui split, sidebar, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
@@ -49,7 +49,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
 | `kvim-tui` | The embedded editor and review presentation models and standalone presentation adapters. It owns visible state for one supplied editor instance. It owns no terminal and no event loop. |
-| `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers. It owns no host worktree list or focus policy. |
+| `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
@@ -131,7 +131,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-ui` | `kvim-keymap`, `kvim-fuzzy` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
-| 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
 | 4 | `kvim-tui` | every library above, including `kvim-terminal` for the normalized event value alone |
 | 5 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
 
@@ -161,9 +161,21 @@ split tree, the sidebar, and the which-key widget still name no keymap type, so
 a consumer of those parts alone compiles no dispatch code that it does not use.
 
 `kvim-ui` depends on `kvim-fuzzy` because `Selector<R>` ranks its candidates
-through `kvim_fuzzy::score_candidate`. `kvim-fuzzy` is layer 0 and depends on
-no other kvim crate, so the edge adds no cycle and no other module of
-`kvim-ui` compiles ranking code that it does not use.
+through `kvim_fuzzy::rank`. `kvim-fuzzy` is layer 0 and depends on no other
+kvim crate, so the edge adds no cycle and no other module of `kvim-ui`
+compiles ranking code that it does not use.
+
+`kvim-workspace` depends on `kvim-ui` because `Picker` holds one
+`Selector<usize>` for its query, its ranking, its match list, and its
+selection. `kvim-ui` is layer 2 and `kvim-workspace` is layer 3, so the edge
+adds no cycle. `kvim-workspace` keeps its direct dependency on `kvim-fuzzy`
+too, because it re-exports `score_candidate`, `FUZZY_NAME_WEIGHT`, and
+`FUZZY_TEXT_CHARS_MAX` for a consumer that scores a candidate of its own
+without the file, buffer, and picker vocabulary of `kvim-workspace`, and
+because its own public `rank_candidates` function clips its query and then
+calls `kvim_fuzzy::rank` over borrowed candidates. `kvim_fuzzy::rank` is the
+one ranking rule that `Picker`, the command-line completion, and `Selector<R>`
+all share.
 
 `kvim-runtime` depends on `kvim-path` only for the portable filesystem watcher.
 The watcher uses one caller-supplied worktree capability for registration reads
@@ -195,12 +207,13 @@ resolved command, count, and register name from it. `kvim-editor` publishes the
 modal editing state over one `TextBuffer`, so a consumer can put a real Vim
 buffer behind its own text field without the terminal session.
 
-`kvim-fuzzy` holds the ranking rule alone. A host that ranks a list of its own
-values takes the score without the file, buffer, and picker charter of
-`kvim-workspace`, which is not a supported package. `kvim-ui` publishes
-`Selector<R>` over that same rule, so a host that also wants the bounded
-query, candidate, match, and selection mechanics takes `kvim-ui` instead of
-calling `kvim-fuzzy` directly.
+`kvim-fuzzy` holds the ranking rule alone: `score_candidate` scores one
+candidate against one query, and `rank` turns those scores into one ordered
+list of source indexes. A host that ranks a list of its own values takes
+either without the file, buffer, and picker charter of `kvim-workspace`,
+which is not a supported package. `kvim-ui` publishes `Selector<R>` over that
+same rule, so a host that also wants the bounded query, candidate, match, and
+selection mechanics takes `kvim-ui` instead of calling `kvim-fuzzy` directly.
 
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and

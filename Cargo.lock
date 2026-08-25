@@ -658,6 +658,7 @@ dependencies = [
  "kvim-path",
  "kvim-runtime",
  "kvim-settings",
+ "kvim-ui",
  "thiserror",
  "tokio",
  "tokio-util",

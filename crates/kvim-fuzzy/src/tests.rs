@@ -1,4 +1,4 @@
-use super::score_candidate;
+use super::{rank, score_candidate};
 
 #[test]
 fn a_query_that_the_candidate_does_not_hold_scores_nothing() {
@@ -41,4 +41,37 @@ fn the_filename_weighs_more_than_the_directory() {
 fn the_match_ignores_the_case_of_both_sides() {
     assert!(score_candidate("MAIN", "main.rs", "").is_some());
     assert!(score_candidate("main", "MAIN.RS", "").is_some());
+}
+
+#[test]
+fn an_empty_query_keeps_the_order_of_the_source() {
+    let entries = [("zebra.rs", "src"), ("alpha.rs", ""), ("main.rs", "src")];
+    assert_eq!(rank("", entries.iter().copied()), [0, 1, 2]);
+}
+
+#[test]
+fn the_best_match_sits_at_the_top_of_the_list() {
+    // "domain.rs" holds "main" as a spread subsequence too, so it stays in
+    // the list behind the dense match of "main.rs".
+    let entries = [
+        ("domain.rs", "src"),
+        ("main.rs", "src"),
+        ("manual.md", "docs"),
+    ];
+    assert_eq!(rank("main", entries.iter().copied()), [1, 0]);
+}
+
+#[test]
+fn a_dropped_entry_keeps_no_index() {
+    let entries = [("main.rs", "src"), ("mode.rs", "src")];
+    assert_eq!(rank("zz", entries.iter().copied()), Vec::<usize>::new());
+}
+
+#[test]
+fn two_equal_scores_keep_one_deterministic_order() {
+    // Both names hold the query at the same positions, so the shorter
+    // combined name and container wins, and the earlier entry wins an equal
+    // width.
+    let entries = [("ab_long_name.rs", ""), ("ab.rs", ""), ("ab2.rs", "")];
+    assert_eq!(rank("ab", entries.iter().copied()), [1, 2, 0]);
 }

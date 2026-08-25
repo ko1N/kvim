@@ -21,6 +21,7 @@ kvim-fuzzy.workspace = true
 kvim-path.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true
+kvim-ui.workspace = true
 
 # Basics
 thiserror.workspace = true

@@ -10,6 +10,11 @@
 //! passes an empty directory. The kvim picker ranks its rows with these scores;
 //! see `docs/files.md`.
 //!
+//! [`rank`] turns those scores into one ordered list of source indexes. It is
+//! the one rule that every caller with a bounded candidate list shares: the
+//! workspace picker, the command-line completion, and the domain-neutral
+//! selector of `kvim-ui`. No caller keeps a second copy of the ordering rule.
+//!
 //! # Examples
 //!
 //! ```
@@ -26,6 +31,8 @@
 //! // An empty query keeps the order of the source list.
 //! assert_eq!(score_candidate("", "main.rs", "src"), Some(0));
 //! ```
+
+use std::cmp::Reverse;
 
 /// The largest number of characters that one scored text holds.
 ///
@@ -95,6 +102,60 @@ pub fn score_candidate(query: &str, name: &str, directory: &str) -> Option<i32> 
             .chain(std::iter::once('/'))
             .chain(name.chars()),
     )
+}
+
+/// Returns the source indexes that `query` keeps, ranked with the best first.
+///
+/// The function scores every entry through [`score_candidate`] over its name
+/// and its container, and it drops every entry that scores `None`. The order
+/// is total, so two equal queries always produce one order:
+///
+/// 1. the higher score first,
+/// 2. then the shorter combined name and container,
+/// 3. then the earlier entry of `entries`.
+///
+/// An empty query keeps every entry and the order of `entries`, because every
+/// entry then holds the same score.
+///
+/// The function takes borrowed entries and clips no query, so a caller ranks
+/// a list on every keystroke with no allocation beyond the returned index
+/// list. Clip the query to a caller bound before calling this function; the
+/// function keeps none of its own.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_fuzzy::rank;
+///
+/// let entries = [("session.rs", "src"), ("main.rs", "src")];
+/// assert_eq!(rank("main", entries.iter().copied()), [1]);
+/// assert_eq!(rank("", entries.iter().copied()), [0, 1]);
+/// ```
+#[must_use]
+pub fn rank<'a, I>(query: &str, entries: I) -> Vec<usize>
+where
+    I: IntoIterator<Item = (&'a str, &'a str)>,
+{
+    let entries: Vec<(&str, &str)> = entries.into_iter().collect();
+    let mut scored: Vec<(usize, i32)> = entries
+        .iter()
+        .enumerate()
+        .filter_map(|(index, (name, container))| {
+            let score = score_candidate(query, name, container)?;
+            Some((index, score))
+        })
+        .collect();
+    if !query.is_empty() {
+        scored.sort_by_key(|(index, score)| {
+            let (name, container) = entries[*index];
+            let width = name
+                .chars()
+                .count()
+                .saturating_add(container.chars().count());
+            (Reverse(*score), width, *index)
+        });
+    }
+    scored.into_iter().map(|(index, _)| index).collect()
 }
 
 /// Returns the score of one query against one text.

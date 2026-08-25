@@ -1,28 +1,36 @@
-//! The bounded picker model: candidates, the query, the ranking, and the
-//! selection.
+//! The workspace picker: the file, search, and buffer vocabulary over the
+//! domain-neutral selector of `kvim-ui`.
 //!
 //! One picker framework serves the file search, the ripgrep search, and the
 //! buffer search. The three differ only in the source of their candidates and
-//! in what one accepted row opens. Every function of this file is a pure
-//! transition over already collected candidates, so the terminal event loop
-//! runs no filesystem and no process work. See `docs/files.md`.
+//! in what one accepted row opens. [`Picker`] keeps the candidate list, the
+//! accepted target, and the preview. Its query, its ranking, its match list,
+//! and its selection live inside one `kvim_ui::Selector`. Every function of
+//! this file is a pure transition over already collected candidates, so the
+//! terminal event loop runs no filesystem and no process work. See
+//! `docs/files.md`.
 
-use std::cmp::Reverse;
 use std::path::{Path, PathBuf};
 
+use kvim_fuzzy::rank;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+use kvim_ui::{Selector, SelectorCandidate};
 
 use super::buffer::BufferId;
-use kvim_fuzzy::score_candidate;
 
 /// The largest number of candidates that one picker keeps.
 ///
 /// One repository holds more files than a reader ever inspects. The bound keeps
-/// one keystroke inside the latency budget of `docs/responsiveness.md`.
-pub const PICKER_CANDIDATES_MAX: usize = 4096;
+/// one keystroke inside the latency budget of `docs/responsiveness.md`. The
+/// value equals `kvim_ui::SELECTOR_CANDIDATES_MAX`, because the picker holds
+/// its candidates inside one `Selector`.
+pub const PICKER_CANDIDATES_MAX: usize = kvim_ui::SELECTOR_CANDIDATES_MAX;
 
 /// The largest number of characters that one picker query holds.
-pub const PICKER_QUERY_CHARS_MAX: usize = 128;
+///
+/// The value equals `kvim_ui::SELECTOR_QUERY_CHARS_MAX`, because the picker
+/// forwards its effective query to one `Selector`.
+pub const PICKER_QUERY_CHARS_MAX: usize = kvim_ui::SELECTOR_QUERY_CHARS_MAX;
 
 /// The largest number of characters that one matched line shows.
 pub const PICKER_MATCH_CHARS_MAX: usize = 160;
@@ -311,14 +319,6 @@ impl Candidate {
             CandidateTarget::Buffer { buffer } => Acceptance::ShowBuffer { buffer: *buffer },
         }
     }
-
-    /// Returns the number of characters that the ranking compares.
-    fn width(&self) -> usize {
-        self.name
-            .chars()
-            .count()
-            .saturating_add(self.directory.chars().count())
-    }
 }
 
 /// Returns the filename and the directory of one path below the root.
@@ -343,16 +343,13 @@ fn clip(text: &str, chars_max: usize) -> String {
     text.chars().take(chars_max).collect()
 }
 
-/// The direction of one selection move.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Step {
-    /// Move away from the prompt.
-    Next,
-    /// Move toward the prompt.
-    Previous,
-}
-
-/// The bounded picker: one query, one candidate list, and one stable selection.
+/// The bounded picker: the file, search, and buffer vocabulary over one
+/// `kvim_ui::Selector`.
+///
+/// The picker keeps its own candidate list, because a candidate names a path,
+/// a matched line, or a buffer identity that the selector never names. The
+/// query, the ranking, the match list, and the selection all live inside the
+/// selector.
 ///
 /// # Examples
 ///
@@ -381,17 +378,20 @@ enum Step {
 pub struct Picker {
     kind: PickerKind,
     root: PathBuf,
+    /// The text that the reader typed into the prompt.
+    ///
+    /// [`Picker::query`] always returns this text, even for
+    /// [`PickerKind::Search`]. [`Picker::effective_query`] decides what the
+    /// selector sees.
     query: String,
     candidates: Vec<Candidate>,
-    /// The candidate indexes that the query keeps, with the best row first.
-    matches: Vec<usize>,
-    /// The candidate index of the selected row.
+    /// The query, the ranking, the match list, and the selection.
     ///
-    /// The picker keeps the selected candidate across one refiltering while the
-    /// query still matches it, so the selection never jumps under the reader.
-    selected: Option<usize>,
-    /// Reports whether the source found more candidates than the bound keeps.
-    truncated: bool,
+    /// The selector holds one [`SelectorCandidate<usize>`] for each candidate
+    /// of `candidates`, at the same position, with the position itself as the
+    /// host identity. A match or a selection therefore names one position of
+    /// `candidates` directly.
+    selector: Selector<usize>,
 }
 
 impl Picker {
@@ -403,9 +403,7 @@ impl Picker {
             root,
             query: String::new(),
             candidates: Vec::new(),
-            matches: Vec::new(),
-            selected: None,
-            truncated: false,
+            selector: Selector::default(),
         }
     }
 
@@ -430,7 +428,7 @@ impl Picker {
     /// Reports whether the source found more candidates than the bound keeps.
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
-        self.truncated
+        self.selector.is_truncated()
     }
 
     /// Replaces the candidates and ranks them again.
@@ -438,10 +436,18 @@ impl Picker {
     /// The list stops at [`PICKER_CANDIDATES_MAX`], and a longer list reports
     /// the truncation.
     pub fn set_candidates(&mut self, candidates: Vec<Candidate>, truncated: bool) {
-        self.truncated = truncated || candidates.len() > PICKER_CANDIDATES_MAX;
+        let truncated = truncated || candidates.len() > PICKER_CANDIDATES_MAX;
         self.candidates = candidates;
         self.candidates.truncate(PICKER_CANDIDATES_MAX);
-        self.refilter();
+        let selector_candidates = self
+            .candidates
+            .iter()
+            .enumerate()
+            .map(|(index, candidate)| {
+                SelectorCandidate::new(index, candidate.name.clone(), candidate.directory.clone())
+            })
+            .collect();
+        self.selector.set_candidates(selector_candidates, truncated);
     }
 
     /// Replaces the query and ranks the candidates again.
@@ -449,13 +455,14 @@ impl Picker {
     /// The query stops at [`PICKER_QUERY_CHARS_MAX`] characters.
     pub fn set_query(&mut self, query: &str) {
         self.query = clip(query, PICKER_QUERY_CHARS_MAX);
-        self.refilter();
+        self.selector
+            .set_query(Self::effective_query(self.kind, &self.query));
     }
 
     /// Returns the candidate indexes that the query keeps, with the best first.
     #[must_use]
     pub fn matches(&self) -> &[usize] {
-        &self.matches
+        self.selector.matches()
     }
 
     /// Returns one candidate by its index.
@@ -467,14 +474,14 @@ impl Picker {
     /// Returns the selected candidate, or `None` while no row matches.
     #[must_use]
     pub fn selected(&self) -> Option<&Candidate> {
-        self.candidates.get(self.selected?)
+        let index = *self.selector.selected()?.id();
+        self.candidates.get(index)
     }
 
     /// Returns the position of the selected row inside [`Picker::matches`].
     #[must_use]
     pub fn selected_row(&self) -> Option<usize> {
-        let selected = self.selected?;
-        self.matches.iter().position(|index| *index == selected)
+        self.selector.selected_row()
     }
 
     /// Moves the selection one row toward the end of the list.
@@ -482,12 +489,12 @@ impl Picker {
     /// The list ends at both edges, because a wrap would move the reader past
     /// the best match without a key that says so.
     pub fn select_next(&mut self) {
-        self.select(Step::Next);
+        self.selector.select_next();
     }
 
     /// Moves the selection one row toward the prompt.
     pub fn select_previous(&mut self) {
-        self.select(Step::Previous);
+        self.selector.select_previous();
     }
 
     /// Returns what the editor does with the selected row.
@@ -496,38 +503,16 @@ impl Picker {
         self.selected().map(Candidate::acceptance)
     }
 
-    /// Moves the selection by one step inside the matched rows.
-    fn select(&mut self, step: Step) {
-        let Some(row) = self.selected_row() else {
-            self.selected = self.matches.first().copied();
-            return;
-        };
-        let last = self.matches.len().saturating_sub(1);
-        let next = match step {
-            Step::Previous => row.saturating_sub(1),
-            Step::Next => row.saturating_add(1).min(last),
-        };
-        self.selected = self.matches.get(next).copied();
-    }
-
-    /// Ranks every candidate against the query and keeps the selection.
+    /// Returns the query that the selector ranks against, for one kind.
     ///
     /// The search picker sends its query to `rg`, so its rows already answer
     /// that query. A second filter over the filenames would drop every matched
-    /// line whose filename does not hold the pattern.
-    fn refilter(&mut self) {
-        let query = match self.kind {
+    /// line whose filename does not hold the pattern, so the selector sees an
+    /// empty query while [`Picker::query`] still returns the typed text.
+    fn effective_query(kind: PickerKind, query: &str) -> &str {
+        match kind {
             PickerKind::Search => "",
-            PickerKind::Files | PickerKind::Buffers => self.query.as_str(),
-        };
-        self.matches = rank_candidates(query, &self.candidates);
-        // The selection follows its candidate while the query still keeps it,
-        // so a further character never moves the reader to another row.
-        if !self
-            .selected
-            .is_some_and(|selected| self.matches.contains(&selected))
-        {
-            self.selected = self.matches.first().copied();
+            PickerKind::Files | PickerKind::Buffers => query,
         }
     }
 }
@@ -550,6 +535,12 @@ impl Picker {
 /// every candidate then holds the same score. The query stops at
 /// [`PICKER_QUERY_CHARS_MAX`] characters.
 ///
+/// The ranking rule itself lives in [`kvim_fuzzy::rank`]. This function is the
+/// clipping boundary: it clips `query`, then hands borrowed name and
+/// directory pairs to that one shared rule, so the command-line completion
+/// ranks a candidate list on every typed character with no allocation beyond
+/// the returned index list.
+///
 /// # Examples
 ///
 /// ```
@@ -568,21 +559,12 @@ impl Picker {
 #[must_use]
 pub fn rank_candidates(query: &str, candidates: &[Candidate]) -> Vec<usize> {
     let query = clip(query, PICKER_QUERY_CHARS_MAX);
-    let mut scored: Vec<(usize, i32)> = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, candidate)| {
-            let score = score_candidate(&query, &candidate.name, &candidate.directory)?;
-            Some((index, score))
-        })
-        .collect();
-    if !query.is_empty() {
-        scored.sort_by_key(|(index, score)| {
-            let width = candidates[*index].width();
-            (Reverse(*score), width, *index)
-        });
-    }
-    scored.into_iter().map(|(index, _)| index).collect()
+    rank(
+        &query,
+        candidates
+            .iter()
+            .map(|candidate| (candidate.name.as_str(), candidate.directory.as_str())),
+    )
 }
 
 #[cfg(test)]

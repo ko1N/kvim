@@ -866,11 +866,23 @@ column shows the results alone, over the complete width.
 
 ### Ranking
 
-`kvim-fuzzy` owns the scoring rule. The rule names no path, no buffer, and no
-picker, so a host that ranks a list of its own values holds the same score
+`kvim-fuzzy` owns the scoring rule and the ranking rule: `score_candidate`
+scores one candidate against one query, and `rank` turns those scores into
+one ordered list of source indexes. Neither name a path, a buffer, or a
+picker, so a host that ranks a list of its own values holds the same rule
 without this charter. [`architecture.md`](architecture.md) records the crate.
-`kvim-workspace` consumes it and re-exports it, so the picker vocabulary of that
-crate stays in one place.
+`kvim-workspace` re-exports `score_candidate`, so the picker vocabulary of
+that crate stays in one place.
+
+`Picker` keeps the file, search, and buffer vocabulary alone: the candidate
+list, the accepted target, and the preview. Its query, its ranking, its match
+list, and its selection live inside one `kvim_ui::Selector`, the
+domain-neutral mechanism that also serves a host of its own vocabulary.
+`Picker`'s public `rank_candidates` function and `Selector<R>` both clip or
+gather their own borrowed candidates and then call `kvim_fuzzy::rank`, so the
+rule that turns a score into an ordered list exists in one place, not two.
+[`architecture.md`](architecture.md) records the layer edge from
+`kvim-workspace` to `kvim-ui`.
 
 The fuzzy match is a subsequence match without case. Each matched character
 scores by its position: a character that follows the previous match scores most,
@@ -971,8 +983,8 @@ list.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
-| Candidates of one picker | `PICKER_CANDIDATES_MAX` | 4096 | One reader never inspects more rows, and the bound keeps one keystroke inside the latency budget. |
-| Characters of one query | `PICKER_QUERY_CHARS_MAX` | 128 | A query is a short name fragment or one search pattern. The path argument of the command line uses the same bound, because it reaches the same ranking. |
+| Candidates of one picker | `PICKER_CANDIDATES_MAX` | 4096 | One reader never inspects more rows, and the bound keeps one keystroke inside the latency budget. The value equals `SELECTOR_CANDIDATES_MAX` of `kvim-ui`, because the picker holds its candidates inside one `Selector`. |
+| Characters of one query | `PICKER_QUERY_CHARS_MAX` | 128 | A query is a short name fragment or one search pattern. The path argument of the command line uses the same bound, because it reaches the same ranking. The value equals `SELECTOR_QUERY_CHARS_MAX` of `kvim-ui`, because the picker forwards its effective query to one `Selector`. |
 | Characters of one matched line | `PICKER_MATCH_CHARS_MAX` | 160 | One result row shows the start of the matched line, not the complete line. |
 | Files of one walk | `WALK_FILES_MAX` | 4096 | The value is `PICKER_CANDIDATES_MAX`, so the walk collects no file that the picker drops. |
 | Directories of one walk | `WALK_DIRECTORIES_MAX` | 4096 | One repository holds far fewer directories, and the bound stops a looping symbolic link. |

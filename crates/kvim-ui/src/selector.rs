@@ -11,9 +11,7 @@
 //!
 //! The module is pure. It reads no clock, no filesystem, and no terminal.
 
-use std::cmp::Reverse;
-
-use kvim_fuzzy::score_candidate;
+use kvim_fuzzy::rank;
 
 /// The largest number of candidates that one selector holds.
 ///
@@ -70,14 +68,6 @@ impl<R> SelectorCandidate<R> {
     #[must_use]
     pub fn container(&self) -> &str {
         &self.container
-    }
-
-    /// Returns the number of characters that a tied ranking compares.
-    fn width(&self) -> usize {
-        self.name
-            .chars()
-            .count()
-            .saturating_add(self.container.chars().count())
     }
 }
 
@@ -247,8 +237,17 @@ impl<R> Selector<R> {
     }
 
     /// Ranks every candidate against the query and keeps the selection.
+    ///
+    /// The ranking rule itself lives in [`kvim_fuzzy::rank`], the one shared
+    /// rule that every bounded candidate list in kvim uses. See
+    /// `docs/architecture.md`.
     fn refilter(&mut self) {
-        self.matches = rank_candidates(&self.query, &self.candidates);
+        self.matches = rank(
+            &self.query,
+            self.candidates
+                .iter()
+                .map(|candidate| (candidate.name(), candidate.container())),
+        );
         // The selection follows its candidate while the query still keeps it,
         // so a further character never moves the reader to another row.
         if !self
@@ -258,37 +257,6 @@ impl<R> Selector<R> {
             self.selected = self.matches.first().copied();
         }
     }
-}
-
-/// Returns the indexes of the candidates that `query` keeps, with the best
-/// first.
-///
-/// The function is pure, so one query and one candidate list always produce
-/// one order. The order is total, so two equal queries always produce one
-/// order:
-///
-/// 1. the higher score first,
-/// 2. then the shorter candidate,
-/// 3. then the earlier candidate of the source.
-///
-/// An empty query keeps every candidate and the order of the source, because
-/// every candidate then holds the same score.
-fn rank_candidates<R>(query: &str, candidates: &[SelectorCandidate<R>]) -> Vec<usize> {
-    let mut scored: Vec<(usize, i32)> = candidates
-        .iter()
-        .enumerate()
-        .filter_map(|(index, candidate)| {
-            let score = score_candidate(query, &candidate.name, &candidate.container)?;
-            Some((index, score))
-        })
-        .collect();
-    if !query.is_empty() {
-        scored.sort_by_key(|(index, score)| {
-            let width = candidates[*index].width();
-            (Reverse(*score), width, *index)
-        });
-    }
-    scored.into_iter().map(|(index, _)| index).collect()
 }
 
 /// Returns the first characters of one text.
