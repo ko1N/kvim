@@ -25,7 +25,7 @@ use super::diff::{DiffLine, DiffSide, Hunk, LineOrigin};
 ///
 /// // The kind of one row follows from which sides it holds.
 /// fn describes(row: &AlignedRow<'_>) -> &'static str {
-///     match (row.old().is_some(), row.new().is_some()) {
+///     match (row.old_line().is_some(), row.new_line().is_some()) {
 ///         (true, true) => "context or replacement",
 ///         (true, false) => "removal",
 ///         (false, true) => "addition",
@@ -43,13 +43,13 @@ pub struct AlignedRow<'a> {
 impl<'a> AlignedRow<'a> {
     /// Returns the line that the old side draws, or `None` for a gap.
     #[must_use]
-    pub const fn old(&self) -> Option<&'a DiffLine> {
+    pub const fn old_line(&self) -> Option<&'a DiffLine> {
         self.old
     }
 
     /// Returns the line that the new side draws, or `None` for a gap.
     #[must_use]
-    pub const fn new(&self) -> Option<&'a DiffLine> {
+    pub const fn new_line(&self) -> Option<&'a DiffLine> {
         self.new
     }
 
@@ -113,7 +113,7 @@ impl<'a> AlignedRow<'a> {
 /// // beside the text that it replaced.
 /// let rows = align_hunk(&hunk);
 /// assert_eq!(rows.len(), 1);
-/// assert!(rows[0].old().is_some() && rows[0].new().is_some());
+/// assert!(rows[0].old_line().is_some() && rows[0].new_line().is_some());
 /// # Ok(())
 /// # }
 /// ```

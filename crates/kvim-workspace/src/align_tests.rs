@@ -76,7 +76,7 @@ fn texts(row: &AlignedRow<'_>) -> (String, String) {
             |line| String::from_utf8_lossy(line.text().as_bytes()).into_owned(),
         )
     };
-    (side(row.old()), side(row.new()))
+    (side(row.old_line()), side(row.new_line()))
 }
 
 #[test]
@@ -145,7 +145,7 @@ fn an_addition_without_a_removal_holds_an_empty_old_side() {
 
     assert_eq!(rows.len(), 2);
     assert_eq!(texts(&rows[1]), ("-".to_owned(), "fresh".to_owned()));
-    assert!(rows[1].old().is_none());
+    assert!(rows[1].old_line().is_none());
 }
 
 #[test]
@@ -184,8 +184,8 @@ fn every_published_line_reaches_exactly_one_row() {
 
     let drawn = rows
         .iter()
-        .filter_map(|row| row.old())
-        .chain(rows.iter().filter_map(|row| row.new()))
+        .filter_map(|row| row.old_line())
+        .chain(rows.iter().filter_map(|row| row.new_line()))
         .count();
     // Every context line draws twice, once in each column.
     let context_lines = 2;
