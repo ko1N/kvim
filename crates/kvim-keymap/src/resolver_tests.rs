@@ -991,3 +991,192 @@ fn a_longer_sequence_of_the_owning_scope_beats_an_interruption() {
     );
     assert_eq!(resolver.pending_keys(), [ch('g'), ch('x')]);
 }
+
+#[test]
+fn every_published_interrupting_key_runs_while_the_prefix_is_pending() {
+    // Three scopes answer here. The overlay scope and the host scope both
+    // precede the focused scope that arms the leader, so both contribute
+    // interrupting keys. The property is the acceptance of the published
+    // list: a fresh resolver primed with the same prefix must reach an
+    // interruption for every published key, and never an unbound outcome.
+    let leader = ch(' ');
+    let bindings = vec![
+        Binding::surface(Table::Overlay, &[ch('p')], Action::PickNext),
+        Binding::surface(Table::Overlay, &[ch('n')], Action::Down),
+        Binding::host(
+            Table::Global,
+            &[Key::ctrl(KeyCode::Char('q'))],
+            Action::Quit,
+        ),
+        Binding::host(Table::Global, &[ch('c')], Action::Close),
+        Binding::surface(Table::Normal, &[leader, ch('f')], Action::FirstLine),
+    ];
+    let registry =
+        Arc::new(Registry::from_bindings(&bindings, 4).expect("the test table validates"));
+    let context = DispatchContext {
+        overlay: Some(Table::Overlay),
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    let mut resolver = Resolver::new(Arc::clone(&registry), 4, DELAY);
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(leader), Some(NOW)),
+        Dispatch::Pending
+    );
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    let published = view.interruptions();
+    assert_eq!(
+        published
+            .iter()
+            .map(|entry| (entry.scope(), entry.hint().key()))
+            .collect::<Vec<_>>(),
+        vec![
+            (Table::Overlay, ch('n')),
+            (Table::Overlay, ch('p')),
+            (Table::Global, ch('c')),
+            (Table::Global, Key::ctrl(KeyCode::Char('q'))),
+        ],
+        "both preceding scopes contribute their complete one-key bindings, in scope order"
+    );
+
+    for entry in published {
+        let mut fresh = Resolver::new(Arc::clone(&registry), 4, DELAY);
+        assert_eq!(
+            fresh.dispatch(&context, Input::Key(leader), Some(NOW)),
+            Dispatch::Pending
+        );
+        let outcome = fresh.dispatch(&context, Input::Key(entry.hint().key()), Some(NOW));
+        assert!(
+            matches!(outcome, Dispatch::Interrupted { .. }),
+            "the published key {} must cancel the prefix and run, but it reached {outcome:?}",
+            entry.hint().key_label()
+        );
+        assert!(
+            fresh.pending_keys().is_empty(),
+            "an interruption leaves no prefix behind"
+        );
+    }
+}
+
+#[test]
+fn a_group_opening_key_of_a_preceding_scope_is_not_published() {
+    // The host scope binds `z z` and binds `z` alone to nothing. The
+    // interruption pass reads the pressed key alone, so `z` resolves to
+    // `Unbound` while the prefix is pending. Publishing it would name a key
+    // that does not run.
+    let mut resolver = resolver_over(vec![
+        Binding::host(Table::Global, &[ch('z'), ch('z')], Action::Quit),
+        Binding::host(Table::Global, &[ch('c')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    let keys: Vec<Key> = view
+        .interruptions()
+        .iter()
+        .map(|entry| entry.hint().key())
+        .collect();
+    assert_eq!(
+        keys,
+        vec![ch('c')],
+        "the complete one-key binding is published, and the group opener is not"
+    );
+}
+
+#[test]
+fn a_prefix_owned_by_the_first_scope_publishes_no_interruption() {
+    // The overlay scope arms the prefix, so no scope precedes it. The host
+    // scope and the focused scope both bind a key alone, and neither can
+    // interrupt from behind the owner.
+    let mut resolver = resolver_over(vec![
+        Binding::surface(Table::Overlay, &[ch('g'), ch('g')], Action::PickNext),
+        Binding::host(Table::Global, &[ch('c')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('j')], Action::Down),
+    ]);
+    let context = DispatchContext {
+        overlay: Some(Table::Overlay),
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    assert_eq!(view.scope(), Table::Overlay, "the first scope armed it");
+    assert!(
+        view.interruptions().is_empty(),
+        "no scope precedes the first scope of the order"
+    );
+}
+
+#[test]
+fn a_context_with_one_scope_publishes_no_interruption() {
+    let mut resolver = resolver();
+    let context = normal();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    assert!(
+        view.interruptions().is_empty(),
+        "one scope answers, so the published list holds nothing"
+    );
+    assert_eq!(
+        view.hints().len(),
+        1,
+        "the extensions of the pending prefix stay unchanged"
+    );
+}
+
+#[test]
+fn an_extension_of_the_prefix_stays_in_both_lists_and_still_extends() {
+    // `c` extends the pending prefix of the focused scope, and the host scope
+    // binds `c` alone. Both lists therefore name the key. The extension wins,
+    // because the resolver extends the sequence before it tests an
+    // interruption.
+    let mut resolver = resolver_over(vec![
+        Binding::host(Table::Global, &[ch('c')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('g'), ch('c')], Action::FirstLine),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    assert_eq!(
+        view.hints()
+            .iter()
+            .map(|entry| (entry.scope(), entry.hint().key()))
+            .collect::<Vec<_>>(),
+        vec![(Table::Normal, ch('c'))],
+        "the focused scope extends the prefix with `c`"
+    );
+    assert_eq!(
+        view.interruptions()
+            .iter()
+            .map(|entry| (entry.scope(), entry.hint().key()))
+            .collect::<Vec<_>>(),
+        vec![(Table::Global, ch('c'))],
+        "the host scope binds the same key alone"
+    );
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('c')), Some(NOW)),
+        Dispatch::Surface {
+            command: Action::FirstLine
+        },
+        "the extension of the pending prefix wins over the interruption"
+    );
+}

@@ -19,6 +19,9 @@
 //! [`Resolver::idle_which_key`] walks the same order with no pending prefix.
 //! A host uses it to list a complete one-key binding of another scope, such
 //! as a host-global escape, which never extends the focused scope's prefix.
+//! [`WhichKeyView::interruptions`] lists the keys of the preceding scopes that
+//! cancel the pending prefix, beside the extensions that
+//! [`WhichKeyView::hints`] lists.
 //!
 //! `crates/kvim-keymap/examples/dispatch_keys.rs` is the dedicated example of
 //! this feature. It composes one registry, dispatches a one-key binding and a
@@ -329,7 +332,8 @@ enum PendingPrefix<S> {
 /// so a hint can never disagree with the command that the next key reaches.
 /// [`WhichKeyView::hints`] spans the scope order of the pending prefix. Every
 /// hinted key resolves to some scope's binding, with an earlier scope winning
-/// a collision.
+/// a collision. [`WhichKeyView::interruptions`] publishes the second list that
+/// an overlay needs: the keys of the preceding scopes that cancel the prefix.
 #[derive(Clone, Copy, Debug)]
 pub struct WhichKeyView<'a, C, S> {
     registry: &'a Registry<C, S>,
@@ -388,6 +392,152 @@ where
         for scope in self.identity.scope_order() {
             for hint in self.registry.hints_for_prefix(scope, self.prefix) {
                 hints.push(ScopedWhichKeyHint::new(scope, hint));
+            }
+        }
+        hints
+    }
+
+    /// Returns one hint for each key that cancels the pending prefix and runs
+    /// at once.
+    ///
+    /// [`WhichKeyView::hints`] lists the keys that continue the pending
+    /// sequence. This function lists the keys that abandon it. The two lists
+    /// mean different things to a reader, so a host draws them apart.
+    ///
+    /// The list holds the complete one-key bindings of every scope that
+    /// precedes the scope owning the prefix, in scope order. Each entry names
+    /// its scope. Pressing such a key drops the pending prefix and dispatches
+    /// [`Dispatch::Interrupted`].
+    ///
+    /// A key that only opens a group of a preceding scope stays out of the
+    /// list. The interruption pass reads the pressed key alone, so such a key
+    /// runs no command and resolves to [`Dispatch::Unbound`].
+    ///
+    /// One key can stand in both lists. The extension wins, because the
+    /// resolver completes and extends the pending sequence before it tests an
+    /// interruption.
+    ///
+    /// Two preceding scopes can bind the same key. Each one contributes its
+    /// own entry, exactly as [`Resolver::idle_which_key`] keeps both. The
+    /// earlier scope in the order runs when the reader presses that key.
+    ///
+    /// The list stays short. It holds the complete one-key bindings of at
+    /// most two preceding scopes, and the largest scope of kvim's own preset
+    /// holds 76 of them. A host that draws this list together with
+    /// [`WhichKeyView::hints`] must still respect
+    /// `kvim_ui::WHICH_KEY_HINTS_MAX`, which is 256 and refuses a longer list
+    /// instead of cutting it, because a host declares its own preceding
+    /// scopes. Bound or page the combined list before the overlay takes it.
+    ///
+    /// # Examples
+    ///
+    /// The host below binds `Ctrl-E` alone in its global scope, the way a host
+    /// reserves the key that returns focus to its own surface. The focused
+    /// editor scope holds a leader sequence. While that leader is pending, the
+    /// extensions name the editor scope and the interruptions name the
+    /// host-global scope.
+    ///
+    /// ```
+    /// # use std::fmt;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use kvim_keymap::{
+    /// #     Binding, CommandMetadata, CommandOwner, Dispatch, DispatchContext, Input,
+    /// #     InputContextSnapshot, Key, KeyCode, Registry, Resolver, Scope, WhichKeyTarget,
+    /// # };
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # enum Action { LeaveToChat, OpenFiles }
+    /// # impl fmt::Display for Action {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.id()) }
+    /// # }
+    /// # impl CommandMetadata for Action {
+    /// #     fn id(&self) -> &str {
+    /// #         match self {
+    /// #             Self::LeaveToChat => "leave-to-chat",
+    /// #             Self::OpenFiles => "open-files",
+    /// #         }
+    /// #     }
+    /// #     fn label(&self) -> &str {
+    /// #         match self {
+    /// #             Self::LeaveToChat => "Leave to chat",
+    /// #             Self::OpenFiles => "Open the file picker",
+    /// #         }
+    /// #     }
+    /// # }
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # enum HostScope { Global, Editor }
+    /// # impl fmt::Display for HostScope {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         f.write_str(match self { Self::Global => "Global", Self::Editor => "Editor" })
+    /// #     }
+    /// # }
+    /// # impl Scope for HostScope { const COUNT: usize = 2; }
+    /// let escape = Key::ctrl(KeyCode::Char('e'));
+    /// let leader = Key::plain(KeyCode::Char(' '));
+    /// let files = Key::plain(KeyCode::Char('f'));
+    /// let registry = Registry::from_bindings(
+    ///     &[
+    ///         Binding::host(HostScope::Global, &[escape], Action::LeaveToChat),
+    ///         Binding::surface(HostScope::Editor, &[leader, files], Action::OpenFiles),
+    ///     ],
+    ///     4,
+    /// )?;
+    /// let delay = Duration::from_millis(500);
+    /// let mut resolver = Resolver::new(Arc::new(registry), 4, delay);
+    /// let context = DispatchContext {
+    ///     overlay: None,
+    ///     global: Some(HostScope::Global),
+    ///     focus: InputContextSnapshot::idle(HostScope::Editor),
+    /// };
+    ///
+    /// assert_eq!(
+    ///     resolver.dispatch(&context, Input::Key(leader), Some(Duration::ZERO)),
+    ///     Dispatch::Pending,
+    ///     "the editor scope arms the leader"
+    /// );
+    /// let view = resolver.which_key(delay).expect("the delay elapsed");
+    ///
+    /// let extensions = view.hints();
+    /// assert_eq!(extensions.len(), 1, "one key continues the leader");
+    /// assert_eq!(extensions[0].scope(), HostScope::Editor);
+    /// assert_eq!(extensions[0].hint().key(), files);
+    ///
+    /// let interruptions = view.interruptions();
+    /// assert_eq!(interruptions.len(), 1, "the host-global scope binds one key alone");
+    /// assert_eq!(interruptions[0].scope(), HostScope::Global);
+    /// assert_eq!(interruptions[0].hint().key(), escape);
+    /// assert_eq!(
+    ///     interruptions[0].hint().target(),
+    ///     WhichKeyTarget::Command(Action::LeaveToChat)
+    /// );
+    ///
+    /// assert_eq!(
+    ///     resolver.dispatch(&context, Input::Key(escape), Some(delay)),
+    ///     Dispatch::Interrupted {
+    ///         owner: CommandOwner::Host,
+    ///         command: Action::LeaveToChat,
+    ///     },
+    ///     "every published interrupting key runs at that moment"
+    /// );
+    /// # Ok::<(), kvim_keymap::RegistryError<Action, HostScope>>(())
+    /// ```
+    #[must_use]
+    pub fn interruptions(&self) -> Vec<ScopedWhichKeyHint<C, S>> {
+        let mut hints = Vec::new();
+        for scope in self
+            .identity
+            .scope_order()
+            .take_while(|scope| *scope != self.scope)
+        {
+            for hint in self.registry.hints_for_prefix(scope, &[]) {
+                // The interruption pass of `continue_prefix` tests the pressed
+                // key alone against `bound_command`. A first key that only
+                // opens a group of this scope answers `None` there, so
+                // publishing it would name a key that resolves to
+                // `Dispatch::Unbound`.
+                if self.registry.bound_command(scope, &[hint.key()]).is_some() {
+                    hints.push(ScopedWhichKeyHint::new(scope, hint));
+                }
             }
         }
         hints

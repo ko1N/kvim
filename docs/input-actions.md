@@ -519,6 +519,38 @@ list can approach `WHICH_KEY_HINTS_MAX`, which refuses a longer list rather
 than cutting it, so a host bounds or pages the result before it draws it. See
 [`embedding.md`](embedding.md).
 
+`WhichKeyView::interruptions` publishes the third list. A host calls it while a
+prefix is pending, beside `WhichKeyView::hints`.
+
+The two lists of a pending prefix answer two different questions. The hints
+name the keys that continue the sequence. A press of such a key completes the
+sequence or extends it further. The interruptions name the keys that abandon
+the sequence. A press of such a key drops the pending prefix and runs the
+command of a preceding scope.
+
+The interruption list holds the complete one-key bindings of every scope that
+precedes the scope owning the prefix, in scope order. Each entry names its
+scope.
+
+A key that only opens a group of a preceding scope stays out of the list. The
+third pass reads the pressed key alone, so such a key runs no command. Every
+published key therefore runs at that moment.
+
+One key can stand in both lists. The hint wins, because the resolver completes
+and extends the pending sequence before it tests an interruption. The overlay
+must not promise the command of the preceding scope for such a key.
+
+Two preceding scopes can bind the same key. Each one contributes its own entry,
+exactly as the idle list keeps both. The earlier scope in the order answers.
+
+A prefix that the first scope of the order owns publishes an empty interruption
+list. A context with one scope publishes an empty list as well.
+
+The interruption list stays short. It holds the complete one-key bindings of at
+most two preceding scopes, and the largest scope of kvim's own preset holds 76
+of them. A host that draws both lists in one overlay must still respect
+`WHICH_KEY_HINTS_MAX`, because a host declares its own preceding scopes.
+
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written
 list. `keymap` folds the extensions of the pending prefix into these hints,
