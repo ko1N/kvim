@@ -760,8 +760,12 @@ sequence.
 
 `<leader>gg` opens the review of the changes of the worktree. The review owns
 every key while it stays open, and it binds no key that changes a buffer.
-[`diff-view.md`](diff-view.md) owns the table of its keys and the rules of its
-two views.
+
+The review holds two regions and moves both of them with the motions that the
+buffer and the sidebar already publish, so it adds no motion command of its own.
+`Ctrl-H` and `Ctrl-L` move the keys between the two regions.
+[`diff-view.md`](diff-view.md) owns the table of its keys, the rules of its two
+views, and its live updates.
 
 ### Text Objects
 

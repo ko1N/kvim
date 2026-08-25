@@ -126,15 +126,37 @@ The review surface survives a close. A reader who jumps into a file and opens th
 review again keeps every read mark and the cursor, and the new captures reload
 into the surface instead of replacing it.
 
+### The Two Regions
+
+The review holds two regions: the changes panel and the diff body. One of them
+owns the keys, and `Ctrl-H` and `Ctrl-L` move between them, which are the keys
+that already move between windows.
+
+Both regions move like an ordinary buffer. The review binds the motions that the
+buffer and the file-tree sidebar already publish, so it holds no motion
+vocabulary of its own and a reader needs to learn none.
+
+The panel moves its selection over the changed files, and the body always shows
+the file that the panel names. The body holds every published row of that file:
+one header for each hunk and the aligned rows of that hunk. A motion of one
+region never moves the other one.
+
 | Key | What |
 |---|---|
 | `q`, `Esc`, `Ctrl-C` | Leave the review |
+| `Ctrl-H`, `Ctrl-L` | Move the keys to the panel and to the diff |
+| `j`, `k` | One row |
+| `Ctrl-D`, `Ctrl-U` | One half page |
+| `Ctrl-F`, `Ctrl-B` | One full page |
+| `gg`, `G` | The first and the last row |
 | `s` | Switch the two views |
-| `j`, `k` | The next and the previous hunk |
+| `]c`, `[c` | The next and the previous hunk, as Vim walks a diff |
+| `]f`, `[f` | The next and the previous changed file |
 | `n`, `N` | The next and the previous unread hunk |
-| `]`, `[` | The first hunk of the next and the previous changed file |
 | `m` | Mark the hunk at the cursor as read |
 | `Enter` | Open the file of the hunk at its first line |
+
+A count before a motion names the number of steps, as it does everywhere else.
 
 The review owns every key while it stays open, so a buffer key reaches no
 buffer. A key that the review does not bind reaches nothing.
@@ -153,3 +175,18 @@ itself.
 A repository without a commit publishes no staged half, which is a normal state
 and not a failure: `HEAD` names no commit to compare the index against. A
 refused capture reaches the message line once and leaves a usable editor.
+
+## Live Updates
+
+An open review shows the worktree, so a change of that worktree captures it
+again. The file watch that the file tree already uses carries the change, and
+the review needs no key and no refresh command.
+
+This is what makes the review usable beside an agent. The agent writes files,
+the diff follows, and every read mark and the selection relocate onto the later
+candidate, so a hunk that the change did not touch stays read and a rewritten
+hunk becomes unread again.
+
+The review queues no capture while captures of its own have not resolved, so a
+burst of changes never grows the outbox. The next burst after they resolve
+captures the state that the burst left behind.

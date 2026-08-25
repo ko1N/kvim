@@ -4483,6 +4483,22 @@ impl Session {
         Redraw::Needed
     }
 
+    /// Captures the worktree again while the review stays open.
+    ///
+    /// The captures carry the read marks and the selection forward, because a
+    /// reload relocates both onto the later candidate. A hunk that the change
+    /// did not touch therefore stays read.
+    ///
+    /// The call queues nothing while the review holds captures that have not
+    /// resolved, so a burst of changes never grows the outbox.
+    fn refresh_review(&mut self) -> Redraw {
+        if !self.review_open || !self.diff_outbox.is_empty() {
+            return Redraw::Skipped;
+        }
+        self.request_diff_captures();
+        Redraw::Skipped
+    }
+
     /// Queues the two captures that the review shows.
     fn request_diff_captures(&mut self) {
         let root = Arc::clone(&self.root);
@@ -4686,6 +4702,10 @@ impl Session {
         self.tree.apply_watch(batch);
         self.reconcile_tree();
         self.start_watch_reload();
+        // An open review shows the worktree, so a change of that worktree
+        // captures it again. An agent that writes files therefore updates the
+        // diff without a key. See `docs/diff-view.md`.
+        self.refresh_review();
         self.report_watch_coverage(batch.coverage())
     }
 

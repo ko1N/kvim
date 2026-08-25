@@ -2767,3 +2767,41 @@ fn the_leader_belongs_to_the_leader_in_the_sidebar() {
         "`<leader>gg` opens the review from the sidebar"
     );
 }
+
+#[test]
+fn a_watched_change_captures_the_open_review_again() {
+    let (dir, mut session) = workspace();
+    let changed = dir.join("docs");
+
+    // A change while no review is open queues no capture.
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &changed, WatchKind::Modified));
+    assert!(
+        session.take_diff_request().is_none(),
+        "a closed review captures nothing"
+    );
+
+    // The review opens and asks for both halves.
+    type_keys(&mut session, " gg");
+    let _staged = session.take_diff_request().expect("the staged half");
+    let _unstaged = session.take_diff_request().expect("the unstaged half");
+    assert!(session.take_diff_request().is_none());
+
+    // A change of the worktree captures it again, so an agent that writes
+    // files updates the diff without a key.
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &changed, WatchKind::Modified));
+    assert!(
+        session.take_diff_request().is_some(),
+        "the open review captures the change"
+    );
+    let _ = session.take_diff_request();
+
+    // A second change while captures wait queues nothing further, so a burst
+    // never grows the outbox.
+    type_keys(&mut session, " gg");
+    let _ = session.apply_watch_batch(&watch_batch(&dir.path, &changed, WatchKind::Modified));
+    let mut queued = 0;
+    while session.take_diff_request().is_some() {
+        queued += 1;
+        assert!(queued < 8, "the outbox stays bounded");
+    }
+}
