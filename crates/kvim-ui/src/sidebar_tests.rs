@@ -7,9 +7,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::{
-    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DRAWS_MAX,
-    SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarError, SidebarEvent,
-    SidebarInput, SidebarMotion, SidebarRow, SidebarState,
+    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
+    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarError,
+    SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState,
 };
 
 /// The row identity that the host owns. The sidebar only compares the value.
@@ -40,6 +40,25 @@ fn double_rows(viewport_rows: u16, count: u32) -> SidebarState<RowId> {
     sidebar
         .set_rows(rows)
         .expect("the rows stay inside the bounds");
+    sidebar
+}
+
+/// Returns the two-directory tree that a collapsed-subtree test moves over.
+///
+/// `a` and `b` both hold one collapsed child, so `a/1`, `a/2`, and `b/1` are
+/// all hidden. `a` and `b` stay visible, because a collapsed row hides only
+/// the rows below it.
+fn tree_with_two_collapsed_directories() -> SidebarState<RowId> {
+    let mut sidebar = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable).with_collapsed(true), // a
+            SidebarRow::single(1, RowKind::Selectable).with_depth(1),        // a/1, hidden
+            SidebarRow::single(2, RowKind::Selectable).with_depth(1),        // a/2, hidden
+            SidebarRow::single(3, RowKind::Selectable).with_collapsed(true), // b
+            SidebarRow::single(4, RowKind::Selectable).with_depth(1),        // b/1, hidden
+        ])
+        .expect("the rows stay inside every bound");
     sidebar
 }
 
@@ -473,4 +492,94 @@ fn a_rectangle_outside_the_buffer_returns_the_error_and_changes_no_cell() {
     });
     assert_eq!(outcome, Err(SidebarError::Area { area, buffer }));
     assert_eq!(target, untouched, "a refused rectangle paints no cell");
+}
+
+#[test]
+fn a_collapsed_row_contributes_no_line_and_no_placement() {
+    let sidebar = tree_with_two_collapsed_directories();
+
+    // Only `a` and `b` are visible, so they are the only rows that count
+    // toward the scroll and the only rows that receive a placement.
+    assert_eq!(sidebar.total_lines(), 2);
+    let placed: Vec<RowId> = sidebar
+        .placements()
+        .iter()
+        .map(|placement| *placement.row())
+        .collect();
+    assert_eq!(placed, vec![0, 3]);
+}
+
+#[test]
+fn a_downward_move_over_a_collapsed_parent_lands_on_the_next_visible_row() {
+    let mut sidebar = tree_with_two_collapsed_directories();
+    sidebar.select(&0);
+
+    // The move counts visible rows only, so it skips both hidden children of
+    // `a` and lands directly on `b`, the next visible row.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+        Some(SidebarEvent::SelectionChanged { row: 3 }),
+    );
+    // The same move back up returns to `a` in one step.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Up(1))),
+        Some(SidebarEvent::SelectionChanged { row: 0 }),
+    );
+}
+
+#[test]
+fn to_row_on_a_hidden_row_resolves_like_an_inert_row() {
+    let mut sidebar = tree_with_two_collapsed_directories();
+
+    // Row 1 is `a/1`, hidden below the collapsed `a`. The move takes the
+    // nearest visible, selectable row in the direction of travel.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(SidebarMotion::ToRow(1))),
+        Some(SidebarEvent::SelectionChanged { row: 3 }),
+    );
+}
+
+#[test]
+fn last_row_moves_to_the_last_visible_selectable_row() {
+    let mut sidebar = tree_with_two_collapsed_directories();
+    sidebar.select(&0);
+
+    // Row 4, `b/1`, is the last row of the flat list and it is hidden below
+    // the collapsed `b`, so the last visible row, `b`, takes the selection.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(SidebarMotion::LastRow)),
+        Some(SidebarEvent::SelectionChanged { row: 3 }),
+    );
+}
+
+#[test]
+fn a_row_deeper_than_the_depth_bound_is_refused() {
+    let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
+    let rows = vec![
+        SidebarRow::single(0, RowKind::Selectable),
+        SidebarRow::single(1, RowKind::Selectable).with_depth(SIDEBAR_ROW_DEPTH_MAX + 1),
+    ];
+
+    assert_eq!(
+        sidebar.set_rows(rows),
+        Err(SidebarError::Depth {
+            index: 1,
+            depth: SIDEBAR_ROW_DEPTH_MAX + 1,
+            max: SIDEBAR_ROW_DEPTH_MAX,
+        }),
+    );
+    assert!(
+        sidebar.rows().is_empty(),
+        "the refused list changes nothing"
+    );
+}
+
+#[test]
+fn a_hidden_row_never_takes_the_selection_or_the_selection_focus() {
+    let mut sidebar = tree_with_two_collapsed_directories();
+
+    // Selecting a hidden identity leaves the selection where it was, exactly
+    // as selecting an inert row does.
+    assert_eq!(sidebar.select(&1), None);
+    assert_eq!(sidebar.selected(), None);
 }

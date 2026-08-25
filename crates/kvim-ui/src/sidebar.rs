@@ -37,6 +37,14 @@ pub const SIDEBAR_ROWS_MAX: usize = 32_768;
 /// product of the row count and the row height inside [`u32`].
 pub const SIDEBAR_ROW_LINES_MAX: u16 = 8;
 
+/// The largest depth that one sidebar row holds.
+///
+/// The bound matches `TREE_DEPTH_MAX` of `kvim-workspace` and
+/// [`SPLIT_DEPTH_MAX`](crate::SPLIT_DEPTH_MAX) of this crate, so a host tree
+/// that already respects those bounds never exceeds this one. It also keeps
+/// the guide string of one row a bounded number of cells.
+pub const SIDEBAR_ROW_DEPTH_MAX: usize = 16;
+
 /// The largest number of characters that one drawn text accepts.
 ///
 /// The bound stops a host callback from handing a whole file to the cell
@@ -76,6 +84,16 @@ pub enum SidebarError {
         height: u16,
         /// The bound that the height passed.
         max: u16,
+    },
+    /// One row named a depth deeper than [`SIDEBAR_ROW_DEPTH_MAX`].
+    #[error("row {index} holds depth {depth}, and the bound is {max}")]
+    Depth {
+        /// The position of the row in the supplied list.
+        index: usize,
+        /// The depth that the host supplied.
+        depth: usize,
+        /// The bound that the depth passed.
+        max: usize,
     },
     /// The draw named a line outside the visible part of the row.
     #[error("the visible row holds {lines} lines, so line {line} is outside it")]
@@ -168,27 +186,93 @@ pub struct SidebarRow<R> {
     id: R,
     height_rows: NonZeroU16,
     kind: RowKind,
+    depth: usize,
+    collapsed: bool,
 }
 
 impl<R> SidebarRow<R> {
-    /// Creates one row of the named height.
+    /// Creates one row of the named height, at depth 0 and not collapsed.
+    ///
+    /// Use [`SidebarRow::with_depth`] and [`SidebarRow::with_collapsed`] to
+    /// place the row inside a tree.
     #[must_use]
     pub const fn new(id: R, height_rows: NonZeroU16, kind: RowKind) -> Self {
         Self {
             id,
             height_rows,
             kind,
+            depth: 0,
+            collapsed: false,
         }
     }
 
-    /// Creates one row that occupies one terminal row.
+    /// Creates one row that occupies one terminal row, at depth 0 and not
+    /// collapsed.
+    ///
+    /// Use [`SidebarRow::with_depth`] and [`SidebarRow::with_collapsed`] to
+    /// place the row inside a tree.
     #[must_use]
     pub const fn single(id: R, kind: RowKind) -> Self {
         Self {
             id,
             height_rows: NonZeroU16::MIN,
             kind,
+            depth: 0,
+            collapsed: false,
         }
+    }
+
+    /// Returns the row with the named depth below the root of its tree.
+    ///
+    /// The root row of a tree holds depth 0. [`SIDEBAR_ROW_DEPTH_MAX`] bounds
+    /// the depth that [`SidebarState::set_rows`] accepts.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{RowKind, SidebarRow};
+    ///
+    /// let child = SidebarRow::single("src/main.rs", RowKind::Selectable).with_depth(1);
+    /// assert_eq!(child.depth(), 1);
+    /// ```
+    #[must_use]
+    pub const fn with_depth(mut self, depth: usize) -> Self {
+        self.depth = depth;
+        self
+    }
+
+    /// Returns the row with the named collapsed state.
+    ///
+    /// A collapsed row hides every row below it that carries a strictly
+    /// greater depth, transitively, from every motion, from the placements,
+    /// and from the total line count. See [`SidebarState`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{RowKind, SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+    ///
+    /// // A collapsed directory hides the file below it.
+    /// let mut sidebar = SidebarState::new(3);
+    /// sidebar
+    ///     .set_rows(vec![
+    ///         SidebarRow::single("src", RowKind::Selectable).with_collapsed(true),
+    ///         SidebarRow::single("src/main.rs", RowKind::Selectable).with_depth(1),
+    ///         SidebarRow::single("tests", RowKind::Selectable),
+    ///     ])
+    ///     .expect("three rows stay inside every bound");
+    ///
+    /// // A downward move skips the hidden file and lands on the next visible row.
+    /// sidebar.select(&"src");
+    /// sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1)));
+    /// assert_eq!(sidebar.selected(), Some(&"tests"));
+    /// // The collapsed subtree contributes no line to the scroll.
+    /// assert_eq!(sidebar.total_lines(), 2);
+    /// ```
+    #[must_use]
+    pub const fn with_collapsed(mut self, collapsed: bool) -> Self {
+        self.collapsed = collapsed;
+        self
     }
 
     /// Returns the host identity of the row.
@@ -208,6 +292,48 @@ impl<R> SidebarRow<R> {
     pub const fn kind(&self) -> RowKind {
         self.kind
     }
+
+    /// Returns the depth of the row below the root of its tree.
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Reports whether the row hides the rows below it that carry a strictly
+    /// greater depth.
+    #[must_use]
+    pub const fn is_collapsed(&self) -> bool {
+        self.collapsed
+    }
+}
+
+/// Returns, for each row of `rows`, whether a collapsed ancestor hides it.
+///
+/// A row is hidden when a preceding row of strictly smaller depth carries
+/// `collapsed == true` and no shallower row closes that ancestor first. The
+/// scan holds one stack of the depths of the ancestors that are currently
+/// open and collapsed, so it costs one pass over `rows`. A row that is itself
+/// collapsed stays visible; only the rows below it, of strictly greater
+/// depth, are hidden.
+pub(crate) fn sidebar_visibility<R>(rows: &[SidebarRow<R>]) -> Vec<bool> {
+    let mut visible = Vec::with_capacity(rows.len());
+    let mut collapsed_ancestors: Vec<usize> = Vec::new();
+    for row in rows {
+        // A row at or above the depth of the innermost open ancestor has left
+        // its subtree, so that ancestor, and every one it closes with it, no
+        // longer applies.
+        while collapsed_ancestors
+            .last()
+            .is_some_and(|&depth| row.depth <= depth)
+        {
+            collapsed_ancestors.pop();
+        }
+        visible.push(collapsed_ancestors.is_empty());
+        if row.collapsed {
+            collapsed_ancestors.push(row.depth);
+        }
+    }
+    visible
 }
 
 /// The visible part of one row, in the coordinates of the sidebar rectangle.
@@ -441,6 +567,11 @@ pub enum SidebarEvent<R> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SidebarState<R> {
     rows: Vec<SidebarRow<R>>,
+    /// Whether each row of `rows` is visible, at the same position. A
+    /// collapsed ancestor hides a row from every motion, from the
+    /// placements, and from the total line count. [`Self::set_rows`]
+    /// computes this once and every later read uses the stored result.
+    visible: Vec<bool>,
     total_lines: u32,
     selected: Option<usize>,
     first_line: u32,
@@ -454,6 +585,7 @@ impl<R> Default for SidebarState<R> {
     fn default() -> Self {
         Self {
             rows: Vec::new(),
+            visible: Vec::new(),
             total_lines: 0,
             selected: None,
             first_line: 0,
@@ -475,6 +607,11 @@ impl<R: Clone + Eq> SidebarState<R> {
     }
 
     /// Returns the current rows.
+    ///
+    /// The list stays the complete flat list that the host supplied, hidden
+    /// rows included, because the host indexes into it and needs those
+    /// indexes to stay stable. Use [`SidebarState::placements`] for the
+    /// visible rows alone.
     #[must_use]
     pub fn rows(&self) -> &[SidebarRow<R>] {
         &self.rows
@@ -535,8 +672,9 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// # Errors
     ///
     /// Returns [`SidebarError::Rows`] when the list passes
-    /// [`SIDEBAR_ROWS_MAX`], and [`SidebarError::RowHeight`] when one row
-    /// passes [`SIDEBAR_ROW_LINES_MAX`].
+    /// [`SIDEBAR_ROWS_MAX`], [`SidebarError::RowHeight`] when one row passes
+    /// [`SIDEBAR_ROW_LINES_MAX`], and [`SidebarError::Depth`] when one row
+    /// passes [`SIDEBAR_ROW_DEPTH_MAX`].
     ///
     /// # Examples
     ///
@@ -576,16 +714,27 @@ impl<R: Clone + Eq> SidebarState<R> {
                     max: SIDEBAR_ROW_LINES_MAX,
                 });
             }
+            if row.depth > SIDEBAR_ROW_DEPTH_MAX {
+                return Err(SidebarError::Depth {
+                    index,
+                    depth: row.depth,
+                    max: SIDEBAR_ROW_DEPTH_MAX,
+                });
+            }
         }
         let previous = self
             .selected
             .map(|index| (index, self.rows[index].id.clone()));
         // The list passed every bound, so the replacement commits in one step.
+        let visible = sidebar_visibility(&rows);
         self.total_lines = rows
             .iter()
-            .map(|row| u32::from(row.height_rows()))
+            .zip(&visible)
+            .filter(|&(_, &visible)| visible)
+            .map(|(row, _)| u32::from(row.height_rows()))
             .sum::<u32>();
         self.rows = rows;
+        self.visible = visible;
         self.selected = previous.and_then(|(index, id)| {
             self.index_of(&id)
                 .or_else(|| self.nearest_selectable(index, Travel::Forward))
@@ -731,12 +880,24 @@ impl<R: Clone + Eq> SidebarState<R> {
     }
 
     /// Moves the selection by one bounded row move.
+    ///
+    /// [`SidebarMotion::Down`] and [`SidebarMotion::Up`] count visible rows
+    /// only, so a collapsed subtree is absent from the count and a move over
+    /// one lands on the next visible row at or above the depth of the
+    /// collapsed row. [`SidebarMotion::ToRow`] and [`SidebarMotion::LastRow`]
+    /// address visible rows only, through [`Self::nearest_selectable`].
     fn move_selection(&mut self, motion: SidebarMotion) -> Option<SidebarEvent<R>> {
         let last = self.rows.len().checked_sub(1)?;
         let current = self.selected.unwrap_or(0);
         let (target, travel) = match motion {
-            SidebarMotion::Down(step) => (current.saturating_add(step).min(last), Travel::Forward),
-            SidebarMotion::Up(step) => (current.saturating_sub(step), Travel::Backward),
+            SidebarMotion::Down(step) => (
+                self.step_visible(current, step, Travel::Forward),
+                Travel::Forward,
+            ),
+            SidebarMotion::Up(step) => (
+                self.step_visible(current, step, Travel::Backward),
+                Travel::Backward,
+            ),
             SidebarMotion::ToRow(row) => (row.min(last), Travel::Forward),
             SidebarMotion::LastRow => (last, Travel::Backward),
         };
@@ -744,6 +905,28 @@ impl<R: Clone + Eq> SidebarState<R> {
         // finds no row at all and the selection stays where it was.
         let found = self.nearest_selectable(target, travel)?;
         self.commit_selection(Some(found))
+    }
+
+    /// Returns the row position `step` visible rows away from `from`.
+    ///
+    /// A hidden row is absent from the count, so the walk never stops on one
+    /// and never counts it toward `step`. The walk stops at the first or the
+    /// last row instead of wrapping, so a `step` larger than the number of
+    /// visible rows ahead lands on the row nearest that end.
+    fn step_visible(&self, from: usize, step: usize, travel: Travel) -> usize {
+        let last = self.rows.len().saturating_sub(1);
+        let mut position = from.min(last);
+        for _ in 0..step {
+            let next = match travel {
+                Travel::Forward => (position.saturating_add(1)..=last).find(|&i| self.visible[i]),
+                Travel::Backward => (0..position).rev().find(|&i| self.visible[i]),
+            };
+            let Some(next) = next else {
+                break;
+            };
+            position = next;
+        }
+        position
     }
 
     /// Selects one row and reports the change.
@@ -759,27 +942,26 @@ impl<R: Clone + Eq> SidebarState<R> {
             .map(|row| SidebarEvent::SelectionChanged { row })
     }
 
-    /// Returns the position of one selectable row.
+    /// Returns the position of one visible, selectable row.
     fn index_of(&self, id: &R) -> Option<usize> {
-        self.rows
-            .iter()
-            .position(|row| row.kind == RowKind::Selectable && row.id == *id)
+        self.rows.iter().enumerate().position(|(index, row)| {
+            row.kind == RowKind::Selectable && self.visible[index] && row.id == *id
+        })
     }
 
-    /// Returns the nearest selectable row from one position.
+    /// Returns the nearest visible, selectable row from one position.
     ///
-    /// The search runs in the direction of travel first, and then behind it, so
-    /// a block of inert rows never stops a move.
+    /// The search runs in the direction of travel first, and then behind it,
+    /// so a block of hidden rows or inert rows never stops a move. Both
+    /// conditions must hold for a row to match: it is visible, and its kind
+    /// is [`RowKind::Selectable`].
     fn nearest_selectable(&self, from: usize, travel: Travel) -> Option<usize> {
         let last = self.rows.len().checked_sub(1)?;
         let from = from.min(last);
-        let ahead = self.rows[from..]
-            .iter()
-            .position(|row| row.kind == RowKind::Selectable)
-            .map(|offset| from + offset);
-        let behind = self.rows[..=from]
-            .iter()
-            .rposition(|row| row.kind == RowKind::Selectable);
+        let is_selectable =
+            |index: usize| self.rows[index].kind == RowKind::Selectable && self.visible[index];
+        let ahead = (from..=last).find(|&index| is_selectable(index));
+        let behind = (0..=from).rev().find(|&index| is_selectable(index));
         match travel {
             Travel::Forward => ahead.or(behind),
             Travel::Backward => behind.or(ahead),
@@ -787,10 +969,14 @@ impl<R: Clone + Eq> SidebarState<R> {
     }
 
     /// Returns the first terminal row of one row of the list.
+    ///
+    /// A hidden row contributes no line, so it is absent from the sum.
     fn line_of(&self, index: usize) -> u32 {
         self.rows[..index]
             .iter()
-            .map(|row| u32::from(row.height_rows()))
+            .zip(&self.visible)
+            .filter(|&(_, &visible)| visible)
+            .map(|(row, _)| u32::from(row.height_rows()))
             .sum()
     }
 
@@ -800,6 +986,11 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// the sidebar never scrolls past its rows to satisfy a margin that no row
     /// can fill. A row that is taller than the viewport shows its first line.
     fn reconcile(&mut self) {
+        debug_assert_eq!(
+            self.rows.len(),
+            self.visible.len(),
+            "set_rows always stores one visibility flag for every row"
+        );
         self.placements.clear();
         if self.height_rows == 0 || self.rows.is_empty() {
             self.first_line = 0;
@@ -833,11 +1024,18 @@ impl<R: Clone + Eq> SidebarState<R> {
         );
     }
 
-    /// Places every row that the viewport shows and clips the two ends.
+    /// Places every visible row that the viewport shows and clips the two
+    /// ends.
+    ///
+    /// A hidden row contributes no line, so it never reaches the loop body
+    /// that turns a line range into one placement.
     fn place_rows(&mut self) {
         let height = u32::from(self.height_rows);
         let mut line = 0_u32;
         for (index, row) in self.rows.iter().enumerate() {
+            if !self.visible[index] {
+                continue;
+            }
             let end = line + u32::from(row.height_rows());
             if end <= self.first_line {
                 line = end;
@@ -848,11 +1046,11 @@ impl<R: Clone + Eq> SidebarState<R> {
             }
             let first_line = self.first_line.saturating_sub(line);
             let top_row = line.saturating_sub(self.first_line);
-            let visible = (u32::from(row.height_rows()) - first_line).min(height - top_row);
+            let visible_lines = (u32::from(row.height_rows()) - first_line).min(height - top_row);
             let (Ok(first_line), Ok(top_row), Some(lines)) = (
                 u16::try_from(first_line),
                 u16::try_from(top_row),
-                u16::try_from(visible).ok().and_then(NonZeroU16::new),
+                u16::try_from(visible_lines).ok().and_then(NonZeroU16::new),
             ) else {
                 debug_assert!(false, "one visible part stays inside the viewport height");
                 return;

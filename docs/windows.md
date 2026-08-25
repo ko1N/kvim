@@ -286,6 +286,63 @@ title row above the rows names the workspace root, and it carries the focused or
 the unfocused title color. The terminal draws its own cursor on the selected row
 while the sidebar holds the focus, so one frame still reports one cursor cell.
 
+### Tree Rows
+
+`SidebarRow<R>` carries a depth and a collapsed flag. The depth is the
+distance of the row below the root of its tree. The root row of a tree holds
+depth 0. `SIDEBAR_ROW_DEPTH_MAX` bounds the depth at 16, so a row that names a
+deeper tree makes `set_rows` return an error instead of an unbounded guide
+string.
+
+The row list stays flat. A row's parent is the nearest earlier row of a
+strictly smaller depth. `SidebarState` computes which rows are visible once,
+when `set_rows` runs, and stores the result. Every later read uses the stored
+result. A row is hidden when an ancestor, transitively, carries the collapsed
+flag. A collapsed row stays visible itself; only the rows below it are
+hidden.
+
+A hidden row composes with the inert-row rule instead of replacing it. A row
+takes the selection only when it is visible and its kind is `Selectable`.
+
+`Down` and `Up` count visible rows only, so a move over a collapsed parent
+lands on the next visible row, at or above the depth of the collapsed parent.
+`ToRow` and `LastRow` address visible rows only. A hidden target resolves
+like an inert row does: to the nearest selectable row in the direction of
+travel, then to the nearest one behind it. Neither motion wraps.
+
+`rows()` still returns the complete flat list, hidden rows included, because
+the host indexes into that list and needs those indexes to stay stable. Use
+`placements()` for the visible rows alone.
+
+A hidden row contributes no line to the total line count, to the scroll
+margin, or to `placements()`.
+
+### Tree Guides
+
+`sidebar_guides` draws the indent guides of one tree row: a trunk for a level
+that holds a further row below, an elbow for the last row of a level, and a
+blank guide otherwise. The rule starts at depth 1, so a top-level row of a
+tree carries no guide of its own.
+
+A host calls `sidebar_guides` for a visible row only, the same row it draws.
+A collapsed subtree then changes no guide, and the scan needs no visibility
+test. Every row that the scan reads holds the depth of the closing level or a
+deeper one, and every row that a collapse hides sits deeper than the ancestor
+that hides it. A hidden row therefore never holds the depth that closes the
+level. The scan allocates nothing beyond the returned string, so a host that
+calls `sidebar_guides` once for every drawn row, every frame, pays for that
+string alone.
+
+The file tree and the changes panel of the diff view drew this exact rule
+twice before `kvim-ui` published it. The two copies read alike but were not
+identical, because the file tree draws one header row above the workspace
+root. Its top-level rows sit below that header and carry no sibling that
+could ever close a guide, so the file tree prepends one blank guide of its
+own before the shared result. The changes panel has no such header, so its
+top-level rows take the shared result unchanged. `sidebar_guides` never adds
+the leading blank itself, because that blank is a fact of the file tree's own
+header, not a fact of the shared rule.
+
 ## Selector
 
 `Selector<R>` owns a bounded query, a bounded candidate list, a ranked match

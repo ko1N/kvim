@@ -87,6 +87,7 @@
 #![deny(missing_docs)]
 
 mod composer;
+mod guides;
 mod layout;
 mod selector;
 mod sidebar;
@@ -98,14 +99,19 @@ pub use composer::{
     COMPOSED_SURFACES_MAX, Composition, CompositionEffect, CompositionLayout, OverlayPlacement,
     ResumeError, SurfacePlacement, TransitionId, UnknownSurface, WorkspaceComposer,
 };
+pub use guides::{
+    SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_GUIDE_TRUNK,
+    sidebar_guides,
+};
 pub use layout::{Region, RegionKind, WindowLayout};
 pub use selector::{
     SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
 };
 pub use sidebar::{
-    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DRAWS_MAX,
-    SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas, SidebarError,
-    SidebarEvent, SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow, SidebarState,
+    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
+    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas,
+    SidebarError, SidebarEvent, SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow,
+    SidebarState,
 };
 pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabStrip};
 pub use which_key::{
