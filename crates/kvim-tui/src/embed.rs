@@ -46,6 +46,7 @@ use kvim_workspace::FileOperation;
 
 use super::clipboard::ClipboardAccess;
 use super::driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
+use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
 use super::session::{Redraw, RunState, Session};
 
 /// The largest number of editor facts that one instance queues at a time.
@@ -283,6 +284,19 @@ pub enum EditorEvent {
     WorkspaceChanged {
         /// The operation that the workspace performed.
         operation: FileOperation,
+    },
+    /// The reader activated one file of the file sidebar.
+    ///
+    /// The editor opened no buffer. The fact reaches the host through the
+    /// [`FileSidebarOutcome`] of the input that produced it, and
+    /// [`FileSidebarOutcome::event`] converts it for a host that keeps one
+    /// uniform event stream.
+    ///
+    /// [`FileSidebarOutcome`]: super::file_sidebar::FileSidebarOutcome
+    /// [`FileSidebarOutcome::event`]: super::file_sidebar::FileSidebarOutcome::event
+    FileActivated {
+        /// The contained path of the activated file.
+        path: WorktreeRelativePath,
     },
     /// The visible state changed and the host must draw one frame.
     ///
@@ -871,6 +885,120 @@ impl EmbeddedEditor {
     /// [`EmbeddedEditor::dispatch`] hands to the spawner.
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> Redraw {
         self.editor.open(path)
+    }
+
+    /// Returns the file-sidebar rows that the host draws beside this editor.
+    ///
+    /// The editor owns one lazy file tree over its worktree root. This call
+    /// copies the loaded state of that tree and reads no directory, so it
+    /// performs no filesystem work on the host event loop. A directory that
+    /// holds no listing yet reports
+    /// [`FileRowKind::LoadingDirectory`](super::file_sidebar::FileRowKind::LoadingDirectory)
+    /// until [`EmbeddedEditor::dispatch`] hands its read to the spawner and
+    /// [`EmbeddedEditor::apply`] hands the listing back.
+    ///
+    /// The list holds at most
+    /// [`FILE_SIDEBAR_ROWS_MAX`](super::file_sidebar::FILE_SIDEBAR_ROWS_MAX)
+    /// rows. The host keeps one copy between frames and reads it again after
+    /// one [`EditorEvent::RedrawRequested`].
+    ///
+    /// `crates/kvim-tui/examples/embedded_file_sidebar.rs` draws these rows.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::time::Duration;
+    ///
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_tui::EmbeddedEditor;
+    ///
+    /// # let host_runtime = tokio::runtime::Builder::new_current_thread()
+    /// #     .enable_all()
+    /// #     .build()
+    /// #     .expect("the example builds one runtime");
+    /// # host_runtime.block_on(async {
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut editor = EmbeddedEditor::builder(root, Rect::new(0, 0, 80, 24))
+    ///     .open()
+    ///     .expect("the rectangle holds cells");
+    ///
+    /// // The tree reads no directory here. The read leaves as one unit of
+    /// // work, and the host hands the finished unit back.
+    /// for _ in 0..32 {
+    ///     let _redraw = editor.dispatch();
+    ///     if !editor.file_rows().is_empty() {
+    ///         break;
+    ///     }
+    ///     let waited = tokio::time::timeout(Duration::from_secs(10), editor.recv()).await;
+    ///     let Ok(completed) = waited else { break };
+    ///     let _redraw = editor.apply(completed, Duration::ZERO);
+    /// }
+    ///
+    /// let rows = editor.file_rows();
+    /// assert!(!rows.is_empty(), "the worktree root holds entries");
+    /// assert!(rows.iter().all(|row| row.depth() == 0));
+    /// # let _shutdown = editor.shutdown(Duration::from_secs(10)).await;
+    /// # });
+    /// ```
+    #[must_use]
+    pub fn file_rows(&self) -> Vec<FileRow> {
+        self.editor.file_rows()
+    }
+
+    /// Returns the worktree root as the header of the file sidebar shows it.
+    ///
+    /// The label shortens the home directory of the user to `~`, exactly as the
+    /// header row of the sidebar of kvim shows it.
+    #[must_use]
+    pub fn file_root_label(&self) -> String {
+        self.editor.file_root_label()
+    }
+
+    /// Applies one input of the host to the file sidebar of this editor.
+    ///
+    /// The reduction moves the selection, opens one directory, or closes one
+    /// directory. It reads no directory itself: an expansion queues the listing
+    /// that the next [`EmbeddedEditor::dispatch`] hands to the spawner.
+    ///
+    /// The sidebar opens no buffer. An activated file returns as
+    /// [`FileSidebarOutcome::Activated`](super::file_sidebar::FileSidebarOutcome::Activated),
+    /// and the host decides whether to call [`EmbeddedEditor::open_file`] with
+    /// that path. The reduction latches [`EditorEvent::RedrawRequested`], so
+    /// the host draws one frame after it.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_tui::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, SidebarMotion};
+    ///
+    /// let root = std::sync::Arc::new(
+    ///     kvim_path::WorktreeRoot::open(
+    ///         std::env::current_dir().expect("the process holds a working directory"),
+    ///     )
+    ///     .expect("the working directory is a worktree"),
+    /// );
+    /// let mut editor = EmbeddedEditor::builder(root, Rect::new(0, 0, 80, 24))
+    ///     .open()
+    ///     .expect("the rectangle holds cells");
+    ///
+    /// // The first listing has not arrived, so the tree shows no row and the
+    /// // move changes nothing. The call still touches no filesystem.
+    /// assert_eq!(
+    ///     editor.file_sidebar(FileSidebarInput::Move(SidebarMotion::Down(1))),
+    ///     FileSidebarOutcome::Applied,
+    /// );
+    /// ```
+    #[must_use]
+    pub fn file_sidebar(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
+        self.editor.reduce_file_sidebar(input)
     }
 
     /// Applies one resolved editor command.

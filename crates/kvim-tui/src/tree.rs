@@ -39,6 +39,9 @@ use kvim_workspace::{
 };
 
 use super::buffer_view::WindowFocus;
+use super::file_sidebar::{
+    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowKind, FileSidebarInput, FileSidebarOutcome,
+};
 use super::icons::{ICON_CELLS, directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
 
@@ -823,32 +826,10 @@ impl TreeSidebar {
 
     /// Copies the current rows and the current selection into the row state.
     ///
-    /// Every row occupies one terminal row and carries its own position as its
-    /// identity, so the renderer reads the tree row of one placement directly.
-    /// A row that reports a bounded or a failed directory read takes no
-    /// selection.
+    /// The renderer reads the tree row of one placement directly, because every
+    /// row carries its own position as its identity.
     fn sync_rows(&mut self) {
-        let rows = self
-            .tree
-            .rows()
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let kind = if row.is_selectable() {
-                    RowKind::Selectable
-                } else {
-                    RowKind::Inert
-                };
-                // `FileTree` withholds a collapsed directory's children from
-                // `tree.rows()` itself, so this row list already holds the
-                // visible rows alone. The sidebar's own collapsed flag stays
-                // unset here on purpose: calling `with_collapsed` would hide a
-                // row that `FileTree` never emitted, so it changes nothing,
-                // and one owner of the truth stays enough. See
-                // `docs/windows.md`.
-                SidebarRow::single(index, kind).with_depth(row.depth)
-            })
-            .collect();
+        let rows = self.generic_rows();
         if let Err(error) = self.view.set_rows(rows) {
             debug_assert!(false, "the tree bounds hold every row: {error}");
             return;
@@ -860,6 +841,102 @@ impl TreeSidebar {
                 self.view.select(&index);
             }
             None => self.view.clear_selection(),
+        }
+    }
+
+    /// Returns the generic rows of the current tree rows.
+    ///
+    /// Every row occupies one terminal row and carries its own position as its
+    /// identity. A row that reports a bounded or a failed directory read is
+    /// inert, so it takes no selection.
+    ///
+    /// `FileTree` withholds the children of a collapsed directory from
+    /// [`FileTree::rows`] itself, so this list already holds the visible rows
+    /// alone. The collapsed flag of the sidebar stays unset here on purpose:
+    /// [`SidebarRow::with_collapsed`] would hide a row that `FileTree` never
+    /// emitted, so it changes nothing, and one owner of the truth stays enough.
+    /// See `docs/windows.md`.
+    fn generic_rows(&self) -> Vec<SidebarRow<usize>> {
+        self.tree
+            .rows()
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let kind = if row.is_selectable() {
+                    RowKind::Selectable
+                } else {
+                    RowKind::Inert
+                };
+                SidebarRow::single(index, kind).with_depth(row.depth)
+            })
+            .collect()
+    }
+
+    /// Returns the rows that one embedded host draws for this tree.
+    ///
+    /// The rows carry the text, the indent guides, the depth, the state, and
+    /// the selection of the tree as it stands now. The call reads no
+    /// filesystem: it copies loaded state alone, and a directory that holds no
+    /// listing yet reports [`FileRowKind::LoadingDirectory`] until the host
+    /// hands its read back. See `docs/embedding.md`.
+    pub(super) fn host_rows(&self) -> Vec<FileRow> {
+        let generic = self.generic_rows();
+        debug_assert!(
+            generic.len() <= FILE_SIDEBAR_ROWS_MAX,
+            "the bounds of the file tree hold every row inside the sidebar bound"
+        );
+        let selected = self.tree.selected();
+        self.tree
+            .rows()
+            .iter()
+            .enumerate()
+            .map(|(index, row)| {
+                let label = match &row.content {
+                    RowContent::File { name, .. } | RowContent::Directory { name, .. } => {
+                        name.clone()
+                    }
+                    RowContent::Notice(notice) => notice_text(notice),
+                };
+                // The shared rule starts a guide at depth 1, and the header row
+                // of the workspace root is no sibling of the first entries, so
+                // the file tree prepends one blank guide of its own. The host
+                // takes the complete indent, so it reproduces that look without
+                // holding a second copy of the rule. See `docs/windows.md`.
+                let guides = format!("{SIDEBAR_GUIDE_BLANK}{}", sidebar_guides(&generic, index));
+                let selected = row.is_selectable() && selected == Some(row.path.as_path());
+                FileRow::new(label, guides, row.depth, host_row_kind(row), selected)
+            })
+            .collect()
+    }
+
+    /// Applies one input of an embedded host to this tree.
+    ///
+    /// The reduction changes the selection and the expansion alone. It opens no
+    /// buffer and reads no directory: an expansion queues the listing that
+    /// [`TreeSidebar::take_request`] hands to the worker service.
+    pub(super) fn reduce_host(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
+        let activated = match input {
+            FileSidebarInput::Move(motion) => {
+                self.move_selection(match motion {
+                    SidebarMotion::Down(step) => TreeMotion::Down(step),
+                    SidebarMotion::Up(step) => TreeMotion::Up(step),
+                    SidebarMotion::ToRow(row) => TreeMotion::ToRow(row),
+                    SidebarMotion::LastRow => TreeMotion::LastRow,
+                });
+                None
+            }
+            FileSidebarInput::Open => self.expand_selected(),
+            FileSidebarInput::Close => {
+                self.collapse_selected();
+                None
+            }
+            FileSidebarInput::Activate => self.open_selected(),
+        };
+        // The tree names an absolute path. A path that names no contained entry
+        // of the root belongs to no row, so it reaches no host either.
+        match activated.and_then(|path| self.contained(&path)) {
+            Some(path) => FileSidebarOutcome::Activated { path },
+            None => FileSidebarOutcome::Applied,
         }
     }
 
@@ -1052,15 +1129,40 @@ fn row_text(row: &TreeRow, guides: &str, state: RowState, icons: FileTreeIcons) 
             };
             format!("{mark}{guides}{glyph}{name}{link}{held}")
         }
-        RowContent::Notice(Notice::Truncated { shown, total }) => {
-            format!("{mark}{guides}{glyph}… {shown} of {total} entries")
+        RowContent::Notice(notice) => {
+            format!("{mark}{guides}{glyph}{}", notice_text(notice))
         }
-        RowContent::Notice(Notice::Unreadable) => {
-            format!("{mark}{guides}{glyph}… unreadable")
-        }
-        RowContent::Notice(Notice::Hidden { count }) => {
+    }
+}
+
+/// Returns what one tree row shows to an embedded host.
+///
+/// The state of a directory reaches the host as one value, so a host draws one
+/// row from one match and never combines two flags. See `docs/embedding.md`.
+fn host_row_kind(row: &TreeRow) -> FileRowKind {
+    match &row.content {
+        RowContent::File { .. } => FileRowKind::File,
+        RowContent::Directory { expansion, .. } => match expansion {
+            Expansion::Collapsed => FileRowKind::ClosedDirectory,
+            Expansion::Expanded => FileRowKind::OpenDirectory,
+            Expansion::Pending => FileRowKind::LoadingDirectory,
+        },
+        RowContent::Notice(_) => FileRowKind::Note,
+    }
+}
+
+/// Returns the report that one notice row shows about its directory.
+///
+/// The renderer of the sidebar and the host surface of `file_sidebar.rs` both
+/// read this rule, so a host that draws the rows itself reports a bounded read,
+/// a failed read, and a hidden entry with the words that kvim shows.
+fn notice_text(notice: &Notice) -> String {
+    match notice {
+        Notice::Truncated { shown, total } => format!("… {shown} of {total} entries"),
+        Notice::Unreadable => "… unreadable".to_owned(),
+        Notice::Hidden { count } => {
             let items = if *count == 1 { "item" } else { "items" };
-            format!("{mark}{guides}{glyph}({count} hidden {items})")
+            format!("({count} hidden {items})")
         }
     }
 }

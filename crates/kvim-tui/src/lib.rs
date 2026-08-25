@@ -28,10 +28,13 @@
 //! [`PublishedEvent`], [`Reduction`], [`ReductionOutcome`], [`Refusal`],
 //! [`Saturated`], [`CursorRequest`], [`CursorShape`], [`GeometryError`],
 //! [`InputRequest`], [`EditorShutdown`], [`EditorDrain`], [`ShutdownDrain`],
-//! [`Completed`], [`EditorWork`], [`ClipboardAccess`], the forwarded `kvim-ui`
-//! geometry values, and the bounds of each one. A host composes one editor from
-//! these values alone. `crates/kvim-tui/examples/embedded_editor.rs` uses
-//! nothing else.
+//! [`Completed`], [`EditorWork`], [`ClipboardAccess`], the file sidebar values
+//! [`FileRow`], [`FileRowKind`], [`FileSidebarInput`], and
+//! [`FileSidebarOutcome`], the forwarded `kvim-ui` geometry values, and the
+//! bounds of each one. A host composes one editor from these values alone.
+//! `crates/kvim-tui/examples/embedded_editor.rs` uses nothing else, and
+//! `crates/kvim-tui/examples/embedded_file_sidebar.rs` adds the file sidebar
+//! alone.
 //!
 //! The standalone facade serves the `kvim` binary, which is the terminal
 //! adapter of this repository. It holds [`Session`], [`Windows`],
@@ -86,6 +89,7 @@ mod diagnostics;
 mod diff_view;
 mod driver;
 mod embed;
+mod file_sidebar;
 mod icons;
 mod jumps;
 mod language;
@@ -112,10 +116,14 @@ pub use embed::{
     EditorEvent, EditorInstanceId, EditorShutdown, EmbeddedEditor, EmbeddedEditorBuilder,
     GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal, Saturated,
 };
+pub use file_sidebar::{
+    FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowKind, FileSidebarInput,
+    FileSidebarOutcome,
+};
 pub use kvim_ui::{
     CloseOutcome, Direction, LayoutChange, LayoutFit, Orientation, Region, RegionKind,
     SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX, SPLIT_WEIGHT_TOTAL, Sidebar,
-    SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLayout,
+    SidebarMotion, SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLayout,
 };
 pub use language::{
     DiagnosticJump, FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, FormatOnSave, LANGUAGE_OUTBOX_MAX,

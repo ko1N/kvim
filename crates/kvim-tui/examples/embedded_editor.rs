@@ -279,6 +279,11 @@ fn report(events: &[PublishedEvent]) {
             EditorEvent::WorkspaceChanged { operation } => {
                 println!("editor {}: changed {operation:?}", published.instance.get());
             }
+            EditorEvent::FileActivated { path } => println!(
+                "editor {}: the reader activated {}",
+                published.instance.get(),
+                path.as_path().display()
+            ),
             EditorEvent::RedrawRequested => {
                 println!("editor {}: asks for one frame", published.instance.get());
             }

@@ -88,6 +88,7 @@ use super::embed::{
     EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome,
     Refusal, fits,
 };
+use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
 use super::jumps::{JumpDirection, JumpEntry, JumpStep};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
@@ -1799,6 +1800,32 @@ impl Session {
     #[must_use]
     pub const fn file_tree(&self) -> &FileTree {
         self.tree.tree()
+    }
+
+    /// Returns the file-sidebar rows that one embedded host draws.
+    ///
+    /// The call copies loaded state alone and reads no directory. See
+    /// `docs/embedding.md`.
+    pub(super) fn file_rows(&self) -> Vec<FileRow> {
+        self.tree.host_rows()
+    }
+
+    /// Returns the worktree root as the header of the file sidebar shows it.
+    pub(super) fn file_root_label(&self) -> String {
+        self.tree.root_label()
+    }
+
+    /// Applies one file-sidebar input of an embedded host.
+    ///
+    /// The reduction latches the redraw request, exactly as one editor command
+    /// does, so the host reads one `RedrawRequested` fact instead of a second
+    /// return value. An expansion queues one directory read, which the next
+    /// dispatch hands to the worker service.
+    pub(super) fn reduce_file_sidebar(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
+        let outcome = self.tree.reduce_host(input);
+        self.reconcile_tree();
+        self.note_redraw(Redraw::Needed);
+        outcome
     }
 
     /// Returns the last message, or `None` while the line is empty.

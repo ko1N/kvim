@@ -129,6 +129,60 @@ that owns the resolver has no registry entry that can express "cancel on
 anything unbound". It must answer that case with a host-global chord of its
 own instead.
 
+### The File Sidebar
+
+`EmbeddedEditor` owns one lazy file tree over its worktree root. The facade
+publishes that tree so a host draws a file sidebar beside the editor. The
+surface names no type of `kvim-workspace`, because
+[`architecture.md`](architecture.md) keeps that package out of the supported
+set. It names its own vocabulary, the paths of `kvim-path`, and the geometry of
+`kvim-ui`.
+
+`EmbeddedEditor::file_rows` returns the drawable rows. One `FileRow` carries the
+label, the indent guides, the depth, one `FileRowKind`, and the selection of one
+line. It carries no color, no icon, and no cell, so the host owns the whole look
+of its sidebar. `FileRowKind` names the five states of one line: `File`,
+`ClosedDirectory`, `OpenDirectory`, `LoadingDirectory`, and `Note`. A `Note` row
+reports a bounded read, a failed read, or the number of entries that the
+hidden-entry policy keeps out of the rows; it names no entry and takes no
+selection.
+
+`FileRow::guides` is the complete indent of the row. It already holds the one
+leading blank that the file tree of kvim draws, because the workspace-root
+header of that tree is no sibling of the first entries. A host that draws the
+guides as they are published reproduces the look of kvim.
+[`windows.md`](windows.md) owns the guide rule itself.
+
+`EmbeddedEditor::file_sidebar` applies one `FileSidebarInput`. `Move` takes one
+`kvim_ui::SidebarMotion`, which stops at the first and the last row and never
+wraps. `Open` opens the selected directory or activates the selected file.
+`Close` closes the selected directory or selects the directory that holds the
+selected row. `Activate` activates the selected file or opens and closes the
+selected directory.
+
+The reduction returns one `FileSidebarOutcome`. `Activated` carries the
+contained path of one activated file, and the sidebar opened no buffer for it. A
+host that shows the file calls `EmbeddedEditor::open_file` with that path.
+`FileSidebarOutcome::event` converts the activation into
+`EditorEvent::FileActivated` for a host that keeps one uniform event stream,
+exactly as `InputRequest::event` converts a focus boundary. Nothing is queued,
+so no activation waits behind another event. Every reduction latches
+`RedrawRequested`.
+
+The tree reads no directory on the host event loop. A row that needs a listing
+leaves the editor as one unit of work through `EmbeddedEditor::dispatch`, and
+the listing reaches the tree through `EmbeddedEditor::apply`. The host therefore
+drives these reads with the one work channel that it already drives for the
+editor, and it adds no second channel. A directory reports
+`FileRowKind::LoadingDirectory` between the expansion and the listing.
+
+`FileTree` governs collapse for this tree. It withholds the rows of a closed
+directory itself, so a closed directory contributes no published row.
+[`windows.md`](windows.md) records that decision.
+
+`crates/kvim-tui/examples/embedded_file_sidebar.rs` is one complete host of one
+such sidebar.
+
 The host supplies a `ratatui::Rect` and `ratatui::Buffer` for rendering. The
 editor accepts one explicit rectangle first, because the layout, the viewports,
 and the cursor all follow that rectangle. It writes only inside that rectangle.
@@ -147,6 +201,7 @@ shape and owns no terminal sequence.
 - `ActiveFileChanged`,
 - `FileWritten`,
 - `WorkspaceChanged`,
+- `FileActivated`,
 - `RedrawRequested`,
 - `FocusBoundary(Direction)`,
 - `CloseRequested`.
@@ -332,6 +387,7 @@ The required examples are:
 - `crates/kvim-ui/examples/tab_strip.rs`
 - `crates/kvim-ui/examples/which_key.rs`
 - `crates/kvim-tui/examples/embedded_editor.rs`
+- `crates/kvim-tui/examples/embedded_file_sidebar.rs`
 - `crates/kvim-tui/examples/host_workspace.rs`
 - `crates/kvim-tui/examples/worktree_diff_review.rs`
 
