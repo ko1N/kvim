@@ -310,6 +310,7 @@ fn the_panel_follows_the_cursor_and_names_both_halves() {
         Some(&ChangesRow::File {
             section: ChangeSection::Unstaged,
             path: path("b.txt"),
+            depth: 0,
         })
     );
 }
@@ -439,6 +440,7 @@ fn a_motion_moves_the_region_that_owns_the_keys_alone() {
         Some(&ChangesRow::File {
             section: ChangeSection::Unstaged,
             path: path("b.txt"),
+            depth: 0,
         }),
     );
 }

@@ -6,7 +6,9 @@
 //!
 //! The module is pure. It reads no clock, no filesystem, and no process.
 
+use std::ffi::OsString;
 use std::num::NonZeroU16;
+use std::path::{Path, PathBuf};
 
 use kvim_path::WorktreeRelativePath;
 use kvim_ui::{RowKind, SidebarRow, SidebarState};
@@ -39,12 +41,26 @@ impl ChangeSection {
 pub(super) enum ChangesRow {
     /// The heading of one section, which takes no selection.
     Heading(ChangeSection),
+    /// One directory that holds changed files below it.
+    ///
+    /// The panel groups the changed files by directory, exactly as the file
+    /// tree groups the workspace, so one reader reads one shape.
+    Directory {
+        /// The section that publishes the directory.
+        section: ChangeSection,
+        /// The directory, relative to the workspace root.
+        path: PathBuf,
+        /// The depth of the directory below the section.
+        depth: usize,
+    },
     /// One changed file of one section.
     File {
         /// The section that publishes the file.
         section: ChangeSection,
         /// The file.
         path: WorktreeRelativePath,
+        /// The depth of the file below the section.
+        depth: usize,
     },
 }
 
@@ -75,8 +91,16 @@ impl ChangeEntry {
     }
 
     /// Returns the row text of the entry.
+    ///
+    /// The panel groups the files by directory, so the row names the file
+    /// alone and the directory rows above it carry the rest of the path.
     pub(super) fn label(&self) -> String {
-        let name = self.path.as_path().display();
+        let name = self
+            .path
+            .as_path()
+            .file_name()
+            .unwrap_or_else(|| self.path.as_path().as_os_str())
+            .to_string_lossy();
         let counts = format!("+{} -{}", self.added, self.removed);
         let state = if self.truncated {
             " …".to_owned()
@@ -85,7 +109,7 @@ impl ChangeEntry {
         } else {
             format!(" ({} unread)", self.unread)
         };
-        format!("{} {name}  {counts}{state}", self.mark)
+        format!("{name}  {counts}{state} {}", self.mark)
     }
 }
 
@@ -102,7 +126,8 @@ pub(super) fn entries(review: &ReviewState) -> Vec<ChangeEntry> {
 /// Returns the rows that one pair of reviews publishes.
 ///
 /// A section without a review publishes no heading at all, so a workspace with
-/// nothing staged shows one section instead of an empty one.
+/// nothing staged shows one section instead of an empty one. The files of one
+/// section group by directory, so the panel reads like the file tree.
 pub(super) fn rows(
     staged: Option<&ReviewState>,
     unstaged: Option<&ReviewState>,
@@ -124,18 +149,61 @@ pub(super) fn rows(
             ONE_ROW,
             RowKind::Inert,
         ));
-        for file in files {
-            rows.push(SidebarRow::new(
-                ChangesRow::File {
-                    section,
-                    path: file.path,
-                },
-                ONE_ROW,
-                RowKind::Selectable,
-            ));
-        }
+        push_grouped(&mut rows, section, &files);
     }
     rows
+}
+
+/// Adds the rows of one section, grouped by the directory of each file.
+///
+/// The files arrive in the published order of the candidate, which sorts by
+/// path, so one walk opens each directory once and closes none.
+fn push_grouped(
+    rows: &mut Vec<SidebarRow<ChangesRow>>,
+    section: ChangeSection,
+    files: &[ChangeEntry],
+) {
+    let mut open: Vec<OsString> = Vec::new();
+    for file in files {
+        let components: Vec<OsString> = file
+            .path
+            .as_path()
+            .parent()
+            .into_iter()
+            .flat_map(Path::components)
+            .map(|component| component.as_os_str().to_os_string())
+            .collect();
+
+        // The directories that this file does not share with the last one
+        // close, and the rest open.
+        let shared = open
+            .iter()
+            .zip(&components)
+            .take_while(|(held, wanted)| held == wanted)
+            .count();
+        open.truncate(shared);
+        for component in components.into_iter().skip(shared) {
+            open.push(component);
+            rows.push(SidebarRow::new(
+                ChangesRow::Directory {
+                    section,
+                    path: open.iter().collect(),
+                    depth: open.len() - 1,
+                },
+                ONE_ROW,
+                RowKind::Inert,
+            ));
+        }
+        rows.push(SidebarRow::new(
+            ChangesRow::File {
+                section,
+                path: file.path.clone(),
+                depth: open.len(),
+            },
+            ONE_ROW,
+            RowKind::Selectable,
+        ));
+    }
 }
 
 /// Installs the rows of one pair of reviews into one sidebar.

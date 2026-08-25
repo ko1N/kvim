@@ -143,6 +143,7 @@ fn the_two_sections_hold_their_own_candidates_and_never_merge() {
         &ChangesRow::File {
             section: ChangeSection::Staged,
             path: path("staged.txt"),
+            depth: 0,
         }
     );
     assert_eq!(named[2], &ChangesRow::Heading(ChangeSection::Unstaged));
@@ -151,6 +152,7 @@ fn the_two_sections_hold_their_own_candidates_and_never_merge() {
         &ChangesRow::File {
             section: ChangeSection::Unstaged,
             path: path("unstaged.txt"),
+            depth: 0,
         }
     );
 }
@@ -209,4 +211,83 @@ fn a_refresh_installs_the_rows_of_both_sections_into_one_sidebar() {
     // A later refresh replaces the rows instead of adding to them.
     refresh(&mut sidebar, None, Some(&unstaged));
     assert_eq!(sidebar.rows().len(), 2);
+}
+
+#[test]
+fn the_panel_groups_the_files_by_directory() {
+    // The panel reads like the file tree, so a nested file sits below its
+    // directories and each directory opens once.
+    let review = review(
+        vec![
+            // The candidate publishes its files in path order.
+            added("notes.md", &["three"], DiffTruncation::Complete),
+            added("src/main.rs", &["one"], DiffTruncation::Complete),
+            added("src/parser/mod.rs", &["two"], DiffTruncation::Complete),
+        ],
+        [30; 32],
+    );
+    let published = rows(None, Some(&review));
+
+    let shape: Vec<String> = published
+        .iter()
+        .map(|row| match row.id() {
+            ChangesRow::Heading(section) => format!("# {}", section.heading()),
+            ChangesRow::Directory { path, depth, .. } => {
+                format!("d{depth} {}", path.display())
+            }
+            ChangesRow::File { path, depth, .. } => {
+                format!("f{depth} {}", path.as_path().display())
+            }
+        })
+        .collect();
+
+    assert_eq!(
+        shape,
+        vec![
+            "# Unstaged".to_owned(),
+            "f0 notes.md".to_owned(),
+            "d0 src".to_owned(),
+            "f1 src/main.rs".to_owned(),
+            "d1 src/parser".to_owned(),
+            "f2 src/parser/mod.rs".to_owned(),
+        ]
+    );
+}
+
+#[test]
+fn a_directory_row_takes_no_selection() {
+    let review = review(
+        vec![added("src/main.rs", &["one"], DiffTruncation::Complete)],
+        [31; 32],
+    );
+    let published = rows(None, Some(&review));
+
+    let directory = published
+        .iter()
+        .find(|row| matches!(row.id(), ChangesRow::Directory { .. }))
+        .expect("the panel published one directory row");
+    assert_eq!(directory.kind(), RowKind::Inert);
+}
+
+#[test]
+fn one_row_names_the_file_and_not_its_whole_path() {
+    // The directory rows above the file carry the rest of the path.
+    let review = review(
+        vec![added(
+            "src/parser/mod.rs",
+            &["one"],
+            DiffTruncation::Complete,
+        )],
+        [32; 32],
+    );
+    let label = entries(&review)[0].label();
+
+    assert!(
+        label.starts_with("mod.rs"),
+        "the row names the file: {label}"
+    );
+    assert!(
+        !label.contains("src/"),
+        "the row repeats no directory: {label}"
+    );
 }

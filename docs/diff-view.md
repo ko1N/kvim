@@ -136,15 +136,26 @@ Both regions move like an ordinary buffer. The review binds the motions that the
 buffer and the file-tree sidebar already publish, so it holds no motion
 vocabulary of its own and a reader needs to learn none.
 
+The panel sits at the right edge, where kvim keeps its sidebar, and the diff
+fills the rest. `Ctrl-L` therefore reaches the panel and `Ctrl-H` returns to the
+diff.
+
+The panel draws the changed files with the design of the file tree: it groups
+them by directory, indents each row by the same number of cells, and carries the
+same file and directory icons. One reader reads one shape. A directory row takes
+no selection, and a file row names the file alone, because the rows above it
+carry the rest of its path.
+
 The panel moves its selection over the changed files, and the body always shows
-the file that the panel names. The body holds every published row of that file:
+the file that the panel names. The cursor reaches a file in either direction, so
+a reader who walks down the list and back up returns to every file. The body holds every published row of that file:
 one header for each hunk and the aligned rows of that hunk. A motion of one
 region never moves the other one.
 
 | Key | What |
 |---|---|
 | `q`, `Esc`, `Ctrl-C` | Leave the review |
-| `Ctrl-H`, `Ctrl-L` | Move the keys to the panel and to the diff |
+| `Ctrl-H`, `Ctrl-L` | Move the keys to the diff and to the panel |
 | `j`, `k` | One row |
 | `Ctrl-D`, `Ctrl-U` | One half page |
 | `Ctrl-F`, `Ctrl-B` | One full page |
@@ -190,3 +201,20 @@ hunk becomes unread again.
 The review queues no capture while captures of its own have not resolved, so a
 burst of changes never grows the outbox. The next burst after they resolve
 captures the state that the burst left behind.
+
+## The Cursor Row
+
+The cursor row of the focused region carries the selection band across its whole
+width, including the gap between the two columns, so it reads like a Visual-line
+selection instead of a mark at one edge. The foreground of each cell keeps the
+color of its own change, so an added line still reads as added under the band.
+
+An unfocused panel still marks its selected row, in a quieter role, so a reader
+keeps the place while the keys act in the other region.
+
+## One File, One Body
+
+A hunk identity is unique inside its own file alone. The body therefore names
+the file that it draws, and every lookup of one hunk reads that file. Nothing
+walks over the hunks to find a place, because such a walk crosses into another
+file, where the same identity names another hunk.

@@ -12,8 +12,10 @@ use std::num::NonZeroU32;
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
-use kvim_ui::{SidebarInput, SidebarMotion, SidebarState};
-use kvim_workspace::{DiffContent, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff, align_hunk};
+use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+use kvim_workspace::{
+    DiffContent, Expansion, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff, align_hunk,
+};
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
@@ -23,7 +25,9 @@ use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh};
 use crate::diff_view::{
     RowBand, draw_inline_rows, draw_side_rows, inline_rows, side_rows, view_of,
 };
+use crate::icons::{directory_icon, file_icon};
 use crate::theme::{Theme, ThemeRole};
+use crate::tree::TREE_INDENT_CELLS;
 
 /// The region of the review that owns the keys.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -488,7 +492,18 @@ impl ReviewSurface {
         else {
             return;
         };
-        let _ = self.changes.select(&ChangesRow::File { section, path });
+        // The row identity carries the depth that the panel draws, so the
+        // selection finds the row of the file instead of building one.
+        let target = self
+            .changes
+            .rows()
+            .iter()
+            .map(SidebarRow::id)
+            .find(|id| names_file(id, section, &path))
+            .cloned();
+        if let Some(target) = target {
+            let _ = self.changes.select(&target);
+        }
     }
 
     /// Marks the header row of the hunk at the cursor as read.
@@ -565,7 +580,7 @@ impl ReviewSurface {
 
     /// Shows the file that the panel selected.
     fn follow_selection(&mut self) {
-        let Some(ChangesRow::File { section, path }) = self.changes.selected().cloned() else {
+        let Some(ChangesRow::File { section, path, .. }) = self.changes.selected().cloned() else {
             return;
         };
         self.section = section;
@@ -761,14 +776,36 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
                 };
                 (section.heading().to_owned(), role)
             }
-            ChangesRow::File { section, path } => {
+            // A directory row carries the shape of the workspace, exactly as
+            // the file tree draws it, so one reader reads one shape.
+            ChangesRow::Directory { path, depth, .. } => {
+                let name = path
+                    .file_name()
+                    .unwrap_or_else(|| path.as_os_str())
+                    .to_string_lossy();
+                let icon = directory_icon(Expansion::Expanded);
+                let text = format!("{}{} {name}", indent_of(*depth), icon.glyph);
+                (text, ThemeRole::TreeDirectory)
+            }
+            ChangesRow::File {
+                section,
+                path,
+                depth,
+            } => {
                 let entry = review
                     .review(*section)
                     .map(entries)
                     .and_then(|entries| entries.into_iter().find(|entry| &entry.path == path));
+                let name = path
+                    .as_path()
+                    .file_name()
+                    .unwrap_or_else(|| path.as_path().as_os_str())
+                    .to_string_lossy();
+                let icon = file_icon(&name);
                 let label = entry
                     .as_ref()
-                    .map_or_else(|| path.as_path().display().to_string(), ChangeEntry::label);
+                    .map_or_else(|| name.clone().into_owned(), ChangeEntry::label);
+                let label = format!("{}{} {label}", indent_of(*depth), icon.glyph);
                 // The selection band marks the row of the focused panel. An
                 // unfocused panel still marks its row, in a quieter role, so a
                 // reader keeps the place while the keys act elsewhere.
@@ -799,6 +836,26 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
 
 /// The width of the changes panel, in cells.
 const CHANGES_PANEL_CELLS: u16 = 34;
+
+/// Returns the indent of one row of the changes panel.
+///
+/// The panel indents by the same number of cells as the file tree, so the two
+/// sidebars read as one design. See `docs/windows.md`.
+fn indent_of(depth: usize) -> String {
+    " ".repeat(depth.saturating_mul(TREE_INDENT_CELLS))
+}
+
+/// Reports whether one row names one changed file of one section.
+fn names_file(row: &ChangesRow, section: ChangeSection, path: &WorktreeRelativePath) -> bool {
+    matches!(
+        row,
+        ChangesRow::File {
+            section: held,
+            path: named,
+            ..
+        } if *held == section && named == path
+    )
+}
 
 /// One motion of one region of the review.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
