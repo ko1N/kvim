@@ -113,6 +113,10 @@ A file that the reader finished dims. It reads as complete when no hunk stays
 unread and no bound truncated it, so a truncated file never dims: the candidate
 holds content that the reader cannot reach.
 
+The first row of the review carries the section strip over the diff and the
+workspace header over the panel beside it. The strip therefore stops at the edge
+of the panel, and the path of the workspace stays on that first line.
+
 The panel carries the header of the file tree, so both sidebars name the
 workspace the same way, and it draws the same selection mark, indent guides, and
 repository marks. The staged half draws the mark and the color of a staged

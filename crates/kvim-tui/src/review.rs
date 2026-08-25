@@ -165,11 +165,7 @@ impl ReviewSurface {
             // works on. `refresh_sections` opens the tabs below.
             sections: TabStrip::default(),
             view: settings.view,
-            changes: SidebarState::new(
-                height_rows
-                    .saturating_sub(STRIP_ROWS)
-                    .saturating_sub(PANEL_HEADER_ROWS),
-            ),
+            changes: SidebarState::new(height_rows.saturating_sub(STRIP_ROWS)),
             panel_rows: Vec::new(),
             focus: ReviewFocus::default(),
             body: Vec::new(),
@@ -288,14 +284,12 @@ impl ReviewSurface {
         // The strip of sections takes the first row of the review, so both
         // regions draw below it and hold one row less than the band. A viewport
         // that counted the strip would scroll one row too late.
+        // The first row carries the section strip over the diff and the
+        // workspace header over the panel, so both regions start below it.
         let rows = height_rows.saturating_sub(STRIP_ROWS);
-        // The body carries its own header below the strip, so it holds one row
-        // less than the band.
+        // The body carries one further header, which names its file.
         self.height_rows = usize::from(rows.saturating_sub(BODY_HEADER_ROWS));
-        // The panel carries its own header below the strip, so it holds one
-        // row less than the body.
-        self.changes
-            .set_height_rows(rows.saturating_sub(PANEL_HEADER_ROWS));
+        self.changes.set_height_rows(rows);
         self.reconcile_viewport();
     }
 
@@ -788,26 +782,22 @@ pub(super) fn draw_review(
     }
     // kvim keeps its sidebar at the right edge, so the changes panel sits there
     // as well and the diff fills the rest. See `docs/windows.md`.
-    // The strip names the section, so the panel below it lists the files of
-    // that section alone.
-    let strip = Rect::new(area.x, area.y, area.width, 1);
-    draw_sections(target, strip, theme, review);
-    let Some(area) = below(area) else {
-        return;
-    };
-
     let panel_width = area.width.min(review.panel_cells());
     let body_width = area.width.saturating_sub(panel_width);
-    let panel = Rect::new(
+
+    // The strip stops at the edge of the panel, so the first row carries the
+    // sections over the diff and the workspace over the panel beside them.
+    let strip = Rect::new(area.x, area.y, body_width, STRIP_ROWS);
+    draw_sections(target, strip, theme, review);
+
+    let header = Rect::new(
         area.x.saturating_add(body_width),
         area.y,
         panel_width,
-        area.height,
+        PANEL_HEADER_ROWS,
     );
-    target.set_style(panel, theme.style(ThemeRole::Surface));
     // The panel carries the header of the file tree, so both sidebars name the
     // workspace the same way.
-    let header = Rect::new(panel.x, panel.y, panel.width, PANEL_HEADER_ROWS);
     target.set_style(header, theme.style(ThemeRole::Winbar));
     target.set_stringn(
         header.x,
@@ -816,9 +806,18 @@ pub(super) fn draw_review(
         usize::from(header.width),
         theme.style(ThemeRole::TreeRoot),
     );
-    if let Some(rows) = panel_rows_area(panel) {
-        draw_changes(target, rows, theme, review);
-    }
+
+    let Some(area) = below(area) else {
+        return;
+    };
+    let panel = Rect::new(
+        area.x.saturating_add(body_width),
+        area.y,
+        panel_width,
+        area.height,
+    );
+    target.set_style(panel, theme.style(ThemeRole::Surface));
+    draw_changes(target, panel, theme, review);
 
     if body_width == 0 {
         return;
@@ -893,20 +892,6 @@ fn body_rows_area(body: Rect) -> Option<Rect> {
         body.x,
         body.y.saturating_add(BODY_HEADER_ROWS),
         body.width,
-        height,
-    ))
-}
-
-/// Returns the rows of the panel below its header, or `None` for a header alone.
-fn panel_rows_area(panel: Rect) -> Option<Rect> {
-    let height = panel.height.checked_sub(PANEL_HEADER_ROWS)?;
-    if height == 0 {
-        return None;
-    }
-    Some(Rect::new(
-        panel.x,
-        panel.y.saturating_add(PANEL_HEADER_ROWS),
-        panel.width,
         height,
     ))
 }
