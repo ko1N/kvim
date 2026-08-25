@@ -1286,11 +1286,6 @@ enum Step {
     Backward,
 }
 
-/// Reports whether one review publishes at least one changed file.
-fn publishes_change(review: Option<&ReviewState>) -> bool {
-    review.is_some_and(|review| !review.candidate().files().is_empty())
-}
-
 #[cfg(test)]
 #[path = "review_tests.rs"]
 mod tests;
