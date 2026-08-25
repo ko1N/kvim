@@ -642,7 +642,7 @@ async fn apply_surface(
                 Action::EditorOpenCommandLine => Command::OpenCommandLine,
                 other => return Err(format!("the editor table binds no {other}").into()),
             };
-            let _reduction = editor.command(editor_command, None, NOW);
+            let _reduction = editor.command(editor_command, None, None, NOW);
             let _redraw = editor.dispatch();
             editor_context(editor)
         }

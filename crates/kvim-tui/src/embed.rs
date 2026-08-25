@@ -792,7 +792,7 @@ impl EmbeddedEditorBuilder {
 ///     .open()
 ///     .expect("the rectangle holds cells");
 ///
-/// editor.command(Command::InsertBeforeCursor, None, Duration::ZERO);
+/// editor.command(Command::InsertBeforeCursor, None, None, Duration::ZERO);
 /// editor.insert_literal("hello", Duration::ZERO);
 ///
 /// let mut cells = Buffer::empty(area);
@@ -875,16 +875,19 @@ impl EmbeddedEditor {
 
     /// Applies one resolved editor command.
     ///
-    /// The host owns the key-sequence resolver, so it supplies the command and
-    /// its count. See `docs/embedding.md`.
+    /// The host owns the key-sequence resolver, so it supplies the command, its
+    /// count, and the register that the operation names. `None` names the
+    /// unnamed register, which every operation without a `"` prefix uses. See
+    /// `docs/embedding.md`.
     #[must_use]
     pub fn command(
         &mut self,
         command: Command,
         count: Option<NonZeroU32>,
+        register: Option<char>,
         now: Duration,
     ) -> Reduction {
-        self.editor.apply_command(command, count, now)
+        self.editor.apply_command(command, count, register, now)
     }
 
     /// Inserts one run of literal text.

@@ -75,7 +75,9 @@ pub use cursor::{ColumnLimit, Cursor, PreferredColumn};
 pub use edit::{AutoIndent, MoveDirection, selection_move_indent_line};
 pub use motion::{CharClass, matching_bracket};
 pub use operator::{MotionKind, Operator, motion_kind};
-pub use register::{REGISTER_BYTES_MAX, RegisterShape, RegisterValue, Registers};
+pub use register::{
+    NAMED_REGISTERS_MAX, REGISTER_BYTES_MAX, RegisterShape, RegisterValue, Registers,
+};
 pub use search::{
     SEARCH_MATCHES_MAX, SEARCH_QUERY_CHARS_MAX, SEARCH_SCAN_BYTES_MAX, SearchDirection,
     SearchError, SearchQuery,

@@ -54,6 +54,24 @@ impl Session {
             .apply(&mut context, &mut self.view, command, count)
     }
 
+    fn apply_with_register(
+        &mut self,
+        command: Command,
+        count: Option<NonZeroU32>,
+        register: Option<char>,
+    ) -> CommandOutcome {
+        let mut context = EditContext {
+            buffer: &mut self.buffer,
+            settings: &self.settings,
+            search: None,
+            language_indent_width: self.language_indent_width,
+            registers: &mut self.registers,
+            applied: Vec::new(),
+        };
+        self.state
+            .apply_with_register(&mut context, &mut self.view, command, count, register)
+    }
+
     fn run(&mut self, commands: &[Command]) -> CommandOutcome {
         let mut outcome = CommandOutcome::Applied;
         for command in commands {
@@ -1671,4 +1689,86 @@ fn dot_repeat_replays_a_text_object_change() {
         CommandOutcome::Changed
     );
     assert_eq!(session.text(), "one()\ntwo()\n");
+}
+
+#[test]
+fn a_named_yank_and_a_named_paste_use_the_same_register() {
+    // `"ayy` yanks the first line, and `"ap` pastes it below the second one.
+    let mut session = Session::new("alpha\nbeta\n");
+    session.apply_with_register(Command::YankOverMotion, None, Some('a'));
+    session.apply(Command::YankOverMotion, None);
+    assert_eq!(
+        session.registers.value(Some('a')).map(RegisterValue::text),
+        Some("alpha\n"),
+    );
+    // The unnamed register stayed empty, so the clipboard sees no yank.
+    assert!(session.registers.unnamed().is_none());
+
+    place(&mut session, 1, 0);
+    session.apply_with_register(Command::PasteAfter, None, Some('a'));
+    assert_eq!(session.text(), "alpha\nbeta\nalpha\n");
+}
+
+#[test]
+fn a_named_operator_keeps_its_register_until_its_motion_arrives() {
+    // `"adw` names the register with `d`, and `w` completes the operator.
+    let mut session = Session::new("alpha beta gamma\n");
+    assert_eq!(
+        session.apply_with_register(Command::DeleteOverMotion, None, Some('a')),
+        CommandOutcome::OperatorPending,
+    );
+    assert_eq!(
+        session.apply(Command::MoveNextWordStart, None),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "beta gamma\n");
+    assert_eq!(
+        session.registers.value(Some('a')).map(RegisterValue::text),
+        Some("alpha "),
+    );
+    assert!(session.registers.unnamed().is_none());
+
+    // The name qualified that operation alone, so the next delete is unnamed.
+    session.run(&[Command::DeleteOverMotion, Command::MoveNextWordStart]);
+    assert_eq!(
+        session.registers.value(Some('a')).map(RegisterValue::text),
+        Some("alpha "),
+    );
+    assert_eq!(
+        session.registers.unnamed().map(RegisterValue::text),
+        Some("beta "),
+    );
+}
+
+#[test]
+fn a_black_hole_delete_leaves_the_unnamed_register_unchanged() {
+    let mut session = Session::new("alpha\nbeta\n");
+    // `yy` fills the unnamed register.
+    session.run(&[Command::YankOverMotion, Command::YankOverMotion]);
+    assert_eq!(
+        session.registers.unnamed().map(RegisterValue::text),
+        Some("alpha\n"),
+    );
+
+    // `"_dd` removes the line and keeps the yanked value.
+    session.apply_with_register(Command::DeleteOverMotion, None, Some('_'));
+    assert_eq!(
+        session.apply(Command::DeleteOverMotion, None),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "beta\n");
+    assert_eq!(
+        session.registers.unnamed().map(RegisterValue::text),
+        Some("alpha\n"),
+    );
+}
+
+#[test]
+fn a_paste_from_an_empty_named_register_changes_nothing() {
+    let mut session = Session::new("alpha\n");
+    assert_eq!(
+        session.apply_with_register(Command::PasteAfter, None, Some('q')),
+        CommandOutcome::RegisterEmpty,
+    );
+    assert_eq!(session.text(), "alpha\n");
 }

@@ -123,7 +123,7 @@ pub enum CommandOutcome {
     /// The operator or the Visual selection received no target, so it changed
     /// nothing.
     OperatorAborted,
-    /// The command pastes, but the unnamed register holds no value.
+    /// The command pastes, but the named register holds no value.
     RegisterEmpty,
     /// The command undoes or redoes, but the history holds no further step.
     HistoryExhausted,
@@ -228,6 +228,12 @@ pub struct EditingState {
     pending: Option<PendingOperator>,
     block_insert: Option<PendingBlockInsert>,
     repeat: Option<RepeatableChange>,
+    /// The register that qualifies the operation that is being composed.
+    ///
+    /// `"` and its name arrive with the first command of the operation, and an
+    /// operator reads its motion afterwards, so the value stays until the
+    /// operation completes.
+    register: Option<char>,
 }
 
 impl EditingState {
@@ -320,6 +326,93 @@ impl EditingState {
         self.apply_indented(context, window, command, count, AutoIndent::PreviousLine)
     }
 
+    /// Executes one semantic command that a register name qualifies.
+    ///
+    /// The `input` charter resolves the name: `"` opens the selection, the next
+    /// character names the register, and the completed operation carries that
+    /// name. The name reaches the yank, the delete, the change, and the paste of
+    /// that operation alone, so the next operation reads the unnamed register
+    /// again.
+    ///
+    /// An operator receives the name with its own key and its target afterwards,
+    /// so `"add` keeps the name until the operator completes.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::num::NonZeroU16;
+    ///
+    /// use kvim_core::TextBuffer;
+    /// use kvim_editor::{
+    ///     EditContext, EditingState, RegisterValue, Registers, Viewport, WindowState,
+    /// };
+    /// use kvim_input::Command;
+    /// use kvim_settings::{EditorSettings, FileSettings};
+    ///
+    /// let mut buffer = TextBuffer::from_text("alpha\nbeta\n", &FileSettings::default())
+    ///     .expect("the text is small");
+    /// let settings = EditorSettings::default();
+    /// let mut registers = Registers::default();
+    /// let mut context = EditContext {
+    ///     buffer: &mut buffer,
+    ///     settings: &settings,
+    ///     search: None,
+    ///     language_indent_width: None,
+    ///     registers: &mut registers,
+    ///     applied: Vec::new(),
+    /// };
+    ///
+    /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
+    /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
+    /// let mut window = WindowState::new(Viewport::new(rows, cells));
+    /// let mut state = EditingState::new();
+    ///
+    /// // `"ayy` yanks the first line into the register `a`.
+    /// state.apply_with_register(&mut context, &mut window, Command::YankOverMotion, None, Some('a'));
+    /// state.apply(&mut context, &mut window, Command::YankOverMotion, None);
+    /// assert_eq!(
+    ///     context.registers.value(Some('a')).map(RegisterValue::text),
+    ///     Some("alpha\n"),
+    /// );
+    /// ```
+    pub fn apply_with_register(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        command: Command,
+        count: Option<NonZeroU32>,
+        register: Option<char>,
+    ) -> CommandOutcome {
+        self.apply_indented_with_register(
+            context,
+            window,
+            command,
+            count,
+            AutoIndent::PreviousLine,
+            register,
+        )
+    }
+
+    /// Executes one qualified command with an explicit automatic indent.
+    ///
+    /// The pair of [`EditingState::apply`] and [`EditingState::apply_indented`]
+    /// repeats here, so a caller that holds a parse result can also name a
+    /// register.
+    pub fn apply_indented_with_register(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        command: Command,
+        count: Option<NonZeroU32>,
+        auto: AutoIndent,
+        register: Option<char>,
+    ) -> CommandOutcome {
+        if register.is_some() {
+            self.register = register;
+        }
+        self.apply_indented(context, window, command, count, auto)
+    }
+
     /// Executes one semantic command with an explicit automatic indent.
     ///
     /// Only `o`, `O`, and a Visual selection move read the indent. Every other
@@ -327,6 +420,24 @@ impl EditingState {
     /// lands behind, which
     /// [`selection_move_indent_line`](crate::selection_move_indent_line) names.
     pub fn apply_indented(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        command: Command,
+        count: Option<NonZeroU32>,
+        auto: AutoIndent,
+    ) -> CommandOutcome {
+        let outcome = self.dispatch(context, window, command, count, auto);
+        // A register qualifies exactly one operation. A waiting operator holds
+        // the operation open, so the name survives until its target arrives.
+        if outcome != CommandOutcome::OperatorPending {
+            self.register = None;
+        }
+        outcome
+    }
+
+    /// Executes one semantic command without the register lifetime.
+    fn dispatch(
         &mut self,
         context: &mut EditContext<'_>,
         window: &mut WindowState,
@@ -1022,7 +1133,7 @@ impl EditingState {
         count: Option<NonZeroU32>,
         placement: PastePlacement,
     ) -> CommandOutcome {
-        let value = match context.registers.unnamed() {
+        let value = match context.registers.value(self.register) {
             Some(stored) => stored.repeated(repeat_count(count), context.buffer.line_ending()),
             None => return CommandOutcome::RegisterEmpty,
         };
@@ -1174,7 +1285,8 @@ impl EditingState {
         plan: EditPlan,
     ) -> CommandOutcome {
         if let Some(value) = plan.value {
-            context.registers.set_unnamed(value);
+            let line_ending = context.buffer.line_ending();
+            context.registers.write(self.register, value, line_ending);
         }
         let mut changed = false;
         if let Some(transaction) = plan.transaction {

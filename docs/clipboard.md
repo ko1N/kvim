@@ -70,6 +70,23 @@ and an external copy reaches the editor.
 A yank, a delete, and a change write the unnamed register and then write the
 system clipboard. A paste reads the system clipboard.
 
+## The Named Registers
+
+An operation that names a register with `"` reads and writes that register
+alone. The system clipboard never sees a named register, so `"ayy` reaches no
+other application and no external copy replaces the stored value.
+
+The `editor` module holds the named registers beside the unnamed one, and its
+revision counts the unnamed writes alone. The mirror reads that revision, so a
+named write starts no clipboard work. A paste that names a register reads it
+directly and starts no clipboard read either, so it changes the buffer on the
+first step.
+
+`"` names the unnamed register, so `""yy` behaves exactly like `yy` and still
+reaches the system clipboard. `_` is the black-hole register: a write to it
+discards the value, and a read from it holds nothing. An upper-case name appends
+to its lower-case register, which is the rule that Vim follows.
+
 ## The Event Loop
 
 The terminal event loop must never wait for a clipboard command. See

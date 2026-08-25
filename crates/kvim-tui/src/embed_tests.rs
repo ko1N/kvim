@@ -88,17 +88,17 @@ fn drain_events(session: &mut Session) -> Vec<PublishedEvent> {
 
 /// Opens the file tree and gives it the focus, as `Ctrl-E` does.
 fn reveal_tree(session: &mut Session) {
-    let _ = session.apply_command(Command::RevealInFileTree, None, NOW);
+    let _ = session.apply_command(Command::RevealInFileTree, None, None, NOW);
     settle(session);
 }
 
 /// Runs one file-tree prompt: the command, the typed line, and `Enter`.
 fn run_tree_prompt(session: &mut Session, command: Command, text: &str) {
-    let _ = session.apply_command(command, None, NOW);
+    let _ = session.apply_command(command, None, None, NOW);
     for value in text.chars() {
         let _ = session.insert_literal(&value.to_string(), NOW);
     }
-    let _ = session.apply_command(Command::PromptAccept, None, NOW);
+    let _ = session.apply_command(Command::PromptAccept, None, None, NOW);
     settle(session);
 }
 
@@ -228,7 +228,7 @@ fn view_only_access_refuses_every_mutating_command() {
         "the command table holds every mutating command"
     );
     for command in mutating {
-        let reduction = session.apply_command(command, None, NOW);
+        let reduction = session.apply_command(command, None, None, NOW);
         assert_eq!(
             reduction.refusal(),
             Some(Refusal::ViewOnly),
@@ -280,7 +280,7 @@ fn view_only_access_refuses_a_workspace_mutation() {
     let mut session = editor(&directory.path).with_access(EditorAccess::ViewOnly);
     reveal_tree(&mut session);
 
-    let reduction = session.apply_command(Command::TreeAddFile, None, NOW);
+    let reduction = session.apply_command(Command::TreeAddFile, None, None, NOW);
     assert_eq!(reduction.refusal(), Some(Refusal::ViewOnly));
     settle(&mut session);
     assert!(
@@ -298,12 +298,12 @@ fn read_write_access_keeps_the_editing_and_saving_behavior() {
     settle(&mut session);
 
     assert_eq!(session.access(), EditorAccess::ReadWrite);
-    let _ = session.apply_command(Command::InsertBeforeCursor, None, NOW);
+    let _ = session.apply_command(Command::InsertBeforeCursor, None, None, NOW);
     let _ = session.insert_literal("new ", NOW);
-    let _ = session.apply_command(Command::ReturnToNormal, None, NOW);
+    let _ = session.apply_command(Command::ReturnToNormal, None, None, NOW);
     assert_eq!(session.buffer().to_string(), "new one\n");
 
-    let _ = session.apply_command(Command::SaveBuffer, None, NOW);
+    let _ = session.apply_command(Command::SaveBuffer, None, None, NOW);
     settle(&mut session);
     assert_eq!(
         std::fs::read_to_string(&path).expect("the save wrote the file"),
@@ -317,7 +317,7 @@ fn read_write_access_keeps_the_editing_and_saving_behavior() {
 /// editor then holds no free slot for the next durable operation.
 fn saturate(session: &mut Session) {
     for _ in 0..EDITOR_EVENTS_MAX {
-        let reduction = session.apply_command(Command::SaveBuffer, None, NOW);
+        let reduction = session.apply_command(Command::SaveBuffer, None, None, NOW);
         assert_eq!(reduction.refusal(), None, "the outbox still holds one slot");
         settle(session);
     }
@@ -332,7 +332,7 @@ fn a_saturated_outbox_refuses_a_save_before_the_write_starts() {
     settle(&mut session);
     saturate(&mut session);
 
-    let reduction = session.apply_command(Command::SaveBuffer, None, NOW);
+    let reduction = session.apply_command(Command::SaveBuffer, None, None, NOW);
     assert_eq!(reduction.refusal(), Some(Refusal::Saturated));
     assert!(
         session.take_file_request().is_none(),
@@ -347,7 +347,7 @@ fn a_saturated_outbox_refuses_a_save_before_the_write_starts() {
     ));
     assert_eq!(
         session
-            .apply_command(Command::SaveBuffer, None, NOW)
+            .apply_command(Command::SaveBuffer, None, None, NOW)
             .refusal(),
         None
     );
@@ -364,11 +364,11 @@ fn a_saturated_outbox_refuses_a_workspace_mutation_before_it_starts() {
     reveal_tree(&mut session);
     saturate(&mut session);
 
-    let _ = session.apply_command(Command::TreeAddFile, None, NOW);
+    let _ = session.apply_command(Command::TreeAddFile, None, None, NOW);
     for value in "added.rs".chars() {
         let _ = session.insert_literal(&value.to_string(), NOW);
     }
-    let reduction = session.apply_command(Command::PromptAccept, None, NOW);
+    let reduction = session.apply_command(Command::PromptAccept, None, None, NOW);
     assert_eq!(reduction.refusal(), Some(Refusal::Saturated));
     while let Some(request) = session.take_workspace_request() {
         assert!(
@@ -392,7 +392,7 @@ fn a_completed_write_publishes_its_mandatory_fact() {
     settle(&mut session);
     let _ = drain_events(&mut session);
 
-    let _ = session.apply_command(Command::SaveBuffer, None, NOW);
+    let _ = session.apply_command(Command::SaveBuffer, None, None, NOW);
     settle(&mut session);
 
     let written = WorktreeRelativePath::new("main.rs").expect("the path is contained");
@@ -415,7 +415,7 @@ fn a_failed_write_releases_its_reserved_slot() {
     settle(&mut session);
     let _ = drain_events(&mut session);
 
-    let _ = session.apply_command(Command::SaveBuffer, None, NOW);
+    let _ = session.apply_command(Command::SaveBuffer, None, None, NOW);
     while let Some(request) = session.take_language_request() {
         let _ = session
             .apply_language_dispatch(&request, Err(kvim_language::LspError::NoServerDeclared));
@@ -435,7 +435,7 @@ fn a_failed_write_releases_its_reserved_slot() {
     // The released slot is usable again, so the next save runs.
     assert_eq!(
         session
-            .apply_command(Command::SaveBuffer, None, NOW)
+            .apply_command(Command::SaveBuffer, None, None, NOW)
             .refusal(),
         None
     );
@@ -472,9 +472,9 @@ fn every_workspace_mutation_publishes_its_fact() {
     );
 
     // Copy into the `docs` directory.
-    let _ = session.apply_command(Command::TreeCopyEntry, None, NOW);
+    let _ = session.apply_command(Command::TreeCopyEntry, None, None, NOW);
     select_named(&mut session, "docs");
-    let _ = session.apply_command(Command::TreePasteEntries, None, NOW);
+    let _ = session.apply_command(Command::TreePasteEntries, None, None, NOW);
     settle(&mut session);
     assert_eq!(
         one_mutation(&mut session),
@@ -487,9 +487,9 @@ fn every_workspace_mutation_publishes_its_fact() {
 
     // Delete the copy, so the `docs` directory can take the source instead.
     select_copy_in_docs(&mut session);
-    let _ = session.apply_command(Command::TreeDelete, None, NOW);
+    let _ = session.apply_command(Command::TreeDelete, None, None, NOW);
     let _ = session.insert_literal("y", NOW);
-    let _ = session.apply_command(Command::PromptAccept, None, NOW);
+    let _ = session.apply_command(Command::PromptAccept, None, None, NOW);
     settle(&mut session);
     assert!(
         matches!(one_mutation(&mut session), FileOperation::Delete { .. }),
@@ -498,9 +498,9 @@ fn every_workspace_mutation_publishes_its_fact() {
 
     // Move the source into the `docs` directory that the delete emptied.
     select_named(&mut session, "moved.rs");
-    let _ = session.apply_command(Command::TreeCutEntry, None, NOW);
+    let _ = session.apply_command(Command::TreeCutEntry, None, None, NOW);
     select_named(&mut session, "docs");
-    let _ = session.apply_command(Command::TreePasteEntries, None, NOW);
+    let _ = session.apply_command(Command::TreePasteEntries, None, None, NOW);
     settle(&mut session);
     assert!(
         matches!(
@@ -536,12 +536,12 @@ fn relative(path: &str) -> WorktreeRelativePath {
 
 /// Selects the sidebar row of one entry name.
 fn select_named(session: &mut Session, name: &str) {
-    let _ = session.apply_command(Command::MoveFirstLine, None, NOW);
+    let _ = session.apply_command(Command::MoveFirstLine, None, None, NOW);
     for _ in 0..DRAIN_STEPS_MAX {
         if selected_name(session) == name {
             return;
         }
-        let _ = session.apply_command(Command::MoveDown, None, NOW);
+        let _ = session.apply_command(Command::MoveDown, None, None, NOW);
     }
     panic!("the sidebar shows one row of {name}");
 }
@@ -549,7 +549,7 @@ fn select_named(session: &mut Session, name: &str) {
 /// Expands `docs` and selects the copied entry inside it.
 fn select_copy_in_docs(session: &mut Session) {
     select_named(session, "docs");
-    let _ = session.apply_command(Command::TreeExpandEntry, None, NOW);
+    let _ = session.apply_command(Command::TreeExpandEntry, None, None, NOW);
     settle(session);
     select_named(session, "moved.rs");
     assert!(
@@ -598,8 +598,8 @@ fn a_visible_change_publishes_one_coalesced_redraw_request() {
     let mut session = editor(&directory.path);
     let _ = drain_events(&mut session);
 
-    let _ = session.apply_command(Command::SplitAdaptive, None, NOW);
-    let _ = session.apply_command(Command::SplitAdaptive, None, NOW);
+    let _ = session.apply_command(Command::SplitAdaptive, None, None, NOW);
+    let _ = session.apply_command(Command::SplitAdaptive, None, None, NOW);
 
     let events = drain_events(&mut session);
     let redraws = events
@@ -614,7 +614,7 @@ fn a_focus_move_at_the_edge_reports_the_boundary() {
     let directory = TempDir::new("embed-focus-boundary");
     let mut session = editor(&directory.path);
 
-    let reduction = session.apply_command(Command::FocusWindowLeft, None, NOW);
+    let reduction = session.apply_command(Command::FocusWindowLeft, None, None, NOW);
     assert_eq!(
         reduction.request(),
         Some(InputRequest::FocusBoundary(crate::Direction::Left))
@@ -625,10 +625,10 @@ fn a_focus_move_at_the_edge_reports_the_boundary() {
     );
 
     // A move that stays inside this editor reports no boundary.
-    let _ = session.apply_command(Command::SplitAdaptive, None, NOW);
+    let _ = session.apply_command(Command::SplitAdaptive, None, None, NOW);
     assert_eq!(
         session
-            .apply_command(Command::FocusWindowLeft, None, NOW)
+            .apply_command(Command::FocusWindowLeft, None, None, NOW)
             .request(),
         None
     );
@@ -639,16 +639,16 @@ fn the_last_window_close_reports_the_close_request() {
     let directory = TempDir::new("embed-close");
     let mut session = editor(&directory.path);
 
-    let _ = session.apply_command(Command::SplitAdaptive, None, NOW);
+    let _ = session.apply_command(Command::SplitAdaptive, None, None, NOW);
     assert_eq!(
         session
-            .apply_command(Command::CloseWindow, None, NOW)
+            .apply_command(Command::CloseWindow, None, None, NOW)
             .request(),
         None,
         "one window remains"
     );
 
-    let reduction = session.apply_command(Command::CloseWindow, None, NOW);
+    let reduction = session.apply_command(Command::CloseWindow, None, None, NOW);
     assert_eq!(reduction.request(), Some(InputRequest::CloseRequested));
     assert_eq!(session.run_state(), RunState::Finished);
 }
@@ -660,7 +660,7 @@ fn the_published_context_names_the_scope_of_the_editor() {
     let normal = session.input_context();
     assert!(normal.phases.is_idle());
 
-    let _ = session.apply_command(Command::InsertBeforeCursor, None, NOW);
+    let _ = session.apply_command(Command::InsertBeforeCursor, None, None, NOW);
     let insert = session.input_context();
     assert_ne!(
         insert.scope, normal.scope,
@@ -681,7 +681,7 @@ fn a_cancel_resets_the_prompt_phase_and_publishes_a_new_generation() {
     let directory = TempDir::new("embed-cancel");
     let mut session = editor(&directory.path);
 
-    let _ = session.apply_command(Command::OpenCommandLine, None, NOW);
+    let _ = session.apply_command(Command::OpenCommandLine, None, None, NOW);
     let open = session.input_context();
     assert!(
         open.phases.prompt.is_pending(),
@@ -773,7 +773,7 @@ fn every_published_event_carries_its_instance_identity() {
 
     let _ = first.open(relative("main.rs"));
     settle(&mut first);
-    let _ = first.apply_command(Command::SaveBuffer, None, NOW);
+    let _ = first.apply_command(Command::SaveBuffer, None, None, NOW);
     settle(&mut first);
 
     let events = drain_events(&mut first);
@@ -786,7 +786,9 @@ fn every_published_event_carries_its_instance_identity() {
         assert_ne!(published.instance, second.instance());
     }
     assert_eq!(
-        first.apply_command(Command::MoveDown, None, NOW).instance,
+        first
+            .apply_command(Command::MoveDown, None, None, NOW)
+            .instance,
         first.instance()
     );
 }
@@ -833,14 +835,14 @@ fn a_saturated_editor_leaves_the_outbox_of_its_neighbour_free() {
     saturate(&mut first);
     assert_eq!(
         first
-            .apply_command(Command::SaveBuffer, None, NOW)
+            .apply_command(Command::SaveBuffer, None, None, NOW)
             .refusal(),
         Some(Refusal::Saturated)
     );
 
     // The queue of the second editor holds every slot of its own bound, so the
     // saturated neighbour refuses nothing here.
-    let reduction = second.apply_command(Command::SaveBuffer, None, NOW);
+    let reduction = second.apply_command(Command::SaveBuffer, None, None, NOW);
     assert_eq!(reduction.refusal(), None);
     settle(&mut second);
     let written = relative("second.rs");
@@ -940,9 +942,9 @@ fn rendered_text(cells: &CellBuffer, area: Rect) -> String {
 
 /// Types one run of text into one embedded editor and returns to Normal mode.
 fn type_text(editor: &mut EmbeddedEditor, text: &str) {
-    let _ = editor.command(Command::InsertBeforeCursor, None, NOW);
+    let _ = editor.command(Command::InsertBeforeCursor, None, None, NOW);
     let _ = editor.insert_literal(text, NOW);
-    let _ = editor.command(Command::ReturnToNormal, None, NOW);
+    let _ = editor.command(Command::ReturnToNormal, None, None, NOW);
 }
 
 #[test]
@@ -1059,7 +1061,7 @@ async fn two_editors_on_different_roots_edit_render_and_shut_down_independently(
         EditorShutdown::Finished { .. }
     ));
 
-    let _reduction = right.command(Command::SaveBuffer, None, NOW);
+    let _reduction = right.command(Command::SaveBuffer, None, None, NOW);
     let written = drive_until(&mut right, is_file_written).await;
     assert!(
         written

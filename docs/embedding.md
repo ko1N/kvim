@@ -93,6 +93,12 @@ committed work, and the host keeps its runtime alive until that drain completes.
 `crates/kvim-tui/examples/embedded_editor.rs` is one complete host of one such
 editor.
 
+The host owns the key-sequence resolver, so `EmbeddedEditor::command` takes the
+command, its count, and the register that the operation names. `None` names the
+unnamed register, and `Resolution::Command` carries the name that the `input`
+charter resolved from a `"` prefix. A host that drops that name silently sends
+every operation to the unnamed register. See [`clipboard.md`](clipboard.md).
+
 The host supplies a `ratatui::Rect` and `ratatui::Buffer` for rendering. The
 editor accepts one explicit rectangle first, because the layout, the viewports,
 and the cursor all follow that rectangle. It writes only inside that rectangle.

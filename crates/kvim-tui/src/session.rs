@@ -347,6 +347,11 @@ enum ClipboardWork {
         command: Command,
         /// The count that the key named.
         count: Option<NonZeroU32>,
+        /// The register that the key named, which is always the unnamed one.
+        ///
+        /// A paste that names another register reads that register directly and
+        /// starts no clipboard work, so only `None` and `"` arrive here.
+        register: Option<char>,
     },
 }
 
@@ -1332,7 +1337,7 @@ impl Session {
     ///     .expect("the working directory is a worktree"),
     /// );
     /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
-    /// let reduction = session.apply_command(Command::SplitAdaptive, None, Duration::ZERO);
+    /// let reduction = session.apply_command(Command::SplitAdaptive, None, None, Duration::ZERO);
     /// assert_eq!(reduction.instance, session.instance());
     ///
     /// let published = session.take_event().expect("the split needs one frame");
@@ -1535,7 +1540,7 @@ impl Session {
     /// );
     /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root)
     ///     .with_access(EditorAccess::ViewOnly);
-    /// let reduction = session.apply_command(Command::DeleteLine, None, Duration::ZERO);
+    /// let reduction = session.apply_command(Command::DeleteLine, None, None, Duration::ZERO);
     /// assert_eq!(reduction.refusal(), Some(Refusal::ViewOnly));
     /// ```
     #[must_use]
@@ -1543,10 +1548,11 @@ impl Session {
         &mut self,
         command: Command,
         count: Option<NonZeroU32>,
+        register: Option<char>,
         now: Duration,
     ) -> Reduction {
         self.begin_input(now);
-        let redraw = self.dispatch_command(command, count);
+        let redraw = self.dispatch_command(command, count, register);
         self.finish_input(redraw, now)
     }
 
@@ -1575,7 +1581,7 @@ impl Session {
     ///     .expect("the working directory is a worktree"),
     /// );
     /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
-    /// session.apply_command(Command::InsertBeforeCursor, None, Duration::ZERO);
+    /// session.apply_command(Command::InsertBeforeCursor, None, None, Duration::ZERO);
     /// session.insert_literal("hi", Duration::ZERO);
     /// assert_eq!(session.buffer().to_string(), "hi\n");
     /// ```
@@ -1609,7 +1615,7 @@ impl Session {
     ///     .expect("the working directory is a worktree"),
     /// );
     /// let mut session = Session::new(Rect::new(0, 0, 80, 24), EditorSettings::default(), root);
-    /// session.apply_command(Command::InsertBeforeCursor, None, Duration::ZERO);
+    /// session.apply_command(Command::InsertBeforeCursor, None, None, Duration::ZERO);
     /// let block = PasteText::new("pasted").expect("the block is bounded");
     /// session.paste(&block, Duration::ZERO);
     /// assert_eq!(session.buffer().to_string(), "pasted\n");
@@ -1656,10 +1662,10 @@ impl Session {
         if let Resolution::Command {
             command,
             count,
-            register: _,
+            register,
         } = self.resolver.cancel()
         {
-            redraw = self.dispatch_command(command, count).or(redraw);
+            redraw = self.dispatch_command(command, count, register).or(redraw);
         }
         self.finish_input(redraw, now)
     }
@@ -1963,13 +1969,11 @@ impl Session {
     /// Applies what one resolution names.
     fn apply_resolution(&mut self, resolution: Resolution) -> Redraw {
         match resolution {
-            // The first-release editing state holds no register selection, so
-            // the qualified register reaches no operation yet.
             Resolution::Command {
                 command,
                 count,
-                register: _,
-            } => self.dispatch_command(command, count),
+                register,
+            } => self.dispatch_command(command, count, register),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
             Resolution::Confirmation(edit) => self.edit_confirmation(edit),
             // A pending sequence and a cancelled sequence both change only the
@@ -1987,7 +1991,12 @@ impl Session {
     ///
     /// The window tree sees every command first, because it owns the split,
     /// focus, resize, and close commands. The editing state sees the rest.
-    fn dispatch_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+    fn dispatch_command(
+        &mut self,
+        command: Command,
+        count: Option<NonZeroU32>,
+        register: Option<char>,
+    ) -> Redraw {
         // The access of the instance decides before any owner sees the command,
         // so no view-only editor reaches a text change or a workspace write.
         // See `docs/embedding.md`.
@@ -2025,10 +2034,21 @@ impl Session {
             }
             Command::ToggleComment => return self.toggle_comment().or(cleared),
             // A paste reads the system clipboard first, so the unnamed register
-            // carries an external copy as well. See `docs/clipboard.md`.
+            // carries an external copy as well. A paste that names another
+            // register reads that register alone, so it starts no clipboard
+            // work. See `docs/clipboard.md`.
             Command::PasteAfter | Command::PasteBefore => {
+                if Self::names_another_register(register) {
+                    return self
+                        .apply_editing_command(command, count, register)
+                        .or(cleared);
+                }
                 return self
-                    .start_clipboard(ClipboardWork::Paste { command, count })
+                    .start_clipboard(ClipboardWork::Paste {
+                        command,
+                        count,
+                        register,
+                    })
                     .or(cleared);
             }
             // The language commands build one bounded request or read the
@@ -2060,7 +2080,9 @@ impl Session {
                 if self.editing.pending_operator().is_none() {
                     self.record_jump();
                 }
-                return self.apply_editing_command(command, count).or(cleared);
+                return self
+                    .apply_editing_command(command, count, register)
+                    .or(cleared);
             }
             Command::EndSearch => return self.end_search().or(cleared),
             Command::ToggleFormatOnSave => return self.toggle_format_on_save().or(cleared),
@@ -2094,7 +2116,8 @@ impl Session {
                 return cleared;
             }
         }
-        self.apply_editing_command(command, count).or(cleared)
+        self.apply_editing_command(command, count, register)
+            .or(cleared)
     }
 
     /// Routes one command to the open question or the open prompt line.
@@ -2121,10 +2144,15 @@ impl Session {
     ///
     /// A deferred paste reaches the same entry point after its system clipboard
     /// read resolved, so both paths run the identical transition.
-    fn apply_editing_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+    fn apply_editing_command(
+        &mut self,
+        command: Command,
+        count: Option<NonZeroU32>,
+        register: Option<char>,
+    ) -> Redraw {
         let auto = self.auto_indent(command);
         let outcome = self.edit(|editing, context, window| {
-            editing.apply_indented(context, window, command, count, auto)
+            editing.apply_indented_with_register(context, window, command, count, auto, register)
         });
         self.sync_context();
         self.report(outcome)
@@ -4779,9 +4807,13 @@ impl Session {
                 let notice = self.clipboard.finish_copy(&value, output);
                 self.report_clipboard(notice)
             }
-            ClipboardWork::Paste { command, count } => {
+            ClipboardWork::Paste {
+                command,
+                count,
+                register,
+            } => {
                 let read = self.clipboard.finish_read(output);
-                self.publish_paste(command, count, read)
+                self.publish_paste(command, count, register, read)
             }
         }
     }
@@ -4815,11 +4847,20 @@ impl Session {
                     self.defer_clipboard(request, ClipboardWork::Copy(value))
                 }
             },
-            ClipboardWork::Paste { command, count } => match self.clipboard.read() {
-                ClipboardStep::Done(read) => self.publish_paste(command, count, read),
-                ClipboardStep::Waiting(request) => {
-                    self.defer_clipboard(request, ClipboardWork::Paste { command, count })
-                }
+            ClipboardWork::Paste {
+                command,
+                count,
+                register,
+            } => match self.clipboard.read() {
+                ClipboardStep::Done(read) => self.publish_paste(command, count, register, read),
+                ClipboardStep::Waiting(request) => self.defer_clipboard(
+                    request,
+                    ClipboardWork::Paste {
+                        command,
+                        count,
+                        register,
+                    },
+                ),
             },
         };
         started.or(displaced)
@@ -4837,10 +4878,21 @@ impl Session {
             // The unnamed register still holds the value, so a dropped write
             // loses nothing.
             None | Some(ClipboardWork::Copy(_)) => Redraw::Skipped,
-            Some(ClipboardWork::Paste { command, count }) => {
-                self.publish_paste(command, count, ClipboardRead::Fallback(None))
-            }
+            Some(ClipboardWork::Paste {
+                command,
+                count,
+                register,
+            }) => self.publish_paste(command, count, register, ClipboardRead::Fallback(None)),
         }
+    }
+
+    /// Reports whether one resolved name selects a register beside the unnamed one.
+    ///
+    /// `None` and `"` both name the unnamed register, which the system
+    /// clipboard mirrors. Every other name belongs to the editor alone, so a
+    /// paste from it needs no clipboard read. See `docs/clipboard.md`.
+    const fn names_another_register(register: Option<char>) -> bool {
+        !matches!(register, None | Some('"'))
     }
 
     /// Applies one paste over the register value that the read resolved.
@@ -4851,6 +4903,7 @@ impl Session {
         &mut self,
         command: Command,
         count: Option<NonZeroU32>,
+        register: Option<char>,
         read: ClipboardRead,
     ) -> Redraw {
         let notice = match read {
@@ -4871,7 +4924,7 @@ impl Session {
         if self.picker.is_some() || self.sidebar_has_focus() {
             return self.report_clipboard(notice);
         }
-        let applied = self.apply_editing_command(command, count);
+        let applied = self.apply_editing_command(command, count, register);
         // A clipboard answer arrives outside `handle_event`, so no `settle`
         // transition follows it. Refresh positions before the next frame reads
         // them against text that a Visual paste can shorten.

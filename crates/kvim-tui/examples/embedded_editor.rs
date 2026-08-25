@@ -158,10 +158,10 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // The host resolved these commands itself. The editor accepts the command
     // and the literal text, and it resolves no key sequence of its own.
-    let _reduction = editor.command(Command::InsertBeforeCursor, None, NOW);
+    let _reduction = editor.command(Command::InsertBeforeCursor, None, None, NOW);
     let _reduction = editor.insert_literal(TYPED_TEXT, NOW);
-    let _reduction = editor.command(Command::InsertLineBreak, None, NOW);
-    let _reduction = editor.command(Command::ReturnToNormal, None, NOW);
+    let _reduction = editor.command(Command::InsertLineBreak, None, None, NOW);
+    let _reduction = editor.command(Command::ReturnToNormal, None, None, NOW);
 
     // The host owns the cells. The editor writes only inside `EDITOR_AREA` and
     // returns the cursor that the frame asks for, so the host decides whether
@@ -179,7 +179,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // A save is one durable side effect, so it reserves its outbox slot before
     // the write starts and publishes `FileWritten` after the write succeeded.
-    let _reduction = editor.command(Command::SaveBuffer, None, NOW);
+    let _reduction = editor.command(Command::SaveBuffer, None, None, NOW);
     let written = run_until(&mut editor, &cancellation, |event| {
         matches!(event, EditorEvent::FileWritten { .. })
     })

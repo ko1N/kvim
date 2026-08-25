@@ -3939,3 +3939,38 @@ fn a_newer_clipboard_operation_never_leaves_a_paste_waiting() {
         "the displacing yank owns the clipboard command"
     );
 }
+
+#[test]
+fn a_named_register_carries_a_yank_to_a_paste() {
+    let mut session = session(40, 10);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+    press_code(&mut session, KeyCode::Enter);
+    type_keys(&mut session, "beta");
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(session.buffer().to_string(), "alpha\nbeta\n");
+
+    // `"ayy` on the first line, then `"ap` on the second one.
+    type_keys(&mut session, "gg\"ayy");
+    type_keys(&mut session, "j\"ap");
+    assert_eq!(session.buffer().to_string(), "alpha\nbeta\nalpha\n");
+}
+
+#[test]
+fn the_black_hole_register_keeps_the_yanked_value() {
+    let mut session = session(40, 10);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+    press_code(&mut session, KeyCode::Enter);
+    type_keys(&mut session, "beta");
+    press_code(&mut session, KeyCode::Esc);
+
+    // `yy` on the first line, then `"_dd` on the same line.
+    type_keys(&mut session, "ggyy");
+    type_keys(&mut session, "\"_dd");
+    assert_eq!(session.buffer().to_string(), "beta\n");
+
+    // The yanked line survived the delete, so `p` pastes it again.
+    type_keys(&mut session, "p");
+    assert_eq!(session.buffer().to_string(), "beta\nalpha\n");
+}
