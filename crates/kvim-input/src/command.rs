@@ -140,6 +140,8 @@ semantic_commands! {
     NextChangedFile => ("next-changed-file", "Move to the first hunk of the next changed file"),
     PreviousChangedFile => ("previous-changed-file", "Move to the first hunk of the previous changed file"),
     MarkHunkRead => ("mark-hunk-read", "Mark the hunk at the cursor as read"),
+    NextReviewSection => ("next-review-section", "Show the next section of the review"),
+    PreviousReviewSection => ("previous-review-section", "Show the previous section of the review"),
     OpenHunkFile => ("open-hunk-file", "Open the file of the hunk at its line"),
 
     // Operators, registers, and repeat.
@@ -340,6 +342,8 @@ impl Command {
             | Self::NextChangedFile
             | Self::PreviousChangedFile
             | Self::MarkHunkRead
+            | Self::NextReviewSection
+            | Self::PreviousReviewSection
             | Self::OpenHunkFile
             | Self::EnterVisual
             | Self::EnterVisualLine
@@ -584,6 +588,8 @@ impl Command {
             | Self::NextChangedFile
             | Self::PreviousChangedFile
             | Self::MarkHunkRead
+            | Self::NextReviewSection
+            | Self::PreviousReviewSection
             | Self::OpenHunkFile => CommandGroup::Review,
 
             Self::CountDigitOne

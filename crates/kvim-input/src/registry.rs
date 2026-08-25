@@ -828,6 +828,21 @@ fn add_review_bindings(table: &mut Vec<Binding>) {
         Command::PreviousChangedFile,
     );
 
+    // One key walks the sections of the review, so a reader needs no mapping
+    // for each one. `Tab` is the key that every interface uses for this.
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::Tab)],
+        Command::NextReviewSection,
+    );
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::BackTab)],
+        Command::PreviousReviewSection,
+    );
+
     // Marking a hunk read is the one state that a review records.
     add_scoped(table, REVIEW, &[ch('m')], Command::MarkHunkRead);
 

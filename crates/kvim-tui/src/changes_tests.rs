@@ -133,63 +133,50 @@ fn the_two_sections_hold_their_own_candidates_and_never_merge() {
         [5; 32],
     );
 
-    let published = rows(Some(&staged), Some(&unstaged));
-
+    // The tab strip names the section, so the panel lists one section alone.
+    let published = rows(ChangeSection::Staged, Some(&staged));
     let named: Vec<&ChangesRow> = published.iter().map(SidebarRow::id).collect();
-    assert_eq!(named.len(), 4, "two headings and two files");
-    assert_eq!(named[0], &ChangesRow::Heading(ChangeSection::Staged));
     assert_eq!(
-        named[1],
-        &ChangesRow::File {
+        named,
+        vec![&ChangesRow::File {
             section: ChangeSection::Staged,
             path: path("staged.txt"),
             depth: 0,
-        }
+        }]
     );
-    assert_eq!(named[2], &ChangesRow::Heading(ChangeSection::Unstaged));
+
+    let published = rows(ChangeSection::Unstaged, Some(&unstaged));
+    let named: Vec<&ChangesRow> = published.iter().map(SidebarRow::id).collect();
     assert_eq!(
-        named[3],
-        &ChangesRow::File {
+        named,
+        vec![&ChangesRow::File {
             section: ChangeSection::Unstaged,
             path: path("unstaged.txt"),
             depth: 0,
-        }
+        }]
     );
 }
 
 #[test]
-fn a_section_without_a_change_publishes_no_heading() {
-    let unstaged = review(
-        vec![added("a.txt", &["one"], DiffTruncation::Complete)],
-        [6; 32],
-    );
-
-    let published = rows(None, Some(&unstaged));
-    assert_eq!(published.len(), 2);
-    assert_eq!(
-        published[0].id(),
-        &ChangesRow::Heading(ChangeSection::Unstaged)
-    );
-
-    // A review that publishes no file publishes no heading either.
+fn a_section_without_a_change_publishes_no_row() {
     let empty = review(Vec::new(), [7; 32]);
-    assert!(rows(Some(&empty), None).is_empty());
+    assert!(rows(ChangeSection::Staged, Some(&empty)).is_empty());
+    assert!(rows(ChangeSection::Staged, None).is_empty());
 }
 
 #[test]
-fn a_heading_takes_no_selection() {
+fn a_file_row_takes_the_selection() {
     let staged = review(
         vec![added("a.txt", &["one"], DiffTruncation::Complete)],
         [8; 32],
     );
-    let published = rows(Some(&staged), None);
+    let published = rows(ChangeSection::Staged, Some(&staged));
 
-    assert_eq!(published[0].kind(), RowKind::Inert);
-    assert_eq!(published[1].kind(), RowKind::Selectable);
+    assert_eq!(published[0].kind(), RowKind::Selectable);
 }
 
 #[test]
-fn a_refresh_installs_the_rows_of_both_sections_into_one_sidebar() {
+fn a_refresh_installs_the_rows_of_one_section_into_one_sidebar() {
     let staged = review(
         vec![added("staged.txt", &["one"], DiffTruncation::Complete)],
         [9; 32],
@@ -200,17 +187,29 @@ fn a_refresh_installs_the_rows_of_both_sections_into_one_sidebar() {
     );
     let mut sidebar: SidebarState<ChangesRow> = SidebarState::new(20);
 
-    refresh(&mut sidebar, Some(&staged), Some(&unstaged));
+    refresh(&mut sidebar, ChangeSection::Staged, Some(&staged));
 
-    assert_eq!(sidebar.rows().len(), 4);
+    assert_eq!(sidebar.rows().len(), 1);
     assert_eq!(
         sidebar.rows()[0].id(),
-        &ChangesRow::Heading(ChangeSection::Staged)
+        &ChangesRow::File {
+            section: ChangeSection::Staged,
+            path: path("staged.txt"),
+            depth: 0,
+        }
     );
 
     // A later refresh replaces the rows instead of adding to them.
-    refresh(&mut sidebar, None, Some(&unstaged));
-    assert_eq!(sidebar.rows().len(), 2);
+    refresh(&mut sidebar, ChangeSection::Unstaged, Some(&unstaged));
+    assert_eq!(sidebar.rows().len(), 1);
+    assert_eq!(
+        sidebar.rows()[0].id(),
+        &ChangesRow::File {
+            section: ChangeSection::Unstaged,
+            path: path("unstaged.txt"),
+            depth: 0,
+        }
+    );
 }
 
 #[test]
@@ -226,12 +225,11 @@ fn the_panel_groups_the_files_by_directory() {
         ],
         [30; 32],
     );
-    let published = rows(None, Some(&review));
+    let published = rows(ChangeSection::Unstaged, Some(&review));
 
     let shape: Vec<String> = published
         .iter()
         .map(|row| match row.id() {
-            ChangesRow::Heading(section) => format!("# {}", section.heading()),
             ChangesRow::Directory { path, depth, .. } => {
                 format!("d{depth} {}", path.display())
             }
@@ -244,7 +242,6 @@ fn the_panel_groups_the_files_by_directory() {
     assert_eq!(
         shape,
         vec![
-            "# Unstaged".to_owned(),
             "f0 notes.md".to_owned(),
             "d0 src".to_owned(),
             "f1 src/main.rs".to_owned(),
@@ -260,7 +257,7 @@ fn a_directory_row_takes_no_selection() {
         vec![added("src/main.rs", &["one"], DiffTruncation::Complete)],
         [31; 32],
     );
-    let published = rows(None, Some(&review));
+    let published = rows(ChangeSection::Unstaged, Some(&review));
 
     let directory = published
         .iter()

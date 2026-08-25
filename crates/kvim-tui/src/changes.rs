@@ -39,8 +39,6 @@ impl ChangeSection {
 /// One row identity of the changes panel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ChangesRow {
-    /// The heading of one section, which takes no selection.
-    Heading(ChangeSection),
     /// One directory that holds changed files below it.
     ///
     /// The panel groups the changed files by directory, exactly as the file
@@ -123,32 +121,24 @@ pub(super) fn entries(review: &ReviewState) -> Vec<ChangeEntry> {
         .collect()
 }
 
-/// Returns the rows that one pair of reviews publishes.
+/// Returns the rows that one section of the review publishes.
 ///
-/// A section without a review publishes no heading at all, so a workspace with
-/// nothing staged shows one section instead of an empty one. The files of one
-/// section group by directory, so the panel reads like the file tree.
+/// The tab strip names the section, so the panel lists the files of the active
+/// section alone. The files group by directory, so the panel reads like the
+/// file tree.
 pub(super) fn rows(
-    staged: Option<&ReviewState>,
-    unstaged: Option<&ReviewState>,
+    section: ChangeSection,
+    review: Option<&ReviewState>,
 ) -> Vec<SidebarRow<ChangesRow>> {
     let mut rows = Vec::new();
-    for (section, review) in [
-        (ChangeSection::Staged, staged),
-        (ChangeSection::Unstaged, unstaged),
-    ] {
+    {
         let Some(review) = review else {
-            continue;
+            return rows;
         };
         let files = entries(review);
         if files.is_empty() {
-            continue;
+            return rows;
         }
-        rows.push(SidebarRow::new(
-            ChangesRow::Heading(section),
-            ONE_ROW,
-            RowKind::Inert,
-        ));
         push_grouped(&mut rows, section, &files);
     }
     rows
@@ -206,13 +196,13 @@ fn push_grouped(
     }
 }
 
-/// Installs the rows of one pair of reviews into one sidebar.
+/// Installs the rows of one section into one sidebar.
 pub(super) fn refresh(
     sidebar: &mut SidebarState<ChangesRow>,
-    staged: Option<&ReviewState>,
-    unstaged: Option<&ReviewState>,
+    section: ChangeSection,
+    review: Option<&ReviewState>,
 ) {
-    let rows = rows(staged, unstaged);
+    let rows = rows(section, review);
     // Every row holds one terminal row, so the sidebar accepts the list
     // whenever the panel built it.
     let _ = sidebar.set_rows(rows);

@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
-use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState, TabStrip};
 use kvim_workspace::{
     DiffContent, Expansion, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff, align_hunk,
 };
@@ -104,8 +104,8 @@ pub(super) struct ReviewSurface {
     staged: Option<ReviewState>,
     /// The unstaged half, when the capture published one.
     unstaged: Option<ReviewState>,
-    /// The section that the cursor walks.
-    section: ChangeSection,
+    /// The sections that the review shows, as a strip that a reader walks.
+    sections: TabStrip<ChangeSection>,
     /// The view that draws the hunks.
     view: DiffView,
     /// The rows of the changes panel.
@@ -146,10 +146,23 @@ impl ReviewSurface {
         } else {
             ChangeSection::Staged
         };
+        let mut sections = TabStrip::default();
+        // The unstaged half comes first, because that is the half a reader
+        // works on. A section that publishes no change opens no tab.
+        for (candidate, label) in [
+            (unstaged.as_ref(), ChangeSection::Unstaged),
+            (staged.as_ref(), ChangeSection::Staged),
+        ] {
+            if publishes_change(candidate) {
+                let _ = sections.open(label, label.heading());
+            }
+        }
+        let _ = sections.select(&section);
+
         let mut surface = Self {
             staged,
             unstaged,
-            section,
+            sections,
             view: settings.view,
             changes: SidebarState::new(height_rows),
             focus: ReviewFocus::default(),
@@ -170,8 +183,19 @@ impl ReviewSurface {
     }
 
     /// Returns the section that the cursor walks.
-    pub(super) const fn section(&self) -> ChangeSection {
-        self.section
+    ///
+    /// The strip always holds one active tab while it holds any, and a review
+    /// without a change falls back to the unstaged half, which is empty too.
+    pub(super) fn section(&self) -> ChangeSection {
+        self.sections
+            .active()
+            .copied()
+            .unwrap_or(ChangeSection::Unstaged)
+    }
+
+    /// Returns the strip of sections that the review shows.
+    pub(super) const fn sections(&self) -> &TabStrip<ChangeSection> {
+        &self.sections
     }
 
     /// Returns the rows of the changes panel.
@@ -180,8 +204,8 @@ impl ReviewSurface {
     }
 
     /// Returns the review that the cursor walks.
-    pub(super) const fn active(&self) -> Option<&ReviewState> {
-        match self.section {
+    pub(super) fn active(&self) -> Option<&ReviewState> {
+        match self.section() {
             ChangeSection::Staged => self.staged.as_ref(),
             ChangeSection::Unstaged => self.unstaged.as_ref(),
         }
@@ -260,12 +284,29 @@ impl ReviewSurface {
             Command::PreviousHunk => self.walk_hunk(Step::Backward),
             Command::NextUnreadHunk => self.step(ReviewState::next_unread),
             Command::PreviousUnreadHunk => self.step(ReviewState::previous_unread),
+            Command::NextReviewSection => self.walk_section(true),
+            Command::PreviousReviewSection => self.walk_section(false),
             Command::NextChangedFile => self.walk_file(Step::Forward),
             Command::PreviousChangedFile => self.walk_file(Step::Backward),
             Command::MarkHunkRead => self.mark_read(),
             Command::OpenHunkFile => self.open_file(),
             _ => ReviewOutcome::Unhandled,
         }
+    }
+
+    /// Walks the strip of sections in one direction.
+    fn walk_section(&mut self, forward: bool) -> ReviewOutcome {
+        let moved = if forward {
+            self.sections.select_next()
+        } else {
+            self.sections.select_previous()
+        };
+        if !moved {
+            return ReviewOutcome::Unchanged;
+        }
+        self.refresh_changes();
+        self.follow_selection();
+        ReviewOutcome::Changed
     }
 
     /// Moves the focus to one region.
@@ -476,7 +517,7 @@ impl ReviewSurface {
 
     /// Returns the review that the cursor walks, as a mutable value.
     fn active_mut(&mut self) -> Option<&mut ReviewState> {
-        match self.section {
+        match self.section() {
             ChangeSection::Staged => self.staged.as_mut(),
             ChangeSection::Unstaged => self.unstaged.as_mut(),
         }
@@ -484,7 +525,7 @@ impl ReviewSurface {
 
     /// Selects the panel row of the file that the cursor names.
     fn follow_cursor(&mut self) {
-        let section = self.section;
+        let section = self.section();
         let Some(path) = self
             .active()
             .and_then(ReviewState::cursor)
@@ -583,7 +624,7 @@ impl ReviewSurface {
         let Some(ChangesRow::File { section, path, .. }) = self.changes.selected().cloned() else {
             return;
         };
-        self.section = section;
+        let _ = self.sections.select(&section);
         let Some(review) = self.active_mut() else {
             return;
         };
@@ -614,11 +655,12 @@ impl ReviewSurface {
 
     /// Rebuilds the rows of the changes panel from the two halves.
     fn refresh_changes(&mut self) {
-        refresh(
-            &mut self.changes,
-            self.staged.as_ref(),
-            self.unstaged.as_ref(),
-        );
+        let section = self.section();
+        let review = match section {
+            ChangeSection::Staged => self.staged.as_ref(),
+            ChangeSection::Unstaged => self.unstaged.as_ref(),
+        };
+        refresh(&mut self.changes, section, review);
         self.follow_cursor();
     }
 }
@@ -640,6 +682,14 @@ pub(super) fn draw_review(
     }
     // kvim keeps its sidebar at the right edge, so the changes panel sits there
     // as well and the diff fills the rest. See `docs/windows.md`.
+    // The strip names the section, so the panel below it lists the files of
+    // that section alone.
+    let strip = Rect::new(area.x, area.y, area.width, 1);
+    draw_sections(target, strip, theme, review);
+    let Some(area) = below(area) else {
+        return;
+    };
+
     let panel_width = area.width.min(CHANGES_PANEL_CELLS);
     let body_width = area.width.saturating_sub(panel_width);
     let panel = Rect::new(
@@ -657,6 +707,42 @@ pub(super) fn draw_review(
     let body = Rect::new(area.x, area.y, body_width, area.height);
     target.set_style(body, theme.style(ThemeRole::DiffContext));
     draw_body(target, body, theme, settings, review);
+}
+
+/// Returns the rectangle below the strip band, or `None` for a band alone.
+fn below(area: Rect) -> Option<Rect> {
+    let height = area.height.checked_sub(1)?;
+    if height == 0 {
+        return None;
+    }
+    Some(Rect::new(
+        area.x,
+        area.y.saturating_add(1),
+        area.width,
+        height,
+    ))
+}
+
+/// Paints the strip of sections at the top of the review.
+///
+/// The strip names every section that publishes a change, so a reader walks
+/// them with one key instead of one mapping for each. See `docs/diff-view.md`.
+fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+    target.set_style(area, theme.style(ThemeRole::Surface));
+    review.sections().render(target, area, |cells, placement| {
+        let role = if placement.tab.active {
+            ThemeRole::DiffHeader
+        } else {
+            ThemeRole::DiffGap
+        };
+        cells.set_stringn(
+            placement.area.x,
+            placement.area.y,
+            format!(" {} ", placement.tab.label),
+            usize::from(placement.area.width),
+            theme.style(role),
+        );
+    });
 }
 
 /// Paints the rows of the diff body that the viewport shows.
@@ -766,16 +852,6 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
         }
         let selected = review.changes().selected() == Some(row.id());
         let (text, role) = match row.id() {
-            // The heading of the section that the cursor walks stands out, so
-            // a reader sees which half the keys act on.
-            ChangesRow::Heading(section) => {
-                let role = if *section == review.section() {
-                    ThemeRole::DiffHeader
-                } else {
-                    ThemeRole::DiffGap
-                };
-                (section.heading().to_owned(), role)
-            }
             // A directory row carries the shape of the workspace, exactly as
             // the file tree draws it, so one reader reads one shape.
             ChangesRow::Directory { path, depth, .. } => {

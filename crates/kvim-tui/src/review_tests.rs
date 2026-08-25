@@ -291,13 +291,15 @@ fn the_panel_follows_the_cursor_and_names_both_halves() {
         20,
     );
 
-    // Both halves stay reachable by name, and the panel lists them together.
+    // Both halves stay reachable by name, and the strip names both sections.
     assert!(review.review(ChangeSection::Staged).is_some());
     assert!(review.review(ChangeSection::Unstaged).is_some());
+    assert_eq!(review.sections().len(), 2, "one tab for each section");
+    // The panel lists the files of the active section alone.
     assert_eq!(
         review.changes().rows().len(),
-        5,
-        "two headings, three files"
+        2,
+        "the two files of the unstaged half"
     );
 
     // The panel selection follows the cursor into the next file.
@@ -563,4 +565,50 @@ fn a_page_jump_keeps_the_body_on_its_own_file() {
         review.apply(Command::MoveHalfPageUp, None);
         assert_eq!(review.body_path(), Some(&path("a.txt")));
     }
+}
+
+#[test]
+fn one_key_walks_the_sections_of_the_review() {
+    let mut review = ReviewSurface::new(
+        Some(candidate(vec![added("staged.txt", 1, &["one"])], [40; 32])),
+        Some(candidate(
+            vec![added("unstaged.txt", 1, &["two"])],
+            [41; 32],
+        )),
+        DiffSettings::default(),
+        20,
+    );
+
+    // The review opens on the half that a reader works on.
+    assert_eq!(review.section(), ChangeSection::Unstaged);
+
+    assert_eq!(
+        review.apply(Command::NextReviewSection, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.section(), ChangeSection::Staged);
+    assert_eq!(
+        review.body_path(),
+        Some(&path("staged.txt")),
+        "the body follows the section"
+    );
+
+    // The walk cycles, so one key reaches every section.
+    assert_eq!(
+        review.apply(Command::NextReviewSection, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.section(), ChangeSection::Unstaged);
+}
+
+#[test]
+fn a_review_with_one_section_walks_to_nothing_new() {
+    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+
+    assert_eq!(review.sections().len(), 1, "the staged half publishes none");
+    assert_eq!(
+        review.apply(Command::NextReviewSection, None),
+        ReviewOutcome::Unchanged
+    );
+    assert_eq!(review.section(), ChangeSection::Unstaged);
 }
