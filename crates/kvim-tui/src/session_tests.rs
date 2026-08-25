@@ -4021,3 +4021,20 @@ fn the_review_asks_for_both_halves_of_the_worktree() {
         "the review asks for two halves and no more"
     );
 }
+
+#[test]
+fn a_jump_from_the_review_moves_the_keys_to_the_window() {
+    // A reader who opened the review from the file tree left the keys there.
+    // The jump must reach the file, not leave the keys on the sidebar.
+    let mut session = session(80, 24);
+    press_ctrl(&mut session, 'e');
+    assert_eq!(session.input_context().scope, BindingScope::Sidebar);
+
+    type_keys(&mut session, " gg");
+    assert_eq!(session.input_context().scope, BindingScope::Review);
+
+    // The review holds no capture yet, so the jump reaches no file and the
+    // review still gives the keys back to a buffer rather than the sidebar.
+    press(&mut session, 'q');
+    assert_eq!(session.input_context().scope, BindingScope::Sidebar);
+}

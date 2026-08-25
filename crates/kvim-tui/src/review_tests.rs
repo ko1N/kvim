@@ -344,6 +344,7 @@ fn the_focus_moves_between_the_two_regions() {
 fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
     let lines: Vec<&str> = vec!["one", "two", "three", "four", "five", "six"];
     let mut review = surface(vec![added("a.txt", 1, &lines)]);
+    // The strip of sections takes one row, so the body holds two of the three.
     review.set_height_rows(3);
 
     // One header and one row for each published line.
@@ -367,7 +368,7 @@ fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
     assert_eq!(review.cursor_row(), 4);
     assert_eq!(
         review.first_row(),
-        2,
+        3,
         "the viewport scrolled with the cursor"
     );
 
@@ -395,19 +396,20 @@ fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
 fn a_half_page_moves_by_the_height_of_the_region() {
     let lines: Vec<&str> = (0..20).map(|_| "line").collect();
     let mut review = surface(vec![added("a.txt", 1, &lines)]);
+    // The strip takes one row, so the body holds nine of the ten.
     review.set_height_rows(10);
 
     assert_eq!(
         review.apply(Command::MoveHalfPageDown, None),
         ReviewOutcome::Changed
     );
-    assert_eq!(review.cursor_row(), 5);
+    assert_eq!(review.cursor_row(), 4, "one half of nine rows");
 
     assert_eq!(
         review.apply(Command::MoveFullPageDown, None),
         ReviewOutcome::Changed
     );
-    assert_eq!(review.cursor_row(), 14);
+    assert_eq!(review.cursor_row(), 12, "one full page keeps one row");
 }
 
 #[test]

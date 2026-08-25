@@ -165,13 +165,13 @@ impl ReviewSurface {
             unstaged,
             sections,
             view: settings.view,
-            changes: SidebarState::new(height_rows),
+            changes: SidebarState::new(height_rows.saturating_sub(STRIP_ROWS)),
             focus: ReviewFocus::default(),
             body: Vec::new(),
             body_path: None,
             cursor: 0,
             first_row: 0,
-            height_rows: usize::from(height_rows),
+            height_rows: usize::from(height_rows.saturating_sub(STRIP_ROWS)),
             panel_cells: CHANGES_PANEL_CELLS,
         };
         surface.refresh_changes();
@@ -253,8 +253,12 @@ impl ReviewSurface {
 
     /// Tells the review how many rows each region shows.
     pub(super) fn set_height_rows(&mut self, height_rows: u16) {
-        self.height_rows = usize::from(height_rows);
-        self.changes.set_height_rows(height_rows);
+        // The strip of sections takes the first row of the review, so both
+        // regions draw below it and hold one row less than the band. A viewport
+        // that counted the strip would scroll one row too late.
+        let rows = height_rows.saturating_sub(STRIP_ROWS);
+        self.height_rows = usize::from(rows);
+        self.changes.set_height_rows(rows);
         self.reconcile_viewport();
     }
 
@@ -739,13 +743,13 @@ pub(super) fn draw_review(
 
 /// Returns the rectangle below the strip band, or `None` for a band alone.
 fn below(area: Rect) -> Option<Rect> {
-    let height = area.height.checked_sub(1)?;
+    let height = area.height.checked_sub(STRIP_ROWS)?;
     if height == 0 {
         return None;
     }
     Some(Rect::new(
         area.x,
-        area.y.saturating_add(1),
+        area.y.saturating_add(STRIP_ROWS),
         area.width,
         height,
     ))
@@ -930,6 +934,12 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
         canvas.draw_clipped(0, 0, &text, area.width, style);
     });
 }
+
+/// The number of rows that the strip of sections takes.
+///
+/// Both regions of the review draw below the strip, so every viewport of the
+/// review holds this many rows less than its band.
+const STRIP_ROWS: u16 = 1;
 
 /// The width that the changes panel opens with, in cells.
 const CHANGES_PANEL_CELLS: u16 = 34;

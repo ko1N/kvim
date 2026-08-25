@@ -4533,12 +4533,18 @@ impl Session {
                 // The jump records itself, so `Ctrl-O` returns to where the
                 // reader stood before the review opened the file.
                 self.record_jump();
+                // The file opens in the focused editor window. A reader who
+                // opened the review from the file tree left the keys there, so
+                // the jump moves them to the window that shows the file.
+                let window = self.windows.focused_window();
+                self.windows.focus_region(window);
                 // The review names a one-based line and the document position
                 // counts from zero.
                 let position = DocumentPosition::new(line.saturating_sub(1), 0);
                 let target = self.root.as_path().join(path.as_path());
-                self.open_at(target, PendingPosition::Document(position))
-                    .or(closed)
+                let opened = self.open_at(target, PendingPosition::Document(position));
+                self.sync_context();
+                opened.or(closed)
             }
         }
     }
