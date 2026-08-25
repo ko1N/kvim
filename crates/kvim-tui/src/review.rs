@@ -29,7 +29,7 @@ use crate::diff_view::{
 use crate::icons::{directory_icon, file_icon};
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
-    GIT_MARK_CELLS, MARK_CELLS, SELECTION_MARK, mark_cells, paint_span, render_git_mark,
+    GIT_MARK_CELLS, MARK_CELLS, SELECTION_MARK, git_mark, mark_cells, paint_span, render_git_mark,
 };
 
 /// The region of the review that owns the keys.
@@ -509,9 +509,19 @@ impl ReviewSurface {
         let wanted = self.section();
         let mut sections = TabStrip::default();
         for label in [ChangeSection::Unstaged, ChangeSection::Staged] {
-            if publishes_change(self.review(label)) {
-                let _ = sections.open(label, label.heading());
+            let Some(review) = self.review(label) else {
+                continue;
+            };
+            let files = review.candidate().files().len();
+            if files == 0 {
+                continue;
             }
+            // The mark takes the first cell of the label, so the placement
+            // holds it and the drawing paints its color over that cell.
+            let _ = sections.open(
+                label,
+                &format!("{} {} {files}", MARK_SPACE, label.heading()),
+            );
         }
         // A strip that holds the section keeps it. Every other strip opened its
         // own first tab, which is the one that holds work.
@@ -918,21 +928,45 @@ fn below(area: Rect) -> Option<Rect> {
 /// Paints the strip of sections at the top of the review.
 ///
 /// The strip names every section that publishes a change, so a reader walks
-/// them with one key instead of one mapping for each. See `docs/diff-view.md`.
+/// them with one key instead of one mapping for each. Each tab carries the mark
+/// of its repository state, its name, and the number of files that it holds.
+/// The active tab sits on a light band and every other tab dims on the bar, so
+/// one glance names the section that the keys act on. See `docs/diff-view.md`.
 fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
-    target.set_style(area, theme.style(ThemeRole::Surface));
+    target.set_style(area, theme.style(ThemeRole::Winbar));
     review.sections().render(target, area, |cells, placement| {
-        let role = if placement.tab.active {
-            ThemeRole::DiffHeader
+        let section = *placement.tab.id;
+        let active = placement.tab.active;
+        // The active tab lifts off the bar, exactly as one editor tab does.
+        let band = if active {
+            ThemeRole::PopupSelection
         } else {
-            ThemeRole::DiffGap
+            ThemeRole::Winbar
+        };
+        cells.set_style(placement.area, theme.style(band));
+
+        let text = if active {
+            ThemeRole::Title
+        } else {
+            ThemeRole::TreeMuted
         };
         cells.set_stringn(
             placement.area.x,
             placement.area.y,
             format!(" {} ", placement.tab.label),
             usize::from(placement.area.width),
-            theme.style(role),
+            theme.style(text).patch(theme.style(band)),
+        );
+        // The mark carries the color of its repository state, so the strip and
+        // the rows below it name one state the same way.
+        cells.set_stringn(
+            placement.area.x.saturating_add(TAB_MARK_OFFSET_CELLS),
+            placement.area.y,
+            git_mark(section.git_status()),
+            1,
+            theme
+                .style(ThemeRole::TreeGit(section.git_status()))
+                .patch(theme.style(band)),
         );
     });
 }
@@ -1175,6 +1209,14 @@ fn build_panel_rows(
         })
         .collect()
 }
+
+/// The placeholder that reserves the mark cell of one tab label.
+const MARK_SPACE: &str = " ";
+
+/// The cell of one tab that carries the mark of its repository state.
+///
+/// One cell of padding opens every tab, so the mark stands beside it.
+const TAB_MARK_OFFSET_CELLS: u16 = 1;
 
 /// The number of rows that the header of the diff body takes.
 const BODY_HEADER_ROWS: u16 = 1;

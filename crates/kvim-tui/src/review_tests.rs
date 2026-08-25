@@ -702,8 +702,10 @@ fn a_half_that_fills_again_opens_its_tab_in_its_own_place() {
         ChangeSection::Staged,
         candidate(vec![added("b.txt", 1, &["two"])], [52; 32]),
     );
+    // One tab names its state, its section, and the number of files that it
+    // holds. The first cell of the label reserves the mark.
     let labels: Vec<&str> = review.sections().tabs().map(|tab| tab.label).collect();
-    assert_eq!(labels, vec!["Unstaged", "Staged"]);
+    assert_eq!(labels, vec!["  Unstaged 1", "  Staged 1"]);
     assert_eq!(
         review.section(),
         ChangeSection::Unstaged,
@@ -720,5 +722,9 @@ fn a_half_that_fills_again_opens_its_tab_in_its_own_place() {
     );
 
     let labels: Vec<&str> = review.sections().tabs().map(|tab| tab.label).collect();
-    assert_eq!(labels, vec!["Unstaged", "Staged"]);
+    assert_eq!(
+        labels,
+        vec!["  Unstaged 1", "  Staged 1"],
+        "the tab returns to its own place"
+    );
 }
