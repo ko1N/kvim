@@ -66,3 +66,29 @@ moves nothing.
 
 The read state lives in the review, so it lasts as long as the view. A host that
 needs it to outlive the view owns that persistence.
+
+## The Two Views
+
+`EditorSettings` holds the diff policy in `DiffSettings`. `view` names the view
+that a review opens with, and `SideBySide` is the default, because a replacement
+reads best beside the text that it replaced.
+
+The two-column view gives each side one column of equal width with one gap
+between them, and one line-number column inside each. A text that passes its
+column clips; it wraps onto no further row, because a wrapped diff row would
+break the pairing that the column layout exists for.
+
+`side_column_cells_min` names the smallest useful width of one column. A window
+that cannot hold two such columns draws inline whatever the setting asks for,
+because two columns of a handful of cells each show nothing.
+
+The inline view draws one column and marks the origin of every line: a space for
+an unchanged line, `-` for a removed line, and `+` for an added one. It writes a
+removal before the addition that replaced it, which is the order that every
+unified diff writes.
+
+## Text That Is Not Text
+
+A capture publishes exact bytes, and not every byte sequence is text. A line
+that holds none draws its state instead of guessed characters, so a reader never
+mistakes a repaired byte for the content of the file.

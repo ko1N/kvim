@@ -82,6 +82,7 @@ mod chrome;
 mod clipboard;
 mod completion;
 mod diagnostics;
+mod diff_view;
 mod driver;
 mod embed;
 mod icons;

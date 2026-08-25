@@ -50,6 +50,12 @@ const POPUP_SELECTION_BACKGROUND: Color = Color::Rgb(0x34, 0x3a, 0x55);
 /// The color of an error message.
 const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
 
+/// The band behind one added diff line.
+const DIFF_ADDED_BACKGROUND: Color = Color::Rgb(0x1b, 0x2b, 0x25);
+
+/// The band behind one removed diff line.
+const DIFF_REMOVED_BACKGROUND: Color = Color::Rgb(0x2d, 0x1c, 0x20);
+
 /// The color of a warning message.
 const WARNING: Color = Color::Rgb(0xe0, 0xaf, 0x68);
 
@@ -191,6 +197,18 @@ pub enum ThemeRole {
     TreeSelectionMark,
     /// One recorded Git state of a file-tree entry.
     TreeGit(GitStatus),
+    /// One unchanged line of a diff, which both sides hold.
+    DiffContext,
+    /// One line that the new side added.
+    DiffAdded,
+    /// One line that the old side lost.
+    DiffRemoved,
+    /// One column that draws no line, opposite a removal or an addition.
+    DiffGap,
+    /// The line number beside one diff line.
+    DiffLineNumber,
+    /// The header of one changed file or one hunk.
+    DiffHeader,
     /// An error message.
     Error,
     /// A warning message.
@@ -336,6 +354,17 @@ impl Theme {
             ThemeRole::TreeGit(GitStatus::Untracked) => Style::new().fg(INFO),
             ThemeRole::TreeGit(GitStatus::Ignored) => Style::new().fg(TEXT_MUTED),
             ThemeRole::TreeGit(GitStatus::Conflicted) => Style::new().fg(ERROR),
+            // A diff paints the change and not the syntax, so a context line
+            // keeps the ordinary text color and the two changed sides take the
+            // colors that every reviewer already reads as added and removed.
+            ThemeRole::DiffContext => Style::new().fg(TEXT).bg(self.base),
+            ThemeRole::DiffAdded => Style::new().fg(HINT).bg(DIFF_ADDED_BACKGROUND),
+            ThemeRole::DiffRemoved => Style::new().fg(ERROR).bg(DIFF_REMOVED_BACKGROUND),
+            // A gap holds no line at all, so it draws as a quiet band instead
+            // of an empty row that reads like unchanged text.
+            ThemeRole::DiffGap => Style::new().fg(NON_TEXT).bg(SURFACE),
+            ThemeRole::DiffLineNumber => Style::new().fg(TEXT_MUTED).bg(self.base),
+            ThemeRole::DiffHeader => Style::new().fg(TITLE).bg(SURFACE),
             // An icon decorates the row below it, so it carries a foreground
             // color only and keeps the row background and the selection.
             ThemeRole::Icon(role) => Style::new().fg(icon_color(role)),
