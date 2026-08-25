@@ -68,13 +68,13 @@ const MARK_CELLS: usize = 1;
 const SELECTION_MARK: &str = "▌";
 
 /// The indent guide of one level that holds a further entry below the row.
-const GUIDE_TRUNK: &str = "│ ";
+pub(super) const GUIDE_TRUNK: &str = "│ ";
 
 /// The indent guide that closes the last child of one level.
-const GUIDE_ELBOW: &str = "└ ";
+pub(super) const GUIDE_ELBOW: &str = "└ ";
 
 /// The indent guide of one level that holds no further entry.
-const GUIDE_BLANK: &str = "  ";
+pub(super) const GUIDE_BLANK: &str = "  ";
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";

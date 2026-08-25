@@ -288,3 +288,34 @@ fn one_row_names_the_file_and_not_its_whole_path() {
         "the row repeats no directory: {label}"
     );
 }
+
+#[test]
+fn the_guides_draw_the_shape_of_the_directories() {
+    // The panel draws the same box-drawing guides as the file tree, so a
+    // reader sees where a file sits without reading its whole path.
+    let review = review(
+        vec![
+            added("notes.md", &["one"], DiffTruncation::Complete),
+            added("src/main.rs", &["two"], DiffTruncation::Complete),
+            added("src/parser/mod.rs", &["three"], DiffTruncation::Complete),
+        ],
+        [40; 32],
+    );
+    let published = rows(ChangeSection::Unstaged, Some(&review));
+
+    let guides: Vec<String> = (0..published.len())
+        .map(|index| row_guides(&published, index))
+        .collect();
+
+    assert_eq!(
+        guides,
+        vec![
+            // The rows of the section sit at the top level and carry no guide.
+            String::new(),     // notes.md
+            String::new(),     // src
+            "│ ".to_owned(),   // src/main.rs, with src/parser still to come
+            "└ ".to_owned(),   // src/parser, the last row of its level
+            "  └ ".to_owned(), // src/parser/mod.rs, two levels in
+        ]
+    );
+}

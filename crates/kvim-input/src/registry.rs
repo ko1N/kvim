@@ -810,9 +810,12 @@ fn add_review_bindings(table: &mut Vec<Binding>) {
     add_scoped(table, REVIEW, &[ch('G')], Command::MoveLastLine);
 
     // The focus moves between the two regions with the keys that already move
-    // between windows.
+    // between windows, and the same chords resize the panel, exactly as they
+    // resize a window.
     add_scoped(table, REVIEW, &[ctrl('h')], Command::FocusWindowLeft);
     add_scoped(table, REVIEW, &[ctrl('l')], Command::FocusWindowRight);
+    add_scoped(table, REVIEW, &[ctrl_alt('h')], Command::ResizeWindowLeft);
+    add_scoped(table, REVIEW, &[ctrl_alt('l')], Command::ResizeWindowRight);
 
     // Vim walks the hunks of a diff with this bracket pair, so the review does
     // too. The file walk keeps the bare brackets.

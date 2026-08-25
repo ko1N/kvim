@@ -612,3 +612,41 @@ fn a_review_with_one_section_walks_to_nothing_new() {
     );
     assert_eq!(review.section(), ChangeSection::Unstaged);
 }
+
+#[test]
+fn the_panel_resizes_on_the_one_axis_that_the_review_holds() {
+    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let opened = review.panel_cells();
+
+    assert_eq!(
+        review.apply(Command::ResizeWindowLeft, None),
+        ReviewOutcome::Changed
+    );
+    assert!(review.panel_cells() > opened, "the panel widened");
+
+    assert_eq!(
+        review.apply(Command::ResizeWindowRight, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.panel_cells(), opened, "and it narrowed back");
+
+    // The bounds hold, so no resize hides the panel or takes the diff.
+    for _ in 0..64 {
+        review.apply(Command::ResizeWindowRight, None);
+    }
+    let narrow = review.panel_cells();
+    assert_eq!(
+        review.apply(Command::ResizeWindowRight, None),
+        ReviewOutcome::Unchanged
+    );
+    assert_eq!(review.panel_cells(), narrow);
+    assert!(narrow > 0, "the panel keeps cells of its own");
+
+    for _ in 0..64 {
+        review.apply(Command::ResizeWindowLeft, None);
+    }
+    assert_eq!(
+        review.apply(Command::ResizeWindowLeft, None),
+        ReviewOutcome::Unchanged
+    );
+}

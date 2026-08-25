@@ -12,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use kvim_path::WorktreeRelativePath;
 use kvim_ui::{RowKind, SidebarRow, SidebarState};
+
+use crate::tree::{GUIDE_BLANK, GUIDE_ELBOW, GUIDE_TRUNK, TREE_INDENT_CELLS};
 use kvim_workspace::{DiffChange, DiffContent, FileDiff, LineOrigin, ReviewState};
 
 /// The two sections that the panel shows.
@@ -60,6 +62,50 @@ pub(super) enum ChangesRow {
         /// The depth of the file below the section.
         depth: usize,
     },
+}
+
+impl ChangesRow {
+    /// Returns the depth of the row below its section.
+    pub(super) const fn depth(&self) -> usize {
+        match self {
+            Self::Directory { depth, .. } | Self::File { depth, .. } => *depth,
+        }
+    }
+}
+
+/// Returns the indent guides of one row of the panel.
+///
+/// One level that holds a further row below this one draws a trunk, and the
+/// last row of a level closes it with an elbow. The guides match the file tree,
+/// so both sidebars read as one design. See `docs/windows.md`.
+pub(super) fn row_guides(rows: &[SidebarRow<ChangesRow>], index: usize) -> String {
+    let Some(depth) = rows.get(index).map(|row| row.id().depth()) else {
+        return String::new();
+    };
+    let mut guides = String::with_capacity(depth * TREE_INDENT_CELLS);
+    // The rows of the section sit at the top level, so they carry no guide.
+    // Every level below one draws a trunk while it holds a further row, and the
+    // last row of a level closes it with an elbow.
+    for level in 1..=depth {
+        let segment = if level_continues(rows, index, level) {
+            GUIDE_TRUNK
+        } else if level == depth {
+            GUIDE_ELBOW
+        } else {
+            GUIDE_BLANK
+        };
+        guides.push_str(segment);
+    }
+    guides
+}
+
+/// Reports whether one level holds a further row below one row.
+fn level_continues(rows: &[SidebarRow<ChangesRow>], index: usize, depth: usize) -> bool {
+    rows.get(index.saturating_add(1)..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|row| row.id().depth() >= depth)
+        .any(|row| row.id().depth() == depth)
 }
 
 /// One changed file of one section, with the counts that its row shows.

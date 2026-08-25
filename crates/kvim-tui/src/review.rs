@@ -21,13 +21,12 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
 use crate::cells::clip_cells;
-use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh};
+use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh, row_guides};
 use crate::diff_view::{
     RowBand, draw_inline_rows, draw_side_rows, inline_rows, side_rows, view_of,
 };
 use crate::icons::{directory_icon, file_icon};
 use crate::theme::{Theme, ThemeRole};
-use crate::tree::TREE_INDENT_CELLS;
 
 /// The region of the review that owns the keys.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -125,6 +124,8 @@ pub(super) struct ReviewSurface {
     first_row: usize,
     /// The number of rows that the body viewport holds.
     height_rows: usize,
+    /// The width of the changes panel, in cells.
+    panel_cells: u16,
 }
 
 impl ReviewSurface {
@@ -171,6 +172,7 @@ impl ReviewSurface {
             cursor: 0,
             first_row: 0,
             height_rows: usize::from(height_rows),
+            panel_cells: CHANGES_PANEL_CELLS,
         };
         surface.refresh_changes();
         surface.rebuild_body();
@@ -191,6 +193,11 @@ impl ReviewSurface {
             .active()
             .copied()
             .unwrap_or(ChangeSection::Unstaged)
+    }
+
+    /// Returns the width of the changes panel, in cells.
+    pub(super) const fn panel_cells(&self) -> u16 {
+        self.panel_cells
     }
 
     /// Returns the strip of sections that the review shows.
@@ -268,6 +275,8 @@ impl ReviewSurface {
             }
             // The panel sits at the right edge, so `Ctrl-L` reaches it and
             // `Ctrl-H` returns to the diff.
+            Command::ResizeWindowLeft => self.resize_panel(1),
+            Command::ResizeWindowRight => self.resize_panel(-1),
             Command::FocusWindowLeft => self.focus_region(ReviewFocus::Diff),
             Command::FocusWindowRight => self.focus_region(ReviewFocus::Panel),
             Command::MoveDown => self.move_focused(Motion::Down(repeat)),
@@ -306,6 +315,25 @@ impl ReviewSurface {
         }
         self.refresh_changes();
         self.follow_selection();
+        ReviewOutcome::Changed
+    }
+
+    /// Widens or narrows the changes panel.
+    ///
+    /// The review holds one vertical edge, so it resizes on that axis alone.
+    /// The panel stays inside its bounds, so no resize hides it and none takes
+    /// the diff.
+    fn resize_panel(&mut self, step: i16) -> ReviewOutcome {
+        let wanted = i32::from(self.panel_cells) + i32::from(step) * i32::from(RESIZE_STEP_CELLS);
+        let width = wanted.clamp(
+            i32::from(CHANGES_PANEL_CELLS_MIN),
+            i32::from(CHANGES_PANEL_CELLS_MAX),
+        );
+        let width = u16::try_from(width).unwrap_or(CHANGES_PANEL_CELLS);
+        if width == self.panel_cells {
+            return ReviewOutcome::Unchanged;
+        }
+        self.panel_cells = width;
         ReviewOutcome::Changed
     }
 
@@ -690,7 +718,7 @@ pub(super) fn draw_review(
         return;
     };
 
-    let panel_width = area.width.min(CHANGES_PANEL_CELLS);
+    let panel_width = area.width.min(review.panel_cells());
     let body_width = area.width.saturating_sub(panel_width);
     let panel = Rect::new(
         area.x.saturating_add(body_width),
@@ -843,31 +871,31 @@ const fn settings_with(settings: DiffSettings, view: DiffView) -> DiffSettings {
 }
 
 /// Paints the rows of the changes panel.
+///
+/// The sidebar owns the viewport, so the panel draws the rows that it places
+/// and a list longer than the region scrolls with its selection.
 fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
     let focused = review.focus() == ReviewFocus::Panel;
-    let mut y = area.y;
-    for row in review.changes().rows() {
-        if y >= area.y.saturating_add(area.height) {
-            return;
-        }
-        let selected = review.changes().selected() == Some(row.id());
-        let (text, role) = match row.id() {
-            // A directory row carries the shape of the workspace, exactly as
-            // the file tree draws it, so one reader reads one shape.
-            ChangesRow::Directory { path, depth, .. } => {
+    let rows = review.changes().rows();
+    let selected = review.changes().selected().cloned();
+    let _ = review.changes().render(target, area, |canvas, placement| {
+        let row = placement.row();
+        let guides = row_guides(rows, placement.index());
+        let (text, role) = match row {
+            // A directory row carries the shape of the workspace, exactly
+            // as the file tree draws it, so one reader reads one shape.
+            ChangesRow::Directory { path, .. } => {
                 let name = path
                     .file_name()
                     .unwrap_or_else(|| path.as_os_str())
                     .to_string_lossy();
                 let icon = directory_icon(Expansion::Expanded);
-                let text = format!("{}{} {name}", indent_of(*depth), icon.glyph);
-                (text, ThemeRole::TreeDirectory)
+                (
+                    format!("{guides}{} {name}", icon.glyph),
+                    ThemeRole::TreeDirectory,
+                )
             }
-            ChangesRow::File {
-                section,
-                path,
-                depth,
-            } => {
+            ChangesRow::File { section, path, .. } => {
                 let entry = review
                     .review(*section)
                     .map(entries)
@@ -881,45 +909,39 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
                 let label = entry
                     .as_ref()
                     .map_or_else(|| name.clone().into_owned(), ChangeEntry::label);
-                let label = format!("{}{} {label}", indent_of(*depth), icon.glyph);
                 // The selection band marks the row of the focused panel. An
-                // unfocused panel still marks its row, in a quieter role, so a
-                // reader keeps the place while the keys act elsewhere.
-                let role = if selected && focused {
+                // unfocused panel still marks its row, in a quieter role, so
+                // a reader keeps the place while the keys act elsewhere.
+                let is_selected = selected.as_ref() == Some(row);
+                let role = if is_selected && focused {
                     ThemeRole::PopupSelection
-                } else if selected {
+                } else if is_selected {
                     ThemeRole::DiffHeader
                 } else if entry.is_some_and(|entry| entry.is_complete()) {
                     ThemeRole::DiffGap
                 } else {
                     ThemeRole::DiffContext
                 };
-                (label, role)
+                (format!("{guides}{} {label}", icon.glyph), role)
             }
         };
-        let line = Rect::new(area.x, y, area.width, 1);
-        target.set_style(line, theme.style(role));
-        target.set_stringn(
-            area.x,
-            y,
-            clip_cells(&text, usize::from(area.width)),
-            usize::from(area.width),
-            theme.style(role),
-        );
-        y = y.saturating_add(1);
-    }
+        let style = theme.style(role);
+        canvas.style_span(0, 0, area.width, style);
+        canvas.draw_clipped(0, 0, &text, area.width, style);
+    });
 }
 
-/// The width of the changes panel, in cells.
+/// The width that the changes panel opens with, in cells.
 const CHANGES_PANEL_CELLS: u16 = 34;
 
-/// Returns the indent of one row of the changes panel.
-///
-/// The panel indents by the same number of cells as the file tree, so the two
-/// sidebars read as one design. See `docs/windows.md`.
-fn indent_of(depth: usize) -> String {
-    " ".repeat(depth.saturating_mul(TREE_INDENT_CELLS))
-}
+/// The narrowest changes panel, in cells.
+const CHANGES_PANEL_CELLS_MIN: u16 = 16;
+
+/// The widest changes panel, in cells.
+const CHANGES_PANEL_CELLS_MAX: u16 = 80;
+
+/// The number of cells that one resize step changes.
+const RESIZE_STEP_CELLS: u16 = 2;
 
 /// Reports whether one row names one changed file of one section.
 fn names_file(row: &ChangesRow, section: ChangeSection, path: &WorktreeRelativePath) -> bool {

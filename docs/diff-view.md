@@ -126,6 +126,19 @@ The review surface survives a close. A reader who jumps into a file and opens th
 review again keeps every read mark and the cursor, and the new captures reload
 into the surface instead of replacing it.
 
+### The Sections
+
+The review shows one section at a time, and a strip of tabs at the top names
+them: the unstaged half first, because that is the half a reader works on, and
+the staged half beside it. `Tab` and `Shift-Tab` walk the strip, so a reader
+needs no mapping for each section. A section that publishes no change opens no
+tab.
+
+`kvim_ui::TabStrip` holds the strip. It is a domain-neutral value: it carries
+opaque host identities and bounded labels, owns no surface, and draws every cell
+through a host callback. A host that shows a chat, an editor, and a review uses
+the same value for those.
+
 ### The Two Regions
 
 The review holds two regions: the changes panel and the diff body. One of them
@@ -141,10 +154,17 @@ fills the rest. `Ctrl-L` therefore reaches the panel and `Ctrl-H` returns to the
 diff.
 
 The panel draws the changed files with the design of the file tree: it groups
-them by directory, indents each row by the same number of cells, and carries the
+them by directory, draws the same box-drawing indent guides, and carries the
 same file and directory icons. One reader reads one shape. A directory row takes
 no selection, and a file row names the file alone, because the rows above it
 carry the rest of its path.
+
+The panel draws through the same sidebar value that the file tree uses, so a
+list longer than the region scrolls with its selection instead of clipping.
+
+`Ctrl-Alt-H` and `Ctrl-Alt-L` resize the panel, exactly as they resize a window.
+The review holds one vertical edge, so it resizes on that axis alone, and the
+panel stays inside its bounds: no resize hides it and none takes the diff.
 
 The panel moves its selection over the changed files, and the body always shows
 the file that the panel names. The cursor reaches a file in either direction, so
@@ -156,6 +176,8 @@ region never moves the other one.
 |---|---|
 | `q`, `Esc`, `Ctrl-C` | Leave the review |
 | `Ctrl-H`, `Ctrl-L` | Move the keys to the diff and to the panel |
+| `Ctrl-Alt-H`, `Ctrl-Alt-L` | Widen and narrow the changes panel |
+| `Tab`, `Shift-Tab` | The next and the previous section |
 | `j`, `k` | One row |
 | `Ctrl-D`, `Ctrl-U` | One half page |
 | `Ctrl-F`, `Ctrl-B` | One full page |
