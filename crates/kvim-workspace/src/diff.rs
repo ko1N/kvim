@@ -19,7 +19,7 @@
 //! use kvim_path::WorktreeRelativePath;
 //! use kvim_workspace::{
 //!     BaseRevision, CandidateAuthority, DiffChange, DiffContent, DiffLine, DiffLineText,
-//!     DiffSide, DiffTarget, DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority,
+//!     DiffOldSide, DiffSide, DiffTarget, DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority,
 //!     Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine, NewLineRange, OldLine,
 //!     OldLineRange, TextDiff, WorktreeDiff,
 //! };
@@ -55,7 +55,7 @@
 //!
 //! let authority = CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([0; 32]));
 //! let diff = WorktreeDiff::new(
-//!     base,
+//!     DiffOldSide::Commit(base),
 //!     DiffTarget::Worktree,
 //!     &authority,
 //!     vec![file],
@@ -303,14 +303,14 @@ impl DiffRevision {
     /// that order, so a reordered candidate is a different revision.
     #[must_use]
     pub fn derive(
-        base: &BaseRevision,
+        old: DiffOldSide,
         authority: &CandidateAuthority,
         files: &[FileDiff],
         truncation: DiffTruncation,
     ) -> Self {
         let mut hasher = Hasher::new();
         hasher.update(REVISION_DOMAIN);
-        absorb(&mut hasher, base.as_bytes());
+        old.absorb_into(&mut hasher);
         match authority.head() {
             HeadAuthority::Unborn => {
                 hasher.update(&[0]);
@@ -566,6 +566,127 @@ impl DiffChange {
             Self::Deleted { .. } => 1,
             Self::Modified { .. } => 2,
             Self::Renamed { .. } => 3,
+        }
+    }
+}
+
+/// The two states that one capture compares.
+///
+/// Git compares a pair of states, and the pair decides which section of a
+/// review the capture publishes. The value names both states together, so a
+/// pair that Git cannot compare cannot be requested. See `docs/git.md`.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_workspace::{BaseRevision, DiffComparison};
+///
+/// let base = BaseRevision::new("0123456789abcdef0123456789abcdef01234567")
+///     .expect("the identifier is one full object name");
+/// // The staged half of one review reads no worktree file.
+/// assert!(!DiffComparison::CommitToIndex(base).reads_worktree());
+/// // The unstaged half needs no revision at all.
+/// assert!(DiffComparison::IndexToWorktree.reads_worktree());
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiffComparison {
+    /// One commit against the worktree. Every change, staged or not.
+    CommitToWorktree(BaseRevision),
+    /// One commit against the index. The staged half of one review.
+    CommitToIndex(BaseRevision),
+    /// The index against the worktree. The unstaged half of one review.
+    IndexToWorktree,
+    /// One commit against another commit.
+    ///
+    /// The range of one finished piece of work, reproducible from the
+    /// repository alone, because neither side can change.
+    CommitToCommit {
+        /// The commit that the comparison starts from.
+        old: BaseRevision,
+        /// The commit that the comparison ends at.
+        new: BaseRevision,
+    },
+}
+
+impl DiffComparison {
+    /// Returns the commit that the capture must prove names one commit object.
+    ///
+    /// [`DiffComparison::IndexToWorktree`] names no commit, so it returns
+    /// `None` and the capture proves nothing.
+    #[must_use]
+    pub const fn old_commit(self) -> Option<BaseRevision> {
+        match self {
+            Self::CommitToWorktree(base)
+            | Self::CommitToIndex(base)
+            | Self::CommitToCommit { old: base, .. } => Some(base),
+            Self::IndexToWorktree => None,
+        }
+    }
+
+    /// Returns the commit that the comparison ends at, when it ends at one.
+    #[must_use]
+    pub const fn new_commit(self) -> Option<BaseRevision> {
+        match self {
+            Self::CommitToCommit { new, .. } => Some(new),
+            Self::CommitToWorktree(_) | Self::CommitToIndex(_) | Self::IndexToWorktree => None,
+        }
+    }
+
+    /// Reports whether the comparison ends at the worktree.
+    ///
+    /// An untracked file exists in the worktree alone, so only a comparison
+    /// that ends there lists one.
+    #[must_use]
+    pub const fn reads_worktree(self) -> bool {
+        matches!(self, Self::CommitToWorktree(_) | Self::IndexToWorktree)
+    }
+}
+
+/// The state that one candidate compares against.
+///
+/// A commit names itself. The index names no commit, so the unstaged half of a
+/// review records the index digest that the capture read. A durable anchor
+/// therefore states which state its old lines came from, instead of naming a
+/// commit that never held them. See `docs/git.md`.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_workspace::{BaseRevision, DiffOldSide};
+///
+/// let base = BaseRevision::new("0123456789abcdef0123456789abcdef01234567")
+///     .expect("the identifier is one full object name");
+/// assert_eq!(DiffOldSide::Commit(base).commit(), Some(base));
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DiffOldSide {
+    /// The old lines came from one commit.
+    Commit(BaseRevision),
+    /// The old lines came from the index that this digest names.
+    Index(IndexAuthority),
+}
+
+impl DiffOldSide {
+    /// Returns the commit that holds the old lines, when a commit holds them.
+    #[must_use]
+    pub const fn commit(self) -> Option<BaseRevision> {
+        match self {
+            Self::Commit(base) => Some(base),
+            Self::Index(_) => None,
+        }
+    }
+
+    /// Absorbs the value into one digest, with its own tag for each case.
+    pub(crate) fn absorb_into(self, hasher: &mut Hasher) {
+        match self {
+            Self::Commit(base) => {
+                hasher.update(&[0]);
+                absorb(hasher, base.as_bytes());
+            }
+            Self::Index(index) => {
+                hasher.update(&[1]);
+                hasher.update(index.as_bytes());
+            }
         }
     }
 }
@@ -1517,7 +1638,7 @@ pub enum FileDiffError {
 /// with the same revision always shows the same review.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorktreeDiff {
-    base: BaseRevision,
+    old: DiffOldSide,
     target: DiffTarget,
     files: Vec<FileDiff>,
     truncation: DiffTruncation,
@@ -1527,7 +1648,7 @@ pub struct WorktreeDiff {
 impl WorktreeDiff {
     /// Validates one complete candidate and derives its revision.
     pub fn new(
-        base: BaseRevision,
+        old: DiffOldSide,
         target: DiffTarget,
         authority: &CandidateAuthority,
         files: Vec<FileDiff>,
@@ -1555,9 +1676,9 @@ impl WorktreeDiff {
             previous = Some(file.path());
         }
 
-        let revision = DiffRevision::derive(&base, authority, &files, truncation);
+        let revision = DiffRevision::derive(old, authority, &files, truncation);
         Ok(Self {
-            base,
+            old,
             target,
             files,
             truncation,
@@ -1565,10 +1686,13 @@ impl WorktreeDiff {
         })
     }
 
-    /// Returns the commit that the candidate compares against.
+    /// Returns the state that the candidate compares against.
+    ///
+    /// The unstaged half of one review compares against the index, which is no
+    /// commit, so the value names the state instead of a revision.
     #[must_use]
-    pub const fn base(&self) -> BaseRevision {
-        self.base
+    pub const fn old_side(&self) -> DiffOldSide {
+        self.old
     }
 
     /// Returns the selection that produced the candidate.
@@ -1807,7 +1931,9 @@ pub enum AnchorContextError {
 /// #     let authority =
 /// #         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([7; 32]));
 /// #     Ok(WorktreeDiff::new(
-/// #         BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?,
+/// #         DiffOldSide::Commit(BaseRevision::new(
+/// #             "0123456789abcdef0123456789abcdef01234567",
+/// #         )?),
 /// #         DiffTarget::Worktree,
 /// #         &authority,
 /// #         vec![file],
@@ -1829,7 +1955,7 @@ pub enum AnchorContextError {
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewAnchor {
-    base: BaseRevision,
+    old: DiffOldSide,
     candidate: DiffRevision,
     path: WorktreeRelativePath,
     hunk: HunkId,
@@ -1878,7 +2004,7 @@ impl ReviewAnchor {
         }
 
         Ok(Self {
-            base: candidate.base(),
+            old: candidate.old_side(),
             candidate: candidate.revision(),
             path: path.clone(),
             hunk,
@@ -1888,10 +2014,14 @@ impl ReviewAnchor {
         })
     }
 
-    /// Returns the commit that the review compares against.
+    /// Returns the state that the review compares against.
+    ///
+    /// The unstaged half of one review compares against the index, so the
+    /// anchor names the index digest that held its old lines rather than a
+    /// commit that never held them.
     #[must_use]
-    pub const fn base(&self) -> BaseRevision {
-        self.base
+    pub const fn old_side(&self) -> DiffOldSide {
+        self.old
     }
 
     /// Returns the candidate that published the selection.

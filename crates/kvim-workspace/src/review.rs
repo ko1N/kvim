@@ -56,7 +56,9 @@
 //! #     let authority =
 //! #         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([7; 32]));
 //! #     Ok(WorktreeDiff::new(
-//! #         BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?,
+//! #         DiffOldSide::Commit(BaseRevision::new(
+//! #             "0123456789abcdef0123456789abcdef01234567",
+//! #         )?),
 //! #         DiffTarget::Worktree,
 //! #         &authority,
 //! #         vec![file],
@@ -90,7 +92,7 @@ use kvim_path::WorktreeRelativePath;
 use thiserror::Error;
 
 use crate::diff::{
-    AnchorLocation, BaseRevision, CommentBody, DiffContent, DiffLimit, DiffLine, DiffRevision,
+    AnchorLocation, CommentBody, DiffContent, DiffLimit, DiffLine, DiffOldSide, DiffRevision,
     DiffSide, DiffTarget, DiffTruncation, FileDiff, Hunk, HunkId, LineNumberError, LineRangeError,
     NewLine, NewLineRange, OldLine, OldLineRange, Relocation, ReviewAnchor, ReviewAnchorError,
     TextDiff, WorktreeDiff, relocate,
@@ -125,15 +127,15 @@ pub const REVIEW_EVENTS_MAX: usize = 64;
 ///
 /// ```
 /// # use kvim_workspace::{
-/// #     BaseRevision, CandidateAuthority, DiffTarget, DiffTruncation, HeadAuthority,
-/// #     IndexAuthority, TargetAuthority, WorktreeDiff,
+/// #     BaseRevision, CandidateAuthority, DiffOldSide, DiffTarget, DiffTruncation,
+/// #     HeadAuthority, IndexAuthority, TargetAuthority, WorktreeDiff,
 /// # };
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let base = BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?;
 /// let authority =
 ///     CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([0; 32]));
 /// let empty = WorktreeDiff::new(
-///     base,
+///     DiffOldSide::Commit(base),
 ///     DiffTarget::Worktree,
 ///     &authority,
 ///     Vec::new(),
@@ -146,7 +148,7 @@ pub const REVIEW_EVENTS_MAX: usize = 64;
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetAuthority {
-    base: BaseRevision,
+    old: DiffOldSide,
     target: DiffTarget,
     projection: AuthorityProjection,
     revision: DiffRevision,
@@ -157,17 +159,17 @@ impl TargetAuthority {
     #[must_use]
     pub fn of(candidate: &WorktreeDiff) -> Self {
         Self {
-            base: candidate.base(),
+            old: candidate.old_side(),
             target: candidate.target().clone(),
             projection: AuthorityProjection::of(candidate),
             revision: candidate.revision(),
         }
     }
 
-    /// Returns the commit that the capture compared against.
+    /// Returns the state that the capture compared against.
     #[must_use]
-    pub const fn base(&self) -> BaseRevision {
-        self.base
+    pub const fn old_side(&self) -> DiffOldSide {
+        self.old
     }
 
     /// Returns the selection that produced the capture.
@@ -187,7 +189,7 @@ impl TargetAuthority {
     /// The comparison runs from the widest fact to the narrowest one, so the
     /// answer names the reason that a reader can act on.
     fn drift(&self, later: &Self) -> Option<StaleLocation> {
-        if self.base != later.base || self.target != later.target {
+        if self.old != later.old || self.target != later.target {
             return Some(StaleLocation::Target);
         }
         if self.projection != later.projection {

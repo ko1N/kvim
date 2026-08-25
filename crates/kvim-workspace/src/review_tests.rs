@@ -1,9 +1,9 @@
 use kvim_path::WorktreeRelativePath;
 
 use crate::diff::{
-    CandidateAuthority, DiffChange, DiffContent, DiffLine, DiffLineText, DiffTruncation, FileMode,
-    FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine,
-    NewLineRange, OldLine, OldLineRange, TextDiff,
+    BaseRevision, CandidateAuthority, DiffChange, DiffContent, DiffLine, DiffLineText, DiffOldSide,
+    DiffTruncation, FileMode, FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding,
+    LineOrigin, NewLine, NewLineRange, OldLine, OldLineRange, TextDiff,
 };
 
 use super::*;
@@ -66,7 +66,9 @@ fn candidate(files: Vec<FileDiff>, index: [u8; 32]) -> WorktreeDiff {
     let authority =
         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest(index));
     WorktreeDiff::new(
-        BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        DiffOldSide::Commit(
+            BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        ),
         DiffTarget::Worktree,
         &authority,
         files,
@@ -360,7 +362,9 @@ fn a_capture_of_another_target_publishes_no_comment() {
     let authority =
         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([7; 32]));
     let other = WorktreeDiff::new(
-        BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        DiffOldSide::Commit(
+            BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        ),
         DiffTarget::Path(path("a.txt")),
         &authority,
         vec![added("a.txt", &["one", "two"], DiffTruncation::Complete)],

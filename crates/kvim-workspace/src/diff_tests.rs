@@ -8,6 +8,11 @@ fn base() -> BaseRevision {
     BaseRevision::new(BASE_HEX).expect("the fixture names a full SHA-1 identifier")
 }
 
+/// The old side of every fixture candidate: the base commit above.
+fn old_side() -> DiffOldSide {
+    DiffOldSide::Commit(base())
+}
+
 fn authority() -> CandidateAuthority {
     CandidateAuthority::new(
         HeadAuthority::Commit(base()),
@@ -97,7 +102,7 @@ fn added_file(name: &str, lines: &[&str]) -> FileDiff {
 
 fn candidate(files: Vec<FileDiff>) -> WorktreeDiff {
     WorktreeDiff::new(
-        base(),
+        old_side(),
         DiffTarget::Worktree,
         &authority(),
         files,
@@ -506,7 +511,7 @@ fn a_candidate_bounds_its_files_and_orders_its_paths() {
 
     assert_eq!(
         WorktreeDiff::new(
-            base(),
+            old_side(),
             DiffTarget::Worktree,
             &authority(),
             files,
@@ -521,7 +526,7 @@ fn a_candidate_bounds_its_files_and_orders_its_paths() {
     let unordered = vec![added_file("b.rs", &["a"]), added_file("a.rs", &["a"])];
     assert!(matches!(
         WorktreeDiff::new(
-            base(),
+            old_side(),
             DiffTarget::Worktree,
             &authority(),
             unordered,
@@ -532,7 +537,7 @@ fn a_candidate_bounds_its_files_and_orders_its_paths() {
 
     assert!(matches!(
         WorktreeDiff::new(
-            base(),
+            old_side(),
             DiffTarget::Path(path("a.rs")),
             &authority(),
             vec![added_file("b.rs", &["a"])],
@@ -557,7 +562,7 @@ fn truncation_stays_visible_on_every_level() {
     )
     .expect("a regular mode publishes text");
     let diff = WorktreeDiff::new(
-        base(),
+        old_side(),
         DiffTarget::Worktree,
         &authority(),
         vec![file],
@@ -590,7 +595,7 @@ fn the_revision_covers_the_complete_published_authority() {
     let reference = candidate(files.clone()).revision();
 
     let other_authority = WorktreeDiff::new(
-        base(),
+        old_side(),
         DiffTarget::Worktree,
         &CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([7; 32])),
         files.clone(),
@@ -598,7 +603,7 @@ fn the_revision_covers_the_complete_published_authority() {
     )
     .expect("one file needs no order");
     let other_index = WorktreeDiff::new(
-        base(),
+        old_side(),
         DiffTarget::Worktree,
         &CandidateAuthority::new(
             HeadAuthority::Commit(base()),
@@ -611,7 +616,7 @@ fn the_revision_covers_the_complete_published_authority() {
     let other_bytes = candidate(vec![added_file("a.rs", &["one", "three"])]);
     let other_path = candidate(vec![added_file("b.rs", &["one", "two"])]);
     let other_truncation = WorktreeDiff::new(
-        base(),
+        old_side(),
         DiffTarget::Worktree,
         &authority(),
         vec![added_file("a.rs", &["one", "two"])],
@@ -653,7 +658,7 @@ fn an_anchor_names_every_part_of_its_location() {
     let diff = candidate(vec![added_file("a.rs", &["one", "two", "three"])]);
     let anchor = anchor_on(&diff, "a.rs", 2, 1);
 
-    assert_eq!(anchor.base(), base());
+    assert_eq!(anchor.old_side(), old_side());
     assert_eq!(anchor.candidate(), diff.revision());
     assert_eq!(anchor.path(), &path("a.rs"));
     assert_eq!(anchor.hunk(), HunkId::new(0));
