@@ -743,6 +743,30 @@ the unnamed register, `_` discards every write, and an upper-case name appends t
 its lower-case register. [`clipboard.md`](clipboard.md) records which registers
 the system clipboard sees.
 
+### The Leader Key
+
+The leader belongs to the leader in every scope that binds keys of its own. The
+file-tree sidebar therefore passes `Space` through to the leader instead of
+acting on the selected row, and every leader sequence reaches its command from
+the sidebar exactly as it does from a buffer. `l` and `h` open and close an
+entry, and `Enter` opens it, so the sidebar needs no toggle key of its own.
+
+A command that the sidebar does not own falls through to the owner that the
+session picks next. A modal surface that reads its own answer, such as the
+picker or the review, takes every key while it stays open and passes no leader
+sequence.
+
+### The Review
+
+`<leader>gg` opens the review of the changes of the worktree. The review owns
+every key while it stays open, and it binds no key that changes a buffer.
+
+The review holds two regions and moves both of them with the motions that the
+buffer and the sidebar already publish, so it adds no motion command of its own.
+`Ctrl-H` and `Ctrl-L` move the keys between the two regions.
+[`diff-view.md`](diff-view.md) owns the table of its keys, the rules of its two
+views, and its live updates.
+
 ### Text Objects
 
 A text object names a range around the cursor without moving it first. An

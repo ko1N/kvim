@@ -73,9 +73,33 @@ kvim reads the message text of `git`, of any other command, or of any error.
 
 ## Worktree Diff Capture
 
-The caller supplies one full `BaseRevision` Git commit object identifier. Kvim
-does not discover a review base. An unavailable object or an object that is not
-a commit returns `BaseUnavailable`.
+### The Compared Pair
+
+The caller supplies one `DiffComparison`, which names both states that the
+capture compares. Kvim discovers no review base and no pair.
+
+| Comparison | Compares | Section |
+|---|---|---|
+| `CommitToWorktree` | one commit against the working tree | every change, staged or not |
+| `CommitToIndex` | one commit against the index | the staged half |
+| `IndexToWorktree` | the index against the working tree | the unstaged half |
+| `CommitToCommit` | one commit against another commit | one finished range of work |
+
+Each case maps to one argument set. The staged half adds `--cached`. The
+unstaged half names no revision, because a bare diff already compares the index
+with the working tree. A commit pair names both commits in order.
+
+An untracked file exists in the working tree alone, so a comparison that ends
+elsewhere lists none and skips that read.
+
+A commit pair is reproducible from the repository alone, because neither side
+can change. A host that records a range of work therefore records two object
+identifiers and reads the same candidate again at any later time.
+
+The caller supplies one full `BaseRevision` Git commit object identifier for
+every commit that a comparison names. An unavailable object or an object that is
+not a commit returns `BaseUnavailable`. `IndexToWorktree` names no commit and
+proves none.
 
 `BaseRevision` accepts the two published object formats: 40 hexadecimal
 characters for SHA-1 and 64 for SHA-256. It accepts either letter case and keeps
@@ -87,10 +111,20 @@ stay one object for the life of the review.
 `WorktreeRelativePath`. One-path selection matches either side of a rename and
 returns the complete rename pair.
 
-Capture compares the base commit tree with the current working tree. One
-candidate includes commits after the base, staged changes, unstaged changes, and
-untracked content. A clean worktree with commits after the base remains
-reviewable.
+A `CommitToWorktree` capture includes commits after the base, staged changes,
+unstaged changes, and untracked content. A clean worktree with commits after the
+base remains reviewable.
+
+### The Old Side
+
+One candidate records the state that it compared against as a `DiffOldSide`. A
+commit names itself. The index is no commit, so the unstaged half records the
+index digest that the capture read.
+
+A `ReviewAnchor` carries the same value. An anchor of the unstaged half
+therefore states that its old lines came from the index, instead of naming a
+commit that never held them. The identity stays true whenever the index and
+`HEAD` disagree, which is whenever work is staged.
 
 The candidate records exact source bytes, file kinds, modes, old and new sides,
 line mappings, truncation, and one `DiffRevision`. Added, deleted, modified,
@@ -100,7 +134,7 @@ comment.
 
 `DiffRevision` is a BLAKE3 digest of:
 
-- the base commit,
+- the old side, with one tag for a commit and one for the index,
 - current `HEAD`,
 - index authority,
 - sorted paths,

@@ -61,8 +61,8 @@ use kvim_ui::{
 };
 use kvim_workspace::temp::TempRepository;
 use kvim_workspace::{
-    BaseRevision, CommentBody, DiffSide, DiffTarget, HunkStep, ReviewEvent, ReviewRow, ReviewState,
-    TargetAuthority, WorktreeDiff, WorktreeDiffRead, WorktreeDiffRequest,
+    BaseRevision, CommentBody, DiffComparison, DiffSide, DiffTarget, HunkStep, ReviewEvent,
+    ReviewRow, ReviewState, TargetAuthority, WorktreeDiff, WorktreeDiffRead, WorktreeDiffRequest,
 };
 
 /// The file that the workspace shows and reviews.
@@ -887,7 +887,8 @@ async fn capture(
     target: DiffTarget,
 ) -> Result<WorktreeDiff, Box<dyn Error>> {
     let root = Arc::new(WorktreeRoot::open(root)?);
-    let mut request = WorktreeDiffRequest::new(root, base, target);
+    let mut request =
+        WorktreeDiffRequest::new(root, DiffComparison::CommitToWorktree(base), target);
     for _ in 0..CAPTURE_COMMANDS_MAX {
         let output = run(request.command()).await;
         match request.publish(&output) {

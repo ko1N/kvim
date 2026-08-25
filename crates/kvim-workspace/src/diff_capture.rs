@@ -32,10 +32,10 @@ use kvim_runtime::{ProcessOutput, ProcessRequest, RuntimeError};
 
 use crate::diff::{
     BaseRevision, CandidateAuthority, DIFF_FILE_HUNKS_MAX, DIFF_FILES_MAX, DIFF_HUNK_LINES_MAX,
-    DIGEST_BYTES, DiffChange, DiffContent, DiffLimit, DiffLine, DiffLineText, DiffSide, DiffTarget,
-    DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority,
-    LineEnding, LineOrigin, NewLine, NewLineRange, OldLine, OldLineRange, TextDiff, WorktreeDiff,
-    absorb, absorb_count,
+    DIGEST_BYTES, DiffChange, DiffComparison, DiffContent, DiffLimit, DiffLine, DiffLineText,
+    DiffOldSide, DiffSide, DiffTarget, DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority,
+    Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine, NewLineRange, OldLine,
+    OldLineRange, TextDiff, WorktreeDiff, absorb, absorb_count,
 };
 use crate::git::GitExecutionPolicy;
 
@@ -147,6 +147,9 @@ const PATCH_ARGUMENTS: [&str; 4] = ["--patch", "--no-color", "--unified=3", "--r
 /// The pathspec that names every entry below the worktree root.
 const ROOT_PATHSPEC: &str = ".";
 
+/// The argument that compares against the index instead of the worktree.
+const CACHED_ARGUMENT: &str = "--cached";
+
 /// The separator that follows every option and precedes every pathspec.
 const PATHSPEC_SEPARATOR: &str = "--";
 
@@ -176,14 +179,14 @@ const BINARY_MARKERS: [&[u8]; 2] = [b"Binary files ", b"GIT binary patch"];
 /// ```
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// use kvim_workspace::{
-///     AuthorityProjection, BaseRevision, CandidateAuthority, DiffTarget, DiffTruncation,
-///     HeadAuthority, IndexAuthority, WorktreeDiff,
+///     AuthorityProjection, BaseRevision, CandidateAuthority, DiffOldSide, DiffTarget,
+///     DiffTruncation, HeadAuthority, IndexAuthority, WorktreeDiff,
 /// };
 ///
 /// let base = BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?;
 /// let authority = CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([0; 32]));
 /// let empty = WorktreeDiff::new(
-///     base,
+///     DiffOldSide::Commit(base),
 ///     DiffTarget::Worktree,
 ///     &authority,
 ///     Vec::new(),
@@ -203,7 +206,7 @@ impl AuthorityProjection {
     pub fn of(diff: &WorktreeDiff) -> Self {
         let mut hasher = Hasher::new();
         hasher.update(PROJECTION_DOMAIN);
-        absorb(&mut hasher, diff.base().as_bytes());
+        diff.old_side().absorb_into(&mut hasher);
         hasher.update(&[u8::from(diff.truncation().is_truncated())]);
         absorb_count(&mut hasher, diff.files().len());
         for file in diff.files() {
@@ -342,6 +345,31 @@ enum CaptureStep {
     Patch,
 }
 
+impl CaptureStep {
+    /// Returns the first step of one comparison.
+    ///
+    /// A comparison without a commit proves no commit object, so it starts at
+    /// the authority read instead.
+    const fn first(comparison: DiffComparison) -> Self {
+        match comparison.old_commit() {
+            Some(_) => Self::BaseKind,
+            None => Self::Head,
+        }
+    }
+
+    /// Returns the step that follows the untracked listing.
+    ///
+    /// An untracked file exists in the worktree alone, so a comparison that
+    /// ends elsewhere lists none and skips the read.
+    const fn after_status(comparison: DiffComparison) -> Self {
+        if comparison.reads_worktree() {
+            Self::Untracked
+        } else {
+            Self::Raw
+        }
+    }
+}
+
 /// The role of one pass of the capture.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum CapturePass {
@@ -378,11 +406,14 @@ struct PassReads {
 /// use std::sync::Arc;
 ///
 /// use kvim_path::WorktreeRoot;
-/// use kvim_workspace::{BaseRevision, DiffTarget, GIT_PROGRAM, WorktreeDiffRequest};
+/// use kvim_workspace::{
+///     BaseRevision, DiffComparison, DiffTarget, GIT_PROGRAM, WorktreeDiffRequest,
+/// };
 ///
 /// let root = Arc::new(WorktreeRoot::open(std::env::current_dir()?)?);
 /// let base = BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?;
-/// let request = WorktreeDiffRequest::new(root, base, DiffTarget::Worktree);
+/// let comparison = DiffComparison::CommitToWorktree(base);
+/// let request = WorktreeDiffRequest::new(root, comparison, DiffTarget::Worktree);
 /// let command = request.command();
 ///
 /// assert_eq!(command.program, GIT_PROGRAM);
@@ -393,7 +424,7 @@ struct PassReads {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorktreeDiffRequest {
     policy: GitExecutionPolicy,
-    base: BaseRevision,
+    comparison: DiffComparison,
     target: DiffTarget,
     attempt: usize,
     pass: CapturePass,
@@ -405,19 +436,20 @@ pub struct WorktreeDiffRequest {
 }
 
 impl WorktreeDiffRequest {
-    /// Creates one capture of one caller-supplied base commit.
+    /// Creates one capture of one caller-supplied comparison.
     ///
-    /// Kvim discovers no review base. The caller names the full commit object
-    /// identifier that the review compares against.
+    /// Kvim discovers no review base. The caller names the two states that the
+    /// capture compares, and every commit in them by its full object
+    /// identifier. See `docs/git.md`.
     #[must_use]
-    pub fn new(root: Arc<WorktreeRoot>, base: BaseRevision, target: DiffTarget) -> Self {
+    pub fn new(root: Arc<WorktreeRoot>, comparison: DiffComparison, target: DiffTarget) -> Self {
         Self {
             policy: GitExecutionPolicy::new(root),
-            base,
+            comparison,
             target,
             attempt: 0,
             pass: CapturePass::Initial,
-            step: CaptureStep::BaseKind,
+            step: CaptureStep::first(comparison),
             reads: PassReads::default(),
             initial: None,
             candidate: None,
@@ -431,10 +463,10 @@ impl WorktreeDiffRequest {
         self.policy.root()
     }
 
-    /// Returns the commit that the capture compares against.
+    /// Returns the two states that the capture compares.
     #[must_use]
-    pub const fn base(&self) -> BaseRevision {
-        self.base
+    pub const fn comparison(&self) -> DiffComparison {
+        self.comparison
     }
 
     /// Returns the selection that the capture publishes.
@@ -449,7 +481,9 @@ impl WorktreeDiffRequest {
     /// locale, an explicit output bound, and the capture deadline.
     #[must_use]
     pub fn command(&self) -> ProcessRequest {
-        let base = self.base.to_hex();
+        let old_commit = self.comparison.old_commit().map(|commit| commit.to_hex());
+        let new_commit = self.comparison.new_commit().map(|commit| commit.to_hex());
+        let base = old_commit.clone().unwrap_or_default();
         let mut arguments: Vec<&str> = Vec::new();
         let output_bytes_max = match self.step {
             CaptureStep::BaseKind => {
@@ -476,13 +510,13 @@ impl WorktreeDiffRequest {
             CaptureStep::Raw => {
                 arguments.extend(DIFF_ARGUMENTS);
                 arguments.extend(RAW_ARGUMENTS);
-                arguments.push(&base);
+                extend_comparison(&mut arguments, self.comparison, &base, &new_commit);
                 DIFF_PROCESS_OUTPUT_BYTES_MAX
             }
             CaptureStep::Patch => {
                 arguments.extend(DIFF_ARGUMENTS);
                 arguments.extend(PATCH_ARGUMENTS);
-                arguments.push(&base);
+                extend_comparison(&mut arguments, self.comparison, &base, &new_commit);
                 DIFF_PROCESS_OUTPUT_BYTES_MAX
             }
         };
@@ -572,7 +606,12 @@ impl WorktreeDiffRequest {
             CaptureStep::Status => {
                 let stdout = require(succeeded, &output.stdout)?;
                 self.reads.status = Some(digest(STATUS_DOMAIN, stdout));
-                self.step = CaptureStep::Untracked;
+                self.step = CaptureStep::after_status(self.comparison);
+                if self.step == CaptureStep::Raw {
+                    // The comparison ends at no worktree, so it lists no
+                    // untracked file and the collection reads an empty list.
+                    self.reads.untracked = Some(Vec::new());
+                }
             }
             CaptureStep::Untracked => {
                 let stdout = require(succeeded, &output.stdout)?;
@@ -616,14 +655,24 @@ impl WorktreeDiffRequest {
 
         let (files, truncation) = select_files(collected, &self.target);
         let authority = CandidateAuthority::new(head, index);
-        let candidate = WorktreeDiff::new(
-            self.base,
-            self.target.clone(),
-            &authority,
-            files,
-            truncation,
-        )
-        .map_err(|_| WorktreeDiffFailure::Unavailable)?;
+        // The index holds the old lines of the unstaged half, and the index is
+        // no commit, so the candidate names the digest that the pass read.
+        let old_side = match self.comparison {
+            DiffComparison::IndexToWorktree => DiffOldSide::Index(index),
+            // The staged half compares against `HEAD`, which the authority read
+            // of this pass already named. A repository without a commit has no
+            // `HEAD` to compare against.
+            DiffComparison::HeadToIndex => match head {
+                HeadAuthority::Commit(commit) => DiffOldSide::Commit(commit),
+                HeadAuthority::Unborn => return Err(WorktreeDiffFailure::BaseUnavailable),
+            },
+            DiffComparison::CommitToWorktree(commit)
+            | DiffComparison::CommitToIndex(commit)
+            | DiffComparison::CommitToCommit { old: commit, .. } => DiffOldSide::Commit(commit),
+        };
+        let candidate =
+            WorktreeDiff::new(old_side, self.target.clone(), &authority, files, truncation)
+                .map_err(|_| WorktreeDiffFailure::Unavailable)?;
         let fingerprint = CaptureFingerprint {
             head,
             index,
@@ -674,6 +723,35 @@ impl WorktreeDiffRequest {
         self.pass = CapturePass::Candidate;
         self.step = CaptureStep::Head;
         Ok(WorktreeDiffRead::Pending(Box::new(self)))
+    }
+}
+
+/// Adds the revisions that one comparison names to one diff read.
+///
+/// The staged half reads the index with `--cached`. The unstaged half names no
+/// revision at all, because a bare diff already compares the index against the
+/// worktree. Every other comparison names its commits in order.
+fn extend_comparison<'a>(
+    arguments: &mut Vec<&'a str>,
+    comparison: DiffComparison,
+    old: &'a str,
+    new: &'a Option<String>,
+) {
+    match comparison {
+        DiffComparison::CommitToWorktree(_) => arguments.push(old),
+        DiffComparison::CommitToIndex(_) => {
+            arguments.push(CACHED_ARGUMENT);
+            arguments.push(old);
+        }
+        // Git resolves `HEAD` itself, so the read names no revision.
+        DiffComparison::HeadToIndex => arguments.push(CACHED_ARGUMENT),
+        DiffComparison::IndexToWorktree => {}
+        DiffComparison::CommitToCommit { .. } => {
+            arguments.push(old);
+            if let Some(new) = new.as_deref() {
+                arguments.push(new);
+            }
+        }
     }
 }
 

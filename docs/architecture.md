@@ -638,6 +638,9 @@ learn that it failed. See [`responsiveness.md`](responsiveness.md).
   formatter.
 - [`git.md`](git.md) owns read-only Git status and diff capture, review anchors,
   recorded entry states, and safe Git execution.
+- [`diff-view.md`](diff-view.md) owns the presentation of one captured diff: the
+  screen rows of one hunk, the two views, the changes panel, and the read state
+  of one review.
 - [`clipboard.md`](clipboard.md) owns the system clipboard boundary, the
   register shape rule, and the platform commands.
 - [`settings.md`](settings.md) owns the `EditorSettings` structure and every

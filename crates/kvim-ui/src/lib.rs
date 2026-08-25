@@ -83,6 +83,7 @@
 mod composer;
 mod layout;
 mod sidebar;
+mod tabs;
 mod which_key;
 mod window;
 
@@ -96,6 +97,7 @@ pub use sidebar::{
     SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas, SidebarError,
     SidebarEvent, SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow, SidebarState,
 };
+pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabStrip};
 pub use which_key::{
     WHICH_KEY_BODY_SHARE, WHICH_KEY_COLUMN_ROWS_MAX, WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX,
     WhichKeyError, WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles,

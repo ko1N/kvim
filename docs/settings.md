@@ -39,6 +39,17 @@ structure, not a flat list of primitives.
 
 [`windows.md`](windows.md) owns the presentation behavior for these fields.
 
+## Diff
+
+| Field | Default |
+|---|---|
+| View | Side by side |
+| Smallest column width | 24 cells |
+
+[`diff-view.md`](diff-view.md) owns the presentation behavior for these fields.
+A window that cannot hold two columns of the smallest width draws inline
+whatever the view field asks for.
+
 ## Indent
 
 | Field | Default |

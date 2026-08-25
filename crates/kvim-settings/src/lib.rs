@@ -242,6 +242,50 @@ impl Default for DisplaySettings {
     }
 }
 
+/// The view that the diff of one review draws.
+///
+/// Both views read the same aligned rows, so they cannot disagree about what
+/// one hunk holds. See `docs/diff-view.md`.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_settings::{DiffSettings, DiffView};
+///
+/// // Two columns are the default, because a replacement reads best beside the
+/// // text that it replaced.
+/// assert_eq!(DiffSettings::default().view, DiffView::SideBySide);
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DiffView {
+    /// Draw the old side and the new side in two columns.
+    #[default]
+    SideBySide,
+    /// Draw one column and mark the origin of every line.
+    Inline,
+}
+
+/// The diff view policy of the editor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DiffSettings {
+    /// The view that a review opens with.
+    pub view: DiffView,
+    /// The smallest width that one column of the two-column view needs.
+    ///
+    /// A window narrower than two such columns draws inline instead, because
+    /// two columns of a handful of cells each show nothing useful.
+    pub side_column_cells_min: u16,
+}
+
+impl Default for DiffSettings {
+    fn default() -> Self {
+        Self {
+            view: DiffView::SideBySide,
+            side_column_cells_min: 24,
+        }
+    }
+}
+
 /// The indent policy that the buffer applies to tabs and shifts.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct IndentSettings {
@@ -486,6 +530,8 @@ impl Default for LanguageSettings {
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EditorSettings {
+    /// The view and the bounds of the diff of one review.
+    pub diff: DiffSettings,
     /// The visible layout of one editor window.
     pub display: DisplaySettings,
     /// The file load and save policy.

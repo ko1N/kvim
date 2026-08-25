@@ -62,19 +62,19 @@ const COLLAPSED_MARKER: &str = "▸ ";
 /// The number of cells that the selection mark reserves at the left edge.
 ///
 /// The column stays blank on every other row, so one mark never moves a name.
-const MARK_CELLS: usize = 1;
+pub(super) const MARK_CELLS: usize = 1;
 
 /// The mark of the selected row, at the left edge of the sidebar.
-const SELECTION_MARK: &str = "▌";
+pub(super) const SELECTION_MARK: &str = "▌";
 
 /// The indent guide of one level that holds a further entry below the row.
-const GUIDE_TRUNK: &str = "│ ";
+pub(super) const GUIDE_TRUNK: &str = "│ ";
 
 /// The indent guide that closes the last child of one level.
-const GUIDE_ELBOW: &str = "└ ";
+pub(super) const GUIDE_ELBOW: &str = "└ ";
 
 /// The indent guide of one level that holds no further entry.
-const GUIDE_BLANK: &str = "  ";
+pub(super) const GUIDE_BLANK: &str = "  ";
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";
@@ -102,7 +102,7 @@ pub const GENERATED_NAMES: [&str; 5] = [".direnv", ".git", "__pycache__", "node_
 ///
 /// The column stays blank on every row without a Git state, so one mark never
 /// moves a name.
-const GIT_MARK_CELLS: u16 = 1;
+pub(super) const GIT_MARK_CELLS: u16 = 1;
 
 /// Returns the mark of one recorded Git state.
 ///
@@ -110,7 +110,7 @@ const GIT_MARK_CELLS: u16 = 1;
 /// configuration paints them: a filled shape for a change that the reader owns,
 /// an outlined shape for an entry that the repository does not track yet, and a
 /// checked box for an entry that the ignore rules name.
-const fn git_mark(status: GitStatus) -> &'static str {
+pub(super) const fn git_mark(status: GitStatus) -> &'static str {
     match status {
         GitStatus::Staged => "■",
         GitStatus::Modified => "●",
@@ -1262,7 +1262,7 @@ const fn name_offset_cells(depth: usize) -> usize {
 }
 
 /// Returns the width of the selection mark, in cells of the canvas.
-fn mark_cells() -> u16 {
+pub(super) fn mark_cells() -> u16 {
     u16::try_from(MARK_CELLS).unwrap_or(1)
 }
 
@@ -1271,7 +1271,7 @@ fn mark_cells() -> u16 {
 /// A span that starts outside the sidebar paints nothing, and a span that
 /// reaches the edge stops there, so a narrow sidebar writes no cell outside its
 /// own rectangle.
-fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: usize, style: Style) {
+pub(super) fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: usize, style: Style) {
     let (Ok(start), Ok(cells)) = (u16::try_from(start), u16::try_from(cells)) else {
         debug_assert!(
             false,
@@ -1290,7 +1290,12 @@ fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: usize, style:
 /// The mark reports the state of the entry, and of every entry below a
 /// directory. A sidebar that holds no cell for the mark paints none, so a very
 /// narrow sidebar still shows its names. See `docs/git.md`.
-fn render_git_mark(canvas: &mut SidebarCanvas<'_>, status: GitStatus, theme: Theme, style: Style) {
+pub(super) fn render_git_mark(
+    canvas: &mut SidebarCanvas<'_>,
+    status: GitStatus,
+    theme: Theme,
+    style: Style,
+) {
     let Some(offset) = canvas.width_cells().checked_sub(GIT_MARK_CELLS) else {
         return;
     };

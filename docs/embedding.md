@@ -299,6 +299,7 @@ The required examples are:
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
 - `crates/kvim-ui/examples/split_windows.rs`
+- `crates/kvim-ui/examples/tab_strip.rs`
 - `crates/kvim-ui/examples/which_key.rs`
 - `crates/kvim-tui/examples/embedded_editor.rs`
 - `crates/kvim-tui/examples/host_workspace.rs`

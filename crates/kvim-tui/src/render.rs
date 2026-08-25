@@ -16,6 +16,7 @@ use super::buffer_view::{BracketHighlight, WindowFocus, WindowView, cursor_cell,
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::overlay::{render_completion, render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
+use super::review::draw_review;
 use super::session::Visible;
 use super::theme::ThemeRole;
 use super::tree::render_tree;
@@ -39,6 +40,37 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     let bands = shell_areas(view.area);
     let theme = view.theme;
     target.set_style(view.area, theme.style(ThemeRole::Text));
+
+    // The open review draws the body instead of the window tree. It changes no
+    // window, no viewport, and no buffer, so leaving it restores the layout by
+    // drawing that tree again. See `docs/diff-view.md`.
+    if let Some(review) = view.review {
+        draw_review(
+            target,
+            bands.body,
+            theme,
+            view.settings.diff,
+            &view.tree.root_label(),
+            review,
+        );
+        render_statusline(
+            target,
+            bands.statusline,
+            theme,
+            view.editing.mode(),
+            Cursor::ORIGIN,
+            view.focused_format_on_save(),
+        );
+        render_message(
+            target,
+            bands.message,
+            theme,
+            view.confirmation,
+            view.prompt,
+            view.message,
+        );
+        return None;
+    }
 
     let focused = view.windows.focused_window();
     // The terminal draws its own cursor, so one frame reports at most one

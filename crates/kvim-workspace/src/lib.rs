@@ -43,6 +43,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod align;
 mod buffer;
 mod clipboard;
 mod diff;
@@ -65,6 +66,7 @@ pub mod temp;
 #[cfg(test)]
 mod tests;
 
+pub use align::{AlignedRow, align_hunk};
 pub use buffer::{
     BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME,
     SaveApplyOutcome,
@@ -74,13 +76,14 @@ pub use diff::{
     AmbiguityReason, AnchorContext, AnchorContextError, AnchorLocation, BaseRevision,
     BaseRevisionError, CandidateAuthority, CommentBody, CommentBodyError, DIFF_FILE_HUNKS_MAX,
     DIFF_FILES_MAX, DIFF_HUNK_LINES_MAX, DIFF_LINE_BYTES_MAX, DIFF_LINE_NUMBER_MAX, DIGEST_BYTES,
-    DiffChange, DiffContent, DiffLimit, DiffLine, DiffLineText, DiffLineTextError, DiffRevision,
-    DiffSide, DiffTarget, DiffTruncation, FILE_MODE_DIGITS, FileDiff, FileDiffError, FileMode,
-    FileModeError, FileSide, HeadAuthority, Hunk, HunkError, HunkId, IndexAuthority, LineEnding,
-    LineNumberError, LineOrigin, LineRangeError, NewLine, NewLineRange, OldLine, OldLineRange,
-    RELOCATION_WINDOWS_MAX, REVIEW_COMMENT_BYTES_MAX, REVIEW_CONTEXT_LINES_MAX, Relocation,
-    ReviewAnchor, ReviewAnchorError, SHA1_HEX_CHARS, SHA256_HEX_CHARS, SelectionDigest, TextDiff,
-    TextDiffError, UnsupportedMode, WorktreeDiff, WorktreeDiffError, relocate,
+    DiffChange, DiffComparison, DiffContent, DiffLimit, DiffLine, DiffLineText, DiffLineTextError,
+    DiffOldSide, DiffRevision, DiffSide, DiffTarget, DiffTruncation, FILE_MODE_DIGITS, FileDiff,
+    FileDiffError, FileMode, FileModeError, FileSide, HeadAuthority, Hunk, HunkError, HunkId,
+    IndexAuthority, LineEnding, LineNumberError, LineOrigin, LineRangeError, NewLine, NewLineRange,
+    OldLine, OldLineRange, RELOCATION_WINDOWS_MAX, REVIEW_COMMENT_BYTES_MAX,
+    REVIEW_CONTEXT_LINES_MAX, Relocation, ReviewAnchor, ReviewAnchorError, SHA1_HEX_CHARS,
+    SHA256_HEX_CHARS, SelectionDigest, TextDiff, TextDiffError, UnsupportedMode, WorktreeDiff,
+    WorktreeDiffError, relocate,
 };
 pub use diff_capture::{
     AuthorityProjection, DIFF_ANSWER_OUTPUT_BYTES_MAX, DIFF_BINARY_SCAN_BYTES,

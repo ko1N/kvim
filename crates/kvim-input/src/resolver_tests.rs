@@ -468,6 +468,10 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
             ),
             ("e".to_owned(), "Show the diagnostic float".to_owned()),
             ("f".to_owned(), "+3 commands".to_owned()),
+            (
+                "g".to_owned(),
+                "Show the changes of the worktree".to_owned()
+            ),
             ("k".to_owned(), "Show hover information".to_owned()),
             ("o".to_owned(), "Open the buffer picker".to_owned()),
             ("q".to_owned(), "Close the focused window".to_owned()),
@@ -597,8 +601,13 @@ fn the_sidebar_scope_resolves_its_own_keys() {
 
     assert_eq!(
         resolver.resolve(ch(' '), NOW),
-        command(Command::TreeToggleEntry),
-        "the sidebar holds no leader sequence, so Space acts at once"
+        Resolution::Pending,
+        "the leader belongs to the leader in the sidebar as well"
+    );
+    assert_eq!(
+        feed(&mut resolver, &[ch('g'), ch('g')]),
+        command(Command::OpenReview),
+        "a leader sequence reaches its command from the sidebar"
     );
     assert_eq!(
         feed(&mut resolver, &[ch('3'), ch('j')]),

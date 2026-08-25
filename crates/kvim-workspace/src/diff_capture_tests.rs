@@ -8,7 +8,8 @@ use kvim_runtime::{
 };
 
 use crate::diff::{
-    DiffChange, DiffContent, DiffSide, DiffTarget, FileMode, LineOrigin, WorktreeDiff,
+    DiffChange, DiffComparison, DiffContent, DiffOldSide, DiffSide, DiffTarget, FileMode,
+    LineOrigin, WorktreeDiff,
 };
 use crate::temp::TempRepository;
 
@@ -59,6 +60,36 @@ fn capture(
     capture_with(root, base, target, |_| {})
 }
 
+/// Captures one named comparison through the bounded process service.
+fn capture_comparison(
+    root: &Path,
+    comparison: DiffComparison,
+    target: DiffTarget,
+) -> Result<WorktreeDiff, WorktreeDiffFailure> {
+    let root = Arc::new(WorktreeRoot::open(root).expect("the fixture root is one directory"));
+    let tokio = tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(1)
+        .enable_all()
+        .build()
+        .expect("the test host starts one Tokio runtime");
+    tokio.block_on(async move {
+        let mut request = WorktreeDiffRequest::new(root, comparison, target);
+        for _ in 0..CAPTURE_COMMANDS_MAX {
+            let output = run(request.command()).await;
+            match request.publish(&output)? {
+                WorktreeDiffRead::Pending(next) => request = *next,
+                WorktreeDiffRead::Published(diff) => return Ok(*diff),
+            }
+        }
+        panic!("one capture finishes inside its command bound")
+    })
+}
+
+/// Returns the revision of one fixture commit.
+fn revision(hex: &str) -> BaseRevision {
+    BaseRevision::new(hex).expect("the fixture names one full identifier")
+}
+
 /// Captures one worktree diff and lets the caller change the repository.
 ///
 /// The callback runs before every command, so a test can place one change
@@ -74,13 +105,16 @@ where
 {
     let root = Arc::new(WorktreeRoot::open(root).expect("the fixture root is one directory"));
     let base = BaseRevision::new(base).expect("the fixture names one full identifier");
+    // Every fixture below compares the base commit against the worktree, which
+    // is the comparison that the capture published before it named its pair.
+    let comparison = DiffComparison::CommitToWorktree(base);
     let tokio = tokio::runtime::Builder::new_multi_thread()
         .worker_threads(1)
         .enable_all()
         .build()
         .expect("the test host starts one Tokio runtime");
     tokio.block_on(async move {
-        let mut request = WorktreeDiffRequest::new(root, base, target);
+        let mut request = WorktreeDiffRequest::new(root, comparison, target);
         for step in 0..CAPTURE_COMMANDS_MAX {
             before(step);
             let output = run(request.command()).await;
@@ -485,4 +519,127 @@ fn keeps_a_final_line_that_holds_no_line_feed() {
     assert_eq!(text.side_bytes(DiffSide::New), b"keep\nnew");
     let lines = text.hunks()[0].lines();
     assert!(matches!(lines[0].origin(), LineOrigin::Context { .. }));
+}
+
+#[test]
+fn publishes_the_staged_half_alone() {
+    // The staged half compares the commit against the index, so the later
+    // unstaged edit of the same file never reaches it.
+    let repository = TempRepository::new("diff-staged-half");
+    repository.file("notes.txt", "one\n");
+    repository.commit("base");
+    let base = repository.head();
+
+    repository.file("notes.txt", "one\nstaged\n");
+    repository.git(&["add", "notes.txt"]);
+    repository.file("notes.txt", "one\nstaged\nunstaged\n");
+
+    let diff = capture_comparison(
+        repository.path(),
+        DiffComparison::CommitToIndex(revision(&base)),
+        DiffTarget::Worktree,
+    )
+    .expect("the fixture holds one reachable base");
+
+    assert_eq!(diff.files().len(), 1);
+    assert_eq!(new_bytes(&diff, "notes.txt"), b"one\nstaged\n");
+    assert_eq!(diff.old_side(), DiffOldSide::Commit(revision(&base)));
+}
+
+#[test]
+fn publishes_the_unstaged_half_and_names_the_index() {
+    // The unstaged half compares the index against the worktree, so it holds
+    // the later edit alone. The index is no commit, so the candidate names the
+    // index digest instead of a revision.
+    let repository = TempRepository::new("diff-unstaged-half");
+    repository.file("notes.txt", "one\n");
+    repository.commit("base");
+
+    repository.file("notes.txt", "one\nstaged\n");
+    repository.git(&["add", "notes.txt"]);
+    repository.file("notes.txt", "one\nstaged\nunstaged\n");
+
+    let diff = capture_comparison(
+        repository.path(),
+        DiffComparison::IndexToWorktree,
+        DiffTarget::Worktree,
+    )
+    .expect("the unstaged half names no commit and proves none");
+
+    assert_eq!(diff.files().len(), 1);
+    assert_eq!(new_bytes(&diff, "notes.txt"), b"one\nstaged\nunstaged\n");
+    assert!(diff.old_side().commit().is_none());
+    assert!(matches!(diff.old_side(), DiffOldSide::Index(_)));
+}
+
+#[test]
+fn publishes_one_commit_against_another_and_ignores_the_worktree() {
+    // A commit pair is immutable, so a dirty worktree changes nothing about
+    // what the capture publishes.
+    let repository = TempRepository::new("diff-commit-pair");
+    repository.file("notes.txt", "one\n");
+    repository.commit("base");
+    let base = repository.head();
+
+    repository.file("notes.txt", "one\ntwo\n");
+    repository.commit("second");
+    let second = repository.head();
+
+    repository.file("notes.txt", "one\ntwo\nthree\n");
+
+    let diff = capture_comparison(
+        repository.path(),
+        DiffComparison::CommitToCommit {
+            old: revision(&base),
+            new: revision(&second),
+        },
+        DiffTarget::Worktree,
+    )
+    .expect("the fixture holds both commits");
+
+    assert_eq!(diff.files().len(), 1);
+    assert_eq!(new_bytes(&diff, "notes.txt"), b"one\ntwo\n");
+    assert_eq!(diff.old_side(), DiffOldSide::Commit(revision(&base)));
+}
+
+#[test]
+fn the_staged_half_resolves_its_own_head() {
+    // The neogit screen compares `HEAD` against the index, and Git resolves
+    // `HEAD` itself, so the caller names no revision.
+    let repository = TempRepository::new("diff-head-to-index");
+    repository.file("notes.txt", "one\n");
+    repository.commit("base");
+    let head = repository.head();
+
+    repository.file("notes.txt", "one\nstaged\n");
+    repository.git(&["add", "notes.txt"]);
+    repository.file("notes.txt", "one\nstaged\nunstaged\n");
+
+    let diff = capture_comparison(
+        repository.path(),
+        DiffComparison::HeadToIndex,
+        DiffTarget::Worktree,
+    )
+    .expect("the fixture holds one commit");
+
+    assert_eq!(new_bytes(&diff, "notes.txt"), b"one\nstaged\n");
+    assert_eq!(diff.old_side(), DiffOldSide::Commit(revision(&head)));
+}
+
+#[test]
+fn a_repository_without_a_commit_publishes_no_staged_half() {
+    // An unborn `HEAD` names no commit, so the staged half has nothing to
+    // compare against and answers the typed outcome instead of guessing.
+    let repository = TempRepository::new("diff-head-unborn");
+    repository.file("notes.txt", "one\n");
+    repository.git(&["add", "notes.txt"]);
+
+    let failure = capture_comparison(
+        repository.path(),
+        DiffComparison::HeadToIndex,
+        DiffTarget::Worktree,
+    )
+    .expect_err("an unborn head compares against no commit");
+
+    assert_eq!(failure, WorktreeDiffFailure::BaseUnavailable);
 }

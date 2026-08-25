@@ -56,7 +56,9 @@
 //! #     let authority =
 //! #         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([7; 32]));
 //! #     Ok(WorktreeDiff::new(
-//! #         BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?,
+//! #         DiffOldSide::Commit(BaseRevision::new(
+//! #             "0123456789abcdef0123456789abcdef01234567",
+//! #         )?),
 //! #         DiffTarget::Worktree,
 //! #         &authority,
 //! #         vec![file],
@@ -90,7 +92,7 @@ use kvim_path::WorktreeRelativePath;
 use thiserror::Error;
 
 use crate::diff::{
-    AnchorLocation, BaseRevision, CommentBody, DiffContent, DiffLimit, DiffLine, DiffRevision,
+    AnchorLocation, CommentBody, DiffContent, DiffLimit, DiffLine, DiffOldSide, DiffRevision,
     DiffSide, DiffTarget, DiffTruncation, FileDiff, Hunk, HunkId, LineNumberError, LineRangeError,
     NewLine, NewLineRange, OldLine, OldLineRange, Relocation, ReviewAnchor, ReviewAnchorError,
     TextDiff, WorktreeDiff, relocate,
@@ -125,15 +127,15 @@ pub const REVIEW_EVENTS_MAX: usize = 64;
 ///
 /// ```
 /// # use kvim_workspace::{
-/// #     BaseRevision, CandidateAuthority, DiffTarget, DiffTruncation, HeadAuthority,
-/// #     IndexAuthority, TargetAuthority, WorktreeDiff,
+/// #     BaseRevision, CandidateAuthority, DiffOldSide, DiffTarget, DiffTruncation,
+/// #     HeadAuthority, IndexAuthority, TargetAuthority, WorktreeDiff,
 /// # };
 /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
 /// let base = BaseRevision::new("0123456789abcdef0123456789abcdef01234567")?;
 /// let authority =
 ///     CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([0; 32]));
 /// let empty = WorktreeDiff::new(
-///     base,
+///     DiffOldSide::Commit(base),
 ///     DiffTarget::Worktree,
 ///     &authority,
 ///     Vec::new(),
@@ -146,7 +148,7 @@ pub const REVIEW_EVENTS_MAX: usize = 64;
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TargetAuthority {
-    base: BaseRevision,
+    old: DiffOldSide,
     target: DiffTarget,
     projection: AuthorityProjection,
     revision: DiffRevision,
@@ -157,17 +159,17 @@ impl TargetAuthority {
     #[must_use]
     pub fn of(candidate: &WorktreeDiff) -> Self {
         Self {
-            base: candidate.base(),
+            old: candidate.old_side(),
             target: candidate.target().clone(),
             projection: AuthorityProjection::of(candidate),
             revision: candidate.revision(),
         }
     }
 
-    /// Returns the commit that the capture compared against.
+    /// Returns the state that the capture compared against.
     #[must_use]
-    pub const fn base(&self) -> BaseRevision {
-        self.base
+    pub const fn old_side(&self) -> DiffOldSide {
+        self.old
     }
 
     /// Returns the selection that produced the capture.
@@ -187,7 +189,7 @@ impl TargetAuthority {
     /// The comparison runs from the widest fact to the narrowest one, so the
     /// answer names the reason that a reader can act on.
     fn drift(&self, later: &Self) -> Option<StaleLocation> {
-        if self.base != later.base || self.target != later.target {
+        if self.old != later.old || self.target != later.target {
             return Some(StaleLocation::Target);
         }
         if self.projection != later.projection {
@@ -264,6 +266,15 @@ pub enum HunkStep {
     AtBorder,
 }
 
+/// The direction of one walk over the published hunks.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Direction {
+    /// Walk towards the last hunk of the candidate.
+    Forward,
+    /// Walk towards the first hunk of the candidate.
+    Backward,
+}
+
 /// The hunk that the review cursor names.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct ReviewCursor<'a> {
@@ -333,6 +344,11 @@ pub struct ReviewState {
     authority: TargetAuthority,
     cursor: Option<HunkCursor>,
     selection: Option<ReviewAnchor>,
+    /// One anchor for each hunk that the reader marked read.
+    ///
+    /// The anchor covers the whole hunk, so a reload carries the mark through
+    /// [`relocate`] and the mark follows content instead of a line number.
+    read: Vec<ReviewAnchor>,
     events: VecDeque<ReviewEvent>,
 }
 
@@ -350,6 +366,7 @@ impl ReviewState {
             authority,
             cursor,
             selection: None,
+            read: Vec::new(),
             events: VecDeque::new(),
         }
     }
@@ -481,9 +498,153 @@ impl ReviewState {
         Ok(self.selection.insert(anchor))
     }
 
+    /// Moves the cursor to the first published hunk of one file.
+    ///
+    /// The call reaches a file in either direction, so a reader who walks down
+    /// a list of files and back up returns to the file that they left. It
+    /// answers `false` when the candidate publishes no hunk for that path.
+    pub fn select_file(&mut self, path: &WorktreeRelativePath) -> bool {
+        let Some(file) = self
+            .candidate
+            .files()
+            .iter()
+            .position(|file| file.change().names(path) && !hunks_of(file).is_empty())
+        else {
+            return false;
+        };
+        self.place(HunkCursor { file, hunk: 0 });
+        true
+    }
+
+    /// Moves the cursor to one named hunk of one named file.
+    ///
+    /// A hunk identity is unique inside its own file alone, so a caller that
+    /// names a hunk must name its file as well. The call answers `false` when
+    /// the candidate publishes no such hunk, and it moves no cursor then.
+    pub fn select_hunk(&mut self, path: &WorktreeRelativePath, hunk: HunkId) -> bool {
+        let Some(file) = self
+            .candidate
+            .files()
+            .iter()
+            .position(|file| file.change().names(path))
+        else {
+            return false;
+        };
+        let Some(index) = hunks_of(&self.candidate.files()[file])
+            .iter()
+            .position(|published| published.id() == hunk)
+        else {
+            return false;
+        };
+        self.place(HunkCursor { file, hunk: index });
+        true
+    }
+
     /// Drops the selection and keeps the cursor.
     pub fn clear_selection(&mut self) {
         self.selection = None;
+    }
+
+    /// Marks the hunk at the cursor as read.
+    ///
+    /// The mark anchors the whole hunk, so a later candidate carries it through
+    /// [`relocate`]: a hunk that the author did not touch stays read even when
+    /// the lines above it moved. A rewritten hunk becomes unread again, because
+    /// its content no longer matches.
+    ///
+    /// The call answers `false` when the review holds no cursor, and when the
+    /// hunk publishes no line that an anchor can name.
+    pub fn mark_read(&mut self) -> bool {
+        let Some(cursor) = self.cursor() else {
+            return false;
+        };
+        let path = cursor.file.path().clone();
+        let hunk = cursor.hunk.id();
+        let Some(location) = whole_hunk(cursor.hunk) else {
+            return false;
+        };
+        if self.is_read(&path, hunk) {
+            return true;
+        }
+        match ReviewAnchor::select(&self.candidate, &path, hunk, location) {
+            Ok(anchor) => {
+                self.read.push(anchor);
+                true
+            }
+            Err(_) => false,
+        }
+    }
+
+    /// Reports whether one published hunk carries a read mark.
+    #[must_use]
+    pub fn is_read(&self, path: &WorktreeRelativePath, hunk: HunkId) -> bool {
+        self.read
+            .iter()
+            .any(|anchor| anchor.hunk() == hunk && anchor.path() == path)
+    }
+
+    /// Returns the number of published hunks of one file that stay unread.
+    ///
+    /// The changes panel shows the count, so a reader sees which file still
+    /// needs attention without opening it.
+    #[must_use]
+    pub fn unread_hunks(&self, path: &WorktreeRelativePath) -> usize {
+        let Some(file) = self.candidate.file(path) else {
+            return 0;
+        };
+        hunks_of(file)
+            .iter()
+            .filter(|hunk| !self.is_read(path, hunk.id()))
+            .count()
+    }
+
+    /// Returns the number of published hunks that stay unread.
+    #[must_use]
+    pub fn unread_total(&self) -> usize {
+        self.candidate
+            .files()
+            .iter()
+            .map(|file| self.unread_hunks(file.path()))
+            .sum()
+    }
+
+    /// Moves the cursor to the next published hunk that stays unread.
+    ///
+    /// The walk starts after the cursor and stops at the last hunk of the
+    /// candidate, exactly as [`ReviewState::next_hunk`] does. A candidate
+    /// without a further unread hunk leaves the cursor where it stands.
+    pub fn next_unread(&mut self) -> HunkStep {
+        self.walk_unread(Direction::Forward)
+    }
+
+    /// Moves the cursor to the previous published hunk that stays unread.
+    pub fn previous_unread(&mut self) -> HunkStep {
+        self.walk_unread(Direction::Backward)
+    }
+
+    /// Walks to the nearest unread hunk in one direction.
+    ///
+    /// The walk restores the cursor when it reaches the border without finding
+    /// one, so a failed walk moves nothing.
+    fn walk_unread(&mut self, direction: Direction) -> HunkStep {
+        let start = self.cursor;
+        loop {
+            let step = match direction {
+                Direction::Forward => self.next_hunk(),
+                Direction::Backward => self.previous_hunk(),
+            };
+            if step == HunkStep::AtBorder {
+                self.cursor = start;
+                return HunkStep::AtBorder;
+            }
+            let Some(cursor) = self.cursor() else {
+                self.cursor = start;
+                return HunkStep::AtBorder;
+            };
+            if !self.is_read(cursor.file.path(), cursor.hunk.id()) {
+                return HunkStep::Moved;
+            }
+        }
     }
 
     /// Replaces the candidate with one complete later candidate.
@@ -494,11 +655,24 @@ impl ReviewState {
     /// missing or an ambiguous outcome clears it, because the review never
     /// guesses a place. The answer is [`None`] when the review held no
     /// selection.
+    ///
+    /// Every read mark follows the same way. A hunk whose content the later
+    /// candidate still holds stays read, even when the lines above it moved. A
+    /// rewritten hunk becomes unread, because a reader must see it again.
     pub fn reload(&mut self, candidate: WorktreeDiff) -> Option<Relocation> {
         let outcome = self
             .selection
             .as_ref()
             .map(|anchor| relocate(anchor, &candidate));
+
+        self.read = self
+            .read
+            .iter()
+            .filter_map(|anchor| match relocate(anchor, &candidate) {
+                Relocation::Exact { anchor } | Relocation::Relocated { anchor } => Some(anchor),
+                Relocation::Missing | Relocation::Ambiguous(_) => None,
+            })
+            .collect();
 
         self.authority = TargetAuthority::of(&candidate);
         self.selection = match &outcome {
@@ -585,6 +759,23 @@ fn text_of(file: &FileDiff) -> Option<&TextDiff> {
         | DiffContent::Submodule
         | DiffContent::Unsupported => None,
     }
+}
+
+/// Returns the location that covers one whole published hunk.
+///
+/// The new side answers a reader, so it comes first. A hunk that publishes no
+/// new line, such as a complete removal, uses its old side instead. A hunk that
+/// publishes neither has no location and takes no read mark.
+fn whole_hunk(hunk: &Hunk) -> Option<AnchorLocation> {
+    let new_range = hunk.new_range();
+    if new_range.count() > 0 {
+        return Some(AnchorLocation::New { range: new_range });
+    }
+    let old_range = hunk.old_range();
+    if old_range.count() > 0 {
+        return Some(AnchorLocation::Old { range: old_range });
+    }
+    None
 }
 
 /// Returns the published hunks of one file.

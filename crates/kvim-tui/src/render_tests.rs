@@ -1064,11 +1064,11 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     // and eight of those show a mapping.
     assert_eq!(
         row_of(&buffer, 9),
-        format!(" Which Key{}+2 more", " ".repeat(42)),
+        format!(" Which Key{}+3 more", " ".repeat(42)),
         "the title row reports the mappings that no column holds"
     );
     assert_eq!(row_of(&buffer, 8), "~", "the buffer stays visible above");
-    assert_eq!(row_of(&buffer, 17), " q      Close the focused window");
+    assert_eq!(row_of(&buffer, 17), " o      Open the buffer picker");
 
     // A body band that cannot hold the title and one mapping over its own half
     // shows no overlay at all, so the buffer never disappears behind it.

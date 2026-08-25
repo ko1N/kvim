@@ -202,6 +202,14 @@ fn leader() -> Key {
     ch(' ')
 }
 
+/// The scopes in which the leader key opens its sequences.
+///
+/// The leader belongs to the leader everywhere, so a surface that owns keys
+/// still passes the leader through. A modal surface that reads its own answer,
+/// such as the picker or the review, is not one of these scopes, because it
+/// takes every key while it stays open.
+const LEADER_SCOPES: &[BindingScope] = &[BindingScope::Mode(Mode::Normal), BindingScope::Sidebar];
+
 /// Every mode that accepts a motion.
 ///
 /// `docs/input-actions.md` applies every motion row to Visual Block mode too.
@@ -592,31 +600,47 @@ fn first_release_bindings() -> Vec<Binding> {
     // Files and buffers.
     add(table, ALL_MODES, &[ctrl('s')], Command::SaveBuffer);
     add(table, NORMAL, &[ctrl('e')], Command::RevealInFileTree);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('o')],
         Command::OpenBufferPicker,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('f'), ch('b')],
         Command::OpenBufferPicker,
     );
-    add(table, NORMAL, &[leader(), ch('x')], Command::UnloadBuffer);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
+        &[leader(), ch('x')],
+        Command::UnloadBuffer,
+    );
+    add_scoped(
+        table,
+        LEADER_SCOPES,
         &[leader(), ch('f'), ch('f')],
         Command::OpenFilePicker,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('f'), ch('/')],
         Command::OpenRipgrepPicker,
     );
+
+    // The review of one captured diff. The reference configuration opens its
+    // Git interface on the same sequence, so the key that a reader already
+    // knows opens this one.
+    add_scoped(
+        table,
+        LEADER_SCOPES,
+        &[leader(), ch('g'), ch('g')],
+        Command::OpenReview,
+    );
+    add_review_bindings(table);
 
     // Windows.
     add(table, NORMAL, &[ctrl('h')], Command::FocusWindowLeft);
@@ -627,9 +651,9 @@ fn first_release_bindings() -> Vec<Binding> {
     add(table, NORMAL, &[ctrl_alt('j')], Command::ResizeWindowDown);
     add(table, NORMAL, &[ctrl_alt('k')], Command::ResizeWindowUp);
     add(table, NORMAL, &[ctrl_alt('l')], Command::ResizeWindowRight);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), Key::plain(KeyCode::Enter)],
         Command::SplitAdaptive,
     );
@@ -639,14 +663,19 @@ fn first_release_bindings() -> Vec<Binding> {
         &[Key::ctrl(KeyCode::Enter)],
         Command::SplitAdaptive,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('\\')],
         Command::SplitInverseAdaptive,
     );
     add(table, NORMAL, &[ctrl('\\')], Command::SplitInverseAdaptive);
-    add(table, NORMAL, &[leader(), ch('q')], Command::CloseWindow);
+    add_scoped(
+        table,
+        LEADER_SCOPES,
+        &[leader(), ch('q')],
+        Command::CloseWindow,
+    );
     add(table, ALL_MODES, &[ctrl('q')], Command::CloseWindow);
 
     // Language services.
@@ -657,10 +686,15 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::ToggleComment,
     );
     add(table, NORMAL, &[ch('g'), ch('d')], Command::GoToDefinition);
-    add(table, NORMAL, &[leader(), ch('k')], Command::ShowHover);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
+        &[leader(), ch('k')],
+        Command::ShowHover,
+    );
+    add_scoped(
+        table,
+        LEADER_SCOPES,
         &[leader(), ch('e')],
         Command::ShowDiagnosticFloat,
     );
@@ -671,9 +705,9 @@ fn first_release_bindings() -> Vec<Binding> {
         &[ch('['), ch('d')],
         Command::PreviousDiagnostic,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('c'), ch('f')],
         Command::ToggleFormatOnSave,
     );
@@ -738,6 +772,95 @@ fn add_count_and_register_bindings(table: &mut Vec<Binding>) {
         ],
         &[ch('"')],
         Command::SelectRegister,
+    );
+}
+
+/// Adds the keys that the open review owns.
+///
+/// The review reads no text and changes no buffer, so its table holds
+/// navigation and view keys alone. The walk keys repeat the buffer motions, so
+/// a reader moves through hunks with the keys that already move through lines.
+/// See `docs/diff-view.md`.
+fn add_review_bindings(table: &mut Vec<Binding>) {
+    const REVIEW: &[BindingScope] = &[BindingScope::Review];
+
+    // Leaving the review restores the layout that it replaced.
+    add_scoped(table, REVIEW, &[ch('q')], Command::CloseReview);
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::Esc)],
+        Command::CloseReview,
+    );
+    add_scoped(table, REVIEW, &[ctrl('c')], Command::CloseReview);
+
+    // One key switches the two views, because a reader compares them often.
+    add_scoped(table, REVIEW, &[ch('s')], Command::ToggleReviewView);
+
+    // The two regions of the review move like an ordinary buffer, so the
+    // review binds the motions that the buffer and the sidebar already publish
+    // and needs no motion vocabulary of its own.
+    add_scoped(table, REVIEW, &[ch('j')], Command::MoveDown);
+    add_scoped(table, REVIEW, &[ch('k')], Command::MoveUp);
+    add_scoped(table, REVIEW, &[ctrl('d')], Command::MoveHalfPageDown);
+    add_scoped(table, REVIEW, &[ctrl('u')], Command::MoveHalfPageUp);
+    add_scoped(table, REVIEW, &[ctrl('f')], Command::MoveFullPageDown);
+    add_scoped(table, REVIEW, &[ctrl('b')], Command::MoveFullPageUp);
+    add_scoped(table, REVIEW, &[ch('g'), ch('g')], Command::MoveFirstLine);
+    add_scoped(table, REVIEW, &[ch('G')], Command::MoveLastLine);
+
+    // The focus moves between the two regions with the keys that already move
+    // between windows, and the same chords resize the panel, exactly as they
+    // resize a window.
+    add_scoped(table, REVIEW, &[ctrl('h')], Command::FocusWindowLeft);
+    add_scoped(table, REVIEW, &[ctrl('l')], Command::FocusWindowRight);
+    add_scoped(table, REVIEW, &[ctrl_alt('h')], Command::ResizeWindowLeft);
+    add_scoped(table, REVIEW, &[ctrl_alt('l')], Command::ResizeWindowRight);
+
+    // Vim walks the hunks of a diff with this bracket pair, so the review does
+    // too. The file walk keeps the bare brackets.
+    add_scoped(table, REVIEW, &[ch(']'), ch('c')], Command::NextHunk);
+    add_scoped(table, REVIEW, &[ch('['), ch('c')], Command::PreviousHunk);
+    add_scoped(table, REVIEW, &[ch('n')], Command::NextUnreadHunk);
+    add_scoped(table, REVIEW, &[ch('N')], Command::PreviousUnreadHunk);
+    add_scoped(table, REVIEW, &[ch(']'), ch('f')], Command::NextChangedFile);
+    add_scoped(
+        table,
+        REVIEW,
+        &[ch('['), ch('f')],
+        Command::PreviousChangedFile,
+    );
+
+    // One key walks the sections of the review, so a reader needs no mapping
+    // for each one. `Tab` is the key that every interface uses for this.
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::Tab)],
+        Command::NextReviewSection,
+    );
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::BackTab)],
+        Command::PreviousReviewSection,
+    );
+
+    // The file watch skips the Git directory, so an index write reaches no
+    // burst and a staged change needs this key. The sidebar refreshes with the
+    // same one. See `docs/diff-view.md`.
+    add_scoped(table, REVIEW, &[ch('R')], Command::RefreshReview);
+
+    // Marking a hunk read is the one state that a review records.
+    add_scoped(table, REVIEW, &[ch('m')], Command::MarkHunkRead);
+
+    // The jump into the file is what makes a review a working surface instead
+    // of a report, so it takes the key that opens everything else.
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::Enter)],
+        Command::OpenHunkFile,
     );
 }
 
@@ -871,7 +994,9 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree_keys(table, &[ch('g'), ch('g')], Command::MoveFirstLine);
     add_tree(table, ch('G'), Command::MoveLastLine);
     add_tree(table, Key::plain(KeyCode::Enter), Command::TreeOpenEntry);
-    add_tree(table, ch(' '), Command::TreeToggleEntry);
+    // `l` and `h` open and close an entry, and `Enter` opens it, so the toggle
+    // needs no key of its own. The leader key belongs to the leader in every
+    // scope. See `docs/input-actions.md`.
     add_tree(table, ch('l'), Command::TreeExpandEntry);
     add_tree(table, ch('h'), Command::TreeCollapseEntry);
     add_tree(table, ch('R'), Command::TreeRefresh);

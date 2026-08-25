@@ -78,10 +78,12 @@
 
 mod buffer_view;
 mod cells;
+mod changes;
 mod chrome;
 mod clipboard;
 mod completion;
 mod diagnostics;
+mod diff_view;
 mod driver;
 mod embed;
 mod icons;
@@ -93,6 +95,7 @@ mod notify;
 mod overlay;
 mod picker;
 mod render;
+mod review;
 mod session;
 mod theme;
 mod tree;

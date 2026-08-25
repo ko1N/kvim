@@ -1,9 +1,9 @@
 use kvim_path::WorktreeRelativePath;
 
 use crate::diff::{
-    CandidateAuthority, DiffChange, DiffContent, DiffLine, DiffLineText, DiffTruncation, FileMode,
-    FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine,
-    NewLineRange, OldLine, OldLineRange, TextDiff,
+    BaseRevision, CandidateAuthority, DiffChange, DiffContent, DiffLine, DiffLineText, DiffOldSide,
+    DiffTruncation, FileMode, FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding,
+    LineOrigin, NewLine, NewLineRange, OldLine, OldLineRange, TextDiff,
 };
 
 use super::*;
@@ -66,7 +66,9 @@ fn candidate(files: Vec<FileDiff>, index: [u8; 32]) -> WorktreeDiff {
     let authority =
         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest(index));
     WorktreeDiff::new(
-        BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        DiffOldSide::Commit(
+            BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        ),
         DiffTarget::Worktree,
         &authority,
         files,
@@ -360,7 +362,9 @@ fn a_capture_of_another_target_publishes_no_comment() {
     let authority =
         CandidateAuthority::new(HeadAuthority::Unborn, IndexAuthority::from_digest([7; 32]));
     let other = WorktreeDiff::new(
-        BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        DiffOldSide::Commit(
+            BaseRevision::new(BASE_HEX).expect("the fixture names one full identifier"),
+        ),
         DiffTarget::Path(path("a.txt")),
         &authority,
         vec![added("a.txt", &["one", "two"], DiffTruncation::Complete)],
@@ -407,4 +411,107 @@ fn a_full_queue_answers_before_the_submission_starts() {
         .submit_comment(body("accepted"), &captured)
         .expect("the drain freed one slot");
     assert_eq!(review.queued_events(), REVIEW_EVENTS_MAX);
+}
+
+#[test]
+fn a_read_mark_covers_the_hunk_at_the_cursor() {
+    let published = candidate(
+        vec![
+            added("a.txt", &["one", "two"], DiffTruncation::Complete),
+            added("b.txt", &["three"], DiffTruncation::Complete),
+        ],
+        [11; 32],
+    );
+    let mut review = ReviewState::new(published);
+
+    assert_eq!(review.unread_total(), 2);
+    assert!(review.mark_read());
+    assert!(review.is_read(&path("a.txt"), HunkId::new(0)));
+    assert_eq!(review.unread_hunks(&path("a.txt")), 0);
+    assert_eq!(review.unread_hunks(&path("b.txt")), 1);
+    assert_eq!(review.unread_total(), 1);
+
+    // A second mark of the same hunk records nothing further.
+    assert!(review.mark_read());
+    assert_eq!(review.unread_total(), 1);
+}
+
+#[test]
+fn the_unread_walk_passes_every_hunk_that_carries_a_mark() {
+    let published = candidate(
+        vec![
+            added("a.txt", &["one"], DiffTruncation::Complete),
+            added("b.txt", &["two"], DiffTruncation::Complete),
+            added("c.txt", &["three"], DiffTruncation::Complete),
+        ],
+        [12; 32],
+    );
+    let mut review = ReviewState::new(published);
+
+    // Read the first two, so the walk reaches the third at once.
+    assert!(review.mark_read());
+    assert_eq!(review.next_hunk(), HunkStep::Moved);
+    assert!(review.mark_read());
+    assert_eq!(review.previous_hunk(), HunkStep::Moved);
+
+    assert_eq!(review.next_unread(), HunkStep::Moved);
+    let cursor = review.cursor().expect("the walk placed the cursor");
+    assert_eq!(cursor.file.path(), &path("c.txt"));
+
+    // Nothing unread follows, so the cursor stays where the walk started.
+    assert!(review.mark_read());
+    assert_eq!(review.next_unread(), HunkStep::AtBorder);
+    let cursor = review.cursor().expect("a failed walk moves no cursor");
+    assert_eq!(cursor.file.path(), &path("c.txt"));
+}
+
+#[test]
+fn a_reload_keeps_the_mark_of_an_unchanged_hunk() {
+    let first = candidate(
+        vec![added("a.txt", &["one", "two"], DiffTruncation::Complete)],
+        [13; 32],
+    );
+    let mut review = ReviewState::new(first);
+    assert!(review.mark_read());
+
+    // The same content in a later candidate keeps the mark.
+    let again = candidate(
+        vec![added("a.txt", &["one", "two"], DiffTruncation::Complete)],
+        [14; 32],
+    );
+    review.reload(again);
+    assert!(review.is_read(&path("a.txt"), HunkId::new(0)));
+    assert_eq!(review.unread_total(), 0);
+}
+
+#[test]
+fn a_reload_clears_the_mark_of_a_rewritten_hunk() {
+    let first = candidate(
+        vec![added("a.txt", &["one", "two"], DiffTruncation::Complete)],
+        [15; 32],
+    );
+    let mut review = ReviewState::new(first);
+    assert!(review.mark_read());
+
+    // The author rewrote the hunk, so the reader must see it again.
+    let rewritten = candidate(
+        vec![added(
+            "a.txt",
+            &["one", "CHANGED"],
+            DiffTruncation::Complete,
+        )],
+        [16; 32],
+    );
+    review.reload(rewritten);
+    assert!(!review.is_read(&path("a.txt"), HunkId::new(0)));
+    assert_eq!(review.unread_total(), 1);
+}
+
+#[test]
+fn a_candidate_without_a_hunk_takes_no_read_mark() {
+    let mut review = ReviewState::new(candidate(vec![binary("a.bin")], [17; 32]));
+
+    assert!(!review.mark_read());
+    assert_eq!(review.unread_total(), 0);
+    assert_eq!(review.next_unread(), HunkStep::AtBorder);
 }
