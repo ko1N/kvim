@@ -147,8 +147,11 @@ impl ChangeEntry {
 
     /// Returns the row text of the entry.
     ///
-    /// The panel groups the files by directory, so the row names the file
-    /// alone and the directory rows above it carry the rest of the path.
+    /// The row names the file alone, exactly as the file tree names one entry.
+    /// The directory rows above it carry the rest of the path, the mark column
+    /// carries the repository state, and the header of the diff carries the
+    /// counts. A truncated file names its bound, because the panel is the one
+    /// place that can state it.
     pub(super) fn label(&self) -> String {
         let name = self
             .path
@@ -156,15 +159,10 @@ impl ChangeEntry {
             .file_name()
             .unwrap_or_else(|| self.path.as_path().as_os_str())
             .to_string_lossy();
-        let counts = format!("+{} -{}", self.added, self.removed);
-        let state = if self.truncated {
-            " …".to_owned()
-        } else if self.unread == 0 {
-            String::new()
-        } else {
-            format!(" ({} unread)", self.unread)
-        };
-        format!("{name}  {counts}{state} {}", self.mark)
+        if self.truncated {
+            return format!("{name} …");
+        }
+        name.into_owned()
     }
 }
 

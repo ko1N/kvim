@@ -7,7 +7,7 @@
 - auto/tab-completions
 
 - ctrl+o missing (to back?) after i followed a symbol
-- pasting is horrible
-- indentation still broken?
+- [x] pasting is horrible
+- [x] indentation still broken?
 
 - neogit support / git diff view

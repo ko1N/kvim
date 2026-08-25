@@ -83,7 +83,8 @@ fn one_entry_counts_the_lines_of_its_own_file() {
     assert_eq!(entries[0].added, 3);
     assert_eq!(entries[0].removed, 0);
     assert_eq!(entries[0].mark, 'A');
-    assert!(entries[0].label().contains("+3 -0"));
+    // The row names the file alone; the header of the diff carries the counts.
+    assert_eq!(entries[0].label(), "a.txt");
 }
 
 #[test]
@@ -119,7 +120,10 @@ fn a_truncated_file_never_reads_as_complete() {
     assert_eq!(entries[0].unread, 0);
     assert!(entries[0].truncated);
     assert!(!entries[0].is_complete());
-    assert!(entries[0].label().contains('…'));
+    assert!(
+        entries[0].label().contains('…'),
+        "the panel is the one place that states the bound"
+    );
 }
 
 #[test]

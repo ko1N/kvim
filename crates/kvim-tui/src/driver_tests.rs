@@ -503,3 +503,14 @@ fn the_session_builds_the_analysis_request_and_never_runs_it() {
         "the session builds the request and never runs it"
     );
 }
+
+#[test]
+fn the_two_review_captures_hold_their_own_publication_slots() {
+    // One capture takes several commands, so the two halves run at the same
+    // time. One shared slot would cancel the half that started first, and the
+    // review would then publish one half alone and open one tab.
+    assert_ne!(
+        DIFF_STAGED_SLOT, DIFF_UNSTAGED_SLOT,
+        "each half of the review needs its own slot"
+    );
+}

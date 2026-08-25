@@ -475,12 +475,17 @@ const COMPLETION_SLOT: RequestSlot = RequestSlot::new(9);
 /// one runs, so one slot holds every host report. See `docs/architecture.md`.
 const DIAGNOSTICS_SLOT: RequestSlot = RequestSlot::new(10);
 
-/// The publication slot of one diff capture of the review.
+/// The publication slot of the staged half of the review.
 ///
-/// The review captures one half at a time, so a newer capture cancels the one
-/// that it replaces and the gate rejects the obsolete candidate. See
+/// Each half holds its own slot, because one capture takes several commands and
+/// the two halves run at the same time. One shared slot would cancel the half
+/// that started first, and the review would then publish one half alone. A
+/// newer capture of the same half still cancels the one that it replaces. See
 /// `docs/git.md`.
-const DIFF_SLOT: RequestSlot = RequestSlot::new(11);
+const DIFF_STAGED_SLOT: RequestSlot = RequestSlot::new(11);
+
+/// The publication slot of the unstaged half of the review.
+const DIFF_UNSTAGED_SLOT: RequestSlot = RequestSlot::new(12);
 
 /// The picker requests that one loop iteration submits.
 ///
@@ -773,7 +778,11 @@ fn submit_diff_work(
     let Some((section, request)) = editor.take_diff_request() else {
         return Redraw::Skipped;
     };
-    let handle = gate.begin(DIFF_SLOT, &spawner.cancellation_root());
+    let slot = match section {
+        ChangeSection::Staged => DIFF_STAGED_SLOT,
+        ChangeSection::Unstaged => DIFF_UNSTAGED_SLOT,
+    };
+    let handle = gate.begin(slot, &spawner.cancellation_root());
     let command = request.command();
     let submitted = spawner.submit_process(handle, command, move |output| {
         EditorWork(WorkResult::Diff(section, request.publish(&output)))

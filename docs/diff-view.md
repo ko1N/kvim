@@ -104,11 +104,25 @@ the index, and the unstaged half compares the index against the working tree.
 The panel never merges them. A section without a change publishes no heading, so
 a workspace with nothing staged shows one section instead of an empty one.
 
-One row names its file, the marker of its change kind, its added and removed
-line counts, and the number of hunks that stay unread. A file reads as complete
-when no hunk stays unread and no bound truncated it. A truncated file never
-reads as complete, because the candidate holds content that the reader cannot
-reach.
+One row names its file alone, exactly as the file tree names one entry. The
+directory rows above it carry the rest of the path, the mark column carries the
+repository state, and the header of the diff carries the counts. A truncated
+file names its bound, because the panel is the one place that can state it.
+
+A file that the reader finished dims. It reads as complete when no hunk stays
+unread and no bound truncated it, so a truncated file never dims: the candidate
+holds content that the reader cannot reach.
+
+The panel carries the header of the file tree, so both sidebars name the
+workspace the same way, and it draws the same selection mark, indent guides, and
+repository marks. The staged half draws the mark and the color of a staged
+entry, and the unstaged half those of a changed one.
+
+### The Header Of The Diff
+
+One line above the diff names the file that the body draws and what changed in
+it. An added line count reads green and a removed one reads red, which is the
+vocabulary that every diff uses.
 
 A heading takes no selection. Selecting a file row moves the review cursor to
 the first hunk of that file.
@@ -205,6 +219,11 @@ such as a complete removal, names its old side instead.
 The review captures both halves through the bounded process service, so it opens
 at once and fills as the captures resolve. The session runs no `git` command
 itself.
+
+Each half holds its own publication slot. One capture takes several commands and
+the two halves run at the same time, so one shared slot would cancel the half
+that started first and the review would publish one half alone. A newer capture
+of the same half still cancels the one that it replaces.
 
 A repository without a commit publishes no staged half, which is a normal state
 and not a failure: `HEAD` names no commit to compare the index against. A

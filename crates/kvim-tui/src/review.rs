@@ -176,7 +176,11 @@ impl ReviewSurface {
             body_path: None,
             cursor: 0,
             first_row: 0,
-            height_rows: usize::from(height_rows.saturating_sub(STRIP_ROWS)),
+            height_rows: usize::from(
+                height_rows
+                    .saturating_sub(STRIP_ROWS)
+                    .saturating_sub(BODY_HEADER_ROWS),
+            ),
             panel_cells: CHANGES_PANEL_CELLS,
             resize_step_cells: resize_step,
         };
@@ -248,6 +252,22 @@ impl ReviewSurface {
         &self.body
     }
 
+    /// Returns the added and removed line counts of the file that the body
+    /// draws.
+    pub(super) fn body_counts(&self) -> BodyCounts {
+        let counts = self.body_path.as_ref().and_then(|path| {
+            let review = self.active()?;
+            entries(review)
+                .into_iter()
+                .find(|entry| &entry.path == path)
+                .map(|entry| BodyCounts {
+                    added: entry.added,
+                    removed: entry.removed,
+                })
+        });
+        counts.unwrap_or_default()
+    }
+
     /// Returns the file that the body rows belong to.
     pub(super) const fn body_path(&self) -> Option<&WorktreeRelativePath> {
         self.body_path.as_ref()
@@ -269,7 +289,9 @@ impl ReviewSurface {
         // regions draw below it and hold one row less than the band. A viewport
         // that counted the strip would scroll one row too late.
         let rows = height_rows.saturating_sub(STRIP_ROWS);
-        self.height_rows = usize::from(rows);
+        // The body carries its own header below the strip, so it holds one row
+        // less than the band.
+        self.height_rows = usize::from(rows.saturating_sub(BODY_HEADER_ROWS));
         // The panel carries its own header below the strip, so it holds one
         // row less than the body.
         self.changes
@@ -793,7 +815,76 @@ pub(super) fn draw_review(
     }
     let body = Rect::new(area.x, area.y, body_width, area.height);
     target.set_style(body, theme.style(ThemeRole::DiffContext));
-    draw_body(target, body, theme, settings, review);
+    draw_body_header(target, body, theme, review);
+    if let Some(rows) = body_rows_area(body) {
+        draw_body(target, rows, theme, settings, review);
+    }
+}
+
+/// Paints the header of the diff body: the file and what changed in it.
+///
+/// The panel names the file alone, so this line carries the counts. An added
+/// line reads green and a removed line reads red, which is the vocabulary that
+/// every diff uses.
+fn draw_body_header(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+    let band = Rect::new(area.x, area.y, area.width, BODY_HEADER_ROWS);
+    target.set_style(band, theme.style(ThemeRole::Winbar));
+    let Some(path) = review.body_path() else {
+        return;
+    };
+    let counts = review.body_counts();
+    let name = path.as_path().display().to_string();
+
+    let mut x = band.x;
+    let mut left = band.width;
+    let mut write = |text: &str, role: ThemeRole, x: &mut u16, left: &mut u16| {
+        if *left == 0 {
+            return;
+        }
+        let clipped = clip_cells(text, usize::from(*left));
+        let cells = u16::try_from(clipped.chars().count()).unwrap_or(*left);
+        target.set_stringn(
+            *x,
+            band.y,
+            clipped,
+            usize::from(*left),
+            theme.style(role).patch(theme.style(ThemeRole::Winbar)),
+        );
+        *x = x.saturating_add(cells);
+        *left = left.saturating_sub(cells);
+    };
+    write(
+        &format!(" {name}  "),
+        ThemeRole::TreeRoot,
+        &mut x,
+        &mut left,
+    );
+    write(
+        &format!("+{} ", counts.added),
+        ThemeRole::DiffAdded,
+        &mut x,
+        &mut left,
+    );
+    write(
+        &format!("-{}", counts.removed),
+        ThemeRole::DiffRemoved,
+        &mut x,
+        &mut left,
+    );
+}
+
+/// Returns the rows of the body below its header, or `None` for a header alone.
+fn body_rows_area(body: Rect) -> Option<Rect> {
+    let height = body.height.checked_sub(BODY_HEADER_ROWS)?;
+    if height == 0 {
+        return None;
+    }
+    Some(Rect::new(
+        body.x,
+        body.y.saturating_add(BODY_HEADER_ROWS),
+        body.width,
+        height,
+    ))
 }
 
 /// Returns the rows of the panel below its header, or `None` for a header alone.
@@ -1002,6 +1093,15 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
     });
 }
 
+/// What one file of the diff body changed.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) struct BodyCounts {
+    /// The number of added lines that the candidate published.
+    pub(super) added: usize,
+    /// The number of removed lines that the candidate published.
+    pub(super) removed: usize,
+}
+
 /// The drawn text of one row of the changes panel.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PanelRow {
@@ -1075,6 +1175,9 @@ fn build_panel_rows(
         })
         .collect()
 }
+
+/// The number of rows that the header of the diff body takes.
+const BODY_HEADER_ROWS: u16 = 1;
 
 /// The number of rows that the header of the changes panel takes.
 const PANEL_HEADER_ROWS: u16 = 1;

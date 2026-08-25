@@ -350,8 +350,9 @@ fn the_focus_moves_between_the_two_regions() {
 fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
     let lines: Vec<&str> = vec!["one", "two", "three", "four", "five", "six"];
     let mut review = surface(vec![added("a.txt", 1, &lines)]);
-    // The strip of sections takes one row, so the body holds two of the three.
-    review.set_height_rows(3);
+    // The strip and the header of the body each take one row, so a band of
+    // four rows leaves the body two.
+    review.set_height_rows(4);
 
     // One header and one row for each published line.
     assert_eq!(review.body().len(), lines.len() + 1);
@@ -402,8 +403,8 @@ fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
 fn a_half_page_moves_by_the_height_of_the_region() {
     let lines: Vec<&str> = (0..20).map(|_| "line").collect();
     let mut review = surface(vec![added("a.txt", 1, &lines)]);
-    // The strip takes one row, so the body holds nine of the ten.
-    review.set_height_rows(10);
+    // The strip and the header each take one row, so the body holds nine.
+    review.set_height_rows(11);
 
     assert_eq!(
         review.apply(Command::MoveHalfPageDown, None),
