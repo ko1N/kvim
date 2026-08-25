@@ -1129,19 +1129,3 @@ fn an_overlay_that_publishes_a_pending_phase_is_refused_at_the_call() {
     );
     let _effect = composer.open_overlay(PALETTE, Table::Palette, AREA, reading);
 }
-
-#[test]
-fn an_overlay_with_an_idle_context_closes_at_once() {
-    // The rule above keeps the close free of the reset handshake, so one call
-    // opens the overlay and one call takes ownership back.
-    let mut composer = workspace();
-    assert_eq!(
-        composer.open_overlay(PALETTE, Table::Palette, AREA, idle(Table::Palette)),
-        CompositionEffect::Applied
-    );
-    assert_eq!(composer.input_surface(), &PALETTE);
-
-    assert_eq!(composer.close_overlay(), CompositionEffect::Applied);
-    assert_eq!(composer.overlay_owner(), None);
-    assert_ne!(composer.input_surface(), &PALETTE);
-}

@@ -293,6 +293,7 @@ every example. One combined example does not replace a feature example.
 The required examples are:
 
 - `crates/kvim-path/examples/confine_worktree_paths.rs`
+- `crates/kvim-fuzzy/examples/rank_candidates.rs`
 - `crates/kvim-keymap/examples/dispatch_keys.rs`
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`

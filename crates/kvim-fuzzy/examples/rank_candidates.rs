@@ -44,9 +44,9 @@ fn main() {
         })
         .collect();
 
-    // A higher score ranks first. The scan is deterministic, so an equal score
-    // keeps the order of the input list.
-    ranked.sort_by(|left, right| right.0.cmp(&left.0));
+    // A higher score ranks first. The sort is stable, so an equal score keeps
+    // the order of the input list.
+    ranked.sort_by_key(|(score, _)| std::cmp::Reverse(*score));
 
     println!(
         "the query {query:?} ranks {} of {}",

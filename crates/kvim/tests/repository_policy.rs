@@ -91,7 +91,8 @@ const FEATURE_EXAMPLES: [(&str, &str); 15] = [
 ///
 /// A new example belongs to one public feature. An example outside this list is
 /// a kitchen-sink example, which `docs/embedding.md` refuses.
-const REQUIRED_EXAMPLES: [&str; 10] = [
+const REQUIRED_EXAMPLES: [&str; 11] = [
+    "crates/kvim-fuzzy/examples/rank_candidates.rs",
     "crates/kvim-keymap/examples/dispatch_keys.rs",
     "crates/kvim-lsp/examples/lsp_diagnostics.rs",
     "crates/kvim-path/examples/confine_worktree_paths.rs",
