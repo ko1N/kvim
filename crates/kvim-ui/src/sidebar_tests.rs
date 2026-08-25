@@ -8,8 +8,9 @@ use ratatui::style::{Modifier, Style};
 
 use crate::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
-    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarError,
-    SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState,
+    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SIDEBAR_SECTIONS_MAX,
+    SidebarAction, SidebarError, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow,
+    SidebarState,
 };
 
 /// The row identity that the host owns. The sidebar only compares the value.
@@ -59,6 +60,20 @@ fn tree_with_two_collapsed_directories() -> SidebarState<RowId> {
             SidebarRow::single(4, RowKind::Selectable).with_depth(1),        // b/1, hidden
         ])
         .expect("the rows stay inside every bound");
+    sidebar
+}
+
+/// Returns one sidebar of two sections: two rows in section 0 and one row in
+/// section 1. Neither section is collapsed yet.
+fn two_sections() -> SidebarState<RowId> {
+    let mut sidebar = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable).with_section(0), // task one
+            SidebarRow::single(1, RowKind::Selectable).with_section(0), // task two
+            SidebarRow::single(2, RowKind::Selectable).with_section(1), // src
+        ])
+        .expect("three rows stay inside every bound");
     sidebar
 }
 
@@ -582,4 +597,120 @@ fn a_hidden_row_never_takes_the_selection_or_the_selection_focus() {
     // as selecting an inert row does.
     assert_eq!(sidebar.select(&1), None);
     assert_eq!(sidebar.selected(), None);
+}
+
+#[test]
+fn a_collapsed_section_hides_every_row_it_holds_and_contributes_no_line() {
+    let mut sidebar = two_sections();
+
+    sidebar
+        .set_sections(vec![true, false])
+        .expect("two sections stay inside the bound");
+
+    // Only the section-1 row, `src`, stays visible.
+    assert_eq!(sidebar.total_lines(), 1);
+    let placed: Vec<RowId> = sidebar
+        .placements()
+        .iter()
+        .map(|placement| *placement.row())
+        .collect();
+    assert_eq!(placed, vec![2]);
+}
+
+#[test]
+fn a_move_crosses_a_collapsed_section_without_entering_it() {
+    let mut sidebar = two_sections();
+    sidebar
+        .set_sections(vec![true, false])
+        .expect("two sections stay inside the bound");
+
+    // A downward move from no selection skips both hidden tasks in one step
+    // and lands directly on the next visible row.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+        Some(SidebarEvent::SelectionChanged { row: 2 }),
+    );
+    // The same move back up returns to the section boundary without landing
+    // on either hidden task.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Up(1))),
+        None,
+    );
+}
+
+#[test]
+fn a_section_that_no_row_carries_still_collapses_correctly() {
+    // Section 0's flag stays reachable even while no row of section 0
+    // exists yet, so a host may declare a section before it publishes a row.
+    let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable).with_section(1),
+        ])
+        .expect("one row stays inside every bound");
+
+    sidebar
+        .set_sections(vec![false, true])
+        .expect("two sections stay inside the bound");
+
+    assert_eq!(sidebar.total_lines(), 0);
+    assert!(sidebar.placements().is_empty());
+}
+
+#[test]
+fn a_row_without_a_declared_section_stays_visible_by_default() {
+    // A sidebar that never calls `set_sections` hides no row through the
+    // section axis, so every present consumer keeps its current behavior.
+    let sidebar = single_rows(4, 3);
+
+    assert!(sidebar.sections().is_empty());
+    assert_eq!(sidebar.total_lines(), 3);
+}
+
+#[test]
+fn a_refused_section_list_leaves_the_previous_sections_and_selection_in_place() {
+    let mut sidebar = two_sections();
+    sidebar.select(&2);
+
+    let too_many = vec![false; SIDEBAR_SECTIONS_MAX + 1];
+    assert_eq!(
+        sidebar.set_sections(too_many),
+        Err(SidebarError::Sections {
+            sections: SIDEBAR_SECTIONS_MAX + 1,
+            max: SIDEBAR_SECTIONS_MAX,
+        }),
+    );
+
+    assert!(sidebar.sections().is_empty());
+    assert_eq!(sidebar.selected(), Some(&2));
+}
+
+#[test]
+fn a_collapsed_section_and_a_collapsed_row_hide_together() {
+    // A section carries its own collapsed rows too. Collapsing the section
+    // hides them along with every other row of the section, exactly as it
+    // hides an uncollapsed row.
+    let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable)
+                .with_section(0)
+                .with_collapsed(true), // a, collapsed
+            SidebarRow::single(1, RowKind::Selectable)
+                .with_section(0)
+                .with_depth(1), // a/1, hidden below `a` alone
+            SidebarRow::single(2, RowKind::Selectable).with_section(1), // src
+        ])
+        .expect("three rows stay inside every bound");
+
+    // Before the section collapses, `a` stays visible and `a/1` is already
+    // hidden below its own collapsed row.
+    assert_eq!(sidebar.total_lines(), 2);
+
+    sidebar
+        .set_sections(vec![true, false])
+        .expect("two sections stay inside the bound");
+
+    // The section collapse now hides `a` as well, so only `src` remains.
+    assert_eq!(sidebar.total_lines(), 1);
 }

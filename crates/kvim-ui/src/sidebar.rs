@@ -45,6 +45,15 @@ pub const SIDEBAR_ROW_LINES_MAX: u16 = 8;
 /// the guide string of one row a bounded number of cells.
 pub const SIDEBAR_ROW_DEPTH_MAX: usize = 16;
 
+/// The largest number of sections that one sidebar holds.
+///
+/// A section is a second axis over the same flat row list: a collapsible
+/// task list above a worktree tree is one section beside another. The bound
+/// stops a host from building an unbounded section list, the way
+/// [`SIDEBAR_ROWS_MAX`] stops an unbounded row list, and it stays well above
+/// the number of collapsible groups that one sidebar plausibly shows.
+pub const SIDEBAR_SECTIONS_MAX: usize = 64;
+
 /// The largest number of characters that one drawn text accepts.
 ///
 /// The bound stops a host callback from handing a whole file to the cell
@@ -93,6 +102,14 @@ pub enum SidebarError {
         /// The depth that the host supplied.
         depth: usize,
         /// The bound that the depth passed.
+        max: usize,
+    },
+    /// The section list holds more sections than [`SIDEBAR_SECTIONS_MAX`].
+    #[error("the sidebar holds at most {max} sections, and the host supplied {sections}")]
+    Sections {
+        /// The number of sections that the host supplied.
+        sections: usize,
+        /// The bound that the section list passed.
         max: usize,
     },
     /// The draw named a line outside the visible part of the row.
@@ -188,13 +205,16 @@ pub struct SidebarRow<R> {
     kind: RowKind,
     depth: usize,
     collapsed: bool,
+    section: usize,
 }
 
 impl<R> SidebarRow<R> {
-    /// Creates one row of the named height, at depth 0 and not collapsed.
+    /// Creates one row of the named height, at depth 0, not collapsed, and in
+    /// section 0.
     ///
-    /// Use [`SidebarRow::with_depth`] and [`SidebarRow::with_collapsed`] to
-    /// place the row inside a tree.
+    /// Use [`SidebarRow::with_depth`], [`SidebarRow::with_collapsed`], and
+    /// [`SidebarRow::with_section`] to place the row inside a tree and a
+    /// section.
     #[must_use]
     pub const fn new(id: R, height_rows: NonZeroU16, kind: RowKind) -> Self {
         Self {
@@ -203,14 +223,16 @@ impl<R> SidebarRow<R> {
             kind,
             depth: 0,
             collapsed: false,
+            section: 0,
         }
     }
 
-    /// Creates one row that occupies one terminal row, at depth 0 and not
-    /// collapsed.
+    /// Creates one row that occupies one terminal row, at depth 0, not
+    /// collapsed, and in section 0.
     ///
-    /// Use [`SidebarRow::with_depth`] and [`SidebarRow::with_collapsed`] to
-    /// place the row inside a tree.
+    /// Use [`SidebarRow::with_depth`], [`SidebarRow::with_collapsed`], and
+    /// [`SidebarRow::with_section`] to place the row inside a tree and a
+    /// section.
     #[must_use]
     pub const fn single(id: R, kind: RowKind) -> Self {
         Self {
@@ -219,6 +241,7 @@ impl<R> SidebarRow<R> {
             kind,
             depth: 0,
             collapsed: false,
+            section: 0,
         }
     }
 
@@ -275,6 +298,29 @@ impl<R> SidebarRow<R> {
         self
     }
 
+    /// Returns the row in the named section.
+    ///
+    /// A section is a second axis over the same flat row list, not a nested
+    /// container: it groups rows by section index instead of by tree depth.
+    /// The row list stays ordered by section, so every row of section 0
+    /// precedes every row of section 1, and the depth of a row still counts
+    /// from the root of its own tree, inside its own section. Use
+    /// [`SidebarState::set_sections`] to collapse a whole section at once.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{RowKind, SidebarRow};
+    ///
+    /// let task = SidebarRow::single("task one", RowKind::Selectable).with_section(0);
+    /// assert_eq!(task.section(), 0);
+    /// ```
+    #[must_use]
+    pub const fn with_section(mut self, section: usize) -> Self {
+        self.section = section;
+        self
+    }
+
     /// Returns the host identity of the row.
     #[must_use]
     pub const fn id(&self) -> &R {
@@ -305,20 +351,40 @@ impl<R> SidebarRow<R> {
     pub const fn is_collapsed(&self) -> bool {
         self.collapsed
     }
+
+    /// Returns the section index of the row.
+    #[must_use]
+    pub const fn section(&self) -> usize {
+        self.section
+    }
 }
 
-/// Returns, for each row of `rows`, whether a collapsed ancestor hides it.
+/// Returns, for each row of `rows`, whether a collapsed ancestor or a
+/// collapsed section hides it.
 ///
 /// A row is hidden when a preceding row of strictly smaller depth carries
-/// `collapsed == true` and no shallower row closes that ancestor first. The
-/// scan holds one stack of the depths of the ancestors that are currently
-/// open and collapsed, so it costs one pass over `rows`. A row that is itself
-/// collapsed stays visible; only the rows below it, of strictly greater
-/// depth, are hidden.
-pub(crate) fn sidebar_visibility<R>(rows: &[SidebarRow<R>]) -> Vec<bool> {
+/// `collapsed == true` and no shallower row closes that ancestor first, or
+/// when `sections` marks the row's own section index collapsed. This is the
+/// one function that decides row visibility, so the depth rule and the
+/// section rule never drift apart. The scan holds one stack of the depths of
+/// the ancestors that are currently open and collapsed, so it costs one pass
+/// over `rows`. A row that is itself collapsed stays visible; only the rows
+/// below it, of strictly greater depth, are hidden. A section index past the
+/// end of `sections` counts as not collapsed, so a row that carries no
+/// section stays visible under the default, empty section list.
+pub(crate) fn sidebar_visibility<R>(rows: &[SidebarRow<R>], sections: &[bool]) -> Vec<bool> {
     let mut visible = Vec::with_capacity(rows.len());
     let mut collapsed_ancestors: Vec<usize> = Vec::new();
+    let mut section = None;
     for row in rows {
+        // A section holds its own tree, so no row of one section is the
+        // ancestor of a row of the next one. The stack therefore empties at
+        // every section boundary, and a host that starts a section below
+        // depth 0 still hides no row of it behind the previous section.
+        if section != Some(row.section) {
+            section = Some(row.section);
+            collapsed_ancestors.clear();
+        }
         // A row at or above the depth of the innermost open ancestor has left
         // its subtree, so that ancestor, and every one it closes with it, no
         // longer applies.
@@ -328,7 +394,8 @@ pub(crate) fn sidebar_visibility<R>(rows: &[SidebarRow<R>]) -> Vec<bool> {
         {
             collapsed_ancestors.pop();
         }
-        visible.push(collapsed_ancestors.is_empty());
+        let section_collapsed = sections.get(row.section).copied().unwrap_or(false);
+        visible.push(collapsed_ancestors.is_empty() && !section_collapsed);
         if row.collapsed {
             collapsed_ancestors.push(row.depth);
         }
@@ -567,10 +634,16 @@ pub enum SidebarEvent<R> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SidebarState<R> {
     rows: Vec<SidebarRow<R>>,
+    /// The collapsed flag of each section, in section order. A row whose
+    /// section index falls outside this list counts as not collapsed, so a
+    /// sidebar that never calls [`Self::set_sections`] hides no row through
+    /// this axis. [`Self::set_sections`] replaces the whole list.
+    sections: Vec<bool>,
     /// Whether each row of `rows` is visible, at the same position. A
-    /// collapsed ancestor hides a row from every motion, from the
-    /// placements, and from the total line count. [`Self::set_rows`]
-    /// computes this once and every later read uses the stored result.
+    /// collapsed ancestor or a collapsed section hides a row from every
+    /// motion, from the placements, and from the total line count.
+    /// [`Self::set_rows`] and [`Self::set_sections`] both recompute this and
+    /// every later read uses the stored result.
     visible: Vec<bool>,
     total_lines: u32,
     selected: Option<usize>,
@@ -585,6 +658,7 @@ impl<R> Default for SidebarState<R> {
     fn default() -> Self {
         Self {
             rows: Vec::new(),
+            sections: Vec::new(),
             visible: Vec::new(),
             total_lines: 0,
             selected: None,
@@ -615,6 +689,15 @@ impl<R: Clone + Eq> SidebarState<R> {
     #[must_use]
     pub fn rows(&self) -> &[SidebarRow<R>] {
         &self.rows
+    }
+
+    /// Returns the collapsed flag of each section, in section order.
+    ///
+    /// A row whose section index falls outside this list counts as not
+    /// collapsed. See [`Self::set_sections`].
+    #[must_use]
+    pub fn sections(&self) -> &[bool] {
+        &self.sections
     }
 
     /// Returns the number of terminal rows that every row occupies together.
@@ -726,21 +809,95 @@ impl<R: Clone + Eq> SidebarState<R> {
             .selected
             .map(|index| (index, self.rows[index].id.clone()));
         // The list passed every bound, so the replacement commits in one step.
-        let visible = sidebar_visibility(&rows);
-        self.total_lines = rows
+        self.rows = rows;
+        self.recompute_visibility(previous);
+        Ok(())
+    }
+
+    /// Replaces the collapsed flag of every section.
+    ///
+    /// `sections[i]` is the collapsed flag of section `i`. A collapsed
+    /// section hides every row of that section from every motion, from the
+    /// placements, and from the total line count, exactly as a collapsed
+    /// tree row hides its subtree. A section index that no row carries still
+    /// counts toward the bound, because the host may add a row of that
+    /// section later.
+    ///
+    /// The call validates the list before it replaces anything, so a refused
+    /// list leaves the previous sections and the previous selection in
+    /// place.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SidebarError::Sections`] when the list passes
+    /// [`SIDEBAR_SECTIONS_MAX`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{RowKind, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+    ///
+    /// // A task section sits above a worktree section.
+    /// let mut sidebar = SidebarState::new(4);
+    /// sidebar
+    ///     .set_rows(vec![
+    ///         SidebarRow::single("task one", RowKind::Selectable).with_section(0),
+    ///         SidebarRow::single("task two", RowKind::Selectable).with_section(0),
+    ///         SidebarRow::single("src", RowKind::Selectable).with_section(1),
+    ///     ])
+    ///     .expect("three rows stay inside every bound");
+    ///
+    /// // Collapsing the task section hides every row it holds and contributes
+    /// // no line to the scroll.
+    /// sidebar
+    ///     .set_sections(vec![true, false])
+    ///     .expect("two sections stay inside the bound");
+    /// assert_eq!(sidebar.total_lines(), 1);
+    ///
+    /// // A downward move from no selection skips both hidden tasks in one
+    /// // step and lands on the worktree row.
+    /// assert_eq!(
+    ///     sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+    ///     Some(SidebarEvent::SelectionChanged { row: "src" }),
+    /// );
+    /// ```
+    pub fn set_sections(&mut self, sections: Vec<bool>) -> Result<(), SidebarError> {
+        if sections.len() > SIDEBAR_SECTIONS_MAX {
+            return Err(SidebarError::Sections {
+                sections: sections.len(),
+                max: SIDEBAR_SECTIONS_MAX,
+            });
+        }
+        let previous = self
+            .selected
+            .map(|index| (index, self.rows[index].id.clone()));
+        // The list passed the bound, so the replacement commits in one step.
+        self.sections = sections;
+        self.recompute_visibility(previous);
+        Ok(())
+    }
+
+    /// Recomputes visibility from the current rows and sections, then
+    /// restores the selection and reconciles the viewport.
+    ///
+    /// [`Self::set_rows`] and [`Self::set_sections`] both change one input of
+    /// [`sidebar_visibility`] and share this recovery, so the rule that turns
+    /// a lost selection into the nearest visible row lives once.
+    fn recompute_visibility(&mut self, previous: Option<(usize, R)>) {
+        let visible = sidebar_visibility(&self.rows, &self.sections);
+        self.total_lines = self
+            .rows
             .iter()
             .zip(&visible)
             .filter(|&(_, &visible)| visible)
             .map(|(row, _)| u32::from(row.height_rows()))
             .sum::<u32>();
-        self.rows = rows;
         self.visible = visible;
         self.selected = previous.and_then(|(index, id)| {
             self.index_of(&id)
                 .or_else(|| self.nearest_selectable(index, Travel::Forward))
         });
         self.reconcile();
-        Ok(())
     }
 
     /// Sets the viewport height, in terminal rows.

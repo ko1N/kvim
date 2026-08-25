@@ -367,6 +367,48 @@ directory rows always show every file below them, so its rows never carry
 the collapsed flag either, and the question of an owner does not yet arise
 for that host.
 
+### Sidebar Sections
+
+A section is a second axis over the same flat row list, not a nested
+container. `SidebarRow<R>` carries a section index alongside its depth, set
+through `with_section`. The row list stays ordered by section: every row of
+section 0 precedes every row of section 1. A depth still counts from the
+root of a row's own tree, inside its own section, so a further section
+simply restarts the tree at depth 0. No row of one section is the ancestor of
+a row of the next one, so a section boundary closes every open subtree of the
+section above it. A host that starts a section below depth 0 therefore still
+hides no row of it behind a collapsed row of the previous section.
+
+`SidebarState<R>` holds the collapsed flag of every section as one bounded,
+ordered list, set through `set_sections`. `SIDEBAR_SECTIONS_MAX` bounds the
+list at 64, and a longer list makes `set_sections` return
+`SidebarError::Sections` instead of an unbounded state, exactly as
+`SIDEBAR_ROWS_MAX` bounds `set_rows`. A refused list leaves the previous
+sections and the previous selection in place. A section index that no
+declared section covers counts as not collapsed, so a sidebar that never
+calls `set_sections` hides no row through this axis, and every present
+consumer keeps its current behavior without a change.
+
+`sidebar_visibility` is the one function that decides row visibility. It
+folds the section rule into the same pass as the depth-collapse rule: a row
+is hidden when a collapsed ancestor hides it, exactly as before, or when its
+own section is collapsed. A row inside a collapsed section is hidden
+regardless of its own subtree state, because the two rules combine with a
+logical and. `set_rows` and `set_sections` both change one input of that
+one function and share the same recovery afterward: the visibility list, the
+total line count, and the selection all recompute, and a selection that a
+new collapse hides moves to the nearest visible, selectable row, the same
+rule that a collapsed tree row already follows.
+
+A section carries no header row of its own. `kvim-ui` publishes no drawn
+text for a section, the same way it publishes none for a tree row, so a host
+that wants a visible heading draws an ordinary row for it, at depth 0 in
+that section, and gives that row its own meaning. The changes panel of the
+diff view is the first consumer: `ChangesRow::Directory` and `ChangesRow::File`
+each carry a `ChangeSection`, ready to become a `with_section` index for a
+host that wants to show the staged and the unstaged files together. That
+conversion is a further change; this slice publishes the mechanism alone.
+
 ## Selector
 
 `Selector<R>` owns a bounded query, a bounded candidate list, a ranked match

@@ -109,9 +109,9 @@ pub use selector::{
 };
 pub use sidebar::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
-    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SidebarAction, SidebarCanvas,
-    SidebarError, SidebarEvent, SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow,
-    SidebarState,
+    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SIDEBAR_SECTIONS_MAX,
+    SidebarAction, SidebarCanvas, SidebarError, SidebarEvent, SidebarInput, SidebarMotion,
+    SidebarPlacement, SidebarRow, SidebarState,
 };
 pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabStrip};
 pub use which_key::{

@@ -146,7 +146,6 @@ fn the_two_sections_hold_their_own_candidates_and_never_merge() {
         vec![&ChangesRow::File {
             section: ChangeSection::Staged,
             path: path("staged.txt"),
-            depth: 0,
         }]
     );
 
@@ -157,7 +156,6 @@ fn the_two_sections_hold_their_own_candidates_and_never_merge() {
         vec![&ChangesRow::File {
             section: ChangeSection::Unstaged,
             path: path("unstaged.txt"),
-            depth: 0,
         }]
     );
 }
@@ -200,7 +198,6 @@ fn a_refresh_installs_the_rows_of_one_section_into_one_sidebar() {
         &ChangesRow::File {
             section: ChangeSection::Staged,
             path: path("staged.txt"),
-            depth: 0,
         }
     );
 
@@ -212,7 +209,6 @@ fn a_refresh_installs_the_rows_of_one_section_into_one_sidebar() {
         &ChangesRow::File {
             section: ChangeSection::Unstaged,
             path: path("unstaged.txt"),
-            depth: 0,
         }
     );
 }
@@ -234,12 +230,13 @@ fn the_panel_groups_the_files_by_directory() {
 
     let shape: Vec<String> = published
         .iter()
-        .map(|row| match row.id() {
-            ChangesRow::Directory { path, depth, .. } => {
-                format!("d{depth} {}", path.display())
-            }
-            ChangesRow::File { path, depth, .. } => {
-                format!("f{depth} {}", path.as_path().display())
+        .map(|row| {
+            let depth = row.depth();
+            match row.id() {
+                ChangesRow::Directory { path, .. } => format!("d{depth} {}", path.display()),
+                ChangesRow::File { path, .. } => {
+                    format!("f{depth} {}", path.as_path().display())
+                }
             }
         })
         .collect();

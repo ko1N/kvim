@@ -60,8 +60,6 @@ pub(super) enum ChangesRow {
         section: ChangeSection,
         /// The directory, relative to the workspace root.
         path: PathBuf,
-        /// The depth of the directory below the section.
-        depth: usize,
     },
     /// One changed file of one section.
     File {
@@ -69,8 +67,6 @@ pub(super) enum ChangesRow {
         section: ChangeSection,
         /// The file.
         path: WorktreeRelativePath,
-        /// The depth of the file below the section.
-        depth: usize,
     },
 }
 
@@ -189,7 +185,6 @@ fn push_grouped(
                     ChangesRow::Directory {
                         section,
                         path: open.iter().collect(),
-                        depth: open.len() - 1,
                     },
                     ONE_ROW,
                     RowKind::Inert,
@@ -202,7 +197,6 @@ fn push_grouped(
                 ChangesRow::File {
                     section,
                     path: file.path.clone(),
-                    depth: open.len(),
                 },
                 ONE_ROW,
                 RowKind::Selectable,
