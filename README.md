@@ -4,8 +4,6 @@ kvim is a modal terminal editor for Rust projects on macOS and Linux. It
 provides Vim-style editing, workspace navigation, fuzzy search, Tree-sitter
 highlighting, language server support, and format-on-save in one executable.
 
-Repository: [github.com/ko1N/kvim](https://github.com/ko1N/kvim)
-
 ![kvim editor showing a Rust workspace](docs/screenshot.png)
 
 ## Install
@@ -47,17 +45,6 @@ Open a file, or start with an empty buffer:
 kvim src/main.rs
 kvim
 ```
-
-kvim uses the current directory as the workspace root. The file tree, pickers,
-and language server operate inside this root.
-
-| Key | Action |
-|---|---|
-| `Space ff` | Open the file picker. |
-| `Space f/` | Search workspace text. |
-| `Space o` | List loaded buffers. |
-| `Ctrl-e` | Open or close the file tree. |
-| `gd` | Go to a definition. |
 
 `Space` is the leader key. Press it and wait half a second to show available
 key sequences. Run `kvim --help` for command-line help and `kvim --version` for
