@@ -669,6 +669,19 @@ An operator takes `g_` and `%` as a characterwise, inclusive target. `dg_`
 therefore deletes to the last non-blank character. `d%` deletes both brackets of
 the pair and the text between them.
 
+An operator reads `w` by two rules that the plain motion does not follow.
+
+1. An operator ends at the end of the last word that the motion moved over, when
+   that word ends at the end of its line. `dw` on the last word of a line
+   therefore removes that word and keeps the line, and `d2w` over a line
+   boundary stops at the end of the second word.
+2. `cw` on a non-blank changes to the end of the word, exactly as `ce` does, so
+   the blanks after the word stay. `cw` on a blank follows the plain motion and
+   removes the blanks.
+
+The plain `w` motion keeps its own rule, so `w` on the last word of a line still
+moves to the last character of that line.
+
 macOS sends the `Option` chord as the `Alt` modifier, so `Option-Left` and
 `Option-Right` arrive as `Alt-Left` and `Alt-Right`. The `terminal` module folds
 six `Alt` encodings onto another chord while it normalizes the key, so the
@@ -723,6 +736,12 @@ binding. Every other `Shift` combination is a rejection.
 | `.` | Repeat the last repeatable change | Normal |
 
 Visual paste replaces the selection and preserves the source register.
+
+`"` names the register of the next operation, and the character after it is the
+name. `"ayy` yanks the line into the register `a`, and `"ap` pastes it. `"` names
+the unnamed register, `_` discards every write, and an upper-case name appends to
+its lower-case register. [`clipboard.md`](clipboard.md) records which registers
+the system clipboard sees.
 
 ### Text Objects
 

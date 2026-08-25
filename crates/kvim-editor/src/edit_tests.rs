@@ -1772,3 +1772,49 @@ fn a_paste_from_an_empty_named_register_changes_nothing() {
     );
     assert_eq!(session.text(), "alpha\n");
 }
+
+#[test]
+fn a_delete_over_the_word_motion_stops_at_the_line_end() {
+    // `dw` on the last word of a line removes that word and keeps the line, so
+    // the delete never joins the next line.
+    let mut session = Session::new("alpha beta gamma\ndelta\n");
+    place(&mut session, 0, 11);
+    session.run(&[Command::DeleteOverMotion, Command::MoveNextWordStart]);
+    assert_eq!(session.text(), "alpha beta \ndelta\n");
+
+    // The last line of the buffer follows the same rule.
+    let mut last = Session::new("alpha beta gamma\n");
+    place(&mut last, 0, 11);
+    last.run(&[Command::DeleteOverMotion, Command::MoveNextWordStart]);
+    assert_eq!(last.text(), "alpha beta \n");
+
+    // A count stops at the end of the last word that the motion moved over.
+    let mut counted = Session::new("alpha beta\ngamma\n");
+    counted.apply(Command::DeleteOverMotion, None);
+    counted.apply(Command::MoveNextWordStart, count(2));
+    assert_eq!(counted.text(), "\ngamma\n");
+}
+
+#[test]
+fn a_word_motion_without_an_operator_still_stops_on_the_last_character() {
+    // The rule above belongs to the operator, so `w` alone is unchanged.
+    let mut session = Session::new("alpha beta gamma\n");
+    place(&mut session, 0, 11);
+    session.apply(Command::MoveNextWordStart, None);
+    assert_eq!(session.position(), (0, 15));
+}
+
+#[test]
+fn a_change_over_the_word_motion_keeps_the_blanks_after_the_word() {
+    // `cw` on a non-blank changes to the end of the word, exactly as `ce` does.
+    let mut session = Session::new("alpha  beta\n");
+    session.run(&[Command::ChangeOverMotion, Command::MoveNextWordStart]);
+    assert_eq!(session.text(), "  beta\n");
+    assert_eq!(session.state.mode(), Mode::Insert);
+
+    // On a blank the plain rule applies, so the change removes the blanks.
+    let mut blank = Session::new("alpha  beta\n");
+    place(&mut blank, 0, 5);
+    blank.run(&[Command::ChangeOverMotion, Command::MoveNextWordStart]);
+    assert_eq!(blank.text(), "alphabeta\n");
+}

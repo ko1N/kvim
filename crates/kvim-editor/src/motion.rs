@@ -322,6 +322,71 @@ pub(super) fn move_previous_word_start(
     )
 }
 
+/// Returns the end of an operator range over `w`.
+///
+/// Vim ends the operated text at the end of the last word that the motion moved
+/// over, when that word ends at the end of its line. `dw` on the last word of a
+/// line therefore removes that word and keeps the line. The plain `w` motion
+/// stops on the last character of the line instead, because Normal mode holds
+/// the cursor on a character, so an operator needs its own end.
+///
+/// The returned cursor can stand after the last character of its line, which
+/// an exclusive range needs to reach that character.
+pub(super) fn operator_next_word_start(
+    buffer: &TextBuffer,
+    cursor: Cursor,
+    count: usize,
+) -> Cursor {
+    let mut walker = WordWalker::new(buffer);
+    let start = WalkPosition {
+        line: cursor.line().get(),
+        column: cursor.column().get(),
+    };
+    let mut position = start;
+    for _ in 0..count {
+        let next = walker.next_word_start(position);
+        if next == position {
+            break;
+        }
+        position = next;
+    }
+    let end = |line: usize, column: usize| {
+        Cursor::clamped(buffer, line, column, ColumnLimit::AfterLastCharacter)
+    };
+    if position.line == start.line {
+        return end(position.line, position.column);
+    }
+
+    // The walk left the line, so the range stops after the last non-blank
+    // character that the walk passed.
+    let mut back = position;
+    while let Some(previous) = walker.previous(back) {
+        back = previous;
+        if back == start {
+            break;
+        }
+        if walker.class_at(back) != CharClass::Blank {
+            let content_end = walker.line_len(back.line);
+            return end(back.line, content_end);
+        }
+    }
+    // The walk passed blanks alone, so it moved over no word and the plain
+    // motion target is the end.
+    end(position.line, position.column)
+}
+
+/// Reports whether the cursor stands on a blank character.
+///
+/// A position after the last character of a line holds no character, and an
+/// empty line holds none either. Both count as blank.
+pub(super) fn is_blank_at(buffer: &TextBuffer, cursor: Cursor) -> bool {
+    buffer
+        .line_text(cursor.line())
+        .chars()
+        .nth(cursor.column().get())
+        .is_none_or(|character| CharClass::of(character) == CharClass::Blank)
+}
+
 /// Moves the cursor to the end of the next word.
 pub(super) fn move_next_word_end(
     buffer: &TextBuffer,

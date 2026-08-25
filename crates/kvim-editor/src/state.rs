@@ -894,7 +894,30 @@ impl EditingState {
         };
         let effective = operator_motion_count(command, pending.count, count);
         let before = window.cursor;
-        let motion = self.motion_target(&context.read(), window, command, effective);
+        // Vim reads `w` after an operator by two rules of its own, which
+        // `docs/input-actions.md` records. `cw` on a non-blank changes to the
+        // end of the word, exactly as `ce` does, so the blanks after the word
+        // stay. Every other operator ends at the end of the last word that the
+        // motion moved over, when that word ends at the end of its line.
+        let word_start = command == Command::MoveNextWordStart;
+        let (kind, motion) = if word_start
+            && pending.operator == Operator::Change
+            && !motion::is_blank_at(context.buffer, before)
+        {
+            (
+                MotionKind::Inclusive,
+                self.motion_target(&context.read(), window, Command::MoveNextWordEnd, effective),
+            )
+        } else if word_start {
+            let target =
+                motion::operator_next_word_start(context.buffer, before, repeat_count(effective));
+            (kind, MotionResult::Moved(target))
+        } else {
+            (
+                kind,
+                self.motion_target(&context.read(), window, command, effective),
+            )
+        };
         let MotionResult::Moved(after) = motion else {
             return CommandOutcome::OperatorAborted;
         };
