@@ -151,8 +151,9 @@ section. A section that publishes no change opens no tab.
 One tab carries the mark of its repository state, its name, and the number of
 files that it holds. The mark takes the color that the rows below it take for
 the same state, so the strip and the panel name one state the same way. The
-active tab sits on a light band and every other tab dims on the bar, so one
-glance names the section that the keys act on.
+active tab takes the background of the body below it, so it connects to its own
+content, and every other tab dims on the bar above them. A band lighter than the
+bar reads washed out, because the bar and the text then sit at the same weight.
 
 `kvim_ui::TabStrip` holds the strip. It is a domain-neutral value: it carries
 opaque host identities and bounded labels, owns no surface, and draws every cell
