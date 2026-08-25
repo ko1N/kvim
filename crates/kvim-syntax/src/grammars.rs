@@ -57,6 +57,21 @@ pub const BUNDLED_LANGUAGES_MAX: usize = 32;
 /// The list is empty in a build without a grammar feature, which is the
 /// default. Selection then returns [`crate::HighlightFailure::UnsupportedLanguage`]
 /// for every language, and a consumer that needs a language enables its feature.
+///
+/// # Examples
+///
+/// ```
+/// // A build without a grammar feature bundles nothing at all.
+/// assert!(kvim_syntax::bundled().len() <= kvim_syntax::BUNDLED_LANGUAGES_MAX);
+///
+/// # #[cfg(feature = "grammar-rust")] {
+/// let rust = kvim_syntax::bundled()
+///     .iter()
+///     .find(|entry| entry.language_names().contains(&"rust"))
+///     .expect("the feature bundles Rust");
+/// assert!(rust.extensions().contains(&"rs"));
+/// # }
+/// ```
 pub fn bundled() -> &'static [&'static LanguageCatalogEntry] {
     static REGISTRY: OnceLock<Vec<&'static LanguageCatalogEntry>> = OnceLock::new();
     REGISTRY.get_or_init(|| {

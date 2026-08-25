@@ -1252,3 +1252,7 @@ enum Step {
     Next,
     Previous,
 }
+
+#[cfg(test)]
+#[path = "tree_tests.rs"]
+mod tests;

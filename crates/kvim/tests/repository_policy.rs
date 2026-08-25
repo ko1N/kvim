@@ -24,7 +24,19 @@ const SOURCE_DEPTH_MAX: usize = 8;
 ///
 /// `docs/embedding.md` owns this list. One feature has one example, and one
 /// combined example never replaces a feature example.
-const FEATURE_EXAMPLES: [(&str, &str); 12] = [
+const FEATURE_EXAMPLES: [(&str, &str); 15] = [
+    (
+        "crates/kvim-path/src/lib.rs",
+        "crates/kvim-path/examples/confine_worktree_paths.rs",
+    ),
+    (
+        "crates/kvim-keymap/src/lib.rs",
+        "crates/kvim-keymap/examples/dispatch_keys.rs",
+    ),
+    (
+        "crates/kvim-keymap/src/resolver.rs",
+        "crates/kvim-keymap/examples/dispatch_keys.rs",
+    ),
     (
         "crates/kvim-syntax/src/lib.rs",
         "crates/kvim-syntax/examples/highlight.rs",
@@ -79,8 +91,10 @@ const FEATURE_EXAMPLES: [(&str, &str); 12] = [
 ///
 /// A new example belongs to one public feature. An example outside this list is
 /// a kitchen-sink example, which `docs/embedding.md` refuses.
-const REQUIRED_EXAMPLES: [&str; 8] = [
+const REQUIRED_EXAMPLES: [&str; 10] = [
+    "crates/kvim-keymap/examples/dispatch_keys.rs",
     "crates/kvim-lsp/examples/lsp_diagnostics.rs",
+    "crates/kvim-path/examples/confine_worktree_paths.rs",
     "crates/kvim-syntax/examples/highlight.rs",
     "crates/kvim-tui/examples/embedded_editor.rs",
     "crates/kvim-tui/examples/host_workspace.rs",

@@ -20,11 +20,11 @@ use kvim_settings::EditorSettings;
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode, WorkspaceRequest};
 
-use super::embed::{
+use crate::embed::{
     CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorShutdown,
     EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
 };
-use super::session::{Redraw, RunState, Session, test_root};
+use crate::session::{Redraw, RunState, Session, test_root};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -423,7 +423,7 @@ fn a_failed_write_releases_its_reserved_slot() {
     let _ = session
         .take_file_request()
         .expect("the save queued one write");
-    let _ = session.abandon_file_request(super::session::FileRequestFailure::Saturated);
+    let _ = session.abandon_file_request(crate::session::FileRequestFailure::Saturated);
 
     let events = drain_events(&mut session);
     assert!(
@@ -617,11 +617,11 @@ fn a_focus_move_at_the_edge_reports_the_boundary() {
     let reduction = session.apply_command(Command::FocusWindowLeft, None, NOW);
     assert_eq!(
         reduction.request(),
-        Some(InputRequest::FocusBoundary(super::Direction::Left))
+        Some(InputRequest::FocusBoundary(crate::Direction::Left))
     );
     assert_eq!(
         reduction.request().map(InputRequest::event),
-        Some(EditorEvent::FocusBoundary(super::Direction::Left))
+        Some(EditorEvent::FocusBoundary(crate::Direction::Left))
     );
 
     // A move that stays inside this editor reports no boundary.
@@ -733,7 +733,7 @@ fn the_editor_events_hold_no_review_fact() {
             },
         },
         EditorEvent::RedrawRequested,
-        EditorEvent::FocusBoundary(super::Direction::Left),
+        EditorEvent::FocusBoundary(crate::Direction::Left),
         EditorEvent::CloseRequested,
     ]
     .into_iter()

@@ -999,3 +999,7 @@ impl SidebarCanvas<'_> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "sidebar_tests.rs"]
+mod tests;

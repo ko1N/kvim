@@ -19,8 +19,8 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{PickerResult, PickerSlot, Preview, PreviewKey, PreviewTarget, temp::TempDir};
 
-use super::picker::{PREVIEW_WIDTH_PERCENT, PickerFailure, picker_areas};
-use super::session::{Redraw, Session, test_root};
+use crate::picker::{PREVIEW_WIDTH_PERCENT, PickerFailure, picker_areas};
+use crate::session::{Redraw, Session, test_root};
 
 const NOW: Duration = Duration::ZERO;
 

@@ -27,6 +27,37 @@
 - If shared `sccache` stalls, retry the same narrow command without `sccache`. Do not replace it with a broad command.
 - The final closeout slice runs every deferred test and slow compilation path once.
 
+## Source Layout
+
+- Keep production source files small enough for human review. Unit tests must not inflate them.
+- Do not append a large `#[cfg(test)] mod tests` block at the bottom of a source file.
+- Put the unit tests for `<module>.rs` in a sibling file `<module>_tests.rs` in the same
+  directory. Declare it at the bottom of `<module>.rs` as a child module with an explicit path:
+
+  ```rust
+  #[cfg(test)]
+  #[path = "<module>_tests.rs"]
+  mod tests;
+  ```
+
+  Use `use super::*;` in the test file; the child-module declaration keeps private items
+  reachable.
+- A crate root is the one exception to the file name. `lib.rs` and `main.rs` declare
+  `#[cfg(test)] mod tests;` and put the tests in `src/tests.rs`, because the default module
+  resolution already finds that file.
+- A tiny inline test module (roughly 30 lines or fewer) is acceptable when a separate file would
+  not help.
+- Integration tests stay under each crate's `tests/` directory. Doctests stay on the items they
+  document.
+- High-level public APIs must carry a doc example, and the example must be a runnable doctest.
+  This covers the entry points a consumer starts from: builders, registries, parsers, printers,
+  verifiers, and typed wrappers. Small accessors and plain data types do not need one.
+- High-level user functions must also have a dedicated runnable example under the owning crate's
+  `examples/` directory, runnable with `cargo run -p <crate> --example <name>`. One example per
+  user workflow, not per function: for example, author-verify-print a module, or parse and
+  inspect one. Examples are maintained code: they compile in every check and follow the same
+  lint rules. Put an example in the lowest crate that can express the whole workflow.
+
 ## Architecture Rules
 
 - Keep the terminal event loop free from filesystem, process, Git, language server, formatting, and Tree-sitter work.

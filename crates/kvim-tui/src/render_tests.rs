@@ -20,9 +20,9 @@ use kvim_settings::{EditorSettings, FileTreeIcons, NotificationSettings, WHICH_K
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
-use super::buffer_view::WINBAR_ROWS;
-use super::clipboard::SessionClipboard;
-use super::session::{ConfirmedAction, MessageLevel, Redraw, Session, test_root};
+use crate::buffer_view::WINBAR_ROWS;
+use crate::clipboard::SessionClipboard;
+use crate::session::{ConfirmedAction, MessageLevel, Redraw, Session, test_root};
 use kvim_ui::WindowId;
 
 const NOW: Duration = Duration::ZERO;

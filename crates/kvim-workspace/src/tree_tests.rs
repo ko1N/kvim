@@ -11,19 +11,19 @@ use std::sync::Arc;
 
 use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 
-use super::clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
-use super::mutation::{
+use crate::BufferId;
+use crate::clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
+use crate::mutation::{
     FileOperation, MUTATION_PATHS_MAX, MutationError, MutationPlan, OpenBuffer, Overwrite,
     TakenDestination, TransferMode,
 };
-use super::temp::TempDir;
-use super::tree::{
+use crate::temp::TempDir;
+use crate::tree::{
     DirectoryIdentity, DirectoryListing, EntryKind, Expansion, FileTree, LinkKind, Notice,
     RowContent, TREE_DEPTH_MAX, TREE_DIRECTORY_ENTRIES_MAX, TREE_ENTRIES_MAX,
     TREE_SEARCH_CHARS_MAX, TREE_SEARCH_READS_MAX, TreeEntry, Truncation, read_directory,
 };
-use super::tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
-use crate::BufferId;
+use crate::tree_request::{MutateRequest, WorkspaceRequest, WorkspaceResult};
 
 /// Returns the workspace root of one temporary directory.
 ///
@@ -536,7 +536,7 @@ fn the_directory_bound_reports_the_truncation() {
 #[test]
 fn the_directory_scan_bound_reports_uninspected_entries() {
     let directory = TempDir::new("tree-scan-bound");
-    for index in 0..=super::tree::TREE_DIRECTORY_SCAN_MAX {
+    for index in 0..=crate::tree::TREE_DIRECTORY_SCAN_MAX {
         directory.file(&format!("file-{index:05}.rs"), "");
     }
     let root = Arc::new(WorktreeRoot::open(&directory.path).expect("the fixture root exists"));
@@ -549,7 +549,7 @@ fn the_directory_scan_bound_reports_uninspected_entries() {
         listing.truncation,
         Truncation::Truncated {
             shown: TREE_DIRECTORY_ENTRIES_MAX,
-            total: super::tree::TREE_DIRECTORY_SCAN_MAX + 1,
+            total: crate::tree::TREE_DIRECTORY_SCAN_MAX + 1,
         }
     );
 }

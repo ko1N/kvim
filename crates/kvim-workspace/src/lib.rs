@@ -65,8 +65,6 @@ mod walk;
 pub mod temp;
 #[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tree_tests;
 
 pub use buffer::{
     BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME,

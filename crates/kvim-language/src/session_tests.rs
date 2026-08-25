@@ -18,21 +18,23 @@ use kvim_lsp::{
 };
 use kvim_settings::{EditorSettings, FileSettings};
 
-use super::document::{MarkupKind, content_changes};
-use super::mock::{
+use crate::document::{MarkupKind, content_changes};
+use crate::markup::MarkupDocument;
+use crate::mock::{
     self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, ROOT,
     TEST_DEADLINE, connected, pipe, session,
 };
-use super::progress::{ProgressPercentage, ProgressReport, ProgressStage};
-use super::session::{
+use crate::progress::{ProgressPercentage, ProgressReport, ProgressStage};
+use crate::session::{
     LSP_DIAGNOSTIC_PULL_DELAY, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX,
-    LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome,
+    LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome, MarkupText,
+    hover_contents,
 };
-use super::{
+use crate::{
     CommentStyle, DiagnosticSeverity, Grammar, IndentRule, IndentScope, LSP_CONTENT_CHANGES_MAX,
     LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX, LanguageAdapter, LanguageCatalogEntry,
     LanguageRegistry, LanguageServerDeclaration, LanguageServerId, LanguageServices, RustAdapter,
-    ServerFormatting, SessionGeneration,
+    ServerFormatting, SessionGeneration, SyntaxHighlighter,
 };
 
 /// The node kind that a test adapter indents.
@@ -822,10 +824,10 @@ async fn a_formatting_request_carries_the_indent_width_of_its_language() {
 fn formatting_edits_reject_an_obsolete_buffer_version() {
     let mut text = buffer("fn  main() {}\n");
     let version = text.version();
-    let edits = super::FormatEdits::new(
+    let edits = crate::FormatEdits::new(
         PathBuf::from(DOCUMENT),
         version,
-        vec![super::TextEdit {
+        vec![crate::TextEdit {
             span: SourceSpan::new(DocumentPosition::new(0, 2), DocumentPosition::new(0, 4)),
             text: " ".to_owned(),
         }],
@@ -844,10 +846,10 @@ fn formatting_edits_reject_an_obsolete_buffer_version() {
 #[test]
 fn formatting_edits_reject_a_range_outside_the_buffer() {
     let text = buffer("fn main() {}\n");
-    let edits = super::FormatEdits::new(
+    let edits = crate::FormatEdits::new(
         PathBuf::from(DOCUMENT),
         text.version(),
-        vec![super::TextEdit {
+        vec![crate::TextEdit {
             span: SourceSpan::new(DocumentPosition::new(0, 2), DocumentPosition::new(0, 200)),
             text: " ".to_owned(),
         }],
@@ -2401,4 +2403,99 @@ async fn drains_a_server_that_writes_more_than_its_bound() {
         "every recorded line stays inside the line bound"
     );
     harness.task.await.expect("the session task ends cleanly");
+}
+
+/// Returns the answer of one hover `contents` value.
+fn answer(contents: &Value) -> Option<MarkupText> {
+    hover_contents(
+        contents,
+        LanguageRegistry::first_release(),
+        &mut SyntaxHighlighter::new(),
+    )
+    .expect("the text stays under the bound")
+}
+
+#[test]
+fn a_markup_block_carries_the_kind_that_it_names() {
+    let markdown = answer(&json!({ "kind": "markdown", "value": "`fn main()`" }))
+        .expect("the block carries text");
+    assert_eq!(markdown.kind, MarkupKind::Markdown);
+    assert_eq!(markdown.text, "`fn main()`");
+
+    let plain =
+        answer(&json!({ "kind": "plaintext", "value": "a * b" })).expect("the block carries text");
+    assert_eq!(plain.kind, MarkupKind::PlainText);
+    assert_eq!(plain.text, "a * b");
+}
+
+#[test]
+fn every_deprecated_marked_string_carries_markdown() {
+    // The protocol defines a bare string as markdown, and it defines the
+    // pair of a language and a value as one fenced markdown code block.
+    let bare = answer(&json!("*emphasis*")).expect("the string carries text");
+    assert_eq!(bare.kind, MarkupKind::Markdown);
+
+    let fenced = answer(&json!({ "language": "rust", "value": "fn main()" }))
+        .expect("the block carries text");
+    assert_eq!(fenced.kind, MarkupKind::Markdown);
+    assert_eq!(
+        fenced.text, "```rust\nfn main()\n```",
+        "the pair of a language and a value is one code block, so the reader writes its fence"
+    );
+
+    let array = answer(&json!([
+        { "language": "rust", "value": "fn main()" },
+        "*emphasis*",
+    ]))
+    .expect("the array carries text");
+    assert_eq!(array.kind, MarkupKind::Markdown);
+    assert_eq!(array.text, "```rust\nfn main()\n```\n*emphasis*");
+}
+
+#[test]
+fn a_deprecated_pair_that_holds_a_fence_keeps_its_whole_value() {
+    // CommonMark closes a fence at the first line that holds as many
+    // backticks as the opening one, so the fence must be the longer one.
+    let fenced = answer(&json!({ "language": "md", "value": "a\n```\nb\n```\nc" }))
+        .expect("the block carries text");
+
+    assert_eq!(fenced.text, "````md\na\n```\nb\n```\nc\n````");
+    let document = MarkupDocument::parse(&fenced.text);
+    assert_eq!(
+        document.blocks().len(),
+        1,
+        "the value stands in one code block: {document:?}"
+    );
+}
+
+#[test]
+fn one_part_of_plain_text_makes_the_whole_answer_plain_text() {
+    // A parser that reads plain text as markdown loses the characters that
+    // mark up a document, so the safe kind covers the joined text.
+    let mixed = answer(&json!([
+        "*emphasis*",
+        { "kind": "plaintext", "value": "a * b" },
+    ]))
+    .expect("the array carries text");
+    assert_eq!(mixed.kind, MarkupKind::PlainText);
+    assert_eq!(mixed.text, "*emphasis*\na * b");
+}
+
+#[test]
+fn a_kind_that_the_protocol_defines_nowhere_takes_plain_text() {
+    // An object that names no kind and no language is no shape of the
+    // protocol, and neither is an unknown kind name.
+    let nameless = answer(&json!({ "value": "a * b" })).expect("the object carries text");
+    assert_eq!(nameless.kind, MarkupKind::PlainText);
+
+    let unknown =
+        answer(&json!({ "kind": "html", "value": "a * b" })).expect("the object carries text");
+    assert_eq!(unknown.kind, MarkupKind::PlainText);
+}
+
+#[test]
+fn an_answer_without_text_names_no_markup() {
+    assert!(answer(&json!("   ")).is_none());
+    assert!(answer(&json!([])).is_none());
+    assert!(answer(&json!({ "kind": "markdown" })).is_none());
 }

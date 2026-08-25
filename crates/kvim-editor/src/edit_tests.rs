@@ -2,7 +2,7 @@
 
 use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 
-use super::{
+use crate::{
     AutoIndent, CommandOutcome, EditContext, EditingState, Operator, RegisterShape, RegisterValue,
     Registers, Selection, Viewport, WindowState,
 };

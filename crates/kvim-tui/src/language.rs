@@ -1208,3 +1208,7 @@ impl LanguageState {
         self.format_on_save.insert(buffer, state);
     }
 }
+
+#[cfg(test)]
+#[path = "language_tests.rs"]
+mod tests;

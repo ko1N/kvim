@@ -1077,3 +1077,7 @@ impl EditorDrain {
         drain_published(&mut editor)
     }
 }
+
+#[cfg(test)]
+#[path = "embed_tests.rs"]
+mod tests;

@@ -86,15 +86,6 @@ mod sidebar;
 mod which_key;
 mod window;
 
-#[cfg(test)]
-mod composer_tests;
-#[cfg(test)]
-mod sidebar_tests;
-#[cfg(test)]
-mod which_key_tests;
-#[cfg(test)]
-mod window_tests;
-
 pub use composer::{
     COMPOSED_SURFACES_MAX, Composition, CompositionEffect, CompositionLayout, OverlayPlacement,
     ResumeError, SurfacePlacement, TransitionId, UnknownSurface, WorkspaceComposer,

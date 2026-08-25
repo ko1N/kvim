@@ -14,6 +14,13 @@
 //!
 //! [`Resolver`] reads that one registry for dispatch and for which-key hints,
 //! so no presentation layer holds a second table. The crate renders nothing.
+//! `crates/kvim-keymap/examples/dispatch_keys.rs` is the dedicated example of
+//! that whole path, and it needs no terminal and no renderer:
+//!
+//! ```sh
+//! cargo run -p kvim-keymap --example dispatch_keys
+//! ```
+//!
 //! `crates/kvim-ui/examples/which_key.rs` builds a registry, feeds it a pending
 //! key, derives the hints of that prefix, and renders them:
 //!

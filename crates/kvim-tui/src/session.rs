@@ -5939,3 +5939,7 @@ const HOVER_TITLE: &str = " Hover ";
 
 /// The title band of the diagnostic float.
 const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
+
+#[cfg(test)]
+#[path = "session_tests.rs"]
+mod tests;

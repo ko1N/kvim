@@ -99,19 +99,7 @@ mod tree;
 mod window;
 
 #[cfg(test)]
-mod embed_tests;
-#[cfg(test)]
-mod language_tests;
-#[cfg(test)]
-mod picker_tests;
-#[cfg(test)]
-mod render_tests;
-#[cfg(test)]
-mod session_tests;
-#[cfg(test)]
 mod tests;
-#[cfg(test)]
-mod tree_tests;
 
 pub use clipboard::ClipboardAccess;
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};

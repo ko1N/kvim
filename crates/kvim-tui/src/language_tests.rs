@@ -30,12 +30,12 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 
-use super::language::{
+use crate::language::{
     FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, Float, LanguageRequestKind, send_request,
 };
-use super::markup::{FloatLine, FloatStyle};
-use super::overlay::float_lines;
-use super::session::{MessageLevel, Redraw, Session, test_root};
+use crate::markup::{FloatLine, FloatStyle};
+use crate::overlay::float_lines;
+use crate::session::{MessageLevel, Redraw, Session, test_root};
 
 /// The elapsed time of every transition. The session reads no clock.
 const NOW: Duration = Duration::ZERO;

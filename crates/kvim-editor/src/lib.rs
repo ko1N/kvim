@@ -68,8 +68,6 @@ mod viewport;
 mod window;
 
 #[cfg(test)]
-mod edit_tests;
-#[cfg(test)]
 mod tests;
 
 pub use cursor::{ColumnLimit, Cursor, PreferredColumn};

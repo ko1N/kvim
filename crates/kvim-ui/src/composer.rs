@@ -1047,3 +1047,7 @@ const fn side_index(side: SidebarSide) -> usize {
         SidebarSide::Right => 1,
     }
 }
+
+#[cfg(test)]
+#[path = "composer_tests.rs"]
+mod tests;

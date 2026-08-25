@@ -522,3 +522,7 @@ fn fill(target: &mut Buffer, area: Rect, symbol: &str) {
 fn text_cells(text: &str) -> usize {
     text.chars().map(|value| value.width().unwrap_or(1)).sum()
 }
+
+#[cfg(test)]
+#[path = "which_key_tests.rs"]
+mod tests;

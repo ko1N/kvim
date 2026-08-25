@@ -25,14 +25,15 @@ use kvim_runtime::{
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{
-    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusRead, GitStatusRequest,
-    TREE_PENDING_READS_MAX, TakenDestination, temp::TempDir,
+    EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusRead, GitStatusRequest, LinkKind,
+    Notice, RowContent, TREE_PENDING_READS_MAX, TakenDestination, TransferMode, TreeRow,
+    temp::TempDir,
 };
 
-use super::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
-use super::theme::{Theme, ThemeRole};
-use super::tree::{
-    GENERATED_NAMES, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
+use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
+use crate::theme::{Theme, ThemeRole};
+use crate::tree::{
+    GENERATED_NAMES, RowState, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
 };
 
 const NOW: Duration = Duration::ZERO;
@@ -1135,7 +1136,7 @@ fn a_workspace_failure_keeps_the_tree_usable() {
     let _request = session
         .take_workspace_request()
         .expect("the refresh queues one read");
-    let _ = session.abandon_workspace_request(super::session::FileRequestFailure::Timeout);
+    let _ = session.abandon_workspace_request(crate::session::FileRequestFailure::Timeout);
 
     assert_eq!(sidebar_rows(&session), before);
     assert_eq!(
@@ -2659,4 +2660,84 @@ fn a_created_file_reaches_the_editor_through_the_workspace_watcher() {
         ),
         "the burst names the directory that changed"
     );
+}
+
+/// Returns one notice row of the workspace root.
+fn notice_row(notice: Notice) -> TreeRow {
+    TreeRow {
+        path: PathBuf::from("/workspace"),
+        depth: 0,
+        content: RowContent::Notice(notice),
+        matched: None,
+    }
+}
+
+#[test]
+fn a_truncated_listing_never_reads_like_a_count_of_hidden_entries() {
+    // A truncated listing keeps entries out that the reader expects, so it
+    // warns. A hidden count reports a choice of the reader instead. The
+    // entry bound of the tree is far above a practical test workspace, so
+    // the row builder answers this question directly.
+    let truncated = RowState::of(
+        &notice_row(Notice::Truncated {
+            shown: 8192,
+            total: 9000,
+        }),
+        None,
+        None,
+    );
+    let counted = RowState::of(&notice_row(Notice::Hidden { count: 5 }), None, None);
+    assert_eq!(truncated.role(), ThemeRole::TreeIncomplete);
+    assert_eq!(counted.role(), ThemeRole::TreeNotice);
+    assert_eq!(
+        RowState::of(&notice_row(Notice::Unreadable), None, None).role(),
+        ThemeRole::TreeIncomplete,
+        "a failed read warns like a truncated one"
+    );
+}
+
+/// Returns one file row of the workspace root.
+fn file_row(name: &str) -> TreeRow {
+    TreeRow {
+        path: PathBuf::from("/workspace").join(name),
+        depth: 0,
+        content: RowContent::File {
+            name: name.to_owned(),
+            link: LinkKind::Direct,
+        },
+        matched: None,
+    }
+}
+
+#[test]
+fn an_ignored_entry_dims_like_one_generated_name() {
+    // The fixed generated list and the Git ignore rules must not disagree
+    // about one row, so both reach the same state. See `docs/git.md`.
+    let ignored = RowState::of(&file_row("kvim.log"), None, Some(GitStatus::Ignored));
+    let generated = RowState::of(&file_row("node_modules"), None, None);
+    assert_eq!(ignored, generated);
+    assert_eq!(ignored.role(), ThemeRole::TreeMuted);
+}
+
+#[test]
+fn a_notice_row_never_borrows_the_state_of_its_directory() {
+    let row = notice_row(Notice::Hidden { count: 5 });
+    assert!(!row.is_selectable());
+    assert_eq!(
+        RowState::of(&row, None, Some(GitStatus::Ignored)).role(),
+        ThemeRole::TreeNotice
+    );
+}
+
+#[test]
+fn a_held_entry_keeps_its_pending_operation_over_the_git_state() {
+    // The pending file operation is the report that the reader waits for,
+    // so it wins over the recorded state of the repository.
+    let held = RowState::of(
+        &file_row("main.rs"),
+        Some(TransferMode::Copy),
+        Some(GitStatus::Modified),
+    );
+    assert_eq!(held, RowState::Held(TransferMode::Copy));
+    assert_eq!(held.suffix(), " (copied)");
 }

@@ -57,6 +57,30 @@ pub struct SyntaxError {
 }
 
 /// The complete result of one highlight request.
+///
+/// The value answers three questions at once: which ranges carry which
+/// meaning, where the grammar could not read the fragment, and whether a bound
+/// stopped the walk before its end. A short result is therefore never silent.
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "grammar-rust")] {
+/// use kvim_syntax::{HighlightLimits, NeverCancelled, SyntaxHighlighter, Truncation};
+///
+/// let entry = kvim_syntax::language("rust").expect("the feature bundles Rust");
+/// let highlighted = SyntaxHighlighter::new()
+///     .highlight(entry, "fn main() {}\n", &HighlightLimits::default(), &NeverCancelled)
+///     .expect("the fragment stays inside every bound");
+///
+/// assert!(!highlighted.spans().is_empty());
+/// assert!(highlighted.errors().is_empty(), "the grammar read the whole fragment");
+/// assert_eq!(highlighted.truncation(), Truncation::Complete);
+///
+/// let first = highlighted.spans()[0];
+/// assert!(first.start_byte < first.end_byte, "a span covers at least one byte");
+/// # }
+/// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct Highlighted {
     spans: Vec<HighlightSpan>,

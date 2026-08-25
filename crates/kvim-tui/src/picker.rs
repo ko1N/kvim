@@ -583,3 +583,7 @@ fn render_preview(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
         );
     }
 }
+
+#[cfg(test)]
+#[path = "picker_tests.rs"]
+mod tests;

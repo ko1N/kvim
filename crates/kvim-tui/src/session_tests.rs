@@ -23,11 +23,11 @@ use kvim_workspace::{
     PickerRequest, PickerResult, WorkspaceResult, rank_candidates,
 };
 
-use super::clipboard::SessionClipboard;
-use super::completion::{CompletionOutcome, LineCompletion};
-use super::language::{LanguageRequest, LanguageRequestKind};
-use super::log::LOG_ENTRIES_MAX;
-use super::session::{
+use crate::clipboard::SessionClipboard;
+use crate::completion::{CompletionOutcome, LineCompletion};
+use crate::language::{LanguageRequest, LanguageRequestKind};
+use crate::log::LOG_ENTRIES_MAX;
+use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
     Redraw, RunState, Session, test_root,
 };

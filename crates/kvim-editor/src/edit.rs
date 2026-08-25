@@ -1070,3 +1070,7 @@ fn char_range(buffer: &TextBuffer, start: usize, end: usize) -> CharRange {
     let end = position(buffer, end.max(start.get()));
     CharRange::new(start, end).expect("the clamp keeps the start before the end")
 }
+
+#[cfg(test)]
+#[path = "edit_tests.rs"]
+mod tests;

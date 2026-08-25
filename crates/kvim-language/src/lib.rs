@@ -159,8 +159,6 @@ mod zig;
 #[cfg(any(test, feature = "test-support"))]
 pub mod mock;
 #[cfg(test)]
-mod session_tests;
-#[cfg(test)]
 mod tests;
 
 #[cfg(feature = "grammar-asm")]

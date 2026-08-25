@@ -1489,3 +1489,7 @@ pub(crate) const fn axis_extent(orientation: Orientation, area: Rect) -> u16 {
         Orientation::Horizontal => area.height,
     }
 }
+
+#[cfg(test)]
+#[path = "window_tests.rs"]
+mod tests;
