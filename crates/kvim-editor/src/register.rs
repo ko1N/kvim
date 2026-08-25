@@ -1,8 +1,9 @@
-//! The unnamed register and the shape that a paste follows.
+//! The registers and the shape that a paste follows.
 //!
 //! The `editor` module owns every register value. The `clipboard` module mirrors
-//! the unnamed register into the system clipboard. A clipboard failure never
-//! removes the value that this module holds. See `docs/clipboard.md`.
+//! the unnamed register into the system clipboard, and it never sees a named
+//! register. A clipboard failure never removes the value that this module
+//! holds. See `docs/clipboard.md`.
 
 use std::collections::BTreeMap;
 

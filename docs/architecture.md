@@ -378,6 +378,23 @@ model. `kvim-core` runs no other dependency except `thiserror`.
   - Future consideration: move to `ropey` 2.0 after that line reaches a stable
     release. Confirm the character-index API before the move.
 
+### Grapheme Clusters
+
+This dependency runs inside `kvim-editor`, because the cursor rule of
+[`text-model.md`](text-model.md) needs a segmentation table that `kvim-core`
+does not hold.
+
+- `unicode-segmentation` 1.12
+  - Replaces: a local Unicode grapheme cluster break table and the boundary
+    walk over it.
+  - May run: in `kvim-editor` only, over one line at a time. `kvim-core` reports
+    whether a line holds ASCII characters alone, and an ASCII line needs no
+    segmentation, so the walk runs on other text alone.
+  - Cost: compile time and the break table. One walk reads one line, which the
+    file settings bound, so a step and a delete stay bounded.
+  - Version reason: the 1.x line implements the current Unicode text
+    segmentation annex and carries no further dependency.
+
 ### The Worker Service
 
 These dependencies run only on the bounded worker service.
