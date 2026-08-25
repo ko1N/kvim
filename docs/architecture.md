@@ -41,7 +41,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
-| `kvim-ui` | Generic ratatui split, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
+| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -233,16 +233,29 @@ and the section count. A host supplies the row identities and the meaning. It
 writes no indent rule, no collapse rule, and no motion rule of its own.
 [`windows.md`](windows.md) owns these rules.
 
-`kvim-keymap` publishes two which-key lists and one registry helper.
+`kvim-keymap` publishes three which-key lists and one registry helper.
 `Resolver::which_key` returns one `WhichKeyView`, and `WhichKeyView::hints`
 reports the hints of every scope that extends the pending prefix. Each hint
-names its own scope. `Resolver::idle_which_key` lists the top-level bindings
-of every scope of one context, with no pending prefix, so a host-global escape
-stays discoverable.
+names its own scope. `WhichKeyView::interruptions` reports the complete one-key
+bindings of every scope that precedes the scope owning that prefix, so an
+overlay names the keys that abandon the sequence beside the keys that continue
+it. `Resolver::idle_which_key` lists the top-level bindings of every scope of
+one context, with no pending prefix, so a host-global escape stays
+discoverable.
 `Registry::all_bindings` yields every `(scope, KeySequence, BoundCommand)`
 triple of one registry, so a host takes kvim's preset without walking the
 scopes itself. [`input-actions.md`](input-actions.md) owns the resolution
 order, and [`embedding.md`](embedding.md) owns the host recipe.
+
+`kvim-keymap` also publishes `Dispatch::Interrupted`, and `kvim-ui` carries it
+to a host as `Composition::Interrupted`. A complete binding of a preceding
+scope cancels a pending key sequence and runs, so a host-global escape leaves a
+focused surface at any moment. The outcome names the owner and the command. The
+resolver drops its key prefix alone, so the host resets the named surface
+before it runs the command. Every consumer matches the enum, so a host that
+ignores the outcome does not compile.
+[`input-actions.md`](input-actions.md) owns the rule, and
+[`embedding.md`](embedding.md) owns the host contract.
 
 The embedded facade in `kvim-tui` publishes one file sidebar over the worktree
 root of one editor. `EmbeddedEditor::file_rows`, `file_root_label`, and
@@ -286,10 +299,11 @@ patch release must not intentionally break a documented public facade.
 
 Every surface that this section names is such a facade. This includes the
 selector, the tree and section mechanics of the sidebar, the indent guide
-rule, the two which-key lists, `Registry::all_bindings`, and the embedded file
-sidebar. Each surface carries rustdoc, one owning document, and the dedicated
-example of its feature. `crates/kvim/tests/repository_policy.rs` proves that
-last link, so the same rule governs all of them.
+rule, the three which-key lists, `Registry::all_bindings`, the interrupted
+dispatch outcome, the adaptive split rule with `AdaptiveSplit`, and the
+embedded file sidebar. Each surface carries rustdoc, one owning document, and
+the dedicated example of its feature. `crates/kvim/tests/repository_policy.rs`
+proves that last link, so the same rule governs all of them.
 
 Continuous integration checks minimal features, each required feature, default
 features, and all valid feature combinations. This matrix is exact:

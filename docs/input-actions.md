@@ -376,6 +376,12 @@ dispatch outcome names the interruption, so the owner of that state resets it
 before it runs the command. The semantic reducer of the editor does this itself.
 See [Reset Rules](#reset-rules).
 
+The standalone editor reaches no interruption. It is its own host, so its
+context declares no host-global scope. Its only overlay scope is the picker
+table, above a prompt focus, and the prompt table binds one key at a time. No
+prompt key therefore arms a pending prefix, so no scope ever precedes the owner
+of one. An interruption is a host path alone.
+
 The which-key hints of a pending prefix span the same scope order. Each hint
 names its scope. Every hinted key resolves to some scope's binding. Two scopes
 can hint the same key with different commands. The earlier scope in the order

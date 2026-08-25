@@ -25,7 +25,9 @@
 //!
 //! `crates/kvim-keymap/examples/dispatch_keys.rs` is the dedicated example of
 //! this feature. It composes one registry, dispatches a one-key binding and a
-//! two-key sequence, and reads the hints of the pending prefix.
+//! two-key sequence, and reads the hints of the pending prefix. It then runs
+//! the same registry through a context that names a host-global scope, and
+//! there a host-global key cancels the pending editor sequence and runs.
 
 use std::borrow::Cow;
 use std::sync::Arc;

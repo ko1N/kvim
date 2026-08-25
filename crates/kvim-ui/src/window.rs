@@ -10,7 +10,7 @@
 //! disagree. No other code computes a window rectangle.
 //!
 //! `examples/split_windows.rs` splits one host area between caller-owned
-//! surfaces and prints the resulting layout.
+//! surfaces, reads the adaptive split rule, and prints the resulting layout.
 
 use std::num::NonZeroU16;
 

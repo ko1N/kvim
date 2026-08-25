@@ -14,9 +14,15 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
 use kvim_ui::{
-    ChildSide, Direction, LayoutFit, Orientation, RegionKind, SidebarSide, WindowId, WindowLimits,
-    WindowTree,
+    AdaptiveSplit, ChildSide, Direction, LayoutFit, Orientation, RegionKind, SidebarSide, WindowId,
+    WindowLimits, WindowTree,
 };
+
+/// The width-to-height threshold that the adaptive split rule compares.
+///
+/// A host owns this value. `kvim-ui` reads no settings, so the rule takes it as
+/// an argument. Kvim's own default is 2.5.
+const ADAPTIVE_RATIO: f32 = 2.5;
 
 /// The identity of one host surface.
 ///
@@ -60,6 +66,14 @@ fn main() {
     // One window shows the first surface. The limits keep every window usable.
     let mut tree = WindowTree::new(surfaces[0].id, HOST_AREA, WindowLimits::default());
 
+    // A host that binds kvim's adaptive split key asks the tree which
+    // orientation the current shape selects. A tree with one window always
+    // selects a vertical split, because a full-width area would otherwise
+    // divide into two short windows.
+    let adaptive = tree.adaptive_orientation(AdaptiveSplit::Normal, ADAPTIVE_RATIO);
+    println!("adaptive orientation with one window: {adaptive:?}");
+    assert_eq!(adaptive, Orientation::Vertical);
+
     // A vertical split opens the new window on the right and focuses it.
     let right = tree
         .split(Orientation::Vertical, ChildSide::Second)
@@ -78,6 +92,14 @@ fn main() {
     let sidebar = tree
         .open_sidebar(SidebarSide::Left, 14)
         .expect("the tree can issue one more identity");
+
+    // Beyond one window the rule compares the focused rectangle against the
+    // ratio. The inverse sense mirrors the answer.
+    println!(
+        "adaptive orientation beyond one window: {:?}, inverse {:?}",
+        tree.adaptive_orientation(AdaptiveSplit::Normal, ADAPTIVE_RATIO),
+        tree.adaptive_orientation(AdaptiveSplit::Inverse, ADAPTIVE_RATIO)
+    );
 
     println!("focus: {:?}", tree.focused_region());
     println!("fit:   {:?}", tree.layout().fit());

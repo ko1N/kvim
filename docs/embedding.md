@@ -130,6 +130,15 @@ surface that owns input, so the host rebuilds no context of its own. The call
 takes no elapsed time and changes no state, because the which-key delay and the
 overlay state govern `WorkspaceComposer::which_key` alone.
 
+A pending prefix answers two lists, and the host draws them apart.
+`WhichKeyView::hints` names the keys that continue the sequence.
+`WhichKeyView::interruptions` names the keys of the preceding scopes that
+abandon it. `WorkspaceComposer::which_key` returns that same view, so a host
+reaches both lists from the one resolver that resolves its keys. Never draw an
+idle hint among the extensions of a pending prefix. Read the interruption list
+there instead, because every key of that list runs at that moment.
+See [`input-actions.md`](input-actions.md).
+
 Bound the idle list before you draw it. It can approach
 `kvim_ui::WHICH_KEY_HINTS_MAX`, which is 256 and refuses a longer hint list
 instead of cutting it. Kvim's own preset holds 81 distinct first keys in Normal
