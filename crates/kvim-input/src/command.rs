@@ -129,6 +129,19 @@ semantic_commands! {
     PromptCompleteNext => ("prompt-complete-next", "Write the next completion candidate"),
     PromptCompletePrevious => ("prompt-complete-previous", "Write the previous completion candidate"),
 
+    // The review of one captured diff.
+    OpenReview => ("open-review", "Show the changes of the worktree"),
+    CloseReview => ("close-review", "Leave the review and restore the layout"),
+    ToggleReviewView => ("toggle-review-view", "Switch between the two-column and the inline view"),
+    NextHunk => ("next-hunk", "Move to the next hunk"),
+    PreviousHunk => ("previous-hunk", "Move to the previous hunk"),
+    NextUnreadHunk => ("next-unread-hunk", "Move to the next hunk that stays unread"),
+    PreviousUnreadHunk => ("previous-unread-hunk", "Move to the previous hunk that stays unread"),
+    NextChangedFile => ("next-changed-file", "Move to the first hunk of the next changed file"),
+    PreviousChangedFile => ("previous-changed-file", "Move to the first hunk of the previous changed file"),
+    MarkHunkRead => ("mark-hunk-read", "Mark the hunk at the cursor as read"),
+    OpenHunkFile => ("open-hunk-file", "Open the file of the hunk at its line"),
+
     // Operators, registers, and repeat.
     SelectRegister => ("select-register", "Select the register of the next operation"),
     DeleteOverMotion => ("delete-over-motion", "Delete over a motion"),
@@ -317,7 +330,18 @@ impl Command {
             | Self::TreeRename
             | Self::TreePasteEntries => CommandAuthority::Workspace,
 
-            Self::EnterVisual
+            Self::OpenReview
+            | Self::CloseReview
+            | Self::ToggleReviewView
+            | Self::NextHunk
+            | Self::PreviousHunk
+            | Self::NextUnreadHunk
+            | Self::PreviousUnreadHunk
+            | Self::NextChangedFile
+            | Self::PreviousChangedFile
+            | Self::MarkHunkRead
+            | Self::OpenHunkFile
+            | Self::EnterVisual
             | Self::EnterVisualLine
             | Self::EnterVisualBlock
             | Self::OpenCommandLine
@@ -457,6 +481,8 @@ pub enum CommandGroup {
     Buffer,
     /// A command that acts on the file tree.
     Tree,
+    /// The review of one captured diff.
+    Review,
     /// Every other command, such as a motion, a text change, or a mode switch.
     #[default]
     Other,
@@ -547,6 +573,18 @@ impl Command {
             | Self::TreePasteEntries
             | Self::TreeToggleHidden
             | Self::TreeSearch => CommandGroup::Tree,
+
+            Self::OpenReview
+            | Self::CloseReview
+            | Self::ToggleReviewView
+            | Self::NextHunk
+            | Self::PreviousHunk
+            | Self::NextUnreadHunk
+            | Self::PreviousUnreadHunk
+            | Self::NextChangedFile
+            | Self::PreviousChangedFile
+            | Self::MarkHunkRead
+            | Self::OpenHunkFile => CommandGroup::Review,
 
             Self::CountDigitOne
             | Self::CountDigitTwo

@@ -26,7 +26,7 @@
 //! The session reads no clock. The event loop measures the elapsed time and
 //! passes it in, which keeps every transition deterministic and testable.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::mem;
 use std::num::NonZeroU8;
 use std::num::NonZeroU16;
@@ -65,16 +65,18 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, TerminalEvent};
 use kvim_ui::{Direction, RegionKind, SidebarSide, WindowId};
 use kvim_workspace::{
-    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, EntryKind, ExternalChange, FileBuffer,
-    FileOperation, FileRequest, FileResult, FileTarget, FileTree, GitStatusFailure, GitStatusRead,
-    GitStatusRequest, MutationError, MutationOutcome, OpenError, OpenRequest, OpenedFile,
-    Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest, PickerResult, PickerSlot,
-    RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer,
-    SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination,
-    TransferMode, WorkspaceRequest, WorkspaceResult, render_content,
+    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget, EntryKind,
+    ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult, FileTarget, FileTree,
+    GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError, MutationOutcome, OpenError,
+    OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest,
+    PickerResult, PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget,
+    ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer,
+    TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult,
+    WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest, render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
+use super::changes::ChangeSection;
 use super::chrome::shell_areas;
 use super::clipboard::{ClipboardAccess, ClipboardStep, SessionClipboard, register_value};
 use super::completion::{
@@ -96,6 +98,7 @@ use super::language::{
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
+use super::review::{ReviewOutcome, ReviewSurface};
 use super::theme::Theme;
 use super::tree::{
     GitPublication, TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
@@ -825,6 +828,8 @@ pub(super) struct Visible<'a> {
     pub(super) tree: &'a TreeSidebar,
     /// The open picker, which covers every other region.
     pub(super) picker: Option<&'a PickerState>,
+    /// The open review, which draws the body instead of the window tree.
+    pub(super) review: Option<&'a ReviewSurface>,
     /// Every loaded buffer, because each window shows its own buffer.
     pub(super) buffers: &'a Buffers,
     /// The buffer that the editing state and the active search belong to.
@@ -1055,6 +1060,17 @@ pub struct Session {
     /// The picker owns its own prompt, so it lives exactly as long as that
     /// prompt. See `docs/files.md`.
     picker: Option<PickerState>,
+    /// The review of one captured diff.
+    ///
+    /// The value survives a close, so a reader that jumps into a file and
+    /// returns keeps every read mark and the cursor. See `docs/diff-view.md`.
+    review: Option<ReviewSurface>,
+    /// Reports whether the review owns the frame and the keys.
+    review_open: bool,
+    /// The diff captures that the bounded process service must run.
+    diff_outbox: VecDeque<(ChangeSection, WorktreeDiffRequest)>,
+    /// Reports whether the editor already named a refused diff capture.
+    diff_reported: bool,
     /// Reports whether the editor already named the missing `rg` command.
     ///
     /// A missing command is a normal state, so the editor reports it once and
@@ -1181,6 +1197,10 @@ impl Session {
             tree: TreeSidebar::new(Arc::clone(&root)),
             tree_region: None,
             picker: None,
+            review: None,
+            review_open: false,
+            diff_outbox: VecDeque::new(),
+            diff_reported: false,
             ripgrep_reported: false,
             git_reported: false,
             watch_reported: false,
@@ -1908,6 +1928,7 @@ impl Session {
             windows: &self.windows,
             tree: &self.tree,
             picker: self.picker.as_ref(),
+            review: self.review.as_ref().filter(|_| self.review_open),
             buffers: &self.buffers,
             active: self.active,
             analysis: &self.analysis,
@@ -2007,6 +2028,14 @@ impl Session {
         // they do for one resolved key. See `docs/input-actions.md`.
         if let Some(redraw) = self.route_to_open_line(command) {
             return redraw;
+        }
+        // The open review owns every key while it stays open, so a review key
+        // never reaches a buffer. See `docs/diff-view.md`.
+        if self.review_open {
+            return self.apply_review_command(command);
+        }
+        if command == Command::OpenReview {
+            return self.open_review();
         }
         let cleared = self.clear_message();
         // An open picker owns every key, so a picker key never reaches the
@@ -2693,7 +2722,9 @@ impl Session {
 
     /// Returns the scope that owns the keys while no prompt is open.
     fn input_scope(&self) -> BindingScope {
-        if self.picker.is_some() {
+        if self.review_open {
+            BindingScope::Review
+        } else if self.picker.is_some() {
             BindingScope::Picker
         } else if self.sidebar_has_focus() {
             BindingScope::Sidebar
@@ -4406,6 +4437,128 @@ impl Session {
         self.tree.take_request()
     }
 
+    /// Opens the review of the two halves of the worktree.
+    ///
+    /// The session captures both halves through the bounded process service, so
+    /// the review opens at once and fills as the captures resolve. A review
+    /// that a reader closed earlier keeps its read marks, and the captures
+    /// reload into it. See `docs/diff-view.md`.
+    fn open_review(&mut self) -> Redraw {
+        self.review_open = true;
+        self.request_diff_captures();
+        self.sync_context();
+        Redraw::Needed
+    }
+
+    /// Leaves the review and gives the frame back to the window tree.
+    ///
+    /// The window tree, every viewport, and every buffer stay exactly as they
+    /// were, because the review drew over them and changed none of them. The
+    /// surface itself survives, so a later review keeps the read marks.
+    fn close_review(&mut self) -> Redraw {
+        self.review_open = false;
+        self.sync_context();
+        Redraw::Needed
+    }
+
+    /// Queues the two captures that the review shows.
+    fn request_diff_captures(&mut self) {
+        let root = Arc::clone(&self.root);
+        for (section, comparison) in [
+            (ChangeSection::Staged, DiffComparison::HeadToIndex),
+            (ChangeSection::Unstaged, DiffComparison::IndexToWorktree),
+        ] {
+            self.diff_outbox.push_back((
+                section,
+                WorktreeDiffRequest::new(Arc::clone(&root), comparison, DiffTarget::Worktree),
+            ));
+        }
+    }
+
+    /// Applies one review command to the open review.
+    fn apply_review_command(&mut self, command: Command) -> Redraw {
+        let Some(review) = self.review.as_mut() else {
+            // The captures have not resolved yet, so the review holds nothing
+            // to walk. Leaving it still works, because the session owns that.
+            return if command == Command::CloseReview {
+                self.close_review()
+            } else {
+                Redraw::Skipped
+            };
+        };
+        match review.apply(command) {
+            ReviewOutcome::Unchanged | ReviewOutcome::Unhandled => Redraw::Skipped,
+            ReviewOutcome::Changed => Redraw::Needed,
+            ReviewOutcome::Close => self.close_review(),
+            ReviewOutcome::OpenFile { path, line } => {
+                let closed = self.close_review();
+                // The jump records itself, so `Ctrl-O` returns to where the
+                // reader stood before the review opened the file.
+                self.record_jump();
+                // The review names a one-based line and the document position
+                // counts from zero.
+                let position = DocumentPosition::new(line.saturating_sub(1), 0);
+                let target = self.root.as_path().join(path.as_path());
+                self.open_at(target, PendingPosition::Document(position))
+                    .or(closed)
+            }
+        }
+    }
+
+    /// Takes the diff capture that the bounded process service must run.
+    ///
+    /// The session never runs `git` itself, so every capture leaves the session
+    /// as a request and returns as one candidate. See `docs/git.md`.
+    pub(super) fn take_diff_request(&mut self) -> Option<(ChangeSection, WorktreeDiffRequest)> {
+        self.diff_outbox.pop_front()
+    }
+
+    /// Applies one finished diff capture as one state transition.
+    ///
+    /// One capture takes more than one command, so a step that needs a further
+    /// command returns to the outbox instead of publishing. A refused capture
+    /// reaches the message line once and leaves a usable editor.
+    #[must_use]
+    pub(super) fn apply_diff_result(
+        &mut self,
+        section: ChangeSection,
+        result: Result<WorktreeDiffRead, WorktreeDiffFailure>,
+    ) -> Redraw {
+        let failure = match result {
+            Ok(WorktreeDiffRead::Pending(request)) => {
+                self.diff_outbox.push_back((section, *request));
+                return Redraw::Skipped;
+            }
+            Ok(WorktreeDiffRead::Published(candidate)) => {
+                match self.review.as_mut() {
+                    Some(review) => review.reload(section, *candidate),
+                    None => {
+                        let (staged, unstaged) = match section {
+                            ChangeSection::Staged => (Some(*candidate), None),
+                            ChangeSection::Unstaged => (None, Some(*candidate)),
+                        };
+                        self.review = Some(ReviewSurface::new(
+                            staged,
+                            unstaged,
+                            self.settings.diff,
+                            self.area.height,
+                        ));
+                    }
+                }
+                return Redraw::Needed;
+            }
+            Err(failure) => failure,
+        };
+        // A repository without a commit publishes no staged half, which is a
+        // normal state and not a failure of the review.
+        if failure != WorktreeDiffFailure::BaseUnavailable && !self.diff_reported {
+            self.diff_reported = true;
+            self.set_message(DIFF_UNAVAILABLE_NOTE, MessageLevel::Warning);
+            return Redraw::Needed;
+        }
+        Redraw::Skipped
+    }
+
     /// Takes the Git status read that the bounded process service must run.
     ///
     /// The session never runs `git` itself, so the command leaves the session
@@ -5947,6 +6100,10 @@ const NEWEST_JUMP_NOTE: &str = "the jump list holds no newer position";
 const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 
 /// The message that a missing `git` command shows once for each session.
+/// The message that a refused diff capture writes once.
+const DIFF_UNAVAILABLE_NOTE: &str =
+    "the changes are unavailable: git refused the read of this worktree";
+
 const GIT_MISSING_NOTE: &str =
     "the `git` command is not available; the file tree shows no repository state";
 

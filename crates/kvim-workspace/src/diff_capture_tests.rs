@@ -601,3 +601,45 @@ fn publishes_one_commit_against_another_and_ignores_the_worktree() {
     assert_eq!(new_bytes(&diff, "notes.txt"), b"one\ntwo\n");
     assert_eq!(diff.old_side(), DiffOldSide::Commit(revision(&base)));
 }
+
+#[test]
+fn the_staged_half_resolves_its_own_head() {
+    // The neogit screen compares `HEAD` against the index, and Git resolves
+    // `HEAD` itself, so the caller names no revision.
+    let repository = TempRepository::new("diff-head-to-index");
+    repository.file("notes.txt", "one\n");
+    repository.commit("base");
+    let head = repository.head();
+
+    repository.file("notes.txt", "one\nstaged\n");
+    repository.git(&["add", "notes.txt"]);
+    repository.file("notes.txt", "one\nstaged\nunstaged\n");
+
+    let diff = capture_comparison(
+        repository.path(),
+        DiffComparison::HeadToIndex,
+        DiffTarget::Worktree,
+    )
+    .expect("the fixture holds one commit");
+
+    assert_eq!(new_bytes(&diff, "notes.txt"), b"one\nstaged\n");
+    assert_eq!(diff.old_side(), DiffOldSide::Commit(revision(&head)));
+}
+
+#[test]
+fn a_repository_without_a_commit_publishes_no_staged_half() {
+    // An unborn `HEAD` names no commit, so the staged half has nothing to
+    // compare against and answers the typed outcome instead of guessing.
+    let repository = TempRepository::new("diff-head-unborn");
+    repository.file("notes.txt", "one\n");
+    repository.git(&["add", "notes.txt"]);
+
+    let failure = capture_comparison(
+        repository.path(),
+        DiffComparison::HeadToIndex,
+        DiffTarget::Worktree,
+    )
+    .expect_err("an unborn head compares against no commit");
+
+    assert_eq!(failure, WorktreeDiffFailure::BaseUnavailable);
+}

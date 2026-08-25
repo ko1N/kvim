@@ -112,3 +112,44 @@ reach.
 
 A heading takes no selection. Selecting a file row moves the review cursor to
 the first hunk of that file.
+
+## Entering, Leaving, And Moving
+
+`<leader>gg` opens the review, which is the sequence that the reference Git
+interface uses, so the key that a reader already knows opens this one.
+
+The review draws over the window tree. It changes no window, no viewport, and no
+buffer, so leaving it restores the layout by drawing that tree again. Nothing is
+saved, because nothing is replaced.
+
+The review surface survives a close. A reader who jumps into a file and opens the
+review again keeps every read mark and the cursor, and the new captures reload
+into the surface instead of replacing it.
+
+| Key | What |
+|---|---|
+| `q`, `Esc`, `Ctrl-C` | Leave the review |
+| `s` | Switch the two views |
+| `j`, `k` | The next and the previous hunk |
+| `n`, `N` | The next and the previous unread hunk |
+| `]`, `[` | The first hunk of the next and the previous changed file |
+| `m` | Mark the hunk at the cursor as read |
+| `Enter` | Open the file of the hunk at its first line |
+
+The review owns every key while it stays open, so a buffer key reaches no
+buffer. A key that the review does not bind reaches nothing.
+
+`Enter` leaves the review, records a jump, and opens the file, so `Ctrl-O`
+returns to where the reader stood before. The review cursor names one hunk, so
+the jump reaches the first line of that hunk. A hunk that publishes no new line,
+such as a complete removal, names its old side instead.
+
+## The Captures Of One Review
+
+The review captures both halves through the bounded process service, so it opens
+at once and fills as the captures resolve. The session runs no `git` command
+itself.
+
+A repository without a commit publishes no staged half, which is a normal state
+and not a failure: `HEAD` names no commit to compare the index against. A
+refused capture reaches the message line once and leaves a usable editor.

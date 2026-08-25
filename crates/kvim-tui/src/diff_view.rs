@@ -9,19 +9,6 @@
 //! The module is pure. It builds the drawable rows and paints them into cells.
 //! It reads no clock, no filesystem, and no process.
 
-// The session installs the review surface in a later change of this plan. The
-// expectation fails as soon as one caller arrives, so it removes itself instead
-// of hiding a value that nothing needs.
-// The tests of this module already reach every value, so the expectation
-// belongs to the build that holds no test.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the review surface reaches these values when the session installs it"
-    )
-)]
-
 use kvim_settings::{DiffSettings, DiffView};
 use kvim_workspace::{AlignedRow, DiffLine, DiffLineText, DiffSide, Hunk, align_hunk};
 

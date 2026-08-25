@@ -291,6 +291,12 @@ impl Icon {
                 glyph: "\u{f07b}",
                 role: IconRole::CommandTree,
             },
+            // A source-control branch names the review, which reads one
+            // captured diff of the repository.
+            CommandGroup::Review => Self {
+                glyph: "\u{e725}",
+                role: IconRole::CommandReview,
+            },
             CommandGroup::Other => Self {
                 glyph: "\u{f11c}",
                 role: IconRole::CommandOther,

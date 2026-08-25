@@ -468,6 +468,10 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
             ),
             ("e".to_owned(), "Show the diagnostic float".to_owned()),
             ("f".to_owned(), "+3 commands".to_owned()),
+            (
+                "g".to_owned(),
+                "Show the changes of the worktree".to_owned()
+            ),
             ("k".to_owned(), "Show hover information".to_owned()),
             ("o".to_owned(), "Open the buffer picker".to_owned()),
             ("q".to_owned(), "Close the focused window".to_owned()),

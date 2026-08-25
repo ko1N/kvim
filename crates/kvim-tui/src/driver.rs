@@ -35,9 +35,10 @@ use kvim_runtime::{
 };
 use kvim_workspace::{
     BUFFERS_MAX, FileResult, GitStatusFailure, GitStatusRead, PickerResult, PickerSlot,
-    WorkspaceResult,
+    WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead,
 };
 
+use super::changes::ChangeSection;
 use super::clipboard::{command_failure, refused_submission};
 use super::embed::EditorInstanceId;
 use super::language::{LANGUAGE_OUTBOX_MAX, Refusal, send_request};
@@ -474,6 +475,13 @@ const COMPLETION_SLOT: RequestSlot = RequestSlot::new(9);
 /// one runs, so one slot holds every host report. See `docs/architecture.md`.
 const DIAGNOSTICS_SLOT: RequestSlot = RequestSlot::new(10);
 
+/// The publication slot of one diff capture of the review.
+///
+/// The review captures one half at a time, so a newer capture cancels the one
+/// that it replaces and the gate rejects the obsolete candidate. See
+/// `docs/git.md`.
+const DIFF_SLOT: RequestSlot = RequestSlot::new(11);
+
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -527,6 +535,8 @@ enum WorkResult {
     Clipboard(ProcessOutput),
     /// One Git status read of the workspace finished.
     Git(Result<GitStatusRead, GitStatusFailure>),
+    /// One diff capture of one review section finished.
+    Diff(ChangeSection, Result<WorktreeDiffRead, WorktreeDiffFailure>),
     /// One run of the external formatter of one buffer finished.
     Format(Result<Option<FormattedDocument>, FormatterFailure>),
     /// One host probe finished and produced the report as plain text.
@@ -544,6 +554,7 @@ impl WorkResult {
             Self::Completion(_) => "completion",
             Self::Clipboard(_) => "clipboard",
             Self::Git(_) => "git",
+            Self::Diff(..) => "diff",
             Self::Format(_) => "format",
             Self::HostReport(_) => "host report",
         }
@@ -695,6 +706,7 @@ fn submit_background_work(
         .or(submit_completion_work(editor, spawner, gate))
         .or(submit_clipboard_work(editor, spawner, gate))
         .or(submit_git_work(editor, spawner, gate))
+        .or(submit_diff_work(editor, spawner, gate))
         .or(submit_format_work(editor, spawner, gate))
         .or(submit_host_work(editor, spawner, gate))
 }
@@ -744,6 +756,30 @@ fn submit_git_work(
     });
     if submitted.is_err() {
         return editor.apply_git_result(Err(GitStatusFailure::Unavailable));
+    }
+    Redraw::Skipped
+}
+
+/// Hands the queued diff capture to the bounded process service.
+///
+/// The review never runs `git` itself, so every capture leaves the session as a
+/// request. A refused submission returns as a typed failure, which leaves the
+/// review usable and the editor unchanged. See `docs/git.md`.
+fn submit_diff_work(
+    editor: &mut Session,
+    spawner: &Runtime<EditorWork>,
+    gate: &PublicationGate,
+) -> Redraw {
+    let Some((section, request)) = editor.take_diff_request() else {
+        return Redraw::Skipped;
+    };
+    let handle = gate.begin(DIFF_SLOT, &spawner.cancellation_root());
+    let command = request.command();
+    let submitted = spawner.submit_process(handle, command, move |output| {
+        EditorWork(WorkResult::Diff(section, request.publish(&output)))
+    });
+    if submitted.is_err() {
+        return editor.apply_diff_result(section, Err(WorktreeDiffFailure::Unavailable));
     }
     Redraw::Skipped
 }
@@ -1110,6 +1146,9 @@ fn complete(
             editor.apply_clipboard_result(Ok(output))
         }
         (_, Ok(EditorWork(WorkResult::Git(result)))) => editor.apply_git_result(result),
+        (_, Ok(EditorWork(WorkResult::Diff(section, result)))) => {
+            editor.apply_diff_result(section, result)
+        }
         (_, Ok(EditorWork(WorkResult::Format(result)))) => editor.apply_format_result(result),
         (_, Ok(EditorWork(WorkResult::HostReport(report)))) => editor.apply_host_report(&report),
         (Some(slot), Err(error)) => editor.abandon_picker_request(slot, picker_failure(&error)),

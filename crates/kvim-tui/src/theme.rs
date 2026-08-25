@@ -128,6 +128,8 @@ pub enum IconRole {
     CommandBuffer,
     /// A command that acts on the file tree.
     CommandTree,
+    /// The icon of one review command.
+    CommandReview,
     /// Every other command.
     CommandOther,
 }
@@ -450,6 +452,7 @@ const fn icon_color(role: IconRole) -> Color {
         IconRole::CommandWindow => INFO,
         IconRole::CommandBuffer => TEXT,
         IconRole::CommandTree => TITLE,
+        IconRole::CommandReview => ACCENT_WARM,
         IconRole::CommandOther => HINT,
     }
 }

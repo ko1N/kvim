@@ -6,17 +6,6 @@
 //!
 //! The module is pure. It reads no clock, no filesystem, and no process.
 
-// The session installs the review surface in a later change of this plan. The
-// tests of this module already reach every value, so the expectation belongs to
-// the build that holds no test.
-#![cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "the review surface reaches these values when the session installs it"
-    )
-)]
-
 use std::num::NonZeroU16;
 
 use kvim_path::WorktreeRelativePath;

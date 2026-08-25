@@ -592,8 +592,14 @@ impl DiffChange {
 pub enum DiffComparison {
     /// One commit against the worktree. Every change, staged or not.
     CommitToWorktree(BaseRevision),
-    /// One commit against the index. The staged half of one review.
+    /// One commit against the index. The staged half against a chosen base.
     CommitToIndex(BaseRevision),
+    /// The current `HEAD` against the index. The staged half of one review.
+    ///
+    /// Git resolves `HEAD` itself, so the caller names no revision. A
+    /// repository without a commit has no `HEAD` to compare against, and the
+    /// capture answers `BaseUnavailable`.
+    HeadToIndex,
     /// The index against the worktree. The unstaged half of one review.
     IndexToWorktree,
     /// One commit against another commit.
@@ -619,7 +625,7 @@ impl DiffComparison {
             Self::CommitToWorktree(base)
             | Self::CommitToIndex(base)
             | Self::CommitToCommit { old: base, .. } => Some(base),
-            Self::IndexToWorktree => None,
+            Self::HeadToIndex | Self::IndexToWorktree => None,
         }
     }
 
@@ -628,7 +634,10 @@ impl DiffComparison {
     pub const fn new_commit(self) -> Option<BaseRevision> {
         match self {
             Self::CommitToCommit { new, .. } => Some(new),
-            Self::CommitToWorktree(_) | Self::CommitToIndex(_) | Self::IndexToWorktree => None,
+            Self::CommitToWorktree(_)
+            | Self::CommitToIndex(_)
+            | Self::HeadToIndex
+            | Self::IndexToWorktree => None,
         }
     }
 

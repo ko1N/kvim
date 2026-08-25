@@ -145,13 +145,18 @@ pub enum BindingScope {
     /// The scope holds no binding. The next printable key names the register,
     /// and every other key cancels the selection.
     RegisterSelection,
+    /// The open review of one captured diff owns the keys.
+    ///
+    /// The review reads no text and edits nothing, so it holds its own small
+    /// table of navigation and view keys. See `docs/diff-view.md`.
+    Review,
 }
 
 /// The number of binding scopes.
 ///
 /// The inherent constant and the [`Scope`] constant both read this value, so
 /// the two counts cannot drift apart.
-const SCOPE_COUNT: usize = Mode::COUNT + 6;
+const SCOPE_COUNT: usize = Mode::COUNT + 7;
 
 impl BindingScope {
     /// The number of scopes. The mapping registry holds one table for each.
@@ -170,6 +175,7 @@ impl BindingScope {
         Self::Prompt,
         Self::Confirmation,
         Self::RegisterSelection,
+        Self::Review,
     ];
 
     /// Returns the registry table index of the scope.
@@ -186,6 +192,7 @@ impl BindingScope {
             Self::Prompt => Mode::COUNT + 3,
             Self::Confirmation => Mode::COUNT + 4,
             Self::RegisterSelection => Mode::COUNT + 5,
+            Self::Review => Mode::COUNT + 6,
         }
     }
 
@@ -239,7 +246,7 @@ impl BindingScope {
             | Self::Prompt
             | Self::Confirmation
             | Self::RegisterSelection => TextFallback::Typed(CommandOwner::Surface),
-            Self::Mode(_) | Self::Sidebar | Self::Picker | Self::OperatorPending => {
+            Self::Mode(_) | Self::Sidebar | Self::Picker | Self::OperatorPending | Self::Review => {
                 TextFallback::None
             }
         }
@@ -256,6 +263,9 @@ impl BindingScope {
             // The sidebar moves with the buffer navigation keys, so `5j` and
             // `12G` name a row count and a row there as well.
             Self::Sidebar => true,
+            // The review walks hunks and files, and a count before a walk names
+            // how many to pass, exactly as it does for a motion.
+            Self::Review => true,
             // Each of these scopes reads text, so a digit is part of that text.
             Self::Picker | Self::Prompt | Self::Confirmation | Self::RegisterSelection => false,
         }
@@ -272,6 +282,7 @@ impl BindingScope {
             Self::Prompt => "Prompt",
             Self::Confirmation => "Confirmation",
             Self::RegisterSelection => "Register Selection",
+            Self::Review => "Review",
         }
     }
 
@@ -288,6 +299,7 @@ impl BindingScope {
             Self::Mode(mode) => InputContext::Mode(mode),
             Self::Sidebar => InputContext::Sidebar,
             Self::Picker => InputContext::Picker,
+            Self::Review => InputContext::Review,
             Self::OperatorPending | Self::Prompt | Self::Confirmation | Self::RegisterSelection => {
                 InputContext::NORMAL
             }
@@ -406,6 +418,8 @@ pub enum InputContext {
     Sidebar,
     /// One open picker owns input.
     Picker,
+    /// The open review of one captured diff owns input.
+    Review,
     /// One line prompt owns input.
     Prompt {
         /// The prompt that reads the line.
@@ -437,6 +451,7 @@ impl InputContext {
             Self::Mode(mode) => BindingScope::Mode(mode),
             Self::Sidebar => BindingScope::Sidebar,
             Self::Picker => BindingScope::Picker,
+            Self::Review => BindingScope::Review,
             Self::Prompt { return_to, .. } | Self::Confirmation { return_to } => return_to,
         }
     }
@@ -460,6 +475,7 @@ impl InputContext {
             Self::Mode(mode) => BindingScope::Mode(mode),
             Self::Sidebar => BindingScope::Sidebar,
             Self::Picker => BindingScope::Picker,
+            Self::Review => BindingScope::Review,
             Self::Prompt { .. } => BindingScope::Prompt,
             Self::Confirmation { .. } => BindingScope::Confirmation,
         }
@@ -471,7 +487,11 @@ impl InputContext {
     #[inline]
     pub const fn prompt(self) -> Option<PromptKind> {
         match self {
-            Self::Mode(_) | Self::Sidebar | Self::Picker | Self::Confirmation { .. } => None,
+            Self::Mode(_)
+            | Self::Sidebar
+            | Self::Picker
+            | Self::Review
+            | Self::Confirmation { .. } => None,
             Self::Prompt { kind, .. } => Some(kind),
         }
     }

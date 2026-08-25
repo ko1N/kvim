@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
-use kvim_input::{CommandLineCommand, Mode};
+use kvim_input::{BindingScope, CommandLineCommand, Mode};
 use kvim_language::LspError;
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
@@ -3973,4 +3973,51 @@ fn the_black_hole_register_keeps_the_yanked_value() {
     // The yanked line survived the delete, so `p` pastes it again.
     type_keys(&mut session, "p");
     assert_eq!(session.buffer().to_string(), "beta\nalpha\n");
+}
+
+#[test]
+fn the_review_owns_the_keys_and_gives_the_layout_back_unchanged() {
+    let mut session = session(80, 24);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+    press_code(&mut session, KeyCode::Esc);
+
+    let before = session.buffer().to_string();
+    let scope = session.input_context().scope;
+
+    // `<leader>gg` opens the review, which then owns every key.
+    type_keys(&mut session, " gg");
+    assert_eq!(session.input_context().scope, BindingScope::Review);
+
+    // A buffer key reaches no buffer while the review stays open.
+    type_keys(&mut session, "dd");
+    assert_eq!(session.buffer().to_string(), before);
+
+    // `q` leaves the review and the editor is exactly as it was.
+    press(&mut session, 'q');
+    assert_eq!(session.input_context().scope, scope);
+    assert_eq!(session.buffer().to_string(), before);
+
+    // The buffer answers keys again.
+    type_keys(&mut session, "dd");
+    assert_ne!(session.buffer().to_string(), before);
+}
+
+#[test]
+fn the_review_asks_for_both_halves_of_the_worktree() {
+    let mut session = session(80, 24);
+    type_keys(&mut session, " gg");
+
+    // The session runs no `git` itself, so both captures leave it as requests.
+    let first = session
+        .take_diff_request()
+        .expect("the review asks for the staged half");
+    let second = session
+        .take_diff_request()
+        .expect("the review asks for the unstaged half");
+    assert_ne!(first.0, second.0, "the two requests name two sections");
+    assert!(
+        session.take_diff_request().is_none(),
+        "the review asks for two halves and no more"
+    );
 }

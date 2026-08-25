@@ -618,6 +618,17 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::OpenRipgrepPicker,
     );
 
+    // The review of one captured diff. The reference configuration opens its
+    // Git interface on the same sequence, so the key that a reader already
+    // knows opens this one.
+    add(
+        table,
+        NORMAL,
+        &[leader(), ch('g'), ch('g')],
+        Command::OpenReview,
+    );
+    add_review_bindings(table);
+
     // Windows.
     add(table, NORMAL, &[ctrl('h')], Command::FocusWindowLeft);
     add(table, NORMAL, &[ctrl('j')], Command::FocusWindowDown);
@@ -738,6 +749,50 @@ fn add_count_and_register_bindings(table: &mut Vec<Binding>) {
         ],
         &[ch('"')],
         Command::SelectRegister,
+    );
+}
+
+/// Adds the keys that the open review owns.
+///
+/// The review reads no text and changes no buffer, so its table holds
+/// navigation and view keys alone. The walk keys repeat the buffer motions, so
+/// a reader moves through hunks with the keys that already move through lines.
+/// See `docs/diff-view.md`.
+fn add_review_bindings(table: &mut Vec<Binding>) {
+    const REVIEW: &[BindingScope] = &[BindingScope::Review];
+
+    // Leaving the review restores the layout that it replaced.
+    add_scoped(table, REVIEW, &[ch('q')], Command::CloseReview);
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::Esc)],
+        Command::CloseReview,
+    );
+    add_scoped(table, REVIEW, &[ctrl('c')], Command::CloseReview);
+
+    // One key switches the two views, because a reader compares them often.
+    add_scoped(table, REVIEW, &[ch('s')], Command::ToggleReviewView);
+
+    // The hunk walk repeats the buffer motions, and the file walk takes the
+    // bracket pair that every editor uses for a larger step.
+    add_scoped(table, REVIEW, &[ch('j')], Command::NextHunk);
+    add_scoped(table, REVIEW, &[ch('k')], Command::PreviousHunk);
+    add_scoped(table, REVIEW, &[ch('n')], Command::NextUnreadHunk);
+    add_scoped(table, REVIEW, &[ch('N')], Command::PreviousUnreadHunk);
+    add_scoped(table, REVIEW, &[ch(']')], Command::NextChangedFile);
+    add_scoped(table, REVIEW, &[ch('[')], Command::PreviousChangedFile);
+
+    // Marking a hunk read is the one state that a review records.
+    add_scoped(table, REVIEW, &[ch('m')], Command::MarkHunkRead);
+
+    // The jump into the file is what makes a review a working surface instead
+    // of a report, so it takes the key that opens everything else.
+    add_scoped(
+        table,
+        REVIEW,
+        &[Key::plain(KeyCode::Enter)],
+        Command::OpenHunkFile,
     );
 }
 

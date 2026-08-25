@@ -743,6 +743,13 @@ the unnamed register, `_` discards every write, and an upper-case name appends t
 its lower-case register. [`clipboard.md`](clipboard.md) records which registers
 the system clipboard sees.
 
+### The Review
+
+`<leader>gg` opens the review of the changes of the worktree. The review owns
+every key while it stays open, and it binds no key that changes a buffer.
+[`diff-view.md`](diff-view.md) owns the table of its keys and the rules of its
+two views.
+
 ### Text Objects
 
 A text object names a range around the cursor without moving it first. An

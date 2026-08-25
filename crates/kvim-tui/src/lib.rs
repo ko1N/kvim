@@ -95,6 +95,7 @@ mod notify;
 mod overlay;
 mod picker;
 mod render;
+mod review;
 mod session;
 mod theme;
 mod tree;

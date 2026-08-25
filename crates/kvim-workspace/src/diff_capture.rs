@@ -657,9 +657,18 @@ impl WorktreeDiffRequest {
         let authority = CandidateAuthority::new(head, index);
         // The index holds the old lines of the unstaged half, and the index is
         // no commit, so the candidate names the digest that the pass read.
-        let old_side = match self.comparison.old_commit() {
-            Some(commit) => DiffOldSide::Commit(commit),
-            None => DiffOldSide::Index(index),
+        let old_side = match self.comparison {
+            DiffComparison::IndexToWorktree => DiffOldSide::Index(index),
+            // The staged half compares against `HEAD`, which the authority read
+            // of this pass already named. A repository without a commit has no
+            // `HEAD` to compare against.
+            DiffComparison::HeadToIndex => match head {
+                HeadAuthority::Commit(commit) => DiffOldSide::Commit(commit),
+                HeadAuthority::Unborn => return Err(WorktreeDiffFailure::BaseUnavailable),
+            },
+            DiffComparison::CommitToWorktree(commit)
+            | DiffComparison::CommitToIndex(commit)
+            | DiffComparison::CommitToCommit { old: commit, .. } => DiffOldSide::Commit(commit),
         };
         let candidate =
             WorktreeDiff::new(old_side, self.target.clone(), &authority, files, truncation)
@@ -734,6 +743,8 @@ fn extend_comparison<'a>(
             arguments.push(CACHED_ARGUMENT);
             arguments.push(old);
         }
+        // Git resolves `HEAD` itself, so the read names no revision.
+        DiffComparison::HeadToIndex => arguments.push(CACHED_ARGUMENT),
         DiffComparison::IndexToWorktree => {}
         DiffComparison::CommitToCommit { .. } => {
             arguments.push(old);
