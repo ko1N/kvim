@@ -116,8 +116,18 @@ an applied transaction cannot split a character.
 
 A combining mark keeps its own character position. `core` validates character
 boundaries only, because a grapheme cluster boundary needs a segmentation table
-that `core` does not hold. The `editor` module owns grapheme-aware cursor
-movement when a later release needs it.
+that `core` does not hold. The `editor` module owns that table.
+
+Every cursor column stands on a grapheme cluster boundary of its line. The
+`Cursor` constructors hold the rule, and every motion, every clamp, and every
+operator range reaches one of them, so no cursor stands between a letter and its
+combining mark. One horizontal step passes one whole cluster, and one backward
+delete removes one whole cluster.
+
+The rule bounds its own cost. `core` reports whether one line holds ASCII
+characters only, and an ASCII line needs no segmentation, because every ASCII
+character is its own cluster. A line that holds other characters is segmented,
+and the file settings bound one buffer, so they bound that work.
 
 kvim detects the line ending of the loaded file. It records that line ending
 with the buffer. It writes the same line ending on save. A file with mixed line

@@ -58,6 +58,12 @@ blake3 = "1.5"
 # Text storage
 ropey = "1.6"
 
+# Text segmentation
+#
+# The editor charter owns grapheme cluster boundaries, because `core` holds no
+# segmentation table. See `docs/text-model.md`.
+unicode-segmentation = "1.12"
+
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = { version = "1.0", features = ["raw_value"] }

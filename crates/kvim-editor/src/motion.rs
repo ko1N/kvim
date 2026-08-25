@@ -7,6 +7,7 @@
 use kvim_core::{CharPosition, LineIndex, TextBuffer};
 
 use super::cursor::{ColumnLimit, Cursor, PreferredColumn};
+use super::grapheme;
 use super::text_object::{CharReader, Delimiter, DelimiterShape, scan_backward, scan_forward};
 
 /// The character class that the word motions compare.
@@ -55,24 +56,29 @@ impl CharClass {
 }
 
 /// Moves the cursor left, and stops at the first column of the line.
+///
+/// The count names grapheme clusters, so one step passes a letter and every
+/// combining mark that belongs to it.
 pub(super) fn move_left(
     buffer: &TextBuffer,
     cursor: Cursor,
     limit: ColumnLimit,
     count: usize,
 ) -> Cursor {
-    let column = cursor.column().get().saturating_sub(count);
+    let column = grapheme::column_left(buffer, cursor.line(), cursor.column().get(), count);
     Cursor::clamped(buffer, cursor.line().get(), column, limit)
 }
 
 /// Moves the cursor right, and stops at the last column of the line.
+///
+/// The count names grapheme clusters, exactly as [`move_left`] does.
 pub(super) fn move_right(
     buffer: &TextBuffer,
     cursor: Cursor,
     limit: ColumnLimit,
     count: usize,
 ) -> Cursor {
-    let column = cursor.column().get().saturating_add(count);
+    let column = grapheme::column_right(buffer, cursor.line(), cursor.column().get(), count);
     Cursor::clamped(buffer, cursor.line().get(), column, limit)
 }
 

@@ -579,6 +579,22 @@ fn a_backward_delete_removes_one_character_and_joins_lines_at_column_zero() {
 }
 
 #[test]
+fn a_backward_delete_removes_one_whole_grapheme_cluster() {
+    // `e` and a combining acute are two characters and one cluster, so one
+    // backward delete removes both and never leaves the mark alone.
+    let mut session = Session::new("ae\u{301}b\n");
+    place(&mut session, 0, 3);
+    session.enter_insert();
+    assert_eq!(session.delete_backward(), CommandOutcome::Changed);
+    assert_eq!(session.text(), "ab\n");
+    assert_eq!(session.position(), (0, 1));
+
+    // One undo reverses the whole cluster.
+    session.apply(Command::Undo, None);
+    assert_eq!(session.text(), "ae\u{301}b\n");
+}
+
+#[test]
 fn a_backward_delete_at_column_zero_removes_a_complete_crlf_ending() {
     let mut session = Session::new("alpha\r\nbeta\r\n");
     assert_eq!(session.buffer.line_ending(), LineEnding::Crlf);

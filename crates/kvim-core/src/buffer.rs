@@ -521,6 +521,32 @@ impl TextBuffer {
         self.line_slice(line).len_chars()
     }
 
+    /// Reports whether one line holds ASCII characters only.
+    ///
+    /// A caller that segments the line into grapheme clusters uses this as a
+    /// fast path, because every ASCII character is its own cluster. The check
+    /// reads the stored chunks and allocates nothing, unlike
+    /// [`TextBuffer::line_text`]. `core` holds no segmentation table, so the
+    /// segmentation itself belongs to the caller. See `docs/text-model.md`.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_core::TextBuffer;
+    /// use kvim_settings::FileSettings;
+    ///
+    /// let buffer = TextBuffer::from_text("one\ntw\u{f6}\n", &FileSettings::default())
+    ///     .expect("the text is small");
+    /// let first = buffer.line_index(0).expect("the first line exists");
+    /// let second = buffer.line_index(1).expect("the second line exists");
+    /// assert!(buffer.line_is_ascii(first));
+    /// assert!(!buffer.line_is_ascii(second));
+    /// ```
+    #[must_use]
+    pub fn line_is_ascii(&self, line: LineIndex) -> bool {
+        self.line_slice(line).chunks().all(str::is_ascii)
+    }
+
     /// Applies one transaction as one state change and records it for undo.
     ///
     /// # Errors

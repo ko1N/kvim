@@ -7,6 +7,8 @@
 use kvim_core::{CharPosition, LineIndex, SourceColumn, TextBuffer};
 use kvim_input::Mode;
 
+use super::grapheme;
+
 /// The last column that the cursor may hold on one line.
 ///
 /// Normal mode and the three Visual modes keep the cursor on a character. Insert
@@ -153,6 +155,11 @@ impl Cursor {
     ///
     /// Vertical motions keep their preferred column, so a run of short lines does
     /// not shorten it.
+    ///
+    /// The column also moves back to the start of its grapheme cluster, so no
+    /// cursor stands between a letter and its combining mark. Every constructor
+    /// of this type reaches this one, so the rule holds for every motion, every
+    /// clamp, and every operator range. See `docs/text-model.md`.
     #[must_use]
     pub fn clamped_with_preferred(
         buffer: &TextBuffer,
@@ -167,8 +174,9 @@ impl Cursor {
             .line_index(line.min(line_count - 1))
             .expect("the clamp keeps the line index inside the buffer");
         let last_column = limit.last_column(buffer.line_len_chars(line));
+        let clamped = grapheme::snapped_column(buffer, line, column.min(last_column));
         let column = buffer
-            .source_column(line, column.min(last_column))
+            .source_column(line, clamped)
             .expect("the clamp keeps the column inside the line");
         Self {
             line,

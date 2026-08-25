@@ -447,6 +447,52 @@ fn a_count_before_the_last_non_blank_motion_names_a_later_line() {
     assert_eq!(position(&view), (3, 4));
 }
 
+#[test]
+fn a_horizontal_motion_passes_one_whole_grapheme_cluster() {
+    // `e` and a combining acute are two characters and one cluster. Every step
+    // below therefore lands on a cluster start, and never on the mark alone.
+    let mut text = buffer("ae\u{301}b\n");
+    let mut state = EditingState::new();
+    let mut view = window(6, 20);
+
+    apply(&mut text, &mut state, &mut view, Command::MoveRight, None);
+    assert_eq!(position(&view), (0, 1));
+    apply(&mut text, &mut state, &mut view, Command::MoveRight, None);
+    assert_eq!(position(&view), (0, 3));
+    apply(&mut text, &mut state, &mut view, Command::MoveLeft, None);
+    assert_eq!(position(&view), (0, 1));
+
+    // A count names clusters, so two steps reach the last cluster.
+    apply(
+        &mut text,
+        &mut state,
+        &mut view,
+        Command::MoveFirstColumn,
+        None,
+    );
+    apply(
+        &mut text,
+        &mut state,
+        &mut view,
+        Command::MoveRight,
+        count(2),
+    );
+    assert_eq!(position(&view), (0, 3));
+
+    // The line end holds a cluster start, not the mark of the last cluster.
+    let mut marked = buffer("ae\u{301}\n");
+    let mut state = EditingState::new();
+    let mut view = window(6, 20);
+    apply(
+        &mut marked,
+        &mut state,
+        &mut view,
+        Command::MoveLineEnd,
+        None,
+    );
+    assert_eq!(position(&view), (0, 1));
+}
+
 /// Moves the cursor to one line and one column with plain motions.
 fn place(
     text: &mut TextBuffer,

@@ -57,6 +57,7 @@
 
 mod cursor;
 mod edit;
+mod grapheme;
 mod motion;
 mod operator;
 mod register;

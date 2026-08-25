@@ -13,3 +13,6 @@ kvim-settings.workspace = true
 
 # Basics
 thiserror.workspace = true
+
+# Text segmentation
+unicode-segmentation.workspace = true

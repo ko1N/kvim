@@ -17,6 +17,7 @@ use kvim_core::{
 use kvim_input::Command;
 
 use super::cursor::{ColumnLimit, Cursor};
+use super::grapheme;
 use super::motion;
 use super::register::{RegisterShape, RegisterValue};
 use super::selection::Selection;
@@ -461,7 +462,16 @@ pub(super) fn plan_delete_backward(buffer: &TextBuffer, cursor: Cursor) -> EditP
     let at = cursor.position(buffer);
     let line = cursor.line();
     let range = if cursor.column().get() > 0 {
-        char_range(buffer, at.get() - 1, at.get())
+        // The delete takes one grapheme cluster, so a combining mark leaves the
+        // buffer together with the letter that carries it.
+        let start = grapheme::column_left(buffer, line, cursor.column().get(), 1);
+        let start = buffer.column_to_char(
+            line,
+            buffer
+                .source_column(line, start)
+                .expect("a cluster boundary of the line is a column of the line"),
+        );
+        char_range(buffer, start.get(), at.get())
     } else if line.get() > 0 {
         // The line ending is two characters in a CRLF buffer, so the range
         // starts at the content end of the previous line instead of one
