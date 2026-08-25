@@ -8,18 +8,25 @@
 //! including the default build, which bundles no grammar at all.
 
 use std::fmt;
+use std::num::NonZeroU16;
 use std::sync::Arc;
 use std::time::Duration;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use kvim_core::TextBuffer;
+use kvim_editor::{
+    EditContext, EditingState, RegisterValue, Registers, Viewport, WindowState,
+};
+use kvim_input::{Command, Registry as InputRegistry, Resolution, Resolver as InputResolver};
 use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
     Registry, Resolver, Scope,
 };
 use kvim_lsp::{DiagnosticsLimits, DocumentRevision, ManagerLimits, WaitPolicy};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+use kvim_settings::{EditorSettings, FileSettings, InputSettings};
 use kvim_syntax::{HighlightLimits, NeverCancelled, SyntaxHighlighter};
 use kvim_tui::{EditorAccess, EditorCapacity, EditorEvent};
 use kvim_ui::{ChildSide, Orientation, WindowLimits, WindowTree};
@@ -89,6 +96,8 @@ fn main() {
     check_path();
     check_syntax();
     check_keymap();
+    check_input();
+    check_editor();
     check_ui();
     check_lsp();
     check_embedded_editor();
@@ -144,6 +153,68 @@ fn check_keymap() {
     let pending = resolver.dispatch(&context, Input::Key(leader), None);
     assert_eq!(pending, Dispatch::Pending, "the leader opens a sequence");
     println!("the leader key answers {pending:?}");
+}
+
+/// Reads one resolved command, count, and register name from the preset.
+///
+/// A host that resolves keys itself takes all three from `Resolution::Command`
+/// and hands them to the editor. A dropped register name would send every
+/// operation to the unnamed register.
+fn check_input() {
+    let mut resolver = InputResolver::new(InputRegistry::first_release(), InputSettings::default());
+    let quote = Key::plain(KeyCode::Char('"'));
+    let name = Key::plain(KeyCode::Char('a'));
+    let yank = Key::plain(KeyCode::Char('y'));
+    // `"` opens the selection and `a` names the register. The operator key that
+    // follows carries that name into the completed operation.
+    let _ = resolver.resolve(quote, Duration::ZERO);
+    let _ = resolver.resolve(name, Duration::ZERO);
+    match resolver.resolve(yank, Duration::ZERO) {
+        Resolution::Command {
+            command,
+            count,
+            register,
+        } => {
+            assert_eq!(command, Command::YankOverMotion, "`y` starts the operator");
+            assert_eq!(register, Some('a'), "the resolver keeps the register name");
+            println!("the keys answer {command} with count {count:?} and register {register:?}");
+        }
+        other => panic!("`\"ay` completes one command, not {other:?}"),
+    }
+}
+
+/// Applies one qualified operation to one buffer.
+///
+/// The editor needs no terminal and no clock, so a host can put a real Vim
+/// buffer behind its own text field.
+fn check_editor() {
+    let settings = EditorSettings::default();
+    let mut buffer = TextBuffer::from_text("alpha\nbeta\n", &FileSettings::default())
+        .expect("the text is small");
+    let mut registers = Registers::default();
+    let mut context = EditContext {
+        buffer: &mut buffer,
+        settings: &settings,
+        search: None,
+        language_indent_width: None,
+        registers: &mut registers,
+        applied: Vec::new(),
+    };
+
+    let rows = NonZeroU16::new(HOST_AREA.height).expect("the host area holds rows");
+    let cells = NonZeroU16::new(HOST_AREA.width).expect("the host area holds cells");
+    let mut window = WindowState::new(Viewport::new(rows, cells));
+    let mut state = EditingState::new();
+
+    // `"ayy` yanks the first line into the register `a`.
+    state.apply_with_register(&mut context, &mut window, Command::YankOverMotion, None, Some('a'));
+    state.apply(&mut context, &mut window, Command::YankOverMotion, None);
+    let stored = context
+        .registers
+        .value(Some('a'))
+        .map(RegisterValue::text)
+        .expect("the yank wrote the register");
+    println!("the register a holds {stored:?}");
 }
 
 /// Splits one host area between two caller-owned surfaces.

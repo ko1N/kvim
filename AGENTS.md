@@ -4,7 +4,7 @@
 
 - This repository is the standalone kvim terminal editor.
 - The project uses one Cargo workspace. Every module charter is one library crate under `crates/`: `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-syntax`, `kvim-terminal`, `kvim-tui`, `kvim-ui`, and `kvim-workspace`. The `crates/kvim` binary crate produces the `kvim` executable.
-- The supported external packages are `kvim-path`, `kvim-syntax`, `kvim-lsp`, `kvim-keymap`, `kvim-ui`, and the embedded facade in `kvim-tui`. `docs/architecture.md` owns the public feature matrix and the stability policy.
+- The supported external packages are `kvim-path`, `kvim-core`, `kvim-settings`, `kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`, `kvim-lsp`, `kvim-ui`, and the embedded facade in `kvim-tui`. `docs/architecture.md` owns the public feature matrix and the stability policy.
 - `fixtures/consumer` compiles the public crates as an outside repository would. The workspace `exclude` key keeps it out of the workspace.
 - `kvim-syntax`, `kvim-language`, and `kvim-tui` enable no grammar by default. Test them with `--features all-grammars` or `--all-features`.
 - The crate boundaries make the one-way dependency direction a compile error. `docs/architecture.md` owns the layer table.

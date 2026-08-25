@@ -16,9 +16,13 @@ version = "0.1.0"
 
 [dependencies]
 # kvim public packages
+kvim-core = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
+kvim-editor = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
+kvim-input = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-keymap = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-lsp = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-path = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
+kvim-settings = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-syntax = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-tui = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-ui = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }

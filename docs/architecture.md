@@ -178,8 +178,20 @@ owns its meaning. A reverse dependency is a Cargo cycle, so it fails the build.
 
 ## External Consumption
 
-The supported external packages are `kvim-path`, `kvim-syntax`, `kvim-lsp`,
-`kvim-keymap`, `kvim-ui`, and the embedded facade in `kvim-tui`.
+The supported external packages are `kvim-path`, `kvim-core`, `kvim-settings`,
+`kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`, `kvim-lsp`,
+`kvim-ui`, and the embedded facade in `kvim-tui`.
+
+`kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
+so its action list is public. A consumer that resolves keys itself reads the
+resolved command, count, and register name from it. `kvim-editor` publishes the
+modal editing state over one `TextBuffer`, so a consumer can put a real Vim
+buffer behind its own text field without the terminal session.
+
+`kvim-core` and `kvim-settings` are the vocabulary of those signatures.
+`TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and
+`EditorSettings` all appear in a public parameter or return value, so a consumer
+cannot use the editor or the embedded facade without naming both packages.
 
 Each public crate supports a revision-pinned Cargo Git dependency from another
 repository. It requires no shared parent workspace. Every normal dependency of
