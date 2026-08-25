@@ -28,7 +28,8 @@ use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
 use kvim_ui::{
-    RowKind, SidebarCanvas, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState,
+    RowKind, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_INDENT_CELLS, SidebarCanvas, SidebarEvent,
+    SidebarInput, SidebarMotion, SidebarRow, SidebarState, sidebar_guides,
 };
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
@@ -40,9 +41,6 @@ use kvim_workspace::{
 use super::buffer_view::WindowFocus;
 use super::icons::{ICON_CELLS, directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
-
-/// The number of cells that one tree level indents.
-pub(super) const TREE_INDENT_CELLS: usize = 2;
 
 /// The number of rows that the sidebar title occupies.
 pub(super) const TREE_TITLE_ROWS: u16 = 1;
@@ -66,15 +64,6 @@ pub(super) const MARK_CELLS: usize = 1;
 
 /// The mark of the selected row, at the left edge of the sidebar.
 pub(super) const SELECTION_MARK: &str = "▌";
-
-/// The indent guide of one level that holds a further entry below the row.
-pub(super) const GUIDE_TRUNK: &str = "│ ";
-
-/// The indent guide that closes the last child of one level.
-pub(super) const GUIDE_ELBOW: &str = "└ ";
-
-/// The indent guide of one level that holds no further entry.
-pub(super) const GUIDE_BLANK: &str = "  ";
 
 /// The suffix of one symbolic link.
 const LINK_SUFFIX: &str = "@";
@@ -850,7 +839,14 @@ impl TreeSidebar {
                 } else {
                     RowKind::Inert
                 };
-                SidebarRow::single(index, kind)
+                // `FileTree` withholds a collapsed directory's children from
+                // `tree.rows()` itself, so this row list already holds the
+                // visible rows alone. The sidebar's own collapsed flag stays
+                // unset here on purpose: calling `with_collapsed` would hide a
+                // row that `FileTree` never emitted, so it changes nothing,
+                // and one owner of the truth stays enough. See
+                // `docs/windows.md`.
+                SidebarRow::single(index, kind).with_depth(row.depth)
             })
             .collect();
         if let Err(error) = self.view.set_rows(rows) {
@@ -1018,50 +1014,6 @@ pub(super) fn root_label(root: &Path, home: Option<&Path>) -> String {
     }
 }
 
-/// Reports whether one further row of `depth` follows the row at `index`.
-///
-/// The scan stops at the first shallower row, which closes the level, so the
-/// answer covers the siblings of one directory alone.
-fn level_continues(rows: &[TreeRow], index: usize, depth: usize) -> bool {
-    rows.get(index.saturating_add(1)..)
-        .unwrap_or_default()
-        .iter()
-        .take_while(|row| row.depth >= depth)
-        .any(|row| row.depth == depth)
-}
-
-/// Returns the indent guides of one visible row.
-///
-/// One level that holds a further entry below the row draws a trunk, and the
-/// last child of a level closes it with an elbow. Every guide is one
-/// box-drawing character of one terminal cell, so a level always costs
-/// [`TREE_INDENT_CELLS`] cells.
-fn row_guides(rows: &[TreeRow], index: usize) -> String {
-    let Some(depth) = rows.get(index).map(|row| row.depth) else {
-        debug_assert!(
-            false,
-            "the renderer only reads the rows that the tree holds"
-        );
-        return String::new();
-    };
-    let mut guides = String::with_capacity(depth.saturating_add(1) * TREE_INDENT_CELLS);
-    for level in 0..=depth {
-        // The entries of the workspace root need no guide. The header row above
-        // them is no sibling, so no guide would ever close.
-        let segment = if level == 0 {
-            GUIDE_BLANK
-        } else if level_continues(rows, index, level) {
-            GUIDE_TRUNK
-        } else if level == depth {
-            GUIDE_ELBOW
-        } else {
-            GUIDE_BLANK
-        };
-        guides.push_str(segment);
-    }
-    guides
-}
-
 /// Returns the two cells that sit between the guides and the name.
 ///
 /// The cells hold the icon of the entry. Without a patched font the expansion
@@ -1172,7 +1124,16 @@ pub(super) fn render_tree(
         // The selection covers the complete row, so the reader finds it at any
         // indent depth.
         canvas.fill(style);
-        let guides = row_guides(rows, placement.index());
+        // The shared rule starts a guide at depth 1, so the top-level entries
+        // of the workspace root would draw with no guide at all. The header
+        // row above them is no sibling, so no guide could ever close there
+        // either. The file tree therefore prepends one blank guide of its
+        // own before the shared result, so every entry indents one level
+        // below the header. See `docs/windows.md`.
+        let guides = format!(
+            "{SIDEBAR_GUIDE_BLANK}{}",
+            sidebar_guides(sidebar.view().rows(), placement.index())
+        );
         // The Git mark owns the last cell of every row, so a long name never
         // covers it and no mark ever moves a name.
         let name_cells = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
@@ -1247,10 +1208,11 @@ pub(super) fn render_tree(
 /// Returns the cell column of the glyph cells inside one sidebar row.
 ///
 /// The glyph follows the mark cell and the indent guides of every level, which
-/// each cost [`TREE_INDENT_CELLS`] cells. The workspace root is one level above
-/// the first entry, so a row of depth zero already carries one guide.
+/// each cost [`SIDEBAR_GUIDE_INDENT_CELLS`] cells. The workspace root is one
+/// level above the first entry, so a row of depth zero already carries one
+/// guide, the leading blank that stands for the header row.
 const fn glyph_offset_cells(depth: usize) -> usize {
-    MARK_CELLS + TREE_INDENT_CELLS * (depth + 1)
+    MARK_CELLS + SIDEBAR_GUIDE_INDENT_CELLS * (depth + 1)
 }
 
 /// Returns the cell column of the entry name inside one sidebar row.

@@ -24,6 +24,9 @@ use kvim_runtime::{
 };
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
+use kvim_ui::{
+    SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_GUIDE_TRUNK,
+};
 use kvim_workspace::{
     EntryKind, GIT_PROGRAM, GitStatus, GitStatusFailure, GitStatusRead, GitStatusRequest, LinkKind,
     Notice, RowContent, TREE_PENDING_READS_MAX, TakenDestination, TransferMode, TreeRow,
@@ -33,7 +36,8 @@ use kvim_workspace::{
 use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
-    GENERATED_NAMES, RowState, TREE_TITLE_ROWS, delete_question, overwrite_question, root_label,
+    GENERATED_NAMES, MARK_CELLS, RowState, TREE_TITLE_ROWS, delete_question, overwrite_question,
+    root_label,
 };
 
 const NOW: Duration = Duration::ZERO;
@@ -1825,6 +1829,55 @@ fn the_indent_guides_draw_a_trunk_and_close_the_last_child_with_an_elbow() {
     // The guides carry their own color, so they never read as one name.
     let guide = theme().style(ThemeRole::TreeIndentGuide);
     assert_eq!(sidebar_style(&session, 3, 3).fg, guide.fg);
+}
+
+#[test]
+fn the_leading_blank_and_the_shared_rule_together_cost_one_guide_per_level() {
+    // `tree.rs` prepends one `SIDEBAR_GUIDE_BLANK` before the shared
+    // `kvim_ui::sidebar_guides` result, because the workspace-root header row
+    // above the entries carries no sibling that a guide could ever close.
+    // This test pins the exact guide string at three depths, and the total
+    // cell width that the leading blank and the shared rule together cost, so
+    // a later reader who drops the leading blank fails here first.
+    let (_dir, mut session) = appearance_workspace(FileTreeIcons::Hidden);
+    press(&mut session, 'l');
+    drain(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, 'l');
+    drain(&mut session);
+
+    let rows = sidebar_rows(&session);
+    // The guide of one row sits behind the mark cell and ends where the
+    // directory or the file glyph starts, at `(depth + 1)` guide levels.
+    let guide_of = |row: &str, depth: usize| -> String {
+        row.chars()
+            .skip(MARK_CELLS)
+            .take(SIDEBAR_GUIDE_INDENT_CELLS * (depth + 1))
+            .collect::<String>()
+    };
+
+    // Depth 0: `alpha` carries the leading blank alone.
+    assert_eq!(guide_of(&rows[0], 0), SIDEBAR_GUIDE_BLANK);
+    // Depth 1: `inner` sits below `alpha`, which holds the further sibling
+    // `beta.rs`, so the first level draws a trunk behind the leading blank.
+    assert_eq!(
+        guide_of(&rows[1], 1),
+        format!("{SIDEBAR_GUIDE_BLANK}{SIDEBAR_GUIDE_TRUNK}"),
+    );
+    // Depth 2: `deep.rs` is the only, and therefore the last, child of
+    // `inner`, so its own level closes with an elbow behind the same trunk.
+    assert_eq!(
+        guide_of(&rows[2], 2),
+        format!("{SIDEBAR_GUIDE_BLANK}{SIDEBAR_GUIDE_TRUNK}{SIDEBAR_GUIDE_ELBOW}"),
+    );
+
+    for (row, depth) in [(&rows[0], 0), (&rows[1], 1), (&rows[2], 2)] {
+        assert_eq!(
+            guide_of(row, depth).chars().count(),
+            (depth + 1) * SIDEBAR_GUIDE_INDENT_CELLS,
+            "the row at depth {depth} costs (depth + 1) guide levels",
+        );
+    }
 }
 
 #[test]

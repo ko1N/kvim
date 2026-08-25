@@ -343,6 +343,30 @@ top-level rows take the shared result unchanged. `sidebar_guides` never adds
 the leading blank itself, because that blank is a fact of the file tree's own
 header, not a fact of the shared rule.
 
+### File Tree Collapse Ownership
+
+`FileTree`, in `kvim-workspace`, and `SidebarState`, in `kvim-ui`, can each
+hide a collapsed subtree. `FileTree` owns the expansion set. `SidebarState`
+hides a subtree whose row carries the collapsed flag. Two owners of one
+truth can disagree, so the file tree names one owner: `FileTree` alone.
+
+`FileTree` withholds the rows of a collapsed directory from `tree.rows()`
+itself, because it also drives the directory reads. It cannot emit a row for
+a directory that it has never read. `crates/kvim-tui/src/tree.rs` therefore
+builds every `SidebarRow<usize>` from a row list that already excludes the
+hidden rows, and it never calls `SidebarRow::with_collapsed`. The collapsed
+flag of every file tree row stays `false`, the default that
+`SidebarRow::single` sets, so `SidebarState`'s own hiding rule finds nothing
+to hide and stays inert for this host. The file tree therefore keeps one
+owner of the truth, and the sidebar's collapsed flag is not a forgotten
+wire; a later reader who adds `with_collapsed` to the file tree would hide a
+row twice, not once.
+
+The changes panel of the diff view carries no expansion set of its own. Its
+directory rows always show every file below them, so its rows never carry
+the collapsed flag either, and the question of an owner does not yet arise
+for that host.
+
 ## Selector
 
 `Selector<R>` owns a bounded query, a bounded candidate list, a ranked match

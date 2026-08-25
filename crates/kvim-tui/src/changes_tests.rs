@@ -2,6 +2,7 @@
 
 use super::*;
 
+use kvim_ui::{SIDEBAR_GUIDE_INDENT_CELLS, sidebar_guides};
 use kvim_workspace::{
     BaseRevision, CandidateAuthority, DiffLimit, DiffLine, DiffLineText, DiffOldSide, DiffTarget,
     DiffTruncation, FileMode, FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding,
@@ -308,7 +309,7 @@ fn the_guides_draw_the_shape_of_the_directories() {
     let published = rows(ChangeSection::Unstaged, Some(&review));
 
     let guides: Vec<String> = (0..published.len())
-        .map(|index| row_guides(&published, index))
+        .map(|index| sidebar_guides(&published, index))
         .collect();
 
     assert_eq!(
@@ -322,4 +323,33 @@ fn the_guides_draw_the_shape_of_the_directories() {
             "  └ ".to_owned(), // src/parser/mod.rs, two levels in
         ]
     );
+}
+
+#[test]
+fn the_guide_width_matches_depth_times_the_indent_cells() {
+    // The changes panel carries no header row above its top level, unlike the
+    // file tree, so its guide width follows the shared rule exactly: an empty
+    // string at depth 0, and `depth * SIDEBAR_GUIDE_INDENT_CELLS` cells below
+    // it. This test pins that formula at three depths, so a later reader who
+    // changes the depth that `push_grouped` passes to `with_depth` fails here
+    // first.
+    let review = review(
+        vec![
+            added("notes.md", &["one"], DiffTruncation::Complete),
+            added("src/main.rs", &["two"], DiffTruncation::Complete),
+            added("src/parser/mod.rs", &["three"], DiffTruncation::Complete),
+        ],
+        [41; 32],
+    );
+    let published = rows(ChangeSection::Unstaged, Some(&review));
+
+    // `notes.md`, at index 0, sits at depth 0 and draws no guide.
+    assert_eq!(sidebar_guides(&published, 0), "");
+    for (index, depth) in [(0, 0), (2, 1), (4, 2)] {
+        assert_eq!(
+            sidebar_guides(&published, index).chars().count(),
+            depth * SIDEBAR_GUIDE_INDENT_CELLS,
+            "row {index} at depth {depth} costs depth guide levels",
+        );
+    }
 }

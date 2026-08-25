@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
-use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState, TabStrip};
+use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState, TabStrip, sidebar_guides};
 use kvim_workspace::{
     DiffContent, Expansion, GitStatus, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff,
     align_hunk,
@@ -22,7 +22,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
 use crate::cells::clip_cells;
-use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh, row_guides};
+use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh};
 use crate::diff_view::{
     RowBand, draw_inline_rows, draw_side_rows, inline_rows, side_rows, view_of,
 };
@@ -1145,7 +1145,7 @@ fn build_panel_rows(
     rows.iter()
         .enumerate()
         .map(|(index, row)| {
-            let guides = row_guides(rows, index);
+            let guides = sidebar_guides(rows, index);
             // The first cell belongs to the selection mark, exactly as it does
             // in the file tree, so a mark moves no name.
             let mark = " ".repeat(MARK_CELLS);
