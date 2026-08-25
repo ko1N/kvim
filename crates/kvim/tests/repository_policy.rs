@@ -14,6 +14,9 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+/// The document that owns the complete example list.
+const REQUIRED_EXAMPLES_DOCUMENT: &str = "docs/embedding.md";
+
 /// The largest directory depth that the source sweep walks.
 ///
 /// The source tree of one crate is flat today. The bound stops a symbolic link
@@ -87,23 +90,40 @@ const FEATURE_EXAMPLES: [(&str, &str); 15] = [
     ),
 ];
 
-/// The complete set of example files that this repository publishes.
+/// Returns the complete set of example files that this repository publishes.
 ///
 /// A new example belongs to one public feature. An example outside this list is
 /// a kitchen-sink example, which `docs/embedding.md` refuses.
-const REQUIRED_EXAMPLES: [&str; 11] = [
-    "crates/kvim-fuzzy/examples/rank_candidates.rs",
-    "crates/kvim-keymap/examples/dispatch_keys.rs",
-    "crates/kvim-lsp/examples/lsp_diagnostics.rs",
-    "crates/kvim-path/examples/confine_worktree_paths.rs",
-    "crates/kvim-syntax/examples/highlight.rs",
-    "crates/kvim-tui/examples/embedded_editor.rs",
-    "crates/kvim-tui/examples/host_workspace.rs",
-    "crates/kvim-tui/examples/worktree_diff_review.rs",
-    "crates/kvim-ui/examples/sidebar.rs",
-    "crates/kvim-ui/examples/split_windows.rs",
-    "crates/kvim-ui/examples/which_key.rs",
-];
+///
+/// That document owns the list, so this check reads it instead of holding a
+/// second copy. Two copies of one fact are free to drift, which is the failure
+/// that this file exists to prevent.
+///
+/// The reader takes the bullet list under the heading below and stops at the
+/// first line that is no bullet, so a later paragraph adds no entry.
+fn required_examples() -> Vec<String> {
+    const HEADING: &str = "The required examples are:";
+
+    let document = fs::read_to_string(repository_root().join(REQUIRED_EXAMPLES_DOCUMENT))
+        .expect("the embedding document is readable text");
+    let (_, listed) = document
+        .split_once(HEADING)
+        .unwrap_or_else(|| panic!("{REQUIRED_EXAMPLES_DOCUMENT} names its example list"));
+
+    let mut examples: Vec<String> = listed
+        .lines()
+        .map(str::trim)
+        .skip_while(|line| line.is_empty())
+        .take_while(|line| line.starts_with("- "))
+        .map(|line| line.trim_start_matches("- ").trim_matches('`').to_owned())
+        .collect();
+    assert!(
+        !examples.is_empty(),
+        "{REQUIRED_EXAMPLES_DOCUMENT} lists at least one example under its heading"
+    );
+    examples.sort();
+    examples
+}
 
 /// Returns the root directory of this repository.
 fn repository_root() -> PathBuf {
@@ -207,10 +227,10 @@ fn no_example_replaces_a_feature_example() {
     }
     published.sort();
 
-    let required = REQUIRED_EXAMPLES.map(String::from).to_vec();
     assert_eq!(
-        published, required,
-        "docs/embedding.md names the complete set of examples"
+        published,
+        required_examples(),
+        "{REQUIRED_EXAMPLES_DOCUMENT} names the complete set of examples"
     );
 }
 
@@ -239,7 +259,7 @@ fn every_documented_example_link_resolves() {
         }
     }
     assert!(
-        checked >= REQUIRED_EXAMPLES.len(),
+        checked >= required_examples().len(),
         "the sweep found the example links of this workspace"
     );
 }
