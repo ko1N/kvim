@@ -933,29 +933,26 @@ fn below(area: Rect) -> Option<Rect> {
 /// The active tab sits on a light band and every other tab dims on the bar, so
 /// one glance names the section that the keys act on. See `docs/diff-view.md`.
 fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
-    target.set_style(area, theme.style(ThemeRole::Winbar));
+    // The bar sits above every tab, so it takes the surface band and the
+    // active tab drops out of it onto the body color.
+    target.set_style(area, theme.style(ThemeRole::TabInactive));
     review.sections().render(target, area, |cells, placement| {
         let section = *placement.tab.id;
         let active = placement.tab.active;
-        // The active tab lifts off the bar, exactly as one editor tab does.
+        // The active tab takes the background of the body below it, so it
+        // connects to its own content while the bar stays above them both.
         let band = if active {
-            ThemeRole::PopupSelection
+            ThemeRole::TabActive
         } else {
-            ThemeRole::Winbar
+            ThemeRole::TabInactive
         };
         cells.set_style(placement.area, theme.style(band));
-
-        let text = if active {
-            ThemeRole::Title
-        } else {
-            ThemeRole::TreeMuted
-        };
         cells.set_stringn(
             placement.area.x,
             placement.area.y,
             format!(" {} ", placement.tab.label),
             usize::from(placement.area.width),
-            theme.style(text).patch(theme.style(band)),
+            theme.style(band),
         );
         // The mark carries the color of its repository state, so the strip and
         // the rows below it name one state the same way.

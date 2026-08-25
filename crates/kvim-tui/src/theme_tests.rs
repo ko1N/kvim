@@ -196,3 +196,21 @@ fn only_the_theme_module_names_a_color() {
         }
     }
 }
+
+#[test]
+fn the_active_tab_takes_the_body_background_and_the_bar_stays_above_it() {
+    // A band lighter than the bar reads washed out, because the bar and the
+    // text then sit at the same weight. The active tab drops onto the color of
+    // the body instead, so it connects to its own content.
+    let theme = Theme::default();
+    let active = theme.style(ThemeRole::TabActive);
+    let inactive = theme.style(ThemeRole::TabInactive);
+    let body = theme.style(ThemeRole::Text);
+
+    assert_eq!(active.bg, body.bg, "the tab connects to the body below it");
+    assert_ne!(active.bg, inactive.bg, "the bar stays above the active tab");
+    assert_ne!(
+        active.fg, inactive.fg,
+        "the active tab reads brighter than the rest"
+    );
+}

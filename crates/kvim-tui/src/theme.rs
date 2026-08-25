@@ -211,6 +211,10 @@ pub enum ThemeRole {
     DiffLineNumber,
     /// The header of one changed file or one hunk.
     DiffHeader,
+    /// The tab that owns its strip.
+    TabActive,
+    /// One tab that another tab owns the strip over.
+    TabInactive,
     /// An error message.
     Error,
     /// A warning message.
@@ -367,6 +371,12 @@ impl Theme {
             ThemeRole::DiffGap => Style::new().fg(NON_TEXT).bg(SURFACE),
             ThemeRole::DiffLineNumber => Style::new().fg(TEXT_MUTED).bg(self.base),
             ThemeRole::DiffHeader => Style::new().fg(TITLE).bg(SURFACE),
+            // The active tab takes the background of the body below it, so the
+            // tab connects to its own content and the bar stays above them
+            // both. A band lighter than the bar reads washed out instead,
+            // because the bar and the text then sit at the same weight.
+            ThemeRole::TabActive => Style::new().fg(TEXT).bg(self.base),
+            ThemeRole::TabInactive => Style::new().fg(TEXT_MUTED).bg(self.surface),
             // An icon decorates the row below it, so it carries a foreground
             // color only and keeps the row background and the selection.
             ThemeRole::Icon(role) => Style::new().fg(icon_color(role)),
