@@ -1971,6 +1971,9 @@ impl Session {
         }
         self.area = area;
         self.windows.set_terminal(shell_areas(area).body);
+        if let Some(review) = self.review.as_mut() {
+            review.set_height_rows(review_body_rows(area));
+        }
         Redraw::Needed
     }
 
@@ -2032,7 +2035,7 @@ impl Session {
         // The open review owns every key while it stays open, so a review key
         // never reaches a buffer. See `docs/diff-view.md`.
         if self.review_open {
-            return self.apply_review_command(command);
+            return self.apply_review_command(command, count);
         }
         if command == Command::OpenReview {
             return self.open_review();
@@ -4461,6 +4464,9 @@ impl Session {
     /// reload into it. See `docs/diff-view.md`.
     fn open_review(&mut self) -> Redraw {
         self.review_open = true;
+        if let Some(review) = self.review.as_mut() {
+            review.set_height_rows(review_body_rows(self.area));
+        }
         self.request_diff_captures();
         self.sync_context();
         Redraw::Needed
@@ -4492,7 +4498,7 @@ impl Session {
     }
 
     /// Applies one review command to the open review.
-    fn apply_review_command(&mut self, command: Command) -> Redraw {
+    fn apply_review_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
         let Some(review) = self.review.as_mut() else {
             // The captures have not resolved yet, so the review holds nothing
             // to walk. Leaving it still works, because the session owns that.
@@ -4502,7 +4508,7 @@ impl Session {
                 Redraw::Skipped
             };
         };
-        match review.apply(command) {
+        match review.apply(command, count) {
             ReviewOutcome::Unchanged | ReviewOutcome::Unhandled => Redraw::Skipped,
             ReviewOutcome::Changed => Redraw::Needed,
             ReviewOutcome::Close => self.close_review(),
@@ -4557,7 +4563,7 @@ impl Session {
                             staged,
                             unstaged,
                             self.settings.diff,
-                            self.area.height,
+                            review_body_rows(self.area),
                         ));
                     }
                 }
@@ -6116,6 +6122,14 @@ const NEWEST_JUMP_NOTE: &str = "the jump list holds no newer position";
 const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 
 /// The message that a missing `git` command shows once for each session.
+/// Returns the number of rows that one region of the review shows.
+///
+/// The statusline and the message line take their own rows, so the review
+/// draws inside the body band alone.
+fn review_body_rows(area: Rect) -> u16 {
+    shell_areas(area).body.height
+}
+
 /// Reports whether the sidebar owns one command.
 ///
 /// The sidebar table binds these commands, so a key that reaches one of them

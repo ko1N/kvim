@@ -797,14 +797,36 @@ fn add_review_bindings(table: &mut Vec<Binding>) {
     // One key switches the two views, because a reader compares them often.
     add_scoped(table, REVIEW, &[ch('s')], Command::ToggleReviewView);
 
-    // The hunk walk repeats the buffer motions, and the file walk takes the
-    // bracket pair that every editor uses for a larger step.
-    add_scoped(table, REVIEW, &[ch('j')], Command::NextHunk);
-    add_scoped(table, REVIEW, &[ch('k')], Command::PreviousHunk);
+    // The two regions of the review move like an ordinary buffer, so the
+    // review binds the motions that the buffer and the sidebar already publish
+    // and needs no motion vocabulary of its own.
+    add_scoped(table, REVIEW, &[ch('j')], Command::MoveDown);
+    add_scoped(table, REVIEW, &[ch('k')], Command::MoveUp);
+    add_scoped(table, REVIEW, &[ctrl('d')], Command::MoveHalfPageDown);
+    add_scoped(table, REVIEW, &[ctrl('u')], Command::MoveHalfPageUp);
+    add_scoped(table, REVIEW, &[ctrl('f')], Command::MoveFullPageDown);
+    add_scoped(table, REVIEW, &[ctrl('b')], Command::MoveFullPageUp);
+    add_scoped(table, REVIEW, &[ch('g'), ch('g')], Command::MoveFirstLine);
+    add_scoped(table, REVIEW, &[ch('G')], Command::MoveLastLine);
+
+    // The focus moves between the two regions with the keys that already move
+    // between windows.
+    add_scoped(table, REVIEW, &[ctrl('h')], Command::FocusWindowLeft);
+    add_scoped(table, REVIEW, &[ctrl('l')], Command::FocusWindowRight);
+
+    // Vim walks the hunks of a diff with this bracket pair, so the review does
+    // too. The file walk keeps the bare brackets.
+    add_scoped(table, REVIEW, &[ch(']'), ch('c')], Command::NextHunk);
+    add_scoped(table, REVIEW, &[ch('['), ch('c')], Command::PreviousHunk);
     add_scoped(table, REVIEW, &[ch('n')], Command::NextUnreadHunk);
     add_scoped(table, REVIEW, &[ch('N')], Command::PreviousUnreadHunk);
-    add_scoped(table, REVIEW, &[ch(']')], Command::NextChangedFile);
-    add_scoped(table, REVIEW, &[ch('[')], Command::PreviousChangedFile);
+    add_scoped(table, REVIEW, &[ch(']'), ch('f')], Command::NextChangedFile);
+    add_scoped(
+        table,
+        REVIEW,
+        &[ch('['), ch('f')],
+        Command::PreviousChangedFile,
+    );
 
     // Marking a hunk read is the one state that a review records.
     add_scoped(table, REVIEW, &[ch('m')], Command::MarkHunkRead);

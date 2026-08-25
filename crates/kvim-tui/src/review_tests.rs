@@ -69,6 +69,45 @@ fn candidate(files: Vec<FileDiff>, index: [u8; 32]) -> WorktreeDiff {
     .expect("the fixture candidate is usable")
 }
 
+fn count(value: u32) -> Option<NonZeroU32> {
+    Some(NonZeroU32::new(value).expect("the fixture count is not zero"))
+}
+
+/// Builds one modified file that publishes two hunks.
+fn two_hunk_file(name: &str) -> FileDiff {
+    let hunk = |id: u32, first: u32| {
+        let body = vec![DiffLine::new(
+            LineOrigin::Added {
+                new: NewLine::new(first).expect("the fixture number is one line number"),
+            },
+            DiffLineText::new(b"line".to_vec()).expect("the fixture text is short"),
+            LineEnding::Newline,
+        )];
+        Hunk::new(
+            HunkId::new(id),
+            OldLineRange::new(OldLine::new(1).expect("one is one line number"), 0)
+                .expect("an empty old range is usable"),
+            NewLineRange::new(
+                NewLine::new(first).expect("the fixture number is one line number"),
+                1,
+            )
+            .expect("the fixture range is usable"),
+            body,
+        )
+        .expect("the fixture hunk realizes its ranges")
+    };
+    FileDiff::new(
+        DiffChange::Added {
+            new: FileSide::new(path(name), FileMode::Regular),
+        },
+        DiffContent::Text(
+            TextDiff::new(vec![hunk(0, 1), hunk(1, 10)], DiffTruncation::Complete)
+                .expect("the fixture is usable"),
+        ),
+    )
+    .expect("the fixture file is usable")
+}
+
 fn surface(unstaged: Vec<FileDiff>) -> ReviewSurface {
     ReviewSurface::new(
         None,
@@ -84,13 +123,13 @@ fn the_view_key_switches_the_two_views_and_returns() {
     assert_eq!(review.view(), DiffView::SideBySide);
 
     assert_eq!(
-        review.apply(Command::ToggleReviewView),
+        review.apply(Command::ToggleReviewView, None),
         ReviewOutcome::Changed
     );
     assert_eq!(review.view(), DiffView::Inline);
 
     assert_eq!(
-        review.apply(Command::ToggleReviewView),
+        review.apply(Command::ToggleReviewView, None),
         ReviewOutcome::Changed
     );
     assert_eq!(review.view(), DiffView::SideBySide);
@@ -119,16 +158,16 @@ fn the_cursor_starts_in_the_half_that_a_reader_works_on() {
 
 #[test]
 fn the_hunk_walk_stops_at_the_border_and_changes_nothing_there() {
-    let mut review = surface(vec![
-        added("a.txt", 1, &["one"]),
-        added("b.txt", 1, &["two"]),
-    ]);
+    // The walk moves inside the body of one file, so one file with one hunk
+    // holds one header and the walk reaches no second one.
+    let mut review = surface(vec![added("a.txt", 1, &["one", "two"])]);
 
-    assert_eq!(review.apply(Command::NextHunk), ReviewOutcome::Changed);
-    assert_eq!(review.apply(Command::NextHunk), ReviewOutcome::Unchanged);
-    assert_eq!(review.apply(Command::PreviousHunk), ReviewOutcome::Changed);
     assert_eq!(
-        review.apply(Command::PreviousHunk),
+        review.apply(Command::NextHunk, None),
+        ReviewOutcome::Unchanged
+    );
+    assert_eq!(
+        review.apply(Command::PreviousHunk, None),
         ReviewOutcome::Unchanged
     );
 }
@@ -141,7 +180,7 @@ fn the_file_walk_passes_every_hunk_of_the_file_that_it_leaves() {
     ]);
 
     assert_eq!(
-        review.apply(Command::NextChangedFile),
+        review.apply(Command::NextChangedFile, None),
         ReviewOutcome::Changed
     );
     let cursor = review
@@ -152,7 +191,7 @@ fn the_file_walk_passes_every_hunk_of_the_file_that_it_leaves() {
 
     // No further file follows, so the walk changes nothing.
     assert_eq!(
-        review.apply(Command::NextChangedFile),
+        review.apply(Command::NextChangedFile, None),
         ReviewOutcome::Unchanged
     );
 }
@@ -162,7 +201,7 @@ fn the_jump_names_the_file_and_the_first_line_of_the_hunk() {
     let mut review = surface(vec![added("src/main.rs", 42, &["one", "two"])]);
 
     assert_eq!(
-        review.apply(Command::OpenHunkFile),
+        review.apply(Command::OpenHunkFile, None),
         ReviewOutcome::OpenFile {
             path: path("src/main.rs"),
             line: 42,
@@ -181,7 +220,10 @@ fn a_read_mark_reaches_the_review_and_the_panel() {
         1
     );
 
-    assert_eq!(review.apply(Command::MarkHunkRead), ReviewOutcome::Changed);
+    assert_eq!(
+        review.apply(Command::MarkHunkRead, None),
+        ReviewOutcome::Changed
+    );
     assert_eq!(
         review
             .active()
@@ -191,7 +233,7 @@ fn a_read_mark_reaches_the_review_and_the_panel() {
     );
     // A second mark records nothing further.
     assert_eq!(
-        review.apply(Command::MarkHunkRead),
+        review.apply(Command::MarkHunkRead, None),
         ReviewOutcome::Unchanged
     );
 }
@@ -199,7 +241,10 @@ fn a_read_mark_reaches_the_review_and_the_panel() {
 #[test]
 fn a_reload_keeps_the_marks_that_the_later_capture_still_holds() {
     let mut review = surface(vec![added("a.txt", 1, &["one"])]);
-    assert_eq!(review.apply(Command::MarkHunkRead), ReviewOutcome::Changed);
+    assert_eq!(
+        review.apply(Command::MarkHunkRead, None),
+        ReviewOutcome::Changed
+    );
 
     review.reload(
         ChangeSection::Unstaged,
@@ -219,14 +264,17 @@ fn a_reload_keeps_the_marks_that_the_later_capture_still_holds() {
 #[test]
 fn the_close_key_asks_the_session_to_restore_its_layout() {
     let mut review = surface(vec![added("a.txt", 1, &["one"])]);
-    assert_eq!(review.apply(Command::CloseReview), ReviewOutcome::Close);
+    assert_eq!(
+        review.apply(Command::CloseReview, None),
+        ReviewOutcome::Close
+    );
 }
 
 #[test]
 fn a_command_of_another_surface_reaches_no_behavior_here() {
     let mut review = surface(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(
-        review.apply(Command::InsertBeforeCursor),
+        review.apply(Command::InsertBeforeCursor, None),
         ReviewOutcome::Unhandled
     );
 }
@@ -254,7 +302,7 @@ fn the_panel_follows_the_cursor_and_names_both_halves() {
 
     // The panel selection follows the cursor into the next file.
     assert_eq!(
-        review.apply(Command::NextChangedFile),
+        review.apply(Command::NextChangedFile, None),
         ReviewOutcome::Changed
     );
     assert_eq!(
@@ -264,4 +312,181 @@ fn the_panel_follows_the_cursor_and_names_both_halves() {
             path: path("b.txt"),
         })
     );
+}
+
+#[test]
+fn the_focus_moves_between_the_two_regions() {
+    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    assert_eq!(review.focus(), ReviewFocus::Diff);
+
+    assert_eq!(
+        review.apply(Command::FocusWindowLeft, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.focus(), ReviewFocus::Panel);
+    // The region that already owns the keys changes nothing.
+    assert_eq!(
+        review.apply(Command::FocusWindowLeft, None),
+        ReviewOutcome::Unchanged
+    );
+
+    assert_eq!(
+        review.apply(Command::FocusWindowRight, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.focus(), ReviewFocus::Diff);
+}
+
+#[test]
+fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
+    let lines: Vec<&str> = vec!["one", "two", "three", "four", "five", "six"];
+    let mut review = surface(vec![added("a.txt", 1, &lines)]);
+    review.set_height_rows(3);
+
+    // One header and one row for each published line.
+    assert_eq!(review.body().len(), lines.len() + 1);
+    assert!(review.body()[0].is_header());
+    assert_eq!(review.cursor_row(), 0);
+    assert_eq!(review.first_row(), 0);
+
+    // `j` moves one row and the viewport follows the cursor.
+    assert_eq!(
+        review.apply(Command::MoveDown, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), 1);
+    assert_eq!(review.first_row(), 0);
+
+    assert_eq!(
+        review.apply(Command::MoveDown, count(3)),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), 4);
+    assert_eq!(
+        review.first_row(),
+        2,
+        "the viewport scrolled with the cursor"
+    );
+
+    // `G` reaches the last row and `gg` returns to the first.
+    assert_eq!(
+        review.apply(Command::MoveLastLine, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), review.body().len() - 1);
+    assert_eq!(
+        review.apply(Command::MoveFirstLine, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), 0);
+    assert_eq!(review.first_row(), 0);
+
+    // The border changes nothing.
+    assert_eq!(
+        review.apply(Command::MoveUp, None),
+        ReviewOutcome::Unchanged
+    );
+}
+
+#[test]
+fn a_half_page_moves_by_the_height_of_the_region() {
+    let lines: Vec<&str> = (0..20).map(|_| "line").collect();
+    let mut review = surface(vec![added("a.txt", 1, &lines)]);
+    review.set_height_rows(10);
+
+    assert_eq!(
+        review.apply(Command::MoveHalfPageDown, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), 5);
+
+    assert_eq!(
+        review.apply(Command::MoveFullPageDown, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), 14);
+}
+
+#[test]
+fn a_motion_moves_the_region_that_owns_the_keys_alone() {
+    let mut review = surface(vec![
+        added("a.txt", 1, &["one", "two"]),
+        added("b.txt", 1, &["three"]),
+    ]);
+    review.set_height_rows(10);
+    let selected = review.changes().selected().cloned();
+
+    // The body owns the keys, so `j` scrolls it and the panel selection stays.
+    assert_eq!(review.focus(), ReviewFocus::Diff);
+    assert_eq!(
+        review.apply(Command::MoveDown, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), 1);
+    assert_eq!(review.changes().selected().cloned(), selected);
+
+    // The panel owns the keys, so `j` moves its selection to the next file.
+    assert_eq!(
+        review.apply(Command::FocusWindowLeft, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(
+        review.apply(Command::MoveDown, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(
+        review.changes().selected(),
+        Some(&ChangesRow::File {
+            section: ChangeSection::Unstaged,
+            path: path("b.txt"),
+        }),
+    );
+}
+
+#[test]
+fn selecting_a_file_in_the_panel_shows_that_file() {
+    let mut review = surface(vec![
+        added("a.txt", 1, &["one"]),
+        added("b.txt", 1, &["two", "three"]),
+    ]);
+    review.set_height_rows(10);
+
+    review.apply(Command::FocusWindowLeft, None);
+    // The heading takes no selection, so two steps reach the second file.
+    review.apply(Command::MoveDown, None);
+    review.apply(Command::MoveDown, None);
+
+    let cursor = review
+        .active()
+        .and_then(ReviewState::cursor)
+        .expect("the selection placed the review cursor");
+    assert_eq!(cursor.file.path(), &path("b.txt"));
+    assert_eq!(review.body().len(), 3, "one header and two published rows");
+}
+
+#[test]
+fn the_hunk_walk_reaches_the_header_of_every_hunk() {
+    let mut review = surface(vec![two_hunk_file("a.txt")]);
+    review.set_height_rows(10);
+
+    let headers: Vec<usize> = review
+        .body()
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| row.is_header())
+        .map(|(index, _)| index)
+        .collect();
+    assert_eq!(headers.len(), 2);
+
+    assert_eq!(review.cursor_row(), headers[0]);
+    assert_eq!(
+        review.apply(Command::NextHunk, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), headers[1]);
+    assert_eq!(
+        review.apply(Command::PreviousHunk, None),
+        ReviewOutcome::Changed
+    );
+    assert_eq!(review.cursor_row(), headers[0]);
 }
