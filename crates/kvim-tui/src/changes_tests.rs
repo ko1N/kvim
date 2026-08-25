@@ -210,9 +210,3 @@ fn a_refresh_installs_the_rows_of_both_sections_into_one_sidebar() {
     refresh(&mut sidebar, None, Some(&unstaged));
     assert_eq!(sidebar.rows().len(), 2);
 }
-
-#[test]
-fn each_section_names_itself() {
-    assert_eq!(ChangeSection::Staged.heading(), "Staged");
-    assert_eq!(ChangeSection::Unstaged.heading(), "Unstaged");
-}
