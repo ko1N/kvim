@@ -302,3 +302,122 @@ fn one_hint_names_every_distinct_command_behind_its_next_key() {
     );
     assert_eq!(hints[1].commands(), [Action::First, Action::Second]);
 }
+
+#[test]
+fn all_bindings_matches_a_per_scope_walk_with_nothing_missing_or_repeated() {
+    let built = registry(&[
+        Binding::surface(Table::Global, &[ch('a')], Action::First),
+        Binding::surface(Table::Global, &[ch('b')], Action::Second),
+        Binding::host(Table::Overlay, &[ch('a')], Action::Second),
+    ])
+    .expect("two scopes may share one sequence");
+
+    let walked: Vec<_> = built
+        .all_bindings()
+        .map(|(scope, keys, bound)| (scope, keys.to_string(), bound.command))
+        .collect();
+
+    let mut expected = Vec::new();
+    for scope in [Table::Global, Table::Overlay] {
+        expected.extend(
+            built
+                .bindings(scope)
+                .map(|(keys, bound)| (scope, keys.to_string(), bound.command)),
+        );
+    }
+
+    assert_eq!(
+        walked, expected,
+        "the combined walk holds exactly what a per-scope walk holds"
+    );
+    assert_eq!(walked.len(), built.len());
+}
+
+#[test]
+fn a_host_scope_that_collapses_two_kvim_scopes_meets_a_duplicate_sequence() {
+    // `j` reaches a different command in `Global` and in `Overlay`, exactly as
+    // it does in kvim's own Normal, Sidebar, and OperatorPending scopes. A
+    // host scope type that folds both onto one table cannot hold both.
+    let preset = registry(&[
+        Binding::surface(Table::Global, &[ch('j')], Action::First),
+        Binding::host(Table::Overlay, &[ch('j')], Action::Second),
+    ])
+    .expect("two scopes may bind the same sequence to different commands");
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    struct CollapsedHostScope;
+
+    impl fmt::Display for CollapsedHostScope {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("Host")
+        }
+    }
+
+    impl Scope for CollapsedHostScope {
+        const COUNT: usize = 1;
+    }
+
+    let collapsed_bindings: Vec<_> = preset
+        .all_bindings()
+        .map(|(_scope, keys, bound)| Binding {
+            scope: CollapsedHostScope,
+            keys: keys.keys().to_vec(),
+            command: bound.command,
+            owner: bound.owner,
+        })
+        .collect();
+
+    let error = Registry::from_bindings(&collapsed_bindings, 4)
+        .expect_err("the collapsed scope holds `j` twice");
+
+    assert!(matches!(error, RegistryError::DuplicateSequence { .. }));
+}
+
+#[test]
+fn a_host_scope_that_distinguishes_every_kvim_scope_builds() {
+    let preset = registry(&[
+        Binding::surface(Table::Global, &[ch('j')], Action::First),
+        Binding::host(Table::Overlay, &[ch('j')], Action::Second),
+    ])
+    .expect("two scopes may bind the same sequence to different commands");
+
+    #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    enum DistinctHostScope {
+        Editor(Table),
+    }
+
+    impl fmt::Display for DistinctHostScope {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            match self {
+                Self::Editor(scope) => write!(formatter, "Editor {scope}"),
+            }
+        }
+    }
+
+    impl Scope for DistinctHostScope {
+        const COUNT: usize = Table::COUNT;
+    }
+
+    let distinct_bindings: Vec<_> = preset
+        .all_bindings()
+        .map(|(scope, keys, bound)| Binding {
+            scope: DistinctHostScope::Editor(scope),
+            keys: keys.keys().to_vec(),
+            command: bound.command,
+            owner: bound.owner,
+        })
+        .collect();
+
+    let built = Registry::from_bindings(&distinct_bindings, 4)
+        .expect("one host scope for one kvim scope keeps `j` distinct");
+
+    assert_eq!(built.len(), preset.len());
+    assert_eq!(
+        built.command(DistinctHostScope::Editor(Table::Global), &[ch('j')]),
+        Some(Action::First)
+    );
+    assert_eq!(
+        built.command(DistinctHostScope::Editor(Table::Overlay), &[ch('j')]),
+        Some(Action::Second)
+    );
+}

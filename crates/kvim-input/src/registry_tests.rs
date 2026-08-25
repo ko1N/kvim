@@ -1,8 +1,8 @@
 use kvim_keymap::KeySequence;
 
 use super::{
-    Binding, BindingScope, Command, CommandGroup, Key, KeyCode, Mode, Registry, RegistryError,
-    WhichKeyTarget, ch, ctrl, ctrl_alt, leader,
+    Binding, BindingScope, Command, CommandGroup, Key, KeyCode, Mode, PENDING_KEYS_MAX, Registry,
+    RegistryError, WhichKeyTarget, ch, ctrl, ctrl_alt, leader,
 };
 
 /// Builds the sequence of a rejection case.
@@ -389,4 +389,54 @@ fn key_sequences_render_with_their_chord_and_name() {
     for (keys, expected) in cases {
         assert_eq!(sequence(&keys).to_string(), expected);
     }
+}
+
+/// One host scope for one kvim scope, the shape that `docs/embedding.md`
+/// tells a host to build.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+enum HostScope {
+    Editor(BindingScope),
+}
+
+impl std::fmt::Display for HostScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Editor(scope) => write!(f, "Editor({scope})"),
+        }
+    }
+}
+
+impl kvim_keymap::Scope for HostScope {
+    const COUNT: usize = <BindingScope as kvim_keymap::Scope>::COUNT;
+}
+
+#[test]
+fn a_host_builds_one_table_of_the_whole_preset_without_a_duplicate_sequence() {
+    // This is the recipe that `docs/embedding.md` publishes, run against the
+    // real preset rather than a small one. A host that collapses two scopes
+    // meets `DuplicateSequence` here, because the preset reaches a different
+    // command with one key in more than one table.
+    let preset = Registry::first_release();
+    let shared = preset.shared();
+    let bindings: Vec<kvim_keymap::Binding<Command, HostScope>> = shared
+        .all_bindings()
+        .map(|(scope, keys, bound)| kvim_keymap::Binding {
+            scope: HostScope::Editor(scope),
+            keys: keys.keys().to_vec(),
+            command: bound.command,
+            owner: bound.owner,
+        })
+        .collect();
+    assert!(
+        !bindings.is_empty(),
+        "the preset holds the bindings of the standalone editor"
+    );
+
+    let host = kvim_keymap::Registry::from_bindings(&bindings, PENDING_KEYS_MAX)
+        .expect("one host scope for one kvim scope holds every binding of the preset");
+    assert_eq!(
+        host.len(),
+        bindings.len(),
+        "the host table loses no binding of the preset"
+    );
 }

@@ -99,6 +99,36 @@ unnamed register, and `Resolution::Command` carries the name that the `input`
 charter resolved from a `"` prefix. A host that drops that name silently sends
 every operation to the unnamed register. See [`clipboard.md`](clipboard.md).
 
+The editor accepts only a resolved command. The host must therefore own the
+table that resolves one, but it does not have to invent that table.
+`kvim_input::Registry::first_release` builds kvim's own hardcoded preset.
+`kvim_keymap::Registry::all_bindings` yields every `(scope, KeySequence,
+BoundCommand)` triple of a registry, across every scope of the preset at
+once. A host walks that one list, maps each `BindingScope` to its own scope
+value, and builds its shared registry with `Registry::from_bindings`.
+
+The host scope type must distinguish every `BindingScope` that the preset
+uses. Kvim reuses one key across several tables. `j` is the clearest case: it
+reaches `MoveDown` in Normal mode, a different motion in the sidebar, and a
+motion under a waiting operator in the operator-pending table. A host scope
+type that collapses two of those tables onto one hands `Registry::from_bindings`
+two commands for one sequence in one scope. Construction then fails with
+`RegistryError::DuplicateSequence`, at startup and never at dispatch. The safe
+shape is one host scope variant for one `BindingScope`, for example a host
+enum variant `Editor(BindingScope)`.
+
+`Resolver::idle_which_key` lists the top-level bindings of every scope of a
+context, with no pending prefix. A host that binds its own escape in the
+host-global scope should read this method too: it is what keeps that escape
+discoverable beside the editor's own bindings. See
+[`input-actions.md`](input-actions.md).
+
+`BindingScope::RegisterSelection` binds no key. Kvim's own resolver cancels an
+open register selection on any key that the registry does not bind. A host
+that owns the resolver has no registry entry that can express "cancel on
+anything unbound". It must answer that case with a host-global chord of its
+own instead.
+
 The host supplies a `ratatui::Rect` and `ratatui::Buffer` for rendering. The
 editor accepts one explicit rectangle first, because the layout, the viewports,
 and the cursor all follow that rectangle. It writes only inside that rectangle.

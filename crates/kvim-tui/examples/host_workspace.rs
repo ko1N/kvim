@@ -223,6 +223,14 @@ impl Table {
     ///
     /// The embedded editor publishes its own scope. The host owns the shared
     /// registry, so it names the table that answers for that scope.
+    ///
+    /// This collapse is safe here only because this example binds three
+    /// editor commands by hand, in one table, with no collision between
+    /// them. It is not the shape for a host that takes kvim's whole preset:
+    /// `docs/embedding.md` names the entry point for that case,
+    /// `kvim_input::Registry::first_release`, and the rule that such a host's
+    /// scope type must distinguish every `BindingScope` instead of folding
+    /// several onto one table.
     const fn of_editor(scope: BindingScope) -> Self {
         match scope {
             BindingScope::Mode(Mode::Insert) => Self::EditorInsert,

@@ -293,6 +293,141 @@ where
             .flat_map(|table| table.iter().map(|(keys, bound)| (keys, *bound)))
     }
 
+    /// Returns every binding of every scope, in scope order and then
+    /// sequence order.
+    ///
+    /// A host that takes kvim's whole preset walks this once instead of
+    /// enumerating the scopes itself and calling [`Registry::bindings`] for
+    /// each one. `Scope` declares only a count, not the set of values, so the
+    /// registry answers from its own storage: it yields exactly the scopes
+    /// that hold at least one binding, and a scope with no binding
+    /// contributes nothing a host needs.
+    ///
+    /// The host scope type that receives this list must distinguish every
+    /// scope of `S`. One key sequence commonly reaches a different command in
+    /// two different scopes of `S`, so a host scope type that collapses two
+    /// of them onto one table hands [`Registry::from_bindings`] two commands
+    /// for one sequence and meets [`RegistryError::DuplicateSequence`] at
+    /// construction.
+    ///
+    /// ```
+    /// use std::fmt;
+    ///
+    /// use kvim_keymap::{Binding, CommandMetadata, Key, KeyCode, Registry, Scope};
+    ///
+    /// #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// enum EditorCommand {
+    ///     MoveDown,
+    ///     ExpandRow,
+    /// }
+    ///
+    /// impl fmt::Display for EditorCommand {
+    ///     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         formatter.write_str(self.id())
+    ///     }
+    /// }
+    ///
+    /// impl CommandMetadata for EditorCommand {
+    ///     fn id(&self) -> &str {
+    ///         match self {
+    ///             Self::MoveDown => "move-down",
+    ///             Self::ExpandRow => "expand-row",
+    ///         }
+    ///     }
+    ///
+    ///     fn label(&self) -> &str {
+    ///         match self {
+    ///             Self::MoveDown => "Move down",
+    ///             Self::ExpandRow => "Expand the row",
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// // `j` reaches a different command in each editor scope, so a host
+    /// // scope type must keep the two scopes apart.
+    /// #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// enum EditorScope {
+    ///     Normal,
+    ///     Sidebar,
+    /// }
+    ///
+    /// impl fmt::Display for EditorScope {
+    ///     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         formatter.write_str(match self {
+    ///             Self::Normal => "Normal",
+    ///             Self::Sidebar => "Sidebar",
+    ///         })
+    ///     }
+    /// }
+    ///
+    /// impl Scope for EditorScope {
+    ///     const COUNT: usize = 2;
+    /// }
+    ///
+    /// // The host wraps every editor scope in its own scope type, one host
+    /// // variant for one editor scope, so the wrapped table never collapses
+    /// // two editor scopes onto one host table.
+    /// #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// enum HostScope {
+    ///     Editor(EditorScope),
+    /// }
+    ///
+    /// impl fmt::Display for HostScope {
+    ///     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+    ///         match self {
+    ///             Self::Editor(scope) => write!(formatter, "Editor {scope}"),
+    ///         }
+    ///     }
+    /// }
+    ///
+    /// impl Scope for HostScope {
+    ///     const COUNT: usize = EditorScope::COUNT;
+    /// }
+    ///
+    /// let preset = Registry::from_bindings(
+    ///     &[
+    ///         Binding::surface(
+    ///             EditorScope::Normal,
+    ///             &[Key::plain(KeyCode::Char('j'))],
+    ///             EditorCommand::MoveDown,
+    ///         ),
+    ///         Binding::surface(
+    ///             EditorScope::Sidebar,
+    ///             &[Key::plain(KeyCode::Char('j'))],
+    ///             EditorCommand::ExpandRow,
+    ///         ),
+    ///     ],
+    ///     4,
+    /// )
+    /// .expect("the editor preset binds no duplicate sequence");
+    ///
+    /// let host_bindings: Vec<_> = preset
+    ///     .all_bindings()
+    ///     .map(|(scope, keys, bound)| Binding {
+    ///         scope: HostScope::Editor(scope),
+    ///         keys: keys.keys().to_vec(),
+    ///         command: bound.command,
+    ///         owner: bound.owner,
+    ///     })
+    ///     .collect();
+    /// let host_registry = Registry::from_bindings(&host_bindings, 4)?;
+    ///
+    /// assert_eq!(host_registry.len(), preset.len());
+    /// assert_eq!(
+    ///     host_registry.command(
+    ///         HostScope::Editor(EditorScope::Sidebar),
+    ///         &[Key::plain(KeyCode::Char('j'))]
+    ///     ),
+    ///     Some(EditorCommand::ExpandRow)
+    /// );
+    /// # Ok::<(), kvim_keymap::RegistryError<EditorCommand, HostScope>>(())
+    /// ```
+    pub fn all_bindings(&self) -> impl Iterator<Item = (S, &KeySequence, BoundCommand<C>)> {
+        self.by_scope
+            .iter()
+            .flat_map(|(scope, table)| table.iter().map(|(keys, bound)| (*scope, keys, *bound)))
+    }
+
     /// Returns every binding of one scope whose sequence is strictly longer
     /// than the prefix and starts with it.
     ///
