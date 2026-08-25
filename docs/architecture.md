@@ -215,6 +215,12 @@ which is not a supported package. `kvim-ui` publishes `Selector<R>` over that
 same rule, so a host that also wants the bounded query, candidate, match, and
 selection mechanics takes `kvim-ui` instead of calling `kvim-fuzzy` directly.
 
+`kvim-ui` also publishes the adaptive split rule. `WindowTree::adaptive_orientation`
+takes the sense of the command, `AdaptiveSplit`, and a caller-supplied ratio, and
+answers the orientation that the command selects. A host that binds an adaptive
+split key reaches the same rule that kvim uses, without depending on
+`kvim-settings`. [`windows.md`](windows.md) owns the rule.
+
 `kvim-ui` also publishes the tree mechanics of one sidebar. `SidebarRow<R>`
 carries a depth, a collapsed flag, and a section index, through `with_depth`,
 `with_collapsed`, and `with_section`. `SidebarState<R>` hides a collapsed

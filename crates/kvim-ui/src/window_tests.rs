@@ -3,9 +3,9 @@
 use ratatui::layout::Rect;
 
 use crate::{
-    ChildSide, CloseOutcome, Direction, LayoutChange, LayoutFit, Orientation, RegionError,
-    RegionKind, SPLIT_DEPTH_MAX, SidebarSide, SplitError, WindowId, WindowLayout, WindowLimits,
-    WindowTree,
+    AdaptiveSplit, ChildSide, CloseOutcome, Direction, LayoutChange, LayoutFit, Orientation,
+    RegionError, RegionKind, SPLIT_DEPTH_MAX, SidebarSide, SplitError, WindowId, WindowLayout,
+    WindowLimits, WindowTree,
 };
 
 /// The surface identity that the host owns. The tree never reads the value.
@@ -966,4 +966,93 @@ fn an_unknown_region_reports_a_distinct_error() {
     );
     assert_eq!(tree.replace_surface(window, 11), Ok(SURFACE));
     assert_eq!(tree.surface(window), Some(&11));
+}
+
+const RATIO: f32 = 2.5;
+
+#[test]
+fn one_window_always_selects_vertical() {
+    // A full-width area would otherwise divide into two short windows, so
+    // the single-window exception comes before the ratio.
+    let tall = windows(40, 120);
+    assert_eq!(
+        tall.adaptive_orientation(AdaptiveSplit::Normal, RATIO),
+        Orientation::Vertical
+    );
+    assert_eq!(
+        tall.adaptive_orientation(AdaptiveSplit::Inverse, RATIO),
+        Orientation::Horizontal
+    );
+
+    let wide = windows(200, 40);
+    assert_eq!(
+        wide.adaptive_orientation(AdaptiveSplit::Normal, RATIO),
+        Orientation::Vertical
+    );
+}
+
+#[test]
+fn the_adaptive_rule_follows_the_ratio_beyond_one_window() {
+    // Two stacked windows of 200 by 20 leave a width above 20 times 2.5.
+    let mut wide = windows(200, 40);
+    split(&mut wide, Orientation::Horizontal);
+    assert_eq!(
+        wide.adaptive_orientation(AdaptiveSplit::Normal, RATIO),
+        Orientation::Vertical
+    );
+    assert_eq!(
+        wide.adaptive_orientation(AdaptiveSplit::Inverse, RATIO),
+        Orientation::Horizontal
+    );
+
+    // Two windows of 45 by 40 leave a width below 40 times 2.5.
+    let mut narrow = windows(90, 40);
+    split(&mut narrow, Orientation::Vertical);
+    assert_eq!(
+        narrow.adaptive_orientation(AdaptiveSplit::Normal, RATIO),
+        Orientation::Horizontal
+    );
+    assert_eq!(
+        narrow.adaptive_orientation(AdaptiveSplit::Inverse, RATIO),
+        Orientation::Vertical
+    );
+}
+
+#[test]
+fn the_ratio_boundary_requires_strictly_more_than_the_threshold() {
+    // The focused window is 50 cells wide and 20 cells tall: the width equals
+    // 20 times the ratio exactly, so the strict comparison selects Horizontal.
+    let mut tree = windows(50, 40);
+    split(&mut tree, Orientation::Horizontal);
+    assert_eq!(
+        tree.adaptive_orientation(AdaptiveSplit::Normal, RATIO),
+        Orientation::Horizontal
+    );
+}
+
+#[test]
+fn an_invalid_ratio_falls_back_to_the_neutral_ratio() {
+    let invalid = [f32::NAN, 0.0, -1.0, f32::INFINITY, f32::NEG_INFINITY];
+
+    // The focused window is 200 cells wide and 20 cells tall. The neutral
+    // ratio of 1.0 selects Vertical, because the width exceeds the height.
+    let mut wide = windows(200, 40);
+    split(&mut wide, Orientation::Horizontal);
+    for ratio in invalid {
+        assert_eq!(
+            wide.adaptive_orientation(AdaptiveSplit::Normal, ratio),
+            Orientation::Vertical
+        );
+    }
+
+    // The focused window is 20 cells wide and 800 cells tall. The neutral
+    // ratio selects Horizontal, because the width does not exceed the height.
+    let mut tall = windows(40, 800);
+    split(&mut tall, Orientation::Vertical);
+    for ratio in invalid {
+        assert_eq!(
+            tall.adaptive_orientation(AdaptiveSplit::Normal, ratio),
+            Orientation::Horizontal
+        );
+    }
 }

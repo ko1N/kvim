@@ -16,8 +16,8 @@ use kvim_editor::{Viewport, WindowState};
 use kvim_input::Command;
 use kvim_settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSettings};
 use kvim_ui::{
-    ChildSide, CloseOutcome, Direction, LayoutChange, Orientation, RegionKind, Sidebar,
-    SidebarSide, SplitError, WindowId, WindowLayout, WindowLimits, WindowTree,
+    AdaptiveSplit, ChildSide, CloseOutcome, Direction, LayoutChange, Orientation, RegionKind,
+    Sidebar, SidebarSide, SplitError, WindowId, WindowLayout, WindowLimits, WindowTree,
 };
 use kvim_workspace::BufferId;
 
@@ -46,15 +46,6 @@ impl WindowView {
             jumps: JumpList::default(),
         }
     }
-}
-
-/// The rule that the adaptive split command applies.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum AdaptiveSplit {
-    /// Select a vertical split for a wide window.
-    Normal,
-    /// Select a horizontal split for a wide window.
-    Inverse,
 }
 
 /// The result of one window command.
@@ -311,30 +302,13 @@ impl Windows {
 
     /// Returns the orientation that the adaptive split command selects.
     ///
-    /// One rule comes before the ratio: a terminal that holds exactly one
-    /// editor window always selects a vertical split, because a full-width
-    /// terminal would otherwise divide into two short windows. The inverse
-    /// command mirrors both the exception and the ratio.
+    /// [`kvim_ui::WindowTree::adaptive_orientation`] carries the rule. This
+    /// method reads the configured ratio and calls it, so kvim and every host
+    /// that composes a [`WindowTree`] share the same behavior.
     #[must_use]
     pub fn adaptive_orientation(&self, sense: AdaptiveSplit) -> Orientation {
         let ratio = self.settings.adaptive_split_ratio.get();
-        let normal = if self.window_count() == 1 {
-            Orientation::Vertical
-        } else {
-            let area = self
-                .layout()
-                .area(self.focused_window())
-                .unwrap_or(self.terminal());
-            if f32::from(area.width) > f32::from(area.height) * ratio {
-                Orientation::Vertical
-            } else {
-                Orientation::Horizontal
-            }
-        };
-        match sense {
-            AdaptiveSplit::Normal => normal,
-            AdaptiveSplit::Inverse => normal.inverse(),
-        }
+        self.tree.adaptive_orientation(sense, ratio)
     }
 
     /// Splits the focused window with the adaptive rule.

@@ -101,6 +101,18 @@ impl Orientation {
     }
 }
 
+/// The rule that the adaptive split command applies.
+///
+/// [`WindowTree::adaptive_orientation`] selects the orientation. Every host
+/// that binds an adaptive split key reaches the same rule through this type.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdaptiveSplit {
+    /// Select a vertical split for a wide window.
+    Normal,
+    /// Select a horizontal split for a wide window.
+    Inverse,
+}
+
 /// One of the four sides of a window rectangle.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Direction {
@@ -1183,6 +1195,77 @@ impl<S: Clone> WindowTree<S> {
         self.focus = Focus::Window;
         self.layout = layout;
         Ok(id)
+    }
+
+    /// Returns the orientation that the adaptive split command selects.
+    ///
+    /// One rule comes before the ratio: a tree that holds exactly one window
+    /// always selects a vertical split, because a full-width host area would
+    /// otherwise divide into two short windows. Beyond one window, the rule
+    /// compares the focused rectangle: a vertical split wins while the width
+    /// exceeds the height multiplied by `ratio`, and a horizontal split wins
+    /// otherwise. The inverse sense mirrors both the exception and the ratio.
+    ///
+    /// `ratio` names a width-to-height threshold, for example the value that
+    /// `kvim_settings::SplitRatio::get` returns. The caller may pass a value
+    /// that is not finite, zero, or negative. The rule then falls back to the
+    /// neutral ratio 1.0, so it stays one defined width-to-height comparison.
+    /// A comparison against a value such as `NaN` would otherwise silently
+    /// answer `false` every time and always select [`Orientation::Horizontal`].
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_ui::{AdaptiveSplit, ChildSide, Orientation, WindowLimits, WindowTree};
+    ///
+    /// // Two windows, so the single-window exception does not decide the split.
+    /// let mut wide = WindowTree::new("chat", Rect::new(0, 0, 200, 20), WindowLimits::default());
+    /// wide.split(Orientation::Horizontal, ChildSide::Second)
+    ///     .expect("the area is tall enough for two rows");
+    /// // The focused window is 200 cells wide and 10 cells tall: wider than 10 * 2.5.
+    /// assert_eq!(
+    ///     wide.adaptive_orientation(AdaptiveSplit::Normal, 2.5),
+    ///     Orientation::Vertical
+    /// );
+    ///
+    /// let mut tall = WindowTree::new("chat", Rect::new(0, 0, 20, 200), WindowLimits::default());
+    /// tall.split(Orientation::Horizontal, ChildSide::Second)
+    ///     .expect("the area is tall enough for two rows");
+    /// // The focused window is 20 cells wide and 100 cells tall: not wider than 100 * 2.5.
+    /// assert_eq!(
+    ///     tall.adaptive_orientation(AdaptiveSplit::Normal, 2.5),
+    ///     Orientation::Horizontal
+    /// );
+    /// ```
+    #[must_use]
+    pub fn adaptive_orientation(&self, sense: AdaptiveSplit, ratio: f32) -> Orientation {
+        // A ratio outside the validated domain falls back to the neutral
+        // ratio 1.0, so the comparison below stays a defined answer instead
+        // of silently favoring Horizontal through a false NaN comparison.
+        let ratio = if ratio.is_finite() && ratio > 0.0 {
+            ratio
+        } else {
+            1.0
+        };
+        let normal = if self.window_count() == 1 {
+            Orientation::Vertical
+        } else {
+            let area = self
+                .layout()
+                .area(self.focused_window())
+                .unwrap_or(self.area());
+            if f32::from(area.width) > f32::from(area.height) * ratio {
+                Orientation::Vertical
+            } else {
+                Orientation::Horizontal
+            }
+        };
+        match sense {
+            AdaptiveSplit::Normal => normal,
+            AdaptiveSplit::Inverse => normal.inverse(),
+        }
     }
 
     /// Closes the focused region.

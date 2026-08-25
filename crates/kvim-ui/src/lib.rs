@@ -121,8 +121,8 @@ pub use which_key::{
     WhichKeyError, WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles,
 };
 pub use window::{
-    ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit, Orientation,
-    RegionError, SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX,
+    AdaptiveSplit, ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit,
+    Orientation, RegionError, SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX,
     SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLimits,
     WindowTree,
 };

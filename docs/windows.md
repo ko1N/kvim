@@ -132,21 +132,39 @@ moment. The new window receives focus.
 
 ## Adaptive Split
 
-The adaptive split command selects the orientation from the current window
-rectangle. It selects a vertical split when the width exceeds the height
-multiplied by the adaptive ratio of 2.5. Otherwise it selects a horizontal
-split.
+`WindowTree::adaptive_orientation` owns the adaptive split rule. It selects the
+orientation from the current window rectangle and a caller-supplied ratio. It
+selects a vertical split when the width exceeds the height multiplied by the
+ratio. Otherwise it selects a horizontal split. One rule now serves kvim and
+every host that composes a `WindowTree`: the host supplies the ratio, and it
+reaches the rule through `kvim-ui` alone, with no dependency on `kvim-tui` or
+`EditorSettings`.
 
-One rule comes before the ratio: when the terminal holds exactly one editor
-window, the adaptive split always selects a vertical split. A full-width terminal
-would otherwise divide into two short windows. The reference configuration uses
-the same exception.
+`AdaptiveSplit` names the sense of the command: `Normal` or `Inverse`. It lives
+beside `WindowTree` in `kvim-ui`. `kvim-tui` re-exports it, so no present
+consumer of `kvim_tui::AdaptiveSplit` breaks.
+
+One rule comes before the ratio: when the tree holds exactly one window, the
+adaptive split always selects a vertical split. A full-width host area would
+otherwise divide into two short windows. The reference configuration uses the
+same exception.
 
 The inverse adaptive split command mirrors that decision. It selects a
 horizontal split when the width exceeds the height multiplied by the same ratio.
 Otherwise it selects a vertical split.
 
-The adaptive ratio belongs to `EditorSettings`.
+`kvim-ui` depends on no other kvim crate above `kvim-keymap` and `kvim-fuzzy`,
+so `WindowTree::adaptive_orientation` takes the ratio as a plain `f32`, not as
+`kvim_settings::SplitRatio`. A ratio that is not finite, zero, or negative
+falls back to the neutral ratio 1.0, so the rule always answers one defined
+orientation. Without that fallback, a comparison against a value such as `NaN`
+would silently answer `false` on every comparison and always select
+`Horizontal`.
+
+`Windows::adaptive_orientation`, in `kvim-tui`, reads `EditorSettings::adaptive_split_ratio`
+and calls `WindowTree::adaptive_orientation` with the validated ratio. It keeps
+its present signature, so the standalone editor and every present caller stay
+unchanged. The adaptive ratio belongs to `EditorSettings`.
 
 ## Focus And Resize
 
