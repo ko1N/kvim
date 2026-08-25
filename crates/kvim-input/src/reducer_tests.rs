@@ -298,3 +298,76 @@ fn a_picker_prompt_puts_the_picker_table_above_the_query() {
     assert_eq!(context.global, None);
     assert_eq!(context.focus.scope, BindingScope::Prompt);
 }
+
+/// Builds the outcome of one key that a preceding scope took from a pending
+/// sequence of this surface.
+fn interrupted(command: Command) -> Dispatch<Command> {
+    Dispatch::Interrupted {
+        owner: CommandOwner::Host,
+        command,
+    }
+}
+
+#[test]
+fn an_interruption_drops_the_count_of_the_cancelled_sequence() {
+    let mut reducer = reducer();
+    assert_eq!(
+        reducer.reduce(surface(Command::CountDigitThree)).reduction,
+        Reduction::Prefix
+    );
+    assert_eq!(reducer.phases().count, Phase::Pending);
+
+    let reduced = reducer.reduce(interrupted(Command::OpenFilePicker));
+    assert_eq!(
+        reduced.reduction,
+        operation(Command::OpenFilePicker, None, None),
+        "the count belongs to the cancelled sequence, so it qualifies no command"
+    );
+    assert_eq!(reducer.phases().count, Phase::Empty);
+    assert!(reduced.context.phases.is_idle());
+}
+
+#[test]
+fn an_interruption_disarms_a_waiting_operator() {
+    let mut reducer = reducer();
+    reducer.reduce(surface(Command::DeleteOverMotion));
+    assert_eq!(reducer.active_scope(), BindingScope::OperatorPending);
+
+    assert_eq!(
+        reducer
+            .reduce(interrupted(Command::OpenFilePicker))
+            .reduction,
+        operation(Command::OpenFilePicker, None, None)
+    );
+    assert_eq!(reducer.phases().operator, Phase::Empty);
+    assert_eq!(
+        reducer.active_scope(),
+        BindingScope::Mode(Mode::Normal),
+        "the cancelled operator no longer owns the keys"
+    );
+
+    assert_eq!(
+        reducer
+            .reduce(surface(Command::MoveNextWordStart))
+            .reduction,
+        operation(Command::MoveNextWordStart, None, None),
+        "the next motion is a plain motion, not the target of the cancelled operator"
+    );
+}
+
+#[test]
+fn an_interruption_drops_a_selected_register() {
+    let mut reducer = reducer();
+    reducer.reduce(surface(Command::SelectRegister));
+    assert_eq!(reducer.reduce(typed('a')).reduction, Reduction::Prefix);
+    assert_eq!(reducer.phases().register, Phase::Pending);
+
+    assert_eq!(
+        reducer
+            .reduce(interrupted(Command::OpenFilePicker))
+            .reduction,
+        operation(Command::OpenFilePicker, None, None),
+        "the register belongs to the cancelled sequence"
+    );
+    assert_eq!(reducer.phases().register, Phase::Empty);
+}

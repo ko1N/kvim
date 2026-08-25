@@ -329,6 +329,7 @@ Resolution returns one of these typed outcomes:
 
 - host command,
 - surface command,
+- interrupted command, which cancelled a pending sequence,
 - typed text for one owner,
 - pending sequence,
 - unsupported input,
@@ -352,6 +353,28 @@ armed the prefix first. Every further key then resolved in that scope alone.
 The resolver now re-evaluates the scope order at every key. kvim's own leader
 bindings therefore resolve correctly beside a host-global binding under the
 same prefix.
+
+A third pass follows those two passes. When no scope completes the sequence and
+no scope extends it, the resolver reads the pressed key alone. It reads that key
+against every scope that precedes the scope which armed the pending prefix, in
+scope order. The first of those scopes with a complete binding for that one key
+cancels the sequence and runs its command.
+
+The third pass reads the pressed key alone. It never reads a longer sequence
+that starts with that key. Such a key would cancel the sequence of the reader
+and run no command, which is worse than an unbound outcome.
+
+A host-global escape therefore leaves a focused surface at any moment. The scope
+that owns the pending prefix, and every scope after it, interrupt nothing. An
+editor key therefore never interrupts an editor sequence, so `d` and then `x`
+still aborts the operator, exactly as Vim aborts it. A context with one scope
+holds no preceding scope, so it resolves exactly as it resolved before.
+
+The interruption cancels the pending key prefix of the resolver only. The
+surface owns its count, its operator, its register, and its text object. The
+dispatch outcome names the interruption, so the owner of that state resets it
+before it runs the command. The semantic reducer of the editor does this itself.
+See [Reset Rules](#reset-rules).
 
 The which-key hints of a pending prefix span the same scope order. Each hint
 names its scope. Every hinted key resolves to some scope's binding. Two scopes
@@ -577,6 +600,7 @@ Pending input resets after:
 - a completed semantic operation,
 - a sequence mismatch,
 - a cancel with `Esc` or `Ctrl-C`,
+- an interruption by a preceding scope,
 - input that no binding accepts,
 - a mode change,
 - a focus change,
@@ -593,6 +617,10 @@ focus change, mode change, or overlay ownership change. Operator state resets
 after semantic completion, cancellation, invalid input, mode change, or focus
 change. A selected register resets after one semantic operation, invalid
 selection, cancellation, mode change, or focus change.
+
+An interruption resets the count, the operator, the register, and the text
+object before its command runs. Each one belongs to the cancelled sequence, so
+none of them qualifies the command that a preceding scope binds.
 
 A reset never changes buffer text and never cancels a running background
 request.

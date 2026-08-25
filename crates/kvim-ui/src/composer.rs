@@ -207,6 +207,23 @@ pub enum Composition<C, Sid> {
         /// The command that the sequence reached.
         command: C,
     },
+    /// A complete binding of a preceding scope cancelled the pending sequence
+    /// and ran.
+    ///
+    /// The resolver dropped its pending key prefix. The surface below owns its
+    /// own count, operator, register, and text object, and every one of them
+    /// belongs to the cancelled sequence. The host resets that surface, exactly
+    /// as it resets it for [`CompositionEffect::CancelPending`], and then it
+    /// runs the command on the named owner. See `docs/input-actions.md`.
+    Interrupted {
+        /// The surface that owns input, and whose pending semantic state the
+        /// host resets.
+        surface: Sid,
+        /// The side that executes the command.
+        owner: CommandOwner,
+        /// The command that the preceding scope binds to the pressed key.
+        command: C,
+    },
     /// One owner takes the input as literal text.
     Text {
         /// The surface that owns input.
@@ -989,6 +1006,10 @@ where
     /// The overlay scope answers first, the host-global scope answers next, and
     /// the scope of the input-owning surface answers last.
     ///
+    /// A complete binding of a preceding scope cancels a pending sequence of a
+    /// later scope and runs. That outcome is [`Composition::Interrupted`], and
+    /// the host resets the named surface before it runs the command.
+    ///
     /// `now` is the elapsed time that the host measured. It reaches the
     /// which-key overlay alone. `None` states that the host draws no which-key
     /// overlay, so pending input arms no timer and a host that reads no clock
@@ -999,6 +1020,11 @@ where
         match self.resolver.dispatch(&context, input, now) {
             Dispatch::Host { command } => Composition::Host { command },
             Dispatch::Surface { command } => Composition::Surface { surface, command },
+            Dispatch::Interrupted { owner, command } => Composition::Interrupted {
+                surface,
+                owner,
+                command,
+            },
             Dispatch::Text { owner, text } => Composition::Text {
                 surface,
                 owner,

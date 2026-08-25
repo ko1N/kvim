@@ -10,7 +10,11 @@
 //! sequence walks this order. The first scope that completes it wins. When no
 //! scope completes it, the first scope that can extend it owns that one key.
 //! The owning scope can change from one key to the next, because the walk
-//! runs again for every key. The which-key hints of the pending prefix walk
+//! runs again for every key. When neither walk takes the key, a complete
+//! binding of a scope that precedes the scope owning the pending prefix
+//! cancels that prefix and runs. A host-global escape therefore leaves a
+//! focused surface at any moment, and a key of the scope that owns the prefix
+//! never interrupts it. The which-key hints of the pending prefix walk
 //! the same order. Every hinted key resolves to some scope's binding.
 //! [`Resolver::idle_which_key`] walks the same order with no pending prefix.
 //! A host uses it to list a complete one-key binding of another scope, such
@@ -215,6 +219,24 @@ pub enum Dispatch<C> {
     /// The focused surface executes the command.
     Surface {
         /// The command that the sequence reached.
+        command: C,
+    },
+    /// A complete binding of a preceding scope cancelled the pending sequence
+    /// and ran.
+    ///
+    /// The pressed key completed no binding of the pending sequence, and it
+    /// extended none. A scope that precedes the scope owning that sequence
+    /// binds the key alone, so the resolver dropped the sequence and reached
+    /// that binding.
+    ///
+    /// The resolver owns the key prefix alone. A surface holds its own count,
+    /// operator, register, and text object, and every one of them belongs to
+    /// the cancelled sequence. The owner of that state must reset it before it
+    /// runs this command.
+    Interrupted {
+        /// The side that executes the command.
+        owner: CommandOwner,
+        /// The command that the preceding scope binds to the pressed key.
         command: C,
     },
     /// One owner takes the input as literal text.
@@ -703,15 +725,17 @@ where
     /// host-global scope, the way a host binds the key that returns focus to
     /// its own surface. The focused editor scope binds its own leader
     /// sequence. `Ctrl-E` never extends that leader, so only the idle view
-    /// surfaces it, marked with the host-global scope.
+    /// surfaces it, marked with the host-global scope. The example then presses
+    /// the leader and the escape. The host-global scope precedes the editor
+    /// scope, so the escape cancels the pending leader and runs.
     ///
     /// ```
     /// # use std::fmt;
     /// # use std::sync::Arc;
     /// # use std::time::Duration;
     /// # use kvim_keymap::{
-    /// #     Binding, CommandMetadata, DispatchContext, InputContextSnapshot, Key,
-    /// #     KeyCode, Registry, Resolver, Scope,
+    /// #     Binding, CommandMetadata, CommandOwner, Dispatch, DispatchContext, Input,
+    /// #     InputContextSnapshot, Key, KeyCode, Registry, Resolver, Scope,
     /// # };
     /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
     /// # enum Action { LeaveToChat, OpenFiles }
@@ -753,7 +777,7 @@ where
     ///     ],
     ///     4,
     /// )?;
-    /// let resolver = Resolver::new(Arc::new(registry), 4, Duration::from_millis(500));
+    /// let mut resolver = Resolver::new(Arc::new(registry), 4, Duration::from_millis(500));
     /// let context = DispatchContext {
     ///     overlay: None,
     ///     global: Some(HostScope::Global),
@@ -766,6 +790,19 @@ where
     /// assert_eq!(hints[0].hint().key(), escape);
     /// assert_eq!(hints[1].scope(), HostScope::Editor);
     /// assert_eq!(hints[1].hint().key(), leader);
+    ///
+    /// // The leader arms the editor scope, and no scope binds `<leader> Ctrl-E`.
+    /// let now = Some(Duration::ZERO);
+    /// assert_eq!(resolver.dispatch(&context, Input::Key(leader), now), Dispatch::Pending);
+    /// assert_eq!(
+    ///     resolver.dispatch(&context, Input::Key(escape), now),
+    ///     Dispatch::Interrupted {
+    ///         owner: CommandOwner::Host,
+    ///         command: Action::LeaveToChat,
+    ///     },
+    ///     "the host-global scope precedes the editor scope, so its escape cancels the leader"
+    /// );
+    /// assert!(resolver.pending_keys().is_empty(), "the cancelled prefix is gone");
     /// # Ok::<(), kvim_keymap::RegistryError<Action, HostScope>>(())
     /// ```
     #[must_use]
@@ -825,13 +862,15 @@ where
         now: Option<Duration>,
     ) -> Dispatch<C> {
         match std::mem::replace(&mut self.pending, PendingPrefix::Idle) {
-            PendingPrefix::Active { mut keys, .. } => {
+            PendingPrefix::Active {
+                scope, mut keys, ..
+            } => {
                 debug_assert!(
                     keys.len() < usize::from(self.keys_max),
                     "the registry rejects a binding above the pending-key maximum, so a prefix keeps room for one key"
                 );
                 keys.push(key);
-                self.continue_prefix(identity, keys, now)
+                self.continue_prefix(identity, scope, keys, now)
             }
             PendingPrefix::Idle => self.start_sequence(context, identity, key, now),
         }
@@ -880,12 +919,28 @@ where
     /// the order beats a longer sequence in any other scope. Both passes run
     /// in full before the next begins, so the scope that resolves this key
     /// can differ from the scope that armed the prefix one key ago.
+    ///
+    /// A third pass follows both. It reads the pressed key alone against every
+    /// scope that precedes `prefix_scope`, the scope that armed the prefix. The
+    /// first of those scopes with a complete binding for that one key cancels
+    /// the sequence and runs. `prefix_scope` and every scope after it bind
+    /// nothing here, so a key of the surface that owns the sequence still
+    /// aborts it. A context with one scope holds no preceding scope, so this
+    /// pass reads nothing there. See `docs/input-actions.md`.
     fn continue_prefix(
         &mut self,
         identity: ContextIdentity<S>,
+        prefix_scope: S,
         keys: Vec<Key>,
         now: Option<Duration>,
     ) -> Dispatch<C> {
+        let Some(pressed) = keys.last().copied() else {
+            debug_assert!(
+                false,
+                "`dispatch_key` pushed the pressed key onto the prefix"
+            );
+            return Dispatch::Unbound;
+        };
         for scope in identity.scope_order() {
             if let Some(bound) = self.registry.bound_command(scope, &keys) {
                 self.overlay = OverlayState::Hidden;
@@ -906,6 +961,25 @@ where
             }
         }
         self.overlay = OverlayState::Hidden;
+        debug_assert!(
+            identity.scope_order().any(|scope| scope == prefix_scope),
+            "the walk that armed this prefix chose its scope from this same order"
+        );
+        // The pass reads the pressed key alone. It never reads a longer
+        // sequence that starts with that key: such a key would cancel the
+        // sequence of the reader and run no command, which is worse than the
+        // unbound outcome below.
+        for scope in identity
+            .scope_order()
+            .take_while(|scope| *scope != prefix_scope)
+        {
+            if let Some(bound) = self.registry.bound_command(scope, &[pressed]) {
+                return Dispatch::Interrupted {
+                    owner: bound.owner,
+                    command: bound.command,
+                };
+            }
+        }
         Dispatch::Unbound
     }
 

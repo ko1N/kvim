@@ -132,6 +132,10 @@ fn report(dispatch: Dispatch<Action>) {
     match dispatch {
         Dispatch::Host { command } => println!("host runs `{}`", command.label()),
         Dispatch::Surface { command } => println!("surface runs `{}`", command.label()),
+        Dispatch::Interrupted { owner, command } => println!(
+            "{owner} runs `{}`, and the pending sequence is cancelled",
+            command.label()
+        ),
         Dispatch::Text { owner, text } => println!("{owner} takes text {text:?}"),
         Dispatch::Pending => println!("the sequence is pending"),
         Dispatch::Unsupported => println!("the terminal reported unsupported input"),

@@ -554,6 +554,22 @@ async fn step(
         Composition::Surface { surface, command } => {
             apply_surface(composer, host, editor, surface, command).await?;
         }
+        // A preceding scope cancelled the pending sequence of the surface that
+        // owns input. The host resets that surface first, so no count and no
+        // waiting operator of the cancelled sequence reaches this command.
+        Composition::Interrupted {
+            surface,
+            owner,
+            command,
+        } => {
+            let _context = reset_surface(host, editor, surface).await;
+            match owner {
+                CommandOwner::Host => apply_host(composer, host, editor, command).await?,
+                CommandOwner::Surface => {
+                    apply_surface(composer, host, editor, surface, command).await?;
+                }
+            }
+        }
         Composition::Text {
             surface,
             owner: _,

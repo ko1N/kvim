@@ -281,9 +281,20 @@ minimum dimensions, sidebar row metrics, input contexts, bindings, and styles.
 Every surface enters the composer with the `InputContextSnapshot` that it
 publishes, and the host republishes that snapshot after every input.
 
-One reduction routes a key or paste to one host command, surface command, typed
-text owner, pending sequence, unsupported input, or unbound result. The composer
-does not accept, store, or invoke a surface input or render callback.
+One reduction routes a key or paste to one host command, surface command,
+interrupted command, typed text owner, pending sequence, unsupported input, or
+unbound result. The composer does not accept, store, or invoke a surface input
+or render callback.
+
+`Composition::Interrupted` names the key that cancelled a pending sequence. A
+complete binding of a scope that precedes the scope of that sequence takes the
+key, so a host-global escape leaves a focused surface at any moment. See
+[`input-actions.md`](input-actions.md). The composer clears the pending key
+prefix alone. The named surface still holds its own count, operator, register,
+and text object, and every one of them belongs to the cancelled sequence. The
+host resets that surface with `EmbeddedEditor::cancel_pending`, exactly as it
+resets it for `CompositionEffect::CancelPending`, and then it runs the command
+on the named owner.
 
 The host supplies the elapsed time with each reduction, and that time reaches
 the which-key overlay alone. `WorkspaceComposer::reduce` therefore takes the

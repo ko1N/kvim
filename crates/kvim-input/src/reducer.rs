@@ -283,6 +283,10 @@ impl SemanticReducer {
     }
 
     /// Composes one dispatched input into the editor grammar.
+    ///
+    /// [`Dispatch::Interrupted`] resets every grammar phase before its command
+    /// runs, because a preceding scope cancelled the sequence that those
+    /// phases qualify. See `docs/input-actions.md`.
     pub fn reduce(&mut self, dispatch: Dispatch<Command>) -> Reduced {
         let reduction = match dispatch {
             Dispatch::Pending => {
@@ -296,6 +300,16 @@ impl SemanticReducer {
                 };
             }
             Dispatch::Host { command } | Dispatch::Surface { command } => self.command(command),
+            Dispatch::Interrupted { command, .. } => {
+                // A scope that precedes this surface cancelled the pending key
+                // sequence. The count, the operator, the register, and the text
+                // object all belong to that cancelled sequence, so the same
+                // reset that a cancel key performs runs before the command.
+                // Without it a surviving count would qualify this command, and
+                // a waiting operator would consume the next motion.
+                self.reset();
+                self.command(command)
+            }
             Dispatch::Text { text, .. } => self.text(text),
             Dispatch::Unsupported => {
                 self.reset();

@@ -758,3 +758,236 @@ fn the_registry_of_the_resolver_is_the_dispatch_table() {
         Some(Action::Down)
     );
 }
+
+/// Builds one resolver over the supplied bindings.
+fn resolver_over(bindings: Vec<Binding<Action, Table>>) -> Resolver<Action, Table> {
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    Resolver::new(Arc::new(registry), 4, DELAY)
+}
+
+/// Returns a context whose scopes are the host-global table and the focused
+/// table.
+fn host_and_focus() -> DispatchContext<Table> {
+    DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    }
+}
+
+#[test]
+fn a_host_global_binding_interrupts_a_pending_focused_prefix() {
+    // The host binds `Ctrl-Q` alone, the way a host binds the key that returns
+    // focus to its own surface. The focused scope holds the two-key sequence
+    // `g g`. No scope binds `g Ctrl-Q`, and no scope extends it, so the third
+    // pass reads `Ctrl-Q` alone against the host scope, which precedes the
+    // focused scope.
+    let escape = Key::ctrl(KeyCode::Char('q'));
+    let mut resolver = resolver_over(vec![
+        Binding::host(Table::Global, &[escape], Action::Quit),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending,
+        "the focused scope arms the prefix"
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(escape), Some(NOW)),
+        Dispatch::Interrupted {
+            owner: CommandOwner::Host,
+            command: Action::Quit
+        },
+        "the host scope precedes the focused scope, so its escape cancels the prefix and runs"
+    );
+    assert!(
+        resolver.pending_keys().is_empty(),
+        "the interruption leaves no prefix behind"
+    );
+}
+
+#[test]
+fn a_key_of_the_scope_that_owns_the_prefix_does_not_interrupt_it() {
+    // `d` opens the operator sequence of the focused scope, and the same scope
+    // binds `x` alone. Vim aborts the operator there, so `x` must abort the
+    // sequence instead of running. The host scope precedes the focused scope
+    // but binds no `x`, so it takes nothing either.
+    let mut resolver = resolver_over(vec![
+        Binding::host(
+            Table::Global,
+            &[Key::ctrl(KeyCode::Char('q'))],
+            Action::Quit,
+        ),
+        Binding::surface(Table::Normal, &[ch('d'), ch('w')], Action::Down),
+        Binding::surface(Table::Normal, &[ch('x')], Action::Close),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('d')), Some(NOW)),
+        Dispatch::Pending,
+        "the focused scope owns the operator prefix"
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('x')), Some(NOW)),
+        Dispatch::Unbound,
+        "a key of the scope that owns the prefix aborts the sequence, exactly as Vim aborts it"
+    );
+    assert!(resolver.pending_keys().is_empty());
+}
+
+#[test]
+fn an_overlay_interrupts_a_host_prefix_and_the_focused_scope_does_not() {
+    // The host scope arms the prefix, so only the overlay scope precedes it.
+    // The overlay key therefore interrupts, and the focused key does not.
+    let bindings = vec![
+        Binding::host(Table::Global, &[ch('g'), ch('g')], Action::Quit),
+        Binding::surface(Table::Overlay, &[ch('p')], Action::PickNext),
+        Binding::surface(Table::Normal, &[ch('j')], Action::Down),
+    ];
+    let context = DispatchContext {
+        overlay: Some(Table::Overlay),
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    let mut resolver = resolver_over(bindings.clone());
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending,
+        "the host scope arms the prefix, because the overlay scope holds no `g`"
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('p')), Some(NOW)),
+        Dispatch::Interrupted {
+            owner: CommandOwner::Surface,
+            command: Action::PickNext
+        },
+        "the overlay scope precedes the host scope"
+    );
+
+    let mut resolver = resolver_over(bindings);
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('j')), Some(NOW)),
+        Dispatch::Unbound,
+        "the focused scope follows the host scope, so its own key interrupts nothing"
+    );
+}
+
+#[test]
+fn a_context_with_one_scope_holds_no_preceding_scope() {
+    // The one scope of this context binds the two-key sequence and the one-key
+    // command together. A preceding scope with that one-key command would
+    // interrupt, so this test states that no scope precedes the owner here.
+    let mut resolver = resolver_over(vec![
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+        Binding::surface(Table::Normal, &[ch('j')], Action::Down),
+    ]);
+    let context = normal();
+    assert_eq!(
+        scope_order(&context).collect::<Vec<_>>(),
+        vec![Table::Normal],
+        "one scope answers, so the interruption pass reads nothing"
+    );
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('j')), Some(NOW)),
+        Dispatch::Unbound,
+        "the one scope owns its own prefix, so its own key breaks the sequence"
+    );
+    assert!(resolver.pending_keys().is_empty());
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Surface {
+            command: Action::FirstLine
+        },
+        "the complete sequence still resolves, key for key"
+    );
+}
+
+#[test]
+fn a_key_that_only_opens_a_group_of_a_preceding_scope_does_not_interrupt() {
+    // The host scope binds `z z` and binds `z` alone to nothing. An
+    // interruption on `z` would cancel the sequence of the reader and run no
+    // command, so the pass reads the pressed key alone and takes nothing.
+    let mut resolver = resolver_over(vec![
+        Binding::host(Table::Global, &[ch('z'), ch('z')], Action::Quit),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('z')), Some(NOW)),
+        Dispatch::Unbound,
+        "a key that only opens a group of a preceding scope interrupts nothing"
+    );
+}
+
+#[test]
+fn a_completion_of_the_owning_scope_beats_an_interruption() {
+    // The host scope binds `x` alone, and the focused scope completes `g x`.
+    // The first pass runs before the interruption pass, so the completion wins.
+    let mut resolver = resolver_over(vec![
+        Binding::host(Table::Global, &[ch('x')], Action::Quit),
+        Binding::surface(Table::Normal, &[ch('g'), ch('x')], Action::FirstLine),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('x')), Some(NOW)),
+        Dispatch::Surface {
+            command: Action::FirstLine
+        },
+        "a complete binding of any scope beats the interruption of a preceding scope"
+    );
+}
+
+#[test]
+fn a_longer_sequence_of_the_owning_scope_beats_an_interruption() {
+    // The host scope binds `x` alone, and the focused scope extends `g x` to a
+    // three-key sequence. The second pass runs before the interruption pass,
+    // so the sequence stays pending.
+    let mut resolver = resolver_over(vec![
+        Binding::host(Table::Global, &[ch('x')], Action::Quit),
+        Binding::surface(
+            Table::Normal,
+            &[ch('g'), ch('x'), ch('y')],
+            Action::FirstLine,
+        ),
+    ]);
+    let context = host_and_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('x')), Some(NOW)),
+        Dispatch::Pending,
+        "a longer sequence of any scope beats the interruption of a preceding scope"
+    );
+    assert_eq!(resolver.pending_keys(), [ch('g'), ch('x')]);
+}
