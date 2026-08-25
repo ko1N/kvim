@@ -17,6 +17,7 @@ test-support = []
 [dependencies]
 # kvim crates
 kvim-core.workspace = true
+kvim-fuzzy.workspace = true
 kvim-path.workspace = true
 kvim-runtime.workspace = true
 kvim-settings.workspace = true

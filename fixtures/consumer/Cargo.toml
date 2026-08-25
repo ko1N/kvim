@@ -18,6 +18,7 @@ version = "0.1.0"
 # kvim public packages
 kvim-core = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-editor = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
+kvim-fuzzy = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-input = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-keymap = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }
 kvim-lsp = { git = "https://github.com/ko1N/kvim.git", rev = "1faef123cdfe85164f19013042ee732cf1e6821c" }

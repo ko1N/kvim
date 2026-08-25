@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 
 use super::buffer::BufferId;
-use super::fuzzy::score_candidate;
+use kvim_fuzzy::score_candidate;
 
 /// The largest number of candidates that one picker keeps.
 ///

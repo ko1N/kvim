@@ -1,0 +1,10 @@
+[package]
+name = "kvim-fuzzy"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+# The crate holds one deterministic scoring rule and no dependency, so every
+# consumer of the score compiles the rule alone.
+[dependencies]

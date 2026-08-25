@@ -24,7 +24,7 @@ readonly REPO_ROOT
 readonly ARCHITECTURE="$REPO_ROOT/docs/architecture.md"
 
 # The supported external packages of `docs/architecture.md`.
-readonly PUBLIC_PACKAGES="kvim-path kvim-core kvim-settings kvim-keymap kvim-input kvim-editor kvim-syntax kvim-lsp kvim-ui kvim-tui"
+readonly PUBLIC_PACKAGES="kvim-path kvim-fuzzy kvim-core kvim-settings kvim-keymap kvim-input kvim-editor kvim-syntax kvim-lsp kvim-ui kvim-tui"
 
 # The external crates that one isolation charter refuses.
 #

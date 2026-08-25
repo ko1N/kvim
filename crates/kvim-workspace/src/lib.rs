@@ -48,7 +48,6 @@ mod clipboard;
 mod diff;
 mod diff_capture;
 mod file;
-mod fuzzy;
 mod git;
 mod mutation;
 mod picker;
@@ -92,12 +91,15 @@ pub use file::{
     FileChange, FileIdentity, FileTarget, LoadedFile, OpenError, SaveError, SavedFile, identity,
     load, render_content, save,
 };
-pub use fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
+// The scoring rule names no path and no buffer, so it lives in its own charter
+// and this crate consumes it. The re-export keeps the picker vocabulary of this
+// crate in one place. See `docs/files.md`.
 pub use git::{
     GIT_PATH_DEPTH_MAX, GIT_PREFIX_OUTPUT_BYTES_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE,
     GIT_STATUS_ENTRIES_MAX, GIT_STATUS_OUTPUT_BYTES_MAX, GitExecutionPolicy, GitStatus,
     GitStatusFailure, GitStatusRead, GitStatusRequest, GitStatusSnapshot,
 };
+pub use kvim_fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
     MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite, TakenDestination,

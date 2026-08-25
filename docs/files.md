@@ -866,6 +866,12 @@ column shows the results alone, over the complete width.
 
 ### Ranking
 
+`kvim-fuzzy` owns the scoring rule. The rule names no path, no buffer, and no
+picker, so a host that ranks a list of its own values holds the same score
+without this charter. [`architecture.md`](architecture.md) records the crate.
+`kvim-workspace` consumes it and re-exports it, so the picker vocabulary of that
+crate stays in one place.
+
 The fuzzy match is a subsequence match without case. Each matched character
 scores by its position: a character that follows the previous match scores most,
 a character at the start of one word scores next, and every other character

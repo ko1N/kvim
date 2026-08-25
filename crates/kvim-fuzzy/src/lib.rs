@@ -1,8 +1,31 @@
-//! The deterministic fuzzy score of one picker candidate.
+//! The deterministic fuzzy score of one candidate against one query.
 //!
-//! The module is pure. It reads no clock, no filesystem, and no process, so one
-//! query and one candidate text always produce one score. The picker ranks its
-//! rows with these scores. See `docs/files.md`.
+//! The crate is pure. It reads no clock, no filesystem, and no process, so one
+//! query and one candidate text always produce one score. It names no path, no
+//! buffer, and no editor concept, so any caller that ranks a list of its own
+//! values can hold it.
+//!
+//! [`score_candidate`] scores one candidate that carries a name and a directory,
+//! which is the shape that a file picker holds. A caller with one text alone
+//! passes an empty directory. The kvim picker ranks its rows with these scores;
+//! see `docs/files.md`.
+//!
+//! # Examples
+//!
+//! ```
+//! use kvim_fuzzy::score_candidate;
+//!
+//! // A run of characters outranks the same characters spread apart.
+//! let dense = score_candidate("main", "main.rs", "").expect("the name answers");
+//! let spread = score_candidate("main", "m_a_i_n.rs", "").expect("the name answers");
+//! assert!(dense > spread);
+//!
+//! // A query that the candidate does not hold scores nothing.
+//! assert_eq!(score_candidate("xyz", "main.rs", "src"), None);
+//!
+//! // An empty query keeps the order of the source list.
+//! assert_eq!(score_candidate("", "main.rs", "src"), Some(0));
+//! ```
 
 /// The largest number of characters that one scored text holds.
 ///
@@ -46,7 +69,7 @@ const WORD_BOUNDARIES: [char; 7] = ['/', '\\', '_', '-', '.', ' ', ':'];
 /// # Examples
 ///
 /// ```
-/// use kvim_workspace::score_candidate;
+/// use kvim_fuzzy::score_candidate;
 ///
 /// // The filename weighs more than the directory.
 /// let name = score_candidate("main", "main.rs", "src").expect("the name holds the query");
@@ -135,5 +158,4 @@ fn equal_ignoring_case(left: char, right: char) -> bool {
 }
 
 #[cfg(test)]
-#[path = "fuzzy_tests.rs"]
 mod tests;

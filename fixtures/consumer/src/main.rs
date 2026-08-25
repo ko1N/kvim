@@ -19,6 +19,7 @@ use kvim_core::TextBuffer;
 use kvim_editor::{
     EditContext, EditingState, RegisterValue, Registers, Viewport, WindowState,
 };
+use kvim_fuzzy::score_candidate;
 use kvim_input::{Command, Registry as InputRegistry, Resolution, Resolver as InputResolver};
 use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
@@ -96,6 +97,7 @@ fn main() {
     check_path();
     check_syntax();
     check_keymap();
+    check_fuzzy();
     check_input();
     check_editor();
     check_ui();
@@ -153,6 +155,20 @@ fn check_keymap() {
     let pending = resolver.dispatch(&context, Input::Key(leader), None);
     assert_eq!(pending, Dispatch::Pending, "the leader opens a sequence");
     println!("the leader key answers {pending:?}");
+}
+
+/// Ranks one list of host values against one query.
+///
+/// The scorer names no path and no buffer, so this consumer ranks its own
+/// values with it.
+fn check_fuzzy() {
+    let rows = ["first session", "second session", "notes"];
+    let mut ranked: Vec<(i32, &str)> = rows
+        .iter()
+        .filter_map(|row| Some((score_candidate("ses", row, "")?, *row)))
+        .collect();
+    ranked.sort_by(|left, right| right.0.cmp(&left.0));
+    println!("the query ses ranks {} of {} rows", ranked.len(), rows.len());
 }
 
 /// Reads one resolved command, count, and register name from the preset.

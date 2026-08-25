@@ -495,6 +495,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "kvim-fuzzy"
+version = "0.1.0"
+
+[[package]]
 name = "kvim-input"
 version = "0.1.0"
 dependencies = [
@@ -649,6 +653,7 @@ dependencies = [
  "blake3",
  "cap-std",
  "kvim-core",
+ "kvim-fuzzy",
  "kvim-path",
  "kvim-runtime",
  "kvim-settings",

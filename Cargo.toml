@@ -4,6 +4,7 @@ members = [
   "crates/kvim-clipboard",
   "crates/kvim-core",
   "crates/kvim-editor",
+  "crates/kvim-fuzzy",
   "crates/kvim-input",
   "crates/kvim-keymap",
   "crates/kvim-language",
@@ -33,6 +34,7 @@ version = "0.1.0"
 kvim-clipboard = { path = "crates/kvim-clipboard" }
 kvim-core = { path = "crates/kvim-core" }
 kvim-editor = { path = "crates/kvim-editor" }
+kvim-fuzzy = { path = "crates/kvim-fuzzy" }
 kvim-input = { path = "crates/kvim-input" }
 kvim-keymap = { path = "crates/kvim-keymap" }
 kvim-language = { path = "crates/kvim-language" }

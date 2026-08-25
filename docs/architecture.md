@@ -38,6 +38,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
 | `kvim-keymap` | Terminal-neutral keys, generic bindings, the shared resolver with its one pending sequence, published input contexts, dispatch ownership, and which-key hints. |
 | `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
+| `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
 | `kvim-ui` | Generic ratatui split, sidebar, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
@@ -117,6 +118,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | Layer | Crate | Depends on kvim crates |
 |---|---|---|
 | 0 | `kvim-keymap` | none |
+| 0 | `kvim-fuzzy` | none |
 | 0 | `kvim-path` | none |
 | 0 | `kvim-settings` | none |
 | 0 | `kvim-syntax` | none |
@@ -129,7 +131,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-ui` | `kvim-keymap` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
-| 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings` |
 | 4 | `kvim-tui` | every library above, including `kvim-terminal` for the normalized event value alone |
 | 5 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
 
@@ -178,15 +180,19 @@ owns its meaning. A reverse dependency is a Cargo cycle, so it fails the build.
 
 ## External Consumption
 
-The supported external packages are `kvim-path`, `kvim-core`, `kvim-settings`,
-`kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`, `kvim-lsp`,
-`kvim-ui`, and the embedded facade in `kvim-tui`.
+The supported external packages are `kvim-path`, `kvim-fuzzy`, `kvim-core`,
+`kvim-settings`, `kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`,
+`kvim-lsp`, `kvim-ui`, and the embedded facade in `kvim-tui`.
 
 `kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
 so its action list is public. A consumer that resolves keys itself reads the
 resolved command, count, and register name from it. `kvim-editor` publishes the
 modal editing state over one `TextBuffer`, so a consumer can put a real Vim
 buffer behind its own text field without the terminal session.
+
+`kvim-fuzzy` holds the ranking rule alone. A host that ranks a list of its own
+values takes the score without the file, buffer, and picker charter of
+`kvim-workspace`, which is not a supported package.
 
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and
