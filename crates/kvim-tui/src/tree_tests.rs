@@ -2805,3 +2805,20 @@ fn a_watched_change_captures_the_open_review_again() {
         assert!(queued < 8, "the outbox stays bounded");
     }
 }
+
+#[test]
+fn the_refresh_key_captures_the_review_again() {
+    // The file watch skips the Git directory, so a staged change reaches no
+    // burst. The reader asks for the capture instead.
+    let (_dir, mut session) = workspace();
+    type_keys(&mut session, " gg");
+    while session.take_diff_request().is_some() {}
+
+    press(&mut session, 'R');
+
+    let mut queued = 0;
+    while session.take_diff_request().is_some() {
+        queued += 1;
+    }
+    assert_eq!(queued, 2, "the refresh asks for both halves");
+}

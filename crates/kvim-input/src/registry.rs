@@ -846,6 +846,11 @@ fn add_review_bindings(table: &mut Vec<Binding>) {
         Command::PreviousReviewSection,
     );
 
+    // The file watch skips the Git directory, so an index write reaches no
+    // burst and a staged change needs this key. The sidebar refreshes with the
+    // same one. See `docs/diff-view.md`.
+    add_scoped(table, REVIEW, &[ch('R')], Command::RefreshReview);
+
     // Marking a hunk read is the one state that a review records.
     add_scoped(table, REVIEW, &[ch('m')], Command::MarkHunkRead);
 

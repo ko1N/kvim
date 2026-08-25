@@ -14,7 +14,7 @@ use kvim_path::WorktreeRelativePath;
 use kvim_ui::{RowKind, SidebarRow, SidebarState};
 
 use crate::tree::{GUIDE_BLANK, GUIDE_ELBOW, GUIDE_TRUNK, TREE_INDENT_CELLS};
-use kvim_workspace::{DiffChange, DiffContent, FileDiff, LineOrigin, ReviewState};
+use kvim_workspace::{DiffChange, DiffContent, FileDiff, GitStatus, LineOrigin, ReviewState};
 
 /// The two sections that the panel shows.
 ///
@@ -34,6 +34,17 @@ impl ChangeSection {
         match self {
             Self::Staged => "Staged",
             Self::Unstaged => "Unstaged",
+        }
+    }
+
+    /// Returns the repository state that the files of the section carry.
+    ///
+    /// The panel then draws the mark and the color that the file tree draws for
+    /// the same state, so one reader reads one vocabulary. See `docs/git.md`.
+    pub(super) const fn git_status(self) -> GitStatus {
+        match self {
+            Self::Staged => GitStatus::Staged,
+            Self::Unstaged => GitStatus::Modified,
         }
     }
 }

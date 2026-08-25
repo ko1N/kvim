@@ -2,6 +2,8 @@
 
 use super::*;
 
+use kvim_settings::WindowSettings;
+
 use kvim_workspace::{
     BaseRevision, CandidateAuthority, DiffChange, DiffContent, DiffLine, DiffLineText, DiffOldSide,
     DiffTarget, DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority, Hunk, HunkId,
@@ -113,6 +115,7 @@ fn surface(unstaged: Vec<FileDiff>) -> ReviewSurface {
         None,
         Some(candidate(unstaged, [1; 32])),
         DiffSettings::default(),
+        WindowSettings::default().resize_step_cells,
         20,
     )
 }
@@ -142,6 +145,7 @@ fn the_cursor_starts_in_the_half_that_a_reader_works_on() {
         Some(candidate(vec![added("staged.txt", 1, &["one"])], [2; 32])),
         Some(candidate(vec![added("unstaged.txt", 1, &["two"])], [3; 32])),
         DiffSettings::default(),
+        WindowSettings::default().resize_step_cells,
         20,
     );
     assert_eq!(both.section(), ChangeSection::Unstaged);
@@ -151,6 +155,7 @@ fn the_cursor_starts_in_the_half_that_a_reader_works_on() {
         Some(candidate(vec![added("staged.txt", 1, &["one"])], [4; 32])),
         Some(candidate(Vec::new(), [5; 32])),
         DiffSettings::default(),
+        WindowSettings::default().resize_step_cells,
         20,
     );
     assert_eq!(staged_only.section(), ChangeSection::Staged);
@@ -288,6 +293,7 @@ fn the_panel_follows_the_cursor_and_names_both_halves() {
             [21; 32],
         )),
         DiffSettings::default(),
+        WindowSettings::default().resize_step_cells,
         20,
     );
 
@@ -578,6 +584,7 @@ fn one_key_walks_the_sections_of_the_review() {
             [41; 32],
         )),
         DiffSettings::default(),
+        WindowSettings::default().resize_step_cells,
         20,
     );
 
@@ -619,12 +626,17 @@ fn a_review_with_one_section_walks_to_nothing_new() {
 fn the_panel_resizes_on_the_one_axis_that_the_review_holds() {
     let mut review = surface(vec![added("a.txt", 1, &["one"])]);
     let opened = review.panel_cells();
+    let step = WindowSettings::default().resize_step_cells;
 
     assert_eq!(
         review.apply(Command::ResizeWindowLeft, None),
         ReviewOutcome::Changed
     );
-    assert!(review.panel_cells() > opened, "the panel widened");
+    assert_eq!(
+        review.panel_cells(),
+        opened + step,
+        "the panel resizes by the window step, not a step of its own"
+    );
 
     assert_eq!(
         review.apply(Command::ResizeWindowRight, None),
@@ -651,4 +663,61 @@ fn the_panel_resizes_on_the_one_axis_that_the_review_holds() {
         review.apply(Command::ResizeWindowLeft, None),
         ReviewOutcome::Unchanged
     );
+}
+
+#[test]
+fn staging_every_change_moves_the_reader_to_the_staged_half() {
+    // A reader stages the work that they were reading. The unstaged half then
+    // publishes nothing, so its tab closes, the staged tab opens, and the
+    // reader sees the same files instead of an empty view.
+    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    assert_eq!(review.section(), ChangeSection::Unstaged);
+    assert_eq!(review.sections().len(), 1);
+
+    // The captures of a staged worktree: the unstaged half is empty and the
+    // staged half holds the file.
+    review.reload(ChangeSection::Unstaged, candidate(Vec::new(), [50; 32]));
+    review.reload(
+        ChangeSection::Staged,
+        candidate(vec![added("a.txt", 1, &["one"])], [51; 32]),
+    );
+
+    assert_eq!(review.sections().len(), 1, "the empty half opened no tab");
+    assert_eq!(
+        review.section(),
+        ChangeSection::Staged,
+        "the reader follows the work"
+    );
+    assert_eq!(review.body_path(), Some(&path("a.txt")));
+    assert_eq!(review.changes().rows().len(), 1, "the panel names the file");
+}
+
+#[test]
+fn a_half_that_fills_again_opens_its_tab_in_its_own_place() {
+    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+
+    // Both halves hold work, so the strip names both in a fixed order.
+    review.reload(
+        ChangeSection::Staged,
+        candidate(vec![added("b.txt", 1, &["two"])], [52; 32]),
+    );
+    let labels: Vec<&str> = review.sections().tabs().map(|tab| tab.label).collect();
+    assert_eq!(labels, vec!["Unstaged", "Staged"]);
+    assert_eq!(
+        review.section(),
+        ChangeSection::Unstaged,
+        "the active section stays active while it holds work"
+    );
+
+    // The unstaged half empties and fills again, and its tab returns to the
+    // front instead of landing behind the staged one.
+    review.reload(ChangeSection::Unstaged, candidate(Vec::new(), [53; 32]));
+    assert_eq!(review.section(), ChangeSection::Staged);
+    review.reload(
+        ChangeSection::Unstaged,
+        candidate(vec![added("a.txt", 1, &["one"])], [54; 32]),
+    );
+
+    let labels: Vec<&str> = review.sections().tabs().map(|tab| tab.label).collect();
+    assert_eq!(labels, vec!["Unstaged", "Staged"]);
 }

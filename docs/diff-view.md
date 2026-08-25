@@ -187,6 +187,7 @@ region never moves the other one.
 | `]f`, `[f` | The next and the previous changed file |
 | `n`, `N` | The next and the previous unread hunk |
 | `m` | Mark the hunk at the cursor as read |
+| `R` | Capture the changes of the worktree again |
 | `Enter` | Open the file of the hunk at its first line |
 
 A count before a motion names the number of steps, as it does everywhere else.
@@ -223,6 +224,21 @@ hunk becomes unread again.
 The review queues no capture while captures of its own have not resolved, so a
 burst of changes never grows the outbox. The next burst after they resolve
 captures the state that the burst left behind.
+
+The strip of sections follows every capture. Staging moves work from one half to
+the other, so the tab of a half that empties closes, the tab of a half that
+fills opens, and a reader whose section emptied follows the work instead of
+watching an empty view.
+
+### The Git Directory
+
+The file watch skips the Git directory, because a repository writes many files
+there and a burst of them would name no change of the worktree. An index write
+therefore reaches no burst, so `git add` alone updates no open review.
+
+`R` captures the worktree again, exactly as the same key refreshes the file
+tree. A later release can watch the index instead, which would need the watch
+registration to hold one exception to the ignored names.
 
 ## The Cursor Row
 

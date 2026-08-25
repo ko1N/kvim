@@ -4515,6 +4515,12 @@ impl Session {
 
     /// Applies one review command to the open review.
     fn apply_review_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+        if command == Command::RefreshReview {
+            // The reader asked, so the capture runs even while one waits.
+            self.diff_outbox.clear();
+            self.request_diff_captures();
+            return Redraw::Needed;
+        }
         let Some(review) = self.review.as_mut() else {
             // The captures have not resolved yet, so the review holds nothing
             // to walk. Leaving it still works, because the session owns that.
@@ -4585,6 +4591,7 @@ impl Session {
                             staged,
                             unstaged,
                             self.settings.diff,
+                            self.settings.windows.resize_step_cells,
                             review_body_rows(self.area),
                         ));
                     }

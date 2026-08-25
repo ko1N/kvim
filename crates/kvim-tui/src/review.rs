@@ -14,7 +14,8 @@ use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
 use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState, TabStrip};
 use kvim_workspace::{
-    DiffContent, Expansion, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff, align_hunk,
+    DiffContent, Expansion, GitStatus, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff,
+    align_hunk,
 };
 
 use ratatui::buffer::Buffer as CellBuffer;
@@ -27,6 +28,9 @@ use crate::diff_view::{
 };
 use crate::icons::{directory_icon, file_icon};
 use crate::theme::{Theme, ThemeRole};
+use crate::tree::{
+    GIT_MARK_CELLS, MARK_CELLS, SELECTION_MARK, mark_cells, paint_span, render_git_mark,
+};
 
 /// The region of the review that owns the keys.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -109,6 +113,12 @@ pub(super) struct ReviewSurface {
     view: DiffView,
     /// The rows of the changes panel.
     changes: SidebarState<ChangesRow>,
+    /// The drawn text of each panel row, in row order.
+    ///
+    /// The counts of one row walk every hunk of its file, so the panel builds
+    /// them when the rows change and the drawing reads them. The file tree
+    /// builds its row text the same way.
+    panel_rows: Vec<PanelRow>,
     /// The region that owns the keys.
     focus: ReviewFocus,
     /// The rows of the diff body, for the selected file.
@@ -126,6 +136,11 @@ pub(super) struct ReviewSurface {
     height_rows: usize,
     /// The width of the changes panel, in cells.
     panel_cells: u16,
+    /// The number of cells that one resize step changes.
+    ///
+    /// The value is the window resize step of `EditorSettings`, so the panel
+    /// resizes exactly as fast as every window and every sidebar.
+    resize_step_cells: u16,
 }
 
 impl ReviewSurface {
@@ -138,34 +153,24 @@ impl ReviewSurface {
         staged: Option<WorktreeDiff>,
         unstaged: Option<WorktreeDiff>,
         settings: DiffSettings,
+        resize_step: u16,
         height_rows: u16,
     ) -> Self {
         let staged = staged.map(ReviewState::new);
         let unstaged = unstaged.map(ReviewState::new);
-        let section = if publishes_change(unstaged.as_ref()) {
-            ChangeSection::Unstaged
-        } else {
-            ChangeSection::Staged
-        };
-        let mut sections = TabStrip::default();
-        // The unstaged half comes first, because that is the half a reader
-        // works on. A section that publishes no change opens no tab.
-        for (candidate, label) in [
-            (unstaged.as_ref(), ChangeSection::Unstaged),
-            (staged.as_ref(), ChangeSection::Staged),
-        ] {
-            if publishes_change(candidate) {
-                let _ = sections.open(label, label.heading());
-            }
-        }
-        let _ = sections.select(&section);
-
         let mut surface = Self {
             staged,
             unstaged,
-            sections,
+            // The unstaged half comes first, because that is the half a reader
+            // works on. `refresh_sections` opens the tabs below.
+            sections: TabStrip::default(),
             view: settings.view,
-            changes: SidebarState::new(height_rows.saturating_sub(STRIP_ROWS)),
+            changes: SidebarState::new(
+                height_rows
+                    .saturating_sub(STRIP_ROWS)
+                    .saturating_sub(PANEL_HEADER_ROWS),
+            ),
+            panel_rows: Vec::new(),
             focus: ReviewFocus::default(),
             body: Vec::new(),
             body_path: None,
@@ -173,7 +178,9 @@ impl ReviewSurface {
             first_row: 0,
             height_rows: usize::from(height_rows.saturating_sub(STRIP_ROWS)),
             panel_cells: CHANGES_PANEL_CELLS,
+            resize_step_cells: resize_step,
         };
+        surface.refresh_sections();
         surface.refresh_changes();
         surface.rebuild_body();
         surface
@@ -208,6 +215,11 @@ impl ReviewSurface {
     /// Returns the rows of the changes panel.
     pub(super) const fn changes(&self) -> &SidebarState<ChangesRow> {
         &self.changes
+    }
+
+    /// Returns the drawn text of each panel row, in row order.
+    pub(super) fn panel_rows(&self) -> &[PanelRow] {
+        &self.panel_rows
     }
 
     /// Returns the review that the cursor walks.
@@ -258,7 +270,10 @@ impl ReviewSurface {
         // that counted the strip would scroll one row too late.
         let rows = height_rows.saturating_sub(STRIP_ROWS);
         self.height_rows = usize::from(rows);
-        self.changes.set_height_rows(rows);
+        // The panel carries its own header below the strip, so it holds one
+        // row less than the body.
+        self.changes
+            .set_height_rows(rows.saturating_sub(PANEL_HEADER_ROWS));
         self.reconcile_viewport();
     }
 
@@ -328,7 +343,8 @@ impl ReviewSurface {
     /// The panel stays inside its bounds, so no resize hides it and none takes
     /// the diff.
     fn resize_panel(&mut self, step: i16) -> ReviewOutcome {
-        let wanted = i32::from(self.panel_cells) + i32::from(step) * i32::from(RESIZE_STEP_CELLS);
+        let step_cells = self.resize_step_cells.max(1);
+        let wanted = i32::from(self.panel_cells) + i32::from(step) * i32::from(step_cells);
         let width = wanted.clamp(
             i32::from(CHANGES_PANEL_CELLS_MIN),
             i32::from(CHANGES_PANEL_CELLS_MAX),
@@ -453,8 +469,32 @@ impl ReviewSurface {
             }
             None => *slot = Some(ReviewState::new(candidate)),
         }
+        // Staging moves work from one half to the other, so the strip follows
+        // the captures. Without this a reader who stages every change stays on
+        // a section that publishes nothing, and the section that holds the work
+        // opens no tab.
+        self.refresh_sections();
         self.refresh_changes();
         self.rebuild_body();
+    }
+
+    /// Rebuilds the strip from the sections that publish a change.
+    ///
+    /// The order stays fixed, so a section that empties and fills again returns
+    /// to its own place. The active section stays active while it still
+    /// publishes a change, and the first tab takes over when it does not.
+    fn refresh_sections(&mut self) {
+        let wanted = self.section();
+        let mut sections = TabStrip::default();
+        for label in [ChangeSection::Unstaged, ChangeSection::Staged] {
+            if publishes_change(self.review(label)) {
+                let _ = sections.open(label, label.heading());
+            }
+        }
+        // A strip that holds the section keeps it. Every other strip opened its
+        // own first tab, which is the one that holds work.
+        let _ = sections.select(&wanted);
+        self.sections = sections;
     }
 
     /// Marks the hunk at the cursor as read.
@@ -693,6 +733,7 @@ impl ReviewSurface {
             ChangeSection::Unstaged => self.unstaged.as_ref(),
         };
         refresh(&mut self.changes, section, review);
+        self.panel_rows = build_panel_rows(self.changes.rows(), review);
         self.follow_cursor();
     }
 }
@@ -707,6 +748,7 @@ pub(super) fn draw_review(
     area: Rect,
     theme: Theme,
     settings: DiffSettings,
+    root: &str,
     review: &ReviewSurface,
 ) {
     if area.width == 0 || area.height == 0 {
@@ -731,7 +773,20 @@ pub(super) fn draw_review(
         area.height,
     );
     target.set_style(panel, theme.style(ThemeRole::Surface));
-    draw_changes(target, panel, theme, review);
+    // The panel carries the header of the file tree, so both sidebars name the
+    // workspace the same way.
+    let header = Rect::new(panel.x, panel.y, panel.width, PANEL_HEADER_ROWS);
+    target.set_style(header, theme.style(ThemeRole::Winbar));
+    target.set_stringn(
+        header.x,
+        header.y,
+        clip_cells(root, usize::from(header.width)),
+        usize::from(header.width),
+        theme.style(ThemeRole::TreeRoot),
+    );
+    if let Some(rows) = panel_rows_area(panel) {
+        draw_changes(target, rows, theme, review);
+    }
 
     if body_width == 0 {
         return;
@@ -739,6 +794,20 @@ pub(super) fn draw_review(
     let body = Rect::new(area.x, area.y, body_width, area.height);
     target.set_style(body, theme.style(ThemeRole::DiffContext));
     draw_body(target, body, theme, settings, review);
+}
+
+/// Returns the rows of the panel below its header, or `None` for a header alone.
+fn panel_rows_area(panel: Rect) -> Option<Rect> {
+    let height = panel.height.checked_sub(PANEL_HEADER_ROWS)?;
+    if height == 0 {
+        return None;
+    }
+    Some(Rect::new(
+        panel.x,
+        panel.y.saturating_add(PANEL_HEADER_ROWS),
+        panel.width,
+        height,
+    ))
 }
 
 /// Returns the rectangle below the strip band, or `None` for a band alone.
@@ -877,63 +946,138 @@ const fn settings_with(settings: DiffSettings, view: DiffView) -> DiffSettings {
 /// Paints the rows of the changes panel.
 ///
 /// The sidebar owns the viewport, so the panel draws the rows that it places
-/// and a list longer than the region scrolls with its selection.
+/// and a list longer than the region scrolls with its selection. Every row text
+/// is built already, so one frame walks no hunk.
 fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
     let focused = review.focus() == ReviewFocus::Panel;
-    let rows = review.changes().rows();
     let selected = review.changes().selected().cloned();
+    let built = review.panel_rows();
     let _ = review.changes().render(target, area, |canvas, placement| {
-        let row = placement.row();
-        let guides = row_guides(rows, placement.index());
-        let (text, role) = match row {
-            // A directory row carries the shape of the workspace, exactly
-            // as the file tree draws it, so one reader reads one shape.
-            ChangesRow::Directory { path, .. } => {
-                let name = path
-                    .file_name()
-                    .unwrap_or_else(|| path.as_os_str())
-                    .to_string_lossy();
-                let icon = directory_icon(Expansion::Expanded);
-                (
-                    format!("{guides}{} {name}", icon.glyph),
-                    ThemeRole::TreeDirectory,
-                )
-            }
-            ChangesRow::File { section, path, .. } => {
-                let entry = review
-                    .review(*section)
-                    .map(entries)
-                    .and_then(|entries| entries.into_iter().find(|entry| &entry.path == path));
-                let name = path
-                    .as_path()
-                    .file_name()
-                    .unwrap_or_else(|| path.as_path().as_os_str())
-                    .to_string_lossy();
-                let icon = file_icon(&name);
-                let label = entry
-                    .as_ref()
-                    .map_or_else(|| name.clone().into_owned(), ChangeEntry::label);
-                // The selection band marks the row of the focused panel. An
-                // unfocused panel still marks its row, in a quieter role, so
-                // a reader keeps the place while the keys act elsewhere.
-                let is_selected = selected.as_ref() == Some(row);
-                let role = if is_selected && focused {
-                    ThemeRole::PopupSelection
-                } else if is_selected {
-                    ThemeRole::DiffHeader
-                } else if entry.is_some_and(|entry| entry.is_complete()) {
-                    ThemeRole::DiffGap
-                } else {
-                    ThemeRole::DiffContext
-                };
-                (format!("{guides}{} {label}", icon.glyph), role)
+        let Some(row) = built.get(placement.index()) else {
+            return;
+        };
+        let role = if row.directory {
+            ThemeRole::TreeDirectory
+        } else {
+            // The selection band marks the row of the focused panel. An
+            // unfocused panel still marks its row, in a quieter role, so a
+            // reader keeps the place while the keys act elsewhere.
+            let is_selected = selected.as_ref() == Some(placement.row());
+            if is_selected && focused {
+                ThemeRole::PopupSelection
+            } else if is_selected {
+                ThemeRole::DiffHeader
+            } else if row.complete {
+                ThemeRole::DiffGap
+            } else {
+                ThemeRole::DiffContext
             }
         };
         let style = theme.style(role);
-        canvas.style_span(0, 0, area.width, style);
-        canvas.draw_clipped(0, 0, &text, area.width, style);
+        canvas.fill(style);
+        // The Git mark owns the last cell of every row, so a long name never
+        // covers it and no mark ever moves a name.
+        let name_cells = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
+        canvas.draw_clipped(0, 0, &row.text, name_cells, style);
+        // The guides carry their own color, so they separate from the names
+        // without the state of the row changing their meaning.
+        paint_span(
+            canvas,
+            MARK_CELLS,
+            row.guide_cells,
+            style.patch(theme.style(ThemeRole::TreeIndentGuide)),
+        );
+        if selected.as_ref() == Some(placement.row()) {
+            canvas.draw_clipped(
+                0,
+                0,
+                SELECTION_MARK,
+                mark_cells(),
+                style.patch(theme.style(ThemeRole::TreeSelectionMark)),
+            );
+        }
+        if let Some(status) = row.git {
+            render_git_mark(canvas, status, theme, style);
+        }
     });
 }
+
+/// The drawn text of one row of the changes panel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PanelRow {
+    /// The text that the row draws, with its guides and its icon.
+    pub(super) text: String,
+    /// Reports whether the row names a directory.
+    pub(super) directory: bool,
+    /// Reports whether the reader finished every hunk of the file.
+    pub(super) complete: bool,
+    /// The repository state that the row draws, for a file row.
+    pub(super) git: Option<GitStatus>,
+    /// The number of characters that the indent guides of the row occupy.
+    pub(super) guide_cells: usize,
+}
+
+/// Builds the drawn text of every row of the changes panel.
+///
+/// The counts of one file walk its hunks, so the panel builds every row once
+/// when the rows change instead of once for each drawn frame.
+fn build_panel_rows(
+    rows: &[SidebarRow<ChangesRow>],
+    review: Option<&ReviewState>,
+) -> Vec<PanelRow> {
+    let entries = review.map(entries).unwrap_or_default();
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            let guides = row_guides(rows, index);
+            // The first cell belongs to the selection mark, exactly as it does
+            // in the file tree, so a mark moves no name.
+            let mark = " ".repeat(MARK_CELLS);
+            match row.id() {
+                // A directory row carries the shape of the workspace, exactly
+                // as the file tree draws it, so one reader reads one shape.
+                ChangesRow::Directory { path, .. } => {
+                    let name = path
+                        .file_name()
+                        .unwrap_or_else(|| path.as_os_str())
+                        .to_string_lossy();
+                    let icon = directory_icon(Expansion::Expanded);
+                    PanelRow {
+                        text: format!("{mark}{guides}{} {name}", icon.glyph),
+                        directory: true,
+                        complete: false,
+                        git: None,
+                        guide_cells: guides.chars().count(),
+                    }
+                }
+                ChangesRow::File { section, path, .. } => {
+                    let entry = entries.iter().find(|entry| &entry.path == path);
+                    let name = path
+                        .as_path()
+                        .file_name()
+                        .unwrap_or_else(|| path.as_path().as_os_str())
+                        .to_string_lossy();
+                    let icon = file_icon(&name);
+                    let label =
+                        entry.map_or_else(|| name.clone().into_owned(), |entry| entry.label());
+                    // The mark and the color are the ones that the file tree
+                    // draws for the same repository state.
+                    let status = section.git_status();
+                    PanelRow {
+                        text: format!("{mark}{guides}{} {label}", icon.glyph),
+                        directory: false,
+                        complete: entry.is_some_and(ChangeEntry::is_complete),
+                        git: Some(status),
+                        guide_cells: guides.chars().count(),
+                    }
+                }
+            }
+        })
+        .collect()
+}
+
+/// The number of rows that the header of the changes panel takes.
+const PANEL_HEADER_ROWS: u16 = 1;
 
 /// The number of rows that the strip of sections takes.
 ///
@@ -949,9 +1093,6 @@ const CHANGES_PANEL_CELLS_MIN: u16 = 16;
 
 /// The widest changes panel, in cells.
 const CHANGES_PANEL_CELLS_MAX: u16 = 80;
-
-/// The number of cells that one resize step changes.
-const RESIZE_STEP_CELLS: u16 = 2;
 
 /// Reports whether one row names one changed file of one section.
 fn names_file(row: &ChangesRow, section: ChangeSection, path: &WorktreeRelativePath) -> bool {

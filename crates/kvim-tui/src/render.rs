@@ -45,7 +45,14 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     // window, no viewport, and no buffer, so leaving it restores the layout by
     // drawing that tree again. See `docs/diff-view.md`.
     if let Some(review) = view.review {
-        draw_review(target, bands.body, theme, view.settings.diff, review);
+        draw_review(
+            target,
+            bands.body,
+            theme,
+            view.settings.diff,
+            &view.tree.root_label(),
+            review,
+        );
         render_statusline(
             target,
             bands.statusline,

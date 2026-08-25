@@ -140,6 +140,7 @@ semantic_commands! {
     NextChangedFile => ("next-changed-file", "Move to the first hunk of the next changed file"),
     PreviousChangedFile => ("previous-changed-file", "Move to the first hunk of the previous changed file"),
     MarkHunkRead => ("mark-hunk-read", "Mark the hunk at the cursor as read"),
+    RefreshReview => ("refresh-review", "Capture the changes of the worktree again"),
     NextReviewSection => ("next-review-section", "Show the next section of the review"),
     PreviousReviewSection => ("previous-review-section", "Show the previous section of the review"),
     OpenHunkFile => ("open-hunk-file", "Open the file of the hunk at its line"),
@@ -342,6 +343,7 @@ impl Command {
             | Self::NextChangedFile
             | Self::PreviousChangedFile
             | Self::MarkHunkRead
+            | Self::RefreshReview
             | Self::NextReviewSection
             | Self::PreviousReviewSection
             | Self::OpenHunkFile
@@ -588,6 +590,7 @@ impl Command {
             | Self::NextChangedFile
             | Self::PreviousChangedFile
             | Self::MarkHunkRead
+            | Self::RefreshReview
             | Self::NextReviewSection
             | Self::PreviousReviewSection
             | Self::OpenHunkFile => CommandGroup::Review,
