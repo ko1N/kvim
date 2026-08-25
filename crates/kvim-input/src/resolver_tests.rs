@@ -601,8 +601,13 @@ fn the_sidebar_scope_resolves_its_own_keys() {
 
     assert_eq!(
         resolver.resolve(ch(' '), NOW),
-        command(Command::TreeToggleEntry),
-        "the sidebar holds no leader sequence, so Space acts at once"
+        Resolution::Pending,
+        "the leader belongs to the leader in the sidebar as well"
+    );
+    assert_eq!(
+        feed(&mut resolver, &[ch('g'), ch('g')]),
+        command(Command::OpenReview),
+        "a leader sequence reaches its command from the sidebar"
     );
     assert_eq!(
         feed(&mut resolver, &[ch('3'), ch('j')]),

@@ -202,6 +202,14 @@ fn leader() -> Key {
     ch(' ')
 }
 
+/// The scopes in which the leader key opens its sequences.
+///
+/// The leader belongs to the leader everywhere, so a surface that owns keys
+/// still passes the leader through. A modal surface that reads its own answer,
+/// such as the picker or the review, is not one of these scopes, because it
+/// takes every key while it stays open.
+const LEADER_SCOPES: &[BindingScope] = &[BindingScope::Mode(Mode::Normal), BindingScope::Sidebar];
+
 /// Every mode that accepts a motion.
 ///
 /// `docs/input-actions.md` applies every motion row to Visual Block mode too.
@@ -592,28 +600,33 @@ fn first_release_bindings() -> Vec<Binding> {
     // Files and buffers.
     add(table, ALL_MODES, &[ctrl('s')], Command::SaveBuffer);
     add(table, NORMAL, &[ctrl('e')], Command::RevealInFileTree);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('o')],
         Command::OpenBufferPicker,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('f'), ch('b')],
         Command::OpenBufferPicker,
     );
-    add(table, NORMAL, &[leader(), ch('x')], Command::UnloadBuffer);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
+        &[leader(), ch('x')],
+        Command::UnloadBuffer,
+    );
+    add_scoped(
+        table,
+        LEADER_SCOPES,
         &[leader(), ch('f'), ch('f')],
         Command::OpenFilePicker,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('f'), ch('/')],
         Command::OpenRipgrepPicker,
     );
@@ -621,9 +634,9 @@ fn first_release_bindings() -> Vec<Binding> {
     // The review of one captured diff. The reference configuration opens its
     // Git interface on the same sequence, so the key that a reader already
     // knows opens this one.
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('g'), ch('g')],
         Command::OpenReview,
     );
@@ -638,9 +651,9 @@ fn first_release_bindings() -> Vec<Binding> {
     add(table, NORMAL, &[ctrl_alt('j')], Command::ResizeWindowDown);
     add(table, NORMAL, &[ctrl_alt('k')], Command::ResizeWindowUp);
     add(table, NORMAL, &[ctrl_alt('l')], Command::ResizeWindowRight);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), Key::plain(KeyCode::Enter)],
         Command::SplitAdaptive,
     );
@@ -650,14 +663,19 @@ fn first_release_bindings() -> Vec<Binding> {
         &[Key::ctrl(KeyCode::Enter)],
         Command::SplitAdaptive,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('\\')],
         Command::SplitInverseAdaptive,
     );
     add(table, NORMAL, &[ctrl('\\')], Command::SplitInverseAdaptive);
-    add(table, NORMAL, &[leader(), ch('q')], Command::CloseWindow);
+    add_scoped(
+        table,
+        LEADER_SCOPES,
+        &[leader(), ch('q')],
+        Command::CloseWindow,
+    );
     add(table, ALL_MODES, &[ctrl('q')], Command::CloseWindow);
 
     // Language services.
@@ -668,10 +686,15 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::ToggleComment,
     );
     add(table, NORMAL, &[ch('g'), ch('d')], Command::GoToDefinition);
-    add(table, NORMAL, &[leader(), ch('k')], Command::ShowHover);
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
+        &[leader(), ch('k')],
+        Command::ShowHover,
+    );
+    add_scoped(
+        table,
+        LEADER_SCOPES,
         &[leader(), ch('e')],
         Command::ShowDiagnosticFloat,
     );
@@ -682,9 +705,9 @@ fn first_release_bindings() -> Vec<Binding> {
         &[ch('['), ch('d')],
         Command::PreviousDiagnostic,
     );
-    add(
+    add_scoped(
         table,
-        NORMAL,
+        LEADER_SCOPES,
         &[leader(), ch('c'), ch('f')],
         Command::ToggleFormatOnSave,
     );
@@ -926,7 +949,9 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree_keys(table, &[ch('g'), ch('g')], Command::MoveFirstLine);
     add_tree(table, ch('G'), Command::MoveLastLine);
     add_tree(table, Key::plain(KeyCode::Enter), Command::TreeOpenEntry);
-    add_tree(table, ch(' '), Command::TreeToggleEntry);
+    // `l` and `h` open and close an entry, and `Enter` opens it, so the toggle
+    // needs no key of its own. The leader key belongs to the leader in every
+    // scope. See `docs/input-actions.md`.
     add_tree(table, ch('l'), Command::TreeExpandEntry);
     add_tree(table, ch('h'), Command::TreeCollapseEntry);
     add_tree(table, ch('R'), Command::TreeRefresh);

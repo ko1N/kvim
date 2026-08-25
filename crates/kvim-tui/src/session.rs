@@ -2043,10 +2043,14 @@ impl Session {
         if self.picker.is_some() {
             return self.apply_picker_command(command).or(cleared);
         }
-        // The sidebar owns every key while it holds the focus, so a tree
-        // command never reaches the buffer of an editor window.
-        if self.sidebar_has_focus() {
-            return self.apply_tree_command(command, count).or(cleared);
+        // The sidebar owns its own keys while it holds the focus. A command
+        // that the sidebar does not own falls through, so a leader sequence
+        // reaches its command from the sidebar as it does from a buffer. See
+        // `docs/input-actions.md`.
+        if self.sidebar_has_focus()
+            && let Some(redraw) = self.apply_tree_command(command, count)
+        {
+            return redraw.or(cleared);
         }
         match command {
             Command::OpenFilePicker => return self.open_picker(PickerKind::Files).or(cleared),
@@ -4165,7 +4169,19 @@ impl Session {
     ///
     /// The navigation commands are the buffer commands, so the tree moves by
     /// the same rule. The sidebar bounds every move by its own rows.
-    fn apply_tree_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
+    fn apply_tree_command(
+        &mut self,
+        command: Command,
+        count: Option<NonZeroU32>,
+    ) -> Option<Redraw> {
+        if !tree_owns(command) {
+            return None;
+        }
+        Some(self.apply_owned_tree_command(command, count))
+    }
+
+    /// Applies one command that the sidebar owns.
+    fn apply_owned_tree_command(&mut self, command: Command, count: Option<NonZeroU32>) -> Redraw {
         let repeat = count
             .map_or(1, |value| value.get() as usize)
             .min(MOTION_COUNT_MAX);
@@ -6100,6 +6116,55 @@ const NEWEST_JUMP_NOTE: &str = "the jump list holds no newer position";
 const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 
 /// The message that a missing `git` command shows once for each session.
+/// Reports whether the sidebar owns one command.
+///
+/// The sidebar table binds these commands, so a key that reaches one of them
+/// while the sidebar holds the focus acts on the tree. Every other command
+/// falls through to the owner that the session picks next, which is how a
+/// leader sequence reaches its command from the sidebar. See
+/// `docs/input-actions.md`.
+const fn tree_owns(command: Command) -> bool {
+    matches!(
+        command,
+        Command::CloseWindow
+            | Command::EndSearch
+            | Command::FocusWindowDown
+            | Command::FocusWindowLeft
+            | Command::FocusWindowRight
+            | Command::FocusWindowUp
+            | Command::MoveDown
+            | Command::MoveFirstLine
+            | Command::MoveFullPageDown
+            | Command::MoveFullPageUp
+            | Command::MoveHalfPageDown
+            | Command::MoveHalfPageUp
+            | Command::MoveLastLine
+            | Command::MoveUp
+            | Command::ResizeWindowDown
+            | Command::ResizeWindowLeft
+            | Command::ResizeWindowRight
+            | Command::ResizeWindowUp
+            | Command::SaveBuffer
+            | Command::SearchNext
+            | Command::SearchPrevious
+            | Command::TreeAddDirectory
+            | Command::TreeAddFile
+            | Command::TreeCollapseEntry
+            | Command::TreeCopyEntry
+            | Command::TreeCutEntry
+            | Command::TreeDelete
+            | Command::TreeExpandEntry
+            | Command::TreeOpenEntry
+            | Command::TreePasteEntries
+            | Command::TreeRefresh
+            | Command::TreeRename
+            | Command::TreeSearch
+            | Command::TreeSelectParent
+            | Command::TreeToggleEntry
+            | Command::TreeToggleHidden
+    )
+}
+
 /// The message that a refused diff capture writes once.
 const DIFF_UNAVAILABLE_NOTE: &str =
     "the changes are unavailable: git refused the read of this worktree";

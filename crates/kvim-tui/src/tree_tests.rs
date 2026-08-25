@@ -15,7 +15,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
-use kvim_input::Mode;
+use kvim_input::{BindingScope, Mode};
 use kvim_language::LspError;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{
@@ -293,7 +293,7 @@ fn an_unreadable_directory_reports_a_notice_row() {
 
     // The selection starts on the first directory, which the test removes
     // between the expansion and the read.
-    press(&mut session, ' ');
+    press(&mut session, 'l');
     fs::remove_dir_all(dir.join("docs")).expect("the temporary directory is writable");
     drain(&mut session);
 
@@ -345,7 +345,7 @@ fn space_expands_a_directory_and_enter_opens_a_file() {
     reveal(&mut session);
 
     press(&mut session, 'j');
-    press(&mut session, ' ');
+    press(&mut session, 'l');
     drain(&mut session);
     assert_eq!(
         sidebar_rows(&session),
@@ -1890,7 +1890,7 @@ fn a_failed_read_warns_while_a_hidden_count_stays_quiet() {
     reveal(&mut session);
     let counted = sidebar_style(&session, 6, 4);
 
-    press(&mut session, ' ');
+    press(&mut session, 'l');
     fs::remove_dir_all(dir.join("docs")).expect("the temporary directory is writable");
     drain(&mut session);
 
@@ -2379,7 +2379,7 @@ fn a_watched_change_reads_only_the_directory_that_it_named() {
     let (dir, mut session) = workspace();
     reveal(&mut session);
     press(&mut session, 'j');
-    press(&mut session, ' ');
+    press(&mut session, 'l');
     drain(&mut session);
     press(&mut session, 'j');
 
@@ -2427,7 +2427,7 @@ fn a_watched_removal_drops_the_entry_and_keeps_the_expansion() {
     let (dir, mut session) = workspace();
     reveal(&mut session);
     press(&mut session, 'j');
-    press(&mut session, ' ');
+    press(&mut session, 'l');
     drain(&mut session);
 
     let removed = dir.join("src/main.rs");
@@ -2740,4 +2740,30 @@ fn a_held_entry_keeps_its_pending_operation_over_the_git_state() {
     );
     assert_eq!(held, RowState::Held(TransferMode::Copy));
     assert_eq!(held.suffix(), " (copied)");
+}
+
+#[test]
+fn the_leader_belongs_to_the_leader_in_the_sidebar() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // Space opens the leader sequence instead of acting on the selected row.
+    // `l` and `h` already open and close an entry.
+    let before = sidebar_row(&session, 1);
+    press(&mut session, ' ');
+    assert_eq!(
+        sidebar_row(&session, 1),
+        before,
+        "the leader key changes no row of the sidebar"
+    );
+
+    // The sequence reaches its command from the sidebar, as it does from a
+    // buffer.
+    press(&mut session, 'g');
+    press(&mut session, 'g');
+    assert_eq!(
+        session.input_context().scope,
+        BindingScope::Review,
+        "`<leader>gg` opens the review from the sidebar"
+    );
 }
