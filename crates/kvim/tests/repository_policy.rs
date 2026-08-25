@@ -27,7 +27,7 @@ const SOURCE_DEPTH_MAX: usize = 8;
 ///
 /// `docs/embedding.md` owns this list. One feature has one example, and one
 /// combined example never replaces a feature example.
-const FEATURE_EXAMPLES: [(&str, &str); 17] = [
+const FEATURE_EXAMPLES: [(&str, &str); 19] = [
     (
         "crates/kvim-path/src/lib.rs",
         "crates/kvim-path/examples/confine_worktree_paths.rs",
@@ -59,6 +59,14 @@ const FEATURE_EXAMPLES: [(&str, &str); 17] = [
     (
         "crates/kvim-ui/src/sidebar.rs",
         "crates/kvim-ui/examples/sidebar.rs",
+    ),
+    (
+        "crates/kvim-ui/src/guides.rs",
+        "crates/kvim-ui/examples/sidebar.rs",
+    ),
+    (
+        "crates/kvim-ui/src/selector.rs",
+        "crates/kvim-ui/examples/selector.rs",
     ),
     (
         "crates/kvim-ui/src/window.rs",

@@ -488,6 +488,14 @@ The list names a host-global escape, such as the key that returns focus to an
 embedding host. A complete one-key binding never extends any prefix. Only the
 idle list shows it.
 
+`WorkspaceComposer::idle_which_key` publishes the same list to a host that
+composes its workspace through the composer. It builds the context from the
+composer's own overlay ownership, host-global scope, and input-owning surface,
+so the listed keys and the keys that a press reaches never disagree. The idle
+list can approach `WHICH_KEY_HINTS_MAX`, which refuses a longer list rather
+than cutting it, so a host bounds or pages the result before it draws it. See
+[`embedding.md`](embedding.md).
+
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written
 list. `keymap` folds the extensions of the pending prefix into these hints,

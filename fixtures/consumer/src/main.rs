@@ -19,7 +19,7 @@ use kvim_core::TextBuffer;
 use kvim_editor::{
     EditContext, EditingState, RegisterValue, Registers, Viewport, WindowState,
 };
-use kvim_fuzzy::score_candidate;
+use kvim_fuzzy::{rank, score_candidate};
 use kvim_input::{Command, Registry as InputRegistry, Resolution, Resolver as InputResolver};
 use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
@@ -30,7 +30,10 @@ use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::{EditorSettings, FileSettings, InputSettings};
 use kvim_syntax::{HighlightLimits, NeverCancelled, SyntaxHighlighter};
 use kvim_tui::{EditorAccess, EditorCapacity, EditorEvent};
-use kvim_ui::{ChildSide, Orientation, WindowLimits, WindowTree};
+use kvim_ui::{
+    ChildSide, Orientation, SELECTOR_CANDIDATES_MAX, Selector, SelectorCandidate, WindowLimits,
+    WindowTree,
+};
 
 /// The host area that this consumer paints.
 const HOST_AREA: Rect = Rect {
@@ -98,6 +101,7 @@ fn main() {
     check_syntax();
     check_keymap();
     check_fuzzy();
+    check_selector();
     check_input();
     check_editor();
     check_ui();
@@ -159,16 +163,43 @@ fn check_keymap() {
 
 /// Ranks one list of host values against one query.
 ///
-/// The scorer names no path and no buffer, so this consumer ranks its own
-/// values with it.
+/// The scorer and the ranking rule name no path and no buffer, so this
+/// consumer orders its own values with them and writes no sort of its own.
 fn check_fuzzy() {
     let rows = ["first session", "second session", "notes"];
-    let mut ranked: Vec<(i32, &str)> = rows
-        .iter()
-        .filter_map(|row| Some((score_candidate("ses", row, "")?, *row)))
-        .collect();
-    ranked.sort_by(|left, right| right.0.cmp(&left.0));
-    println!("the query ses ranks {} of {} rows", ranked.len(), rows.len());
+    let scored = score_candidate("ses", rows[0], "").expect("the first row holds the query");
+    let ranked = rank("ses", rows.iter().map(|row| (*row, "")));
+    println!(
+        "the first row scores {scored} and the query ses ranks {} of {} rows",
+        ranked.len(),
+        rows.len()
+    );
+}
+
+/// Selects one host value through the domain-neutral selector.
+///
+/// The selector names no path, no buffer, and no file, so this consumer drives
+/// it over its own identity and takes the bounded query, the ranked match
+/// list, and the selection without a second implementation.
+fn check_selector() {
+    let mut selector: Selector<SurfaceId> = Selector::default();
+    selector.set_candidates(
+        vec![
+            SelectorCandidate::new(SurfaceId(1), "first session", "worktree"),
+            SelectorCandidate::new(SurfaceId(2), "second session", "worktree"),
+        ],
+        false,
+    );
+    selector.set_query("second");
+    selector.select_next();
+    let selected = selector
+        .selected()
+        .expect("the query keeps the second session");
+    println!(
+        "the selector keeps {} candidate of at most {SELECTOR_CANDIDATES_MAX} and selects {:?}",
+        selector.matches().len(),
+        selected.id()
+    );
 }
 
 /// Reads one resolved command, count, and register name from the preset.
@@ -275,6 +306,7 @@ fn event_name(event: &EditorEvent) -> &'static str {
         EditorEvent::ActiveFileChanged { .. } => "active-file-changed",
         EditorEvent::FileWritten { .. } => "file-written",
         EditorEvent::WorkspaceChanged { .. } => "workspace-changed",
+        EditorEvent::FileActivated { .. } => "file-activated",
         EditorEvent::RedrawRequested => "redraw-requested",
         EditorEvent::FocusBoundary(_) => "focus-boundary",
         EditorEvent::CloseRequested => "close-requested",

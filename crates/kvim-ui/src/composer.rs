@@ -33,7 +33,8 @@ use thiserror::Error;
 
 use kvim_keymap::{
     CommandMetadata, CommandOwner, ContextGeneration, Dispatch, DispatchContext, Input,
-    InputContextSnapshot, Resolver, Scope, SemanticPhases, TypedText, WhichKeyView,
+    InputContextSnapshot, Resolver, Scope, ScopedWhichKeyHint, SemanticPhases, TypedText,
+    WhichKeyView,
 };
 
 use crate::layout::RegionKind;
@@ -855,6 +856,134 @@ where
         self.resolver.which_key(now)
     }
 
+    /// Returns the top-level bindings of every scope that answers right now.
+    ///
+    /// The list holds one entry for each distinct first key of the overlay
+    /// scope, of the host-global scope, and of the scope of the surface that
+    /// owns input, in that order. Each entry names the scope that owns it.
+    ///
+    /// The context is the context of this composer. The overlay ownership, the
+    /// host-global scope, and the published context of the input-owning
+    /// surface are the same three values that [`WorkspaceComposer::reduce`]
+    /// resolves against, so the list always names the keys that the next press
+    /// reaches. A host therefore rebuilds no context of its own.
+    ///
+    /// The list answers at once. It reads no clock and it changes no state,
+    /// because the which-key delay and the overlay state govern the
+    /// pending-prefix view of [`WorkspaceComposer::which_key`] alone. A reader
+    /// can ask what to press before any key arrives.
+    ///
+    /// This is the one list that names a complete one-key binding of another
+    /// scope, such as a host-global escape that returns focus to the host.
+    /// Such a key extends no prefix, so the pending-prefix view never holds
+    /// it.
+    ///
+    /// The list can approach
+    /// [`WHICH_KEY_HINTS_MAX`](crate::WHICH_KEY_HINTS_MAX), which is 256 and
+    /// refuses a longer hint list instead of cutting it. Kvim's own preset
+    /// holds 81 distinct first keys in Normal mode, 56 in Visual mode, and 48
+    /// in the sidebar, and this list spans up to three scopes. Bound or page
+    /// the result before you draw it. Do not hand the raw list to
+    /// [`WhichKeyOverlay`](crate::WhichKeyOverlay).
+    ///
+    /// # Examples
+    ///
+    /// The host below binds `Ctrl-E` in its own global scope as a complete
+    /// one-key escape, and one editor surface holds the focus. The escape
+    /// extends no prefix of the editor scope, so this list is the only one
+    /// that surfaces it.
+    ///
+    /// ```
+    /// # use std::fmt;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use ratatui::layout::Rect;
+    /// # use kvim_keymap::{
+    /// #     Binding, CommandMetadata, InputContextSnapshot, Key, KeyCode, Registry, Resolver,
+    /// #     Scope,
+    /// # };
+    /// # use kvim_ui::{WindowLimits, WorkspaceComposer};
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # enum Action { LeaveToChat, OpenFiles }
+    /// # impl fmt::Display for Action {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.id()) }
+    /// # }
+    /// # impl CommandMetadata for Action {
+    /// #     fn id(&self) -> &str {
+    /// #         match self {
+    /// #             Self::LeaveToChat => "leave-to-chat",
+    /// #             Self::OpenFiles => "open-files",
+    /// #         }
+    /// #     }
+    /// #     fn label(&self) -> &str {
+    /// #         match self {
+    /// #             Self::LeaveToChat => "Leave to chat",
+    /// #             Self::OpenFiles => "Open the file picker",
+    /// #         }
+    /// #     }
+    /// # }
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # enum HostScope { Global, Editor }
+    /// # impl fmt::Display for HostScope {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         f.write_str(match self { Self::Global => "Global", Self::Editor => "Editor" })
+    /// #     }
+    /// # }
+    /// # impl Scope for HostScope { const COUNT: usize = 2; }
+    /// let escape = Key::ctrl(KeyCode::Char('e'));
+    /// let leader = Key::plain(KeyCode::Char(' '));
+    /// let registry = Registry::from_bindings(
+    ///     &[
+    ///         Binding::host(HostScope::Global, &[escape], Action::LeaveToChat),
+    ///         Binding::surface(
+    ///             HostScope::Editor,
+    ///             &[leader, Key::plain(KeyCode::Char('f'))],
+    ///             Action::OpenFiles,
+    ///         ),
+    ///     ],
+    ///     4,
+    /// )?;
+    /// let mut composer = WorkspaceComposer::new(
+    ///     "editor",
+    ///     InputContextSnapshot::idle(HostScope::Editor),
+    ///     Rect::new(0, 0, 80, 24),
+    ///     WindowLimits::default(),
+    ///     Resolver::new(Arc::new(registry), 4, Duration::from_millis(500)),
+    /// );
+    /// composer.set_global_scope(Some(HostScope::Global));
+    ///
+    /// let hints = composer.idle_which_key();
+    /// assert_eq!(hints.len(), 2, "the escape and the leader are each one entry");
+    /// assert_eq!(
+    ///     hints[0].scope(),
+    ///     HostScope::Global,
+    ///     "the host-global scope answers before the focused surface",
+    /// );
+    /// assert_eq!(hints[0].hint().key(), escape);
+    /// assert_eq!(hints[1].scope(), HostScope::Editor);
+    /// assert_eq!(hints[1].hint().key(), leader);
+    /// # Ok::<(), kvim_keymap::RegistryError<Action, HostScope>>(())
+    /// ```
+    #[must_use]
+    pub fn idle_which_key(&self) -> Vec<ScopedWhichKeyHint<C, S>> {
+        self.resolver.idle_which_key(&self.dispatch_context())
+    }
+
+    /// Returns the context that every resolution of this composer reads.
+    ///
+    /// The overlay scope, the host-global scope, and the published context of
+    /// the surface that owns input are one fact of this composer.
+    /// [`WorkspaceComposer::reduce`] and
+    /// [`WorkspaceComposer::idle_which_key`] both read it here, so the list of
+    /// keys and the key that a press reaches can never disagree.
+    fn dispatch_context(&self) -> DispatchContext<S> {
+        DispatchContext {
+            overlay: self.overlay.as_ref().map(|overlay| overlay.scope),
+            global: self.global,
+            focus: self.published_context(self.input_surface()),
+        }
+    }
+
     /// Resolves one input against the surface that owns it.
     ///
     /// The overlay scope answers first, the host-global scope answers next, and
@@ -866,12 +995,7 @@ where
     /// can hold this composer inside pure state.
     pub fn reduce(&mut self, input: Input, now: Option<Duration>) -> Composition<C, Sid> {
         let surface = self.input_surface().clone();
-        let focus = self.published_context(&surface);
-        let context = DispatchContext {
-            overlay: self.overlay.as_ref().map(|overlay| overlay.scope),
-            global: self.global,
-            focus,
-        };
+        let context = self.dispatch_context();
         match self.resolver.dispatch(&context, input, now) {
             Dispatch::Host { command } => Composition::Host { command },
             Dispatch::Surface { command } => Composition::Surface { surface, command },

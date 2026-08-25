@@ -8,6 +8,13 @@
 //! The module is pure. It reads no clock, no filesystem, and no terminal. A
 //! host calls [`sidebar_guides`] once for every drawn row, every frame, so
 //! the scan allocates nothing beyond the returned [`String`].
+//!
+//! `examples/sidebar.rs` draws one tree of two sections and prints the guide of
+//! every visible row:
+//!
+//! ```sh
+//! cargo run -p kvim-ui --example sidebar
+//! ```
 
 use crate::sidebar::SidebarRow;
 

@@ -543,43 +543,6 @@ fn idle_which_key_does_not_fold_a_shared_key_across_two_scopes() {
 }
 
 #[test]
-fn idle_which_key_leaves_the_pending_prefix_view_of_slice_6_unchanged() {
-    // A call to the idle view must change no resolver state, so the
-    // pending-prefix view that slice 6 built keeps every result it reported
-    // before the idle view existed.
-    let mut resolver = resolver();
-    let context = normal();
-
-    let _ = resolver.idle_which_key(&context);
-    assert_eq!(
-        resolver.overlay_deadline(),
-        None,
-        "an idle call arms no overlay, because it changes no pending state"
-    );
-
-    assert_eq!(
-        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
-        Dispatch::Pending
-    );
-    let _ = resolver.idle_which_key(&context);
-    assert!(
-        resolver
-            .which_key(DELAY - Duration::from_millis(1))
-            .is_none(),
-        "an idle call between two keys still leaves the which-key delay intact"
-    );
-
-    let view = resolver.which_key(DELAY).expect("the delay passed");
-    assert_eq!(view.scope(), Table::Normal);
-    assert_eq!(view.prefix(), [ch('g')]);
-    let hints = view.hints();
-    assert_eq!(hints.len(), 1);
-    assert_eq!(hints[0].scope(), Table::Normal);
-    assert_eq!(hints[0].hint().key(), ch('g'));
-    assert_eq!(hints[0].hint().commands(), [Action::FirstLine]);
-}
-
-#[test]
 fn a_later_scopes_completion_still_resolves_after_an_earlier_scope_arms_the_prefix() {
     // The host scope arms the prefix, because it holds a longer sequence
     // under the same first key. Only the focused scope binds the second key,

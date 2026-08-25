@@ -41,13 +41,15 @@
 //! # Examples
 //!
 //! `examples/split_windows.rs` runs the complete flow with caller-owned
-//! surfaces, `examples/sidebar.rs` renders two-line sidebar rows with state
-//! markers, and `examples/which_key.rs` derives overlay hints from one shared
-//! registry and renders them:
+//! surfaces, `examples/sidebar.rs` renders two-line sidebar rows of one
+//! sectioned tree with state markers and indent guides, `examples/selector.rs`
+//! narrows one host-owned list with one query, and `examples/which_key.rs`
+//! derives overlay hints from one shared registry and renders them:
 //!
 //! ```sh
 //! cargo run -p kvim-ui --example split_windows
 //! cargo run -p kvim-ui --example sidebar
+//! cargo run -p kvim-ui --example selector
 //! cargo run -p kvim-ui --example which_key
 //! ```
 //!

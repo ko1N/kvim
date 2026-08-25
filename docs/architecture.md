@@ -41,7 +41,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
-| `kvim-ui` | Generic ratatui split, sidebar, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
+| `kvim-ui` | Generic ratatui split, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -215,6 +215,37 @@ which is not a supported package. `kvim-ui` publishes `Selector<R>` over that
 same rule, so a host that also wants the bounded query, candidate, match, and
 selection mechanics takes `kvim-ui` instead of calling `kvim-fuzzy` directly.
 
+`kvim-ui` also publishes the tree mechanics of one sidebar. `SidebarRow<R>`
+carries a depth, a collapsed flag, and a section index, through `with_depth`,
+`with_collapsed`, and `with_section`. `SidebarState<R>` hides a collapsed
+subtree and a collapsed section from every motion, from the placements, and
+from the line count, and `set_sections` holds the collapsed flag of each
+section. `sidebar_guides` draws the indent guides of one row, over the
+`SIDEBAR_GUIDE_TRUNK`, `SIDEBAR_GUIDE_ELBOW`, and `SIDEBAR_GUIDE_BLANK`
+constants. `SIDEBAR_ROW_DEPTH_MAX` and `SIDEBAR_SECTIONS_MAX` bound the depth
+and the section count. A host supplies the row identities and the meaning. It
+writes no indent rule, no collapse rule, and no motion rule of its own.
+[`windows.md`](windows.md) owns these rules.
+
+`kvim-keymap` publishes two which-key lists and one registry helper.
+`Resolver::which_key` returns one `WhichKeyView`, and `WhichKeyView::hints`
+reports the hints of every scope that extends the pending prefix. Each hint
+names its own scope. `Resolver::idle_which_key` lists the top-level bindings
+of every scope of one context, with no pending prefix, so a host-global escape
+stays discoverable.
+`Registry::all_bindings` yields every `(scope, KeySequence, BoundCommand)`
+triple of one registry, so a host takes kvim's preset without walking the
+scopes itself. [`input-actions.md`](input-actions.md) owns the resolution
+order, and [`embedding.md`](embedding.md) owns the host recipe.
+
+The embedded facade in `kvim-tui` publishes one file sidebar over the worktree
+root of one editor. `EmbeddedEditor::file_rows`, `file_root_label`, and
+`file_sidebar` name `FileRow`, `FileRowKind`, `FileSidebarInput`, and
+`FileSidebarOutcome` alone. The surface names no type of `kvim-workspace`,
+which stays outside the supported set, so the facade publishes its own
+vocabulary instead of a re-export. [`embedding.md`](embedding.md) owns the
+surface.
+
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and
 `EditorSettings` all appear in a public parameter or return value, so a consumer
@@ -230,8 +261,8 @@ The public and workspace minimum supported Rust version (MSRV) is Rust 1.94.1.
 `[workspace.package].rust-version` records this minimum. The development and
 release toolchain remains Rust 1.97.1 in `rust-toolchain.toml`. Continuous
 integration compiles and tests the library workspace separately with Rust
-1.94.1. This document records the target policy. The toolchain and manifest
-changes belong to the MSRV implementation slice.
+1.94.1. The `msrv` development shell of `flake.nix` supplies that toolchain,
+so a developer can run the same check locally.
 
 Public ratatui signatures use workspace ratatui 0.29 types. External consumer
 checks use the same compatible release. Public feature crates remain at version
@@ -246,6 +277,13 @@ first release.
 From that release, a breaking facade change requires a workspace minor-version
 increase, a migration note, updated rustdoc, and an updated dedicated example. A
 patch release must not intentionally break a documented public facade.
+
+Every surface that this section names is such a facade. This includes the
+selector, the tree and section mechanics of the sidebar, the indent guide
+rule, the two which-key lists, `Registry::all_bindings`, and the embedded file
+sidebar. Each surface carries rustdoc, one owning document, and the dedicated
+example of its feature. `crates/kvim/tests/repository_policy.rs` proves that
+last link, so the same rule governs all of them.
 
 Continuous integration checks minimal features, each required feature, default
 features, and all valid feature combinations. This matrix is exact:
@@ -271,7 +309,7 @@ gate on macOS and on Linux.
 
 | Gate | Command | It proves |
 |---|---|---|
-| Feature examples | `cargo run -p <package> --example <name>` for all eight examples | Every dedicated example still runs and still asserts its own facts. |
+| Feature examples | `cargo run -p <package> --example <name>` for every required example of [`embedding.md`](embedding.md) | Every dedicated example still runs and still asserts its own facts. |
 | Example policy | `cargo test -p kvim --test repository_policy` | Every public feature module names an example file that exists, no extra example replaces a feature example, and every documented example link resolves. |
 | Rustdoc links | `cargo doc --workspace --no-deps --all-features` under `RUSTDOCFLAGS=-D warnings` | Every intra-doc link of the published documentation resolves. |
 | Dependency edges | `scripts/check-dependency-edges.sh` | Every direct and transitive kvim edge appears in the layer table above, each isolation charter reaches none of the external crates that it refuses, and every dependency of a supported package is reachable from the same revision or from crates.io. |
@@ -650,7 +688,8 @@ learn that it failed. See [`responsiveness.md`](responsiveness.md).
 - [`responsiveness.md`](responsiveness.md) owns background work, bounds,
   publication gates, latency budgets, and shutdown.
 - [`windows.md`](windows.md) owns the window tree, layout, focus, resize,
-  generic sidebars and rendering, the standalone theme, and the editor log.
+  generic sidebars and their tree mechanics, the domain-neutral selector,
+  rendering, the standalone theme, and the editor log.
 - [`files.md`](files.md) owns buffers, saving, external-change conflicts,
   confined worktree paths, persistent undo files, workspace mutations, and
   picker limits.
@@ -668,5 +707,6 @@ learn that it failed. See [`responsiveness.md`](responsiveness.md).
   default value.
 - [`reviewgraph-integration.md`](reviewgraph-integration.md) owns the deferred
   ReviewGraph relationship and source attribution.
-- [`embedding.md`](embedding.md) owns host, driver, embedded editor, event
+- [`embedding.md`](embedding.md) owns host, driver, embedded editor, the
+  embedded file sidebar, the recipe that gives a host kvim's key preset, event
   lifecycle, composition, external use, and public examples.

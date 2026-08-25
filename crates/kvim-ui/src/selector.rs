@@ -10,6 +10,14 @@
 //! See `docs/windows.md`.
 //!
 //! The module is pure. It reads no clock, no filesystem, and no terminal.
+//!
+//! `examples/selector.rs` narrows one host-owned task board with one query. It
+//! shows the ranking, the moves, the selection that survives a refiltering, and
+//! both bounds:
+//!
+//! ```sh
+//! cargo run -p kvim-ui --example selector
+//! ```
 
 use kvim_fuzzy::rank;
 

@@ -407,7 +407,7 @@ that section, and gives that row its own meaning. The changes panel of the
 diff view is the first consumer: `ChangesRow::Directory` and `ChangesRow::File`
 each carry a `ChangeSection`, ready to become a `with_section` index for a
 host that wants to show the staged and the unstaged files together. That
-conversion is a further change; this slice publishes the mechanism alone.
+conversion is a further change. `kvim-ui` publishes the mechanism alone.
 
 ## Selector
 

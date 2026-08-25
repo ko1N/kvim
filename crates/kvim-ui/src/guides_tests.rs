@@ -125,11 +125,11 @@ fn a_collapsed_row_is_still_found_as_a_sibling_of_the_same_level() {
 }
 
 #[test]
-fn the_shared_scan_matches_the_vector_based_scan_it_replaced() {
-    // Traced by hand against the vector-based visibility computation that
-    // this scan replaced, over a tree that mixes one collapsed directory with
-    // expanded ones across three depths. The incremental scan must give the
-    // exact same strings.
+fn a_collapsed_subtree_changes_no_guide_of_a_visible_row() {
+    // The rows below hold one collapsed directory whose two children stay in
+    // the list and stay hidden. Every hidden row sits deeper than the level
+    // that a guide closes, so no guide of a visible row may move. The strings
+    // below are traced by hand over three depths.
     let rows = vec![
         row("root", 0),            // 0
         row("a", 1),               // 1

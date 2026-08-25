@@ -123,6 +123,20 @@ host-global scope should read this method too: it is what keeps that escape
 discoverable beside the editor's own bindings. See
 [`input-actions.md`](input-actions.md).
 
+`WorkspaceComposer::idle_which_key` is the same list for a host that composes
+its workspace through the composer. It builds the context itself, from the
+overlay ownership, the host-global scope, and the published context of the
+surface that owns input, so the host rebuilds no context of its own. The call
+takes no elapsed time and changes no state, because the which-key delay and the
+overlay state govern `WorkspaceComposer::which_key` alone.
+
+Bound the idle list before you draw it. It can approach
+`kvim_ui::WHICH_KEY_HINTS_MAX`, which is 256 and refuses a longer hint list
+instead of cutting it. Kvim's own preset holds 81 distinct first keys in Normal
+mode, 56 in Visual mode, and 48 in the sidebar, and the list spans up to three
+scopes. A host pages or filters the result and never hands the raw list to
+`WhichKeyOverlay`.
+
 `BindingScope::RegisterSelection` binds no key. Kvim's own resolver cancels an
 open register selection on any key that the registry does not bind. A host
 that owns the resolver has no registry entry that can express "cancel on
@@ -382,6 +396,7 @@ The required examples are:
 - `crates/kvim-keymap/examples/dispatch_keys.rs`
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
+- `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
 - `crates/kvim-ui/examples/split_windows.rs`
 - `crates/kvim-ui/examples/tab_strip.rs`
@@ -395,8 +410,9 @@ Each example demonstrates one feature and its minimum setup. Supporting public
 types use their owning feature example. Internal helpers do not require another
 example.
 
-The LSP example starts itself as a deterministic fixture server. UI examples
-render into test buffers. `host_workspace.rs` composes host-owned chat, a real
+The LSP example starts itself as a deterministic fixture server. A UI example
+renders into a test buffer, or prints the state that it drives when the feature
+paints no cell. `host_workspace.rs` composes host-owned chat, a real
 embedded editor, a real review surface, and sidebar surfaces through one shared
 resolver. Editor, composition, and review examples use temporary worktrees.
 

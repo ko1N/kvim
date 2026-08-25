@@ -14,7 +14,8 @@ use ratatui::layout::Rect;
 
 use kvim_keymap::{
     Binding, CommandMetadata, CommandOwner, ContextGeneration, Input, InputContextSnapshot, Key,
-    KeyCode, PasteText, Phase, Registry, Resolver, Scope, SemanticPhases, TextFallback, TypedText,
+    KeyCode, PasteText, Phase, Registry, Resolver, Scope, ScopedWhichKeyHint, SemanticPhases,
+    TextFallback, TypedText,
 };
 
 use crate::composer::{Composition, CompositionEffect, ResumeError, UnknownSurface};
@@ -1128,4 +1129,73 @@ fn an_overlay_that_publishes_a_pending_phase_is_refused_at_the_call() {
         },
     );
     let _effect = composer.open_overlay(PALETTE, Table::Palette, AREA, reading);
+}
+
+#[test]
+fn the_idle_list_names_a_complete_host_global_key_that_the_pending_view_hides() {
+    let mut composer = workspace();
+
+    // The idle list answers before any key. It takes no elapsed time, and the
+    // which-key delay governs the pending-prefix view alone.
+    let named: Vec<(Table, Key)> = composer
+        .idle_which_key()
+        .iter()
+        .map(|hint| (hint.scope(), hint.hint().key()))
+        .collect();
+    assert_eq!(
+        named,
+        vec![
+            (Table::Global, ch('g')),
+            (Table::Global, ch('h')),
+            (Table::Global, ch('p')),
+            (Table::Global, ch('q')),
+            (Table::EditorNormal, ch('j')),
+        ],
+        "the host-global scope answers before the focused surface"
+    );
+
+    // `q` is a complete one-key binding of the host-global scope, so it
+    // extends no prefix. The pending-prefix view therefore never reports it,
+    // which is the gap that the idle list closes.
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+    let view = composer
+        .which_key(WHICH_KEY_DELAY)
+        .expect("the delay passed, so the overlay is visible");
+    assert!(
+        view.hints().iter().all(|hint| hint.hint().key() != ch('q')),
+        "a complete one-key binding extends no pending prefix"
+    );
+}
+
+#[test]
+fn the_idle_list_reads_the_scopes_that_answer_the_next_key() {
+    let mut composer = workspace();
+    let effect = composer.open_overlay(PALETTE, Table::Palette, AREA, idle(Table::Palette));
+    assert_eq!(effect, CompositionEffect::Applied);
+
+    // The overlay owns input, so the composer resolves against the overlay
+    // scope and the host-global scope alone. The idle list names the same two.
+    let scopes: Vec<Table> = composer
+        .idle_which_key()
+        .iter()
+        .map(ScopedWhichKeyHint::scope)
+        .collect();
+    assert!(scopes.contains(&Table::Palette));
+    assert!(
+        !scopes.contains(&Table::EditorNormal),
+        "the editor answers no key while the overlay owns input"
+    );
+
+    // The palette rebinds `q`, so both scopes hint it. The earlier scope of
+    // the order wins the press, exactly as the list reports it.
+    assert_eq!(
+        composer.reduce(Input::Key(ch('q')), Some(NOW)),
+        Composition::Surface {
+            surface: PALETTE,
+            command: Action::AcceptPalette
+        }
+    );
 }
