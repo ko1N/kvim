@@ -192,6 +192,14 @@ same `Option<Duration>` that `Resolver::dispatch` takes. `None` states that the
 host draws no which-key overlay, so pending input arms no timer and a host that
 reads no clock holds one composer, and one resolver, inside pure state.
 
+An open overlay is not a pending phase. It owns the keyboard; it does not wait
+for the rest of a sequence. The context that an overlay publishes to
+`WorkspaceComposer::open_overlay` is therefore idle, even when the overlay reads
+one line: the surface keeps its own prompt phase to itself. A context that is
+not idle makes the overlay unclosable, because `close_overlay` addresses the
+surface that owns input, which is the overlay, and the only reset that empties a
+prompt phase is that close.
+
 An open overlay owns input while it stays open, so an overlay key never reaches
 the focused surface below it. The focused region and the focused surface stay
 unchanged while the overlay is open. This rule covers the focused scope alone.

@@ -736,6 +736,20 @@ where
     /// The overlay surface enters with the context that it publishes, because
     /// it owns input while it stays open. The rectangle is the one that the
     /// host asks for, and the layout clips it to the composed area.
+    ///
+    /// **The context must be idle.** An open overlay owns the keyboard; it does
+    /// not wait for the rest of a sequence, so it holds no count, operator,
+    /// register, text-object, or prompt phase. A surface that reads one line
+    /// therefore still publishes [`InputContextSnapshot::idle`] here, and it
+    /// keeps its own prompt phase to itself.
+    ///
+    /// A context that is not idle closes the overlay out of the composer.
+    /// [`WorkspaceComposer::close_overlay`] addresses the surface that owns
+    /// input, which is the overlay itself, so it answers with
+    /// [`CompositionEffect::CancelPending`] addressed to the overlay. The only
+    /// reset that would empty a prompt phase is the close that the composer is
+    /// refusing, so the overlay never closes again. The `debug_assert` below
+    /// states the rule for a debug build. See `docs/embedding.md`.
     pub fn open_overlay(
         &mut self,
         surface: Sid,
@@ -743,6 +757,10 @@ where
         area: Rect,
         context: InputContextSnapshot<S>,
     ) -> CompositionEffect<Sid> {
+        debug_assert!(
+            context.phases.is_idle(),
+            "an open overlay owns input and waits for no sequence, so its context is idle"
+        );
         self.propose(Transition::OpenOverlay {
             surface,
             scope,

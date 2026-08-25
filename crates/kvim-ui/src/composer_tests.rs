@@ -1109,3 +1109,39 @@ fn an_open_overlay_keeps_input_and_its_state_across_one_close() {
         "the overlay still answers before the host-global table"
     );
 }
+
+#[test]
+#[cfg(debug_assertions)]
+#[should_panic(expected = "an open overlay owns input and waits for no sequence")]
+fn an_overlay_that_publishes_a_pending_phase_is_refused_at_the_call() {
+    // An overlay that reads one line still publishes an idle context, because
+    // it owns the keyboard instead of waiting for the rest of a sequence. A
+    // pending context would make the overlay unclosable: `close_overlay`
+    // addresses the surface that owns input, which is the overlay itself, and
+    // the only reset that empties a prompt phase is that close.
+    let mut composer = workspace();
+    let reading = pending(
+        Table::Palette,
+        SemanticPhases {
+            prompt: Phase::Pending,
+            ..SemanticPhases::IDLE
+        },
+    );
+    let _effect = composer.open_overlay(PALETTE, Table::Palette, AREA, reading);
+}
+
+#[test]
+fn an_overlay_with_an_idle_context_closes_at_once() {
+    // The rule above keeps the close free of the reset handshake, so one call
+    // opens the overlay and one call takes ownership back.
+    let mut composer = workspace();
+    assert_eq!(
+        composer.open_overlay(PALETTE, Table::Palette, AREA, idle(Table::Palette)),
+        CompositionEffect::Applied
+    );
+    assert_eq!(composer.input_surface(), &PALETTE);
+
+    assert_eq!(composer.close_overlay(), CompositionEffect::Applied);
+    assert_eq!(composer.overlay_owner(), None);
+    assert_ne!(composer.input_surface(), &PALETTE);
+}
