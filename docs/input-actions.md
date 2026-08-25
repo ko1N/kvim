@@ -340,11 +340,23 @@ unbound and unsupported outcomes remain addressed surface inputs while that
 surface reports semantic pending state.
 
 The resolver evaluates the overlay scope, the host-global scope, and the focused
-scope in that order. The first scope that completes the sequence wins. When no
-scope completes it, the first scope that can extend it owns the pending prefix,
-and every further key of that sequence stays in that scope. One sequence
-therefore never changes owner in the middle, and the which-key hints always come
-from the table that will answer.
+scope in that order. It walks this order for every key of a sequence, not only
+the first. The first scope that completes a key wins. When no scope completes
+it, the first scope that can extend it owns that key. The owning scope can
+therefore change from one key to the next.
+
+Before this evaluation order spanned every key, a host-global binding that
+shared kvim's leader could silently swallow kvim's own leader bindings. The
+host-global scope precedes the focused scope in evaluation order. It always
+armed the prefix first. Every further key then resolved in that scope alone.
+The resolver now re-evaluates the scope order at every key. kvim's own leader
+bindings therefore resolve correctly beside a host-global binding under the
+same prefix.
+
+The which-key hints of a pending prefix span the same scope order. Each hint
+names its scope. Every hinted key resolves to some scope's binding. Two scopes
+can hint the same key with different commands. The earlier scope in the order
+wins that collision. See [Leader And Which-Key](#leader-and-which-key).
 
 A text fallback takes the first key of a sequence only. A key that breaks a
 started sequence types no text.
@@ -446,6 +458,16 @@ distinct commands behind it, in the form `+3 commands`. Two sequences that reach
 the same command therefore count once. which-key.nvim marks a group the same
 way, with a `+` prefix. The rows follow the key order of the registry, so the
 overlay is deterministic.
+
+The hints of a pending prefix come from every scope that extends it. The scope
+order is the overlay scope, the host-global scope, and the focused scope,
+without repetition. Each hint names its scope. A host can group or style a
+host-global hint apart from a focused-surface hint. Every hinted key resolves
+to some scope's binding when pressed. Two scopes can hint the same key with
+different commands. The earlier scope in the order wins that collision. This
+list shows an extension of the pending prefix only. A complete one-key binding
+in another scope, such as a host-global escape, does not extend this prefix.
+It does not appear here.
 
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written

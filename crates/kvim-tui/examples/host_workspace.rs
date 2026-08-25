@@ -46,7 +46,7 @@ use tokio::time::sleep;
 use kvim_input::{BindingScope, Command, Mode};
 use kvim_keymap::{
     Binding, CommandMetadata, CommandOwner, Input, InputContextSnapshot, Key, KeyCode, Registry,
-    Resolver, Scope, TextFallback, TypedText, WhichKeyHint as KeyHint,
+    Resolver, Scope, ScopedWhichKeyHint, TextFallback, TypedText,
 };
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{
@@ -459,8 +459,11 @@ async fn main() -> Result<(), Box<dyn Error>> {
         .map(|view| {
             view.hints()
                 .iter()
-                .map(|hint: &KeyHint<Action>| {
-                    (hint.key_label().to_string(), hint.target().to_string())
+                .map(|hint: &ScopedWhichKeyHint<Action, Table>| {
+                    (
+                        hint.hint().key_label().to_string(),
+                        hint.hint().target().to_string(),
+                    )
                 })
                 .collect()
         })

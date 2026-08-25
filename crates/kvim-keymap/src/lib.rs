@@ -94,7 +94,7 @@ pub use binding::{
     CommandOwner, SCOPES_MAX, Scope,
 };
 pub use context::{ContextGeneration, InputContextSnapshot, Phase, SemanticPhases, TextFallback};
-pub use hint::{WhichKeyHint, WhichKeyTarget};
+pub use hint::{ScopedWhichKeyHint, WhichKeyHint, WhichKeyTarget};
 pub use key::{Chord, KEY_LABEL_BYTES_MAX, Key, KeyCode, KeyLabel};
 pub use registry::{BINDINGS_MAX, Registry, RegistryError};
 pub use resolver::{

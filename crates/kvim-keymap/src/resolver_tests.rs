@@ -382,6 +382,206 @@ fn the_which_key_view_reads_the_same_registry_and_prefix() {
 }
 
 #[test]
+fn which_key_hints_from_one_scope_stay_unchanged() {
+    let mut resolver = resolver();
+    let context = normal();
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    let hints = view.hints();
+    assert_eq!(
+        hints.len(),
+        1,
+        "only the Normal scope extends the prefix, so it yields one hint"
+    );
+    assert_eq!(hints[0].scope(), Table::Normal);
+    assert_eq!(hints[0].hint().key(), ch('g'));
+    assert_eq!(hints[0].hint().commands(), [Action::FirstLine]);
+}
+
+#[test]
+fn which_key_hints_span_the_host_and_the_focused_scope() {
+    // The host scope and the focused scope both extend the one-key prefix
+    // `g`, so the host scope arms it, and the hints of the pending prefix
+    // name both scopes, in evaluation order.
+    let bindings = vec![
+        Binding::host(Table::Global, &[ch('g'), ch('x')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ];
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    let mut resolver = Resolver::new(Arc::new(registry), 4, DELAY);
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    assert_eq!(
+        view.scope(),
+        Table::Global,
+        "the earlier scope in evaluation order armed the prefix"
+    );
+
+    let hints = view.hints();
+    let scopes: Vec<_> = hints.iter().map(|hint| hint.scope()).collect();
+    assert_eq!(
+        scopes,
+        vec![Table::Global, Table::Normal],
+        "the host scope's hint precedes the focused scope's hint, without repetition"
+    );
+    assert_eq!(hints[0].hint().key(), ch('x'));
+    assert_eq!(hints[1].hint().key(), ch('g'));
+}
+
+#[test]
+fn a_later_scopes_completion_still_resolves_after_an_earlier_scope_arms_the_prefix() {
+    // The host scope arms the prefix, because it holds a longer sequence
+    // under the same first key. Only the focused scope binds the second key,
+    // so the walk that continues the prefix must reach it. Before this walk
+    // spanned the scope order, the second key returned `Unbound`.
+    let bindings = vec![
+        Binding::host(Table::Global, &[ch('g'), ch('x')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ];
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    let mut resolver = Resolver::new(Arc::new(registry), 4, DELAY);
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending,
+        "the host scope arms the prefix"
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Surface {
+            command: Action::FirstLine
+        },
+        "the focused scope's own completion still resolves, even though the host scope armed the prefix"
+    );
+}
+
+#[test]
+fn the_earlier_scope_wins_a_completion_collision() {
+    // Both scopes bind the exact same two-key sequence to different
+    // commands. The host scope precedes the focused scope in evaluation
+    // order, so its command answers, even though the focused scope also
+    // completes the same keys.
+    let bindings = vec![
+        Binding::host(Table::Global, &[ch('g'), ch('g')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ];
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    let mut resolver = Resolver::new(Arc::new(registry), 4, DELAY);
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Host {
+            command: Action::Close
+        },
+        "the host scope precedes the focused scope in evaluation order, so it wins the collision"
+    );
+}
+
+#[test]
+fn a_later_scopes_complete_binding_beats_an_earlier_scopes_longer_sequence() {
+    // The host scope holds a three-key sequence under the same two-key
+    // prefix that the focused scope completes. The complete-binding pass
+    // must finish across every scope before the longer-sequence pass
+    // considers re-arming the host scope, or the host scope would win by
+    // holding a longer sequence at this depth. That would prove the two
+    // passes had merged into one.
+    let bindings = vec![
+        Binding::host(Table::Global, &[ch('g'), ch('g'), ch('z')], Action::Close),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+    ];
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    let mut resolver = Resolver::new(Arc::new(registry), 4, DELAY);
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending,
+        "the host scope arms the prefix, because it is the earlier scope with a longer sequence"
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Surface {
+            command: Action::FirstLine
+        },
+        "the focused scope's complete binding wins, even though the host scope also extends this prefix"
+    );
+}
+
+#[test]
+fn every_hinted_key_resolves_to_something_other_than_unbound() {
+    // The host scope binds two extensions of the prefix, one of which
+    // collides with the focused scope's own key. The focused scope binds a
+    // third extension that only it holds. Every key that `hints()` reports
+    // must still resolve, because the walk that continues a prefix now spans
+    // the same scope order that armed it.
+    let bindings = vec![
+        Binding::host(Table::Global, &[ch('g'), ch('x')], Action::Close),
+        Binding::host(Table::Global, &[ch('g'), ch('g')], Action::Quit),
+        Binding::surface(Table::Normal, &[ch('g'), ch('g')], Action::FirstLine),
+        Binding::surface(Table::Normal, &[ch('g'), ch('e')], Action::Down),
+    ];
+    let registry =
+        Arc::new(Registry::from_bindings(&bindings, 4).expect("the test table validates"));
+    let context = DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot::idle(Table::Normal),
+    };
+
+    let mut resolver = Resolver::new(Arc::clone(&registry), 4, DELAY);
+    resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW));
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    let hinted_keys: Vec<Key> = view.hints().iter().map(|hint| hint.hint().key()).collect();
+    assert_eq!(
+        hinted_keys.len(),
+        4,
+        "the host scope hints two keys and the focused scope hints two keys"
+    );
+
+    for key in hinted_keys {
+        let mut fresh = Resolver::new(Arc::clone(&registry), 4, DELAY);
+        fresh.dispatch(&context, Input::Key(ch('g')), Some(NOW));
+        let outcome = fresh.dispatch(&context, Input::Key(key), Some(NOW));
+        assert_ne!(
+            outcome,
+            Dispatch::Unbound,
+            "every key that the which-key view hints must resolve to something"
+        );
+    }
+}
+
+#[test]
 fn a_surface_prefix_arms_the_overlay_before_the_first_key() {
     let mut resolver = resolver();
     // The surface opened its own count, so the delay starts here.

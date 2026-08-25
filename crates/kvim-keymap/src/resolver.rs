@@ -6,10 +6,12 @@
 //! the input, and the elapsed time as values. A caller that draws no which-key
 //! overlay supplies no time at all.
 //!
-//! Scope order is overlay, host-global, and focused surface. The first scope
-//! that completes the sequence wins. When no scope completes it, the first
-//! scope that can extend it owns the pending prefix, and the rest of the
-//! sequence stays in that scope.
+//! Scope order is overlay, host-global, and focused surface. Every key of a
+//! sequence walks this order. The first scope that completes it wins. When no
+//! scope completes it, the first scope that can extend it owns that one key.
+//! The owning scope can change from one key to the next, because the walk
+//! runs again for every key. The which-key hints of the pending prefix walk
+//! the same order. Every hinted key resolves to some scope's binding.
 //!
 //! `crates/kvim-keymap/examples/dispatch_keys.rs` is the dedicated example of
 //! this feature. It composes one registry, dispatches a one-key binding and a
@@ -23,7 +25,7 @@ use thiserror::Error;
 
 use crate::binding::CommandOwner;
 use crate::context::{ContextGeneration, InputContextSnapshot};
-use crate::hint::WhichKeyHint;
+use crate::hint::ScopedWhichKeyHint;
 use crate::key::Key;
 use crate::registry::Registry;
 use crate::{BoundCommand, CommandMetadata, KeySequence, Scope};
@@ -255,7 +257,7 @@ struct ContextIdentity<S> {
     generation: ContextGeneration,
 }
 
-impl<S: Copy> ContextIdentity<S> {
+impl<S: Scope> ContextIdentity<S> {
     /// Reads the identity of one request context.
     fn of(context: &DispatchContext<S>) -> Self {
         Self {
@@ -264,6 +266,19 @@ impl<S: Copy> ContextIdentity<S> {
             focus: context.focus.scope,
             generation: context.focus.generation,
         }
+    }
+
+    /// Returns the scopes that armed the pending prefix, in evaluation order
+    /// and without repetition.
+    ///
+    /// The identity stores exactly the fields that [`scope_order`] reads from
+    /// a live [`DispatchContext`]. This walks the same order that
+    /// `start_sequence` walked when it armed the prefix.
+    /// [`WhichKeyView::hints`] calls this instead of asking the caller for a
+    /// fresh context. A hint can never span a different scope order than the
+    /// one that armed its prefix.
+    fn scope_order(&self) -> impl Iterator<Item = S> {
+        scope_order_of(self.overlay, self.global, self.focus)
     }
 }
 
@@ -287,9 +302,13 @@ enum PendingPrefix<S> {
 ///
 /// The view borrows the same registry and the same prefix that dispatch uses,
 /// so a hint can never disagree with the command that the next key reaches.
+/// [`WhichKeyView::hints`] spans the scope order of the pending prefix. Every
+/// hinted key resolves to some scope's binding, with an earlier scope winning
+/// a collision.
 #[derive(Clone, Copy, Debug)]
 pub struct WhichKeyView<'a, C, S> {
     registry: &'a Registry<C, S>,
+    identity: ContextIdentity<S>,
     scope: S,
     prefix: &'a [Key],
 }
@@ -299,7 +318,11 @@ where
     C: CommandMetadata,
     S: Scope,
 {
-    /// Returns the scope that owns the pending prefix.
+    /// Returns the scope that currently owns the pending prefix.
+    ///
+    /// A further key can move ownership to a different scope of the
+    /// evaluation order. This value can therefore differ from what it
+    /// reported one key ago.
     #[inline]
     #[must_use]
     pub const fn scope(&self) -> S {
@@ -314,19 +337,35 @@ where
     }
 
     /// Returns every binding that extends the pending prefix, in registry
-    /// order.
+    /// order, from the scope that currently owns it.
     pub fn extensions(&self) -> impl Iterator<Item = (&KeySequence, BoundCommand<C>)> {
         self.registry.extensions_of_prefix(self.scope, self.prefix)
     }
 
     /// Returns one hint for each distinct next key of the pending prefix.
     ///
+    /// The hints come from every scope of the context that extends the
+    /// prefix, in scope order and without repetition.
+    ///
     /// A presentation layer reads these hints alone. It needs no binding table
     /// of its own, because the hints come from the registry that dispatch
-    /// reads. `crates/kvim-ui/examples/which_key.rs` renders them.
+    /// reads. Every hint names its scope. A host can group or style a
+    /// host-global hint apart from a focused-surface hint.
+    /// `crates/kvim-ui/examples/which_key.rs` renders them.
+    ///
+    /// A key that this view hints resolves to some scope's binding when
+    /// pressed. Two scopes can hint the same key with different commands.
+    /// The earlier scope in the evaluation order wins that collision, exactly
+    /// as [`WhichKeyView::scope`] would report after the press.
     #[must_use]
-    pub fn hints(&self) -> Vec<WhichKeyHint<C>> {
-        self.registry.hints_for_prefix(self.scope, self.prefix)
+    pub fn hints(&self) -> Vec<ScopedWhichKeyHint<C, S>> {
+        let mut hints = Vec::new();
+        for scope in self.identity.scope_order() {
+            for hint in self.registry.hints_for_prefix(scope, self.prefix) {
+                hints.push(ScopedWhichKeyHint::new(scope, hint));
+            }
+        }
+        hints
     }
 }
 
@@ -499,48 +538,104 @@ where
     ///
     /// # Examples
     ///
+    /// The registry below binds a two-key sequence `g g` in the host-global
+    /// scope and a different two-key sequence `g e` in the focused editor
+    /// scope. Both extend the one-key prefix `g`, so the host-global scope
+    /// arms it first, and the hints of the pending prefix name both scopes.
+    ///
     /// ```
     /// # use std::fmt;
     /// # use std::sync::Arc;
     /// # use std::time::Duration;
     /// # use kvim_keymap::{
-    /// #     Binding, CommandMetadata, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
-    /// #     Registry, Resolver, Scope,
+    /// #     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key,
+    /// #     KeyCode, Registry, Resolver, Scope,
     /// # };
     /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-    /// # enum Action { First }
+    /// # enum Action { First, Second }
     /// # impl fmt::Display for Action {
     /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.id()) }
     /// # }
     /// # impl CommandMetadata for Action {
-    /// #     fn id(&self) -> &str { "first" }
-    /// #     fn label(&self) -> &str { "Go to the first line" }
+    /// #     fn id(&self) -> &str {
+    /// #         match self {
+    /// #             Self::First => "first",
+    /// #             Self::Second => "second",
+    /// #         }
+    /// #     }
+    /// #     fn label(&self) -> &str {
+    /// #         match self {
+    /// #             Self::First => "Go to the first line",
+    /// #             Self::Second => "Go to the second scope's target",
+    /// #         }
+    /// #     }
     /// # }
     /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-    /// # struct Editor;
-    /// # impl fmt::Display for Editor {
-    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("Editor") }
+    /// # enum HostScope { Global, Editor }
+    /// # impl fmt::Display for HostScope {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+    /// #         f.write_str(match self { Self::Global => "Global", Self::Editor => "Editor" })
+    /// #     }
     /// # }
-    /// # impl Scope for Editor { const COUNT: usize = 1; }
-    /// let keys = [Key::plain(KeyCode::Char('g')); 2];
-    /// let registry = Registry::from_bindings(&[Binding::surface(Editor, &keys, Action::First)], 4)?;
+    /// # impl Scope for HostScope { const COUNT: usize = 2; }
+    /// let g = Key::plain(KeyCode::Char('g'));
+    /// let registry = Registry::from_bindings(
+    ///     &[
+    ///         Binding::host(HostScope::Global, &[g, g], Action::First),
+    ///         Binding::surface(HostScope::Editor, &[g, Key::plain(KeyCode::Char('e'))], Action::Second),
+    ///     ],
+    ///     4,
+    /// )?;
     /// let delay = Duration::from_millis(500);
     /// let mut resolver = Resolver::new(Arc::new(registry), 4, delay);
-    /// let context = DispatchContext::focused(InputContextSnapshot::idle(Editor));
+    /// let context = DispatchContext {
+    ///     overlay: None,
+    ///     global: Some(HostScope::Global),
+    ///     focus: InputContextSnapshot::idle(HostScope::Editor),
+    /// };
     ///
-    /// resolver.dispatch(&context, Input::Key(keys[0]), Some(Duration::ZERO));
+    /// resolver.dispatch(&context, Input::Key(g), Some(Duration::ZERO));
     /// assert!(
     ///     resolver.which_key(Duration::ZERO).is_none(),
     ///     "the overlay waits out its delay before it first appears"
     /// );
     ///
     /// let view = resolver.which_key(delay).expect("the delay elapsed");
-    /// assert_eq!(view.prefix(), [keys[0]]);
+    /// assert_eq!(view.prefix(), [g]);
+    /// assert_eq!(
+    ///     view.scope(),
+    ///     HostScope::Global,
+    ///     "the earlier scope in evaluation order armed the prefix"
+    /// );
     ///
     /// let hints = view.hints();
-    /// assert_eq!(hints.len(), 1, "one distinct next key follows the prefix");
-    /// assert_eq!(hints[0].key(), keys[1]);
-    /// # Ok::<(), kvim_keymap::RegistryError<Action, Editor>>(())
+    /// assert_eq!(hints.len(), 2, "the global scope and the editor scope both extend the prefix");
+    /// assert_eq!(hints[0].scope(), HostScope::Global);
+    /// assert_eq!(hints[0].hint().key(), g);
+    /// assert_eq!(
+    ///     hints[1].scope(),
+    ///     HostScope::Editor,
+    ///     "the focused scope's hint follows the global scope's hint"
+    /// );
+    /// assert_eq!(hints[1].hint().key(), Key::plain(KeyCode::Char('e')));
+    ///
+    /// assert_eq!(
+    ///     resolver.dispatch(&context, Input::Key(g), Some(delay)),
+    ///     Dispatch::Host { command: Action::First },
+    ///     "the host scope's complete binding wins, because it precedes the editor scope"
+    /// );
+    ///
+    /// // The editor scope's own hint also resolves, even though the host
+    /// // scope armed the prefix first.
+    /// resolver.dispatch(&context, Input::Key(g), Some(delay));
+    /// assert_eq!(
+    ///     resolver.dispatch(&context, Input::Key(Key::plain(KeyCode::Char('e'))), Some(delay)),
+    ///     Dispatch::Surface {
+    ///         command: Action::Second
+    ///     },
+    ///     "every hinted key resolves to some scope's binding"
+    /// );
+    /// # Ok::<(), kvim_keymap::RegistryError<Action, HostScope>>(())
     /// ```
     pub fn which_key(&mut self, now: Duration) -> Option<WhichKeyView<'_, C, S>> {
         if self.pending_keys().is_empty() {
@@ -553,12 +648,18 @@ where
                 self.overlay = OverlayState::Visible;
             }
         }
-        let PendingPrefix::Active { scope, keys, .. } = &self.pending else {
+        let PendingPrefix::Active {
+            identity,
+            scope,
+            keys,
+        } = &self.pending
+        else {
             debug_assert!(false, "an empty prefix leaves the function above");
             return None;
         };
         Some(WhichKeyView {
             registry: &self.registry,
+            identity: *identity,
             scope: *scope,
             prefix: keys,
         })
@@ -610,15 +711,13 @@ where
         now: Option<Duration>,
     ) -> Dispatch<C> {
         match std::mem::replace(&mut self.pending, PendingPrefix::Idle) {
-            PendingPrefix::Active {
-                scope, mut keys, ..
-            } => {
+            PendingPrefix::Active { mut keys, .. } => {
                 debug_assert!(
                     keys.len() < usize::from(self.keys_max),
                     "the registry rejects a binding above the pending-key maximum, so a prefix keeps room for one key"
                 );
                 keys.push(key);
-                self.continue_prefix(identity, scope, keys, now)
+                self.continue_prefix(identity, keys, now)
             }
             PendingPrefix::Idle => self.start_sequence(context, identity, key, now),
         }
@@ -663,29 +762,34 @@ where
 
     /// Resolves one key that continues the pending prefix.
     ///
-    /// The scope that armed the prefix owns every further key, so the which-key
-    /// hints and the reached command always come from one table.
+    /// The walk mirrors `start_sequence`. A complete binding in any scope of
+    /// the order beats a longer sequence in any other scope. Both passes run
+    /// in full before the next begins, so the scope that resolves this key
+    /// can differ from the scope that armed the prefix one key ago.
     fn continue_prefix(
         &mut self,
         identity: ContextIdentity<S>,
-        scope: S,
         keys: Vec<Key>,
         now: Option<Duration>,
     ) -> Dispatch<C> {
-        if let Some(bound) = self.registry.bound_command(scope, &keys) {
-            self.overlay = OverlayState::Hidden;
-            return dispatch_of(bound);
-        }
-        if self.registry.has_longer_sequence(scope, &keys) {
-            if let Some(now) = now {
-                self.arm_overlay(now);
+        for scope in identity.scope_order() {
+            if let Some(bound) = self.registry.bound_command(scope, &keys) {
+                self.overlay = OverlayState::Hidden;
+                return dispatch_of(bound);
             }
-            self.pending = PendingPrefix::Active {
-                identity,
-                scope,
-                keys,
-            };
-            return Dispatch::Pending;
+        }
+        for scope in identity.scope_order() {
+            if self.registry.has_longer_sequence(scope, &keys) {
+                if let Some(now) = now {
+                    self.arm_overlay(now);
+                }
+                self.pending = PendingPrefix::Active {
+                    identity,
+                    scope,
+                    keys,
+                };
+                return Dispatch::Pending;
+            }
         }
         self.overlay = OverlayState::Hidden;
         Dispatch::Unbound
@@ -702,7 +806,23 @@ where
 
 /// Returns the scopes of one context in evaluation order, without repetition.
 fn scope_order<S: Scope>(context: &DispatchContext<S>) -> impl Iterator<Item = S> {
-    let ordered = [context.overlay, context.global, Some(context.focus.scope)];
+    scope_order_of(context.overlay, context.global, context.focus.scope)
+}
+
+/// Returns the overlay scope, the host-global scope, and the focused scope, in
+/// that evaluation order, without repetition.
+///
+/// [`scope_order`] reads the three scopes from a live [`DispatchContext`].
+/// [`ContextIdentity::scope_order`] reads the same three scopes from the
+/// identity that armed a pending prefix. Both call this one function, so
+/// `start_sequence` and [`WhichKeyView::hints`] never walk two different
+/// orders.
+fn scope_order_of<S: Scope>(
+    overlay: Option<S>,
+    global: Option<S>,
+    focus: S,
+) -> impl Iterator<Item = S> {
+    let ordered = [overlay, global, Some(focus)];
     ordered
         .into_iter()
         .enumerate()

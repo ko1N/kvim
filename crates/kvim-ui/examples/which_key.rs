@@ -24,7 +24,7 @@ use ratatui::style::{Color, Style};
 
 use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
-    Registry, Resolver, Scope, WhichKeyHint as KeyHint,
+    Registry, Resolver, Scope, ScopedWhichKeyHint,
 };
 use kvim_ui::{WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles};
 
@@ -196,11 +196,16 @@ fn main() {
         .expect("the delay passed, so the overlay is visible");
     let hints = view.hints();
     for hint in &hints {
-        let reached: Vec<&str> = hint.commands().iter().map(CommandMetadata::id).collect();
+        let reached: Vec<&str> = hint
+            .hint()
+            .commands()
+            .iter()
+            .map(CommandMetadata::id)
+            .collect();
         println!(
             "  {:<4} {:<24} {}",
-            hint.key_label().to_string(),
-            hint.target().to_string(),
+            hint.hint().key_label().to_string(),
+            hint.hint().target().to_string(),
             reached.join(", ")
         );
     }
@@ -211,16 +216,21 @@ fn main() {
 }
 
 /// Renders the derived hints into one cell buffer.
-fn painted(hints: &[KeyHint<Command>]) -> Buffer {
+fn painted(hints: &[ScopedWhichKeyHint<Command, Global>]) -> Buffer {
     let texts: Vec<(String, String)> = hints
         .iter()
-        .map(|hint| (hint.key_label().to_string(), hint.target().to_string()))
+        .map(|hint| {
+            (
+                hint.hint().key_label().to_string(),
+                hint.hint().target().to_string(),
+            )
+        })
         .collect();
     let rows: Vec<WhichKeyHint<'_>> = texts
         .iter()
         .zip(hints)
         .map(|((key, label), hint)| {
-            let group = Group::of(hint.commands());
+            let group = Group::of(hint.hint().commands());
             WhichKeyHint::new(key, label).with_icon(WhichKeyIcon {
                 glyph: group.glyph(),
                 style: Style::default().fg(group.color()),

@@ -194,3 +194,40 @@ impl<C: CommandMetadata> WhichKeyHint<C> {
         }
     }
 }
+
+/// One which-key hint, marked with the scope that contributed it.
+///
+/// [`WhichKeyView::hints`](crate::WhichKeyView::hints) walks the scope order of
+/// the pending prefix. It pairs each scope's hint with that scope. A host can
+/// group or style a hint without deriving the order itself.
+///
+/// Pressing a key walks the same scope order. A hinted key therefore always
+/// resolves to some scope's binding. Two scopes can hint the same key with
+/// different commands. The earlier scope in the evaluation order wins that
+/// collision.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ScopedWhichKeyHint<C, S> {
+    scope: S,
+    hint: WhichKeyHint<C>,
+}
+
+impl<C, S: Copy> ScopedWhichKeyHint<C, S> {
+    /// Pairs one hint with the scope that contributed it.
+    pub(crate) const fn new(scope: S, hint: WhichKeyHint<C>) -> Self {
+        Self { scope, hint }
+    }
+
+    /// Returns the scope that contributed the hint.
+    #[inline]
+    #[must_use]
+    pub const fn scope(&self) -> S {
+        self.scope
+    }
+
+    /// Returns the hint that the scope contributed.
+    #[inline]
+    #[must_use]
+    pub const fn hint(&self) -> &WhichKeyHint<C> {
+        &self.hint
+    }
+}

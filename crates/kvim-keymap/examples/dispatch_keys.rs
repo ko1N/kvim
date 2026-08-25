@@ -97,7 +97,8 @@ fn main() -> Result<(), RegistryError<Action, Editor>> {
     // 5. While the sequence is pending, the hints come from the same table.
     if let Some(view) = resolver.which_key(WHICH_KEY_DELAY) {
         println!("which-key after `g`:");
-        for hint in view.hints() {
+        for scoped in view.hints() {
+            let hint = scoped.hint();
             println!("  {}  {}", hint.key_label(), hint.commands()[0].label());
         }
     }

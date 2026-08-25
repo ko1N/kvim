@@ -330,9 +330,19 @@ impl Resolver {
     /// The rows come from the same registry and the same pending prefix that
     /// dispatch reads, so a row can never disagree with the command that its
     /// key reaches.
+    ///
+    /// The shared resolver hints from every scope that extends the prefix, in
+    /// scope order. The standalone editor sets no host-global scope. Only its
+    /// own scope and an open overlay scope can contribute, so these rows keep
+    /// their present order.
     pub fn which_key(&mut self, now: Duration) -> Option<Vec<WhichKeyRow>> {
         let view = self.shared.which_key(now)?;
-        Some(view.hints().iter().map(WhichKeyRow::of).collect())
+        Some(
+            view.hints()
+                .iter()
+                .map(|hint| WhichKeyRow::of(hint.hint()))
+                .collect(),
+        )
     }
 
     /// Cancels every pending key and every pending grammar phase.
