@@ -44,9 +44,10 @@ use crate::window::{
 
 /// The largest number of surface identities that one composer addresses.
 ///
-/// The window tree holds [`WINDOWS_MAX`] leaves, and one sidebar sits at each
-/// edge, so this bound covers every region that can publish a context.
-pub const COMPOSED_SURFACES_MAX: usize = WINDOWS_MAX + 2;
+/// The window tree holds [`WINDOWS_MAX`] leaves, one sidebar sits at each edge,
+/// and the open overlay takes one slot of its own, so this bound covers every
+/// surface that can publish a context.
+pub const COMPOSED_SURFACES_MAX: usize = WINDOWS_MAX + 3;
 
 /// The identity of one proposed focus or overlay transition.
 ///
@@ -1019,7 +1020,7 @@ where
         }
         debug_assert!(
             self.contexts.len() < COMPOSED_SURFACES_MAX,
-            "the window tree and the two sidebars bound the addressed surfaces"
+            "the window tree, the two sidebars, and the overlay bound the addressed surfaces"
         );
         self.contexts.push((surface, context));
     }
