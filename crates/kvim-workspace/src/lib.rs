@@ -43,6 +43,7 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 
+mod align;
 mod buffer;
 mod clipboard;
 mod diff;
@@ -65,6 +66,7 @@ pub mod temp;
 #[cfg(test)]
 mod tests;
 
+pub use align::{AlignedRow, align_hunk};
 pub use buffer::{
     BUFFERS_MAX, BufferId, Buffers, ExternalChange, FileBuffer, SCRATCH_BUFFER_NAME,
     SaveApplyOutcome,
