@@ -509,6 +509,13 @@ top-level rows take the shared result unchanged. `sidebar_guides` never adds
 the leading blank itself, because that blank is a fact of the file tree's own
 header, not a fact of the shared rule.
 
+`kvim_tui::FileRow::guides` publishes that complete indent, the leading blank
+included. `crates/kvim-tui/src/tree.rs` builds every file tree row through one
+builder, and `kvim_tui::draw_file_row` paints the string exactly as the builder
+wrote it. The standalone file tree and an embedded host therefore read one
+answer, so the leading blank cannot appear on one side and not on the other.
+[`embedding.md`](embedding.md) owns the painter.
+
 ### File Tree Collapse Ownership
 
 `FileTree`, in `kvim-workspace`, and `SidebarState`, in `kvim-ui`, can each
@@ -893,7 +900,12 @@ that file and rebuild with `nix develop -c cargo build --release`.
 
 A constant names a color of the palette, for example `BASE`, `TEXT`, or
 `WARNING`. A role names what the editor marks with it, for example
-`ThemeRole::SearchMatch`. Change a constant to recolor every role that uses it,
+`ThemeRole::SearchMatch`. Every role names a published type, so a host colors
+its own surfaces with the same palette. `ThemeRole::TreeGit` names
+`kvim_tui::FileRowGit`, not the recorded state of `kvim-workspace`, because
+[`architecture.md`](architecture.md) keeps that package out of the supported
+set. `crates/kvim-tui/src/tree.rs` converts the recorded state once, and every
+mark, row color, and published row names the facade state after that. Change a constant to recolor every role that uses it,
 and change a role arm in `Theme::style` to move one part of the interface onto
 another color. Neither change reaches a call site, because a call site names a
 role and never a color.

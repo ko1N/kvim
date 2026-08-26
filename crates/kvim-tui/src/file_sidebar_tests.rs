@@ -356,6 +356,7 @@ fn a_label_longer_than_the_bound_reaches_the_host_clipped() {
         SIDEBAR_GUIDE_BLANK.to_owned(),
         0,
         FileRowKind::File,
+        RowState::File,
         false,
     );
     assert_eq!(row.label().chars().count(), FILE_SIDEBAR_LABEL_CHARS_MAX);

@@ -33,6 +33,7 @@ use kvim_workspace::{
     temp::TempDir,
 };
 
+use crate::file_sidebar::FileRowGit;
 use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
@@ -2218,11 +2219,11 @@ fn a_changed_name_takes_its_state_color_and_an_ignored_name_dims() {
     let ignored = sidebar_style(&session, 5, 5);
     assert_eq!(
         modified.fg,
-        theme().style(ThemeRole::TreeGit(GitStatus::Modified)).fg
+        theme().style(ThemeRole::TreeGit(FileRowGit::Modified)).fg
     );
     assert_eq!(
         untracked.fg,
-        theme().style(ThemeRole::TreeGit(GitStatus::Untracked)).fg
+        theme().style(ThemeRole::TreeGit(FileRowGit::Untracked)).fg
     );
     assert_eq!(
         ignored.fg,

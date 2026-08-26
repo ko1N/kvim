@@ -16,11 +16,12 @@
 //! - the host moves the selection, opens one directory, and closes it again;
 //! - one activated file returns from the input that produced it, and the host
 //!   decides whether to open it;
-//! - the host owns the look: kvim publishes the text, the indent guides, the
-//!   depth, and the state of one row, and no color and no cell;
+//! - the host takes the look of kvim: `draw_file_row` paints one row exactly
+//!   as kvim's own file tree paints it, and that tree paints through the same
+//!   call, so no second appearance exists;
 //! - kvim also publishes the Git state, the symbolic-link fact, and the icon
-//!   role of one row as facts beside the drawn text, and the host draws all
-//!   three itself.
+//!   role of one row as facts beside the drawn cells, so a host that wants a
+//!   look of its own reads them and paints every cell itself.
 //!
 //! Run it with:
 //!
@@ -34,16 +35,16 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
 use tokio::time::timeout;
 
 use kvim_path::WorktreeRoot;
 use kvim_runtime::{Runtime, RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
-use kvim_settings::EditorSettings;
+use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_tui::{
-    EditorCapacity, EditorShutdown, EditorWork, EmbeddedEditor, FILE_SIDEBAR_LINK_SUFFIX, FileRow,
-    FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome, IconRole, ListMotion,
+    EditorCapacity, EditorShutdown, EditorWork, EmbeddedEditor, FileRow, FileRowGit, FileRowKind,
+    FileSidebarInput, FileSidebarOutcome, ListMotion, Theme, draw_file_row,
 };
+use kvim_ui::{RowKind, SidebarRow, SidebarState};
 use kvim_workspace::temp::TempDir;
 
 /// The directory of the temporary worktree that the run opens.
@@ -96,11 +97,12 @@ const STEP_DEADLINE: Duration = Duration::from_secs(10);
 /// The time that the host gives the background work of the editor at exit.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 
-/// The marker that the host paints on the selected row.
+/// The icon setting that this host gives the painter.
 ///
-/// kvim publishes the selection as one fact of the row. The glyph is the
-/// host's own choice, because the host owns the look of its sidebar.
-const SELECTION_MARK: &str = "▌";
+/// Every icon glyph of kvim needs a patched font. This run prints its cells to
+/// an ordinary terminal, so it hides them and takes the expansion markers that
+/// the painter draws instead.
+const ICONS: FileTreeIcons = FileTreeIcons::Hidden;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -132,8 +134,9 @@ async fn main() -> Result<(), Box<dyn Error>> {
     }
     read_until(&mut editor, |editor| !editor.file_rows().is_empty()).await?;
 
+    let theme = Theme::new();
     let mut cells = CellBuffer::empty(HOST_AREA);
-    draw(&mut cells, &editor);
+    draw(&mut cells, &editor, theme);
     println!("--- the worktree root ---");
     print_frame(&cells);
 
@@ -147,13 +150,14 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let _outcome = editor.file_sidebar(FileSidebarInput::Open);
     if let Some(row) = selected_row(&editor) {
         println!("{} is now {:?}", row.label(), row.kind());
+        print_facts(&row);
     }
     read_until(&mut editor, |editor| {
         selected_row(editor).is_some_and(|row| row.kind() == FileRowKind::OpenDirectory)
     })
     .await?;
 
-    draw(&mut cells, &editor);
+    draw(&mut cells, &editor, theme);
     println!("--- {PACKAGE} is open ---");
     print_frame(&cells);
 
@@ -176,7 +180,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // inputs take a file to its directory and then close that directory.
     let _outcome = editor.file_sidebar(FileSidebarInput::Close);
     let _outcome = editor.file_sidebar(FileSidebarInput::Close);
-    draw(&mut cells, &editor);
+    draw(&mut cells, &editor, theme);
     println!("--- {PACKAGE} is closed again ---");
     print_frame(&cells);
 
@@ -230,82 +234,48 @@ fn selected_label(editor: &EmbeddedEditor) -> String {
 
 /// Draws every published row into the cells that the host owns.
 ///
-/// kvim publishes the text, the indent guides, the depth, the state, the
-/// recorded Git state, the symbolic-link fact, and the icon role of one row.
-/// The host owns every glyph and every color, so this function is the
-/// complete look of this sidebar. The temporary worktree of this run holds no
-/// repository, so every row publishes no Git state, and the git column stays
-/// blank.
-fn draw(cells: &mut CellBuffer, editor: &EmbeddedEditor) {
+/// The host owns the rectangle and the row geometry, so it holds one bounded
+/// `SidebarState` of `kvim-ui` over the rows that the editor publishes. Every
+/// visible row then reaches `draw_file_row`, which paints the mark cell, the
+/// indent guides, the glyph cells, the label, the link suffix, and the Git
+/// mark exactly as kvim's own file tree paints them. The host supplies the
+/// palette and the icon setting alone, and it already holds both.
+///
+/// The temporary worktree of this run holds no repository, so every row
+/// carries no Git state and the mark column at the right edge stays blank.
+fn draw(cells: &mut CellBuffer, editor: &EmbeddedEditor, theme: Theme) {
     cells.reset();
-    for (line, row) in editor.file_rows().iter().enumerate() {
-        let Ok(line) = u16::try_from(line) else {
-            break;
-        };
-        if line >= SIDEBAR_AREA.height {
-            break;
+    let rows = editor.file_rows();
+    let mut view = SidebarState::new(SIDEBAR_AREA.height);
+    view.set_rows(
+        (0..rows.len())
+            .map(|index| SidebarRow::single(index, RowKind::Selectable))
+            .collect(),
+    )
+    .expect("this worktree holds a handful of rows");
+    let outcome = view.render(cells, SIDEBAR_AREA, |canvas, placement| {
+        if let Some(row) = rows.get(placement.index()) {
+            draw_file_row(canvas, row, theme, ICONS);
         }
-        let mark = if row.is_selected() {
-            SELECTION_MARK
-        } else {
-            " "
-        };
-        // A host that reproduces the look of kvim appends the published
-        // suffix behind the label of a symbolic link; a host that draws its
-        // own mark reads `FileRow::is_symlink` alone.
-        let link = if row.is_symlink() {
-            FILE_SIDEBAR_LINK_SUFFIX
-        } else {
-            ""
-        };
-        // A host that reproduces the look of kvim draws the glyph that
-        // `FileRowGit::glyph` names for the recorded state; a host that draws
-        // its own marks matches on the state instead.
-        let git = row.git().map_or(" ", FileRowGit::glyph);
-        // The guides already hold the leading blank of the workspace-root
-        // header, so the host draws them exactly as kvim publishes them.
-        let text = format!(
-            "{mark}{}{}{}{}{link} {git}",
-            row.guides(),
-            glyph(row.kind()),
-            icon(row.icon_role()),
-            row.label(),
-        );
-        cells.set_stringn(
-            SIDEBAR_AREA.x,
-            SIDEBAR_AREA.y + line,
-            &text,
-            usize::from(SIDEBAR_AREA.width),
-            Style::default(),
-        );
-    }
+    });
+    outcome.expect("every row stays inside the rectangle of the sidebar");
 }
 
-/// Returns the glyph that this host paints for one row state.
+/// Prints the facts that kvim publishes beside the drawn cells of one row.
 ///
-/// kvim names the state and paints no glyph, so this table belongs to the host.
-const fn glyph(kind: FileRowKind) -> &'static str {
-    match kind {
-        FileRowKind::File => "  ",
-        FileRowKind::ClosedDirectory => "▸ ",
-        FileRowKind::OpenDirectory => "▾ ",
-        FileRowKind::LoadingDirectory => "… ",
-        FileRowKind::Note => "· ",
-    }
-}
-
-/// Returns the glyph that this host paints for one icon role.
-///
-/// kvim names the role and paints no glyph, because every glyph of its own
-/// icon table needs a patched font that a host may not hold. This table is
-/// the host's own choice of a plain character for each role that a file row
-/// can carry.
-const fn icon(role: Option<IconRole>) -> &'static str {
-    match role {
-        Some(IconRole::Directory) => "D ",
-        Some(_) => "F ",
-        None => "  ",
-    }
+/// A host that wants a look of its own reads these facts and paints every
+/// cell itself, instead of calling the painter.
+fn print_facts(row: &FileRow) {
+    println!(
+        "facts: label {:?}, kind {:?}, depth {}, guides {:?}, git {:?}, symlink {}, icon {:?}",
+        row.label(),
+        row.kind(),
+        row.depth(),
+        row.guides(),
+        row.git().map(FileRowGit::glyph),
+        row.is_symlink(),
+        row.icon_role(),
+    );
 }
 
 /// Prints the cells that the host owns.

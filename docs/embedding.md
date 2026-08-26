@@ -181,9 +181,10 @@ set. It names its own vocabulary, the paths of `kvim-path`, and the geometry of
 
 `EmbeddedEditor::file_rows` returns the drawable rows. One `FileRow` carries the
 label, the indent guides, the depth, one `FileRowKind`, the selection, the
-recorded Git state, the symbolic-link fact, and the icon role of one line. It
-carries no color, no glyph, and no cell, so the host owns the whole look of its
-sidebar. `FileRowKind` names the five states of one line: `File`,
+recorded Git state, the symbolic-link fact, and the icon role of one line. Every
+accessor answers a fact and no cell, so a host that wants a look of its own
+paints every cell itself. A host that wants the look of kvim hands the row to
+`draw_file_row` instead. `FileRowKind` names the five states of one line: `File`,
 `ClosedDirectory`, `OpenDirectory`, `LoadingDirectory`, and `Note`. A `Note` row
 reports a bounded read, a failed read, or the number of entries that the
 hidden-entry policy keeps out of the rows; it names no entry and takes no
@@ -196,7 +197,8 @@ guides as they are published reproduces the look of kvim.
 [`windows.md`](windows.md) owns the guide rule itself.
 
 `FileRow::git` returns the recorded Git state of the row as `FileRowGit`, or
-`None` while the row carries no state. A `Note` row and a row of a workspace
+`None` while the row carries no state. `ThemeRole::TreeGit` names the same
+state, so a host colors a row of its own from the published palette. A `Note` row and a row of a workspace
 that no read has covered yet both report `None`. The variant order rises in
 the same severity order as `kvim_workspace::GitStatus`, so a host ranks two
 states the way kvim ranks them. `FileRowGit::glyph` returns the mark that
@@ -213,9 +215,41 @@ kvim appends that constant itself.
 or `None` for a `Note` row. The role reaches the host regardless of
 `FileTreeIcons`, the icon-visibility setting of kvim's own file tree, because a
 host may want the role even while kvim would draw no icon of its own. kvim
-publishes no icon glyph, because every glyph needs a patched font that a host
-may not hold. A host that wants kvim's own icon color reads
-`Theme::style(ThemeRole::Icon(role))`; the glyph stays the host's own choice.
+publishes no icon glyph as a fact, because every glyph needs a patched font that
+a host may not hold. A host that wants kvim's own icon color reads
+`Theme::style(ThemeRole::Icon(role))`; the glyph stays the host's own choice,
+unless the host paints through `draw_file_row`, which draws kvim's own glyph.
+
+#### One Row Painter
+
+`kvim_tui::draw_file_row` paints one `FileRow` into one `kvim_ui::SidebarCanvas`
+exactly as kvim's own file tree paints it. The host asked for the look of kvim
+and not only for its facts, so kvim publishes the painter rather than a second
+description that a host would have to reproduce.
+
+The call takes four arguments and reads nothing else:
+
+- the canvas, which `SidebarState::render` hands to the row callback of the
+  host and which clips every draw at the edges of the row;
+- the row, which carries every fact that the painter draws;
+- one `Theme`, the palette that the host already holds for its own surfaces;
+- one `kvim_settings::FileTreeIcons`, which decides whether a row takes an icon
+  glyph or the expansion marker that needs no patched font.
+
+The painter owns the layout of the row. The first cell holds the selection
+mark, the indent guides and the two glyph cells follow it, and the last cell
+holds the Git mark. A canvas narrower than that layout clips from the right
+edge and the Git mark keeps the last cell it has, so a very narrow sidebar
+still shows the start of every label. A host that wants a different layout
+reads the facts and paints its own cells instead.
+
+kvim's own file tree draws through this one call. `crates/kvim-tui/src/tree.rs`
+holds no second row-drawing path, so the look that a host reaches and the look
+that the standalone editor shows cannot drift apart. The two indent guide
+copies that `windows.md` records are the failure that this rule prevents.
+
+`crates/kvim-tui/examples/embedded_file_sidebar.rs` paints its rows through the
+call and prints the resulting cells.
 
 `EmbeddedEditor::file_sidebar` applies one `FileSidebarInput`. `Move` takes one
 `kvim_ui::ListMotion`, which stops at the first and the last row and never

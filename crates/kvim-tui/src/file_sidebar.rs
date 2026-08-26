@@ -2,13 +2,18 @@
 //!
 //! [`EmbeddedEditor`] already owns one lazy file tree over its worktree root.
 //! This module publishes that tree as a host surface. The host reads one
-//! bounded list of [`FileRow`] values, draws each row itself, and hands one
-//! [`FileSidebarInput`] back for every key that reaches the sidebar. See
-//! `docs/embedding.md`.
+//! bounded list of [`FileRow`] values and hands one [`FileSidebarInput`] back
+//! for every key that reaches the sidebar. See `docs/embedding.md`.
+//!
+//! A host draws each row itself from the published facts, or hands the row to
+//! [`draw_file_row`] and takes the look of kvim's own file tree. That tree
+//! draws through the same painter, so one appearance exists and no second one
+//! can drift away from it.
 //!
 //! The surface names no type of `kvim-workspace`, which
 //! `docs/architecture.md` keeps out of the supported packages. It names its own
-//! vocabulary, the paths of `kvim-path`, and the geometry of `kvim-ui`.
+//! vocabulary, the paths of `kvim-path`, the palette of `kvim-settings`, and
+//! the geometry of `kvim-ui`.
 //!
 //! The tree reads no directory on the host event loop. A row that needs a
 //! listing leaves the editor as one unit of work through
@@ -24,10 +29,20 @@
 //! [`EmbeddedEditor::apply`]: super::embed::EmbeddedEditor::apply
 
 use kvim_path::WorktreeRelativePath;
-use kvim_ui::{ListMotion, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX};
+use kvim_settings::FileTreeIcons;
+use kvim_ui::{
+    ListMotion, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX,
+    SidebarCanvas,
+};
+use ratatui::style::Style;
 
 use super::embed::EditorEvent;
-use super::theme::IconRole;
+use super::icons::{ICON_CELLS, Icon};
+use super::theme::{IconRole, Theme, ThemeRole};
+use super::tree::{
+    COLLAPSED_MARKER, EXPANDED_MARKER, GIT_MARK_CELLS, MARK_CELLS, RowState, SELECTION_MARK,
+    mark_cells, paint_span,
+};
 
 /// The largest number of rows that one file sidebar hands to a host.
 ///
@@ -164,12 +179,30 @@ impl FileRowGit {
     }
 }
 
+/// The characters of one row label that the file-tree search matched.
+///
+/// The span counts characters of the label, not cells and not bytes, so a
+/// name outside the ASCII range marks the same characters that the search
+/// found.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct LabelMatch {
+    /// The first matched character of the label.
+    pub(super) start: usize,
+    /// The number of matched characters.
+    pub(super) len: usize,
+}
+
 /// One drawable row of the file sidebar of one embedded editor.
 ///
 /// The row holds the text, the indent guides, the depth, the state, the
 /// selection, the recorded Git state, the symbolic-link fact, and the icon
-/// role of one visible line. It holds no color, no glyph, and no cell, so the
-/// host owns the complete look of its own sidebar.
+/// role of one visible line. Every published accessor returns a fact, so a
+/// host that draws its own cells owns the complete look of its sidebar.
+///
+/// A host that wants kvim's own look hands the row to [`draw_file_row`]
+/// instead. The row carries the remaining presentation state that painter
+/// needs, and kvim's own file tree draws through the same call, so the two
+/// appearances cannot drift apart.
 ///
 /// [`FileRow::guides`] already carries the leading blank that the file tree of
 /// kvim draws, because the workspace-root header of that tree is no sibling of
@@ -181,24 +214,28 @@ pub struct FileRow {
     guides: String,
     depth: usize,
     kind: FileRowKind,
+    state: RowState,
     selected: bool,
     git: Option<FileRowGit>,
     is_symlink: bool,
-    icon_role: Option<IconRole>,
+    icon: Option<Icon>,
+    matched: Option<LabelMatch>,
 }
 
 impl FileRow {
     /// Creates one published row.
     ///
-    /// The Git state, the symbolic-link fact, and the icon role each start at
-    /// their absent value. [`FileRow::with_git`], [`FileRow::with_symlink`],
-    /// and [`FileRow::with_icon_role`] set them, because they are independent
-    /// facts that a caller sets or leaves absent one at a time.
+    /// The Git state, the symbolic-link fact, the icon, and the matched
+    /// characters each start at their absent value. [`FileRow::with_git`],
+    /// [`FileRow::with_symlink`], [`FileRow::with_icon`], and
+    /// [`FileRow::with_matched`] set them, because they are independent facts
+    /// that a caller sets or leaves absent one at a time.
     pub(super) fn new(
         label: String,
         guides: String,
         depth: usize,
         kind: FileRowKind,
+        state: RowState,
         selected: bool,
     ) -> Self {
         debug_assert!(
@@ -218,10 +255,12 @@ impl FileRow {
             guides,
             depth,
             kind,
+            state,
             selected,
             git: None,
             is_symlink: false,
-            icon_role: None,
+            icon: None,
+            matched: None,
         }
     }
 
@@ -239,10 +278,22 @@ impl FileRow {
         self
     }
 
-    /// Sets the icon role of the row.
+    /// Sets the icon of the row.
+    ///
+    /// The glyph stays unpublished, because it needs a patched font that a
+    /// host may not hold. [`FileRow::icon_role`] publishes the role beside it,
+    /// and [`draw_file_row`] draws the glyph for a host that wants kvim's own
+    /// look.
     #[must_use]
-    pub(super) const fn with_icon_role(mut self, icon_role: Option<IconRole>) -> Self {
-        self.icon_role = icon_role;
+    pub(super) const fn with_icon(mut self, icon: Option<Icon>) -> Self {
+        self.icon = icon;
+        self
+    }
+
+    /// Sets the characters of the label that the file-tree search matched.
+    #[must_use]
+    pub(super) const fn with_matched(mut self, matched: Option<LabelMatch>) -> Self {
+        self.matched = matched;
         self
     }
 
@@ -319,8 +370,260 @@ impl FileRow {
     #[inline]
     #[must_use]
     pub const fn icon_role(&self) -> Option<IconRole> {
-        self.icon_role
+        match self.icon {
+            Some(icon) => Some(icon.role),
+            None => None,
+        }
     }
+
+    /// Returns the complete text of the row, as kvim's own file tree writes it.
+    ///
+    /// The text holds the blank mark cell, the indent guides, the glyph cells,
+    /// the label, the symbolic-link suffix, and the suffix of the row state. A
+    /// [`FileRowKind::Note`] row reports about its directory instead of naming
+    /// an entry, so it carries neither suffix.
+    fn text(&self, icons: FileTreeIcons) -> String {
+        let mark = " ".repeat(MARK_CELLS);
+        let glyph = self.glyph(icons);
+        let guides = &self.guides;
+        let label = &self.label;
+        if !self.kind.is_selectable() {
+            return format!("{mark}{guides}{glyph}{label}");
+        }
+        let link = if self.is_symlink {
+            FILE_SIDEBAR_LINK_SUFFIX
+        } else {
+            ""
+        };
+        let held = self.state.suffix();
+        format!("{mark}{guides}{glyph}{label}{link}{held}")
+    }
+
+    /// Returns the glyph cells that sit between the guides and the label.
+    ///
+    /// Without a patched font the expansion marker of a directory takes the
+    /// same cells, so the state of a directory stays visible and the labels
+    /// keep one column in both icon settings.
+    fn glyph(&self, icons: FileTreeIcons) -> String {
+        match (icons, self.icon, self.kind) {
+            (FileTreeIcons::Shown, Some(icon), _) => format!("{} ", icon.glyph),
+            (FileTreeIcons::Hidden, _, FileRowKind::ClosedDirectory) => COLLAPSED_MARKER.to_owned(),
+            (
+                FileTreeIcons::Hidden,
+                _,
+                FileRowKind::OpenDirectory | FileRowKind::LoadingDirectory,
+            ) => EXPANDED_MARKER.to_owned(),
+            _ => " ".repeat(ICON_CELLS),
+        }
+    }
+}
+
+/// Returns the cell column of the glyph cells inside one file sidebar row.
+///
+/// The glyph follows the mark cell and the indent guides of every level, which
+/// each cost [`SIDEBAR_GUIDE_INDENT_CELLS`] cells. The workspace root is one
+/// level above the first entry, so a row of depth zero already carries one
+/// guide, the leading blank that stands for the header row.
+const fn glyph_offset_cells(depth: usize) -> usize {
+    MARK_CELLS + SIDEBAR_GUIDE_INDENT_CELLS * (depth + 1)
+}
+
+/// Returns the cell column of the label inside one file sidebar row.
+///
+/// Both icon settings reserve the same glyph cells, so the label of one depth
+/// always starts at one column.
+const fn label_offset_cells(depth: usize) -> usize {
+    glyph_offset_cells(depth) + ICON_CELLS
+}
+
+/// Draws one file sidebar row exactly as kvim's own file tree draws it.
+///
+/// The painter owns the complete layout of the row. The first cell holds the
+/// selection mark, the indent guides and the glyph cells follow it, and the
+/// last cell holds the Git mark. A canvas that is narrower than that layout
+/// clips from the right edge, and the Git mark keeps the last cell it has, so
+/// a very narrow sidebar still shows the start of every label.
+///
+/// The caller supplies the palette and the icon-visibility setting, because a
+/// host holds both already. The painter reads no other state: every fact that
+/// it draws comes from the row. kvim's own file tree draws through this call,
+/// so a host that uses it can never see a second appearance.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_settings::FileTreeIcons;
+/// use kvim_tui::{EmbeddedEditor, Theme, draw_file_row};
+/// use kvim_ui::{RowKind, SidebarRow, SidebarState};
+/// use ratatui::buffer::Buffer;
+/// use ratatui::layout::Rect;
+///
+/// let root = std::sync::Arc::new(
+///     kvim_path::WorktreeRoot::open(
+///         std::env::current_dir().expect("the process holds a working directory"),
+///     )
+///     .expect("the working directory is a worktree"),
+/// );
+/// let area = Rect::new(0, 0, 24, 8);
+/// let mut editor = EmbeddedEditor::builder(root, area)
+///     .open()
+///     .expect("the rectangle holds cells");
+///
+/// // The host owns the row geometry, so it holds one bounded sidebar state
+/// // over the rows that the editor publishes. The first listing has not
+/// // arrived here, so this list is still empty and the render draws nothing.
+/// let rows = editor.file_rows();
+/// let mut view = SidebarState::new(area.height);
+/// view.set_rows(
+///     (0..rows.len())
+///         .map(|index| SidebarRow::single(index, RowKind::Selectable))
+///         .collect(),
+/// )
+/// .expect("the tree bounds hold every row");
+///
+/// let mut cells = Buffer::empty(area);
+/// let theme = Theme::new();
+/// view.render(&mut cells, area, |canvas, placement| {
+///     if let Some(row) = rows.get(placement.index()) {
+///         draw_file_row(canvas, row, theme, FileTreeIcons::Hidden);
+///     }
+/// })
+/// .expect("every row stays inside the rectangle");
+/// ```
+pub fn draw_file_row(
+    canvas: &mut SidebarCanvas<'_>,
+    row: &FileRow,
+    theme: Theme,
+    icons: FileTreeIcons,
+) {
+    let style = theme
+        .style(ThemeRole::Text)
+        .patch(theme.style(row.state.role()));
+    let style = if row.selected {
+        style.patch(theme.style(ThemeRole::PopupSelection))
+    } else {
+        style
+    };
+    // The selection covers the complete row, so the reader finds it at any
+    // indent depth.
+    canvas.fill(style);
+    // The Git mark owns the last cell of every row, so a long label never
+    // covers it and no mark ever moves a label.
+    let label_cells = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
+    canvas.draw_clipped(0, 0, &row.text(icons), label_cells, style);
+    // The guides carry their own color, so they separate from the labels
+    // without the state of the row changing their meaning.
+    paint_span(
+        canvas,
+        MARK_CELLS,
+        row.guides.chars().count(),
+        style.patch(theme.style(ThemeRole::TreeIndentGuide)),
+    );
+    if row.selected {
+        canvas.draw_clipped(
+            0,
+            0,
+            SELECTION_MARK,
+            mark_cells(),
+            style.patch(theme.style(ThemeRole::TreeSelectionMark)),
+        );
+    }
+    draw_row_icon(canvas, row, icons, theme, style);
+    if let Some(git) = row.git {
+        draw_git_mark(canvas, git, theme, style);
+        // The label of a changed file takes the color of its state. A
+        // directory keeps the title color, because its state rolls up from the
+        // entries below it and names no change of the directory itself. A
+        // dimmed row keeps its own color, so a quiet row stays quiet.
+        if row.state == RowState::File {
+            paint_span(
+                canvas,
+                label_offset_cells(row.depth),
+                row.label.chars().count(),
+                style.patch(theme.style(ThemeRole::TreeGit(git))),
+            );
+        }
+    }
+    // The search marks every match. The selected row carries the match that
+    // `n` and `N` moved to, so it reads as the current one, exactly as the
+    // match under the cursor does in a buffer window. The mark wins over every
+    // dimmed style, so a match inside a held or generated entry stays readable
+    // as one match.
+    if let Some(matched) = row.matched {
+        let role = if row.selected {
+            ThemeRole::CurrentSearchMatch
+        } else {
+            ThemeRole::SearchMatch
+        };
+        paint_span(
+            canvas,
+            label_offset_cells(row.depth).saturating_add(matched.start),
+            matched.len,
+            style.patch(theme.style(role)),
+        );
+    }
+}
+
+/// Paints the icon cell of one row with the color of its role.
+///
+/// The icon sits behind the mark cell and the indent guides, so its column
+/// follows the depth of the row. A row whose icon falls outside the sidebar
+/// keeps the clipped text that the row already wrote. The icon carries its own
+/// color over the row style, so a selected row keeps its background behind the
+/// glyph.
+fn draw_row_icon(
+    canvas: &mut SidebarCanvas<'_>,
+    row: &FileRow,
+    icons: FileTreeIcons,
+    theme: Theme,
+    style: Style,
+) {
+    if icons == FileTreeIcons::Hidden {
+        return;
+    }
+    let Some(icon) = row.icon else {
+        return;
+    };
+    let (Ok(offset), Ok(cells)) = (
+        u16::try_from(glyph_offset_cells(row.depth)),
+        u16::try_from(ICON_CELLS),
+    ) else {
+        debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
+        return;
+    };
+    if offset >= canvas.width_cells() {
+        return;
+    }
+    canvas.draw_clipped(
+        0,
+        offset,
+        icon.glyph,
+        cells,
+        style.patch(theme.style(ThemeRole::Icon(icon.role))),
+    );
+}
+
+/// Paints the Git mark of one row at the right edge of the sidebar.
+///
+/// The mark reports the state of the entry, and of every entry below a
+/// directory. A sidebar that holds no cell for the mark paints none, so a very
+/// narrow sidebar still shows its labels. See `docs/git.md`.
+pub(super) fn draw_git_mark(
+    canvas: &mut SidebarCanvas<'_>,
+    git: FileRowGit,
+    theme: Theme,
+    style: Style,
+) {
+    let Some(offset) = canvas.width_cells().checked_sub(GIT_MARK_CELLS) else {
+        return;
+    };
+    canvas.draw_clipped(
+        0,
+        offset,
+        git.glyph(),
+        GIT_MARK_CELLS,
+        style.patch(theme.style(ThemeRole::TreeGit(git))),
+    );
 }
 
 /// One input that a host applies to the file sidebar of one embedded editor.

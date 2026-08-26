@@ -307,7 +307,13 @@ root of one editor. `EmbeddedEditor::file_rows`, `file_root_label`, and
 and `FileSidebarOutcome` alone. `FileRow` also carries an `IconRole`, the same
 role that colors kvim's own file tree and which-key overlay. The surface names
 no type of `kvim-workspace`, which stays outside the supported set, so the
-facade publishes its own vocabulary instead of a re-export.
+facade publishes its own vocabulary instead of a re-export. `ThemeRole::TreeGit`
+names `FileRowGit` for the same reason, so a host colors a Git mark from the
+published palette alone.
+
+`draw_file_row` publishes the look of that sidebar beside its facts. kvim's own
+file tree draws through the same call, so one appearance exists and no second
+one can drift. [`embedding.md`](embedding.md) owns the painter.
 [`embedding.md`](embedding.md) owns the surface.
 
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.

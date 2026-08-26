@@ -28,8 +28,8 @@ use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
 use kvim_ui::{
-    ListMotion, RowKind, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_INDENT_CELLS, SidebarCanvas,
-    SidebarEvent, SidebarInput, SidebarRow, SidebarState, sidebar_guides,
+    ListMotion, RowKind, SIDEBAR_GUIDE_BLANK, SidebarCanvas, SidebarEvent, SidebarInput,
+    SidebarRow, SidebarState, sidebar_guides,
 };
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
@@ -40,10 +40,10 @@ use kvim_workspace::{
 
 use super::buffer_view::WindowFocus;
 use super::file_sidebar::{
-    FILE_SIDEBAR_LINK_SUFFIX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowKind,
-    FileSidebarInput, FileSidebarOutcome,
+    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome,
+    LabelMatch, draw_file_row, draw_git_mark,
 };
-use super::icons::{ICON_CELLS, directory_icon, row_icon};
+use super::icons::{directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the sidebar title occupies.
@@ -56,10 +56,10 @@ pub(super) const TREE_TITLE_ROWS: u16 = 1;
 pub(super) const TREE_NAME_CHARS_MAX: usize = 128;
 
 /// The marker of one expanded directory row, while the tree hides its icons.
-const EXPANDED_MARKER: &str = "▾ ";
+pub(super) const EXPANDED_MARKER: &str = "▾ ";
 
 /// The marker of one collapsed directory row, while the tree hides its icons.
-const COLLAPSED_MARKER: &str = "▸ ";
+pub(super) const COLLAPSED_MARKER: &str = "▸ ";
 
 /// The number of cells that the selection mark reserves at the left edge.
 ///
@@ -112,7 +112,7 @@ pub(super) const fn git_mark(status: GitStatus) -> &'static str {
 /// row takes exactly one state, so no two of them can disagree, and a held
 /// entry carries the mode of the file operation instead of two flags.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RowState {
+pub(super) enum RowState {
     /// One ordinary directory entry.
     Directory,
     /// One ordinary file entry.
@@ -158,7 +158,7 @@ impl RowState {
     }
 
     /// Returns the text that follows the name of the row.
-    const fn suffix(self) -> &'static str {
+    pub(super) const fn suffix(self) -> &'static str {
         match self {
             Self::Held(TransferMode::Move) => " (cut)",
             Self::Held(TransferMode::Copy) => " (copied)",
@@ -167,7 +167,7 @@ impl RowState {
     }
 
     /// Returns the role that colors the row.
-    const fn role(self) -> ThemeRole {
+    pub(super) const fn role(self) -> ThemeRole {
         match self {
             Self::Directory => ThemeRole::TreeDirectory,
             Self::File => ThemeRole::Text,
@@ -878,48 +878,65 @@ impl TreeSidebar {
             generic.len() <= FILE_SIDEBAR_ROWS_MAX,
             "the bounds of the file tree hold every row inside the sidebar bound"
         );
-        let selected = self.tree.selected();
-        self.tree
-            .rows()
-            .iter()
-            .enumerate()
-            .map(|(index, row)| {
-                let label = match &row.content {
-                    RowContent::File { name, .. } | RowContent::Directory { name, .. } => {
-                        name.clone()
-                    }
-                    RowContent::Notice(notice) => notice_text(notice),
-                };
-                // The shared rule starts a guide at depth 1, and the header row
-                // of the workspace root is no sibling of the first entries, so
-                // the file tree prepends one blank guide of its own. The host
-                // takes the complete indent, so it reproduces that look without
-                // holding a second copy of the rule. See `docs/windows.md`.
-                let guides = format!("{SIDEBAR_GUIDE_BLANK}{}", sidebar_guides(&generic, index));
-                let selected = row.is_selectable() && selected == Some(row.path.as_path());
-                // A notice row carries the path of its own directory, so it
-                // must not borrow the Git state of that directory.
-                let git = row
-                    .is_selectable()
-                    .then(|| self.git_state(&row.path))
-                    .flatten()
-                    .map(host_git_state);
-                let is_symlink = match &row.content {
-                    RowContent::File { link, .. } | RowContent::Directory { link, .. } => {
-                        *link == LinkKind::Symlink
-                    }
-                    RowContent::Notice(_) => false,
-                };
-                // The role reaches the host regardless of the icon-visibility
-                // setting of kvim's own file tree, because a host may draw
-                // its own icons while kvim would draw none.
-                let icon_role = row_icon(row, FileTreeIcons::Shown).map(|icon| icon.role);
-                FileRow::new(label, guides, row.depth, host_row_kind(row), selected)
-                    .with_git(git)
-                    .with_symlink(is_symlink)
-                    .with_icon_role(icon_role)
-            })
+        (0..self.tree.rows().len())
+            .filter_map(|index| self.host_row(&generic, index))
             .collect()
+    }
+
+    /// Returns one published row of this tree, or `None` outside the rows.
+    ///
+    /// Every drawn row of the file tree comes from this one builder, so the
+    /// standalone editor and an embedded host can never disagree about what
+    /// one row holds. The caller supplies the generic rows, because the indent
+    /// guides read the depth of the neighbors of the row.
+    pub(super) fn host_row(&self, generic: &[SidebarRow<usize>], index: usize) -> Option<FileRow> {
+        let row = self.tree.rows().get(index)?;
+        let label = match &row.content {
+            RowContent::File { name, .. } | RowContent::Directory { name, .. } => name.clone(),
+            RowContent::Notice(notice) => notice_text(notice),
+        };
+        // The shared rule starts a guide at depth 1, and the header row of the
+        // workspace root is no sibling of the first entries, so the file tree
+        // prepends one blank guide of its own. The host takes the complete
+        // indent, so it reproduces that look without holding a second copy of
+        // the rule. See `docs/windows.md`.
+        let guides = format!("{SIDEBAR_GUIDE_BLANK}{}", sidebar_guides(generic, index));
+        let selected = row.is_selectable() && self.tree.selected() == Some(row.path.as_path());
+        // A notice row carries the path of its own directory, so it must not
+        // borrow the Git state of that directory.
+        let git = row
+            .is_selectable()
+            .then(|| self.git_state(&row.path))
+            .flatten();
+        let is_symlink = match &row.content {
+            RowContent::File { link, .. } | RowContent::Directory { link, .. } => {
+                *link == LinkKind::Symlink
+            }
+            RowContent::Notice(_) => false,
+        };
+        // The icon reaches the host regardless of the icon-visibility setting
+        // of kvim's own file tree, because a host may draw its own icons while
+        // kvim would draw none. The row painter reads the setting instead.
+        let icon = row_icon(row, FileTreeIcons::Shown);
+        let matched = row.matched.map(|matched| LabelMatch {
+            start: matched.start,
+            len: matched.len,
+        });
+        let state = RowState::of(row, self.held_mode(&row.path), git);
+        Some(
+            FileRow::new(
+                label,
+                guides,
+                row.depth,
+                host_row_kind(row),
+                state,
+                selected,
+            )
+            .with_git(git.map(host_git_state))
+            .with_symlink(is_symlink)
+            .with_icon(icon)
+            .with_matched(matched),
+        )
     }
 
     /// Applies one input of an embedded host to this tree.
@@ -1109,50 +1126,6 @@ pub(super) fn root_label(root: &Path, home: Option<&Path>) -> String {
     }
 }
 
-/// Returns the two cells that sit between the guides and the name.
-///
-/// The cells hold the icon of the entry. Without a patched font the expansion
-/// marker of a directory takes the same cells, so the state of a directory
-/// stays visible and the names keep one column in both icon settings.
-fn row_glyph(row: &TreeRow, icons: FileTreeIcons) -> String {
-    if let Some(icon) = row_icon(row, icons) {
-        return format!("{} ", icon.glyph);
-    }
-    match (&row.content, icons) {
-        (RowContent::Directory { expansion, .. }, FileTreeIcons::Hidden) => match expansion {
-            Expansion::Collapsed => COLLAPSED_MARKER,
-            Expansion::Expanded | Expansion::Pending => EXPANDED_MARKER,
-        }
-        .to_owned(),
-        _ => " ".repeat(ICON_CELLS),
-    }
-}
-
-/// Returns the text of one tree row, without the selection style.
-///
-/// The row holds the blank mark cell, the indent guides of its levels, the
-/// glyph cells, the name, and the suffix of the row state. A notice row reports
-/// about the directory instead of naming an entry, so it carries no icon and
-/// keeps the glyph cells blank.
-fn row_text(row: &TreeRow, guides: &str, state: RowState, icons: FileTreeIcons) -> String {
-    let mark = " ".repeat(MARK_CELLS);
-    let glyph = row_glyph(row, icons);
-    let held = state.suffix();
-    match &row.content {
-        RowContent::File { name, link } | RowContent::Directory { name, link, .. } => {
-            let link = if *link == LinkKind::Symlink {
-                FILE_SIDEBAR_LINK_SUFFIX
-            } else {
-                ""
-            };
-            format!("{mark}{guides}{glyph}{name}{link}{held}")
-        }
-        RowContent::Notice(notice) => {
-            format!("{mark}{guides}{glyph}{}", notice_text(notice))
-        }
-    }
-}
-
 /// Returns what one tree row shows to an embedded host.
 ///
 /// The state of a directory reaches the host as one value, so a host draws one
@@ -1172,8 +1145,10 @@ fn host_row_kind(row: &TreeRow) -> FileRowKind {
 /// Returns what one recorded Git state reaches an embedded host as.
 ///
 /// The variant order mirrors [`GitStatus`], so the two never disagree about
-/// the severity of one state.
-const fn host_git_state(status: GitStatus) -> FileRowGit {
+/// the severity of one state. This is the one conversion between the two
+/// vocabularies: the theme, the marks, and the published rows all name
+/// [`FileRowGit`] from here on.
+pub(super) const fn host_git_state(status: GitStatus) -> FileRowGit {
     match status {
         GitStatus::Ignored => FileRowGit::Ignored,
         GitStatus::Untracked => FileRowGit::Untracked,
@@ -1232,130 +1207,25 @@ pub(super) fn render_tree(
     })?;
 
     let mut cursor = None;
-    let rows = sidebar.tree().rows();
-    let selected = sidebar.tree().selected();
+    // The standalone tree draws through the published painter, so the look of
+    // this sidebar and the look that an embedded host reaches are one thing.
+    // Two copies of one appearance are free to drift, which is the failure
+    // that the two indent-guide copies already cost once.
     let outcome = sidebar.view().render(target, body, |canvas, placement| {
-        let Some(row) = rows.get(placement.index()) else {
+        let Some(row) = sidebar.host_row(sidebar.view().rows(), placement.index()) else {
             debug_assert!(false, "the row state follows the rows of the tree");
             return;
         };
-        // A notice row carries the path of its own directory, so it must not
-        // borrow the Git state of that directory.
-        let git = row
-            .is_selectable()
-            .then(|| sidebar.git_state(&row.path))
-            .flatten();
-        let state = RowState::of(row, sidebar.held_mode(&row.path), git);
-        let style = theme
-            .style(ThemeRole::Text)
-            .patch(theme.style(state.role()));
-        let current = row.is_selectable() && selected == Some(row.path.as_path());
-        let style = if current {
+        if row.is_selected() {
             cursor = Some(Position::new(canvas.area().x, canvas.area().y));
-            style.patch(theme.style(ThemeRole::PopupSelection))
-        } else {
-            style
-        };
-        // The selection covers the complete row, so the reader finds it at any
-        // indent depth.
-        canvas.fill(style);
-        // The shared rule starts a guide at depth 1, so the top-level entries
-        // of the workspace root would draw with no guide at all. The header
-        // row above them is no sibling, so no guide could ever close there
-        // either. The file tree therefore prepends one blank guide of its
-        // own before the shared result, so every entry indents one level
-        // below the header. See `docs/windows.md`.
-        let guides = format!(
-            "{SIDEBAR_GUIDE_BLANK}{}",
-            sidebar_guides(sidebar.view().rows(), placement.index())
-        );
-        // The Git mark owns the last cell of every row, so a long name never
-        // covers it and no mark ever moves a name.
-        let name_cells = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
-        canvas.draw_clipped(
-            0,
-            0,
-            &row_text(row, &guides, state, icons),
-            name_cells,
-            style,
-        );
-        // The guides carry their own color, so they separate from the names
-        // without the state of the row changing their meaning.
-        paint_span(
-            canvas,
-            MARK_CELLS,
-            guides.chars().count(),
-            style.patch(theme.style(ThemeRole::TreeIndentGuide)),
-        );
-        if current {
-            canvas.draw_clipped(
-                0,
-                0,
-                SELECTION_MARK,
-                mark_cells(),
-                style.patch(theme.style(ThemeRole::TreeSelectionMark)),
-            );
         }
-        // The icon carries its own color over the row style, so a selected row
-        // keeps its background behind the glyph.
-        render_row_icon(canvas, row, icons, theme, style);
-        if let Some(status) = git {
-            render_git_mark(canvas, status, theme, style);
-            // The name of a changed file takes the color of its state. A
-            // directory keeps the title color, because its state rolls up from
-            // the entries below it and names no change of the directory itself.
-            // A dimmed row keeps its own color, so a quiet row stays quiet.
-            if state == RowState::File {
-                paint_span(
-                    canvas,
-                    name_offset_cells(row.depth),
-                    row.name().map_or(0, |name| name.chars().count()),
-                    style.patch(theme.style(ThemeRole::TreeGit(status))),
-                );
-            }
-        }
-        // The search marks every match. The selected row carries the match that
-        // `n` and `N` moved to, so it reads as the current one, exactly as the
-        // match under the cursor does in a buffer window. The mark wins over
-        // every dimmed style, so a match inside a held or generated entry stays
-        // readable as one match.
-        if let Some(matched) = row.matched {
-            let role = if current {
-                ThemeRole::CurrentSearchMatch
-            } else {
-                ThemeRole::SearchMatch
-            };
-            paint_span(
-                canvas,
-                name_offset_cells(row.depth).saturating_add(matched.start),
-                matched.len,
-                style.patch(theme.style(role)),
-            );
-        }
+        draw_file_row(canvas, &row, theme, icons);
     });
     debug_assert!(
         outcome.is_ok(),
         "every sidebar row stays inside the bounds of the canvas"
     );
     cursor
-}
-
-/// Returns the cell column of the glyph cells inside one sidebar row.
-///
-/// The glyph follows the mark cell and the indent guides of every level, which
-/// each cost [`SIDEBAR_GUIDE_INDENT_CELLS`] cells. The workspace root is one
-/// level above the first entry, so a row of depth zero already carries one
-/// guide, the leading blank that stands for the header row.
-const fn glyph_offset_cells(depth: usize) -> usize {
-    MARK_CELLS + SIDEBAR_GUIDE_INDENT_CELLS * (depth + 1)
-}
-
-/// Returns the cell column of the entry name inside one sidebar row.
-///
-/// Both icon settings reserve the same glyph cells, so the name of one depth
-/// always starts at one column.
-const fn name_offset_cells(depth: usize) -> usize {
-    glyph_offset_cells(depth) + ICON_CELLS
 }
 
 /// Returns the width of the selection mark, in cells of the canvas.
@@ -1384,59 +1254,16 @@ pub(super) fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: us
 
 /// Paints the Git mark of one row at the right edge of the sidebar.
 ///
-/// The mark reports the state of the entry, and of every entry below a
-/// directory. A sidebar that holds no cell for the mark paints none, so a very
-/// narrow sidebar still shows its names. See `docs/git.md`.
+/// The changes panel of the review records a [`GitStatus`], so this call
+/// converts once and hands the drawing to the one published painter of a Git
+/// mark. See `docs/git.md`.
 pub(super) fn render_git_mark(
     canvas: &mut SidebarCanvas<'_>,
     status: GitStatus,
     theme: Theme,
     style: Style,
 ) {
-    let Some(offset) = canvas.width_cells().checked_sub(GIT_MARK_CELLS) else {
-        return;
-    };
-    canvas.draw_clipped(
-        0,
-        offset,
-        git_mark(status),
-        GIT_MARK_CELLS,
-        style.patch(theme.style(ThemeRole::TreeGit(status))),
-    );
-}
-
-/// Paints the icon cell of one row with the color of its role.
-///
-/// The icon sits behind the mark cell and the indent guides, so its column
-/// follows the depth of the row. A row whose icon falls outside the sidebar
-/// keeps the clipped text that the row already wrote.
-fn render_row_icon(
-    canvas: &mut SidebarCanvas<'_>,
-    row: &TreeRow,
-    icons: FileTreeIcons,
-    theme: Theme,
-    style: Style,
-) {
-    let Some(icon) = row_icon(row, icons) else {
-        return;
-    };
-    let (Ok(offset), Ok(cells)) = (
-        u16::try_from(glyph_offset_cells(row.depth)),
-        u16::try_from(ICON_CELLS),
-    ) else {
-        debug_assert!(false, "the tree depth stays inside TREE_DEPTH_MAX");
-        return;
-    };
-    if offset >= canvas.width_cells() {
-        return;
-    }
-    canvas.draw_clipped(
-        0,
-        offset,
-        icon.glyph,
-        cells,
-        style.patch(theme.style(ThemeRole::Icon(icon.role))),
-    );
+    draw_git_mark(canvas, host_git_state(status), theme, style);
 }
 
 /// Renders the header row of the sidebar.

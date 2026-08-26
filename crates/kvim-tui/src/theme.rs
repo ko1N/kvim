@@ -8,8 +8,9 @@
 //! See `docs/windows.md`.
 
 use kvim_language::{MarkupRole, SyntaxRole};
-use kvim_workspace::GitStatus;
 use ratatui::style::{Color, Modifier, Style};
+
+use super::file_sidebar::FileRowGit;
 
 /// The editor background.
 const BASE: Color = Color::Rgb(0x11, 0x13, 0x17);
@@ -198,7 +199,11 @@ pub enum ThemeRole {
     /// The mark at the left edge of the selected file-tree row.
     TreeSelectionMark,
     /// One recorded Git state of a file-tree entry.
-    TreeGit(GitStatus),
+    ///
+    /// The role names the published [`FileRowGit`], so a host colors a file
+    /// sidebar row of its own without a package that `docs/architecture.md`
+    /// keeps out of the supported set.
+    TreeGit(FileRowGit),
     /// One unchanged line of a diff, which both sides hold.
     DiffContext,
     /// One line that the new side added.
@@ -353,13 +358,13 @@ impl Theme {
             // configuration paints, and the index takes the calm color of a
             // recorded state. An ignored entry dims like a generated one, so
             // one rule decides the color of every quiet row.
-            ThemeRole::TreeGit(GitStatus::Modified | GitStatus::StagedAndModified) => {
+            ThemeRole::TreeGit(FileRowGit::Modified | FileRowGit::StagedAndModified) => {
                 Style::new().fg(ACCENT_WARM)
             }
-            ThemeRole::TreeGit(GitStatus::Staged) => Style::new().fg(HINT),
-            ThemeRole::TreeGit(GitStatus::Untracked) => Style::new().fg(INFO),
-            ThemeRole::TreeGit(GitStatus::Ignored) => Style::new().fg(TEXT_MUTED),
-            ThemeRole::TreeGit(GitStatus::Conflicted) => Style::new().fg(ERROR),
+            ThemeRole::TreeGit(FileRowGit::Staged) => Style::new().fg(HINT),
+            ThemeRole::TreeGit(FileRowGit::Untracked) => Style::new().fg(INFO),
+            ThemeRole::TreeGit(FileRowGit::Ignored) => Style::new().fg(TEXT_MUTED),
+            ThemeRole::TreeGit(FileRowGit::Conflicted) => Style::new().fg(ERROR),
             // A diff paints the change and not the syntax, so a context line
             // keeps the ordinary text color and the two changed sides take the
             // colors that every reviewer already reads as added and removed.

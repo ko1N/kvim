@@ -29,7 +29,8 @@ use crate::diff_view::{
 use crate::icons::{directory_icon, file_icon};
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
-    GIT_MARK_CELLS, MARK_CELLS, SELECTION_MARK, git_mark, mark_cells, paint_span, render_git_mark,
+    GIT_MARK_CELLS, MARK_CELLS, SELECTION_MARK, git_mark, host_git_state, mark_cells, paint_span,
+    render_git_mark,
 };
 
 /// The region of the review that owns the keys.
@@ -947,7 +948,7 @@ fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Rev
             git_mark(section.git_status()),
             1,
             theme
-                .style(ThemeRole::TreeGit(section.git_status()))
+                .style(ThemeRole::TreeGit(host_git_state(section.git_status())))
                 .patch(theme.style(band)),
         );
     });
