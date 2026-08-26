@@ -27,7 +27,8 @@ use kvim_workspace::{
     PreviewKey,
 };
 
-use super::session::Redraw;
+use super::chrome::prompt_cursor_x;
+use super::session::{PromptLine, Redraw};
 use super::theme::{Theme, ThemeRole};
 
 /// The share of the picker width that the preview receives, in percent.
@@ -405,6 +406,7 @@ pub(super) fn render_picker(
     area: Rect,
     theme: Theme,
     state: &PickerState,
+    prompt: Option<&PromptLine>,
 ) -> Option<Position> {
     if area.is_empty() {
         return None;
@@ -424,7 +426,7 @@ pub(super) fn render_picker(
     }
     target.set_style(area, text);
 
-    let cursor = render_prompt(target, areas.prompt, theme, state);
+    let cursor = render_prompt(target, areas.prompt, theme, state, prompt);
     render_notice(target, &areas, theme, state);
     render_results(target, areas.results, theme, state);
     if let Some(preview) = areas.preview {
@@ -435,11 +437,16 @@ pub(super) fn render_picker(
 }
 
 /// Renders the query row and returns the cell of its cursor.
+///
+/// The picker reads its query through the prompt line, so that line owns the
+/// cursor of this row as well. A row without it reports no cell, and the frame
+/// then shows the cursor of the owner below the picker.
 fn render_prompt(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
     state: &PickerState,
+    prompt: Option<&PromptLine>,
 ) -> Option<Position> {
     if area.is_empty() {
         return None;
@@ -456,13 +463,11 @@ fn render_prompt(
         usize::from(area.width),
         theme.style(ThemeRole::Title),
     );
-    let column = u16::try_from(line.chars().count()).unwrap_or(u16::MAX);
-    Some(Position::new(
-        area.x
-            .saturating_add(column)
-            .min(area.right().saturating_sub(1)),
-        area.y,
-    ))
+    let Some(prompt) = prompt else {
+        debug_assert!(false, "an open picker always holds the prompt of its query");
+        return None;
+    };
+    Some(Position::new(prompt_cursor_x(area, prompt), area.y))
 }
 
 /// Renders the state of the result list between the prompt and the results.

@@ -660,8 +660,10 @@ The terminal holds three bands. The window tree receives the body band only.
   color, so only a warning and a failure stand out. A confirmation shows its
   question on the same row, over the prompt and over the message, because it
   owns the keys. The user types the answer after the hint of the question, so
-  the line draws the cursor after that answer. Every message that this line
-  shows also reaches the editor log, so a replaced message stays readable. See
+  the line draws the cursor after that answer. An open prompt draws its cursor
+  on the character that its own position names, which is no longer always the
+  end of the line. Every message that this line shows also reaches the editor
+  log, so a replaced message stays readable. See
   [`input-actions.md`](input-actions.md) and [The Editor Log](#the-editor-log).
 
 The command line can open a candidate list of the completion. The list is an
@@ -1033,6 +1035,16 @@ cell. One frame reports one cursor cell: the cell of the focused window, behind
 the gutter and after the horizontal scroll. An unfocused window reports no cell,
 so it shows no cursor. It still holds its own cursor position, so its relative
 line numbers count from that line.
+
+A prompt line counts its cursor in characters, and the terminal counts cells.
+The drawn cursor column is therefore the cell width of the prefix of the prompt
+plus the cell width of the text before the position. One rule serves both rows
+that draw a prompt: the message line and the query row of the picker. A wide
+character before the position moves the drawn cursor by two cells, and a
+combining mark moves it by none. A line that is wider than its row keeps the
+cursor on the last cell of that row, because no cell outside the row can carry
+it. The message line still shows one cursor for the whole terminal, because it
+paints one cell.
 
 The cursor shape follows the mode. Insert mode requests a steady vertical bar,
 and every other mode requests a steady block. The editor writes the shape only

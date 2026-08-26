@@ -941,6 +941,53 @@ fn the_command_line_and_the_search_prompt_share_the_message_line() {
 }
 
 #[test]
+fn the_prompt_draws_its_cursor_at_the_character_that_its_position_names() {
+    let mut session = session(40, 6);
+    press(&mut session, ':');
+    type_keys(&mut session, "e main.rs");
+    assert_eq!(row(&session, 5), ":e main.rs");
+    // The prefix `:` occupies the first cell, so the cursor follows the nine
+    // typed characters on the tenth.
+    assert!(
+        is_reversed(&session, 10, 5),
+        "the cursor sits after the typed text"
+    );
+
+    press_code(&mut session, KeyCode::Home);
+    assert!(
+        is_reversed(&session, 1, 5),
+        "the cursor sits on the first character, after the prefix"
+    );
+    assert!(
+        !is_reversed(&session, 10, 5),
+        "the cursor left the end of the line"
+    );
+    assert_eq!(row(&session, 5), ":e main.rs", "no motion changes the text");
+}
+
+#[test]
+fn a_wide_character_before_the_prompt_cursor_moves_it_by_two_cells() {
+    let mut session = session(40, 6);
+    press(&mut session, ':');
+    type_keys(&mut session, "e 語x");
+    // The prefix, `e`, and the blank take one cell each, and the wide character
+    // takes two, so `x` sits on the sixth cell and the cursor follows it.
+    assert!(
+        is_reversed(&session, 6, 5),
+        "the cursor counts cells and not characters"
+    );
+
+    press_code(&mut session, KeyCode::Left);
+    assert!(is_reversed(&session, 5, 5), "the cursor sits on `x`");
+
+    press_code(&mut session, KeyCode::Left);
+    assert!(
+        is_reversed(&session, 3, 5),
+        "the cursor sits on the first cell of the wide character"
+    );
+}
+
+#[test]
 fn a_confirmation_asks_on_the_message_line_and_draws_a_cursor() {
     let mut session = session(40, 6);
     // No formatter serves the scratch buffer, so the toggle reports that and

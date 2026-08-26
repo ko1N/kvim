@@ -70,6 +70,11 @@ fn press_ctrl(session: &mut Session, value: char) -> Redraw {
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char(value))), NOW)
 }
 
+/// Feeds one key without a character with the control chord.
+fn press_ctrl_code(session: &mut Session, code: KeyCode) -> Redraw {
+    session.handle_event(TerminalEvent::Key(Key::ctrl(code)), NOW)
+}
+
 /// Feeds a run of plain character keys.
 fn type_keys(session: &mut Session, keys: &str) {
     for value in keys.chars() {
@@ -109,8 +114,9 @@ fn prompt_cursor(session: &Session) -> usize {
 
 /// Places the cursor of the open prompt at one character position.
 ///
-/// The prompt publishes no motion key yet, so a test that edits inside the
-/// line places the cursor itself, exactly as the seed of a prompt does.
+/// The helper places the position directly, exactly as the seed of a prompt
+/// does, so a test of one edit needs no run of motion keys before it. A test of
+/// a motion presses the motion key instead.
 fn place_prompt_cursor(session: &mut Session, cursor: usize) {
     let prompt = session.prompt.as_mut().expect("the test opened a prompt");
     assert!(
@@ -1497,6 +1503,130 @@ fn a_word_delete_removes_the_word_before_the_cursor_alone() {
         "the text after the cursor stays"
     );
     assert_eq!(prompt_cursor(&session), 2);
+}
+
+#[test]
+fn a_reader_corrects_the_start_of_a_long_line_and_keeps_the_end_of_it() {
+    let mut session = session(60, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e srcc/main.rs");
+
+    // `Home` reaches the start of the line, and the arrow keys walk to the
+    // typing mistake without touching the name at the end.
+    press_code(&mut session, KeyCode::Home);
+    assert_eq!(prompt_cursor(&session), 0);
+    for _ in 0..6 {
+        press_code(&mut session, KeyCode::Right);
+    }
+    assert_eq!(prompt_cursor(&session), 6);
+
+    assert_eq!(press_code(&mut session, KeyCode::Backspace), Redraw::Needed);
+    assert_eq!(
+        prompt_text(&session),
+        "e src/main.rs",
+        "the correction removed one character and kept the rest of the line"
+    );
+    assert_eq!(prompt_cursor(&session), 5);
+
+    press_code(&mut session, KeyCode::End);
+    assert_eq!(
+        prompt_cursor(&session),
+        13,
+        "`End` returns to the end of the corrected line"
+    );
+}
+
+#[test]
+fn every_prompt_motion_stops_at_the_end_that_it_names() {
+    let mut session = session(60, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/main.rs");
+    assert_eq!(prompt_cursor(&session), 13);
+
+    // The line already ends where the cursor stands, so no forward motion
+    // changes anything and none of them wraps to the start.
+    assert_eq!(press_code(&mut session, KeyCode::Right), Redraw::Skipped);
+    assert_eq!(press_code(&mut session, KeyCode::End), Redraw::Skipped);
+    assert_eq!(
+        press_ctrl_code(&mut session, KeyCode::Right),
+        Redraw::Skipped
+    );
+    assert_eq!(prompt_cursor(&session), 13);
+
+    // The word motion lands where the word delete cuts, so both keys name the
+    // same two words.
+    assert_eq!(press_ctrl_code(&mut session, KeyCode::Left), Redraw::Needed);
+    assert_eq!(prompt_cursor(&session), 2);
+    assert_eq!(press_ctrl_code(&mut session, KeyCode::Left), Redraw::Needed);
+    assert_eq!(prompt_cursor(&session), 0);
+
+    // The start of the line stops every backward motion in the same way.
+    assert_eq!(
+        press_ctrl_code(&mut session, KeyCode::Left),
+        Redraw::Skipped
+    );
+    assert_eq!(press_code(&mut session, KeyCode::Left), Redraw::Skipped);
+    assert_eq!(press_code(&mut session, KeyCode::Home), Redraw::Skipped);
+    assert_eq!(prompt_cursor(&session), 0);
+    assert_eq!(
+        prompt_text(&session),
+        "e src/main.rs",
+        "no motion changes the text of the line"
+    );
+
+    // The forward word motion returns over the same two words.
+    assert_eq!(
+        press_ctrl_code(&mut session, KeyCode::Right),
+        Redraw::Needed
+    );
+    assert_eq!(prompt_cursor(&session), 2);
+    assert_eq!(
+        press_ctrl_code(&mut session, KeyCode::Right),
+        Redraw::Needed
+    );
+    assert_eq!(prompt_cursor(&session), 13);
+
+    // One character forward and one character back reach the same neighbours.
+    assert_eq!(press_code(&mut session, KeyCode::Left), Redraw::Needed);
+    assert_eq!(prompt_cursor(&session), 12);
+    assert_eq!(press_code(&mut session, KeyCode::Right), Redraw::Needed);
+    assert_eq!(prompt_cursor(&session), 13);
+}
+
+#[test]
+fn an_insert_after_a_motion_writes_at_the_moved_position() {
+    let mut session = session(60, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e main.rs");
+
+    press_code(&mut session, KeyCode::Home);
+    for _ in 0..2 {
+        press_code(&mut session, KeyCode::Right);
+    }
+    type_keys(&mut session, "src/");
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+    assert_eq!(
+        prompt_cursor(&session),
+        6,
+        "the cursor stays after the written characters"
+    );
+}
+
+#[test]
+fn a_word_delete_after_a_motion_removes_the_word_before_the_moved_position() {
+    let mut session = session(60, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/main.rs");
+
+    press_ctrl_code(&mut session, KeyCode::Left);
+    assert_eq!(prompt_cursor(&session), 2);
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(
+        prompt_text(&session),
+        "src/main.rs",
+        "the delete removed the command word and kept the path after the cursor"
+    );
+    assert_eq!(prompt_cursor(&session), 0);
 }
 
 #[test]

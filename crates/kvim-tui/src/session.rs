@@ -76,6 +76,7 @@ use kvim_workspace::{
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
+use super::cells::text_cells;
 use super::changes::ChangeSection;
 use super::chrome::shell_areas;
 use super::clipboard::{ClipboardAccess, ClipboardStep, SessionClipboard, register_value};
@@ -589,6 +590,35 @@ fn word_start_before(text: &str, at: usize) -> Option<usize> {
     Some(start)
 }
 
+/// Returns where the word after `at` starts inside one written line.
+///
+/// `at` is a byte offset that names a character boundary. The walk passes the
+/// rest of the word under `at` first and then the run of blanks after it, so it
+/// mirrors [`word_start_before`] and lands on the start of the next word. A
+/// line that holds only blanks after `at` holds no next word, so the walk stops
+/// at the end of the line. A line that holds nothing after `at` returns `None`.
+fn word_start_after(text: &str, at: usize) -> Option<usize> {
+    let after = text.get(at..)?;
+    if after.is_empty() {
+        return None;
+    }
+    let over_word = after
+        .char_indices()
+        .find(|&(_, value)| value.is_whitespace())
+        .map_or(after.len(), |(index, _)| index);
+    let over_blanks = after[over_word..]
+        .char_indices()
+        .find(|&(_, value)| !value.is_whitespace())
+        .map_or(after.len() - over_word, |(index, _)| index);
+    let start = at + over_word + over_blanks;
+    debug_assert!(
+        start > at,
+        "the first character after the cursor is a blank or a non-blank, so the walk always \
+         passes at least one character"
+    );
+    Some(start)
+}
+
 /// Removes the word before the end of one written line.
 ///
 /// The answer of a confirmation holds no cursor, so it always ends where the
@@ -691,6 +721,27 @@ impl PromptSeed {
         let cursor = text.chars().count();
         Self { text, cursor }
     }
+}
+
+/// One move of the cursor of a prompt line.
+///
+/// The type is private, because it names the motions of one type and enforces
+/// the cursor invariant of that type alone. [`PromptEdit`] publishes the same
+/// vocabulary to a host, and [`Session::apply_prompt`] joins the two.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PromptMotion {
+    /// One character back.
+    CharacterBackward,
+    /// One character forward.
+    CharacterForward,
+    /// To the start of the word before the cursor.
+    WordBackward,
+    /// To the start of the word after the cursor.
+    WordForward,
+    /// Before the first character of the line.
+    LineStart,
+    /// After the last character of the line.
+    LineEnd,
 }
 
 /// One open line prompt and the text that it holds.
@@ -801,6 +852,54 @@ impl PromptLine {
         self.text.replace_range(start..offset, "");
         self.cursor -= removed;
         Redraw::Needed
+    }
+
+    /// Moves the cursor and reports whether it moved.
+    ///
+    /// Every motion stops at the end that it names and never wraps to the other
+    /// end, so a reader who holds a motion key down reaches a stable position.
+    /// A motion that lands where the cursor already stands changes nothing and
+    /// reports [`Redraw::Skipped`].
+    ///
+    /// A motion changes no text, so it leaves an open completion as it is. Only
+    /// a changed line closes the candidate list.
+    fn move_cursor(&mut self, motion: PromptMotion) -> Redraw {
+        let chars = self.text.chars().count();
+        let offset = self.cursor_offset();
+        let moved = match motion {
+            PromptMotion::CharacterBackward => self.cursor.saturating_sub(1),
+            PromptMotion::CharacterForward => self.cursor.saturating_add(1).min(chars),
+            // The backward motion lands where the backward word delete cuts, so
+            // the two keys always name the same word.
+            PromptMotion::WordBackward => word_start_before(&self.text, offset)
+                .map_or(0, |start| self.text[..start].chars().count()),
+            PromptMotion::WordForward => word_start_after(&self.text, offset)
+                .map_or(chars, |start| self.text[..start].chars().count()),
+            PromptMotion::LineStart => 0,
+            PromptMotion::LineEnd => chars,
+        };
+        debug_assert!(
+            moved <= chars,
+            "every motion clamps to the characters of the line"
+        );
+        if moved == self.cursor {
+            return Redraw::Skipped;
+        }
+        self.cursor = moved;
+        Redraw::Needed
+    }
+
+    /// Returns the cell column of the cursor inside the drawn line.
+    ///
+    /// The drawn line is the prefix of the prompt and then its text, so the
+    /// column is the width of that prefix plus the width of the text before the
+    /// cursor. The position counts characters and the terminal counts cells, so
+    /// this is the one place that converts, and a wide character before the
+    /// cursor moves the drawn cursor by two cells. The message line and the
+    /// query row of the picker both read it, so the two rows can never
+    /// disagree. See `docs/windows.md`.
+    pub(super) fn cursor_cells(&self) -> usize {
+        text_cells(self.kind.prefix()) + text_cells(&self.text[..self.cursor_offset()])
     }
 
     /// Writes one whole line and places the cursor after it.
@@ -3202,6 +3301,14 @@ impl Session {
                 self.sync_completion_walk();
                 Redraw::Needed
             }
+            // A motion changes no text, so neither the picker query nor the
+            // completion walk needs a second look.
+            PromptEdit::CursorLeft => prompt.move_cursor(PromptMotion::CharacterBackward),
+            PromptEdit::CursorRight => prompt.move_cursor(PromptMotion::CharacterForward),
+            PromptEdit::CursorWordBackward => prompt.move_cursor(PromptMotion::WordBackward),
+            PromptEdit::CursorWordForward => prompt.move_cursor(PromptMotion::WordForward),
+            PromptEdit::CursorLineStart => prompt.move_cursor(PromptMotion::LineStart),
+            PromptEdit::CursorLineEnd => prompt.move_cursor(PromptMotion::LineEnd),
             PromptEdit::CompleteNext => self.complete_prompt(CompletionCycle::Next),
             PromptEdit::CompletePrevious => self.complete_prompt(CompletionCycle::Previous),
             PromptEdit::Cancel => {

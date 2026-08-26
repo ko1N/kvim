@@ -236,7 +236,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     // one cursor cell that the frame reports. See `docs/files.md`.
     let picker_cursor = view
         .picker
-        .and_then(|picker| render_picker(target, view.area, theme, picker));
+        .and_then(|picker| render_picker(target, view.area, theme, picker, view.prompt));
     picker_cursor.or(sidebar_cursor).or(cursor_at)
 }
 

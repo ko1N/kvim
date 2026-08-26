@@ -77,6 +77,11 @@ fn press_code(session: &mut Session, code: KeyCode) {
     session.handle_event(TerminalEvent::Key(Key::plain(code)), NOW);
 }
 
+/// Feeds one key without a character with the control chord.
+fn press_ctrl_code(session: &mut Session, code: KeyCode) {
+    session.handle_event(TerminalEvent::Key(Key::ctrl(code)), NOW);
+}
+
 /// Feeds a run of plain character keys.
 fn type_keys(session: &mut Session, keys: &str) {
     for value in keys.chars() {
@@ -123,6 +128,23 @@ fn draw(session: &Session) -> CellBuffer {
         .draw(|frame| session.render(frame))
         .expect("the test backend never fails");
     terminal.backend().buffer().clone()
+}
+
+/// Renders one session and returns the cell that holds the terminal cursor.
+///
+/// The picker covers the complete terminal and owns the one cursor cell that
+/// the frame reports, so this cell is the cursor of the query row.
+fn cursor_position(session: &Session) -> (u16, u16) {
+    let area = session.area();
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).expect("the test backend never fails");
+    terminal
+        .draw(|frame| session.render(frame))
+        .expect("the test backend never fails");
+    let position = terminal
+        .get_cursor_position()
+        .expect("the test backend never fails");
+    (position.x, position.y)
 }
 
 /// Returns one row of a rendered buffer as text, without trailing blanks.
@@ -230,6 +252,53 @@ fn the_control_w_chord_removes_one_word_from_the_query() {
     assert!(
         rows.iter().any(|row| row.starts_with("main.rs")),
         "the result list follows the query that the chord shortened: {rows:?}"
+    );
+}
+
+#[test]
+fn the_query_row_draws_its_cursor_at_the_position_of_the_prompt() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "fb");
+    drain(&mut session);
+    let (start, row) = cursor_position(&session);
+    let prompt = picker_areas(session.area()).prompt;
+    assert_eq!(
+        row, prompt.y,
+        "the cursor of the frame sits on the query row"
+    );
+    assert_eq!(
+        start,
+        prompt.x + 2,
+        "the prefix `> ` takes two cells before the first character of the query"
+    );
+
+    type_keys(&mut session, "main");
+    drain(&mut session);
+    assert_eq!(
+        cursor_position(&session),
+        (start + 4, row),
+        "the cursor follows the four typed characters"
+    );
+
+    // The picker reads its query through the prompt line, so the query row
+    // draws the cursor of that line and follows every motion of it.
+    press_code(&mut session, KeyCode::Home);
+    assert_eq!(
+        cursor_position(&session),
+        (start, row),
+        "`Home` returns the cursor to the first character of the query"
+    );
+
+    press_ctrl_code(&mut session, KeyCode::Right);
+    assert_eq!(
+        cursor_position(&session),
+        (start + 4, row),
+        "the word motion reaches the end of the one query word"
+    );
+    assert_eq!(
+        prompt_row(&session),
+        "> main",
+        "no motion changes the query"
     );
 }
 

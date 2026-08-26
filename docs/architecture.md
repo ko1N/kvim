@@ -383,7 +383,13 @@ binds the members it wants and ignoring a new member is the correct answer.
 the second: it names every editor command, a host binds the ones it publishes,
 and a new command breaks nothing. `kvim_syntax::SyntaxRole` and
 `kvim_syntax::LimitKind` are of the second kind for the same reason, so the
-three carry `#[non_exhaustive]` and are no exception to reconcile. Neither
+three carry `#[non_exhaustive]` and are no exception to reconcile.
+`kvim_input::PromptEdit` is of the first kind, although it lives beside
+`kvim_input::Command`. A host that draws its own prompt line must answer every
+edit, and a host that absorbed a cursor motion into a wildcard arm would drop
+that key with no compile error. The six cursor motions of the prompt line
+arrived as such a break: a host adds one match arm for each and moves the
+cursor of its own line by characters. Neither
 `kvim-tui` nor `kvim-ui` adds a `#[non_exhaustive]` attribute to a published
 enum, because every enum of the facade is of the first kind. A new variant is
 therefore a breaking change, by design. The compile error is how a host learns

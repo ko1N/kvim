@@ -183,10 +183,13 @@ pub(super) fn render_message(
     }
     if let Some(prompt) = prompt {
         let line = format!("{}{}", prompt.kind.prefix(), prompt.text);
-        let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
+        target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
         // The terminal cursor marks the cell of the focused window, so the
-        // prompt draws its own cursor at the end of the line.
-        if let Some(cell) = target.cell_mut((x, area.y)) {
+        // prompt draws its own cursor at the character that its position names.
+        // The line owns the conversion from characters to cells, so a wide
+        // character before the cursor moves this cell by two. See
+        // `docs/windows.md`.
+        if let Some(cell) = target.cell_mut((prompt_cursor_x(area, prompt), area.y)) {
             cell.set_style(base.patch(theme.style(ThemeRole::Cursor)));
         }
         return;
@@ -208,6 +211,24 @@ pub(super) fn render_message(
         usize::from(area.width),
         style,
     );
+}
+
+/// Returns the terminal column that the cursor of one prompt line occupies.
+///
+/// The row draws the prefix and the text of the prompt from its left edge, so
+/// the column is that edge plus the cell width that the line reports. A line
+/// that is wider than the row keeps its cursor on the last cell of the row,
+/// because no cell outside the row can carry it. The message line and the query
+/// row of the picker share this rule. See `docs/windows.md`.
+pub(super) fn prompt_cursor_x(area: Rect, prompt: &PromptLine) -> u16 {
+    debug_assert!(
+        !area.is_empty(),
+        "an empty row draws no prompt and no cursor"
+    );
+    let column = u16::try_from(prompt.cursor_cells()).unwrap_or(u16::MAX);
+    area.x
+        .saturating_add(column)
+        .min(area.right().saturating_sub(1))
 }
 
 #[cfg(test)]

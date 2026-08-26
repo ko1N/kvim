@@ -126,6 +126,12 @@ semantic_commands! {
     PromptCancel => ("prompt-cancel", "Cancel the prompt line"),
     PromptDeleteBackward => ("prompt-delete-backward", "Remove the character before the prompt cursor"),
     PromptDeleteWordBackward => ("prompt-delete-word-backward", "Remove the word before the prompt cursor"),
+    PromptCursorLeft => ("prompt-cursor-left", "Move the prompt cursor one character back"),
+    PromptCursorRight => ("prompt-cursor-right", "Move the prompt cursor one character forward"),
+    PromptCursorWordBackward => ("prompt-cursor-word-backward", "Move the prompt cursor to the word before it"),
+    PromptCursorWordForward => ("prompt-cursor-word-forward", "Move the prompt cursor to the word after it"),
+    PromptCursorLineStart => ("prompt-cursor-line-start", "Move the prompt cursor to the start of the line"),
+    PromptCursorLineEnd => ("prompt-cursor-line-end", "Move the prompt cursor to the end of the line"),
     PromptCompleteNext => ("prompt-complete-next", "Write the next completion candidate"),
     PromptCompletePrevious => ("prompt-complete-previous", "Write the previous completion candidate"),
 
@@ -388,6 +394,12 @@ impl Command {
             | Self::PromptCancel
             | Self::PromptDeleteBackward
             | Self::PromptDeleteWordBackward
+            | Self::PromptCursorLeft
+            | Self::PromptCursorRight
+            | Self::PromptCursorWordBackward
+            | Self::PromptCursorWordForward
+            | Self::PromptCursorLineStart
+            | Self::PromptCursorLineEnd
             | Self::PromptCompleteNext
             | Self::PromptCompletePrevious
             | Self::SelectRegister
@@ -608,6 +620,12 @@ impl Command {
             | Self::PromptCancel
             | Self::PromptDeleteBackward
             | Self::PromptDeleteWordBackward
+            | Self::PromptCursorLeft
+            | Self::PromptCursorRight
+            | Self::PromptCursorWordBackward
+            | Self::PromptCursorWordForward
+            | Self::PromptCursorLineStart
+            | Self::PromptCursorLineEnd
             | Self::PromptCompleteNext
             | Self::PromptCompletePrevious
             | Self::SelectRegister

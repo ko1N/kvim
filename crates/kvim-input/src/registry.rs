@@ -904,6 +904,27 @@ fn add_prompt_bindings(table: &mut Vec<Binding>) {
         &[Key::plain(KeyCode::BackTab)],
         Command::PromptCompletePrevious,
     );
+    // The answer of a confirmation holds no cursor, so only the prompt scope
+    // binds a motion. Each motion takes the key that a terminal reader already
+    // presses: the arrow keys, `Home` and `End`, and the readline chords of
+    // every shell. `Ctrl-Left` and `Ctrl-Right` already name the two word
+    // motions in the editing scopes, and `kvim-terminal` folds the macOS
+    // `Option` arrows into them, so the prompt reuses the pair. See
+    // `docs/input-actions.md`.
+    for (key, command) in [
+        (Key::plain(KeyCode::Left), Command::PromptCursorLeft),
+        (ctrl('b'), Command::PromptCursorLeft),
+        (Key::plain(KeyCode::Right), Command::PromptCursorRight),
+        (ctrl('f'), Command::PromptCursorRight),
+        (Key::ctrl(KeyCode::Left), Command::PromptCursorWordBackward),
+        (Key::ctrl(KeyCode::Right), Command::PromptCursorWordForward),
+        (Key::plain(KeyCode::Home), Command::PromptCursorLineStart),
+        (ctrl('a'), Command::PromptCursorLineStart),
+        (Key::plain(KeyCode::End), Command::PromptCursorLineEnd),
+        (ctrl('e'), Command::PromptCursorLineEnd),
+    ] {
+        add_scoped(table, PROMPT, &[key], command);
+    }
 }
 
 /// Adds the `i` and `a` text objects to every scope that takes one.

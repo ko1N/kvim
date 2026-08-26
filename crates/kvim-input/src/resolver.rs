@@ -29,6 +29,15 @@ use super::registry::{Registry, WhichKeyRow};
 ///
 /// The shared registry holds the prompt keys, and this value names what each
 /// one does, so the command line and the search prompt never compare a key.
+///
+/// The enumeration is exhaustive on purpose. Every variant demands a decision
+/// from a host that draws its own prompt line, so a new variant must stop the
+/// build of that host. A host that absorbed a motion into a wildcard arm would
+/// drop it without a compile error, and its reader would lose the key. A new
+/// variant is therefore a breaking facade change and takes the obligations that
+/// `docs/architecture.md` states for one. The six cursor motions arrived
+/// together in that form: a host adds one match arm for each and moves the
+/// cursor of its own line by characters. See `docs/architecture.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptEdit {
     /// Append one character to the prompt line.
@@ -42,6 +51,29 @@ pub enum PromptEdit {
     /// and keeps the prompt open, so a host that binds `Ctrl-W` for its own
     /// purpose never cancels a prompt with it. See `docs/input-actions.md`.
     DeleteWordBackward,
+    /// Move the cursor one character back, and stop at the start of the line.
+    ///
+    /// Every motion counts characters, because a character is the unit that a
+    /// reader inserts and deletes. A motion at the end that it names changes
+    /// nothing and never wraps to the other end. See `docs/input-actions.md`.
+    CursorLeft,
+    /// Move the cursor one character forward, and stop at the end of the line.
+    CursorRight,
+    /// Move the cursor to the start of the word before it.
+    ///
+    /// The motion passes the blanks before the word as well as the word, so it
+    /// lands where [`PromptEdit::DeleteWordBackward`] would cut.
+    CursorWordBackward,
+    /// Move the cursor to the start of the word after it.
+    ///
+    /// The motion passes the rest of the word under the cursor and then the
+    /// blanks after it. It is the return of [`PromptEdit::CursorWordBackward`],
+    /// because a terminal reader presses the two arrow chords as one pair.
+    CursorWordForward,
+    /// Move the cursor before the first character of the line.
+    CursorLineStart,
+    /// Move the cursor after the last character of the line.
+    CursorLineEnd,
     /// Write the next completion candidate into the prompt line.
     CompleteNext,
     /// Write the previous completion candidate into the prompt line.
@@ -80,6 +112,12 @@ impl PromptEdit {
             Command::PromptCancel => Some(Self::Cancel),
             Command::PromptDeleteBackward => Some(Self::DeleteBackward),
             Command::PromptDeleteWordBackward => Some(Self::DeleteWordBackward),
+            Command::PromptCursorLeft => Some(Self::CursorLeft),
+            Command::PromptCursorRight => Some(Self::CursorRight),
+            Command::PromptCursorWordBackward => Some(Self::CursorWordBackward),
+            Command::PromptCursorWordForward => Some(Self::CursorWordForward),
+            Command::PromptCursorLineStart => Some(Self::CursorLineStart),
+            Command::PromptCursorLineEnd => Some(Self::CursorLineEnd),
             Command::PromptCompleteNext => Some(Self::CompleteNext),
             Command::PromptCompletePrevious => Some(Self::CompletePrevious),
             _ => None,
@@ -90,7 +128,8 @@ impl PromptEdit {
 /// One edit of the answer of an open confirmation.
 ///
 /// The confirmation completes nothing, so this enumeration holds no completion
-/// edit. See `docs/input-actions.md`.
+/// edit. The answer holds no cursor, so it holds no motion either, and the
+/// prompt scope alone binds the motion keys. See `docs/input-actions.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ConfirmEdit {
     /// Append one character to the answer.

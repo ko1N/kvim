@@ -644,6 +644,12 @@ fn a_confirmation_context_takes_every_key_as_an_answer_edit() {
         (Key::plain(KeyCode::Tab), ConfirmEdit::Ignore),
         (Key::plain(KeyCode::BackTab), ConfirmEdit::Ignore),
         (Key::ctrl(KeyCode::Char('y')), ConfirmEdit::Ignore),
+        // The answer holds no cursor, so the prompt scope alone binds the
+        // motion keys and the question ignores every one of them.
+        (Key::plain(KeyCode::Left), ConfirmEdit::Ignore),
+        (Key::plain(KeyCode::Home), ConfirmEdit::Ignore),
+        (Key::ctrl(KeyCode::Char('a')), ConfirmEdit::Ignore),
+        (Key::ctrl(KeyCode::Right), ConfirmEdit::Ignore),
     ];
     for (key, edit) in cases {
         let mut resolver = resolver();
@@ -715,6 +721,32 @@ fn a_prompt_context_edits_the_line_instead_of_the_registry() {
         (
             Key::ctrl(KeyCode::Char('w')),
             Some(PromptEdit::DeleteWordBackward),
+        ),
+        // Every motion takes a key that a terminal reader already presses: the
+        // arrow keys, `Home` and `End`, and the readline chords of a shell.
+        // `Ctrl-Left` and `Ctrl-Right` already name the word motions of the
+        // editing scopes.
+        (Key::plain(KeyCode::Left), Some(PromptEdit::CursorLeft)),
+        (Key::ctrl(KeyCode::Char('b')), Some(PromptEdit::CursorLeft)),
+        (Key::plain(KeyCode::Right), Some(PromptEdit::CursorRight)),
+        (Key::ctrl(KeyCode::Char('f')), Some(PromptEdit::CursorRight)),
+        (
+            Key::ctrl(KeyCode::Left),
+            Some(PromptEdit::CursorWordBackward),
+        ),
+        (
+            Key::ctrl(KeyCode::Right),
+            Some(PromptEdit::CursorWordForward),
+        ),
+        (Key::plain(KeyCode::Home), Some(PromptEdit::CursorLineStart)),
+        (
+            Key::ctrl(KeyCode::Char('a')),
+            Some(PromptEdit::CursorLineStart),
+        ),
+        (Key::plain(KeyCode::End), Some(PromptEdit::CursorLineEnd)),
+        (
+            Key::ctrl(KeyCode::Char('e')),
+            Some(PromptEdit::CursorLineEnd),
         ),
         (Key::plain(KeyCode::Tab), Some(PromptEdit::CompleteNext)),
         (

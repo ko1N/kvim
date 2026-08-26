@@ -240,6 +240,12 @@ Every edit of the line applies at that position:
 | A printable key | Write the character before the position | One character forward |
 | `Backspace` | Remove the character before the position | One character back |
 | `Ctrl-W` | Remove the word before the position, and the blanks before that word | Back over every removed character |
+| `Left` or `Ctrl-B` | Change nothing | One character back |
+| `Right` or `Ctrl-F` | Change nothing | One character forward |
+| `Ctrl-Left` | Change nothing | To the start of the word before the position |
+| `Ctrl-Right` | Change nothing | To the start of the word after the position |
+| `Home` or `Ctrl-A` | Change nothing | Before the first character of the line |
+| `End` or `Ctrl-E` | Change nothing | After the last character of the line |
 | `Tab` or `Shift-Tab` | Write the candidate over the whole line | After the written candidate |
 | `Esc` or `Ctrl-C` over an open candidate list | Restore the text that the reader typed | After the restored text |
 | `Enter`, `Esc`, or `Ctrl-C` | Close the prompt | The position closes with it |
@@ -251,6 +257,26 @@ position, so an insert in the middle meets the same limit as one at the end.
 alone decides that, and not the position, so a `Backspace` at the start of a
 written line removes nothing and keeps the prompt open. `Ctrl-W` never closes
 a prompt, because a host can bind that chord for its own purpose.
+
+Every motion takes a key that a terminal reader already presses. The arrow
+keys, `Home`, and `End` move as they do in every terminal line editor.
+`Ctrl-B`, `Ctrl-F`, `Ctrl-A`, and `Ctrl-E` are the readline chords of every
+shell. `Ctrl-Left` and `Ctrl-Right` already name the two word motions of the
+editing scopes, and the terminal layer folds the macOS `Option` arrows into
+them, so the prompt line reuses that pair. See [Motions](#motions).
+
+A motion stops at the end that it names and never wraps to the other end, so a
+reader who holds a motion key down reaches a stable position. A motion changes
+no text, so it changes no completion candidate and no picker result.
+
+The backward word motion lands where `Ctrl-W` cuts, so the two keys always name
+the same word. The forward word motion is its return. A terminal reader presses
+the two arrow chords as one pair, so a prompt that bound only one half would
+strand a reader who moved back too far.
+
+The answer of a confirmation holds no cursor, so the confirmation binds no
+motion key. It ignores every motion key, as it ignores every other key that its
+own table does not hold.
 
 A completion writes its candidate over the whole line, so the reader continues
 after that candidate, as they do in Vim and in readline. The restore of a
@@ -1186,10 +1212,13 @@ subset. See [`files.md`](files.md) for the behavior behind them.
 | `Enter` | Open the selected result |
 | `Esc` | Close the picker |
 | `Ctrl-C` | Close the picker |
-| `Backspace` | Remove the last character of the query |
-| `Ctrl-W` | Remove the last word of the query |
+| `Backspace` | Remove the character before the query cursor |
+| `Ctrl-W` | Remove the word before the query cursor |
+| Every motion key of the prompt line | Move the query cursor |
 
-Every other printable key extends the query. `Backspace` on the empty query
+Every other printable key extends the query. The picker reads its query through
+the prompt line, so the query takes every motion of that line and the query row
+draws the cursor of it. `Backspace` on the empty query
 closes the picker, as it does for every other prompt. `Ctrl-W` on the empty
 query changes nothing and never closes the picker, unlike `Backspace`, because
 a host that binds `Ctrl-W` elsewhere must not close a picker with it. Both keys
