@@ -644,6 +644,14 @@ of the complete list, the drawn page, and the number of pages of that frame, so
 a host paints the position and knows whether a further step reaches another
 page. The overlay draws no position marker of its own.
 
+`WhichKeyOverlay::placement_for` answers that same report before any paint. It
+takes the body band and returns the `WhichKeyPlacement` of the overlay's own
+page, from a shared reference. A host that writes the page count into the
+title it is about to draw reads the count there first, instead of rendering
+the band once to learn the count and once more to draw the title.
+`WhichKeyOverlay::render` calls the same rule, so the pure answer and the
+rendered answer cannot disagree.
+
 The title row names how many rows follow the drawn page, for example `+2 more`.
 The reader reaches those mappings by typing the next key, or by stepping to the
 next page where the host binds that step. The standalone editor draws the first

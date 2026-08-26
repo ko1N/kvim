@@ -286,6 +286,11 @@ fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
 /// them, and a terminal of 24 rows shows only a part. The overlay therefore
 /// holds one page for each frame of columns, and every render reports the page
 /// it drew, so a host binds one key that steps through the list.
+///
+/// This host writes the page count into the title it is about to draw, for
+/// example " Which Key (page 2 of 5) ". It reads the count from
+/// [`WhichKeyOverlay::placement_for`] first, with no paint, so it never
+/// renders the band once to learn the count and once more to draw the title.
 fn step_through_a_long_list() {
     let keys: Vec<String> = (0..IDLE_KEYS).map(|index| format!("g{index}")).collect();
     let labels: Vec<String> = (0..IDLE_KEYS)
@@ -296,17 +301,33 @@ fn step_through_a_long_list() {
         .zip(&labels)
         .map(|(key, label)| WhichKeyOverlayRow::new(key, label))
         .collect();
-    let overlay = WhichKeyOverlay::new(" Which Key ", &rows, WhichKeyStyles::default())
+    // The title carries no page count yet, because the count depends on the
+    // page. A first overlay reads the geometry only; a host never paints it.
+    let untitled = WhichKeyOverlay::new(" Which Key ", &rows, WhichKeyStyles::default())
         .expect("the idle list stays inside every bound");
 
     let mut reached: Vec<usize> = Vec::new();
     let mut page = 0;
     loop {
+        let opened = untitled.at_page(page);
+        let placement = opened.placement_for(BODY);
+        let title = format!(
+            " Which Key (page {} of {}) ",
+            placement.page() + 1,
+            placement.pages()
+        );
+        let overlay = WhichKeyOverlay::new(&title, &rows, WhichKeyStyles::default())
+            .expect("the idle list stays inside every bound")
+            .at_page(page);
+
         let mut target = Buffer::empty(BODY);
         let drawn = overlay
-            .at_page(page)
             .render(&mut target, BODY)
             .expect("the band covers the cell buffer of this example");
+        assert_eq!(
+            drawn, placement,
+            "the pure answer and the rendered answer name the same page"
+        );
         let range = drawn.drawn();
         // A host paints this position beside the overlay, in its own style.
         println!(

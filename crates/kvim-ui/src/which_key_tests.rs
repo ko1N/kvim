@@ -537,3 +537,72 @@ fn a_key_style_on_some_rows_leaves_the_page_width_unchanged() {
     assert_eq!(row_of(&first_page, 7).chars().nth(6), Some('C'));
     assert_eq!(row_of(&second_page, 7).chars().nth(6), Some('C'));
 }
+
+#[test]
+fn the_pure_placement_agrees_with_the_rendered_placement() {
+    // Ninety-one hints outgrow the frame, so the list holds several pages and
+    // the agreement holds across a step, not only for the first page.
+    let (keys, labels) = long_hints(91);
+    let hints = hints_of(&keys, &labels);
+    let body = Rect::new(0, 0, 60, 24);
+
+    for page in [0, 1, usize::MAX] {
+        let overlay = WhichKeyOverlay::new(TITLE, &hints, styles())
+            .expect("the hints stay inside every bound")
+            .at_page(page);
+        let pure = overlay.placement_for(body);
+        let mut target = Buffer::empty(body);
+        let drawn = overlay
+            .render(&mut target, body)
+            .expect("the band covers the whole cell buffer");
+        assert_eq!(
+            pure, drawn,
+            "the pure answer and the rendered answer name the same page"
+        );
+    }
+}
+
+#[test]
+fn a_host_reads_the_placement_without_a_buffer() {
+    let hints = [
+        WhichKeyOverlayRow::new("/", "Toggle the comment"),
+        WhichKeyOverlayRow::new("C-w", "+3 commands"),
+    ];
+    let overlay =
+        WhichKeyOverlay::new(TITLE, &hints, styles()).expect("the hints stay inside every bound");
+    let body = Rect::new(0, 0, 40, 12);
+
+    // No `Buffer` exists at this point, and `placement_for` takes `&self`,
+    // so a host reads the count before it draws anything.
+    let placement = overlay.placement_for(body);
+    assert_eq!(placement.drawn(), 0..2, "the one page holds every hint");
+    assert_eq!(placement.total(), 2);
+    assert_eq!(placement.pages(), 1);
+    assert!(!placement.has_next_page());
+}
+
+#[test]
+fn a_body_that_holds_no_hint_answers_zero_pages_from_the_pure_call() {
+    let hints = [WhichKeyOverlayRow::new("a", "First")];
+    let narrow_band = WhichKeyOverlay::new(TITLE, &hints, styles())
+        .expect("the hints stay inside every bound")
+        .placement_for(Rect::new(0, 0, 30, 3));
+    assert_eq!(
+        narrow_band.pages(),
+        0,
+        "the band holds no title row with a hint"
+    );
+    assert_eq!(narrow_band.drawn(), 0..0);
+    assert_eq!(
+        narrow_band.total(),
+        1,
+        "the report still names the whole list"
+    );
+
+    let empty_list = WhichKeyOverlay::new(TITLE, &[], styles())
+        .expect("an empty list stays inside every bound")
+        .placement_for(Rect::new(0, 0, 30, 12));
+    assert_eq!(empty_list.total(), 0);
+    assert_eq!(empty_list.pages(), 0);
+    assert!(!empty_list.has_next_page());
+}

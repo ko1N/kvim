@@ -27,6 +27,12 @@
 //! [`WhichKeyOverlay::render`] reports the page it drew, so a host binds one
 //! key that steps through the list and paints the position it reads back.
 //!
+//! [`WhichKeyOverlay::placement_for`] answers that same report before any
+//! paint. A host that writes the page count into the title it is about to
+//! draw reads the count there first, from a shared reference and with no
+//! paint, instead of rendering the band once to learn the count and once more
+//! to draw the title.
+//!
 //! The overlay holds a page rather than a [`ListViewport`](crate::ListViewport)
 //! because the two answer different questions. The viewport moves one window of
 //! lines until it shows a selected item, and the overlay holds no selection: a
@@ -497,6 +503,52 @@ impl<'a> WhichKeyOverlay<'a> {
         self
     }
 
+    /// Answers the placement of the overlay's own page, without painting it.
+    ///
+    /// The answer names the drawn hints, the size of the complete list, the
+    /// drawn page, and the number of pages of `body`, exactly as
+    /// [`WhichKeyOverlay::render`] would report them for the same body band,
+    /// because `render` calls this same rule. A host that must write the page
+    /// count into the title it is about to draw reads the count here first,
+    /// through a shared reference and with no paint, instead of rendering the
+    /// band once to learn the count and once more to draw the title.
+    ///
+    /// The answer covers the page that [`WhichKeyOverlay::at_page`] set. A
+    /// host that wants the count of a different page opens the overlay at
+    /// that page first: the drawn hints and the drawn page depend on it, while
+    /// the number of pages does not, because the number of pages depends on
+    /// the hint list and the body band alone.
+    ///
+    /// A body band that cannot hold the title row and one hint over its own
+    /// share, or an empty hint list, both answer zero pages and an empty
+    /// range, exactly as [`WhichKeyOverlay::render`] paints nothing for them.
+    ///
+    /// # Examples
+    ///
+    /// A host reads the page count before it draws the title that reports it.
+    ///
+    /// ```
+    /// use ratatui::layout::Rect;
+    ///
+    /// use kvim_ui::{WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+    ///
+    /// let body = Rect::new(0, 0, 24, 8);
+    /// let hints = [
+    ///     WhichKeyOverlayRow::new("f", "Find"),
+    ///     WhichKeyOverlayRow::new("q", "Quit"),
+    /// ];
+    /// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
+    ///
+    /// let placement = overlay.placement_for(body);
+    /// let title = format!(" Which Key (page {} of {}) ", placement.page() + 1, placement.pages());
+    /// assert_eq!(title, " Which Key (page 1 of 1) ");
+    /// # Ok::<(), kvim_ui::WhichKeyError>(())
+    /// ```
+    #[must_use]
+    pub fn placement_for(&self, body: Rect) -> WhichKeyPlacement {
+        self.page_geometry(body).placement
+    }
+
     /// Paints one page of the overlay over the bottom of one body band.
     ///
     /// The overlay covers the text behind it, so it blanks its rectangle first.
@@ -532,65 +584,34 @@ impl<'a> WhichKeyOverlay<'a> {
         if !fits(body, buffer) {
             return Err(WhichKeyError::Area { body, buffer });
         }
-        let total = self.hints.len();
-        if body.is_empty() || self.hints.is_empty() {
-            return Ok(WhichKeyPlacement::empty(total));
-        }
-        // Every column keeps the width of the widest hint. A hidden icon
-        // reserves no cell, which keeps that alignment without a patched font.
-        // The measure reads the complete list, so one hint keeps its cells
-        // while the reader steps from one page to the next.
-        let icon_cells = self
-            .hints
-            .iter()
-            .filter_map(|hint| hint.icon)
-            .map(|icon| text_cells(icon.glyph))
-            .max()
-            .map_or(0, |glyph| glyph + ICON_GAP_CELLS);
-        let key_cells = self.widest(|hint| hint.key);
-        let label_cells = self.widest(|hint| hint.label);
-        let column_cells = icon_cells + key_cells + KEY_GAP_CELLS + label_cells + COLUMN_GAP_CELLS;
-
-        // The height bound keeps the overlay over one part of the body only, so
-        // the text around the cursor stays visible while the reader chooses.
-        let rows_max = usize::from((body.height / WHICH_KEY_BODY_SHARE).saturating_sub(TITLE_ROWS))
-            .min(WHICH_KEY_COLUMN_ROWS_MAX);
-        let cells = usize::from(body.width).saturating_sub(LEFT_PAD_CELLS);
-        // One page holds one full frame of columns. The pages therefore cover
-        // the list without a gap and without an overlap, so a reader who steps
-        // through them meets every hint exactly once.
-        let capacity = column_layout(total, column_cells, cells, rows_max).shown(total);
-        if capacity == 0 {
-            return Ok(WhichKeyPlacement::empty(total));
-        }
-        let pages = total.div_ceil(capacity);
-        let page = self.page.min(pages - 1);
-        let first = page * capacity;
-        let hints = &self.hints[first..(first + capacity).min(total)];
-
-        // A last page that holds fewer hints than one frame spreads them over
-        // its own columns, so it never paints an empty column or an empty row.
-        let layout = column_layout(hints.len(), column_cells, cells, rows_max);
-        let shown = layout.shown(hints.len());
-        debug_assert!(
-            shown == hints.len(),
-            "one page never holds more hints than one frame of columns"
-        );
-        let Ok(height) = u16::try_from(layout.rows_per_column) else {
+        // `page_geometry` is the one capacity rule: it answers the same
+        // placement that `WhichKeyOverlay::placement_for` reports, and this
+        // render paints from it instead of computing the rule a second time.
+        let geometry = self.page_geometry(body);
+        let Some(paint) = geometry.paint else {
+            return Ok(geometry.placement);
+        };
+        let placement = geometry.placement;
+        let Ok(height) = u16::try_from(paint.layout.rows_per_column) else {
             debug_assert!(false, "the row bound keeps the overlay height small");
-            return Ok(WhichKeyPlacement::empty(total));
+            return Ok(WhichKeyPlacement::empty(placement.total));
         };
         let height = height.saturating_add(TITLE_ROWS);
         let area = Rect::new(body.x, body.bottom() - height, body.width, height);
         fill(target, area, " ");
         target.set_style(area, self.styles.surface);
-        self.render_title(target, area, total - first - shown);
+        self.render_title(
+            target,
+            area,
+            placement.total - placement.first - placement.shown,
+        );
 
+        let hints = &self.hints[placement.drawn()];
         for (index, hint) in hints.iter().enumerate() {
-            let column = index / layout.rows_per_column;
-            let offset = index % layout.rows_per_column;
+            let column = index / paint.layout.rows_per_column;
+            let offset = index % paint.layout.rows_per_column;
             let (Some(x), Ok(offset)) = (
-                column_start(area, column, column_cells),
+                column_start(area, column, paint.column_cells),
                 u16::try_from(offset),
             ) else {
                 // A column that starts outside the body paints nothing, which
@@ -600,17 +621,17 @@ impl<'a> WhichKeyOverlay<'a> {
             };
             let y = area.y + TITLE_ROWS + offset;
             let mut cursor = x;
-            if icon_cells > 0 {
+            if paint.icon_cells > 0 {
                 let glyph = hint.icon.map_or(0, |icon| text_cells(icon.glyph));
                 if let Some(icon) = hint.icon {
                     write_cells(target, area, &mut cursor, y, icon.glyph, icon.style);
                 }
-                let padding = " ".repeat(icon_cells - glyph);
+                let padding = " ".repeat(paint.icon_cells - glyph);
                 write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
             }
             let key_style = hint.key_style.unwrap_or(self.styles.key);
             write_cells(target, area, &mut cursor, y, hint.key, key_style);
-            let padding = " ".repeat(key_cells - text_cells(hint.key) + KEY_GAP_CELLS);
+            let padding = " ".repeat(paint.key_cells - text_cells(hint.key) + KEY_GAP_CELLS);
             write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
             write_cells(
                 target,
@@ -621,13 +642,7 @@ impl<'a> WhichKeyOverlay<'a> {
                 self.styles.surface,
             );
         }
-        Ok(WhichKeyPlacement {
-            page,
-            pages,
-            first,
-            shown,
-            total,
-        })
+        Ok(placement)
     }
 
     /// Renders the title row of the overlay.
@@ -676,6 +691,114 @@ impl<'a> WhichKeyOverlay<'a> {
             .max()
             .unwrap_or(0)
     }
+
+    /// Answers the geometry of the overlay's own page over `body`, without
+    /// painting it.
+    ///
+    /// This is the one capacity rule of the overlay.
+    /// [`WhichKeyOverlay::render`] and [`WhichKeyOverlay::placement_for`] both
+    /// call it, so the drawn answer and the pure answer cannot disagree. The
+    /// result names the placement that either caller reports, and, when the
+    /// page holds a hint, the measurements that painting needs and does not
+    /// answer twice.
+    fn page_geometry(&self, body: Rect) -> PageGeometry {
+        let total = self.hints.len();
+        if body.is_empty() || self.hints.is_empty() {
+            return PageGeometry::empty(total);
+        }
+        // Every column keeps the width of the widest hint. A hidden icon
+        // reserves no cell, which keeps that alignment without a patched font.
+        // The measure reads the complete list, so one hint keeps its cells
+        // while the reader steps from one page to the next.
+        let icon_cells = self
+            .hints
+            .iter()
+            .filter_map(|hint| hint.icon)
+            .map(|icon| text_cells(icon.glyph))
+            .max()
+            .map_or(0, |glyph| glyph + ICON_GAP_CELLS);
+        let key_cells = self.widest(|hint| hint.key);
+        let label_cells = self.widest(|hint| hint.label);
+        let column_cells = icon_cells + key_cells + KEY_GAP_CELLS + label_cells + COLUMN_GAP_CELLS;
+
+        // The height bound keeps the overlay over one part of the body only, so
+        // the text around the cursor stays visible while the reader chooses.
+        let rows_max = usize::from((body.height / WHICH_KEY_BODY_SHARE).saturating_sub(TITLE_ROWS))
+            .min(WHICH_KEY_COLUMN_ROWS_MAX);
+        let cells = usize::from(body.width).saturating_sub(LEFT_PAD_CELLS);
+        // One page holds one full frame of columns. The pages therefore cover
+        // the list without a gap and without an overlap, so a reader who steps
+        // through them meets every hint exactly once.
+        let capacity = column_layout(total, column_cells, cells, rows_max).shown(total);
+        if capacity == 0 {
+            return PageGeometry::empty(total);
+        }
+        let pages = total.div_ceil(capacity);
+        let page = self.page.min(pages - 1);
+        let first = page * capacity;
+        let hints = &self.hints[first..(first + capacity).min(total)];
+
+        // A last page that holds fewer hints than one frame spreads them over
+        // its own columns, so it never paints an empty column or an empty row.
+        let layout = column_layout(hints.len(), column_cells, cells, rows_max);
+        let shown = layout.shown(hints.len());
+        debug_assert!(
+            shown == hints.len(),
+            "one page never holds more hints than one frame of columns"
+        );
+        PageGeometry {
+            placement: WhichKeyPlacement {
+                page,
+                pages,
+                first,
+                shown,
+                total,
+            },
+            paint: Some(PagePaint {
+                column_cells,
+                icon_cells,
+                key_cells,
+                layout,
+            }),
+        }
+    }
+}
+
+/// The geometry of one page, before any cell is painted.
+///
+/// [`WhichKeyOverlay::page_geometry`] is the one capacity rule of the module.
+/// [`WhichKeyOverlay::render`] and [`WhichKeyOverlay::placement_for`] both
+/// read the result instead of computing a page's geometry a second time.
+struct PageGeometry {
+    /// The report that both callers answer: the drawn hints, the size of the
+    /// complete list, the drawn page, and the number of pages.
+    placement: WhichKeyPlacement,
+    /// The measurements that painting needs, or `None` when the page holds no
+    /// hint, because an empty band or an empty list has nothing to paint.
+    paint: Option<PagePaint>,
+}
+
+impl PageGeometry {
+    /// The geometry of a page that holds no hint.
+    const fn empty(total: usize) -> Self {
+        Self {
+            placement: WhichKeyPlacement::empty(total),
+            paint: None,
+        }
+    }
+}
+
+/// The measurements that painting one page needs, beyond its placement.
+struct PagePaint {
+    /// The width of one column, its own gap included, in terminal cells.
+    column_cells: usize,
+    /// The width that the icon column reserves, or zero while no hint of the
+    /// complete list carries an icon.
+    icon_cells: usize,
+    /// The width of the widest key of the complete list, in terminal cells.
+    key_cells: usize,
+    /// The column count and the row count of the drawn page.
+    layout: ColumnLayout,
 }
 
 /// Rejects one text above the character bound.
