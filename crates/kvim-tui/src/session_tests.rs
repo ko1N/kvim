@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
-use kvim_input::{BindingScope, CommandLineCommand, Mode};
+use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode};
 use kvim_language::LspError;
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
@@ -104,12 +104,15 @@ fn prompt_text(session: &Session) -> String {
     session
         .visible()
         .prompt
-        .map_or_else(String::new, |prompt| prompt.text.clone())
+        .map_or_else(String::new, |prompt| prompt.line.text().to_owned())
 }
 
 /// Returns the cursor of the open prompt, counted in characters.
 fn prompt_cursor(session: &Session) -> usize {
-    session.visible().prompt.map_or(0, |prompt| prompt.cursor)
+    session
+        .visible()
+        .prompt
+        .map_or(0, |prompt| prompt.line.cursor())
 }
 
 /// Places the cursor of the open prompt at one character position.
@@ -120,10 +123,14 @@ fn prompt_cursor(session: &Session) -> usize {
 fn place_prompt_cursor(session: &mut Session, cursor: usize) {
     let prompt = session.prompt.as_mut().expect("the test opened a prompt");
     assert!(
-        cursor <= prompt.text.chars().count(),
+        cursor <= prompt.line.text().chars().count(),
         "the test places the cursor inside the line"
     );
-    prompt.cursor = cursor;
+    prompt.line = EditedLine::opened_at(
+        prompt.line.text().to_owned(),
+        cursor,
+        prompt.line.chars_max(),
+    );
 }
 
 /// Reports whether the open prompt holds a completion.
@@ -1679,7 +1686,9 @@ fn typed_answer(session: &Session) -> String {
     session
         .visible()
         .confirmation
-        .map_or_else(String::new, |confirmation| confirmation.answer.clone())
+        .map_or_else(String::new, |confirmation| {
+            confirmation.answer.text().to_owned()
+        })
 }
 
 #[test]

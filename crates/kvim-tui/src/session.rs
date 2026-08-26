@@ -49,8 +49,8 @@ use kvim_editor::{
 };
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandAuthority, CommandLineCommand,
-    ConfirmAnswer, ConfirmEdit, InputContextSnapshot, Mode, PasteText, PromptEdit, PromptKind,
-    Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
+    ConfirmAnswer, ConfirmEdit, EditedLine, InputContextSnapshot, LineChange, Mode, PasteText,
+    PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
@@ -565,71 +565,16 @@ fn clip_message_line(text: impl Into<String>) -> String {
     text.chars().take(MESSAGE_CHARS_MAX).collect()
 }
 
-/// Returns where the word before `at` starts inside one written line.
+/// Returns whether one changed line needs a new frame.
 ///
-/// `at` is a byte offset that names a character boundary. The walk passes the
-/// run of blanks before `at` first and then the run of non-blanks, which is the
-/// rule of Vim, of readline, and of every terminal shell. A line that holds
-/// nothing before `at` holds no word to remove and returns `None`.
-fn word_start_before(text: &str, at: usize) -> Option<usize> {
-    let before = text.get(..at)?;
-    if before.is_empty() {
-        return None;
+/// Only the edits that a caller owns report [`LineChange::Deferred`], and the
+/// prompt and the confirmation both answer those themselves, so no undecided
+/// change reaches this function.
+const fn line_redraw(change: LineChange) -> Redraw {
+    match change {
+        LineChange::TextChanged | LineChange::CursorMoved => Redraw::Needed,
+        LineChange::Unchanged | LineChange::Deferred => Redraw::Skipped,
     }
-    let start = before
-        .trim_end()
-        .char_indices()
-        .rev()
-        .find(|&(_, value)| value.is_whitespace())
-        .map_or(0, |(index, value)| index + value.len_utf8());
-    debug_assert!(
-        start < at,
-        "the last character before the cursor is a blank or a non-blank, so the walk always \
-         removes at least one character"
-    );
-    Some(start)
-}
-
-/// Returns where the word after `at` starts inside one written line.
-///
-/// `at` is a byte offset that names a character boundary. The walk passes the
-/// rest of the word under `at` first and then the run of blanks after it, so it
-/// mirrors [`word_start_before`] and lands on the start of the next word. A
-/// line that holds only blanks after `at` holds no next word, so the walk stops
-/// at the end of the line. A line that holds nothing after `at` returns `None`.
-fn word_start_after(text: &str, at: usize) -> Option<usize> {
-    let after = text.get(at..)?;
-    if after.is_empty() {
-        return None;
-    }
-    let over_word = after
-        .char_indices()
-        .find(|&(_, value)| value.is_whitespace())
-        .map_or(after.len(), |(index, _)| index);
-    let over_blanks = after[over_word..]
-        .char_indices()
-        .find(|&(_, value)| !value.is_whitespace())
-        .map_or(after.len() - over_word, |(index, _)| index);
-    let start = at + over_word + over_blanks;
-    debug_assert!(
-        start > at,
-        "the first character after the cursor is a blank or a non-blank, so the walk always \
-         passes at least one character"
-    );
-    Some(start)
-}
-
-/// Removes the word before the end of one written line.
-///
-/// The answer of a confirmation holds no cursor, so it always ends where the
-/// edit works from. An empty text changes nothing. [`PromptLine`] holds a
-/// cursor and removes the word before it instead.
-fn delete_word_backward(text: &mut String) -> Redraw {
-    let Some(start) = word_start_before(text, text.len()) else {
-        return Redraw::Skipped;
-    };
-    text.truncate(start);
-    Redraw::Needed
 }
 
 /// Reports whether one operation can replace the entry of a destination.
@@ -748,44 +693,43 @@ impl PromptSeed {
     }
 }
 
-/// One move of the cursor of a prompt line.
+/// Returns the largest number of characters that one prompt accepts.
 ///
-/// The type is private, because it names the motions of one type and enforces
-/// the cursor invariant of that type alone. [`PromptEdit`] publishes the same
-/// vocabulary to a host, and [`Session::apply_prompt`] joins the two.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PromptMotion {
-    /// One character back.
-    CharacterBackward,
-    /// One character forward.
-    CharacterForward,
-    /// To the start of the word before the cursor.
-    WordBackward,
-    /// To the start of the word after the cursor.
-    WordForward,
-    /// Before the first character of the line.
-    LineStart,
-    /// After the last character of the line.
-    LineEnd,
+/// An add-name or a rename prompt reuses [`TREE_NAME_BYTES_MAX`] here as a
+/// character count, not a byte count. One character never encodes in fewer
+/// bytes than itself. This cap therefore never stops a reader short of a name
+/// that `check_name` then accepts. A name built from wide characters can still
+/// pass this cap. Such a name can still meet the byte bound at submission. That
+/// later refusal names the real limit, so the reader learns the true bound
+/// instead of meeting a silent block while still typing.
+const fn prompt_chars_max(kind: PromptKind) -> usize {
+    match kind {
+        PromptKind::CommandLine => COMMAND_LINE_CHARS_MAX,
+        PromptKind::Search => SEARCH_QUERY_CHARS_MAX,
+        PromptKind::Tree(TreePrompt::Search) => TREE_SEARCH_CHARS_MAX,
+        PromptKind::Tree(TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename) => {
+            TREE_NAME_BYTES_MAX
+        }
+        PromptKind::Picker => PICKER_QUERY_CHARS_MAX,
+    }
 }
 
 /// One open line prompt and the text that it holds.
+///
+/// The prompt is one [`EditedLine`] plus the vocabulary of this editor: the
+/// kind that reads the line and the candidate list that a completion opens
+/// over it. The line owns the text, the cursor, and every edit that applies at
+/// that cursor, so a host reaches the identical rules through `kvim-input`. See
+/// `docs/embedding.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PromptLine {
     /// The prompt that reads the line.
     pub(super) kind: PromptKind,
-    /// The text after the prompt character.
-    pub(super) text: String,
-    /// The cursor position, counted in characters from the start of the text.
+    /// The text of the line and the cursor that every edit applies at.
     ///
-    /// Every edit applies here: an insert writes before the cursor, a backward
-    /// delete removes the character before it, and a backward word delete
-    /// removes the word before it. The position never passes the number of
-    /// characters of the text, so it always names a character boundary. This
-    /// type owns every change of `text`, which keeps the two in step. The
-    /// terminal counts cells and not characters, so the drawing converts the
-    /// position once. See `docs/input-actions.md`.
-    pub(super) cursor: usize,
+    /// The terminal counts cells and not characters, so the drawing converts
+    /// the cursor once. See [`Self::cursor_cells`].
+    pub(super) line: EditedLine,
     /// The open completion of the line, while one candidate is written.
     ///
     /// The completion belongs to the prompt, so a closed prompt drops it and no
@@ -796,168 +740,38 @@ pub(super) struct PromptLine {
 impl PromptLine {
     /// Opens the line of one prompt over the text and the cursor of a seed.
     fn opened(kind: PromptKind, seed: PromptSeed) -> Self {
-        let chars = seed.text.chars().count();
-        debug_assert!(
-            seed.cursor <= chars,
-            "`PromptSeed` counts the cursor in the characters of its own text"
-        );
         Self {
             kind,
-            text: seed.text,
-            cursor: seed.cursor.min(chars),
+            line: EditedLine::opened_at(seed.text, seed.cursor, prompt_chars_max(kind)),
             completion: None,
         }
     }
 
-    /// Returns the byte offset of the cursor inside the text.
+    /// Applies one edit of a prompt to the line and closes a stale candidate
+    /// list.
     ///
-    /// The cursor counts characters, and every edit of this type keeps it
-    /// inside the text, so the walk misses only at the end of the line.
-    fn cursor_offset(&self) -> usize {
-        debug_assert!(
-            self.cursor <= self.text.chars().count(),
-            "every edit of this type keeps the cursor inside the text"
-        );
-        self.text
-            .char_indices()
-            .nth(self.cursor)
-            .map_or(self.text.len(), |(offset, _)| offset)
-    }
-
-    /// Writes one character before the cursor and steps the cursor over it.
-    ///
-    /// The bound counts the whole line and not the text before the cursor, so
-    /// an insert in the middle of the line meets the same limit as one at its
-    /// end. See [`Self::chars_max`].
-    fn insert(&mut self, value: char) -> Redraw {
-        if self.text.chars().count() >= self.chars_max() {
-            return Redraw::Skipped;
+    /// A changed line leaves the written candidate in the text, so the next
+    /// completion starts from the new line. A motion changes no text and
+    /// therefore leaves an open completion as it is.
+    fn apply(&mut self, edit: PromptEdit) -> LineChange {
+        let change = self.line.apply(edit);
+        if change == LineChange::TextChanged {
+            self.completion = None;
         }
-        let offset = self.cursor_offset();
-        // The insert continues from the line as it is shown, so the closed
-        // completion leaves the written candidate in the text and the next
-        // completion starts from the new line.
-        self.completion = None;
-        self.text.insert(offset, value);
-        self.cursor += 1;
-        Redraw::Needed
-    }
-
-    /// Removes the character before the cursor and steps the cursor back.
-    ///
-    /// A cursor at the start of the line removes nothing, because no character
-    /// stands before it. The caller closes the empty prompt, so this method
-    /// never decides that.
-    fn delete_backward(&mut self) -> Redraw {
-        self.completion = None;
-        let offset = self.cursor_offset();
-        let Some(removed) = self.text[..offset].chars().next_back() else {
-            return Redraw::Skipped;
-        };
-        self.text.remove(offset - removed.len_utf8());
-        self.cursor -= 1;
-        Redraw::Needed
-    }
-
-    /// Removes the word before the cursor, and the blanks before that word.
-    ///
-    /// The text after the cursor stays, and the cursor steps back over every
-    /// removed character.
-    fn delete_word_backward(&mut self) -> Redraw {
-        self.completion = None;
-        let offset = self.cursor_offset();
-        let Some(start) = word_start_before(&self.text, offset) else {
-            return Redraw::Skipped;
-        };
-        let removed = self.text[start..offset].chars().count();
-        debug_assert!(
-            removed <= self.cursor,
-            "the removed characters all stand before the cursor"
-        );
-        self.text.replace_range(start..offset, "");
-        self.cursor -= removed;
-        Redraw::Needed
-    }
-
-    /// Moves the cursor and reports whether it moved.
-    ///
-    /// Every motion stops at the end that it names and never wraps to the other
-    /// end, so a reader who holds a motion key down reaches a stable position.
-    /// A motion that lands where the cursor already stands changes nothing and
-    /// reports [`Redraw::Skipped`].
-    ///
-    /// A motion changes no text, so it leaves an open completion as it is. Only
-    /// a changed line closes the candidate list.
-    fn move_cursor(&mut self, motion: PromptMotion) -> Redraw {
-        let chars = self.text.chars().count();
-        let offset = self.cursor_offset();
-        let moved = match motion {
-            PromptMotion::CharacterBackward => self.cursor.saturating_sub(1),
-            PromptMotion::CharacterForward => self.cursor.saturating_add(1).min(chars),
-            // The backward motion lands where the backward word delete cuts, so
-            // the two keys always name the same word.
-            PromptMotion::WordBackward => word_start_before(&self.text, offset)
-                .map_or(0, |start| self.text[..start].chars().count()),
-            PromptMotion::WordForward => word_start_after(&self.text, offset)
-                .map_or(chars, |start| self.text[..start].chars().count()),
-            PromptMotion::LineStart => 0,
-            PromptMotion::LineEnd => chars,
-        };
-        debug_assert!(
-            moved <= chars,
-            "every motion clamps to the characters of the line"
-        );
-        if moved == self.cursor {
-            return Redraw::Skipped;
-        }
-        self.cursor = moved;
-        Redraw::Needed
+        change
     }
 
     /// Returns the cell column of the cursor inside the drawn line.
     ///
     /// The drawn line is the prefix of the prompt and then its text, so the
     /// column is the width of that prefix plus the width of the text before the
-    /// cursor. The position counts characters and the terminal counts cells, so
+    /// cursor. The line counts characters and the terminal counts cells, so
     /// this is the one place that converts, and a wide character before the
     /// cursor moves the drawn cursor by two cells. The message line and the
     /// query row of the picker both read it, so the two rows can never
     /// disagree. See `docs/windows.md`.
     pub(super) fn cursor_cells(&self) -> usize {
-        text_cells(self.kind.prefix()) + text_cells(&self.text[..self.cursor_offset()])
-    }
-
-    /// Writes one whole line and places the cursor after it.
-    ///
-    /// A completion replaces the whole line with its candidate, so the reader
-    /// continues after that candidate, as they do in Vim and in readline. The
-    /// restore of a cancelled completion replaces the whole line as well and
-    /// follows the same rule.
-    fn write_line(&mut self, text: String) {
-        self.cursor = text.chars().count();
-        self.text = text;
-    }
-
-    /// Returns the largest number of characters that the prompt accepts.
-    ///
-    /// An add-name or a rename prompt reuses [`TREE_NAME_BYTES_MAX`] here as a
-    /// character count, not a byte count. One character never encodes in
-    /// fewer bytes than itself. This cap therefore never stops a reader short
-    /// of a name that `check_name` then accepts. A name built from wide
-    /// characters can still pass this cap. Such a name can still meet the
-    /// byte bound at submission. That later refusal names the real limit, so
-    /// the reader learns the true bound instead of meeting a silent block
-    /// while still typing.
-    const fn chars_max(&self) -> usize {
-        match self.kind {
-            PromptKind::CommandLine => COMMAND_LINE_CHARS_MAX,
-            PromptKind::Search => SEARCH_QUERY_CHARS_MAX,
-            PromptKind::Tree(TreePrompt::Search) => TREE_SEARCH_CHARS_MAX,
-            PromptKind::Tree(
-                TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename,
-            ) => TREE_NAME_BYTES_MAX,
-            PromptKind::Picker => PICKER_QUERY_CHARS_MAX,
-        }
+        text_cells(self.kind.prefix()) + text_cells(&self.line.text()[..self.line.cursor_offset()])
     }
 
     /// Writes one completion candidate into the line.
@@ -975,21 +789,27 @@ impl PromptLine {
         candidates: impl FnOnce(&str) -> Vec<String>,
         cycle: CompletionCycle,
     ) -> CompletionOutcome {
-        let chars_max = self.chars_max();
+        let chars_max = self.line.chars_max();
         let completion = match self.completion.take() {
             Some(mut open) => {
                 open.cycle(cycle);
                 open
             }
             None => {
-                let offered = candidates(&self.text);
-                let Some(open) = LineCompletion::open(&self.text, offered, chars_max, cycle) else {
+                let offered = candidates(self.line.text());
+                let Some(open) = LineCompletion::open(self.line.text(), offered, chars_max, cycle)
+                else {
                     return CompletionOutcome::Missed;
                 };
                 open
             }
         };
-        self.write_line(completion.selected().to_owned());
+        let written = self.line.write(completion.selected().to_owned());
+        debug_assert_eq!(
+            written,
+            LineChange::TextChanged,
+            "`LineCompletion::open` drops every candidate above the bound of the line"
+        );
         let outcome = completion.outcome();
         self.completion = Some(completion);
         outcome
@@ -1055,7 +875,12 @@ pub(super) struct Confirmation {
     pub(super) question: String,
     /// The answer that the user typed, bounded by
     /// [`CONFIRM_ANSWER_CHARS_MAX`].
-    pub(super) answer: String,
+    ///
+    /// The answer holds no cursor of its own, because the confirmation binds no
+    /// motion key. Its line therefore keeps the cursor after the last typed
+    /// character, where every edit of a question applies. See
+    /// `docs/input-actions.md`.
+    pub(super) answer: EditedLine,
     /// The action that a `y` answer performs.
     action: ConfirmedAction,
 }
@@ -2954,7 +2779,7 @@ impl Session {
         }
         self.confirmation = Some(Confirmation {
             question: clip_message_line(question),
-            answer: String::new(),
+            answer: EditedLine::opened(String::new(), CONFIRM_ANSWER_CHARS_MAX),
             action,
         });
         self.sync_context();
@@ -2975,20 +2800,11 @@ impl Session {
             return Redraw::Skipped;
         };
         match edit {
-            ConfirmEdit::Insert(value) => {
-                if confirmation.answer.chars().count() >= CONFIRM_ANSWER_CHARS_MAX {
-                    return Redraw::Skipped;
-                }
-                confirmation.answer.push(value);
-                Redraw::Needed
+            ConfirmEdit::Insert(value) => line_redraw(confirmation.answer.insert(value)),
+            ConfirmEdit::DeleteBackward => line_redraw(confirmation.answer.delete_backward()),
+            ConfirmEdit::DeleteWordBackward => {
+                line_redraw(confirmation.answer.delete_word_backward())
             }
-            ConfirmEdit::DeleteBackward => {
-                if confirmation.answer.pop().is_none() {
-                    return Redraw::Skipped;
-                }
-                Redraw::Needed
-            }
-            ConfirmEdit::DeleteWordBackward => delete_word_backward(&mut confirmation.answer),
             ConfirmEdit::Accept => self.close_confirmation(ConfirmationClose::Accept),
             ConfirmEdit::Cancel => self.close_confirmation(ConfirmationClose::Cancel),
             ConfirmEdit::Ignore => Redraw::Skipped,
@@ -3012,7 +2828,7 @@ impl Session {
         self.sync_context();
         let answer = match close {
             ConfirmationClose::Cancel => ConfirmAnswer::No,
-            ConfirmationClose::Accept => ConfirmAnswer::from_text(&confirmation.answer),
+            ConfirmationClose::Accept => ConfirmAnswer::from_text(confirmation.answer.text()),
         };
         match answer {
             ConfirmAnswer::No => Redraw::Needed,
@@ -3165,7 +2981,7 @@ impl Session {
             .prompt
             .as_ref()
             .filter(|prompt| prompt.kind == PromptKind::Picker)
-            .map(|prompt| prompt.text.clone());
+            .map(|prompt| prompt.line.text().to_owned());
         let (Some(query), Some(picker)) = (query, self.picker.as_mut()) else {
             return;
         };
@@ -3187,7 +3003,7 @@ impl Session {
         }
         let takes_path = self.prompt.as_ref().is_some_and(|prompt| {
             prompt.kind == PromptKind::CommandLine
-                && CommandLineCommand::path_argument(&prompt.text).is_some()
+                && CommandLineCommand::path_argument(prompt.line.text()).is_some()
         });
         if !takes_path {
             return;
@@ -3284,6 +3100,10 @@ impl Session {
     }
 
     /// Applies one edit of the open prompt line.
+    ///
+    /// The line answers every edit that changes text or moves the cursor. The
+    /// two completion keys, the accept, and the cancel end a prompt that this
+    /// session owns, so the line reports them back and the arms below run them.
     fn apply_prompt(&mut self, edit: PromptEdit) -> Redraw {
         let Some(prompt) = self.prompt.as_mut() else {
             debug_assert!(
@@ -3292,65 +3112,61 @@ impl Session {
             );
             return Redraw::Skipped;
         };
-        match edit {
-            PromptEdit::Insert(value) => {
-                if prompt.insert(value) == Redraw::Skipped {
-                    return Redraw::Skipped;
-                }
-                self.sync_picker_query();
-                self.sync_completion_walk();
-                Redraw::Needed
-            }
-            PromptEdit::DeleteBackward => {
-                // Backspace on the empty line cancels the prompt, like Vim. The
-                // line alone decides that, and not the cursor, so a backspace
-                // at the start of a written line removes nothing and keeps the
-                // prompt open.
-                if prompt.text.is_empty() {
-                    self.close_prompt();
-                    return Redraw::Needed;
-                }
-                if prompt.delete_backward() == Redraw::Skipped {
-                    return Redraw::Skipped;
-                }
-                self.sync_picker_query();
-                self.sync_completion_walk();
-                Redraw::Needed
-            }
-            PromptEdit::DeleteWordBackward => {
-                // A host can bind `Ctrl-W` as its own prefix, so a stray chord
-                // must never close a prompt of this editor. Unlike `Backspace`,
-                // the chord therefore leaves the empty line open.
-                if prompt.delete_word_backward() == Redraw::Skipped {
-                    return Redraw::Skipped;
-                }
+        // Backspace on the empty line cancels the prompt, like Vim. The line
+        // alone decides that, and not the cursor, so a backspace at the start
+        // of a written line removes nothing and keeps the prompt open. A host
+        // can bind `Ctrl-W` as its own prefix, so that chord never closes a
+        // prompt of this editor and leaves the empty line open instead.
+        if edit == PromptEdit::DeleteBackward && prompt.line.text().is_empty() {
+            self.close_prompt();
+            return Redraw::Needed;
+        }
+        match prompt.apply(edit) {
+            // A changed line changes what the picker searches for and what the
+            // completion walk collects.
+            LineChange::TextChanged => {
                 self.sync_picker_query();
                 self.sync_completion_walk();
                 Redraw::Needed
             }
             // A motion changes no text, so neither the picker query nor the
             // completion walk needs a second look.
-            PromptEdit::CursorLeft => prompt.move_cursor(PromptMotion::CharacterBackward),
-            PromptEdit::CursorRight => prompt.move_cursor(PromptMotion::CharacterForward),
-            PromptEdit::CursorWordBackward => prompt.move_cursor(PromptMotion::WordBackward),
-            PromptEdit::CursorWordForward => prompt.move_cursor(PromptMotion::WordForward),
-            PromptEdit::CursorLineStart => prompt.move_cursor(PromptMotion::LineStart),
-            PromptEdit::CursorLineEnd => prompt.move_cursor(PromptMotion::LineEnd),
-            PromptEdit::CompleteNext => self.complete_prompt(CompletionCycle::Next),
-            PromptEdit::CompletePrevious => self.complete_prompt(CompletionCycle::Previous),
-            PromptEdit::Cancel => {
-                // The open candidate list takes the cancel first and restores
-                // the typed text, so a second cancel closes the prompt. Only
-                // the command line completes, so no picker query changes here.
-                if let Some(completion) = prompt.completion.take() {
-                    prompt.write_line(completion.into_typed());
-                    return Redraw::Needed;
+            LineChange::CursorMoved => Redraw::Needed,
+            LineChange::Unchanged => Redraw::Skipped,
+            LineChange::Deferred => match edit {
+                PromptEdit::CompleteNext => self.complete_prompt(CompletionCycle::Next),
+                PromptEdit::CompletePrevious => self.complete_prompt(CompletionCycle::Previous),
+                PromptEdit::Cancel => self.cancel_prompt(),
+                PromptEdit::Accept => self.accept_prompt(),
+                _ => {
+                    debug_assert!(false, "`EditedLine` answers every other edit itself");
+                    Redraw::Skipped
                 }
-                self.close_prompt();
-                Redraw::Needed
-            }
-            PromptEdit::Accept => self.accept_prompt(),
+            },
         }
+    }
+
+    /// Cancels the open prompt, or the candidate list above it.
+    ///
+    /// The open candidate list takes the cancel first and restores the typed
+    /// text, so a second cancel closes the prompt. Only the command line
+    /// completes, so no picker query changes here.
+    fn cancel_prompt(&mut self) -> Redraw {
+        let Some(prompt) = self.prompt.as_mut() else {
+            debug_assert!(false, "the caller holds an open prompt");
+            return Redraw::Skipped;
+        };
+        if let Some(completion) = prompt.completion.take() {
+            let restored = prompt.line.write(completion.into_typed());
+            debug_assert_eq!(
+                restored,
+                LineChange::TextChanged,
+                "the typed text stood inside the bound of this line before the menu opened"
+            );
+            return Redraw::Needed;
+        }
+        self.close_prompt();
+        Redraw::Needed
     }
 
     /// Writes the next or the previous completion candidate into the prompt.
@@ -3401,9 +3217,9 @@ impl Session {
         let picker = self.picker.take();
         self.close_prompt();
         match prompt.kind {
-            PromptKind::CommandLine => self.run_command_line(&prompt.text),
-            PromptKind::Search => self.run_search(&prompt.text),
-            PromptKind::Tree(tree) => self.run_tree_prompt(tree, &prompt.text),
+            PromptKind::CommandLine => self.run_command_line(prompt.line.text()),
+            PromptKind::Search => self.run_search(prompt.line.text()),
+            PromptKind::Tree(tree) => self.run_tree_prompt(tree, prompt.line.text()),
             PromptKind::Picker => self.accept_picker(picker.as_ref()),
         }
     }

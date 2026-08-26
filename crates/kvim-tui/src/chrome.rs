@@ -259,7 +259,11 @@ pub(super) fn render_message(
         // The user types the answer after the hint, so the row draws its own
         // cursor behind that answer, exactly as a prompt does. See
         // `docs/windows.md`.
-        let line = format!("{}? [y/N]:{}", confirmation.question, confirmation.answer);
+        let line = format!(
+            "{}? [y/N]:{}",
+            confirmation.question,
+            confirmation.answer.text()
+        );
         let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
         if let Some(cell) = target.cell_mut((x, area.y)) {
             cell.set_style(base.patch(theme.style(ThemeRole::Cursor)));
@@ -267,7 +271,7 @@ pub(super) fn render_message(
         return;
     }
     if let Some(prompt) = prompt {
-        let line = format!("{}{}", prompt.kind.prefix(), prompt.text);
+        let line = format!("{}{}", prompt.kind.prefix(), prompt.line.text());
         target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
         // The terminal cursor marks the cell of the focused window, so the
         // prompt draws its own cursor at the character that its position names.

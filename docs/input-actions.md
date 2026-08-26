@@ -234,6 +234,12 @@ of the text, so it always names a character boundary. The terminal counts
 cells, so the drawing converts the position once, where the width of a
 character is known.
 
+`kvim_input::EditedLine` holds that text and that position, beside the
+`PromptEdit` vocabulary that edits it. The prompt of this editor is that line
+plus its kind and its candidate list, so a host reaches the identical rules and
+writes no second line. `EditedLine::apply` answers every edit below and reports
+one `LineChange`. See [`embedding.md`](embedding.md).
+
 Every edit of the line applies at that position:
 
 | Edit | Effect on the text | Effect on the position |
@@ -285,7 +291,10 @@ strand a reader who moved back too far.
 
 The answer of a confirmation holds no cursor, so the confirmation binds no
 motion key. It ignores every motion key, as it ignores every other key that its
-own table does not hold.
+own table does not hold. The answer holds one `EditedLine` as well, and that
+line keeps its position after the last typed character, where every edit of a
+question applies. The word rule of `Ctrl-W` therefore lives in one place for
+both lines.
 
 A completion writes its candidate over the whole line, so the reader continues
 after that candidate, as they do in Vim and in readline. The restore of a

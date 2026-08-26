@@ -218,6 +218,14 @@ alone, over the arrow keys, `Home`, `End`, and the readline chords `Ctrl-B`,
 `Ctrl-F`, `Ctrl-A`, and `Ctrl-E`. A host that binds one of those chords in its
 own global scope wins that key, because the resolver walks a global scope
 before a focused one. Such a host keeps the plain key of the same motion.
+`kvim-input` publishes the line that those edits edit as well. `EditedLine`
+holds one text and one cursor counted in characters, and it owns every edit
+that applies at that cursor, so a host holds the verbs and the noun.
+`EditedLine::apply` reports one `LineChange`, and the caller-owned edits report
+`Deferred`, because a candidate list and a prompt belong to the host. The line
+names no prompt kind and no completion: the prompt of kvim is that line plus
+its kind and its candidate list, exactly as `kvim_workspace::Picker` is one
+`kvim_ui::Selector` plus the file vocabulary.
 [`input-actions.md`](input-actions.md) owns the prompt line and its keys.
 
 `kvim-fuzzy` holds the ranking rule alone: `score_candidate` scores one

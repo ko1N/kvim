@@ -342,6 +342,49 @@ Rendering returns an optional cursor position and cursor-shape request. The
 host decides whether to apply either request. The editor names its own cursor
 shape and owns no terminal sequence.
 
+### The Prompt Line
+
+A prompt reads one line of text. kvim publishes the verbs of that line already,
+and it publishes the line itself, so a host holds both halves and no host
+writes a line without a cursor.
+
+`kvim_input::EditedLine` is that line. It holds the text and one cursor
+position, and it owns every change of the text, so the two can never disagree.
+The position counts characters, because a character is the unit that a reader
+inserts and deletes. It never passes the number of characters of the text, so
+it always names a character boundary.
+
+`EditedLine::apply` takes one `PromptEdit` and reports one `LineChange`:
+`TextChanged` when the text changed, `CursorMoved` when only the cursor moved,
+`Unchanged` when the edit changed nothing, and `Deferred` when the line answers
+no such edit. The three text edits and the six motions change the line. The two
+completion keys, the accept, and the cancel report `Deferred`, because a
+candidate list and a prompt belong to the host and never to one line.
+`EditedLine::insert`, `EditedLine::delete_backward`,
+`EditedLine::delete_word_backward`, and `EditedLine::write` name the same edits
+directly, for a host that reads a key table of its own.
+
+`EditedLine::text` and `EditedLine::cursor` answer what a host draws.
+`EditedLine::cursor_offset` answers the byte offset of the cursor, so a host
+measures the text before it in the cells of its own terminal. The line counts
+characters and never cells, so the conversion stays where the host knows the
+width of a character.
+
+The host states the bound. `EditedLine::opened` and `EditedLine::opened_at`
+take the largest number of characters that the line accepts, and that bound
+refuses rather than cuts: an insert above it changes nothing and reports
+`Unchanged`, so no reader loses a character in silence. `opened` places the
+cursor after the whole seed, and `opened_at` places it where the host names.
+
+The line names no prompt kind, no prefix, and no completion. kvim's own prompt
+is that line plus its kind and its candidate list, so the command line, the
+search prompt, the picker query, and the four file-tree prompts all edit
+through the published rules. `crates/kvim-tui/src/session.rs` holds no second
+cursor arithmetic.
+
+[`input-actions.md`](input-actions.md) owns the rules and the bounds.
+`crates/kvim-input/examples/edited_line.rs` holds one complete line of a host.
+
 ### The Candidate Menu
 
 A prompt line offers candidates for the text that a reader typed. kvim
@@ -649,6 +692,7 @@ The required examples are:
 
 - `crates/kvim-path/examples/confine_worktree_paths.rs`
 - `crates/kvim-fuzzy/examples/rank_candidates.rs`
+- `crates/kvim-input/examples/edited_line.rs`
 - `crates/kvim-keymap/examples/dispatch_keys.rs`
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`

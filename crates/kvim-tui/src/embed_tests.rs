@@ -105,7 +105,7 @@ fn run_tree_prompt(session: &mut Session, command: Command, text: &str) {
     let seeded = session
         .visible()
         .prompt
-        .map_or(0, |prompt| prompt.text.chars().count());
+        .map_or(0, |prompt| prompt.line.text().chars().count());
     for _ in 0..seeded {
         let _ = session.apply_command(Command::PromptDeleteBackward, None, None, NOW);
     }

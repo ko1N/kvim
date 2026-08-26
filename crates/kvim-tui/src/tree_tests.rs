@@ -147,7 +147,7 @@ fn rename_to(session: &mut Session, name: &str) {
     let seed_chars = session
         .visible()
         .prompt
-        .map_or(0, |prompt| prompt.text.chars().count());
+        .map_or(0, |prompt| prompt.line.text().chars().count());
     for _ in 0..seed_chars {
         press_code(session, KeyCode::Backspace);
     }
@@ -156,7 +156,10 @@ fn rename_to(session: &mut Session, name: &str) {
 
 /// Returns the cursor of the open prompt, counted in characters.
 fn prompt_cursor(session: &Session) -> usize {
-    session.visible().prompt.map_or(0, |prompt| prompt.cursor)
+    session
+        .visible()
+        .prompt
+        .map_or(0, |prompt| prompt.line.cursor())
 }
 
 /// Creates one workspace that holds a single named file, and reveals it.
@@ -581,7 +584,10 @@ fn the_rename_cursor_opens_at_the_end_of_the_stem() {
         let (_dir, mut session) = workspace_with_one_file(name);
         press(&mut session, 'r');
         assert_eq!(
-            session.visible().prompt.map(|prompt| prompt.text.clone()),
+            session
+                .visible()
+                .prompt
+                .map(|prompt| prompt.line.text().to_owned()),
             Some(name.to_owned()),
             "{name}: the whole name still seeds the prompt"
         );
