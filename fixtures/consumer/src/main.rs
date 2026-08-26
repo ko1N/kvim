@@ -20,7 +20,9 @@ use kvim_editor::{
     EditContext, EditingState, RegisterValue, Registers, Viewport, WindowState,
 };
 use kvim_fuzzy::{rank, score_candidate};
-use kvim_input::{Command, Registry as InputRegistry, Resolution, Resolver as InputResolver};
+use kvim_input::{
+    Command, PromptEdit, Registry as InputRegistry, Resolution, Resolver as InputResolver,
+};
 use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
     Registry, Resolver, Scope,
@@ -299,6 +301,10 @@ fn check_embedded_editor() {
     println!("an embedded editor accepts {access:?} with {capacity:?}");
     println!("a redraw request names {}", event_name(&EditorEvent::RedrawRequested));
     println!("a staged file reports {}", git_state_name(FileRowGit::Staged));
+    println!(
+        "a prompt line answers {}",
+        prompt_edit_name(PromptEdit::CursorWordBackward)
+    );
 }
 
 /// Returns the stable name of one editor event.
@@ -321,6 +327,29 @@ fn event_name(event: &EditorEvent) -> &'static str {
 ///
 /// The match names every variant of a second facade enum, so the same
 /// exhaustive-enum contract as `event_name` exercises `FileRowGit` too.
+/// Names one edit of a prompt line.
+///
+/// The match is exhaustive on purpose. `PromptEdit` names an edit that a host
+/// answers, so a new variant stops this build until the host decides what the
+/// edit means for its own line. `docs/architecture.md` records that rule.
+fn prompt_edit_name(edit: PromptEdit) -> &'static str {
+    match edit {
+        PromptEdit::Insert(_) => "insert",
+        PromptEdit::DeleteBackward => "delete-backward",
+        PromptEdit::DeleteWordBackward => "delete-word-backward",
+        PromptEdit::CursorLeft => "cursor-left",
+        PromptEdit::CursorRight => "cursor-right",
+        PromptEdit::CursorWordBackward => "cursor-word-backward",
+        PromptEdit::CursorWordForward => "cursor-word-forward",
+        PromptEdit::CursorLineStart => "cursor-line-start",
+        PromptEdit::CursorLineEnd => "cursor-line-end",
+        PromptEdit::CompleteNext => "complete-next",
+        PromptEdit::CompletePrevious => "complete-previous",
+        PromptEdit::Accept => "accept",
+        PromptEdit::Cancel => "cancel",
+    }
+}
+
 fn git_state_name(git: FileRowGit) -> &'static str {
     match git {
         FileRowGit::Ignored => "ignored",
