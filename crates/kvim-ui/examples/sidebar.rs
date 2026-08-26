@@ -235,6 +235,24 @@ fn main() {
         "the move skips both hidden children"
     );
 
+    // A parent motion climbs from a nested row to its directory, so a host
+    // that builds a tree on this state writes no depth scan of its own.
+    sidebar.select(&EntryId(8));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::Parent));
+    assert_eq!(
+        sidebar.selected(),
+        Some(&EntryId(6)),
+        "windows.md climbs to its directory, docs"
+    );
+
+    // A top-level row holds no parent, so the same motion leaves it selected.
+    sidebar.reduce(&SidebarInput::Move(ListMotion::Parent));
+    assert_eq!(
+        sidebar.selected(),
+        Some(&EntryId(6)),
+        "a top-level row has no parent to climb to"
+    );
+
     // The guides start at depth 1, so a top-level row carries none. A level
     // that holds a further row below draws a trunk, and the last row of a level
     // closes it with an elbow.

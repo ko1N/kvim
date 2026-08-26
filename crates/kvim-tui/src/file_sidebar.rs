@@ -215,7 +215,10 @@ pub enum FileSidebarInput {
     ///
     /// The move stops at the first and the last row, so it never wraps. A
     /// [`FileRowKind::Note`] row takes no selection, so the move takes the
-    /// nearest entry row in the direction of travel.
+    /// nearest entry row in the direction of travel. [`ListMotion::Parent`]
+    /// moves to the directory that holds the selected entry, the same
+    /// directory that [`FileSidebarInput::Close`] selects on a row that
+    /// holds no open directory of its own.
     Move(ListMotion),
     /// Open the selected directory, or activate the selected file.
     ///

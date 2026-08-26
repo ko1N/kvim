@@ -357,12 +357,13 @@ for each input event or frame, so the cost is one small allocation per event.
 answer. It replaces `SidebarMotion`, which is gone from the public surface.
 The rename is a clean break: no alias remains, because both crates stay
 below version 1.0 and the one embedding host upgrades deliberately. A host
-that read `SidebarMotion` renames its import to `ListMotion`. The four
-variants and their sidebar behavior stay the same.
+that read `SidebarMotion` renames its import to `ListMotion`. The variants
+that `SidebarMotion` held, and their sidebar behavior, stay the same.
 
-`ListMotion` holds four variants. `Down(usize)` and `Up(usize)` move by a row
+`ListMotion` holds five variants. `Down(usize)` and `Up(usize)` move by a row
 count and stop at both edges. `ToRow(usize)` moves to a named row. `LastRow`
-moves to the last row. No variant wraps.
+moves to the last row. `Parent` moves to the parent of the selected row. No
+variant wraps.
 
 `ToRow` names a row inside the row space of the list that receives the
 motion, and the two present lists keep different row spaces. `SidebarState`
@@ -374,6 +375,25 @@ also use, so `ToRow` never resolves to a row that the current query drops.
 The same index value can therefore name two different rows, or no row at
 all, across the two lists. A host that reuses one `ToRow` value across both
 lists reads the row space of each list first.
+
+`Parent` moves to the nearest earlier row of a strictly smaller depth, over
+the row's own section. `SidebarState` climbs past a hidden row or a
+`RowKind::Inert` row to its own parent, so the motion always lands on a row a
+reader can act on, or on none. A row at depth 0, or a row whose section holds
+no shallower row, has no parent, and the motion leaves the selection where it
+is. `parent_row` publishes the climb as a pure function over one sequence of
+`ParentScanRow` values, each holding the depth, the section, and the
+acceptability of one row, so a caller outside `SidebarState` reaches the same
+answer without a second scan. `parent_row` takes that sequence as a
+`DoubleEndedIterator` and an `ExactSizeIterator`, mirroring
+`ListViewport::reconcile`, so neither caller collects its rows into a vector
+first: `slice::Iter` mapped through a closure already satisfies both bounds.
+`kvim_workspace::FileTree::select_parent` is that other caller: the file tree
+owns `TreeRow` values with a depth and no section, so it maps its rows into
+`ParentScanRow::new(row.depth, 0, row.is_selectable())`, naming section 0 for
+every row directly rather than through an empty collection. `Selector` holds
+no depth, because every row of `matches` sits at the top level, so `Parent`
+never moves its selection.
 
 `Selector::apply_motion` answers `ListMotion` the same way
 `SidebarState::reduce` answers a `SidebarInput::Move`. `select_next` and
@@ -451,7 +471,10 @@ takes the selection only when it is visible and its kind is `Selectable`.
 lands on the next visible row, at or above the depth of the collapsed parent.
 `ToRow` and `LastRow` address visible rows only. A hidden target resolves
 like an inert row does: to the nearest selectable row in the direction of
-travel, then to the nearest one behind it. Neither motion wraps.
+travel, then to the nearest one behind it. `Parent` climbs the ancestor chain
+of the row, over the row's own section, and skips a hidden or an inert
+ancestor to reach its own parent. No motion wraps. See [List
+Motion](#list-motion) for the full rule.
 
 `rows()` still returns the complete flat list, hidden rows included, because
 the host indexes into that list and needs those indexes to stay stable. Use

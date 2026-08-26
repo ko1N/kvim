@@ -515,6 +515,10 @@ impl<R> Selector<R> {
     /// [`ListMotion::ToRow`] for how that row space differs from
     /// [`SidebarState`](crate::SidebarState)'s.
     ///
+    /// [`Selector::matches`] holds no depth: every row sits at the top
+    /// level. [`ListMotion::Parent`] therefore never moves the selection, the
+    /// same answer a top-level row of a sidebar gives.
+    ///
     /// An empty match list takes no motion and keeps no selection.
     ///
     /// # Examples
@@ -541,6 +545,10 @@ impl<R> Selector<R> {
     /// // The move stops at the first row instead of wrapping.
     /// selector.apply_motion(ListMotion::Up(4));
     /// assert_eq!(selector.selected_row(), Some(0));
+    ///
+    /// // The selector holds no depth, so a parent motion moves nothing.
+    /// selector.apply_motion(ListMotion::Parent);
+    /// assert_eq!(selector.selected_row(), Some(0));
     /// ```
     pub fn apply_motion(&mut self, motion: ListMotion) {
         let Some(last) = self.matches.len().checked_sub(1) else {
@@ -559,6 +567,9 @@ impl<R> Selector<R> {
             ListMotion::Up(step) => current.saturating_sub(step),
             ListMotion::ToRow(row) => row.min(last),
             ListMotion::LastRow => last,
+            // `matches` carries no depth, so every row sits at the top
+            // level, and a top-level row has no parent to climb to.
+            ListMotion::Parent => current,
         };
         self.selected = self.matches.get(target).copied();
         self.reconcile_viewport();

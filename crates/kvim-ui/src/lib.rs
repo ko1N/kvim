@@ -132,10 +132,10 @@ pub use selector::{
     SelectorPlacement,
 };
 pub use sidebar::{
-    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
-    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SIDEBAR_SECTIONS_MAX,
-    SidebarAction, SidebarCanvas, SidebarError, SidebarEvent, SidebarInput, SidebarPlacement,
-    SidebarRow, SidebarState,
+    ParentScanRow, RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX,
+    SIDEBAR_ROW_DEPTH_MAX, SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX,
+    SIDEBAR_SECTIONS_MAX, SidebarAction, SidebarCanvas, SidebarError, SidebarEvent, SidebarInput,
+    SidebarPlacement, SidebarRow, SidebarState, parent_row,
 };
 pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabStrip};
 pub use which_key::{

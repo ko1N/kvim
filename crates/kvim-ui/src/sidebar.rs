@@ -404,6 +404,134 @@ pub(crate) fn sidebar_visibility<R>(rows: &[SidebarRow<R>], sections: &[bool]) -
     visible
 }
 
+/// One row as the parent scan of [`parent_row`] reads it: its depth, its
+/// section, and whether the climb may stop there.
+///
+/// [`parent_row`] climbs a sequence of these values without storing any of
+/// them, so it costs no allocation. A caller with one section names section
+/// 0 for every row, which states "one section" in the type instead of
+/// through an empty collection.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_ui::ParentScanRow;
+///
+/// let root = ParentScanRow::new(0, 0, true);
+/// assert_eq!(root.depth(), 0);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ParentScanRow {
+    depth: usize,
+    section: usize,
+    acceptable: bool,
+}
+
+impl ParentScanRow {
+    /// Creates one row of the parent scan.
+    #[must_use]
+    pub const fn new(depth: usize, section: usize, acceptable: bool) -> Self {
+        Self {
+            depth,
+            section,
+            acceptable,
+        }
+    }
+
+    /// Returns the depth of the row below the root of its tree.
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.depth
+    }
+
+    /// Returns the section of the row.
+    #[must_use]
+    pub const fn section(&self) -> usize {
+        self.section
+    }
+
+    /// Reports whether the climb of [`parent_row`] may stop at this row.
+    #[must_use]
+    pub const fn is_acceptable(&self) -> bool {
+        self.acceptable
+    }
+}
+
+/// Returns the position of the parent row of the row at `from`, in the
+/// sequence of rows that `rows` yields from its first row to its last.
+///
+/// The parent of a row is the nearest earlier row of a strictly smaller
+/// depth, exactly the ancestor that `sidebar_visibility` finds when it
+/// decides which rows a collapsed row hides. Publishing the rule here lets a
+/// caller outside [`SidebarState`] climb the same ancestor chain over its own
+/// row list, without a second scan. `kvim-workspace`'s file tree is that
+/// caller.
+///
+/// The climb stops at the first earlier row of a different section than the
+/// row at `from`, so a row of one section never reaches a parent of another
+/// one. A row that the climb reaches but that
+/// [`ParentScanRow::is_acceptable`] refuses is not the answer; the climb
+/// continues past it to its own parent instead, so the answer always names a
+/// row the caller marked acceptable, or none at all.
+///
+/// Returns `None` when `from` names no row, or when `from` holds no
+/// acceptable row of a strictly smaller depth before that boundary, for
+/// example a row at depth 0.
+///
+/// The scan walks `rows` from its last row toward its first, so it never
+/// visits a row after `from`. It costs no allocation: a caller that already
+/// holds a slice maps `slice::Iter` into one [`ParentScanRow`] for each row,
+/// which stays a [`DoubleEndedIterator`] and an [`ExactSizeIterator`].
+///
+/// # Examples
+///
+/// ```
+/// use kvim_ui::{ParentScanRow, parent_row};
+///
+/// // Two rows of depth 1 nest below one row of depth 0.
+/// let rows = [
+///     ParentScanRow::new(0, 0, true),
+///     ParentScanRow::new(1, 0, true),
+///     ParentScanRow::new(1, 0, true),
+///     ParentScanRow::new(0, 0, true),
+/// ];
+///
+/// // The nearest earlier row of a strictly smaller depth is the parent.
+/// assert_eq!(parent_row(rows.iter().copied(), 2), Some(0));
+/// // A row at depth 0 has no parent.
+/// assert_eq!(parent_row(rows.iter().copied(), 0), None);
+/// ```
+pub fn parent_row<I>(rows: I, from: usize) -> Option<usize>
+where
+    I: DoubleEndedIterator<Item = ParentScanRow> + ExactSizeIterator,
+{
+    if from >= rows.len() {
+        return None;
+    }
+    // `take(from + 1)` keeps the row at `from` and every earlier row, and
+    // `rev()` walks that prefix from `from` down to the first row, so the
+    // scan never looks at a row after `from`.
+    let mut climb = rows.enumerate().take(from + 1).rev();
+    let (_, start) = climb
+        .next()
+        .expect("from is within bounds, so the climb yields at least the row at from");
+    let mut depth = start.depth;
+    let section = start.section;
+    for (index, row) in climb {
+        if row.section != section {
+            break;
+        }
+        if row.depth >= depth {
+            continue;
+        }
+        depth = row.depth;
+        if row.acceptable {
+            return Some(index);
+        }
+    }
+    None
+}
+
 /// The visible part of one row, in the coordinates of the sidebar rectangle.
 ///
 /// The first and the last placement of one viewport may show a part of a row.
@@ -1093,25 +1221,47 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// one lands on the next visible row at or above the depth of the
     /// collapsed row. [`ListMotion::ToRow`] and [`ListMotion::LastRow`]
     /// address visible rows only, through [`Self::nearest_selectable`].
+    /// [`ListMotion::Parent`] climbs the ancestors of the row instead,
+    /// through [`Self::parent_selectable`].
     fn move_selection(&mut self, motion: ListMotion) -> Option<SidebarEvent<R>> {
         let last = self.rows.len().checked_sub(1)?;
         let current = self.selected.unwrap_or(0);
-        let (target, travel) = match motion {
-            ListMotion::Down(step) => (
+        let found = match motion {
+            ListMotion::Down(step) => self.nearest_selectable(
                 self.step_visible(current, step, Travel::Forward),
                 Travel::Forward,
             ),
-            ListMotion::Up(step) => (
+            ListMotion::Up(step) => self.nearest_selectable(
                 self.step_visible(current, step, Travel::Backward),
                 Travel::Backward,
             ),
-            ListMotion::ToRow(row) => (row.min(last), Travel::Forward),
-            ListMotion::LastRow => (last, Travel::Backward),
+            ListMotion::ToRow(row) => self.nearest_selectable(row.min(last), Travel::Forward),
+            ListMotion::LastRow => self.nearest_selectable(last, Travel::Backward),
+            ListMotion::Parent => self.parent_selectable(current),
         };
-        // Every row may report information instead of an entry, so the move
-        // finds no row at all and the selection stays where it was.
-        let found = self.nearest_selectable(target, travel)?;
-        self.commit_selection(Some(found))
+        // Every row may report information instead of an entry, or hold no
+        // parent, so the move finds no row at all and the selection stays
+        // where it was.
+        self.commit_selection(Some(found?))
+    }
+
+    /// Returns the nearest visible, selectable ancestor of the row at `from`.
+    ///
+    /// [`parent_row`] climbs the ancestor chain from the depth, the section,
+    /// and the acceptability of every row. This method maps them from this
+    /// sidebar's own rows, without collecting them: a row is acceptable when
+    /// it is both [`RowKind::Selectable`] and visible, exactly the two
+    /// conditions that [`Self::nearest_selectable`] requires for every other
+    /// motion.
+    fn parent_selectable(&self, from: usize) -> Option<usize> {
+        let rows = self.rows.iter().zip(&self.visible).map(|(row, &visible)| {
+            ParentScanRow::new(
+                row.depth(),
+                row.section(),
+                row.kind == RowKind::Selectable && visible,
+            )
+        });
+        parent_row(rows, from)
     }
 
     /// Returns the row position `step` visible rows away from `from`.

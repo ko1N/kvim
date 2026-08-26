@@ -20,6 +20,7 @@ use kvim_path::{
     WorktreeConfinementError, WorktreeDirectoryPath, WorktreeRelativePath,
     WorktreeRelativePathError, WorktreeRoot,
 };
+use kvim_ui::{ParentScanRow, parent_row};
 
 /// The largest number of entries that the tree keeps for one directory.
 ///
@@ -786,16 +787,25 @@ impl FileTree {
     }
 
     /// Moves the selection to the directory that holds the selected entry.
+    ///
+    /// The parent of a row is the nearest earlier row of a strictly smaller
+    /// depth, the one rule that `kvim_ui::parent_row` publishes and that
+    /// every kvim row list climbs the same way. A top-level row, and a tree
+    /// with no current selection, both leave the selection where it is.
     pub fn select_parent(&mut self) {
-        let Some(parent) = self
-            .selected
-            .as_deref()
-            .and_then(Path::parent)
-            .map(Path::to_path_buf)
-        else {
+        let Some(from) = self.selected_index() else {
             return;
         };
-        self.select(&parent);
+        // The tree holds one section, so every row states section 0
+        // directly, instead of an empty collection meaning the same thing.
+        let rows = self
+            .rows
+            .iter()
+            .map(|row| ParentScanRow::new(row.depth, 0, row.is_selectable()));
+        let Some(parent) = parent_row(rows, from) else {
+            return;
+        };
+        self.selected = Some(self.rows[parent].path.clone());
     }
 
     /// Shows dotfiles and the named files, or hides them again.

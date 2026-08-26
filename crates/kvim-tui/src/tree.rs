@@ -917,12 +917,17 @@ impl TreeSidebar {
     pub(super) fn reduce_host(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
         let activated = match input {
             FileSidebarInput::Move(motion) => {
-                self.move_selection(match motion {
-                    ListMotion::Down(step) => TreeMotion::Down(step),
-                    ListMotion::Up(step) => TreeMotion::Up(step),
-                    ListMotion::ToRow(row) => TreeMotion::ToRow(row),
-                    ListMotion::LastRow => TreeMotion::LastRow,
-                });
+                // `Parent` reaches the directory that holds the selected
+                // entry through the same method the standalone editor's
+                // `TreeSelectParent` command uses, so the embedded host and
+                // the standalone editor climb through one call, not two.
+                match motion {
+                    ListMotion::Parent => self.select_parent(),
+                    ListMotion::Down(step) => self.move_selection(TreeMotion::Down(step)),
+                    ListMotion::Up(step) => self.move_selection(TreeMotion::Up(step)),
+                    ListMotion::ToRow(row) => self.move_selection(TreeMotion::ToRow(row)),
+                    ListMotion::LastRow => self.move_selection(TreeMotion::LastRow),
+                }
                 None
             }
             FileSidebarInput::Open => self.expand_selected(),

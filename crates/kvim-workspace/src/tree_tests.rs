@@ -508,6 +508,30 @@ fn a_navigation_step_skips_the_notice_row() {
 }
 
 #[test]
+fn select_parent_climbs_to_the_directory_that_holds_the_row() {
+    let directory = TempDir::new("tree-select-parent");
+    directory.file("a/b/target.rs", "");
+    let root = root_of(&directory);
+    let target = root.join("a").join("b").join("target.rs");
+
+    let mut tree = FileTree::new(root.clone());
+    pump(&mut tree);
+    tree.reveal(&target);
+    pump(&mut tree);
+    assert_eq!(tree.selected(), Some(target.as_path()));
+
+    tree.select_parent();
+    assert_eq!(tree.selected(), Some(root.join("a").join("b").as_path()));
+
+    tree.select_parent();
+    assert_eq!(tree.selected(), Some(root.join("a").as_path()));
+
+    // A top-level row holds no parent, so the selection stays.
+    tree.select_parent();
+    assert_eq!(tree.selected(), Some(root.join("a").as_path()));
+}
+
+#[test]
 fn the_directory_bound_reports_the_truncation() {
     let directory = TempDir::new("tree-bound");
     for index in 0..TREE_DIRECTORY_ENTRIES_MAX + 3 {

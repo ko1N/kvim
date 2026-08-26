@@ -453,6 +453,44 @@ pub enum ListMotion {
     ToRow(usize),
     /// Move to the last row.
     LastRow,
+    /// Move to the parent of the selected row.
+    ///
+    /// The parent of a row is the nearest earlier row of a strictly smaller
+    /// depth, the rule that `sidebar_visibility` already applies to decide
+    /// which subtree a collapsed row hides.
+    /// [`SidebarState`](crate::SidebarState) climbs past a hidden row or a
+    /// [`RowKind::Inert`](crate::RowKind) row to its own parent, so the
+    /// motion always lands on a row a reader can act on, or on none at all.
+    /// A row at depth 0, or a row whose section holds no shallower row, has
+    /// no parent, and the motion leaves the selection where it is. The climb
+    /// never crosses a section boundary, so a row of one section never
+    /// resolves to a parent of another one.
+    ///
+    /// [`Selector`](crate::Selector) holds no depth: every one of its rows
+    /// sits at the top level, so the motion never moves its selection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{ListMotion, RowKind, SidebarInput, SidebarRow, SidebarState};
+    ///
+    /// let mut sidebar = SidebarState::new(4);
+    /// sidebar
+    ///     .set_rows(vec![
+    ///         SidebarRow::single("src", RowKind::Selectable),
+    ///         SidebarRow::single("src/main.rs", RowKind::Selectable).with_depth(1),
+    ///     ])
+    ///     .expect("two rows stay inside every bound");
+    ///
+    /// sidebar.select(&"src/main.rs");
+    /// sidebar.reduce(&SidebarInput::Move(ListMotion::Parent));
+    /// assert_eq!(sidebar.selected(), Some(&"src"));
+    ///
+    /// // A top-level row has no parent, so the motion leaves it selected.
+    /// sidebar.reduce(&SidebarInput::Move(ListMotion::Parent));
+    /// assert_eq!(sidebar.selected(), Some(&"src"));
+    /// ```
+    Parent,
 }
 
 /// One window over a bounded list: a height, a scroll margin, and an offset.

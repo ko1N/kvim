@@ -7,9 +7,10 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::{
-    ListMotion, RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
-    SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SIDEBAR_SECTIONS_MAX,
-    SidebarAction, SidebarError, SidebarEvent, SidebarInput, SidebarRow, SidebarState,
+    ListMotion, ParentScanRow, RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX,
+    SIDEBAR_ROW_DEPTH_MAX, SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX,
+    SIDEBAR_SECTIONS_MAX, SidebarAction, SidebarError, SidebarEvent, SidebarInput, SidebarRow,
+    SidebarState, parent_row,
 };
 
 /// The row identity that the host owns. The sidebar only compares the value.
@@ -729,4 +730,129 @@ fn a_shared_sidebar_answers_the_window_of_a_height_it_never_stored() {
     assert_eq!(taller.placements().len(), 6);
     assert_eq!(taller.first_line(), 4);
     assert_eq!(sidebar.height_rows(), 3);
+}
+
+#[test]
+fn a_parent_motion_climbs_one_depth_at_a_time_and_stops_at_the_top() {
+    let mut sidebar = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable), // depth 0
+            SidebarRow::single(1, RowKind::Selectable).with_depth(1), // depth 1
+            SidebarRow::single(2, RowKind::Selectable).with_depth(2), // depth 2
+        ])
+        .expect("three rows stay inside every bound");
+    sidebar.select(&2);
+
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        Some(SidebarEvent::SelectionChanged { row: 1 }),
+    );
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        Some(SidebarEvent::SelectionChanged { row: 0 }),
+    );
+    // A top-level row holds no parent, so the motion produces no event and
+    // leaves the selection where it is.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        None
+    );
+    assert_eq!(sidebar.selected(), Some(&0));
+}
+
+#[test]
+fn a_parent_motion_climbs_past_an_inert_parent_to_the_nearest_selectable_ancestor() {
+    let mut sidebar = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable), // depth 0, grandparent
+            SidebarRow::single(1, RowKind::Inert).with_depth(1), // depth 1, inert parent
+            SidebarRow::single(2, RowKind::Selectable).with_depth(2), // depth 2, selected row
+        ])
+        .expect("three rows stay inside every bound");
+    sidebar.select(&2);
+
+    // The diff view's changes panel marks a directory row inert, so the
+    // climb must reach past it instead of refusing the motion outright.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        Some(SidebarEvent::SelectionChanged { row: 0 }),
+    );
+}
+
+#[test]
+fn a_parent_motion_ignores_an_unrelated_collapsed_row_earlier_in_the_list() {
+    let mut sidebar = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable).with_collapsed(true), // a, collapsed
+            SidebarRow::single(1, RowKind::Selectable).with_depth(1),        // a/1, hidden
+            SidebarRow::single(2, RowKind::Selectable),                      // b
+            SidebarRow::single(3, RowKind::Selectable).with_depth(1),        // b/1
+        ])
+        .expect("four rows stay inside every bound");
+    sidebar.select(&3);
+
+    // The collapsed directory `a` sits above `b` in the row list, but it
+    // holds no row of `b/1`, so the climb never reaches it.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        Some(SidebarEvent::SelectionChanged { row: 2 }),
+    );
+}
+
+#[test]
+fn a_parent_motion_never_crosses_into_an_earlier_section() {
+    let mut sidebar = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable).with_section(0), // task, section 0
+            SidebarRow::single(1, RowKind::Selectable)
+                .with_section(1)
+                .with_depth(1), // src/main.rs, section 1, no shallower row of its own
+        ])
+        .expect("two rows stay inside every bound");
+    sidebar.select(&1);
+
+    // The only row of a strictly smaller depth sits in the previous section,
+    // so the climb finds no parent instead of crossing into it.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        None
+    );
+    assert_eq!(sidebar.selected(), Some(&1));
+}
+
+#[test]
+fn parent_row_climbs_past_an_unacceptable_row_to_its_own_parent() {
+    // A hidden row and an inert row both refuse the climb the same way, so
+    // one acceptable flag stands for either. Depth 0 is the acceptable
+    // grandparent, depth 1 is the unacceptable parent, and depth 2 is the
+    // row itself.
+    let rows = [
+        ParentScanRow::new(0, 0, true),
+        ParentScanRow::new(1, 0, false),
+        ParentScanRow::new(2, 0, true),
+    ];
+
+    assert_eq!(parent_row(rows.iter().copied(), 2), Some(0));
+}
+
+#[test]
+fn parent_row_stops_at_a_section_boundary() {
+    let rows = [
+        ParentScanRow::new(0, 0, true),
+        ParentScanRow::new(1, 1, true),
+    ];
+
+    // Row 1's only shallower row sits in section 0, so the climb finds none.
+    assert_eq!(parent_row(rows.iter().copied(), 1), None);
+}
+
+#[test]
+fn parent_row_reports_no_parent_for_a_position_past_the_end_of_the_rows() {
+    let rows = [ParentScanRow::new(0, 0, true)];
+
+    assert_eq!(parent_row(rows.iter().copied(), 1), None);
 }
