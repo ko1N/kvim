@@ -6,7 +6,7 @@ use super::{
     Dispatch, DispatchContext, Input, PasteError, PasteText, Resolver, TypedText, scope_order,
 };
 use crate::binding::{Binding, CommandMetadata, CommandOwner, Scope};
-use crate::context::{ContextGeneration, InputContextSnapshot, TextFallback};
+use crate::context::{ContextGeneration, InputContextSnapshot, TextFallback, UnboundInput};
 use crate::hint::ScopedWhichKeyHint;
 use crate::key::{Key, KeyCode};
 use crate::registry::Registry;
@@ -1179,4 +1179,131 @@ fn an_extension_of_the_prefix_stays_in_both_lists_and_still_extends() {
         },
         "the extension of the pending prefix wins over the interruption"
     );
+}
+
+/// Returns a context whose focused scope cancels on input that nothing takes.
+fn cancelling_focus() -> DispatchContext<Table> {
+    DispatchContext {
+        overlay: None,
+        global: Some(Table::Global),
+        focus: InputContextSnapshot {
+            unbound_input: UnboundInput::Cancels,
+            ..InputContextSnapshot::idle(Table::Normal)
+        },
+    }
+}
+
+#[test]
+fn a_declaring_scope_cancels_on_input_that_nothing_takes() {
+    // `F5` reaches no binding of either scope and types no character, so the
+    // declaration of the focused scope names the outcome.
+    let mut resolver = resolver();
+    let key = Key::plain(KeyCode::PageDown);
+
+    assert_eq!(
+        resolver.dispatch(&cancelling_focus(), Input::Key(key), Some(NOW)),
+        Dispatch::Cancelled
+    );
+    assert_eq!(
+        resolver.dispatch(&host_and_focus(), Input::Key(key), Some(NOW)),
+        Dispatch::Unbound,
+        "a scope that declares nothing keeps the unbound outcome"
+    );
+}
+
+#[test]
+fn a_bound_key_of_a_declaring_scope_runs_and_cancels_nothing() {
+    // The focused scope binds `j`, and it extends `g` into `g g`. Neither key
+    // reaches the declaration, because a binding and a pending prefix both
+    // answer before it.
+    let mut resolver = resolver();
+    let context = cancelling_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('j')), Some(NOW)),
+        Dispatch::Host {
+            command: Action::Close
+        },
+        "the host-global scope still answers first"
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Surface {
+            command: Action::FirstLine
+        }
+    );
+}
+
+#[test]
+fn a_text_fallback_of_a_declaring_scope_beats_the_cancellation() {
+    // The Insert table takes printable input as text. A scope that declares
+    // both facts therefore types the character and stays open, exactly as the
+    // register selection of kvim reads its register name.
+    let mut resolver = resolver();
+    let mut focus = InputContextSnapshot::idle(Table::Insert);
+    focus.text_fallback = TextFallback::Typed(CommandOwner::Surface);
+    focus.unbound_input = UnboundInput::Cancels;
+    let context = DispatchContext::focused(focus);
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('a')), Some(NOW)),
+        Dispatch::Text {
+            owner: CommandOwner::Surface,
+            text: TypedText::Typed('a'),
+        }
+    );
+    assert_eq!(
+        resolver.dispatch(
+            &context,
+            Input::Key(Key::plain(KeyCode::PageDown)),
+            Some(NOW)
+        ),
+        Dispatch::Cancelled,
+        "a key that types no character still ends the scope"
+    );
+}
+
+#[test]
+fn an_interruption_of_a_preceding_scope_beats_the_cancellation() {
+    // The focused scope arms `g` and declares the cancellation. `Ctrl-Q`
+    // completes no sequence and extends none, so the third pass reads it alone
+    // against the host-global scope. That binding runs, and the declaration
+    // never applies, because the resolver tests it only after every pass.
+    let mut resolver = resolver();
+    let context = cancelling_focus();
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(
+            &context,
+            Input::Key(Key::ctrl(KeyCode::Char('q'))),
+            Some(NOW)
+        ),
+        Dispatch::Interrupted {
+            owner: CommandOwner::Host,
+            command: Action::Quit,
+        }
+    );
+
+    // A key that no preceding scope binds reaches the declaration instead.
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(ch('g')), Some(NOW)),
+        Dispatch::Pending
+    );
+    assert_eq!(
+        resolver.dispatch(
+            &context,
+            Input::Key(Key::plain(KeyCode::PageDown)),
+            Some(NOW)
+        ),
+        Dispatch::Cancelled
+    );
+    assert!(resolver.pending_keys().is_empty(), "the prefix is gone");
 }

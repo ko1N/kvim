@@ -153,11 +153,22 @@ the list, the drawn page, and the number of pages. Bind one key that steps the
 page, and paint the reported position beside the overlay.
 See [`input-actions.md`](input-actions.md).
 
-`BindingScope::RegisterSelection` binds no key. Kvim's own resolver cancels an
-open register selection on any key that the registry does not bind. A host
-that owns the resolver has no registry entry that can express "cancel on
-anything unbound". It must answer that case with a host-global chord of its
-own instead.
+`BindingScope::RegisterSelection` binds no key. It waits for one register name,
+so any input that neither a binding nor its text fallback takes ends it. The
+scope states that rule itself, through
+`kvim_keymap::UnboundInput::Cancels` in the published
+`kvim_keymap::InputContextSnapshot`. A host that owns the resolver states the
+same rule for a scope of its own, so it spends no host-global chord on the
+cancel. `BindingScope::unbound_input` returns the declaration of every kvim
+scope, and a host that maps kvim's scopes onto its own tables must carry that
+value into the snapshot it publishes.
+
+The resolver answers such input with `Dispatch::Cancelled`, and the composer
+answers it with `Composition::Cancelled`. The host closes the named scope and
+runs no command. The declaration changes no precedence, because the resolver
+reads it only after every scope of the order and after the text fallback. A
+host-global binding, an extension of a pending prefix, and an interruption all
+still win. See [`input-actions.md`](input-actions.md).
 
 ### The File Sidebar
 

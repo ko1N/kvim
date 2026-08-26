@@ -532,6 +532,7 @@ fn editor_context(editor: &EmbeddedEditor) -> InputContextSnapshot<Table> {
         scope: Table::of_editor(published.scope),
         phases: published.phases,
         text_fallback: published.text_fallback,
+        unbound_input: published.unbound_input,
         generation: published.generation,
     }
 }
@@ -579,7 +580,10 @@ async fn step(
         }
         // A pending sequence changes only the which-key overlay, and an
         // unbound or unsupported input changes nothing at all.
-        Composition::Pending | Composition::Unsupported { .. } | Composition::Unbound { .. } => {}
+        Composition::Pending
+        | Composition::Unsupported { .. }
+        | Composition::Unbound { .. }
+        | Composition::Cancelled { .. } => {}
     }
     Ok(())
 }

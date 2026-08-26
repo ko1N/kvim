@@ -333,7 +333,8 @@ Resolution returns one of these typed outcomes:
 - typed text for one owner,
 - pending sequence,
 - unsupported input,
-- unbound input.
+- unbound input,
+- cancelled scope, which unbound input ended.
 
 Unsupported modified terminal input never degrades into an unmodified binding.
 Paste follows the focused scope's typed-text owner and remains bounded. Focused
@@ -390,6 +391,25 @@ wins that collision. See [Leader And Which-Key](#leader-and-which-key).
 A text fallback takes the first key of a sequence only. A key that breaks a
 started sequence types no text.
 
+The focused scope decides last. When no scope of the order took the input and
+no text fallback took it either, the scope's own `UnboundInput` declaration
+names the outcome. `UnboundInput::Ignored` keeps the unbound outcome, and every
+scope holds that value by default. `UnboundInput::Cancels` states that such
+input ends the scope, and the resolver reports a cancelled scope instead.
+
+The declaration sits beside the text fallback in the published
+`InputContextSnapshot`, so one scope states both facts in one place. The test
+runs after all three passes and after the text fallback, so it changes no
+precedence. A binding of any scope still wins, an extension of the pending
+prefix still wins, and an interruption from a preceding scope still wins. Only
+the input that nothing took reaches the declaration.
+
+`BindingScope::RegisterSelection` is the one scope of kvim that declares
+`UnboundInput::Cancels`. It binds no key and waits for one register name, so
+any input that neither a binding nor its text fallback takes ends it. The rule
+belongs to the scope, not to the editor, so a host that composes its own scopes
+states the same rule for a scope of its own.
+
 The scopes that declare a text fallback are Insert mode, the prompt, the
 confirmation, and the register selection. Each one names the focused surface as
 its text owner. The prompt scope and the confirmation scope hold their own small
@@ -399,8 +419,8 @@ binds `Enter`, `Backspace`, and `Tab` for the same reason.
 
 After every command, text, paste, unbound, unsupported, or cancellation input,
 the editor returns an `InputContextSnapshot`. It contains mode, operator phase,
-count phase, register phase, text-object phase, prompt phase, text fallback, and
-a generation.
+count phase, register phase, text-object phase, prompt phase, text fallback, the
+unbound-input declaration, and a generation.
 
 Every context-state change increments the generation. A generation change
 clears a pending static prefix. Focus, mode, or overlay-stack changes also clear
@@ -430,7 +450,10 @@ lines and `0` alone still reaches the first column.
 
 A register selection is a surface command as well. `"` reaches it in Normal mode
 and in the three Visual modes, and the register-selection scope then converts
-the next printable key into the register name through its text fallback.
+the next printable key into the register name through its text fallback. The
+scope declares `UnboundInput::Cancels`, so any input that its text fallback does
+not take ends the selection. A printable key that names no register ends it too,
+because the reducer validates the name that the text fallback delivered.
 
 The count maximum is 9,999. Count composition uses checked arithmetic. A count
 above the maximum is invalid and resets semantic pending state.

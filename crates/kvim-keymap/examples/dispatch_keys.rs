@@ -216,5 +216,6 @@ fn report(dispatch: &Dispatch<Action>) {
         Dispatch::Pending => println!("the sequence is pending"),
         Dispatch::Unsupported => println!("the terminal reported unsupported input"),
         Dispatch::Unbound => println!("no binding and no text fallback took the input"),
+        Dispatch::Cancelled => println!("the input cancelled the focused scope"),
     }
 }

@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use crate::{BindingScope, Command, InputContext, Mode, PromptKind, Registry};
-use kvim_keymap::{Key, KeyCode};
+use kvim_keymap::{Key, KeyCode, UnboundInput};
 use kvim_settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
 
 use super::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};
@@ -862,6 +862,32 @@ fn a_cancel_key_ends_a_register_selection() {
     );
     assert!(resolver.snapshot().phases.is_idle());
     assert_eq!(resolver.snapshot().scope, BindingScope::Mode(Mode::Normal));
+}
+
+#[test]
+fn an_unbound_key_ends_a_register_selection() {
+    // The register-selection scope declares that unbound input cancels it, so
+    // a key that names no register ends the selection through the registry
+    // rule instead of through a special case of the editor.
+    let mut resolver = resolver();
+    resolver.resolve(ch('"'), NOW);
+    assert_eq!(
+        resolver.snapshot().unbound_input,
+        UnboundInput::Cancels,
+        "the scope publishes the rule that the shared resolver reads"
+    );
+    assert_eq!(
+        resolver.resolve(Key::plain(KeyCode::PageDown), NOW),
+        Resolution::NoMatch,
+        "the editor reports the unbound key exactly as it reported it before"
+    );
+    assert!(resolver.snapshot().phases.is_idle());
+    assert_eq!(resolver.snapshot().scope, BindingScope::Mode(Mode::Normal));
+    assert_eq!(
+        resolver.resolve(ch('Y'), NOW),
+        command(Command::YankLine),
+        "the ended selection qualifies no later operation"
+    );
 }
 
 #[test]

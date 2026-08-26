@@ -194,6 +194,16 @@ fn every_reset_path_clears_the_count_the_operator_and_the_register() {
     );
     assert!(unbound.phases().is_idle());
 
+    // The declaring scope reports the same input as a cancellation, and the
+    // reducer answers it with the same reset and the same reduction.
+    let mut cancelled_scope = reducer();
+    open(&mut cancelled_scope);
+    assert_eq!(
+        cancelled_scope.reduce(Dispatch::Cancelled).reduction,
+        Reduction::Unbound
+    );
+    assert!(cancelled_scope.phases().is_idle());
+
     let mut unsupported = reducer();
     open(&mut unsupported);
     assert_eq!(

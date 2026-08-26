@@ -93,7 +93,9 @@ pub use binding::{
     Binding, BoundCommand, COMMAND_ID_BYTES_MAX, COMMAND_LABEL_BYTES_MAX, CommandMetadata,
     CommandOwner, SCOPES_MAX, Scope,
 };
-pub use context::{ContextGeneration, InputContextSnapshot, Phase, SemanticPhases, TextFallback};
+pub use context::{
+    ContextGeneration, InputContextSnapshot, Phase, SemanticPhases, TextFallback, UnboundInput,
+};
 pub use hint::{ScopedWhichKeyHint, WhichKeyHint, WhichKeyTarget};
 pub use key::{Chord, KEY_LABEL_BYTES_MAX, Key, KeyCode, KeyLabel};
 pub use registry::{BINDINGS_MAX, Registry, RegistryError};

@@ -2,7 +2,7 @@
 
 use std::fmt;
 
-use kvim_keymap::{CommandOwner, Scope, TextFallback};
+use kvim_keymap::{CommandOwner, Scope, TextFallback, UnboundInput};
 
 /// One editor mode.
 ///
@@ -143,7 +143,9 @@ pub enum BindingScope {
     /// The register selection waits for the name of a register.
     ///
     /// The scope holds no binding. The next printable key names the register,
-    /// and every other key cancels the selection.
+    /// and every other key cancels the selection. The scope states that cancel
+    /// through [`BindingScope::unbound_input`], so a host that owns the
+    /// resolver reads the same rule.
     RegisterSelection,
     /// The open review of one captured diff owns the keys.
     ///
@@ -249,6 +251,47 @@ impl BindingScope {
             Self::Mode(_) | Self::Sidebar | Self::Picker | Self::OperatorPending | Self::Review => {
                 TextFallback::None
             }
+        }
+    }
+
+    /// Returns what the scope does with input that nothing takes.
+    ///
+    /// The register selection waits for one register name that it does not
+    /// bind, so any input that neither a binding nor the text fallback takes
+    /// ends it. Every other scope keeps its state and leaves such input
+    /// unbound.
+    ///
+    /// The rule belongs to the scope, not to the editor, so a host that owns
+    /// the shared resolver reaches it through
+    /// [`kvim_keymap::InputContextSnapshot`].
+    ///
+    /// ```
+    /// use kvim_input::{BindingScope, Mode};
+    /// use kvim_keymap::UnboundInput;
+    ///
+    /// assert_eq!(
+    ///     BindingScope::RegisterSelection.unbound_input(),
+    ///     UnboundInput::Cancels
+    /// );
+    /// assert_eq!(
+    ///     BindingScope::Mode(Mode::Normal).unbound_input(),
+    ///     UnboundInput::Ignored
+    /// );
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn unbound_input(self) -> UnboundInput {
+        match self {
+            Self::RegisterSelection => UnboundInput::Cancels,
+            // A prompt and a confirmation both bind their own cancel keys, so
+            // an unbound key there leaves the open line untouched.
+            Self::Mode(_)
+            | Self::Sidebar
+            | Self::Picker
+            | Self::OperatorPending
+            | Self::Prompt
+            | Self::Confirmation
+            | Self::Review => UnboundInput::Ignored,
         }
     }
 

@@ -15,7 +15,7 @@ use ratatui::layout::Rect;
 use kvim_keymap::{
     Binding, CommandMetadata, CommandOwner, ContextGeneration, Input, InputContextSnapshot, Key,
     KeyCode, PasteText, Phase, Registry, Resolver, Scope, ScopedWhichKeyHint, SemanticPhases,
-    TextFallback, TypedText,
+    TextFallback, TypedText, UnboundInput,
 };
 
 use crate::composer::{Composition, CompositionEffect, ResumeError, UnknownSurface};
@@ -160,6 +160,7 @@ fn pending(scope: Table, phases: SemanticPhases) -> InputContextSnapshot<Table> 
         scope,
         phases,
         text_fallback: TextFallback::None,
+        unbound_input: UnboundInput::Ignored,
         generation: ContextGeneration::FIRST.advanced(),
     }
 }
@@ -349,6 +350,7 @@ fn printable_input_and_one_paste_reach_the_text_owner_of_the_focused_scope() {
                 scope: Table::EditorInsert,
                 phases: SemanticPhases::IDLE,
                 text_fallback: TextFallback::Typed(CommandOwner::Surface),
+                unbound_input: UnboundInput::Ignored,
                 generation: ContextGeneration::FIRST.advanced(),
             },
         )
@@ -568,6 +570,7 @@ fn a_resume_commits_the_focus_only_after_every_phase_reset() {
             scope: Table::EditorNormal,
             phases: SemanticPhases::IDLE,
             text_fallback: TextFallback::None,
+            unbound_input: UnboundInput::Ignored,
             generation: context.generation.advanced(),
         };
         assert_eq!(

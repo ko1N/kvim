@@ -23,6 +23,13 @@
 //! cancel the pending prefix, beside the extensions that
 //! [`WhichKeyView::hints`] lists.
 //!
+//! The focused scope decides last. When no scope took the input and no text
+//! fallback took it either, the scope's own
+//! [`kvim_keymap::UnboundInput`](crate::UnboundInput) declaration names the
+//! outcome. A scope that waits for one answer it does not bind ends there, and
+//! the resolver reports [`Dispatch::Cancelled`] instead of
+//! [`Dispatch::Unbound`].
+//!
 //! `crates/kvim-keymap/examples/dispatch_keys.rs` is the dedicated example of
 //! this feature. It composes one registry, dispatches a one-key binding and a
 //! two-key sequence, and reads the hints of the pending prefix. It then runs
@@ -36,7 +43,7 @@ use std::time::Duration;
 use thiserror::Error;
 
 use crate::binding::CommandOwner;
-use crate::context::{ContextGeneration, InputContextSnapshot};
+use crate::context::{ContextGeneration, InputContextSnapshot, UnboundInput};
 use crate::hint::ScopedWhichKeyHint;
 use crate::key::Key;
 use crate::registry::Registry;
@@ -255,8 +262,17 @@ pub enum Dispatch<C> {
     Pending,
     /// The terminal reported input that no binding accepts.
     Unsupported,
-    /// No binding and no text fallback took the input.
+    /// No binding and no text fallback took the input, and the focused scope
+    /// declared [`UnboundInput::Ignored`], which every scope holds by default.
     Unbound,
+    /// No binding and no text fallback took the input, and the focused scope
+    /// declared that such input cancels it.
+    ///
+    /// The scope of [`UnboundInput::Cancels`] waits for one answer that it does
+    /// not bind, so any other input ends it. The owner of that scope closes it
+    /// and runs no command. The resolver holds no scope state, so it clears its
+    /// own pending prefix alone.
+    Cancelled,
 }
 
 /// The which-key overlay state of the resolver.
@@ -974,6 +990,10 @@ where
     /// focused scope in that order. A pending prefix keeps the scope that armed
     /// it, so a sequence never changes owner in the middle.
     ///
+    /// When no scope of that order took the input and no text fallback took it
+    /// either, the [`UnboundInput`] declaration of the focused scope names the
+    /// outcome. The test runs last, so it changes no precedence.
+    ///
     /// `now` is the elapsed time that the caller measured. It reaches the
     /// which-key overlay alone. `None` states that the caller draws no
     /// which-key overlay, so pending input arms no timer and the overlay stays
@@ -992,7 +1012,7 @@ where
         {
             self.clear_pending();
         }
-        match input {
+        let dispatch = match input {
             Input::Unsupported => {
                 self.clear_pending();
                 Dispatch::Unsupported
@@ -1002,6 +1022,14 @@ where
                 self.typed_text(context, TypedText::Pasted(text))
             }
             Input::Key(key) => self.dispatch_key(context, identity, key, now),
+        };
+        // Every pass of the scope order and the text fallback already ran, and
+        // none of them took the input. Only then does the focused scope decide.
+        // The test therefore changes no precedence: a binding of a preceding
+        // scope still wins, and an interruption still wins.
+        match (dispatch, context.focus.unbound_input) {
+            (Dispatch::Unbound, UnboundInput::Cancels) => Dispatch::Cancelled,
+            (dispatch, UnboundInput::Cancels | UnboundInput::Ignored) => dispatch,
         }
     }
 

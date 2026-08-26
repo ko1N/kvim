@@ -245,6 +245,17 @@ pub enum Composition<C, Sid> {
         /// The surface that owns input.
         surface: Sid,
     },
+    /// No binding and no text fallback took the input, and the scope of the
+    /// named surface declared that such input cancels it.
+    ///
+    /// The surface published `kvim_keymap::UnboundInput::Cancels`, which a
+    /// scope that waits for one answer it does not bind declares. The host
+    /// closes that scope on the named surface and runs no command. See
+    /// `docs/input-actions.md`.
+    Cancelled {
+        /// The surface whose scope the input cancelled.
+        surface: Sid,
+    },
 }
 
 /// One visible region, the surface that it shows, and its rectangle.
@@ -1033,6 +1044,7 @@ where
             Dispatch::Pending => Composition::Pending,
             Dispatch::Unsupported => Composition::Unsupported { surface },
             Dispatch::Unbound => Composition::Unbound { surface },
+            Dispatch::Cancelled => Composition::Cancelled { surface },
         }
     }
 

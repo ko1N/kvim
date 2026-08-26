@@ -1,3 +1,5 @@
+use kvim_keymap::UnboundInput;
+
 use super::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 
 #[test]
@@ -38,4 +40,23 @@ fn a_tree_prompt_returns_input_to_the_sidebar() {
     let prompt = sidebar.open_prompt(PromptKind::Tree(TreePrompt::Rename));
     assert_eq!(prompt.scope(), BindingScope::Sidebar);
     assert_eq!(prompt.close_prompt(), sidebar);
+}
+
+#[test]
+fn the_register_selection_is_the_only_scope_that_unbound_input_cancels() {
+    // The scope waits for one register name that it binds nowhere, so any
+    // other input ends it. Every other scope binds its own cancel keys or
+    // keeps its state, so unbound input leaves it open.
+    for scope in BindingScope::ALL {
+        let expected = if scope == BindingScope::RegisterSelection {
+            UnboundInput::Cancels
+        } else {
+            UnboundInput::Ignored
+        };
+        assert_eq!(
+            scope.unbound_input(),
+            expected,
+            "the {scope} scope declares the wrong rule for unbound input"
+        );
+    }
 }

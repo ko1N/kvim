@@ -170,6 +170,89 @@ impl TextFallback {
     }
 }
 
+/// What one focused scope does with input that nothing takes.
+///
+/// A scope can hold no binding for the input and no text fallback for it. The
+/// scope then declares the outcome. A modal scope that waits for one answer,
+/// such as a register selection, ends there. Every other scope keeps its state
+/// and leaves the input unbound.
+///
+/// The declaration sits beside [`TextFallback`] in [`InputContextSnapshot`], so
+/// a host states both facts of one scope in one place. The resolver reads the
+/// declaration after the whole scope order and after the text fallback, so it
+/// changes no precedence: a binding of any scope and a text fallback both still
+/// win.
+///
+/// # Examples
+///
+/// The overlay scope below waits for one answer and binds no key. It declares
+/// that unbound input cancels it, so the resolver names the cancellation and
+/// the host closes the overlay.
+///
+/// ```
+/// # use std::fmt;
+/// # use std::sync::Arc;
+/// # use std::time::Duration;
+/// # use kvim_keymap::{
+/// #     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key,
+/// #     KeyCode, Registry, Resolver, Scope, UnboundInput,
+/// # };
+/// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// # enum Action { Save }
+/// # impl fmt::Display for Action {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.id()) }
+/// # }
+/// # impl CommandMetadata for Action {
+/// #     fn id(&self) -> &str { "save" }
+/// #     fn label(&self) -> &str { "Save the file" }
+/// # }
+/// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// # enum HostScope { Answer, Editor }
+/// # impl fmt::Display for HostScope {
+/// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+/// #         f.write_str(match self { Self::Answer => "Answer", Self::Editor => "Editor" })
+/// #     }
+/// # }
+/// # impl Scope for HostScope { const COUNT: usize = 2; }
+/// let registry = Registry::from_bindings(
+///     &[Binding::surface(
+///         HostScope::Editor,
+///         &[Key::plain(KeyCode::Char('s'))],
+///         Action::Save,
+///     )],
+///     4,
+/// )?;
+/// let mut resolver = Resolver::new(Arc::new(registry), 4, Duration::from_millis(500));
+/// let answer = InputContextSnapshot {
+///     unbound_input: UnboundInput::Cancels,
+///     ..InputContextSnapshot::idle(HostScope::Answer)
+/// };
+/// let context = DispatchContext::focused(answer);
+///
+/// assert_eq!(
+///     resolver.dispatch(&context, Input::Key(Key::plain(KeyCode::PageDown)), None),
+///     Dispatch::Cancelled,
+///     "the answer scope binds no key, so the input ends it"
+/// );
+///
+/// // A scope that keeps the default declaration reports the same input as
+/// // unbound and stays open.
+/// let editor = DispatchContext::focused(InputContextSnapshot::idle(HostScope::Editor));
+/// assert_eq!(
+///     resolver.dispatch(&editor, Input::Key(Key::plain(KeyCode::PageDown)), None),
+///     Dispatch::Unbound
+/// );
+/// # Ok::<(), kvim_keymap::RegistryError<Action, HostScope>>(())
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum UnboundInput {
+    /// The scope keeps its state, and the input stays unbound.
+    #[default]
+    Ignored,
+    /// The input cancels the scope.
+    Cancels,
+}
+
 /// The input context that one focused surface publishes.
 ///
 /// The surface returns this value after every command, text, paste, unbound,
@@ -207,6 +290,8 @@ pub struct InputContextSnapshot<S> {
     pub phases: SemanticPhases,
     /// The owner that takes printable input as literal text.
     pub text_fallback: TextFallback,
+    /// What the scope does with input that nothing takes.
+    pub unbound_input: UnboundInput,
     /// The version of the published context.
     pub generation: ContextGeneration,
 }
@@ -220,6 +305,7 @@ impl<S> InputContextSnapshot<S> {
             scope,
             phases: SemanticPhases::IDLE,
             text_fallback: TextFallback::None,
+            unbound_input: UnboundInput::Ignored,
             generation: ContextGeneration::FIRST,
         }
     }

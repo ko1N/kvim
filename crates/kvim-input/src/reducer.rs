@@ -231,6 +231,7 @@ impl SemanticReducer {
             scope,
             phases: self.phases(),
             text_fallback: scope.text_fallback(),
+            unbound_input: scope.unbound_input(),
             generation: self.generation,
         }
     }
@@ -315,7 +316,12 @@ impl SemanticReducer {
                 self.reset();
                 Reduction::Unsupported
             }
-            Dispatch::Unbound => {
+            // The register-selection scope declares that unbound input cancels
+            // it, so the resolver names that cancellation. The reset below is
+            // the cancel, and it is the same reset that every other scope
+            // performs for unbound input, so the reported reduction stays the
+            // same. See `docs/input-actions.md`.
+            Dispatch::Cancelled | Dispatch::Unbound => {
                 self.reset();
                 Reduction::Unbound
             }
