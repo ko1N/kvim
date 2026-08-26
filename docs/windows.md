@@ -498,6 +498,26 @@ remaining match. A move past the first or the last matched row stays on that
 row, because a wrap would move the reader past the best match without a key
 that says so.
 
+`Selector` holds one `ListViewport` over its matched rows, the same window
+that `SidebarState` holds. See [List Viewport](#list-viewport). Every matched
+row holds one line, so `set_height_rows` hands the window one `ListItem::single`
+for each row of `matches`. `height_rows`, `set_height_rows`, `scroll_margin`,
+`set_scroll_margin`, `first_line`, and `total_lines` all read or write that one
+window. `placements` returns one `SelectorPlacement` for each row the window
+shows, so a host paints a bounded selector without computing an offset of its
+own.
+
+`SelectorPlacement::index` names the position of the row inside `matches`, the
+row space that `selected_row` also answers. It names no position inside the
+candidate list. `SelectorPlacement::candidate_index` names that position
+instead, so a host passes it to `Selector::candidate` and reaches the matched
+candidate directly, with no further lookup through `matches`.
+
+`candidates_len` returns the number of candidates that the selector holds, not
+the number of matched rows. A host reads this count to tell two empty cases
+apart. Zero names a list with no candidate at all. A positive count beside an
+empty `matches` names a query that keeps nothing.
+
 ## Chrome
 
 The terminal holds three bands. The window tree receives the body band only.

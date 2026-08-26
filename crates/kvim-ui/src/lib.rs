@@ -14,13 +14,15 @@
 //! crate uses: a height, a scroll margin, a first visible line, and the window
 //! that keeps the selected item visible without scrolling past the end of the
 //! list. It reads the height of each item, so a list of one line for each item
-//! is the simple case of the same rule. [`SidebarState`] holds one.
+//! is the simple case of the same rule. [`SidebarState`] and [`Selector`] each
+//! hold one.
 //!
 //! [`Selector`] holds the mechanism that narrows a bounded candidate list
-//! through a query: the query, the ranked matches, and a selection that
-//! survives a refiltering while the query still matches it. It names no path,
-//! no buffer, and no file, so any host that ranks a list of its own values
-//! through a name and a container string can hold it.
+//! through a query: the query, the ranked matches, a selection that survives a
+//! refiltering while the query still matches it, and the window over the
+//! matched rows. It names no path, no buffer, and no file, so any host that
+//! ranks a list of its own values through a name and a container string can
+//! hold it.
 //!
 //! [`WorkspaceComposer`] joins those parts into one composition model of a
 //! complete host-owned workspace: split geometry, sidebar regions, overlay
@@ -116,6 +118,7 @@ pub use layout::{Region, RegionKind, WindowLayout};
 pub use list::{LIST_VIEWPORT_LINES_MAX, ListItem, ListPlacement, ListViewport};
 pub use selector::{
     SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
+    SelectorPlacement,
 };
 pub use sidebar::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,

@@ -130,6 +130,7 @@ fn main() {
     println!("the selection stayed on {before:?} and moved to row 0");
 
     show_the_bounds();
+    show_the_window();
 }
 
 /// Prints the ranked rows of one selector, best row first.
@@ -190,5 +191,61 @@ fn show_the_bounds() {
     println!(
         "the selector clipped a {} character query to {SELECTOR_QUERY_CHARS_MAX}",
         typed.chars().count()
+    );
+}
+
+/// Shows the window that a host paints without computing an offset.
+///
+/// A host whose overlay holds two rows and whose selector matches five reads
+/// [`Selector::placements`] alone. The selector moves the window and stops it
+/// at the end of the list, so the host writes no offset rule of its own.
+fn show_the_window() {
+    let mut selector = Selector::default();
+    selector.set_candidates(
+        BOARD
+            .iter()
+            .map(|task| SelectorCandidate::new(task.id, task.title, task.column))
+            .collect(),
+        false,
+    );
+    selector.set_height_rows(2);
+    assert_eq!(selector.first_line(), 0, "the window starts at the top");
+
+    // The window follows the selection down the list and stops at the end,
+    // instead of scrolling past the last row.
+    for _ in 0..BOARD.len() {
+        selector.select_next();
+    }
+    assert_eq!(selector.selected_row(), Some(BOARD.len() - 1));
+    assert_eq!(
+        selector.first_line(),
+        3,
+        "the window of two rows stops at the end of a five row list"
+    );
+    println!(
+        "the window stopped at row {} for {} candidates",
+        selector.first_line(),
+        selector.candidates_len()
+    );
+
+    // An empty list and a query that keeps nothing both show no placement,
+    // but the candidate count tells the two apart.
+    let empty = Selector::<u32>::default();
+    assert_eq!(empty.candidates_len(), 0, "the list holds no candidate");
+
+    let mut narrowed = Selector::default();
+    narrowed.set_candidates(vec![SelectorCandidate::new(1_u32, "one", "")], false);
+    narrowed.set_height_rows(2);
+    narrowed.set_query("zzz");
+    assert!(narrowed.matches().is_empty(), "the query keeps no row");
+    assert_eq!(
+        narrowed.candidates_len(),
+        1,
+        "one candidate exists, so the empty match list names a lost query"
+    );
+    println!(
+        "an empty list holds {} candidates, and a lost query still holds {}",
+        empty.candidates_len(),
+        narrowed.candidates_len()
     );
 }

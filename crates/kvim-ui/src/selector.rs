@@ -9,17 +9,25 @@
 //! and no file, so any host that ranks a list of its own values can hold it.
 //! See `docs/windows.md`.
 //!
+//! The selector also holds one [`ListViewport`] over its matched rows. A host
+//! reads [`Selector::placements`] to paint a bounded list without computing an
+//! offset of its own, the same way [`SidebarState`](crate::SidebarState) reads
+//! its own placements. See `docs/windows.md`.
+//!
 //! The module is pure. It reads no clock, no filesystem, and no terminal.
 //!
 //! `examples/selector.rs` narrows one host-owned task board with one query. It
-//! shows the ranking, the moves, the selection that survives a refiltering, and
-//! both bounds:
+//! shows the ranking, the moves, the selection that survives a refiltering,
+//! the window over a list larger than the overlay, and every bound:
 //!
 //! ```sh
 //! cargo run -p kvim-ui --example selector
 //! ```
 
 use kvim_fuzzy::rank;
+use ratatui::layout::Rect;
+
+use crate::list::{ListItem, ListPlacement, ListViewport};
 
 /// The largest number of candidates that one selector holds.
 ///
@@ -76,6 +84,83 @@ impl<R> SelectorCandidate<R> {
     #[must_use]
     pub fn container(&self) -> &str {
         &self.container
+    }
+}
+
+/// The visible part of one matched row, in the coordinates of the selector's
+/// window.
+///
+/// [`SelectorPlacement::index`] names the position of the row inside
+/// [`Selector::matches`], the row space that [`Selector::selected_row`] also
+/// answers. It does not name a position inside the candidate list.
+/// [`SelectorPlacement::candidate_index`] names that position instead. Pass it
+/// to [`Selector::candidate`] to reach the matched candidate directly, with no
+/// further lookup through [`Selector::matches`].
+///
+/// # Examples
+///
+/// ```
+/// use kvim_ui::{Selector, SelectorCandidate};
+///
+/// let mut selector = Selector::default();
+/// selector.set_candidates(vec![SelectorCandidate::new(7_u32, "one", "")], false);
+/// selector.set_height_rows(2);
+///
+/// let placement = &selector.placements()[0];
+/// assert_eq!(placement.index(), 0);
+/// let candidate = selector
+///     .candidate(placement.candidate_index())
+///     .expect("the placement names one held candidate");
+/// assert_eq!(candidate.name(), "one");
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SelectorPlacement {
+    candidate: usize,
+    placement: ListPlacement,
+}
+
+impl SelectorPlacement {
+    /// Returns the position of the row inside [`Selector::matches`].
+    #[must_use]
+    pub const fn index(&self) -> usize {
+        self.placement.index()
+    }
+
+    /// Returns the position of the matched candidate inside the complete
+    /// candidate list.
+    ///
+    /// Pass the value to [`Selector::candidate`] to reach the candidate.
+    #[must_use]
+    pub const fn candidate_index(&self) -> usize {
+        self.candidate
+    }
+
+    /// Returns the first visible line of the row.
+    #[must_use]
+    pub const fn first_line(&self) -> u16 {
+        self.placement.first_line()
+    }
+
+    /// Returns the number of visible lines of the row.
+    #[must_use]
+    pub const fn lines(&self) -> u16 {
+        self.placement.lines()
+    }
+
+    /// Returns the offset of the row from the top of the window, in rows.
+    #[must_use]
+    pub const fn top_row(&self) -> u16 {
+        self.placement.top_row()
+    }
+
+    /// Returns the rectangle of the visible part inside one selector
+    /// rectangle.
+    ///
+    /// The rectangle never reaches outside the selector, so a placement of a
+    /// taller window still writes inside a shorter rectangle.
+    #[must_use]
+    pub fn area(&self, selector: Rect) -> Rect {
+        self.placement.area(selector)
     }
 }
 
@@ -144,10 +229,17 @@ pub struct Selector<R> {
     selected: Option<usize>,
     /// Reports whether the host offered more candidates than the bound keeps.
     truncated: bool,
+    /// The one window over the matched rows. It owns the window height, the
+    /// scroll margin, the first visible row, the total row count, and the
+    /// rule that keeps the selected row inside the window. See
+    /// [`ListViewport`].
+    viewport: ListViewport,
+    placements: Vec<SelectorPlacement>,
 }
 
 impl<R> Default for Selector<R> {
-    /// Returns one selector with an empty query and no candidate.
+    /// Returns one selector with an empty query, no candidate, and a window
+    /// of zero rows.
     fn default() -> Self {
         Self {
             query: String::new(),
@@ -155,6 +247,8 @@ impl<R> Default for Selector<R> {
             matches: Vec::new(),
             selected: None,
             truncated: false,
+            viewport: ListViewport::default(),
+            placements: Vec::new(),
         }
     }
 }
@@ -170,6 +264,17 @@ impl<R> Selector<R> {
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
         self.truncated
+    }
+
+    /// Returns the number of candidates that the selector holds.
+    ///
+    /// The count names the complete candidate list, not [`Selector::matches`].
+    /// A host reads this count to tell two empty cases apart. Zero names a
+    /// list with no candidate at all. A positive count beside an empty
+    /// [`Selector::matches`] names a query that keeps nothing.
+    #[must_use]
+    pub const fn candidates_len(&self) -> usize {
+        self.candidates.len()
     }
 
     /// Replaces the candidates and ranks them again.
@@ -217,6 +322,95 @@ impl<R> Selector<R> {
         self.matches.iter().position(|index| *index == selected)
     }
 
+    /// Returns the height of the window, in terminal rows.
+    #[must_use]
+    pub const fn height_rows(&self) -> u16 {
+        self.viewport.height_rows()
+    }
+
+    /// Sets the height of the window, in terminal rows.
+    ///
+    /// The selector scrolls the selected row back into the window, so a
+    /// resize never hides it.
+    pub fn set_height_rows(&mut self, height_rows: u16) {
+        self.viewport.set_height_rows(height_rows);
+        self.reconcile_viewport();
+    }
+
+    /// Returns the number of rows that the selection keeps above and below
+    /// itself.
+    #[must_use]
+    pub const fn scroll_margin(&self) -> u16 {
+        self.viewport.scroll_margin()
+    }
+
+    /// Sets the number of rows that the selection keeps above and below
+    /// itself.
+    ///
+    /// The margin stops at half the window, so a short window still shows the
+    /// selected row.
+    pub fn set_scroll_margin(&mut self, margin_rows: u16) {
+        self.viewport.set_scroll_margin(margin_rows);
+        self.reconcile_viewport();
+    }
+
+    /// Returns the first visible row of the matched list.
+    #[must_use]
+    pub const fn first_line(&self) -> u32 {
+        self.viewport.first_line()
+    }
+
+    /// Returns the number of terminal rows that every matched row occupies
+    /// together.
+    #[must_use]
+    pub const fn total_lines(&self) -> u32 {
+        self.viewport.total_lines()
+    }
+
+    /// Returns the visible part of every matched row that the window shows,
+    /// in match order.
+    ///
+    /// The placements cover the window from its first row without a gap
+    /// while the matched rows fill it. A host paints a bounded selector from
+    /// this list alone, without computing an offset of its own.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{Selector, SelectorCandidate};
+    ///
+    /// let mut selector = Selector::default();
+    /// selector.set_candidates(
+    ///     (0..10)
+    ///         .map(|index| SelectorCandidate::new(index, format!("row {index}"), ""))
+    ///         .collect(),
+    ///     false,
+    /// );
+    /// selector.set_height_rows(4);
+    ///
+    /// // The window follows the selection to the last row and stops there,
+    /// // instead of scrolling past the end of the list.
+    /// for _ in 0..9 {
+    ///     selector.select_next();
+    /// }
+    /// assert_eq!(selector.selected_row(), Some(9));
+    /// assert_eq!(selector.first_line(), 6);
+    /// assert_eq!(selector.placements().len(), 4);
+    ///
+    /// // The selection always sits inside the published window.
+    /// let selected_row = selector.selected_row().expect("one row is selected");
+    /// assert!(
+    ///     selector
+    ///         .placements()
+    ///         .iter()
+    ///         .any(|placement| placement.index() == selected_row)
+    /// );
+    /// ```
+    #[must_use]
+    pub fn placements(&self) -> &[SelectorPlacement] {
+        &self.placements
+    }
+
     /// Moves the selection one row toward the end of the list.
     ///
     /// The list ends at both edges, because a wrap would move the reader past
@@ -234,6 +428,7 @@ impl<R> Selector<R> {
     fn select(&mut self, step: Step) {
         let Some(row) = self.selected_row() else {
             self.selected = self.matches.first().copied();
+            self.reconcile_viewport();
             return;
         };
         let last = self.matches.len().saturating_sub(1);
@@ -242,6 +437,36 @@ impl<R> Selector<R> {
             Step::Next => row.saturating_add(1).min(last),
         };
         self.selected = self.matches.get(next).copied();
+        self.reconcile_viewport();
+    }
+
+    /// Moves the window until it shows the selection, then names the matched
+    /// rows that it places.
+    ///
+    /// [`ListViewport`] owns the offset rule and the clipping. Every matched
+    /// row holds one line, so this method hands it one [`ListItem::single`]
+    /// for each row of [`Selector::matches`], at the position
+    /// [`Selector::selected_row`] answers. It resolves the candidate index of
+    /// each returned placement from [`Selector::matches`], so a caller reaches
+    /// the candidate through [`SelectorPlacement::candidate_index`] with no
+    /// further lookup.
+    fn reconcile_viewport(&mut self) {
+        let selected_row = self.selected_row();
+        self.viewport.reconcile(
+            std::iter::repeat_n(ListItem::single(), self.matches.len()),
+            selected_row,
+        );
+        self.placements.clear();
+        self.placements
+            .extend(
+                self.viewport
+                    .placements()
+                    .iter()
+                    .map(|placement| SelectorPlacement {
+                        candidate: self.matches[placement.index()],
+                        placement: *placement,
+                    }),
+            );
     }
 
     /// Ranks every candidate against the query and keeps the selection.
@@ -264,6 +489,7 @@ impl<R> Selector<R> {
         {
             self.selected = self.matches.first().copied();
         }
+        self.reconcile_viewport();
     }
 }
 
