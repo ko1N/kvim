@@ -342,6 +342,28 @@ From that release, a breaking facade change requires a workspace minor-version
 increase, a migration note, updated rustdoc, and an updated dedicated example. A
 patch release must not intentionally break a documented public facade.
 
+A published enum states which of two kinds it holds, and the attribute follows
+from the kind. An enum whose variant demands a decision from a host stays
+exhaustive, so a new variant stops the build until the host answers it. An enum
+that holds a growing vocabulary carries `#[non_exhaustive]`, because a host
+binds the members it wants and ignoring a new member is the correct answer.
+`EditorEvent` and `Dispatch` are of the first kind. `kvim_input::Command` is of
+the second: it names every editor command, a host binds the ones it publishes,
+and a new command breaks nothing. Neither `kvim-tui` nor `kvim-ui` adds a
+`#[non_exhaustive]` attribute to a published enum, because every enum of the
+facade is of the first kind. A new
+variant is therefore a breaking change, by design. The compile error is how a
+host learns that a new behavior exists. The compile error forces the host to
+decide how it handles that behavior. `Dispatch::Interrupted` proves the rule.
+Plan 029 published it as a new variant, not a flag. Every consumer must handle
+the new variant or fail to build. A host that ignored the interruption would
+run a command with a stale count, or leave an operator armed. A new variant
+costs a host one added match arm. That cost falls due at the version bump that
+a breaking facade change already requires. The rejected alternative is
+`#[non_exhaustive]`. That attribute would let a host absorb a new variant into
+a wildcard arm. A wildcard arm ships the wrong behavior with no compile error
+to catch it.
+
 Every surface that this section names is such a facade. This includes the
 selector with its window and its candidate count, the list viewport with
 `ListItem`, `ListPlacement`, and `ListWindow`, the `window_for_height` answer of

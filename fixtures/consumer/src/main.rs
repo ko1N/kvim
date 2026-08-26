@@ -29,7 +29,7 @@ use kvim_lsp::{DiagnosticsLimits, DocumentRevision, ManagerLimits, WaitPolicy};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::{EditorSettings, FileSettings, InputSettings};
 use kvim_syntax::{HighlightLimits, NeverCancelled, SyntaxHighlighter};
-use kvim_tui::{EditorAccess, EditorCapacity, EditorEvent};
+use kvim_tui::{EditorAccess, EditorCapacity, EditorEvent, FileRowGit};
 use kvim_ui::{
     ChildSide, Orientation, SELECTOR_CANDIDATES_MAX, Selector, SelectorCandidate, WindowLimits,
     WindowTree,
@@ -298,9 +298,13 @@ fn check_embedded_editor() {
     let capacity = EditorCapacity::default();
     println!("an embedded editor accepts {access:?} with {capacity:?}");
     println!("a redraw request names {}", event_name(&EditorEvent::RedrawRequested));
+    println!("a staged file reports {}", git_state_name(FileRowGit::Staged));
 }
 
 /// Returns the stable name of one editor event.
+///
+/// The match names every variant, so this build fails until the consumer
+/// names a new one, which proves the exhaustive-enum contract of the facade.
 fn event_name(event: &EditorEvent) -> &'static str {
     match event {
         EditorEvent::ActiveFileChanged { .. } => "active-file-changed",
@@ -310,5 +314,20 @@ fn event_name(event: &EditorEvent) -> &'static str {
         EditorEvent::RedrawRequested => "redraw-requested",
         EditorEvent::FocusBoundary(_) => "focus-boundary",
         EditorEvent::CloseRequested => "close-requested",
+    }
+}
+
+/// Returns the stable name of one file-sidebar Git state.
+///
+/// The match names every variant of a second facade enum, so the same
+/// exhaustive-enum contract as `event_name` exercises `FileRowGit` too.
+fn git_state_name(git: FileRowGit) -> &'static str {
+    match git {
+        FileRowGit::Ignored => "ignored",
+        FileRowGit::Untracked => "untracked",
+        FileRowGit::Staged => "staged",
+        FileRowGit::Modified => "modified",
+        FileRowGit::StagedAndModified => "staged-and-modified",
+        FileRowGit::Conflicted => "conflicted",
     }
 }
