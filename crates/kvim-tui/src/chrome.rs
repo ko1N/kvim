@@ -12,8 +12,8 @@ use ratatui::layout::Rect;
 
 use kvim_editor::Cursor;
 use kvim_input::Mode;
+use kvim_ui::{BandRank, BandSegment, ChromeBand};
 
-use super::cells::text_cells;
 use super::language::FormatOnSave;
 use super::session::{Confirmation, Message, MessageLevel, PromptLine};
 use super::theme::{Theme, ThemeRole};
@@ -27,12 +27,18 @@ const MESSAGE_ROWS: u16 = 1;
 /// The number of rows that both chrome bands occupy together.
 const CHROME_ROWS: u16 = STATUSLINE_ROWS + MESSAGE_ROWS;
 
-/// The number of blank cells that separate the mode from the format-on-save
-/// state.
+/// How long the mode survives a narrow statusline.
 ///
-/// The mode label and the state label each end with one blank, so this gap
-/// keeps a wide mode name apart from the state on a narrow band.
-const STATUSLINE_GAP_CELLS: usize = 1;
+/// The mode always survives, because it decides what the next key does.
+const MODE_RANK: BandRank = BandRank::new(2);
+
+/// How long the cursor position survives a narrow statusline.
+const POSITION_RANK: BandRank = BandRank::new(1);
+
+/// How long the format-on-save state survives a narrow statusline.
+///
+/// The state sheds first, because the position moves with every key.
+const STATE_RANK: BandRank = BandRank::new(0);
 
 /// The three bands of the terminal.
 ///
@@ -78,12 +84,62 @@ pub(super) fn shell_areas(area: Rect) -> ShellAreas {
     }
 }
 
+/// Draws one band of ranked parts, each in the theme role that the caller
+/// named.
+///
+/// The band answers which parts a narrow row keeps and where every kept part
+/// sits, so no caller repeats the shedding rule. The caller owns the text and
+/// the color, because the band names neither. See `docs/windows.md`.
+pub(super) fn draw_band(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    parts: &[(ThemeRole, BandSegment<'_>)],
+) {
+    debug_assert!(
+        parts
+            .iter()
+            .enumerate()
+            .all(|(index, (_, segment))| !parts[..index]
+                .iter()
+                .any(|(_, earlier)| earlier == segment)),
+        "each part carries its own rank, so no two parts of one band are equal"
+    );
+    let Ok(band) = ChromeBand::new(parts.iter().map(|(_, segment)| *segment).collect()) else {
+        debug_assert!(
+            false,
+            "every band of the editor lists fewer parts than the bound"
+        );
+        return;
+    };
+    for placement in band.placements(area) {
+        // The rank orders the shed and never names a part, so the role comes
+        // from the list that the caller wrote beside the segments.
+        let Some((role, _)) = parts
+            .iter()
+            .find(|(_, segment)| *segment == placement.segment)
+        else {
+            debug_assert!(false, "every placement repeats one listed segment");
+            continue;
+        };
+        target.set_stringn(
+            placement.area.x,
+            placement.area.y,
+            placement.segment.text,
+            usize::from(placement.area.width),
+            theme.style(*role),
+        );
+    }
+}
+
 /// Renders the mode, the format-on-save state, and the cursor position into
 /// the statusline band.
 ///
 /// A band that cannot hold every part drops them in a fixed order: the
 /// format-on-save state first, then the cursor position. The mode always
-/// survives, because the mode decides what the next key does.
+/// survives, because the mode decides what the next key does. The band of
+/// `kvim-ui` holds that rule, so a host that ranks its own parts sheds them
+/// the same way.
 ///
 /// A buffer that no formatter can format reports no state at all, so `format`
 /// is `None` there and the band shows the mode and the position alone.
@@ -98,58 +154,30 @@ pub(super) fn render_statusline(
     if area.is_empty() {
         return;
     }
-    let style = theme.style(ThemeRole::Statusline);
-    target.set_style(area, style);
+    target.set_style(area, theme.style(ThemeRole::Statusline));
+
     let mode_text = format!(" {mode} ");
-    // The title role already carries the surface band, so the mode reads as
-    // chrome on the same background as the rest of the statusline.
-    target.set_stringn(
-        area.x,
-        area.y,
-        &mode_text,
-        usize::from(area.width),
-        theme.style(ThemeRole::Title),
-    );
-
     let position = format!("{}:{} ", cursor.line().get() + 1, cursor.column().get() + 1);
-    let width = usize::from(area.width);
-    let mode_cells = text_cells(&mode_text);
-    let position_cells = text_cells(&position);
-    if width < mode_cells + position_cells {
-        return;
-    }
-    let Ok(position_offset) = u16::try_from(position_cells) else {
-        debug_assert!(false, "one cursor position never fills a terminal row");
-        return;
-    };
-    target.set_stringn(
-        area.right() - position_offset,
-        area.y,
-        &position,
-        position_cells,
-        style,
-    );
+    // The mode label and the state label each end with one blank, so the
+    // leading blank of the state keeps a wide mode name apart from it.
+    let state = format.map(|state| format!(" {} ", state.label()));
 
-    let Some(state) = format.map(|state| format!("{} ", state.label())) else {
-        return;
-    };
-    let state_cells = text_cells(&state);
-    if width < mode_cells + state_cells + position_cells + STATUSLINE_GAP_CELLS {
-        return;
+    // The title role already carries the surface band, so the mode reads as
+    // chrome on the same background as the rest of the statusline. The state
+    // answers a question the reader asks once, so it stays quiet beside the
+    // mode. See `docs/windows.md`.
+    let mut parts = vec![(ThemeRole::Title, BandSegment::left(&mode_text, MODE_RANK))];
+    if let Some(state) = &state {
+        parts.push((
+            ThemeRole::StatuslineMuted,
+            BandSegment::right(state, STATE_RANK),
+        ));
     }
-    let Ok(state_offset) = u16::try_from(state_cells + position_cells) else {
-        debug_assert!(false, "the checked width bounds both labels by the band");
-        return;
-    };
-    // The state answers a question the reader asks once, so it stays quiet
-    // beside the mode. See `docs/windows.md`.
-    target.set_stringn(
-        area.right() - state_offset,
-        area.y,
-        &state,
-        state_cells,
-        theme.style(ThemeRole::StatuslineMuted),
-    );
+    parts.push((
+        ThemeRole::Statusline,
+        BandSegment::right(&position, POSITION_RANK),
+    ));
+    draw_band(target, area, theme, &parts);
 }
 
 /// Renders the open confirmation, the open prompt, or the last message, into
@@ -157,6 +185,10 @@ pub(super) fn render_statusline(
 ///
 /// The confirmation owns the keys, so its question covers both other entries.
 /// The question, its hint, and the typed answer share the row.
+///
+/// The message line holds no shedding rule and therefore no band. It shows one
+/// entry and clips it to the row, so it never chooses between parts. A band
+/// here would invent a rule that kvim does not have. See `docs/windows.md`.
 pub(super) fn render_message(
     target: &mut CellBuffer,
     area: Rect,

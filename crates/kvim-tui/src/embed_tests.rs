@@ -10,13 +10,15 @@ use std::time::Duration;
 
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
+use ratatui::style::Style;
 
 use tokio::time::timeout;
 
-use kvim_input::{Command, CommandAuthority, PasteText};
+use kvim_input::{BindingScope, Command, CommandAuthority, PasteText};
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
 use kvim_settings::EditorSettings;
+use kvim_ui::{BandRank, BandSegment, ChromeBand};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode, WorkspaceRequest};
 
@@ -1101,4 +1103,49 @@ async fn two_editors_on_different_roots_edit_render_and_shut_down_independently(
         right.shutdown(SHUTDOWN_DEADLINE).await,
         EditorShutdown::Finished { .. }
     ));
+}
+
+#[test]
+fn a_host_draws_one_statusline_band_with_a_mode_segment() {
+    // A host showed no mode at all, because nothing named it. The published
+    // context names the scope of the editor, and one scope is the mode, so the
+    // host renders its own label from it. See `docs/embedding.md`.
+    let directory = TempDir::new("embedded-statusline-band");
+    let mut editor = embedded(&directory.path, AREA);
+    let _ = editor.command(Command::InsertBeforeCursor, None, None, NOW);
+    let BindingScope::Mode(mode) = editor.input_context().scope else {
+        panic!("the focused editor publishes the mode as its scope");
+    };
+    let label = format!(" {mode} ");
+    assert_eq!(label, " Insert ");
+
+    // The band of `kvim-ui` holds the shedding rule, so the host ranks its own
+    // parts and keeps the precedence of the editor.
+    let unread = " 2 reports ";
+    let band = ChromeBand::new(vec![
+        BandSegment::left(&label, BandRank::new(2)),
+        BandSegment::right(unread, BandRank::new(0)),
+    ])
+    .expect("two parts stay inside the bound");
+
+    let row = Rect::new(0, 0, 30, 1);
+    let mut cells = CellBuffer::empty(row);
+    for placement in band.placements(row) {
+        cells.set_stringn(
+            placement.area.x,
+            placement.area.y,
+            placement.segment.text,
+            usize::from(placement.area.width),
+            Style::default(),
+        );
+    }
+    let drawn: String = (row.x..row.right())
+        .filter_map(|x| cells.cell((x, row.y)).map(|cell| cell.symbol().to_owned()))
+        .collect();
+    assert_eq!(drawn, format!("{label}{}{unread}", " ".repeat(11)));
+
+    // A band that holds one part alone keeps the mode.
+    let narrow = band.placements(Rect::new(0, 0, 8, 1));
+    assert_eq!(narrow.len(), 1);
+    assert_eq!(narrow[0].segment.text, label);
 }

@@ -17,9 +17,11 @@ use kvim_core::{CharPosition, LineIndex, TextBuffer};
 use kvim_editor::{Cursor, Delimiter, DelimiterShape, Selection, matching_bracket};
 use kvim_language::{Diagnostic, DiagnosticSeverity, HighlightSpan, SyntaxRole};
 use kvim_settings::{DisplaySettings, SignColumn};
+use kvim_ui::{BandRank, BandSegment, ChromeBand};
 use kvim_workspace::ExternalChange;
 
 use super::cells::{RowCell, layout_row, terminal_column, text_cells, truncate_cells_left};
+use super::chrome::draw_band;
 use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the winbar of one window occupies.
@@ -49,10 +51,11 @@ const MODIFIED_MARKER: &str = " [+]";
 /// must act on: kvim could not make the buffer current. See `docs/files.md`.
 const EXTERNAL_MARKER: &str = " [!]";
 
-/// The number of cells that the winbar keeps for the scroll position.
+/// The number of cells that the scroll position of the winbar occupies.
 ///
 /// Every label occupies three cells, and one blank separates the label from the
-/// right edge of the window.
+/// right edge of the window, so the right edge never moves while a window
+/// scrolls.
 const POSITION_CELLS: u16 = 4;
 
 /// The number of cells that the blank left of the path occupies.
@@ -64,6 +67,20 @@ const PATH_INDENT_CELLS: usize = 1;
 /// file name. A winbar that cannot spare this much drops the scroll position,
 /// and then the changed marker, because the path names the file.
 const PATH_CELLS_MIN: usize = 6;
+
+/// How long the path survives a narrow winbar.
+///
+/// The path always survives, because it names the file.
+const PATH_RANK: BandRank = BandRank::new(2);
+
+/// How long the changed marker survives a narrow winbar.
+const MARKER_RANK: BandRank = BandRank::new(1);
+
+/// How long the scroll position survives a narrow winbar.
+///
+/// The scroll position sheds first, because it reports where the view sits and
+/// not which file it shows.
+const POSITION_RANK: BandRank = BandRank::new(0);
 
 /// Whether one window paints the bracket pair that its cursor stands on.
 ///
@@ -387,12 +404,42 @@ fn window_path<'a>(view: &WindowView<'a>) -> Cow<'a, str> {
         .to_string_lossy()
 }
 
+/// Returns the cells that the winbar leaves to the path of the buffer.
+///
+/// The path fills whatever the other parts leave, so it joins the shed at the
+/// smallest region that still names a file, and it takes back every cell that a
+/// shed part frees. A band narrower than that region gives the path every cell
+/// it holds. See `docs/windows.md`.
+fn path_region(band: Rect, marker: &str, position: &str) -> usize {
+    let width = usize::from(band.width);
+    let reserve_cells = PATH_CELLS_MIN.min(width);
+    let reserved = " ".repeat(reserve_cells);
+    let Ok(plan) = ChromeBand::new(vec![
+        BandSegment::left(&reserved, PATH_RANK),
+        BandSegment::left(marker, MARKER_RANK),
+        BandSegment::right(position, POSITION_RANK),
+    ]) else {
+        debug_assert!(false, "the winbar lists three parts");
+        return width.saturating_sub(PATH_INDENT_CELLS);
+    };
+    let kept: usize = plan
+        .placements(band)
+        .iter()
+        .map(|placement| placement.segment.cells())
+        .sum();
+    // The reserve stands for the path itself, so every other kept cell is a
+    // cell that the path cannot use.
+    let taken = kept.saturating_sub(reserve_cells);
+    width.saturating_sub(taken.saturating_add(PATH_INDENT_CELLS))
+}
+
 /// Renders the winbar band of one window.
 ///
 /// The band shows, from the left, one blank, the path of the buffer, and the
 /// changed marker. It shows the scroll position at the right edge. A band that
 /// cannot hold every part drops the scroll position first and the changed
-/// marker second, because the path names the file.
+/// marker second, because the path names the file. The band of `kvim-ui` holds
+/// that rule, so a host that ranks its own parts sheds them the same way.
 fn render_winbar(
     target: &mut CellBuffer,
     area: Rect,
@@ -405,52 +452,46 @@ fn render_winbar(
         ..area
     };
     target.set_style(band, theme.style(ThemeRole::Winbar));
-    let width = usize::from(band.width);
-    if width == 0 {
+    if band.width == 0 {
         return;
     }
     let title = match view.focus {
         RegionFocus::Focused => ThemeRole::Title,
         RegionFocus::Unfocused => ThemeRole::TitleMuted,
     };
-
-    let shows_position = width >= usize::from(POSITION_CELLS) + PATH_CELLS_MIN;
-    let name_cells = if shows_position {
-        width - usize::from(POSITION_CELLS)
-    } else {
-        width
-    };
     let marker = match (view.external, view.buffer.is_modified()) {
         (Some(_), _) => EXTERNAL_MARKER,
         (None, true) => MODIFIED_MARKER,
         (None, false) => "",
     };
-    let marker = if name_cells >= text_cells(marker) + PATH_CELLS_MIN {
-        marker
-    } else {
-        ""
-    };
-    let path_cells = name_cells.saturating_sub(PATH_INDENT_CELLS + text_cells(marker));
-    let path = window_path(view);
-    target.set_stringn(
-        band.x,
-        band.y,
-        format!(" {}{marker}", truncate_cells_left(&path, path_cells)),
-        name_cells,
-        theme.style(title),
+    let position =
+        ScrollPosition::measure(view.first_line, usize::from(rows), view.buffer.line_count());
+    let position = format!("{} ", position.label());
+    debug_assert_eq!(
+        text_cells(&position),
+        usize::from(POSITION_CELLS),
+        "every scroll label holds three cells and one blank"
     );
-
-    if shows_position {
-        let position =
-            ScrollPosition::measure(view.first_line, usize::from(rows), view.buffer.line_count());
-        target.set_stringn(
-            band.right() - POSITION_CELLS,
-            band.y,
-            format!("{} ", position.label()),
-            usize::from(POSITION_CELLS),
-            theme.style(ThemeRole::Winbar),
-        );
-    }
+    let path = window_path(view);
+    let name = format!(
+        " {}",
+        truncate_cells_left(&path, path_region(band, marker, &position))
+    );
+    // The marker follows the path directly, so both carry the title color of
+    // the window and the position reads as band chrome.
+    draw_band(
+        target,
+        band,
+        theme,
+        &[
+            (title, BandSegment::left(&name, PATH_RANK)),
+            (title, BandSegment::left(marker, MARKER_RANK)),
+            (
+                ThemeRole::Winbar,
+                BandSegment::right(&position, POSITION_RANK),
+            ),
+        ],
+    );
 }
 
 /// The prepared state that every row of one window shares.

@@ -10,6 +10,7 @@ use kvim_language::{
     Diagnostic, DiagnosticSeverity, DocumentPosition, HighlightSpan, SourceSpan, SyntaxRole,
 };
 use kvim_settings::{EditorSettings, FileSettings};
+use kvim_workspace::ExternalChange;
 
 use super::super::theme::{Theme, ThemeRole};
 use super::{BracketHighlight, END_OF_BUFFER_GLYPH, RegionFocus, WindowView, render_window};
@@ -82,6 +83,17 @@ fn row_of(target: &CellBuffer, y: u16) -> String {
 /// The window shows the rows of `area` below the winbar row, so the caller
 /// selects the scroll position through `lines` and `first_line`.
 fn winbar(path: Option<&Path>, lines: usize, first_line: usize, area: Rect) -> String {
+    winbar_of(path, None, lines, first_line, area)
+}
+
+/// Renders one window whose file may have changed outside the editor.
+fn winbar_of(
+    path: Option<&Path>,
+    external: Option<ExternalChange>,
+    lines: usize,
+    first_line: usize,
+    area: Rect,
+) -> String {
     let text: String = (0..lines).map(|index| format!("line{index}\n")).collect();
     let buffer =
         TextBuffer::from_text(&text, &FileSettings::default()).expect("the test text is small");
@@ -90,7 +102,7 @@ fn winbar(path: Option<&Path>, lines: usize, first_line: usize, area: Rect) -> S
         buffer: &buffer,
         name: "[Scratch]",
         path,
-        external: None,
+        external,
         root: Path::new(ROOT),
         first_line,
         left_column: 0,
@@ -229,6 +241,35 @@ fn a_narrow_winbar_drops_the_scroll_position_before_the_path() {
     assert_eq!(narrow(3), " <s");
     // One cell holds the blank alone, so the row carries no text.
     assert_eq!(narrow(1), "");
+}
+
+#[test]
+fn a_narrow_winbar_drops_the_scroll_position_before_the_changed_marker() {
+    // The file changed outside the editor, so the winbar shows the marker that
+    // the reader must act on. See `docs/files.md`.
+    let path = inside("a.rs");
+    let narrow = |width: u16| {
+        winbar_of(
+            Some(&path),
+            Some(ExternalChange::Changed),
+            2,
+            0,
+            Rect { width, ..AREA },
+        )
+    };
+    // Thirteen cells hold the path, the marker, and the scroll position.
+    assert_eq!(narrow(13), expected_row(13, " a.rs [!]", "ALL"));
+    assert_eq!(
+        narrow(12),
+        " a.rs [!]",
+        "the scroll position sheds before the marker"
+    );
+    assert_eq!(narrow(9), " a.rs [!]");
+    assert_eq!(
+        narrow(8),
+        " a.rs",
+        "the marker sheds second, because the path names the file"
+    );
 }
 
 /// Returns the foreground color of one cell of the first text row.

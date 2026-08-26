@@ -412,6 +412,39 @@ apart.
 `crates/kvim-tui/examples/completion_menu.rs` opens one menu over host-owned
 candidates, cycles it, draws it, and cancels it.
 
+### The Chrome Band
+
+A statusline, a winbar, and every other one-row band hold parts that a narrow
+terminal cannot all show. Which part goes first is a rule, and kvim publishes
+it.
+
+`kvim_ui::ChromeBand` holds that rule. A host lists one `BandSegment` for each
+part, with the text it already rendered, the edge that the part sits against,
+and one `BandRank`. `ChromeBand::placements` answers where every kept part sits.
+The lowest rank sheds first, the highest rank survives every shed, and two parts
+of one rank shed the later one first. `BAND_SEGMENTS_MAX` bounds the list, and
+`ChromeBand::new` refuses a longer one rather than cutting it.
+[`windows.md`](windows.md) owns the rule and the bounds.
+
+The band names no subject, no color, and no glyph. A host fills it with its own
+parts and paints them with its own palette. A host reaches these values in
+`kvim-ui`, the crate that already holds `SidebarCanvas` and the other drawing
+values, so the band adds no dependency to a host that draws kvim rows today.
+
+The statusline and the winbar of kvim draw through this same band, so the
+precedence that a host keeps is the precedence that the standalone editor shows.
+`crates/kvim-tui/src/chrome.rs` and `crates/kvim-tui/src/buffer_view.rs` hold no
+shedding rule of their own.
+
+A statusline usually names the mode. `EmbeddedEditor::input_context` publishes
+one `InputContextSnapshot`, and its `scope` names the owner of the keys. The
+owner is `BindingScope::Mode(Mode)` while the editor holds them, and `Mode`
+renders its own label, so a host builds the mode segment from that value. The
+scope names another owner while a prompt, the file sidebar, or the picker holds
+the keys, because the scope reports who reads the next key.
+
+`crates/kvim-ui/examples/chrome_band.rs` is one complete host of one band.
+
 ## Editor Events
 
 `EditorEvent` includes these facts and requests:

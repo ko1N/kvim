@@ -720,6 +720,20 @@ a band of its own subjects keeps the same precedence. The band measures terminal
 cells. Each part carries the text that the caller rendered, with its own blanks,
 because the band adds no separator of its own.
 
+The statusline and the winbar of kvim draw through that band. Neither holds a
+shedding rule of its own. Each one names its parts, ranks them, and asks the
+band where every kept part sits. A host and the standalone editor therefore run
+one implementation of the rule. The band names no color, so each caller writes
+the theme role beside each part. The rank orders the shed alone and never names
+a part.
+
+The path of the winbar fills whatever the other parts leave. It joins the shed
+at the smallest region that still names a file, and it takes back every cell
+that a shed part frees.
+
+The message line holds no band. It shows one entry and clips it to the row, so
+it never chooses between parts.
+
 A terminal that cannot hold every band drops the bands in a deterministic
 order: the body first, then the statusline. The message line survives longest,
 because it reports why the terminal is too small.
