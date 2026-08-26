@@ -711,6 +711,15 @@ A winbar that cannot hold every part drops them in a fixed order: the scroll
 position first, then the changed marker. The path always survives, because it
 names the file.
 
+Both drop orders are one rule. Every band of one row holds parts, and each part
+carries one rank. A band that cannot hold every part sheds the lowest rank
+first, and it repeats that shed until the kept parts fit. The highest rank
+survives every shed. Two parts of one rank shed in the reverse of the order that
+the band lists them. `kvim_ui::ChromeBand` holds this rule, so a host that builds
+a band of its own subjects keeps the same precedence. The band measures terminal
+cells. Each part carries the text that the caller rendered, with its own blanks,
+because the band adds no separator of its own.
+
 A terminal that cannot hold every band drops the bands in a deterministic
 order: the body first, then the statusline. The message line survives longest,
 because it reports why the terminal is too small.

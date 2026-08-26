@@ -611,6 +611,7 @@ The required examples are:
 - `crates/kvim-keymap/examples/dispatch_keys.rs`
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
+- `crates/kvim-ui/examples/chrome_band.rs`
 - `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
 - `crates/kvim-ui/examples/split_windows.rs`

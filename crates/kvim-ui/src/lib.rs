@@ -38,6 +38,12 @@
 //! surface state returns one addressed [`CompositionEffect::CancelPending`],
 //! and the host resumes it with the reset context. See `docs/embedding.md`.
 //!
+//! [`ChromeBand`] holds the one shedding rule of every one-row band of the
+//! terminal: a band that cannot hold every part sheds the lowest rank first, and
+//! the highest rank survives every shed. A segment carries text that the caller
+//! already rendered, the edge that it sits against, and one rank, so a host
+//! fills a band with its own parts and keeps that precedence.
+//!
 //! [`WhichKeyOverlay`] renders the keys that may follow a pending key sequence.
 //! It holds no binding table: the caller derives its hints from the one shared
 //! registry of `kvim-keymap` and supplies final texts, optional icons, and its
@@ -60,14 +66,16 @@
 //! `examples/split_windows.rs` runs the complete flow with caller-owned
 //! surfaces, `examples/sidebar.rs` renders two-line sidebar rows of one
 //! sectioned tree with state markers and indent guides, `examples/selector.rs`
-//! narrows one host-owned list with one query, and `examples/which_key.rs`
-//! derives overlay hints from one shared registry and renders them:
+//! narrows one host-owned list with one query, `examples/which_key.rs` derives
+//! overlay hints from one shared registry and renders them, and
+//! `examples/chrome_band.rs` sheds the parts of one host-owned band:
 //!
 //! ```sh
 //! cargo run -p kvim-ui --example split_windows
 //! cargo run -p kvim-ui --example sidebar
 //! cargo run -p kvim-ui --example selector
 //! cargo run -p kvim-ui --example which_key
+//! cargo run -p kvim-ui --example chrome_band
 //! ```
 //!
 //! `crates/kvim-tui/examples/host_workspace.rs` composes host-owned chat, one
@@ -105,6 +113,8 @@
 // its own contract, so no implementation API can reach a consumer by accident.
 #![deny(missing_docs)]
 
+mod band;
+mod cells;
 mod composer;
 mod guides;
 mod layout;
@@ -115,6 +125,9 @@ mod tabs;
 mod which_key;
 mod window;
 
+pub use band::{
+    BAND_SEGMENTS_MAX, BandError, BandPlacement, BandRank, BandSegment, BandSide, ChromeBand,
+};
 pub use composer::{
     COMPOSED_SURFACES_MAX, Composition, CompositionEffect, CompositionLayout, OverlayPlacement,
     ResumeError, SurfacePlacement, TransitionId, UnknownSurface, WorkspaceComposer,

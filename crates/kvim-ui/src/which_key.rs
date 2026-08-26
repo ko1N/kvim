@@ -52,8 +52,8 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Style;
 use thiserror::Error;
-use unicode_width::UnicodeWidthChar;
 
+use crate::cells::text_cells;
 use crate::layout::fits;
 
 /// The largest number of hints that one overlay accepts.
@@ -910,19 +910,6 @@ fn fill(target: &mut Buffer, area: Rect, symbol: &str) {
             }
         }
     }
-}
-
-/// Returns the number of terminal cells that one text occupies.
-///
-/// The measurement never counts bytes and never counts characters: a wide
-/// character occupies two cells, a combining mark occupies none, and a control
-/// character occupies one blank cell, because writing it would move the
-/// terminal cursor.
-///
-/// Every measured text is one text that [`WhichKeyOverlay::new`] accepted, or
-/// padding that the overlay derived from such a text, so the scan is finite.
-fn text_cells(text: &str) -> usize {
-    text.chars().map(|value| value.width().unwrap_or(1)).sum()
 }
 
 #[cfg(test)]
