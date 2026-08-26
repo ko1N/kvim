@@ -8,10 +8,10 @@
 //!
 //! A row beside a pending prefix can carry two independent facts: the table
 //! that holds the key, and whether pressing the key continues the pending
-//! sequence or abandons it. [`WhichKeyHint::icon`] carries the first fact,
+//! sequence or abandons it. [`WhichKeyOverlayRow::icon`] carries the first fact,
 //! because the table is a caller value that this crate cannot enumerate. The
 //! caller supplies one icon for each table it draws, exactly as it already
-//! does for a command group. [`WhichKeyHint::key_style`] carries the second
+//! does for a command group. [`WhichKeyOverlayRow::key_style`] carries the second
 //! fact as a style override for the key text, because the widget selects no
 //! color of its own and a caller therefore paints the two senses apart with
 //! two styles of its choosing. The two fields are independent: a row sets
@@ -149,17 +149,17 @@ pub struct WhichKeyIcon<'a> {
 ///
 /// A row beside a pending prefix can carry two independent facts: which table
 /// holds the key, and whether the key continues the pending sequence or
-/// abandons it. [`WhichKeyHint::icon`] marks the first fact and
-/// [`WhichKeyHint::key_style`] marks the second, so a row loses neither. A row
+/// abandons it. [`WhichKeyOverlayRow::icon`] marks the first fact and
+/// [`WhichKeyOverlayRow::key_style`] marks the second, so a row loses neither. A row
 /// that sets neither field draws exactly as a row of a context with one table
 /// and no abandoning key draws.
 ///
 /// # Examples
 ///
 /// ```
-/// use kvim_ui::WhichKeyHint;
+/// use kvim_ui::WhichKeyOverlayRow;
 ///
-/// let hint = WhichKeyHint::new("f", "+3 commands");
+/// let hint = WhichKeyOverlayRow::new("f", "+3 commands");
 /// assert_eq!(hint.key, "f");
 /// assert!(hint.icon.is_none());
 /// assert!(hint.key_style.is_none());
@@ -172,21 +172,21 @@ pub struct WhichKeyIcon<'a> {
 /// ```
 /// use ratatui::style::{Color, Style};
 ///
-/// use kvim_ui::{WhichKeyHint, WhichKeyIcon};
+/// use kvim_ui::{WhichKeyIcon, WhichKeyOverlayRow};
 ///
 /// let icon = WhichKeyIcon {
 ///     glyph: "#",
 ///     style: Style::default().fg(Color::Cyan),
 /// };
 /// let abandons = Style::default().fg(Color::Red);
-/// let hint = WhichKeyHint::new("C-e", "Leave to chat")
+/// let hint = WhichKeyOverlayRow::new("C-e", "Leave to chat")
 ///     .with_icon(icon)
 ///     .with_key_style(abandons);
 /// assert_eq!(hint.icon, Some(icon));
 /// assert_eq!(hint.key_style, Some(abandons));
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WhichKeyHint<'a> {
+pub struct WhichKeyOverlayRow<'a> {
     /// The key that follows the pending sequence, in its help form.
     pub key: &'a str,
     /// The label of the command, or the marker of a group of commands.
@@ -198,7 +198,7 @@ pub struct WhichKeyHint<'a> {
     pub key_style: Option<Style>,
 }
 
-impl<'a> WhichKeyHint<'a> {
+impl<'a> WhichKeyOverlayRow<'a> {
     /// Builds one hint without an icon and without a key style.
     #[inline]
     #[must_use]
@@ -286,13 +286,13 @@ pub struct WhichKeyStyles {
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_ui::{WhichKeyHint, WhichKeyOverlay, WhichKeyStyles};
+/// use kvim_ui::{WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
 ///
 /// let body = Rect::new(0, 0, 24, 8);
 /// let mut target = Buffer::empty(body);
 /// let hints = [
-///     WhichKeyHint::new("f", "Find"),
-///     WhichKeyHint::new("q", "Quit"),
+///     WhichKeyOverlayRow::new("f", "Find"),
+///     WhichKeyOverlayRow::new("q", "Quit"),
 /// ];
 ///
 /// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
@@ -386,13 +386,13 @@ impl WhichKeyPlacement {
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_ui::{WhichKeyHint, WhichKeyOverlay, WhichKeyStyles};
+/// use kvim_ui::{WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
 ///
 /// let body = Rect::new(0, 0, 30, 8);
 /// let mut target = Buffer::empty(body);
 /// let hints = [
-///     WhichKeyHint::new("f", "+3 commands"),
-///     WhichKeyHint::new("q", "Close the window"),
+///     WhichKeyOverlayRow::new("f", "+3 commands"),
+///     WhichKeyOverlayRow::new("q", "Close the window"),
 /// ];
 ///
 /// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
@@ -409,13 +409,13 @@ impl WhichKeyPlacement {
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_ui::{WhichKeyHint, WhichKeyOverlay, WhichKeyStyles};
+/// use kvim_ui::{WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
 ///
 /// // Forty keys, and a narrow band that holds one short column of them.
 /// let keys: Vec<String> = (0..40).map(|index| format!("k{index}")).collect();
-/// let hints: Vec<WhichKeyHint<'_>> = keys
+/// let hints: Vec<WhichKeyOverlayRow<'_>> = keys
 ///     .iter()
-///     .map(|key| WhichKeyHint::new(key, "Run the command"))
+///     .map(|key| WhichKeyOverlayRow::new(key, "Run the command"))
 ///     .collect();
 /// let body = Rect::new(0, 0, 30, 10);
 /// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
@@ -440,7 +440,7 @@ impl WhichKeyPlacement {
 #[derive(Clone, Copy, Debug)]
 pub struct WhichKeyOverlay<'a> {
     title: &'a str,
-    hints: &'a [WhichKeyHint<'a>],
+    hints: &'a [WhichKeyOverlayRow<'a>],
     styles: WhichKeyStyles,
     page: usize,
 }
@@ -459,7 +459,7 @@ impl<'a> WhichKeyOverlay<'a> {
     /// text, or a label above [`WHICH_KEY_TEXT_CHARS_MAX`].
     pub fn new(
         title: &'a str,
-        hints: &'a [WhichKeyHint<'a>],
+        hints: &'a [WhichKeyOverlayRow<'a>],
         styles: WhichKeyStyles,
     ) -> Result<Self, WhichKeyError> {
         if hints.len() > WHICH_KEY_HINTS_MAX {
@@ -506,7 +506,7 @@ impl<'a> WhichKeyOverlay<'a> {
     /// hold the title row and one hint over its own share paints nothing, which
     /// keeps the text behind it visible.
     ///
-    /// [`WhichKeyHint::key_style`] repaints the key text in place. It adds no
+    /// [`WhichKeyOverlayRow::key_style`] repaints the key text in place. It adds no
     /// cell of its own, so a page never changes width because a marked row
     /// moved onto it or off it.
     ///
@@ -669,7 +669,7 @@ impl<'a> WhichKeyOverlay<'a> {
     }
 
     /// Returns the cells of the widest text that one accessor reads.
-    fn widest(&self, text: impl Fn(&WhichKeyHint<'a>) -> &'a str) -> usize {
+    fn widest(&self, text: impl Fn(&WhichKeyOverlayRow<'a>) -> &'a str) -> usize {
         self.hints
             .iter()
             .map(|hint| text_cells(text(hint)))

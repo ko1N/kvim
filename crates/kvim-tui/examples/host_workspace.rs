@@ -57,7 +57,7 @@ use kvim_tui::{EditorEvent, EditorShutdown, EmbeddedEditor};
 use kvim_ui::{
     ChildSide, CloseOutcome, Composition, CompositionEffect, Direction, ListMotion, Orientation,
     RegionKind, RowKind, SidebarInput, SidebarRow, SidebarSide, SidebarState, SurfacePlacement,
-    WhichKeyHint, WhichKeyOverlay, WhichKeyStyles, WindowLimits, WorkspaceComposer,
+    WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles, WindowLimits, WorkspaceComposer,
 };
 use kvim_workspace::temp::TempRepository;
 use kvim_workspace::{
@@ -783,9 +783,9 @@ fn render(
         }
     }
     if !hints.is_empty() {
-        let rows: Vec<WhichKeyHint<'_>> = hints
+        let rows: Vec<WhichKeyOverlayRow<'_>> = hints
             .iter()
-            .map(|(key, label)| WhichKeyHint::new(key, label))
+            .map(|(key, label)| WhichKeyOverlayRow::new(key, label))
             .collect();
         let accent = Style::default().fg(Color::Yellow);
         WhichKeyOverlay::new(

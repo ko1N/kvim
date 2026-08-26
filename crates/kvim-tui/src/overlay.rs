@@ -31,7 +31,7 @@ use ratatui::style::Style;
 use kvim_input::WhichKeyRow;
 use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
-use kvim_ui::{WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles};
+use kvim_ui::{WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
 
 use super::cells::{text_cells, truncate_cells_left, wrap_cells};
 use super::completion::{CompletionOutcome, LineCompletion};
@@ -210,10 +210,10 @@ pub(super) fn render_which_key(
         })
         .collect();
     let surface = theme.style(ThemeRole::Surface);
-    let hints: Vec<WhichKeyHint<'_>> = texts
+    let hints: Vec<WhichKeyOverlayRow<'_>> = texts
         .iter()
         .map(|(key, label, icon)| {
-            let hint = WhichKeyHint::new(key, label);
+            let hint = WhichKeyOverlayRow::new(key, label);
             match icon {
                 // The icon keeps the surface background, so only its foreground
                 // color separates one command group from the next.

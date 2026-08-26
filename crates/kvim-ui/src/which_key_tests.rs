@@ -6,8 +6,8 @@ use ratatui::style::{Color, Style};
 
 use crate::which_key::{ColumnLayout, column_layout};
 use crate::{
-    WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyHint, WhichKeyIcon,
-    WhichKeyOverlay, WhichKeyPlacement, WhichKeyStyles,
+    WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyIcon, WhichKeyOverlay,
+    WhichKeyOverlayRow, WhichKeyPlacement, WhichKeyStyles,
 };
 
 /// The title that the standalone editor gives its overlay.
@@ -35,13 +35,13 @@ fn row_of(target: &Buffer, y: u16) -> String {
 }
 
 /// Renders one hint list into a body band of the supplied size.
-fn painted(hints: &[WhichKeyHint<'_>], width: u16, height: u16) -> Buffer {
+fn painted(hints: &[WhichKeyOverlayRow<'_>], width: u16, height: u16) -> Buffer {
     painted_page(hints, width, height, 0).0
 }
 
 /// Renders one page of a hint list and returns the buffer with its report.
 fn painted_page(
-    hints: &[WhichKeyHint<'_>],
+    hints: &[WhichKeyOverlayRow<'_>],
     width: u16,
     height: u16,
     page: usize,
@@ -64,10 +64,10 @@ fn long_hints(rows: usize) -> (Vec<String>, Vec<String>) {
 }
 
 /// Zips one key list and one label list into hints.
-fn hints_of<'a>(keys: &'a [String], labels: &'a [String]) -> Vec<WhichKeyHint<'a>> {
+fn hints_of<'a>(keys: &'a [String], labels: &'a [String]) -> Vec<WhichKeyOverlayRow<'a>> {
     keys.iter()
         .zip(labels)
-        .map(|(key, label)| WhichKeyHint::new(key, label))
+        .map(|(key, label)| WhichKeyOverlayRow::new(key, label))
         .collect()
 }
 
@@ -142,8 +142,8 @@ fn an_overlay_without_rows_or_without_space_paints_nothing() {
 #[test]
 fn the_overlay_aligns_its_keys_and_its_labels_at_the_bottom_of_the_body() {
     let hints = [
-        WhichKeyHint::new("/", "Toggle the comment"),
-        WhichKeyHint::new("C-w", "+3 commands"),
+        WhichKeyOverlayRow::new("/", "Toggle the comment"),
+        WhichKeyOverlayRow::new("C-w", "+3 commands"),
     ];
     let target = painted(&hints, 40, 12);
     // The body holds twelve rows, so the overlay takes the title row and two
@@ -173,8 +173,8 @@ fn one_icon_reserves_the_same_width_in_every_row() {
         style: Style::default().fg(Color::Red),
     };
     let hints = [
-        WhichKeyHint::new("a", "First").with_icon(icon),
-        WhichKeyHint::new("b", "Second"),
+        WhichKeyOverlayRow::new("a", "First").with_icon(icon),
+        WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 16, 8);
     assert_eq!(row_of(&target, 6), " * a  First");
@@ -196,7 +196,7 @@ fn one_icon_reserves_the_same_width_in_every_row() {
 
 #[test]
 fn a_row_without_either_mark_draws_as_it_did_before_this_slice() {
-    let hints = [WhichKeyHint::new("a", "First")];
+    let hints = [WhichKeyOverlayRow::new("a", "First")];
     let target = painted(&hints, 16, 8);
     assert_eq!(row_of(&target, 7), " a  First");
     assert_eq!(
@@ -214,8 +214,8 @@ fn a_row_without_either_mark_draws_as_it_did_before_this_slice() {
 fn a_key_style_marks_the_key_without_an_icon() {
     let abandons = Style::default().fg(Color::Red);
     let hints = [
-        WhichKeyHint::new("a", "First").with_key_style(abandons),
-        WhichKeyHint::new("b", "Second"),
+        WhichKeyOverlayRow::new("a", "First").with_key_style(abandons),
+        WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 16, 8);
     assert_eq!(row_of(&target, 6), " a  First");
@@ -248,10 +248,10 @@ fn a_row_carries_an_icon_and_a_key_style_at_once() {
     };
     let abandons = Style::default().fg(Color::Red);
     let hints = [
-        WhichKeyHint::new("a", "First")
+        WhichKeyOverlayRow::new("a", "First")
             .with_icon(icon)
             .with_key_style(abandons),
-        WhichKeyHint::new("b", "Second"),
+        WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 16, 8);
     assert_eq!(row_of(&target, 6), " ! a  First");
@@ -293,10 +293,10 @@ fn a_row_carries_an_icon_and_a_key_style_at_once() {
 fn the_title_row_reports_the_hints_that_no_column_holds() {
     let keys: Vec<String> = (0..12).map(|index| index.to_string()).collect();
     let labels: Vec<String> = (0..12).map(|index| format!("Command {index}")).collect();
-    let hints: Vec<WhichKeyHint<'_>> = keys
+    let hints: Vec<WhichKeyOverlayRow<'_>> = keys
         .iter()
         .zip(&labels)
-        .map(|(key, label)| WhichKeyHint::new(key, label))
+        .map(|(key, label)| WhichKeyOverlayRow::new(key, label))
         .collect();
 
     // One column of five rows fits into the half of a body band of twelve
@@ -317,7 +317,7 @@ fn the_title_row_reports_the_hints_that_no_column_holds() {
 
 #[test]
 fn a_body_band_that_cannot_hold_the_title_and_one_row_paints_nothing() {
-    let hints = [WhichKeyHint::new("a", "First")];
+    let hints = [WhichKeyOverlayRow::new("a", "First")];
     let target = painted(&hints, 30, 3);
     assert!(
         (0..3).all(|y| row_of(&target, y).is_empty()),
@@ -327,7 +327,7 @@ fn a_body_band_that_cannot_hold_the_title_and_one_row_paints_nothing() {
 
 #[test]
 fn the_overlay_states_both_of_its_bounds() {
-    let many = vec![WhichKeyHint::new("a", "First"); WHICH_KEY_HINTS_MAX + 1];
+    let many = vec![WhichKeyOverlayRow::new("a", "First"); WHICH_KEY_HINTS_MAX + 1];
     assert_eq!(
         WhichKeyOverlay::new(TITLE, &many, styles()).unwrap_err(),
         WhichKeyError::Hints {
@@ -335,14 +335,14 @@ fn the_overlay_states_both_of_its_bounds() {
             max: WHICH_KEY_HINTS_MAX,
         }
     );
-    let most = vec![WhichKeyHint::new("a", "First"); WHICH_KEY_HINTS_MAX];
+    let most = vec![WhichKeyOverlayRow::new("a", "First"); WHICH_KEY_HINTS_MAX];
     assert!(
         WhichKeyOverlay::new(TITLE, &most, styles()).is_ok(),
         "the pages reach the hints of an accepted list, and the bound stands"
     );
 
     let long = "a".repeat(WHICH_KEY_TEXT_CHARS_MAX + 1);
-    let hints = [WhichKeyHint::new("a", &long)];
+    let hints = [WhichKeyOverlayRow::new("a", &long)];
     let too_long = WhichKeyError::Text {
         chars: WHICH_KEY_TEXT_CHARS_MAX + 1,
         max: WHICH_KEY_TEXT_CHARS_MAX,
@@ -361,8 +361,8 @@ fn the_overlay_states_both_of_its_bounds() {
 #[test]
 fn a_wide_key_reserves_two_cells_of_the_key_column() {
     let hints = [
-        WhichKeyHint::new("\u{ff21}", "First"),
-        WhichKeyHint::new("b", "Second"),
+        WhichKeyOverlayRow::new("\u{ff21}", "First"),
+        WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 20, 8);
     // The wide key occupies two cells, so both labels start behind two cells
@@ -380,8 +380,8 @@ fn a_wide_key_reserves_two_cells_of_the_key_column() {
 #[test]
 fn a_band_outside_the_buffer_returns_the_error_and_changes_no_cell() {
     let hints = [
-        WhichKeyHint::new("a", "First"),
-        WhichKeyHint::new("b", "Second"),
+        WhichKeyOverlayRow::new("a", "First"),
+        WhichKeyOverlayRow::new("b", "Second"),
     ];
     let buffer = Rect::new(0, 0, 30, 8);
     let mut target = Buffer::empty(buffer);
@@ -454,8 +454,8 @@ fn the_pages_of_a_long_list_reach_every_hint_exactly_once() {
 #[test]
 fn a_list_that_fits_holds_one_page_that_no_step_changes() {
     let hints = [
-        WhichKeyHint::new("/", "Toggle the comment"),
-        WhichKeyHint::new("C-w", "+3 commands"),
+        WhichKeyOverlayRow::new("/", "Toggle the comment"),
+        WhichKeyOverlayRow::new("C-w", "+3 commands"),
     ];
     let (first, drawn) = painted_page(&hints, 40, 12, 0);
     assert_eq!(drawn.drawn(), 0..2, "the one page draws every hint");
@@ -485,7 +485,7 @@ fn a_page_past_the_end_draws_the_last_page() {
 
 #[test]
 fn a_frame_that_holds_no_hint_reports_no_page() {
-    let hints = [WhichKeyHint::new("a", "First")];
+    let hints = [WhichKeyOverlayRow::new("a", "First")];
     let (_, drawn) = painted_page(&hints, 30, 3, 0);
     assert_eq!(drawn.pages(), 0, "the band holds no title row with a hint");
     assert_eq!(drawn.drawn(), 0..0);
@@ -504,12 +504,12 @@ fn a_key_style_on_some_rows_leaves_the_page_width_unchanged() {
     let keys: Vec<String> = (0..40).map(|index| format!("k{index:02}")).collect();
     let labels: Vec<String> = (0..40).map(|index| format!("Command {index}")).collect();
     let abandons = Style::default().fg(Color::Red);
-    let hints: Vec<WhichKeyHint<'_>> = keys
+    let hints: Vec<WhichKeyOverlayRow<'_>> = keys
         .iter()
         .zip(&labels)
         .enumerate()
         .map(|(index, (key, label))| {
-            let hint = WhichKeyHint::new(key, label);
+            let hint = WhichKeyOverlayRow::new(key, label);
             // Every third row abandons the pending sequence, so a page opens
             // on a marked row and the next page opens on an unmarked one.
             if index % 3 == 0 {

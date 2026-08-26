@@ -560,15 +560,26 @@ of them. A host that draws both lists in one overlay must still respect
 
 A row of the combined overlay carries two independent facts: the scope that
 holds the key, and whether the key continues the pending sequence or
-abandons it. `kvim_ui::WhichKeyHint::icon` marks the scope, because the scope
-is a host value that `kvim-ui` cannot enumerate. The host gives one icon to
-each scope it draws, the same way it already marks a command group.
-`kvim_ui::WhichKeyHint::key_style` marks the second fact as a style override
-for the key text, because `kvim-ui` selects no color of its own. A host
-therefore paints an extension and an interruption apart with two styles of
-its choosing, without losing the scope icon of either row. A row that sets
+abandons it. `kvim_ui::WhichKeyOverlayRow::icon` marks the scope, because the
+scope is a host value that `kvim-ui` cannot enumerate. The host gives one icon
+to each scope it draws, the same way it already marks a command group.
+`kvim_ui::WhichKeyOverlayRow::key_style` marks the second fact as a style
+override for the key text, because `kvim-ui` selects no color of its own. A
+host therefore paints an extension and an interruption apart with two styles
+of its choosing, without losing the scope icon of either row. A row that sets
 neither field draws exactly as a row of a context with one scope and no
 interruption draws.
+
+`kvim-ui` renamed `WhichKeyHint` to `WhichKeyOverlayRow` and kept no alias.
+`kvim_keymap::WhichKeyHint` keeps its name, because it answers what a key
+reaches in a registry, and `ScopedWhichKeyHint` already builds on it. `kvim-ui`
+did not choose `WhichKeyRow`, because `kvim_input` already publishes a
+`WhichKeyRow` type that pairs one key with its command group. A caller that
+draws both rows in one file would then alias one import, which repeats the
+problem this rename fixes. `WhichKeyOverlayRow` instead names the row after
+`WhichKeyOverlay`, the widget that draws it. A host renames its import from
+`kvim_ui::WhichKeyHint` to `kvim_ui::WhichKeyOverlayRow` and changes nothing
+else, because the fields and the methods kept their names.
 
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written

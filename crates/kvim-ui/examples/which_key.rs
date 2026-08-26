@@ -34,7 +34,7 @@ use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
     Registry, Resolver, Scope, ScopedWhichKeyHint,
 };
-use kvim_ui::{WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles};
+use kvim_ui::{WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
 
 /// The commands that the host binds.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -234,8 +234,8 @@ fn main() {
 ///
 /// A host that draws `WhichKeyView::hints` beside `WhichKeyView::interruptions`
 /// marks two independent facts on a row: the scope that holds the key, through
-/// `WhichKeyHint::icon`, and whether the key continues the pending sequence or
-/// abandons it, through `WhichKeyHint::key_style`. This registry binds no
+/// `WhichKeyOverlayRow::icon`, and whether the key continues the pending sequence or
+/// abandons it, through `WhichKeyOverlayRow::key_style`. This registry binds no
 /// host-global scope, so the example stands in one interruption of its own: a
 /// key that returns focus to an embedding host, styled apart from the
 /// extensions above it.
@@ -247,7 +247,7 @@ fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
     let extension_key = extension.hint().key_label().to_string();
     let extension_target = extension.hint().target().to_string();
     let extension_row =
-        WhichKeyHint::new(&extension_key, &extension_target).with_icon(WhichKeyIcon {
+        WhichKeyOverlayRow::new(&extension_key, &extension_target).with_icon(WhichKeyIcon {
             glyph: extension_group.glyph(),
             style: Style::default().fg(extension_group.color()),
         });
@@ -260,7 +260,7 @@ fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
         style: Style::default().fg(Color::Magenta),
     };
     let interruption_key_style = Style::default().fg(Color::Red);
-    let interruption_row = WhichKeyHint::new("C-e", "Leave to chat")
+    let interruption_row = WhichKeyOverlayRow::new("C-e", "Leave to chat")
         .with_icon(interruption_icon)
         .with_key_style(interruption_key_style);
 
@@ -291,10 +291,10 @@ fn step_through_a_long_list() {
     let labels: Vec<String> = (0..IDLE_KEYS)
         .map(|index| format!("Run command {index}"))
         .collect();
-    let rows: Vec<WhichKeyHint<'_>> = keys
+    let rows: Vec<WhichKeyOverlayRow<'_>> = keys
         .iter()
         .zip(&labels)
-        .map(|(key, label)| WhichKeyHint::new(key, label))
+        .map(|(key, label)| WhichKeyOverlayRow::new(key, label))
         .collect();
     let overlay = WhichKeyOverlay::new(" Which Key ", &rows, WhichKeyStyles::default())
         .expect("the idle list stays inside every bound");
@@ -344,12 +344,12 @@ fn painted(hints: &[ScopedWhichKeyHint<Command, Global>]) -> Buffer {
             )
         })
         .collect();
-    let rows: Vec<WhichKeyHint<'_>> = texts
+    let rows: Vec<WhichKeyOverlayRow<'_>> = texts
         .iter()
         .zip(hints)
         .map(|((key, label), hint)| {
             let group = Group::of(hint.hint().commands());
-            WhichKeyHint::new(key, label).with_icon(WhichKeyIcon {
+            WhichKeyOverlayRow::new(key, label).with_icon(WhichKeyIcon {
                 glyph: group.glyph(),
                 style: Style::default().fg(group.color()),
             })
