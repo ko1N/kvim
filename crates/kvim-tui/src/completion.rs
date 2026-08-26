@@ -79,7 +79,7 @@ const COMPLETION_PADDING_CELLS: u16 = 1;
 const COMPLETION_PADDING_TOTAL: u16 = COMPLETION_PADDING_CELLS.saturating_mul(2);
 
 /// The direction of one completion cycle.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum CompletionCycle {
     /// Select the candidate after the selected one.
     Next,

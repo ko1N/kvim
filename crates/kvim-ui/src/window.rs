@@ -105,7 +105,7 @@ impl Orientation {
 ///
 /// [`WindowTree::adaptive_orientation`] selects the orientation. Every host
 /// that binds an adaptive split key reaches the same rule through this type.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum AdaptiveSplit {
     /// Select a vertical split for a wide window.
     Normal,

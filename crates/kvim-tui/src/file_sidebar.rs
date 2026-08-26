@@ -683,7 +683,7 @@ pub(super) fn draw_git_mark(
 /// let down = FileSidebarInput::Move(ListMotion::Down(1));
 /// assert_eq!(down, FileSidebarInput::Move(ListMotion::Down(1)));
 /// ```
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum FileSidebarInput {
     /// Move the selection by one bounded move.
     ///

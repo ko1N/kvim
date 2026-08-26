@@ -38,7 +38,7 @@ use super::registry::{Registry, WhichKeyRow};
 /// `docs/architecture.md` states for one. The six cursor motions arrived
 /// together in that form: a host adds one match arm for each and moves the
 /// cursor of its own line by characters. See `docs/architecture.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum PromptEdit {
     /// Write one character before the cursor of the prompt line.
     ///
@@ -134,7 +134,7 @@ impl PromptEdit {
 /// The confirmation completes nothing, so this enumeration holds no completion
 /// edit. The answer holds no cursor, so it holds no motion either, and the
 /// prompt scope alone binds the motion keys. See `docs/input-actions.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ConfirmEdit {
     /// Append one character to the answer.
     Insert(char),

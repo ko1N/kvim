@@ -435,7 +435,7 @@ impl ListWindow<ListPlacement> {
 /// [`Selector::matches`](crate::Selector::matches), the rows that the current
 /// query keeps. The same index value can therefore name two different rows,
 /// or no row at all, across the two lists. See [`ListMotion::ToRow`].
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum ListMotion {
     /// Move down the given number of rows.
     Down(usize),

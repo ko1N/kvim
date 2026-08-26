@@ -27,7 +27,7 @@ use super::resolver::PromptEdit;
 /// The enumeration is exhaustive on purpose, for the reason that
 /// [`PromptEdit`] states: a new variant must stop the build of a host that
 /// decides what each one means. See `docs/architecture.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 #[must_use]
 pub enum LineChange {
     /// The edit changed the text of the line.

@@ -431,6 +431,15 @@ a breaking facade change already requires. The rejected alternative is
 a wildcard arm. A wildcard arm ships the wrong behavior with no compile error
 to catch it.
 
+A published enum that names an input also derives `Ord` and `PartialOrd`. A
+host names such a value inside a command type of its own, and
+`kvim_keymap::CommandMetadata` requires `Copy`, `Eq`, and `Ord`. An input enum
+without those derives therefore forces a host to write a second vocabulary for
+one that kvim already publishes, and to map each member of its own onto ours.
+`PromptEdit`, `ConfirmEdit`, `ListMotion`, `CompletionCycle`, `AdaptiveSplit`,
+and `FileSidebarInput` all name an input and carry the derives. An enum that
+names an outcome or a fact needs no order of its own.
+
 The rule covers the payload of a variant as well as the variant list. A changed
 payload type stops the build of a host that names the variant, exactly as a new
 variant does, and the compile error serves the same purpose: the host must read
