@@ -229,6 +229,29 @@ its rows name its own domain, and it keeps kvim's gutter so the two trees read
 as one surface. `kvim_settings::FileTreeIcons` hides every icon of the editor,
 so one setting answers for both trees and a host adds no second switch.
 
+`FILE_SIDEBAR_MARK_CELLS` is the width that the selection mark reserves at the
+left edge of one row. A host that draws a tree of its own beside the file tree
+of the editor reserves the same width as its own left column, so the two trees
+line up in one window. `FILE_SIDEBAR_SELECTION_MARK` is the glyph that kvim's
+own file tree draws in that column on the selected row. A host that reproduces
+the look of kvim draws this glyph; a host that draws its own mark reads the
+width alone and keeps its own glyph, exactly as it keeps its own glyph for
+`FileRowGit::glyph`.
+
+kvim draws `FILE_SIDEBAR_SELECTION_MARK` only while its sidebar reports
+`RegionFocus::Focused`. An unfocused sidebar leaves the column blank, and the
+selection band over the whole row still reports the selected row. A host that
+reproduces the look of kvim shows its own mark under the same rule, or its
+mark and kvim's disagree about when a row carries one. [`windows.md`](windows.md)
+owns the mark rule.
+
+kvim publishes no width for the Git mark at the right edge of a row in this
+release. A host that draws no Git mark of its own reserves no cell for one, so
+the gap costs it nothing. A host that wants kvim's own Git mark already reads
+`FileRowGit::glyph` for the glyph; the width of that one cell stays with
+`draw_file_row` until a host asks kvim to align a Git mark of its own beside
+it.
+
 #### One Row Painter
 
 `kvim_tui::draw_file_row` paints one `FileRow` into one `kvim_ui::SidebarCanvas`

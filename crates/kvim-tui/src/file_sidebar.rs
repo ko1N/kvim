@@ -78,6 +78,28 @@ pub const FILE_SIDEBAR_LINK_SUFFIX: &str = "@";
 /// setting answers for both trees.
 pub const FILE_SIDEBAR_ICON_CELLS: usize = ICON_CELLS;
 
+/// The number of cells that the selection mark of one row occupies.
+///
+/// Every row reserves this width at the left edge, so a row that carries no
+/// mark keeps the guides and the label of its neighbours aligned. A host that
+/// draws a tree of its own beside the file tree of the editor reserves the
+/// same width, so the left columns of the two trees line up.
+pub const FILE_SIDEBAR_MARK_CELLS: usize = MARK_CELLS;
+
+/// The mark that kvim's own file tree draws on the selected row.
+///
+/// [`FILE_SIDEBAR_MARK_CELLS`] reserves the column that this glyph fills. A
+/// host that reproduces the look of kvim draws this glyph in that column; a
+/// host that draws its own mark reads the width alone and chooses its own
+/// glyph, exactly as it chooses its own glyph for [`FileRowGit::glyph`].
+///
+/// kvim draws this mark only while its sidebar reports
+/// [`RegionFocus::Focused`](super::buffer_view::RegionFocus::Focused). A host
+/// that draws its own mark under a different rule disagrees with kvim about
+/// when the mark appears, so a host that reproduces kvim's look shows this
+/// glyph under the same rule. See `docs/windows.md`.
+pub const FILE_SIDEBAR_SELECTION_MARK: &str = SELECTION_MARK;
+
 /// What one row of the file sidebar shows.
 ///
 /// The value carries the complete state of the row, so a host draws one row

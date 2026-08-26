@@ -33,12 +33,12 @@ use kvim_workspace::{
     temp::TempDir,
 };
 
-use crate::file_sidebar::FileRowGit;
+use crate::file_sidebar::{FILE_SIDEBAR_MARK_CELLS, FILE_SIDEBAR_SELECTION_MARK, FileRowGit};
 use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
-    GENERATED_NAMES, MARK_CELLS, RowState, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeRefusal,
-    check_name, delete_question, overwrite_question, root_label, selected_cell,
+    GENERATED_NAMES, RowState, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeRefusal, check_name,
+    delete_question, overwrite_question, root_label, selected_cell,
 };
 
 const NOW: Duration = Duration::ZERO;
@@ -51,9 +51,6 @@ const HEIGHT: u16 = 12;
 
 /// The first column of the sidebar in a terminal of [`WIDTH`] cells.
 const SIDEBAR_X: u16 = WIDTH - 40;
-
-/// The mark that the sidebar paints at the left edge of the selected row.
-const ROW_MARK: &str = "▌";
 
 /// The largest number of workspace operations that one test drains.
 ///
@@ -1846,7 +1843,7 @@ fn selected_row_index(session: &Session) -> usize {
 fn visible_entries(session: &Session) -> Vec<String> {
     let rows = u16::try_from(SIDEBAR_ROWS).expect("the test terminal is small");
     (TREE_TITLE_ROWS..TREE_TITLE_ROWS + rows)
-        .map(|row| sidebar_row(session, row).replacen(ROW_MARK, " ", 1))
+        .map(|row| sidebar_row(session, row).replacen(FILE_SIDEBAR_SELECTION_MARK, " ", 1))
         .collect()
 }
 
@@ -1857,7 +1854,7 @@ fn entry_row(index: usize) -> String {
 
 /// Returns the row text of one selected entry of the flat workspace.
 fn selected_entry_row(index: usize) -> String {
-    entry_row(index).replacen(' ', ROW_MARK, 1)
+    entry_row(index).replacen(' ', FILE_SIDEBAR_SELECTION_MARK, 1)
 }
 
 #[test]
@@ -2182,7 +2179,7 @@ fn the_leading_blank_and_the_shared_rule_together_cost_one_guide_per_level() {
     // directory or the file glyph starts, at `(depth + 1)` guide levels.
     let guide_of = |row: &str, depth: usize| -> String {
         row.chars()
-            .skip(MARK_CELLS)
+            .skip(FILE_SIDEBAR_MARK_CELLS)
             .take(SIDEBAR_GUIDE_INDENT_CELLS * (depth + 1))
             .collect::<String>()
     };
@@ -2305,7 +2302,7 @@ fn the_selected_row_carries_one_band_and_one_mark_at_its_left_edge() {
             .cell((SIDEBAR_X, 1))
             .expect("the sidebar holds its first column")
             .symbol(),
-        ROW_MARK
+        FILE_SIDEBAR_SELECTION_MARK
     );
     assert_eq!(
         sidebar_style(&session, 0, 1).fg,
@@ -2335,7 +2332,10 @@ fn an_unfocused_sidebar_drops_the_mark_and_keeps_every_other_cell_of_the_row() {
     // none. The cell keeps its width, so no other cell of the row moves.
     assert_eq!(focused[0].chars().next(), Some('▌'));
     assert_eq!(unfocused[0].chars().next(), Some(' '));
-    assert_eq!(focused[0][ROW_MARK.len()..], unfocused[0][1..]);
+    assert_eq!(
+        focused[0][FILE_SIDEBAR_SELECTION_MARK.len()..],
+        unfocused[0][1..]
+    );
     assert_eq!(focused[1..], unfocused[1..]);
 
     // The band still covers the selected row, so the reader still finds it.

@@ -68,9 +68,17 @@ pub(super) const COLLAPSED_MARKER: &str = "▸ ";
 /// The number of cells that the selection mark reserves at the left edge.
 ///
 /// The column stays blank on every other row, so one mark never moves a name.
+///
+/// `file_sidebar` republishes this width as
+/// [`FILE_SIDEBAR_MARK_CELLS`](super::file_sidebar::FILE_SIDEBAR_MARK_CELLS),
+/// so a host aligns a tree of its own beside the file tree of the editor.
 pub(super) const MARK_CELLS: usize = 1;
 
 /// The mark of the selected row, at the left edge of the sidebar.
+///
+/// `file_sidebar` republishes this glyph as
+/// [`FILE_SIDEBAR_SELECTION_MARK`](super::file_sidebar::FILE_SIDEBAR_SELECTION_MARK),
+/// so a host that draws its own rows can draw kvim's own mark.
 pub(super) const SELECTION_MARK: &str = "▌";
 
 /// The entry names whose content one tool generates.

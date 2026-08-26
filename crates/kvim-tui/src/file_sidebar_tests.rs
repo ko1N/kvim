@@ -476,3 +476,18 @@ fn the_facade_reports_no_deadline_of_its_own() {
     assert_eq!(session.next_deadline(), before);
     let _tick = session.tick(Duration::ZERO);
 }
+
+#[test]
+fn a_host_reserving_the_published_mark_width_reaches_the_tree_label_offset() {
+    // A host that reserves `FILE_SIDEBAR_MARK_CELLS` for its own mark column,
+    // then one guide of `SIDEBAR_GUIDE_INDENT_CELLS` per depth level, and
+    // `FILE_SIDEBAR_ICON_CELLS` for its own icon column, starts its label at
+    // the column that `label_offset_cells` names, because the file tree of
+    // kvim reserves the same three widths in the same order.
+    for depth in 0..4_usize {
+        let host_offset = FILE_SIDEBAR_MARK_CELLS
+            + SIDEBAR_GUIDE_INDENT_CELLS * (depth + 1)
+            + FILE_SIDEBAR_ICON_CELLS;
+        assert_eq!(host_offset, label_offset_cells(depth));
+    }
+}
