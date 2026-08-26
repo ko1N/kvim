@@ -997,6 +997,19 @@ impl TreeSidebar {
             .ok_or(TreeRefusal::NoSelection)
     }
 
+    /// Returns the name of the selected entry, for the rename prompt to seed.
+    ///
+    /// The rename prompt reads a bare entry name, not a path, so the seed
+    /// carries the whole name, including any extension. A reader edits the
+    /// stem more often than the extension, but sometimes edits both, and the
+    /// prompt line has no cursor position to place before the extension. The
+    /// caller opens an empty prompt while no row is selected, and the
+    /// submitted rename then reports [`TreeRefusal::NoSelection`], exactly as
+    /// it did before the prompt seeded a name. See `docs/files.md`.
+    pub(super) fn selected_entry_name(&self) -> Option<String> {
+        self.selected_entry().ok().map(|path| entry_name(&path))
+    }
+
     /// Queues the next directory read while no other operation runs.
     fn pump(&mut self) {
         if self.pending.is_some() || self.outbox.is_some() {
@@ -1082,7 +1095,7 @@ pub(super) fn delete_question(paths: &[PathBuf]) -> String {
     let [path] = paths else {
         return format!("Delete {} entries", paths.len());
     };
-    format!("Delete {}", question_name(path))
+    format!("Delete {}", entry_name(path))
 }
 
 /// Returns the question that an overwrite of the named destinations asks.
@@ -1095,15 +1108,16 @@ pub(super) fn overwrite_question(destinations: &[TakenDestination]) -> String {
     let [destination] = destinations else {
         return format!("Overwrite {} entries", destinations.len());
     };
-    format!("Overwrite {}", question_name(destination.path.as_path()))
+    format!("Overwrite {}", entry_name(destination.path.as_path()))
 }
 
-/// Returns the name that a question shows for one entry.
+/// Returns the display name of one entry: the file name, without a directory.
 ///
 /// Every selectable row carries an entry name, so the complete path only
-/// answers for a root that holds no row. A complete path would push the answer
-/// hint of the message line out of view.
-fn question_name(path: &Path) -> String {
+/// answers for a root that holds no row. A question over the complete path
+/// would push its answer hint off the message line, and a seeded rename would
+/// resolve against the wrong directory, so both callers need the bare name.
+fn entry_name(path: &Path) -> String {
     path.file_name().map_or_else(
         || path.display().to_string(),
         |name| name.to_string_lossy().into_owned(),

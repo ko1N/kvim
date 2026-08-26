@@ -471,6 +471,16 @@ one key always moves the reader deeper into the tree. An operation that
 needs text, such as a rename, an add, or a search, reads one line through the
 prompt of the message line. The tree opens no second input mechanism.
 
+The rename prompt starts with the name of the selected entry, so a reader who
+changes one character never retypes the whole name. The seed keeps the whole
+name, including any extension, because the prompt line holds no cursor
+position to place before the extension. The seed adds no directory part,
+because a rename resolves the typed name against the directory of the
+selected entry. The add-file and add-directory prompts start empty, because
+they name a new entry, not an existing one. A rename prompt while no entry is
+selected also starts empty; the submitted name then reports the same refusal
+that an empty prompt reported before the seed existed.
+
 The tree runs one workspace operation at a time, as the file operations do. The
 event loop takes the next directory read after every completed operation, so the
 reads of one reveal or one refresh reach the worker in order. A cancelled,

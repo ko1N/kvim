@@ -135,6 +135,22 @@ fn answer(session: &mut Session, text: &str) {
     press_code(session, KeyCode::Enter);
 }
 
+/// Opens the rename prompt over the selected entry and submits `name`.
+///
+/// The prompt seeds the name of the selected entry, so a test that means to
+/// type a wholly new name first clears that seed, one backspace for each of
+/// its characters, exactly as a reader would before retyping the whole name.
+fn rename_to(session: &mut Session, name: &str) {
+    press(session, 'r');
+    let seed_chars = message_line(session)
+        .strip_prefix("rename: ")
+        .map_or(0, |seed| seed.chars().count());
+    for _ in 0..seed_chars {
+        press_code(session, KeyCode::Backspace);
+    }
+    answer(session, name);
+}
+
 /// Renders one session and returns the terminal cell buffer.
 fn draw(session: &Session) -> CellBuffer {
     let backend = TestBackend::new(WIDTH, HEIGHT);
@@ -400,10 +416,12 @@ fn the_refresh_key_reads_the_workspace_again() {
 
 #[test]
 fn the_text_operations_open_the_prompt_of_the_message_line() {
+    // `r` opens the rename prompt seeded with the selected entry, so its
+    // start line differs from these empty prompts. The rename tests below
+    // cover the seeded prompt on its own.
     let cases = [
         ('a', "new file: "),
         ('A', "new directory: "),
-        ('r', "rename: "),
         ('/', "search: "),
     ];
     for (key, prefix) in cases {
@@ -419,6 +437,92 @@ fn the_text_operations_open_the_prompt_of_the_message_line() {
         type_keys(&mut session, "x");
         assert_eq!(message_line(&session), format!("{prefix}x"));
     }
+}
+
+#[test]
+fn the_rename_key_seeds_the_prompt_with_the_selected_name() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+    // The reveal selects the first row, the "docs" directory.
+
+    press(&mut session, 'r');
+
+    assert_eq!(
+        message_line(&session),
+        "rename: docs",
+        "the rename prompt starts with the name of the selected entry"
+    );
+    // The cursor sits after the seeded text, so a typed key extends it.
+    type_keys(&mut session, "x");
+    assert_eq!(message_line(&session), "rename: docsx");
+}
+
+#[test]
+fn the_rename_key_seeds_the_whole_name_including_the_extension() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    // Two steps down select "README.md".
+
+    press(&mut session, 'r');
+
+    assert_eq!(
+        message_line(&session),
+        "rename: README.md",
+        "the seed keeps the extension, because the prompt has no cursor \
+         position to place before it"
+    );
+}
+
+#[test]
+fn the_rename_key_opens_an_empty_prompt_while_no_entry_is_selected() {
+    let dir = TempDir::new("tree-empty");
+    let mut session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        EditorSettings::default(),
+        test_root(dir.path.clone()),
+    );
+    reveal(&mut session);
+
+    press(&mut session, 'r');
+    assert_eq!(
+        message_line(&session),
+        "rename:",
+        "an empty tree holds no selected entry, so the prompt seeds no text"
+    );
+
+    // A typed name reaches the selection check, so the refusal names the
+    // missing selection instead of the empty text that an untouched `Enter`
+    // would report first.
+    answer(&mut session, "x");
+    assert_eq!(
+        message(&session),
+        "the file tree shows no selected entry",
+        "the submit refuses exactly as it did before the prompt seeded a name"
+    );
+}
+
+#[test]
+fn a_rename_left_unchanged_refuses_the_same_entry_and_writes_nothing() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    // The selection rests on "README.md".
+
+    press(&mut session, 'r');
+    press_code(&mut session, KeyCode::Enter);
+    drain(&mut session);
+
+    assert!(
+        message(&session).contains("README.md"),
+        "the same-entry refusal names the entry that already holds the name"
+    );
+    assert!(
+        dir.join("README.md").exists(),
+        "an unchanged rename destroys no entry"
+    );
 }
 
 #[test]
@@ -446,9 +550,7 @@ fn a_rename_applies_the_buffer_path_and_the_tree_as_one_transition() {
     drain_file(&mut session);
     reveal(&mut session);
 
-    press(&mut session, 'r');
-    type_keys(&mut session, "GUIDE.md");
-    press_code(&mut session, KeyCode::Enter);
+    rename_to(&mut session, "GUIDE.md");
     drain(&mut session);
 
     assert_eq!(
@@ -696,9 +798,7 @@ fn select_notes(session: &mut Session) {
 /// result of the mutation that the user asked for.
 fn ask_to_overwrite_readme(session: &mut Session) {
     select_notes(session);
-    press(session, 'r');
-    type_keys(session, "README.md");
-    press_code(session, KeyCode::Enter);
+    rename_to(session, "README.md");
     drain(session);
     assert_eq!(
         message_line(session),
@@ -847,9 +947,7 @@ fn an_overwrite_of_a_buffer_with_unsaved_changes_asks_nothing() {
     reveal(&mut session);
     add_file(&dir, &mut session, "NOTES.md", "notes\n");
     select_notes(&mut session);
-    press(&mut session, 'r');
-    type_keys(&mut session, "README.md");
-    press_code(&mut session, KeyCode::Enter);
+    rename_to(&mut session, "README.md");
     drain(&mut session);
 
     let report = message(&session);
@@ -2319,9 +2417,7 @@ fn a_workspace_mutation_asks_for_the_repository_state_again() {
 
     press(&mut session, 'j');
     press(&mut session, 'j');
-    press(&mut session, 'r');
-    type_keys(&mut session, "renamed.rs");
-    press_code(&mut session, KeyCode::Enter);
+    rename_to(&mut session, "renamed.rs");
     drain(&mut session);
 
     assert!(dir.join("renamed.rs").exists());

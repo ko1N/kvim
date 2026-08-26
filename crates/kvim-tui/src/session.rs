@@ -2606,18 +2606,47 @@ impl Session {
     /// Opens one line prompt and moves input to it.
     ///
     /// The prompt returns input to the scope that owned it, so a file-tree
-    /// prompt returns the keys to the sidebar.
+    /// prompt returns the keys to the sidebar. [`Self::prompt_seed`] is the
+    /// one place that decides what text the line starts with, so every
+    /// caller opens a prompt the same way.
     fn open_prompt(&mut self, kind: PromptKind) -> Redraw {
         self.prompt = Some(PromptLine {
             kind,
-            text: String::new(),
+            text: self.prompt_seed(kind),
             completion: None,
         });
         // The new line asks for its own walk, and it asks when it first holds a
-        // path argument.
+        // path argument. A seeded rename line asks for none either, because
+        // `sync_completion_walk` only ever queues a walk for `CommandLine`.
         self.completion_walk = CompletionWalk::Unasked;
         self.sync_context();
         Redraw::Needed
+    }
+
+    /// Returns the text that a new prompt line starts with.
+    ///
+    /// Every prompt starts empty, except the rename prompt, which starts with
+    /// the name of the selected entry. A reader who wants to change one
+    /// character of a long name then edits it in place, instead of typing the
+    /// whole name again. The prompt line holds no cursor position, so the
+    /// seed places the cursor after the seeded text, exactly where a reader
+    /// edits a name.
+    ///
+    /// A rename prompt while no entry is selected still starts empty; the
+    /// submitted rename then reports [`TreeRefusal::NoSelection`], exactly as
+    /// it did before the prompt seeded a name. See `docs/files.md`.
+    fn prompt_seed(&self, kind: PromptKind) -> String {
+        match kind {
+            PromptKind::Tree(TreePrompt::Rename) => {
+                self.tree.selected_entry_name().unwrap_or_default()
+            }
+            PromptKind::CommandLine
+            | PromptKind::Search
+            | PromptKind::Tree(
+                TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Search,
+            )
+            | PromptKind::Picker => String::new(),
+        }
     }
 
     /// Opens one confirmation and moves input to it.
