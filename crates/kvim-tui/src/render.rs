@@ -12,7 +12,7 @@ use kvim_editor::{Cursor, WindowState};
 use kvim_input::Mode;
 use kvim_ui::RegionKind;
 
-use super::buffer_view::{BracketHighlight, WindowFocus, WindowView, cursor_cell, render_window};
+use super::buffer_view::{BracketHighlight, RegionFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
 use super::overlay::{render_completion, render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
@@ -109,9 +109,9 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                 };
                 let text = file.text();
                 let focus = if region.id == focused_region {
-                    WindowFocus::Focused
+                    RegionFocus::Focused
                 } else {
-                    WindowFocus::Unfocused
+                    RegionFocus::Unfocused
                 };
                 // Every window owns its cursor, so its relative line numbers
                 // count from its own cursor line. The mode is global and belongs
@@ -130,8 +130,8 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     left_column: state.left_column(),
                     cursor: state.cursor(),
                     selection: match focus {
-                        WindowFocus::Focused => view.editing.selection(text, &state),
-                        WindowFocus::Unfocused => None,
+                        RegionFocus::Focused => view.editing.selection(text, &state),
+                        RegionFocus::Unfocused => None,
                     },
                     matches: if searched { matches } else { &[] },
                     match_chars: if searched { match_chars } else { 0 },
@@ -141,7 +141,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     // The bracket pair answers a Normal-mode `%`, and that key
                     // reaches no window while a sidebar holds the focus, so
                     // only the focused window paints the pair.
-                    brackets: if focus == WindowFocus::Focused
+                    brackets: if focus == RegionFocus::Focused
                         && view.editing.mode() == Mode::Normal
                     {
                         BracketHighlight::Shown
@@ -152,7 +152,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     tab_width: usize::from(view.settings.indent.tab_width.get()),
                 };
                 render_window(target, region.area, theme, &window);
-                if focus == WindowFocus::Focused {
+                if focus == RegionFocus::Focused {
                     focused_area = Some(region.area);
                     cursor_at = cursor_cell(region.area, &window);
                 }
@@ -161,9 +161,9 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             // its own rows, so no editor window covers its rectangle.
             RegionKind::Sidebar(_) => {
                 let focus = if region.id == focused_region {
-                    WindowFocus::Focused
+                    RegionFocus::Focused
                 } else {
-                    WindowFocus::Unfocused
+                    RegionFocus::Unfocused
                 };
                 let selected = render_tree(
                     target,
@@ -175,7 +175,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                 );
                 // The keys reach the sidebar, so the terminal cursor sits on
                 // the selected row instead of in an editor window.
-                if focus == WindowFocus::Focused {
+                if focus == RegionFocus::Focused {
                     sidebar_cursor = selected;
                 }
             }

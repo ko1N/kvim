@@ -29,8 +29,8 @@
 //! [`Saturated`], [`CursorRequest`], [`CursorShape`], [`GeometryError`],
 //! [`InputRequest`], [`EditorShutdown`], [`EditorDrain`], [`ShutdownDrain`],
 //! [`Completed`], [`EditorWork`], [`ClipboardAccess`], the file sidebar values
-//! [`FileRow`], [`FileRowKind`], [`FileSidebarInput`], and
-//! [`FileSidebarOutcome`], the forwarded `kvim-ui` geometry values, and the
+//! [`FileRow`], [`FileRowKind`], [`FileSidebarInput`], [`FileSidebarOutcome`],
+//! and [`RegionFocus`], the forwarded `kvim-ui` geometry values, and the
 //! bounds of each one. A host composes one editor from these values alone.
 //! `crates/kvim-tui/examples/embedded_editor.rs` uses nothing else, and
 //! `crates/kvim-tui/examples/embedded_file_sidebar.rs` adds the file sidebar
@@ -108,6 +108,7 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+pub use buffer_view::RegionFocus;
 pub use clipboard::ClipboardAccess;
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
 pub use driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};

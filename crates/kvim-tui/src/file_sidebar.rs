@@ -36,6 +36,7 @@ use kvim_ui::{
 };
 use ratatui::style::Style;
 
+use super::buffer_view::RegionFocus;
 use super::embed::EditorEvent;
 use super::icons::{ICON_CELLS, Icon};
 use super::theme::{IconRole, Theme, ThemeRole};
@@ -443,7 +444,7 @@ const fn glyph_offset_cells(depth: usize) -> usize {
 ///
 /// Both icon settings reserve the same glyph cells, so the label of one depth
 /// always starts at one column.
-const fn label_offset_cells(depth: usize) -> usize {
+pub(super) const fn label_offset_cells(depth: usize) -> usize {
     glyph_offset_cells(depth) + ICON_CELLS
 }
 
@@ -455,16 +456,23 @@ const fn label_offset_cells(depth: usize) -> usize {
 /// clips from the right edge, and the Git mark keeps the last cell it has, so
 /// a very narrow sidebar still shows the start of every label.
 ///
-/// The caller supplies the palette and the icon-visibility setting, because a
-/// host holds both already. The painter reads no other state: every fact that
-/// it draws comes from the row. kvim's own file tree draws through this call,
-/// so a host that uses it can never see a second appearance.
+/// The selection mark belongs to the focused sidebar alone. A sidebar that
+/// reports [`RegionFocus::Unfocused`] leaves the mark cell blank, and the
+/// selected row still reads as the selected one through the fill of the whole
+/// row. The mark cell keeps its width in both states, so no glyph and no label
+/// moves when the focus moves. See `docs/windows.md`.
+///
+/// The caller supplies the palette, the icon-visibility setting, and the focus
+/// of its sidebar, because a host holds all three already. The painter reads
+/// no other state: every further fact that it draws comes from the row. kvim's
+/// own file tree draws through this call, so a host that uses it can never see
+/// a second appearance.
 ///
 /// # Examples
 ///
 /// ```
 /// use kvim_settings::FileTreeIcons;
-/// use kvim_tui::{EmbeddedEditor, Theme, draw_file_row};
+/// use kvim_tui::{EmbeddedEditor, RegionFocus, Theme, draw_file_row};
 /// use kvim_ui::{RowKind, SidebarRow, SidebarState};
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
@@ -496,7 +504,7 @@ const fn label_offset_cells(depth: usize) -> usize {
 /// let theme = Theme::new();
 /// view.render(&mut cells, area, |canvas, placement| {
 ///     if let Some(row) = rows.get(placement.index()) {
-///         draw_file_row(canvas, row, theme, FileTreeIcons::Hidden);
+///         draw_file_row(canvas, row, theme, FileTreeIcons::Hidden, RegionFocus::Focused);
 ///     }
 /// })
 /// .expect("every row stays inside the rectangle");
@@ -506,6 +514,7 @@ pub fn draw_file_row(
     row: &FileRow,
     theme: Theme,
     icons: FileTreeIcons,
+    focus: RegionFocus,
 ) {
     let style = theme
         .style(ThemeRole::Text)
@@ -530,7 +539,9 @@ pub fn draw_file_row(
         row.guides.chars().count(),
         style.patch(theme.style(ThemeRole::TreeIndentGuide)),
     );
-    if row.selected {
+    // The mark reports which row the keys move. An unfocused sidebar moves no
+    // row, so it draws no mark and the fill alone reports the selection.
+    if row.selected && focus == RegionFocus::Focused {
         canvas.draw_clipped(
             0,
             0,

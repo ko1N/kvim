@@ -991,8 +991,11 @@ fn a_focused_sidebar_leaves_the_one_window_unfocused() {
         Some(MUTED),
         "the one window is unfocused while the sidebar holds the keys"
     );
-    // The selected row of the sidebar is the one cursor cell of the frame.
-    assert_eq!(cursor_position(&session), (60, 1));
+    // The selected row of the sidebar is the one cursor cell of the frame. The
+    // cell is the first cell of the label, five cells behind the left edge of
+    // the sidebar, because a block cursor inverts the cell that it stands on
+    // and the mark cell keeps its own glyph.
+    assert_eq!(cursor_position(&session), (65, 1));
     // The statusline keeps the cursor of the focused window, which names the
     // place the reader returns to.
     assert_eq!(

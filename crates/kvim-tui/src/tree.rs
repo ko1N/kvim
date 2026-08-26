@@ -38,10 +38,10 @@ use kvim_workspace::{
     WorkspaceRequest,
 };
 
-use super::buffer_view::WindowFocus;
+use super::buffer_view::RegionFocus;
 use super::file_sidebar::{
     FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome,
-    LabelMatch, draw_file_row, draw_git_mark,
+    LabelMatch, draw_file_row, draw_git_mark, label_offset_cells,
 };
 use super::icons::{directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
@@ -1203,13 +1203,16 @@ fn notice_text(notice: &Notice) -> String {
 /// entry blank, because the end-of-buffer marker belongs to a buffer window.
 ///
 /// The function returns the cell of the selected row, so the terminal draws its
-/// own cursor there while the sidebar holds the focus.
+/// own cursor there while the sidebar holds the focus. The cell is the first
+/// cell of the label of that row, not the mark cell, because a block cursor
+/// inverts the cell that it stands on and would light the wrong half of the
+/// selection mark. See `docs/windows.md`.
 pub(super) fn render_tree(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
     sidebar: &TreeSidebar,
-    focus: WindowFocus,
+    focus: RegionFocus,
     icons: FileTreeIcons,
 ) -> Option<Position> {
     if area.is_empty() {
@@ -1237,15 +1240,28 @@ pub(super) fn render_tree(
             return;
         };
         if row.is_selected() {
-            cursor = Some(Position::new(canvas.area().x, canvas.area().y));
+            cursor = Some(selected_cell(canvas.area(), row.depth()));
         }
-        draw_file_row(canvas, &row, theme, icons);
+        draw_file_row(canvas, &row, theme, icons, focus);
     });
     debug_assert!(
         outcome.is_ok(),
         "every sidebar row stays inside the bounds of the canvas"
     );
     cursor
+}
+
+/// Returns the cell that the terminal cursor takes on one selected row.
+///
+/// The cursor stands on the first cell of the label, where the content of the
+/// row begins. The mark cell keeps its own glyph that way, because a block
+/// cursor inverts the cell below it. A deep row of a narrow sidebar keeps the
+/// last cell of its own rectangle, so the cursor never leaves the sidebar.
+fn selected_cell(row: Rect, depth: usize) -> Position {
+    let offset = u16::try_from(label_offset_cells(depth)).unwrap_or(u16::MAX);
+    let last = row.x.saturating_add(row.width.saturating_sub(1));
+    let column = row.x.saturating_add(offset).min(last);
+    Position::new(column, row.y)
 }
 
 /// Returns the width of the selection mark, in cells of the canvas.
@@ -1298,12 +1314,12 @@ fn render_header(
     area: Rect,
     theme: Theme,
     sidebar: &TreeSidebar,
-    focus: WindowFocus,
+    focus: RegionFocus,
     icons: FileTreeIcons,
 ) {
     let role = match focus {
-        WindowFocus::Focused => ThemeRole::TreeRoot,
-        WindowFocus::Unfocused => ThemeRole::TitleMuted,
+        RegionFocus::Focused => ThemeRole::TreeRoot,
+        RegionFocus::Unfocused => ThemeRole::TitleMuted,
     };
     let glyph = match icons {
         FileTreeIcons::Hidden => EXPANDED_MARKER.to_owned(),

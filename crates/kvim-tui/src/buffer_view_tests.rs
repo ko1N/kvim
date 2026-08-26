@@ -12,7 +12,7 @@ use kvim_language::{
 use kvim_settings::{EditorSettings, FileSettings};
 
 use super::super::theme::{Theme, ThemeRole};
-use super::{BracketHighlight, END_OF_BUFFER_GLYPH, WindowFocus, WindowView, render_window};
+use super::{BracketHighlight, END_OF_BUFFER_GLYPH, RegionFocus, WindowView, render_window};
 
 /// The window rectangle of every test, including the winbar row.
 const AREA: Rect = Rect {
@@ -41,7 +41,7 @@ fn draw(text: &str, highlights: &[HighlightSpan]) -> CellBuffer {
         match_chars: 0,
         highlights,
         diagnostics: &[],
-        focus: WindowFocus::Unfocused,
+        focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
         display: &settings.display,
         tab_width: usize::from(settings.indent.tab_width.get()),
@@ -100,7 +100,7 @@ fn winbar(path: Option<&Path>, lines: usize, first_line: usize, area: Rect) -> S
         match_chars: 0,
         highlights: &[],
         diagnostics: &[],
-        focus: WindowFocus::Focused,
+        focus: RegionFocus::Focused,
         brackets: BracketHighlight::Hidden,
         display: &settings.display,
         tab_width: usize::from(settings.indent.tab_width.get()),
@@ -261,7 +261,7 @@ fn draw_marked(text: &str, diagnostics: &[Diagnostic], width: u16) -> CellBuffer
         match_chars: 0,
         highlights: &[],
         diagnostics,
-        focus: WindowFocus::Unfocused,
+        focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
         display: &settings.display,
         tab_width: usize::from(settings.indent.tab_width.get()),
@@ -471,7 +471,7 @@ fn a_selection_ends_at_the_last_character_of_every_line() {
         match_chars: 0,
         highlights: &[],
         diagnostics: &[],
-        focus: WindowFocus::Unfocused,
+        focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
         display: &settings.display,
         tab_width: usize::from(settings.indent.tab_width.get()),

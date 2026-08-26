@@ -42,7 +42,7 @@ use kvim_runtime::{Runtime, RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
 use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_tui::{
     EditorCapacity, EditorShutdown, EditorWork, EmbeddedEditor, FileRow, FileRowGit, FileRowKind,
-    FileSidebarInput, FileSidebarOutcome, ListMotion, Theme, draw_file_row,
+    FileSidebarInput, FileSidebarOutcome, ListMotion, RegionFocus, Theme, draw_file_row,
 };
 use kvim_ui::{RowKind, SidebarRow, SidebarState};
 use kvim_workspace::temp::TempDir;
@@ -103,6 +103,12 @@ const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(10);
 /// an ordinary terminal, so it hides them and takes the expansion markers that
 /// the painter draws instead.
 const ICONS: FileTreeIcons = FileTreeIcons::Hidden;
+
+/// The focus that this host gives the painter.
+///
+/// The keys of this run reach the sidebar alone, so the sidebar holds the
+/// focus and the painter marks the selected row at its left edge.
+const FOCUS: RegionFocus = RegionFocus::Focused;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
@@ -239,7 +245,14 @@ fn selected_label(editor: &EmbeddedEditor) -> String {
 /// visible row then reaches `draw_file_row`, which paints the mark cell, the
 /// indent guides, the glyph cells, the label, the link suffix, and the Git
 /// mark exactly as kvim's own file tree paints them. The host supplies the
-/// palette and the icon setting alone, and it already holds both.
+/// palette, the icon setting, and the focus of its sidebar, and it already
+/// holds all three.
+///
+/// This host gives the keys to the sidebar, so it reports
+/// `RegionFocus::Focused` and the selected row takes the mark at its left
+/// edge. A host whose keys reach another surface reports
+/// `RegionFocus::Unfocused` instead, and the fill of the row alone reports the
+/// selection.
 ///
 /// The temporary worktree of this run holds no repository, so every row
 /// carries no Git state and the mark column at the right edge stays blank.
@@ -255,7 +268,7 @@ fn draw(cells: &mut CellBuffer, editor: &EmbeddedEditor, theme: Theme) {
     .expect("this worktree holds a handful of rows");
     let outcome = view.render(cells, SIDEBAR_AREA, |canvas, placement| {
         if let Some(row) = rows.get(placement.index()) {
-            draw_file_row(canvas, row, theme, ICONS);
+            draw_file_row(canvas, row, theme, ICONS, FOCUS);
         }
     });
     outcome.expect("every row stays inside the rectangle of the sidebar");

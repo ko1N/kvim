@@ -236,14 +236,23 @@ exactly as kvim's own file tree paints it. The host asked for the look of kvim
 and not only for its facts, so kvim publishes the painter rather than a second
 description that a host would have to reproduce.
 
-The call takes four arguments and reads nothing else:
+The call takes five arguments and reads nothing else:
 
 - the canvas, which `SidebarState::render` hands to the row callback of the
   host and which clips every draw at the edges of the row;
 - the row, which carries every fact that the painter draws;
 - one `Theme`, the palette that the host already holds for its own surfaces;
 - one `kvim_settings::FileTreeIcons`, which decides whether a row takes an icon
-  glyph or the expansion marker that needs no patched font.
+  glyph or the expansion marker that needs no patched font;
+- one `kvim_tui::RegionFocus`, which reports whether the sidebar of the host
+  holds the input focus.
+
+`RegionFocus` names one region, and a region is one editor window or one
+sidebar. kvim uses the same value for both surfaces, so the facade publishes
+one focus vocabulary and no second one can disagree with it. The focus is a
+property of the sidebar and not of one row, so it reaches the painter as one
+argument of the call instead of one field of every `FileRow`. A host reads the
+focus of its own surfaces, so it already holds the value.
 
 The painter owns the layout of the row. The first cell holds the selection
 mark, the indent guides and the two glyph cells follow it, and the last cell
@@ -251,6 +260,13 @@ holds the Git mark. A canvas narrower than that layout clips from the right
 edge and the Git mark keeps the last cell it has, so a very narrow sidebar
 still shows the start of every label. A host that wants a different layout
 reads the facts and paints its own cells instead.
+
+The selection mark belongs to `RegionFocus::Focused` alone. A sidebar that
+reports `RegionFocus::Unfocused` leaves the mark cell blank, and the selection
+band over the whole row still reports the selected row. The mark cell keeps its
+width in both states, so no cell of the row moves when the focus moves.
+[`windows.md`](windows.md) owns the mark rule and the cursor cell that goes
+with it.
 
 kvim's own file tree draws through this one call. `crates/kvim-tui/src/tree.rs`
 holds no second row-drawing path, so the look that a host reaches and the look

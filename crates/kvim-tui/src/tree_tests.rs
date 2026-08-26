@@ -12,7 +12,7 @@ use std::time::Duration;
 use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer as CellBuffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 use ratatui::style::{Modifier, Style};
 
 use kvim_input::{BindingScope, Mode};
@@ -38,7 +38,7 @@ use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_cover
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
     GENERATED_NAMES, MARK_CELLS, RowState, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeRefusal,
-    check_name, delete_question, overwrite_question, root_label,
+    check_name, delete_question, overwrite_question, root_label, selected_cell,
 };
 
 const NOW: Duration = Duration::ZERO;
@@ -2319,6 +2319,55 @@ fn the_selected_row_carries_one_band_and_one_mark_at_its_left_edge() {
             .expect("the sidebar holds its first column")
             .symbol(),
         " "
+    );
+}
+
+#[test]
+fn an_unfocused_sidebar_drops_the_mark_and_keeps_every_other_cell_of_the_row() {
+    let (_dir, mut session) = appearance_workspace(FileTreeIcons::Hidden);
+    let focused = sidebar_rows(&session);
+
+    // `Ctrl-H` gives the keys to the window left of the sidebar.
+    press_ctrl(&mut session, 'h');
+    let unfocused = sidebar_rows(&session);
+
+    // The mark reports which row the keys move, so an unfocused sidebar draws
+    // none. The cell keeps its width, so no other cell of the row moves.
+    assert_eq!(focused[0].chars().next(), Some('▌'));
+    assert_eq!(unfocused[0].chars().next(), Some(' '));
+    assert_eq!(focused[0][ROW_MARK.len()..], unfocused[0][1..]);
+    assert_eq!(focused[1..], unfocused[1..]);
+
+    // The band still covers the selected row, so the reader still finds it.
+    let band = theme().style(ThemeRole::PopupSelection).bg;
+    let buffer = draw(&session);
+    for column in SIDEBAR_X..WIDTH {
+        let cell = buffer
+            .cell((column, 1))
+            .expect("the test reads a cell inside the sidebar");
+        assert_eq!(cell.style().bg, band, "the band covers the column {column}");
+    }
+}
+
+#[test]
+fn the_cursor_of_a_selected_row_stands_on_the_first_cell_of_its_label() {
+    let sidebar = Rect::new(SIDEBAR_X, 1, WIDTH - SIDEBAR_X, 1);
+
+    // The label follows the mark cell, one indent per level, and the glyph
+    // cells. A block cursor inverts the cell below it, so the mark cell keeps
+    // its own glyph only while the cursor stands behind it.
+    let root = selected_cell(sidebar, 0);
+    assert_eq!(root, Position::new(SIDEBAR_X + 5, 1));
+    assert_ne!(root.x, sidebar.x, "the cursor never inverts the mark cell");
+    assert_eq!(selected_cell(sidebar, 2), Position::new(SIDEBAR_X + 9, 1));
+
+    // A deep row of a narrow sidebar keeps the last cell of the sidebar, so
+    // the cursor never leaves the rectangle of the region.
+    let narrow = Rect::new(SIDEBAR_X, 1, 4, 1);
+    assert_eq!(
+        selected_cell(narrow, 6),
+        Position::new(SIDEBAR_X + 3, 1),
+        "the cursor stops at the right edge of a narrow sidebar"
     );
 }
 

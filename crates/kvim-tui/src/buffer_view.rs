@@ -77,10 +77,23 @@ pub(super) enum BracketHighlight {
     Hidden,
 }
 
-/// Whether one window holds the input focus.
+/// Whether one region holds the input focus.
+///
+/// A region is one editor window or one sidebar, so both surfaces name the
+/// same fact with this value. The published row painter
+/// [`draw_file_row`](super::file_sidebar::draw_file_row) takes it, because a
+/// host owns the focus of the sidebar that it draws.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_tui::RegionFocus;
+///
+/// assert_ne!(RegionFocus::Focused, RegionFocus::Unfocused);
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum WindowFocus {
-    /// The window holds the focus.
+pub enum RegionFocus {
+    /// The region holds the focus.
     Focused,
     /// Another region holds the focus.
     Unfocused,
@@ -130,7 +143,7 @@ pub(super) struct WindowView<'a> {
     /// published one. See `docs/language-services.md`.
     pub(super) diagnostics: &'a [Diagnostic],
     /// Whether the window holds the input focus.
-    pub(super) focus: WindowFocus,
+    pub(super) focus: RegionFocus,
     /// Whether the window paints the bracket pair under its cursor.
     pub(super) brackets: BracketHighlight,
     /// The visible layout settings of the editor.
@@ -397,8 +410,8 @@ fn render_winbar(
         return;
     }
     let title = match view.focus {
-        WindowFocus::Focused => ThemeRole::Title,
-        WindowFocus::Unfocused => ThemeRole::TitleMuted,
+        RegionFocus::Focused => ThemeRole::Title,
+        RegionFocus::Unfocused => ThemeRole::TitleMuted,
     };
 
     let shows_position = width >= usize::from(POSITION_CELLS) + PATH_CELLS_MIN;

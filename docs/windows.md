@@ -451,6 +451,22 @@ while the sidebar holds the focus, so one frame still reports one cursor cell.
 Every editor window is unfocused at that moment, so no window reports a second
 cursor cell and no winbar carries the focused title color.
 
+The focused sidebar marks the selected row with one left half block at the left
+edge of the row. An unfocused sidebar draws no mark. The mark reports which row
+the keys move, and an unfocused sidebar moves no row. The mark cell keeps its
+width in both states, so no guide, no icon, and no label moves when the focus
+moves. The selected row of an unfocused sidebar still carries the selection
+band over its whole width, so the reader still finds the row.
+
+The cursor cell of the focused sidebar is the first cell of the label of the
+selected row. It is not the mark cell. The terminal draws a block cursor that
+inverts the cell below it. The left half block fills the left half of its cell,
+so an inverted mark cell lights the right half instead. The reader reads that
+as a mark that moved by half a cell. The cursor therefore stands behind the
+mark, on the first cell of the content of the row. A deep row of a narrow
+sidebar keeps the last cell of the sidebar, so the cursor never leaves the
+region.
+
 ### Tree Rows
 
 `SidebarRow<R>` carries a depth and a collapsed flag. The depth is the
