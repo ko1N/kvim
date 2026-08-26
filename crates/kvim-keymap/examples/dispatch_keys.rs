@@ -3,6 +3,11 @@
 //! This is the whole keymap workflow that a host starts from. The crate holds
 //! no terminal and no renderer, so the example prints plain lines instead.
 //!
+//! The example walks [`Registry::all_bindings`] to show how a host builds its
+//! own table from kvim's preset, and it reads [`Resolver::idle_which_key`] to
+//! show how a reader discovers what that table holds before any key is
+//! pressed.
+//!
 //! The example runs the same registry through two contexts. A context with one
 //! scope is the standalone shape, and it reaches no interruption. A context
 //! that also names a host-global scope is the embedded shape, and there a
@@ -16,7 +21,7 @@ use std::time::Duration;
 
 use kvim_keymap::{
     Binding, CommandMetadata, CommandOwner, Dispatch, DispatchContext, Input, InputContextSnapshot,
-    Key, KeyCode, Registry, RegistryError, Resolver, Scope,
+    Key, KeyCode, Registry, RegistryError, Resolver, Scope, WhichKeyTarget,
 };
 
 /// The pending-key limit of this host.
@@ -102,19 +107,35 @@ fn main() -> Result<(), RegistryError<Action, Table>> {
         KEYS_MAX,
     )?;
 
-    // 2. One resolver reads that one table, so no presentation layer holds a
+    // 2. `all_bindings` yields every `(scope, KeySequence, BoundCommand)` triple
+    //    of the registry, so a host walks the whole preset once and builds its
+    //    own table with no second copy of the bindings.
+    let walked: Vec<_> = registry.all_bindings().collect();
+    assert_eq!(
+        walked.len(),
+        registry.len(),
+        "the walk reaches every binding of the registry exactly once"
+    );
+    let save = walked
+        .iter()
+        .find(|(scope, keys, _)| *scope == Table::Editor && keys.keys() == [key('s')].as_slice())
+        .expect("the walk carries the one-key save binding of the editor scope");
+    assert_eq!(save.2.command, Action::Save);
+    assert_eq!(save.2.owner, CommandOwner::Host);
+
+    // 3. One resolver reads that one table, so no presentation layer holds a
     //    second one. It reads no clock: the caller supplies the elapsed time.
     let registry = Arc::new(registry);
     let mut resolver = Resolver::new(Arc::clone(&registry), KEYS_MAX, WHICH_KEY_DELAY);
     let context = DispatchContext::focused(InputContextSnapshot::idle(Table::Editor));
 
-    // 3. A one-key binding of the host side reaches the host.
+    // 4. A one-key binding of the host side reaches the host.
     report(&resolver.dispatch(&context, Input::Key(key('s')), Some(Duration::ZERO)));
 
-    // 4. A prefix stays pending until the sequence completes.
+    // 5. A prefix stays pending until the sequence completes.
     report(&resolver.dispatch(&context, Input::Key(key('g')), Some(Duration::ZERO)));
 
-    // 5. While the sequence is pending, the hints come from the same table.
+    // 6. While the sequence is pending, the hints come from the same table.
     if let Some(view) = resolver.which_key(WHICH_KEY_DELAY) {
         println!("which-key after `g`:");
         for scoped in view.hints() {
@@ -123,14 +144,14 @@ fn main() -> Result<(), RegistryError<Action, Table>> {
         }
     }
 
-    // 6. The next key completes the sequence and reaches the focused surface.
+    // 7. The next key completes the sequence and reaches the focused surface.
     report(&resolver.dispatch(&context, Input::Key(key('g')), Some(WHICH_KEY_DELAY)));
 
-    // 7. Input that no binding accepts is reported, never degraded.
+    // 8. Input that no binding accepts is reported, never degraded.
     report(&resolver.dispatch(&context, Input::Key(key('q')), Some(Duration::ZERO)));
     report(&resolver.dispatch(&context, Input::Unsupported, Some(Duration::ZERO)));
 
-    // 8. The context above names one scope, so no scope precedes the editor.
+    // 9. The context above names one scope, so no scope precedes the editor.
     //    A host-global key therefore only breaks the pending sequence there.
     report(&resolver.dispatch(&context, Input::Key(key('g')), Some(Duration::ZERO)));
     let standalone = resolver.dispatch(&context, Input::Key(leave), Some(Duration::ZERO));
@@ -141,21 +162,62 @@ fn main() -> Result<(), RegistryError<Action, Table>> {
         "a context with one scope holds no preceding scope, so it reaches no interruption"
     );
 
-    // 9. An embedded host names its own scope beside the focused one. That
-    //    scope precedes the editor, so its complete one-key binding cancels a
-    //    pending editor sequence and runs. The host resets the semantic state
-    //    of the named surface before it runs the command, because the count,
-    //    the operator, and the register of the cancelled sequence still sit
-    //    there.
+    // 10. An embedded host names its own scope beside the focused one. That
+    //     scope precedes the editor, so its complete one-key binding cancels a
+    //     pending editor sequence and runs. The host resets the semantic state
+    //     of the named surface before it runs the command, because the count,
+    //     the operator, and the register of the cancelled sequence still sit
+    //     there.
     let mut embedded = Resolver::new(Arc::clone(&registry), KEYS_MAX, WHICH_KEY_DELAY);
     let composed = DispatchContext {
         overlay: None,
         global: Some(Table::Global),
         focus: InputContextSnapshot::idle(Table::Editor),
     };
+
+    // 11. Before any key is pressed, a reader asks what it can press.
+    //     `idle_which_key` walks the same scope order with no pending prefix,
+    //     so the host-global escape stays discoverable beside the editor's own
+    //     bindings.
+    let idle = embedded.idle_which_key(&composed);
+    println!("idle bindings of the composed context:");
+    for scoped in &idle {
+        let hint = scoped.hint();
+        println!(
+            "  {}  {}  ({})",
+            hint.key_label(),
+            hint.target(),
+            scoped.scope()
+        );
+    }
+    assert_eq!(
+        idle.len(),
+        3,
+        "the host-global escape and the two first keys of the editor scope"
+    );
+    assert_eq!(
+        idle[0].scope(),
+        Table::Global,
+        "the host-global scope answers first"
+    );
+    assert_eq!(idle[0].hint().key(), leave);
+    assert_eq!(idle[1].scope(), Table::Editor);
+    assert_eq!(idle[1].hint().key(), key('g'));
+    assert_eq!(
+        idle[1].hint().target(),
+        WhichKeyTarget::Group { commands: 2 },
+        "`gg` and `ge` share their first key"
+    );
+    assert_eq!(idle[2].scope(), Table::Editor);
+    assert_eq!(idle[2].hint().key(), key('s'));
+    assert_eq!(
+        idle[2].hint().target(),
+        WhichKeyTarget::Command(Action::Save)
+    );
+
     report(&embedded.dispatch(&composed, Input::Key(key('g')), Some(Duration::ZERO)));
 
-    // 10. The overlay of a pending prefix answers two lists. The hints
+    // 12. The overlay of a pending prefix answers two lists. The hints
     //     continue the sequence, and the interruptions abandon it. Every
     //     published key runs at this moment.
     if let Some(view) = embedded.which_key(WHICH_KEY_DELAY) {
@@ -186,7 +248,7 @@ fn main() -> Result<(), RegistryError<Action, Table>> {
         "the interruption leaves no prefix behind"
     );
 
-    // 11. A conflicting table is refused at composition time.
+    // 13. A conflicting table is refused at composition time.
     let conflict = Registry::from_bindings(
         &[
             Binding::surface(Table::Editor, &[key('g')], Action::FirstLine),

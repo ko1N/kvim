@@ -15,6 +15,14 @@
 //! workspace picker, the command-line completion, and the domain-neutral
 //! selector of `kvim-ui`. No caller keeps a second copy of the ordering rule.
 //!
+//! `crates/kvim-fuzzy/examples/rank_candidates.rs` is the dedicated example of
+//! this feature. It scores a small candidate list against one query and orders
+//! the survivors by score:
+//!
+//! ```sh
+//! cargo run -p kvim-fuzzy --example rank_candidates
+//! ```
+//!
 //! # Examples
 //!
 //! ```
