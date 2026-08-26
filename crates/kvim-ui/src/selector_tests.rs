@@ -380,3 +380,53 @@ fn a_placement_names_the_row_position_and_the_matched_candidate() {
         assert_eq!(*candidate.id(), expected_candidate);
     }
 }
+
+#[test]
+fn a_shared_selector_answers_the_window_of_every_height() {
+    let mut selector = long_selector(10);
+    selector.set_height_rows(4);
+    selector.apply_motion(ListMotion::LastRow);
+
+    // The frame builder holds the selector by shared reference alone, and it
+    // learns each height from a rectangle that it computed itself.
+    let overlay: &Selector<usize> = &selector;
+    for height in 1..=10_u16 {
+        let window = overlay.window_for_height(height, 0);
+        assert_eq!(
+            window.placements().len(),
+            usize::from(height),
+            "the window of {height} rows fills itself"
+        );
+        assert!(
+            window
+                .placements()
+                .iter()
+                .any(|placement| placement.candidate_index() == 9),
+            "the window of {height} rows shows the selected row"
+        );
+        assert_eq!(window.total_lines(), 10);
+    }
+}
+
+#[test]
+fn the_answered_window_repeats_the_stored_window_of_the_selector() {
+    let mut selector = long_selector(10);
+    selector.set_height_rows(4);
+    selector.set_scroll_margin(1);
+
+    for row in (0..10).chain((0..10).rev()) {
+        selector.apply_motion(ListMotion::ToRow(row));
+        let answered = selector.window_for_height(selector.height_rows(), selector.scroll_margin());
+        assert_eq!(
+            answered.first_line(),
+            selector.first_line(),
+            "row {row} answered two offsets"
+        );
+        assert_eq!(answered.total_lines(), selector.total_lines());
+        assert_eq!(
+            answered.placements(),
+            selector.placements(),
+            "row {row} answered two windows"
+        );
+    }
+}

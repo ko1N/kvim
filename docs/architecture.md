@@ -234,15 +234,19 @@ writes no indent rule, no collapse rule, and no motion rule of its own.
 [`windows.md`](windows.md) owns these rules.
 
 `kvim-ui` also publishes the one scroll rule of every bounded list.
-`ListViewport` owns a height, a scroll margin, and the first visible line, and
-it keeps a selected item inside the window without scrolling past the end of
-the list. `ListItem` is the measure of one item, and `ListItem::single` builds
-a list of one line for each item, so a uniform list is the simple case of the
-same rule. `ListPlacement` names the visible part of one item and carries no
-host identity. `LIST_VIEWPORT_LINES_MAX` bounds the total line count.
-`SidebarState<R>` and `Selector<R>` each hold one viewport, so a host paints a
-bounded sidebar or a bounded picker without writing an offset rule of its own.
-[`windows.md`](windows.md) owns the rule.
+`ListWindow::reconciled` is that rule, as a pure function that stores nothing.
+`ListViewport` is the stateful shell over it: it owns a height, a scroll margin,
+and the last answer, and it keeps a selected item inside the window without
+scrolling past the end of the list. `ListItem` is the measure of one item, and
+`ListItem::single` builds a list of one line for each item, so a uniform list is
+the simple case of the same rule. `ListPlacement` names the visible part of one
+item and carries no host identity. `LIST_VIEWPORT_LINES_MAX` bounds the total
+line count. `SidebarState<R>` and `Selector<R>` each hold one viewport, so a
+host paints a bounded sidebar or a bounded picker without writing an offset rule
+of its own. Both also publish `window_for_height`, which answers one window
+through a shared reference for a height that the caller supplies at draw time,
+so a host whose frame builder holds its state by shared reference reads the
+window without a mutable borrow. [`windows.md`](windows.md) owns the rule.
 
 `ListMotion` is the one motion type that both lists answer. It replaces
 `SidebarMotion`, which is gone from the public surface with no alias, and a
@@ -339,7 +343,8 @@ patch release must not intentionally break a documented public facade.
 
 Every surface that this section names is such a facade. This includes the
 selector with its window and its candidate count, the list viewport with
-`ListItem` and `ListPlacement`, the `ListMotion` vocabulary of both lists, the
+`ListItem`, `ListPlacement`, and `ListWindow`, the `window_for_height` answer of
+both lists, the `ListMotion` vocabulary of both lists, the
 tree and section mechanics of the sidebar, the indent guide rule, the three
 which-key lists, the paged which-key overlay with `WhichKeyPlacement` and
 `WhichKeyOverlayRow`, `Registry::all_bindings`, the interrupted

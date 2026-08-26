@@ -1,5 +1,5 @@
-//! Tests for the list viewport: the offset rule, the end of the list, and the
-//! placements.
+//! Tests for the list viewport: the offset rule, the end of the list, the
+//! placements, and the agreement between the pure rule and the stored one.
 
 use super::*;
 
@@ -170,4 +170,69 @@ fn an_empty_list_and_a_window_of_no_row_place_nothing() {
     assert_eq!(viewport.total_lines(), 10);
     assert_eq!(viewport.first_line(), 0);
     assert!(viewport.placements().is_empty());
+}
+
+#[test]
+fn the_pure_window_and_the_stored_window_answer_the_same_thing() {
+    for height in 1..=6_u16 {
+        for margin in [0_u16, 1, 3] {
+            let mut viewport = ListViewport::new(height);
+            viewport.set_scroll_margin(margin);
+            // The pure rule carries no offset of its own, so the sweep hands
+            // it the offset that the previous answer left behind. That is
+            // exactly what the viewport hands its own call.
+            let mut previous = 0_u32;
+            let down = 0..ITEMS;
+            let up = (0..ITEMS).rev();
+            for selected in down.chain(up).map(Some).chain([None]) {
+                let pure =
+                    ListWindow::reconciled(uniform(ITEMS), selected, height, margin, previous);
+                viewport.reconcile(uniform(ITEMS), selected);
+                assert_eq!(
+                    &pure,
+                    viewport.window(),
+                    "height {height}, margin {margin}, item {selected:?} answered two windows"
+                );
+                previous = pure.first_line();
+            }
+        }
+    }
+}
+
+#[test]
+fn a_shared_list_reads_the_window_of_every_height_without_an_offset_of_its_own() {
+    // A host that stores no offset passes zero and still reads a window that
+    // shows the selection, at whatever height it learns while it draws.
+    for height in 1..=12_u16 {
+        let window = ListWindow::reconciled(uniform(ITEMS), Some(ITEMS - 1), height, 0, 0);
+        let total = u32::try_from(ITEMS).expect("ten fits u32");
+        assert_eq!(
+            window.first_line(),
+            total.saturating_sub(u32::from(height)),
+            "the window of {height} rows stops at the end of the list"
+        );
+        assert_eq!(window.total_lines(), total);
+        assert!(
+            window
+                .placements()
+                .iter()
+                .any(|placement| placement.index() == ITEMS - 1),
+            "the window of {height} rows shows the last item"
+        );
+    }
+}
+
+#[test]
+fn the_pure_window_of_no_row_and_of_an_empty_list_places_nothing() {
+    let empty = ListWindow::reconciled(uniform(0), None, 4, 0, 0);
+    assert_eq!(empty.total_lines(), 0);
+    assert_eq!(empty.first_line(), 0);
+    assert!(empty.placements().is_empty());
+
+    // A window of no row still measures the list, so a host reads the total
+    // before it knows a height.
+    let no_row = ListWindow::reconciled(uniform(ITEMS), Some(9), 0, 0, 0);
+    assert_eq!(no_row.total_lines(), 10);
+    assert_eq!(no_row.first_line(), 0);
+    assert!(no_row.placements().is_empty());
 }

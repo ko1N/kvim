@@ -266,11 +266,19 @@ small keeps the subtree that holds the focused window instead.
 
 ## List Viewport
 
-`ListViewport` owns the one scroll rule of every bounded list of `kvim-ui`. It
-holds a viewport height in terminal rows, a scroll margin, and the first
-visible line of the list. It holds no item: the caller owns every item value,
-and `reconcile` takes the measure of each item and the position of the selected
-one.
+`ListWindow::reconciled` owns the one scroll rule of every bounded list of
+`kvim-ui`, and it is the only copy of that rule. It is a pure function: it
+takes the measure of every item, the position of the selected item, a viewport
+height, a scroll margin, and the first visible line of the previous answer, and
+it returns one `ListWindow`. It stores nothing.
+
+`ListViewport` is the stateful shell over that rule. It holds a viewport height
+in terminal rows, a scroll margin, and the last answer. It holds no item: the
+caller owns every item value, and `reconcile` takes the measure of each item and
+the position of the selected one. `reconcile` calls `ListWindow::reconciled`
+with the stored height, the stored margin, and the offset that the previous
+answer left behind, then keeps the result. The stored rule and the pure rule can
+therefore never disagree, because one calls the other.
 
 One `ListItem` is the measure of one item: the terminal lines it occupies, and
 whether it is visible. A list of one line for each item builds every item with
@@ -304,6 +312,44 @@ first, and every present bound stays well below it.
 
 Call `reconcile` after every change of the items, the selection, the height, or
 the margin. The placements describe the state of the last reconciliation.
+
+### The Window Of A Shared List
+
+The geometry of a bounded list is known at draw time, from the rectangle of the
+frame. `set_height_rows` takes `&mut self`, so a host that reaches the window
+only through the stored viewport must mutate before it reads. A host whose frame
+builder holds its state by shared reference cannot do that without a mutable
+borrow across the whole frame.
+
+`Selector::window_for_height` and `SidebarState::window_for_height` therefore
+answer one window through `&self`, for a height and a margin that the caller
+supplies at draw time. Each one calls `ListWindow::reconciled` and names every
+returned placement with its own placement type. Neither host writes arithmetic
+of its own.
+
+The two names divide the two questions. `placements` and `first_line` answer the
+window that the list stored, at the height that the list stored.
+`window_for_height` answers the window of the height that the caller names now,
+and stores nothing.
+
+Both answers start from the same offset: the first visible line that the list
+stored. That choice keeps two properties. The answer for the stored height and
+the stored margin repeats the stored window exactly, because the offset rule is
+idempotent. And the answer stays sticky, so the window keeps its offset while
+the selection stays inside the margin.
+
+The cost is explicit. A host that never calls `set_height_rows` leaves the stored
+offset at zero, and then every answer is the smallest offset that satisfies the
+margin. That window always shows the selection, but it steps between the top and
+the bottom of the area instead of scrolling with the selection. A host that wants
+the scrolling answer calls `set_height_rows` once, when it learns the height, and
+then reads `window_for_height` at that same height for every frame.
+
+`ListWindow::reconciled` allocates one vector of placements for each call. The
+vector holds at most one placement for each terminal row of the window, so the
+allocation stays bounded by the height of the terminal. `ListViewport::reconcile`
+takes the same allocation instead of reusing its previous buffer. One call runs
+for each input event or frame, so the cost is one small allocation per event.
 
 ### List Motion
 
@@ -346,7 +392,8 @@ hands the viewport one `ListItem` for each row, with the height of the row and
 whether a collapsed ancestor or a collapsed section hides it, and it names each
 returned `ListPlacement` with the host identity of its row. `set_height_rows`,
 `set_scroll_margin`, `first_line`, `total_lines`, and `height_rows` all read or
-write that one viewport. See [List Viewport](#list-viewport).
+write that one viewport, and `window_for_height` answers a window of any height
+through a shared reference. See [List Viewport](#list-viewport).
 
 Selection and scrolling count terminal rows, not only item indexes. Layout
 publishes clipped visible row placements. A host callback renders each placement

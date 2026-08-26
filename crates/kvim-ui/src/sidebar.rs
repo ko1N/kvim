@@ -22,7 +22,7 @@ use ratatui::style::Style;
 use thiserror::Error;
 
 use crate::layout::fits;
-use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport};
+use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport, ListWindow};
 
 /// The largest number of rows that one sidebar holds.
 ///
@@ -431,6 +431,19 @@ pub struct SidebarPlacement<R> {
     placement: ListPlacement,
 }
 
+impl<R: Clone> SidebarPlacement<R> {
+    /// Names the host row of one placed row.
+    ///
+    /// `rows` is the complete flat row list, and the placement indexes it, so
+    /// the lookup always lands on one held row.
+    fn of_row(rows: &[SidebarRow<R>], placement: ListPlacement) -> Self {
+        Self {
+            row: rows[placement.index()].id.clone(),
+            placement,
+        }
+    }
+}
+
 impl<R> SidebarPlacement<R> {
     /// Returns the host identity of the row.
     #[must_use]
@@ -713,6 +726,67 @@ impl<R: Clone + Eq> SidebarState<R> {
         &self.placements
     }
 
+    /// Answers the window of a viewport height that the caller supplies,
+    /// without a mutable borrow.
+    ///
+    /// [`SidebarState::placements`] answers the window that the sidebar
+    /// stored, at the height of [`SidebarState::height_rows`]. This method
+    /// answers the window of any height instead, so a host that learns its
+    /// rectangle while it draws, and holds the sidebar by shared reference,
+    /// still reads which rows a bounded area shows. It writes no offset rule
+    /// of its own: [`ListWindow::reconciled`] owns the rule, and
+    /// [`SidebarState::set_height_rows`] runs the same one.
+    ///
+    /// The answer starts from the stored first row, so it repeats the stored
+    /// window exactly when the caller passes the stored height and the stored
+    /// margin. A host that never calls [`SidebarState::set_height_rows`]
+    /// leaves that stored row at zero, and then every answer is the smallest
+    /// offset that satisfies the margin. See
+    /// [`Selector::window_for_height`](crate::Selector::window_for_height) for
+    /// what that costs a host.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{RowKind, SidebarPlacement, SidebarRow, SidebarState};
+    ///
+    /// let mut sidebar = SidebarState::default();
+    /// sidebar
+    ///     .set_rows((0..8).map(|id| SidebarRow::single(id, RowKind::Selectable)).collect())
+    ///     .expect("eight rows stay inside every bound");
+    /// sidebar.select(&7).expect("the last row takes the selection");
+    ///
+    /// // The frame builder holds the sidebar by shared reference alone.
+    /// let tree = &sidebar;
+    /// let window = tree.window_for_height(3, 0);
+    /// let rows: Vec<i32> = window
+    ///     .placements()
+    ///     .iter()
+    ///     .map(|placement| *SidebarPlacement::row(placement))
+    ///     .collect();
+    /// assert_eq!(rows, vec![5, 6, 7]);
+    /// ```
+    #[must_use]
+    pub fn window_for_height(
+        &self,
+        height_rows: u16,
+        margin_rows: u16,
+    ) -> ListWindow<SidebarPlacement<R>> {
+        let items = self
+            .rows
+            .iter()
+            .zip(&self.visible)
+            .map(|(row, &visible)| ListItem::new(row.height_rows).with_visible(visible));
+        ListWindow::reconciled(
+            items,
+            self.selected,
+            height_rows,
+            margin_rows,
+            self.viewport.first_line(),
+        )
+        .map(|placement| SidebarPlacement::of_row(&self.rows, placement))
+    }
+
     /// Replaces every row and keeps the selected identity while it remains.
     ///
     /// A selected identity that stays selectable keeps the selection at its new
@@ -872,6 +946,17 @@ impl<R: Clone + Eq> SidebarState<R> {
     pub fn set_height_rows(&mut self, height_rows: u16) {
         self.viewport.set_height_rows(height_rows);
         self.reconcile();
+    }
+
+    /// Returns the number of rows that the selection keeps above and below
+    /// itself.
+    ///
+    /// A host that answers a window through
+    /// [`SidebarState::window_for_height`] reads the margin back here, so it
+    /// keeps no copy of a value that this sidebar already holds.
+    #[must_use]
+    pub const fn scroll_margin(&self) -> u16 {
+        self.viewport.scroll_margin()
     }
 
     /// Sets the number of rows that the selection keeps above and below itself.
@@ -1109,16 +1194,12 @@ impl<R: Clone + Eq> SidebarState<R> {
             .map(|(row, &visible)| ListItem::new(row.height_rows).with_visible(visible));
         self.viewport.reconcile(items, self.selected);
         self.placements.clear();
-        self.placements
-            .extend(
-                self.viewport
-                    .placements()
-                    .iter()
-                    .map(|placement| SidebarPlacement {
-                        row: self.rows[placement.index()].id.clone(),
-                        placement: *placement,
-                    }),
-            );
+        self.placements.extend(
+            self.viewport
+                .placements()
+                .iter()
+                .map(|placement| SidebarPlacement::of_row(&self.rows, *placement)),
+        );
     }
 }
 

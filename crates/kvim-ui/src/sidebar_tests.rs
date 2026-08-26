@@ -707,3 +707,26 @@ fn a_collapsed_section_and_a_collapsed_row_hide_together() {
     // The section collapse now hides `a` as well, so only `src` remains.
     assert_eq!(sidebar.total_lines(), 1);
 }
+
+#[test]
+fn a_shared_sidebar_answers_the_window_of_a_height_it_never_stored() {
+    let mut sidebar = single_rows(3, 10);
+    sidebar.set_scroll_margin(1);
+    sidebar
+        .select(&9)
+        .expect("the last row takes the selection");
+
+    // The stored height answers the stored window, so the two rules agree.
+    let stored = sidebar.window_for_height(sidebar.height_rows(), 1);
+    assert_eq!(stored.first_line(), sidebar.first_line());
+    assert_eq!(stored.total_lines(), sidebar.total_lines());
+    assert_eq!(stored.placements(), sidebar.placements());
+
+    // A taller rectangle answers more rows without a mutable borrow, and the
+    // sidebar keeps the height that it stored.
+    let tree: &SidebarState<RowId> = &sidebar;
+    let taller = tree.window_for_height(6, 1);
+    assert_eq!(taller.placements().len(), 6);
+    assert_eq!(taller.first_line(), 4);
+    assert_eq!(sidebar.height_rows(), 3);
+}

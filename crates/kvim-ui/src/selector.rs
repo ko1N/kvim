@@ -14,6 +14,11 @@
 //! offset of its own, the same way [`SidebarState`](crate::SidebarState) reads
 //! its own placements. See `docs/windows.md`.
 //!
+//! [`Selector::window_for_height`] answers the same window through a shared
+//! reference, for a height that the caller supplies at draw time. A host whose
+//! frame builder holds its state by shared reference reads the window there
+//! instead of taking a mutable borrow across the whole frame.
+//!
 //! [`Selector::apply_motion`] answers the same [`ListMotion`] that
 //! [`SidebarState`](crate::SidebarState) answers, so a host picker reaches the
 //! last row, jumps to a row, and moves by a count, exactly as a host sidebar
@@ -34,7 +39,7 @@
 use kvim_fuzzy::rank;
 use ratatui::layout::Rect;
 
-use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport};
+use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport, ListWindow};
 
 /// The largest number of candidates that one selector holds.
 ///
@@ -127,6 +132,17 @@ pub struct SelectorPlacement {
 }
 
 impl SelectorPlacement {
+    /// Names the matched candidate of one placed row.
+    ///
+    /// `matches` is [`Selector::matches`], and the placement indexes it, so
+    /// the lookup always lands on one held candidate.
+    fn of_match(matches: &[usize], placement: ListPlacement) -> Self {
+        Self {
+            candidate: matches[placement.index()],
+            placement,
+        }
+    }
+
     /// Returns the position of the row inside [`Selector::matches`].
     #[must_use]
     pub const fn index(&self) -> usize {
@@ -409,6 +425,69 @@ impl<R> Selector<R> {
         &self.placements
     }
 
+    /// Answers the window of a height that the caller supplies, without a
+    /// mutable borrow.
+    ///
+    /// [`Selector::placements`] answers the window that the selector stored,
+    /// at the height of [`Selector::height_rows`]. This method answers the
+    /// window of any height instead, so a host that learns its rectangle while
+    /// it draws, and holds the selector by shared reference, still reads which
+    /// rows a bounded area shows. It writes no offset rule of its own:
+    /// [`ListWindow::reconciled`] owns the rule, and
+    /// [`Selector::set_height_rows`] runs the same one.
+    ///
+    /// The answer starts from the stored first row, so it repeats the stored
+    /// window exactly when the caller passes the stored height and the stored
+    /// margin. A host that never calls [`Selector::set_height_rows`] leaves
+    /// that stored row at zero, and then every answer is the smallest offset
+    /// that satisfies the margin. Such a window always shows the selected row,
+    /// but it steps between the top and the bottom of the area instead of
+    /// scrolling with the selection. A host that wants the scrolling answer
+    /// calls [`Selector::set_height_rows`] once, when it learns the height.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{Selector, SelectorCandidate, SelectorPlacement};
+    ///
+    /// let mut selector = Selector::default();
+    /// selector.set_candidates(
+    ///     (0..10)
+    ///         .map(|index| SelectorCandidate::new(index, format!("row {index}"), ""))
+    ///         .collect(),
+    ///     false,
+    /// );
+    /// selector.apply_motion(kvim_ui::ListMotion::LastRow);
+    ///
+    /// // The frame builder holds the selector by shared reference alone.
+    /// let overlay = &selector;
+    /// let window = overlay.window_for_height(3, 0);
+    /// let rows: Vec<usize> = window
+    ///     .placements()
+    ///     .iter()
+    ///     .map(SelectorPlacement::candidate_index)
+    ///     .collect();
+    /// assert_eq!(rows, vec![7, 8, 9]);
+    ///
+    /// // A taller area answers more rows from the same shared reference.
+    /// assert_eq!(overlay.window_for_height(5, 0).placements().len(), 5);
+    /// ```
+    #[must_use]
+    pub fn window_for_height(
+        &self,
+        height_rows: u16,
+        margin_rows: u16,
+    ) -> ListWindow<SelectorPlacement> {
+        ListWindow::reconciled(
+            std::iter::repeat_n(ListItem::single(), self.matches.len()),
+            self.selected_row(),
+            height_rows,
+            margin_rows,
+            self.viewport.first_line(),
+        )
+        .map(|placement| SelectorPlacement::of_match(&self.matches, placement))
+    }
+
     /// Moves the selection one row toward the end of the list.
     ///
     /// The list ends at both edges, because a wrap would move the reader past
@@ -502,16 +581,12 @@ impl<R> Selector<R> {
             selected_row,
         );
         self.placements.clear();
-        self.placements
-            .extend(
-                self.viewport
-                    .placements()
-                    .iter()
-                    .map(|placement| SelectorPlacement {
-                        candidate: self.matches[placement.index()],
-                        placement: *placement,
-                    }),
-            );
+        self.placements.extend(
+            self.viewport
+                .placements()
+                .iter()
+                .map(|placement| SelectorPlacement::of_match(&self.matches, *placement)),
+        );
     }
 
     /// Ranks every candidate against the query and keeps the selection.

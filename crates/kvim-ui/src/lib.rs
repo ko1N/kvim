@@ -17,6 +17,13 @@
 //! is the simple case of the same rule. [`SidebarState`] and [`Selector`] each
 //! hold one.
 //!
+//! [`ListWindow`] is one answer of that rule: a first visible line, a total
+//! line count, and the visible part of every item that the window shows.
+//! [`ListWindow::reconciled`] answers one and stores nothing, so a host that
+//! holds its list by shared reference reads a window while it draws.
+//! [`Selector::window_for_height`] and [`SidebarState::window_for_height`]
+//! publish the same answer for a height that the caller supplies at draw time.
+//!
 //! [`Selector`] holds the mechanism that narrows a bounded candidate list
 //! through a query: the query, the ranked matches, a selection that survives a
 //! refiltering while the query still matches it, and the window over the
@@ -117,7 +124,9 @@ pub use guides::{
     sidebar_guides,
 };
 pub use layout::{Region, RegionKind, WindowLayout};
-pub use list::{LIST_VIEWPORT_LINES_MAX, ListItem, ListMotion, ListPlacement, ListViewport};
+pub use list::{
+    LIST_VIEWPORT_LINES_MAX, ListItem, ListMotion, ListPlacement, ListViewport, ListWindow,
+};
 pub use selector::{
     SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
     SelectorPlacement,

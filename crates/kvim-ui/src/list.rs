@@ -7,6 +7,13 @@
 //! the simple case of the same rule, not a second rule. See
 //! `docs/windows.md`.
 //!
+//! [`ListWindow::reconciled`] owns the rule itself and stores nothing, so a
+//! host that holds its list by shared reference reads a window while it draws,
+//! at the height that its own rectangle names. [`ListViewport`] is the
+//! stateful shell over that rule: it keeps the height, the margin, and the
+//! last answer, and it calls the pure rule for every new one. The two can
+//! never disagree.
+//!
 //! The module is pure and deterministic. It reads no clock, no filesystem, and
 //! no terminal. It stores no item, because the caller owns every item value:
 //! [`SidebarState`](crate::SidebarState) owns its rows, and a picker owns its
@@ -186,6 +193,237 @@ impl ListPlacement {
     }
 }
 
+/// One answer of the offset rule: the visible part of a bounded list.
+///
+/// A window names the first visible line, the total line count, and the
+/// visible part of every item that the window shows. It holds no height and no
+/// scroll margin, because it is the answer for one height and one margin, not
+/// the state that produces the next answer.
+///
+/// [`ListWindow::reconciled`] answers one window and stores nothing, so a host
+/// that holds its list by shared reference reads a window while it draws.
+/// [`ListViewport`] stores one window instead and answers it again after every
+/// change. The two can never disagree, because the stored one calls the pure
+/// one.
+///
+/// `P` names the placement type. The pure rule answers
+/// [`ListPlacement`], which carries no host identity. A list that names its
+/// rows hands back its own placement type, the way
+/// [`Selector::window_for_height`](crate::Selector::window_for_height) hands
+/// back [`SelectorPlacement`](crate::SelectorPlacement).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ListWindow<P = ListPlacement> {
+    first_line: u32,
+    total_lines: u32,
+    placements: Vec<P>,
+}
+
+impl<P> Default for ListWindow<P> {
+    /// Returns the window of an empty list: no line, and no placement.
+    fn default() -> Self {
+        Self {
+            first_line: 0,
+            total_lines: 0,
+            placements: Vec::new(),
+        }
+    }
+}
+
+impl<P> ListWindow<P> {
+    /// Returns the first visible line of the list.
+    #[must_use]
+    pub const fn first_line(&self) -> u32 {
+        self.first_line
+    }
+
+    /// Returns the number of terminal lines that every visible item occupies
+    /// together.
+    ///
+    /// The count measures the whole list, not the window, so a host reads it
+    /// beside [`ListWindow::first_line`] to draw a scroll bar.
+    #[must_use]
+    pub const fn total_lines(&self) -> u32 {
+        self.total_lines
+    }
+
+    /// Returns the visible part of every item that the window shows, in list
+    /// order.
+    ///
+    /// The placements cover the window from its first row without a gap while
+    /// the items fill it. The first and the last placement may show a part of
+    /// an item.
+    #[must_use]
+    pub fn placements(&self) -> &[P] {
+        &self.placements
+    }
+
+    /// Returns the same window with every placement named by the caller.
+    ///
+    /// The offset and the line count stay exactly as the rule answered them.
+    /// Only the placement type changes, so a list that carries a host identity
+    /// keeps one shared rule instead of a second one.
+    pub(crate) fn map<Q>(self, name: impl FnMut(P) -> Q) -> ListWindow<Q> {
+        ListWindow {
+            first_line: self.first_line,
+            total_lines: self.total_lines,
+            placements: self.placements.into_iter().map(name).collect(),
+        }
+    }
+}
+
+impl ListWindow<ListPlacement> {
+    /// Answers the window of one bounded list, without storing anything.
+    ///
+    /// This is the offset rule of every bounded list of kvim, and the only
+    /// copy of it. `items` supplies the measure of every item, in list order,
+    /// and `selected` names the position of the selected item in that same
+    /// list. `height_rows` and `margin_rows` name the geometry that the caller
+    /// draws into.
+    ///
+    /// `previous_first_line` names the first visible line of the window that
+    /// the caller last drew. It makes the answer sticky: the window keeps its
+    /// offset while the selection stays inside the margin, instead of
+    /// recentering at every call. A caller that stores no offset passes zero
+    /// and reads the smallest offset that satisfies the margin. That answer
+    /// always shows the selection, but the window then steps between the top
+    /// and the bottom of the area instead of scrolling with the selection.
+    ///
+    /// The margin stops at half the window and at the last line of the list,
+    /// so the window never scrolls past the items to satisfy a margin that no
+    /// item can fill. An item that is taller than the window shows its first
+    /// line. A height of zero and an empty list both place nothing.
+    ///
+    /// # Examples
+    ///
+    /// A host holds its picker by shared reference while it draws, and it
+    /// learns the height from the rectangle of the frame:
+    ///
+    /// ```
+    /// use kvim_ui::{ListItem, ListWindow};
+    ///
+    /// struct Picker {
+    ///     rows: Vec<&'static str>,
+    ///     selected: usize,
+    /// }
+    ///
+    /// fn visible_rows(picker: &Picker, height_rows: u16) -> Vec<&'static str> {
+    ///     let window = ListWindow::reconciled(
+    ///         std::iter::repeat_n(ListItem::single(), picker.rows.len()),
+    ///         Some(picker.selected),
+    ///         height_rows,
+    ///         0,
+    ///         0,
+    ///     );
+    ///     window
+    ///         .placements()
+    ///         .iter()
+    ///         .map(|placement| picker.rows[placement.index()])
+    ///         .collect()
+    /// }
+    ///
+    /// let picker = Picker {
+    ///     rows: vec!["one", "two", "three", "four", "five"],
+    ///     selected: 4,
+    /// };
+    ///
+    /// // The window of two rows ends at the selected row.
+    /// assert_eq!(visible_rows(&picker, 2), vec!["four", "five"]);
+    ///
+    /// // A window that holds the whole list shows all of it.
+    /// assert_eq!(visible_rows(&picker, 5).len(), 5);
+    /// ```
+    #[must_use]
+    pub fn reconciled<I>(
+        items: I,
+        selected: Option<usize>,
+        height_rows: u16,
+        margin_rows: u16,
+        previous_first_line: u32,
+    ) -> Self
+    where
+        I: Iterator<Item = ListItem> + Clone,
+    {
+        let lines = list_lines(items.clone(), selected);
+        let mut window = Self {
+            first_line: 0,
+            total_lines: lines.total,
+            placements: Vec::new(),
+        };
+        if height_rows == 0 || lines.total == 0 {
+            return window;
+        }
+        let height = u32::from(height_rows);
+        let last_start = lines.total.saturating_sub(height);
+        window.first_line = match lines.selected {
+            None => previous_first_line.min(last_start),
+            Some((start, end)) => {
+                let margin = u32::from(margin_rows).min((height - 1) / 2);
+                let low = start.saturating_sub(margin);
+                let high = (end + margin).min(lines.total - 1);
+                previous_first_line
+                    .min(low)
+                    .max((high + 1).saturating_sub(height))
+                    .min(last_start)
+                    .min(start)
+            }
+        };
+        window.place(items, height_rows);
+        debug_assert!(
+            selected.is_none_or(|index| {
+                window
+                    .placements
+                    .iter()
+                    .any(|placement| placement.index == index)
+            }),
+            "the reconciled offset always shows the selected item"
+        );
+        window
+    }
+
+    /// Places every visible item that the window shows and clips the two ends.
+    ///
+    /// A hidden item contributes no line, so it never reaches the loop body
+    /// that turns a line range into one placement.
+    fn place<I>(&mut self, items: I, height_rows: u16)
+    where
+        I: Iterator<Item = ListItem>,
+    {
+        let height = u32::from(height_rows);
+        let mut line = 0_u32;
+        for (index, item) in items.enumerate() {
+            if !item.visible {
+                continue;
+            }
+            let end = line + u32::from(item.lines());
+            if end <= self.first_line {
+                line = end;
+                continue;
+            }
+            if line >= self.first_line + height {
+                break;
+            }
+            let first_line = self.first_line.saturating_sub(line);
+            let top_row = line.saturating_sub(self.first_line);
+            let visible_lines = (u32::from(item.lines()) - first_line).min(height - top_row);
+            let (Ok(first_line), Ok(top_row), Some(lines)) = (
+                u16::try_from(first_line),
+                u16::try_from(top_row),
+                u16::try_from(visible_lines).ok().and_then(NonZeroU16::new),
+            ) else {
+                debug_assert!(false, "one visible part stays inside the window height");
+                return;
+            };
+            self.placements.push(ListPlacement {
+                index,
+                first_line,
+                lines,
+                top_row,
+            });
+            line = end;
+        }
+    }
+}
+
 /// One bounded move of a list selection, measured in rows of the receiving
 /// list's own row space.
 ///
@@ -228,6 +466,10 @@ pub enum ListMotion {
 /// state of the last reconciliation, so a caller that skips one reads a stale
 /// window.
 ///
+/// The viewport is the stateful shell over [`ListWindow::reconciled`], which
+/// owns the rule and stores nothing. A caller that learns its height while it
+/// draws, and holds its list by shared reference, calls the pure rule instead.
+///
 /// # Examples
 ///
 /// ```
@@ -253,11 +495,12 @@ pub enum ListMotion {
 /// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ListViewport {
-    total_lines: u32,
-    first_line: u32,
     height_rows: u16,
     margin_rows: u16,
-    placements: Vec<ListPlacement>,
+    /// The answer of the last reconciliation. [`ListWindow::reconciled`] owns
+    /// the rule that produces it, so the stored window and a pure one can
+    /// never disagree.
+    window: ListWindow,
 }
 
 impl ListViewport {
@@ -303,14 +546,14 @@ impl ListViewport {
     /// Returns the first visible line of the list.
     #[must_use]
     pub const fn first_line(&self) -> u32 {
-        self.first_line
+        self.window.first_line
     }
 
     /// Returns the number of terminal lines that every visible item occupies
     /// together.
     #[must_use]
     pub const fn total_lines(&self) -> u32 {
-        self.total_lines
+        self.window.total_lines
     }
 
     /// Returns the visible part of every item that the window shows, in list
@@ -321,7 +564,17 @@ impl ListViewport {
     /// an item.
     #[must_use]
     pub fn placements(&self) -> &[ListPlacement] {
-        &self.placements
+        &self.window.placements
+    }
+
+    /// Returns the window that the last reconciliation stored.
+    ///
+    /// The value is exactly what [`ListWindow::reconciled`] answers for the
+    /// stored height, the stored margin, and the offset that the previous
+    /// reconciliation left behind.
+    #[must_use]
+    pub const fn window(&self) -> &ListWindow {
+        &self.window
     }
 
     /// Moves the window until it shows the selection, then places the items.
@@ -330,88 +583,20 @@ impl ListViewport {
     /// and `selected` names the position of the selected item in that same
     /// list. The selected item is always one visible item of the list.
     ///
-    /// The margin stops at half the window and at the last line of the list,
-    /// so the window never scrolls past the items to satisfy a margin that no
-    /// item can fill. An item that is taller than the window shows its first
-    /// line.
+    /// [`ListWindow::reconciled`] owns the rule. This method supplies the
+    /// stored height, the stored margin, and the stored offset, and it keeps
+    /// the answer for the next call.
     pub fn reconcile<I>(&mut self, items: I, selected: Option<usize>)
     where
         I: Iterator<Item = ListItem> + Clone,
     {
-        self.placements.clear();
-        let lines = list_lines(items.clone(), selected);
-        self.total_lines = lines.total;
-        if self.height_rows == 0 || lines.total == 0 {
-            self.first_line = 0;
-            return;
-        }
-        let height = u32::from(self.height_rows);
-        let last_start = lines.total.saturating_sub(height);
-        self.first_line = match lines.selected {
-            None => self.first_line.min(last_start),
-            Some((start, end)) => {
-                let margin = u32::from(self.margin_rows).min((height - 1) / 2);
-                let low = start.saturating_sub(margin);
-                let high = (end + margin).min(lines.total - 1);
-                self.first_line
-                    .min(low)
-                    .max((high + 1).saturating_sub(height))
-                    .min(last_start)
-                    .min(start)
-            }
-        };
-        self.place(items);
-        debug_assert!(
-            selected.is_none_or(|index| {
-                self.placements
-                    .iter()
-                    .any(|placement| placement.index == index)
-            }),
-            "the reconciled offset always shows the selected item"
+        self.window = ListWindow::reconciled(
+            items,
+            selected,
+            self.height_rows,
+            self.margin_rows,
+            self.window.first_line,
         );
-    }
-
-    /// Places every visible item that the window shows and clips the two ends.
-    ///
-    /// A hidden item contributes no line, so it never reaches the loop body
-    /// that turns a line range into one placement.
-    fn place<I>(&mut self, items: I)
-    where
-        I: Iterator<Item = ListItem>,
-    {
-        let height = u32::from(self.height_rows);
-        let mut line = 0_u32;
-        for (index, item) in items.enumerate() {
-            if !item.visible {
-                continue;
-            }
-            let end = line + u32::from(item.lines());
-            if end <= self.first_line {
-                line = end;
-                continue;
-            }
-            if line >= self.first_line + height {
-                break;
-            }
-            let first_line = self.first_line.saturating_sub(line);
-            let top_row = line.saturating_sub(self.first_line);
-            let visible_lines = (u32::from(item.lines()) - first_line).min(height - top_row);
-            let (Ok(first_line), Ok(top_row), Some(lines)) = (
-                u16::try_from(first_line),
-                u16::try_from(top_row),
-                u16::try_from(visible_lines).ok().and_then(NonZeroU16::new),
-            ) else {
-                debug_assert!(false, "one visible part stays inside the window height");
-                return;
-            };
-            self.placements.push(ListPlacement {
-                index,
-                first_line,
-                lines,
-                top_row,
-            });
-            line = end;
-        }
     }
 }
 

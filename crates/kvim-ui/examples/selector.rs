@@ -133,6 +133,55 @@ fn main() {
 
     show_the_bounds();
     show_the_window();
+    draw_from_a_shared_selector();
+}
+
+/// Draws one bounded overlay from a selector that the host holds by shared
+/// reference.
+///
+/// This is the shape of a real frame builder. The host learns the height of
+/// the overlay from the rectangle of the frame, which it computes while it
+/// draws, and at that moment it holds every piece of its own state by shared
+/// reference. [`Selector::window_for_height`] answers the window there, so the
+/// host takes no mutable borrow across the frame and still writes no offset
+/// rule of its own.
+fn draw_from_a_shared_selector() {
+    let mut selector = Selector::default();
+    selector.set_candidates(
+        BOARD
+            .iter()
+            .map(|task| SelectorCandidate::new(task.id, task.title, task.column))
+            .collect(),
+        false,
+    );
+    selector.apply_motion(ListMotion::LastRow);
+
+    // From here the host owns a shared reference alone.
+    let overlay: &Selector<TaskId> = &selector;
+    for height in [2_u16, 3] {
+        let window = overlay.window_for_height(height, 0);
+        let titles: Vec<&str> = window
+            .placements()
+            .iter()
+            .map(|placement| {
+                overlay
+                    .candidate(placement.candidate_index())
+                    .expect("the placement names one held candidate")
+                    .name()
+            })
+            .collect();
+        assert_eq!(
+            titles.len(),
+            usize::from(height),
+            "the window of {height} rows fills itself"
+        );
+        assert_eq!(
+            titles.last().copied(),
+            overlay.selected().map(SelectorCandidate::name),
+            "the window of {height} rows ends at the selected task"
+        );
+        println!("a window of {height} rows shows {titles:?}");
+    }
 }
 
 /// Prints the ranked rows of one selector, best row first.
