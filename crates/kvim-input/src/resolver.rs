@@ -40,7 +40,11 @@ use super::registry::{Registry, WhichKeyRow};
 /// cursor of its own line by characters. See `docs/architecture.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptEdit {
-    /// Append one character to the prompt line.
+    /// Write one character before the cursor of the prompt line.
+    ///
+    /// The cursor then steps over the written character. A line whose cursor
+    /// stands at its end therefore appends, which is what every prompt did
+    /// before the line held a cursor. See `docs/input-actions.md`.
     Insert(char),
     /// Remove the character before the cursor.
     DeleteBackward,

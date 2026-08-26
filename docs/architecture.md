@@ -207,6 +207,19 @@ resolved command, count, and register name from it. `kvim-editor` publishes the
 modal editing state over one `TextBuffer`, so a consumer can put a real Vim
 buffer behind its own text field without the terminal session.
 
+`kvim-input` also publishes the edit vocabulary of one prompt line.
+`PromptEdit` names every edit that an open prompt takes, and
+`PromptEdit::of_command` turns a resolved command into that edit, so a host
+that draws its own prompt line reaches the same vocabulary that kvim uses. The
+vocabulary holds the two text edits, the two completion edits, `Accept`,
+`Cancel`, and six cursor motions: one character each way, one word each way,
+and each end of the line. The preset binds the motions in the prompt scope
+alone, over the arrow keys, `Home`, `End`, and the readline chords `Ctrl-B`,
+`Ctrl-F`, `Ctrl-A`, and `Ctrl-E`. A host that binds one of those chords in its
+own global scope wins that key, because the resolver walks a global scope
+before a focused one. Such a host keeps the plain key of the same motion.
+[`input-actions.md`](input-actions.md) owns the prompt line and its keys.
+
 `kvim-fuzzy` holds the ranking rule alone: `score_candidate` scores one
 candidate against one query, and `rank` turns those scores into one ordered
 list of source indexes. A host that ranks a list of its own values takes
@@ -389,11 +402,13 @@ three carry `#[non_exhaustive]` and are no exception to reconcile.
 edit, and a host that absorbed a cursor motion into a wildcard arm would drop
 that key with no compile error. The six cursor motions of the prompt line
 arrived as such a break: a host adds one match arm for each and moves the
-cursor of its own line by characters. Neither
-`kvim-tui` nor `kvim-ui` adds a `#[non_exhaustive]` attribute to a published
-enum, because every enum of the facade is of the first kind. A new variant is
-therefore a breaking change, by design. The compile error is how a host learns
-that a new behavior exists. The compile error forces the host to
+cursor of its own line by characters. kvim is before its first release, so that
+break takes the obligations of this section for one: updated rustdoc and an
+updated dedicated example, and no version increase and no migration note.
+Neither `kvim-tui` nor `kvim-ui` adds a `#[non_exhaustive]` attribute to a
+published enum, because every enum of the facade is of the first kind. A new
+variant is therefore a breaking change, by design. The compile error is how a
+host learns that a new behavior exists. The compile error forces the host to
 decide how it handles that behavior. `Dispatch::Interrupted` proves the rule.
 Plan 029 published it as a new variant, not a flag. Every consumer must handle
 the new variant or fail to build. A host that ignored the interruption would

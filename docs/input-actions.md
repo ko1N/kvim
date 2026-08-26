@@ -226,7 +226,8 @@ candidate reaches outside that root.
 ## The Prompt Line
 
 One prompt line serves the command line, the search prompt, the picker query,
-and the three file-tree prompts. The line holds the text and one cursor
+and the four file-tree prompts: add-file, add-directory, rename, and the tree
+search. Every one of them holds a cursor. The line holds the text and one cursor
 position. The position counts characters, because a character is the unit that
 a reader inserts and deletes. It is never larger than the number of characters
 of the text, so it always names a character boundary. The terminal counts
@@ -265,6 +266,14 @@ shell. `Ctrl-Left` and `Ctrl-Right` already name the two word motions of the
 editing scopes, and the terminal layer folds the macOS `Option` arrows into
 them, so the prompt line reuses that pair. See [Motions](#motions).
 
+The preset binds every motion in the prompt scope alone. A host that binds one
+of these chords in its own global scope therefore wins that key, because the
+resolver evaluates a host-global scope before a focused one. Such a host keeps
+the plain key of the same motion and loses the chord. `Ctrl-A` and `Ctrl-E` are
+the two chords that a host is most likely to hold, and `Home` and `End` reach
+the same two positions. This is the documented precedence of
+[Binding Scopes](#binding-scopes) and not a defect of the prompt.
+
 A motion stops at the end that it names and never wraps to the other end, so a
 reader who holds a motion key down reaches a stable position. A motion changes
 no text, so it changes no completion candidate and no picker result.
@@ -281,6 +290,11 @@ own table does not hold.
 A completion writes its candidate over the whole line, so the reader continues
 after that candidate, as they do in Vim and in readline. The restore of a
 cancelled completion replaces the whole line as well and follows the same rule.
+
+A motion therefore leaves an open candidate list open, because the motion
+changes no text. The next `Tab` writes the whole line again and returns the
+position to the end of it. A reader who moved the position and then completed
+meets that jump. It follows the rule above, and no second rule holds it.
 
 A new prompt places its position after the text that it starts with, so a
 reader continues where the seed ends. One seed answers both what the line

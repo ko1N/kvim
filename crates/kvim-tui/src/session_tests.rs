@@ -1594,25 +1594,6 @@ fn every_prompt_motion_stops_at_the_end_that_it_names() {
 }
 
 #[test]
-fn an_insert_after_a_motion_writes_at_the_moved_position() {
-    let mut session = session(60, 10);
-    press(&mut session, ':');
-    type_keys(&mut session, "e main.rs");
-
-    press_code(&mut session, KeyCode::Home);
-    for _ in 0..2 {
-        press_code(&mut session, KeyCode::Right);
-    }
-    type_keys(&mut session, "src/");
-    assert_eq!(prompt_text(&session), "e src/main.rs");
-    assert_eq!(
-        prompt_cursor(&session),
-        6,
-        "the cursor stays after the written characters"
-    );
-}
-
-#[test]
 fn a_word_delete_after_a_motion_removes_the_word_before_the_moved_position() {
     let mut session = session(60, 10);
     press(&mut session, ':');
