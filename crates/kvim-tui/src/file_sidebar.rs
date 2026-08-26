@@ -27,6 +27,7 @@ use kvim_path::WorktreeRelativePath;
 use kvim_ui::{ListMotion, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX};
 
 use super::embed::EditorEvent;
+use super::theme::IconRole;
 
 /// The largest number of rows that one file sidebar hands to a host.
 ///
@@ -42,6 +43,13 @@ pub const FILE_SIDEBAR_ROWS_MAX: usize = SIDEBAR_ROWS_MAX;
 /// canvas of `kvim-ui` accepts, so a host can hand any published label to that
 /// canvas without a refusal.
 pub const FILE_SIDEBAR_LABEL_CHARS_MAX: usize = SIDEBAR_LABEL_CHARS_MAX;
+
+/// The suffix that kvim's own file tree draws behind a symbolic link.
+///
+/// [`FileRow::is_symlink`] names the fact alone. A host that reproduces the
+/// look of kvim appends this suffix to the label; a host that draws its own
+/// mark reads the fact instead of guessing the suffix.
+pub const FILE_SIDEBAR_LINK_SUFFIX: &str = "@";
 
 /// What one row of the file sidebar shows.
 ///
@@ -104,11 +112,64 @@ impl FileRowKind {
     }
 }
 
+/// The recorded Git state of one file-sidebar row.
+///
+/// The variants rise in the same severity order as the source that scans the
+/// repository, so a derived comparison ranks two states the way a reader
+/// ranks them. A row that carries no state, and a row of a workspace that no
+/// read has covered yet, publish `None` from [`FileRow::git`] instead of a
+/// variant of this enum.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_tui::FileRowGit;
+///
+/// assert!(FileRowGit::Conflicted > FileRowGit::Modified);
+/// assert_eq!(FileRowGit::Staged.glyph(), "■");
+/// ```
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileRowGit {
+    /// The Git ignore rules name the entry.
+    Ignored,
+    /// The repository tracks no entry of this path.
+    Untracked,
+    /// The index holds a change that the last commit does not hold.
+    Staged,
+    /// The working tree holds a change that the index does not hold.
+    Modified,
+    /// The index and the working tree each hold a change.
+    StagedAndModified,
+    /// The entry holds an unresolved merge conflict.
+    Conflicted,
+}
+
+impl FileRowGit {
+    /// Returns the mark that kvim's own file tree draws for this state.
+    ///
+    /// A host that reproduces the look of kvim draws this glyph behind the
+    /// row. A host that draws its own marks matches on the state instead and
+    /// never reads this method.
+    #[inline]
+    #[must_use]
+    pub const fn glyph(self) -> &'static str {
+        match self {
+            Self::Staged => "■",
+            Self::Modified => "●",
+            Self::StagedAndModified => "◆",
+            Self::Untracked => "□",
+            Self::Ignored => "☑",
+            Self::Conflicted => "▲",
+        }
+    }
+}
+
 /// One drawable row of the file sidebar of one embedded editor.
 ///
-/// The row holds the text, the indent guides, the depth, the state, and the
-/// selection of one visible line. It holds no color, no icon, and no cell, so
-/// the host owns the complete look of its own sidebar.
+/// The row holds the text, the indent guides, the depth, the state, the
+/// selection, the recorded Git state, the symbolic-link fact, and the icon
+/// role of one visible line. It holds no color, no glyph, and no cell, so the
+/// host owns the complete look of its own sidebar.
 ///
 /// [`FileRow::guides`] already carries the leading blank that the file tree of
 /// kvim draws, because the workspace-root header of that tree is no sibling of
@@ -121,10 +182,18 @@ pub struct FileRow {
     depth: usize,
     kind: FileRowKind,
     selected: bool,
+    git: Option<FileRowGit>,
+    is_symlink: bool,
+    icon_role: Option<IconRole>,
 }
 
 impl FileRow {
     /// Creates one published row.
+    ///
+    /// The Git state, the symbolic-link fact, and the icon role each start at
+    /// their absent value. [`FileRow::with_git`], [`FileRow::with_symlink`],
+    /// and [`FileRow::with_icon_role`] set them, because they are independent
+    /// facts that a caller sets or leaves absent one at a time.
     pub(super) fn new(
         label: String,
         guides: String,
@@ -150,7 +219,31 @@ impl FileRow {
             depth,
             kind,
             selected,
+            git: None,
+            is_symlink: false,
+            icon_role: None,
         }
+    }
+
+    /// Sets the recorded Git state of the row.
+    #[must_use]
+    pub(super) const fn with_git(mut self, git: Option<FileRowGit>) -> Self {
+        self.git = git;
+        self
+    }
+
+    /// Sets whether the row names a symbolic link.
+    #[must_use]
+    pub(super) const fn with_symlink(mut self, is_symlink: bool) -> Self {
+        self.is_symlink = is_symlink;
+        self
+    }
+
+    /// Sets the icon role of the row.
+    #[must_use]
+    pub(super) const fn with_icon_role(mut self, icon_role: Option<IconRole>) -> Self {
+        self.icon_role = icon_role;
+        self
     }
 
     /// Returns the text of the row.
@@ -193,6 +286,40 @@ impl FileRow {
     #[must_use]
     pub const fn is_selected(&self) -> bool {
         self.selected
+    }
+
+    /// Returns the recorded Git state of the row, or `None` while the row
+    /// carries no state.
+    ///
+    /// A [`FileRowKind::Note`] row and a row of a workspace that no read has
+    /// covered yet both publish `None`. [`FileRowGit::glyph`] returns kvim's
+    /// own mark for a state that this method reports.
+    #[inline]
+    #[must_use]
+    pub const fn git(&self) -> Option<FileRowGit> {
+        self.git
+    }
+
+    /// Reports whether the row names a symbolic link.
+    ///
+    /// [`FILE_SIDEBAR_LINK_SUFFIX`] is the suffix that kvim's own file tree
+    /// draws behind a row that reports `true` here.
+    #[inline]
+    #[must_use]
+    pub const fn is_symlink(&self) -> bool {
+        self.is_symlink
+    }
+
+    /// Returns the icon role of the row, or `None` while the row carries no
+    /// icon.
+    ///
+    /// A [`FileRowKind::Note`] row publishes `None`. Every other row publishes
+    /// its role regardless of the icon-visibility setting of kvim's own file
+    /// tree, so a host draws its own icons even while kvim would draw none.
+    #[inline]
+    #[must_use]
+    pub const fn icon_role(&self) -> Option<IconRole> {
+        self.icon_role
     }
 }
 

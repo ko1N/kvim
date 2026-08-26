@@ -40,7 +40,8 @@ use kvim_workspace::{
 
 use super::buffer_view::WindowFocus;
 use super::file_sidebar::{
-    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowKind, FileSidebarInput, FileSidebarOutcome,
+    FILE_SIDEBAR_LINK_SUFFIX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowKind,
+    FileSidebarInput, FileSidebarOutcome,
 };
 use super::icons::{ICON_CELLS, directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
@@ -67,9 +68,6 @@ pub(super) const MARK_CELLS: usize = 1;
 
 /// The mark of the selected row, at the left edge of the sidebar.
 pub(super) const SELECTION_MARK: &str = "▌";
-
-/// The suffix of one symbolic link.
-const LINK_SUFFIX: &str = "@";
 
 /// The entry names whose content one tool generates.
 ///
@@ -101,16 +99,11 @@ pub(super) const GIT_MARK_CELLS: u16 = 1;
 /// The glyphs are presentation data beside the icon table, as the reference
 /// configuration paints them: a filled shape for a change that the reader owns,
 /// an outlined shape for an entry that the repository does not track yet, and a
-/// checked box for an entry that the ignore rules name.
+/// checked box for an entry that the ignore rules name. [`FileRowGit::glyph`]
+/// of `file_sidebar.rs` holds the one table, so the standalone tree and a host
+/// that draws kvim's own marks can never disagree about one state.
 pub(super) const fn git_mark(status: GitStatus) -> &'static str {
-    match status {
-        GitStatus::Staged => "■",
-        GitStatus::Modified => "●",
-        GitStatus::StagedAndModified => "◆",
-        GitStatus::Untracked => "□",
-        GitStatus::Ignored => "☑",
-        GitStatus::Conflicted => "▲",
-    }
+    host_git_state(status).glyph()
 }
 
 /// What one sidebar row shows, beyond the name that it holds.
@@ -904,7 +897,27 @@ impl TreeSidebar {
                 // holding a second copy of the rule. See `docs/windows.md`.
                 let guides = format!("{SIDEBAR_GUIDE_BLANK}{}", sidebar_guides(&generic, index));
                 let selected = row.is_selectable() && selected == Some(row.path.as_path());
+                // A notice row carries the path of its own directory, so it
+                // must not borrow the Git state of that directory.
+                let git = row
+                    .is_selectable()
+                    .then(|| self.git_state(&row.path))
+                    .flatten()
+                    .map(host_git_state);
+                let is_symlink = match &row.content {
+                    RowContent::File { link, .. } | RowContent::Directory { link, .. } => {
+                        *link == LinkKind::Symlink
+                    }
+                    RowContent::Notice(_) => false,
+                };
+                // The role reaches the host regardless of the icon-visibility
+                // setting of kvim's own file tree, because a host may draw
+                // its own icons while kvim would draw none.
+                let icon_role = row_icon(row, FileTreeIcons::Shown).map(|icon| icon.role);
                 FileRow::new(label, guides, row.depth, host_row_kind(row), selected)
+                    .with_git(git)
+                    .with_symlink(is_symlink)
+                    .with_icon_role(icon_role)
             })
             .collect()
     }
@@ -1128,7 +1141,7 @@ fn row_text(row: &TreeRow, guides: &str, state: RowState, icons: FileTreeIcons) 
     match &row.content {
         RowContent::File { name, link } | RowContent::Directory { name, link, .. } => {
             let link = if *link == LinkKind::Symlink {
-                LINK_SUFFIX
+                FILE_SIDEBAR_LINK_SUFFIX
             } else {
                 ""
             };
@@ -1153,6 +1166,21 @@ fn host_row_kind(row: &TreeRow) -> FileRowKind {
             Expansion::Pending => FileRowKind::LoadingDirectory,
         },
         RowContent::Notice(_) => FileRowKind::Note,
+    }
+}
+
+/// Returns what one recorded Git state reaches an embedded host as.
+///
+/// The variant order mirrors [`GitStatus`], so the two never disagree about
+/// the severity of one state.
+const fn host_git_state(status: GitStatus) -> FileRowGit {
+    match status {
+        GitStatus::Ignored => FileRowGit::Ignored,
+        GitStatus::Untracked => FileRowGit::Untracked,
+        GitStatus::Staged => FileRowGit::Staged,
+        GitStatus::Modified => FileRowGit::Modified,
+        GitStatus::StagedAndModified => FileRowGit::StagedAndModified,
+        GitStatus::Conflicted => FileRowGit::Conflicted,
     }
 }
 

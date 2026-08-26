@@ -303,11 +303,12 @@ ignores the outcome does not compile.
 
 The embedded facade in `kvim-tui` publishes one file sidebar over the worktree
 root of one editor. `EmbeddedEditor::file_rows`, `file_root_label`, and
-`file_sidebar` name `FileRow`, `FileRowKind`, `FileSidebarInput`, and
-`FileSidebarOutcome` alone. The surface names no type of `kvim-workspace`,
-which stays outside the supported set, so the facade publishes its own
-vocabulary instead of a re-export. [`embedding.md`](embedding.md) owns the
-surface.
+`file_sidebar` name `FileRow`, `FileRowKind`, `FileRowGit`, `FileSidebarInput`,
+and `FileSidebarOutcome` alone. `FileRow` also carries an `IconRole`, the same
+role that colors kvim's own file tree and which-key overlay. The surface names
+no type of `kvim-workspace`, which stays outside the supported set, so the
+facade publishes its own vocabulary instead of a re-export.
+[`embedding.md`](embedding.md) owns the surface.
 
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and

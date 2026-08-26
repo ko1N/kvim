@@ -6,7 +6,7 @@
 //! [`EmbeddedEditor`] with [`FileSidebarInput`] values, draws every row into
 //! cells that it owns, and ends the editor through one shutdown.
 //!
-//! The run proves five facts of `docs/embedding.md`:
+//! The run proves six facts of `docs/embedding.md`:
 //!
 //! - the host draws the tree over one worktree root without naming one type of
 //!   `kvim-workspace`, which is no supported package;
@@ -17,7 +17,10 @@
 //! - one activated file returns from the input that produced it, and the host
 //!   decides whether to open it;
 //! - the host owns the look: kvim publishes the text, the indent guides, the
-//!   depth, and the state of one row, and no color and no cell.
+//!   depth, and the state of one row, and no color and no cell;
+//! - kvim also publishes the Git state, the symbolic-link fact, and the icon
+//!   role of one row as facts beside the drawn text, and the host draws all
+//!   three itself.
 //!
 //! Run it with:
 //!
@@ -38,8 +41,8 @@ use kvim_path::WorktreeRoot;
 use kvim_runtime::{Runtime, RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
 use kvim_settings::EditorSettings;
 use kvim_tui::{
-    EditorCapacity, EditorShutdown, EditorWork, EmbeddedEditor, FileRow, FileRowKind,
-    FileSidebarInput, FileSidebarOutcome, ListMotion,
+    EditorCapacity, EditorShutdown, EditorWork, EmbeddedEditor, FILE_SIDEBAR_LINK_SUFFIX, FileRow,
+    FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome, IconRole, ListMotion,
 };
 use kvim_workspace::temp::TempDir;
 
@@ -227,9 +230,12 @@ fn selected_label(editor: &EmbeddedEditor) -> String {
 
 /// Draws every published row into the cells that the host owns.
 ///
-/// kvim publishes the text, the indent guides, the depth, and the state of one
-/// row. The host owns every glyph and every color, so this function is the
-/// complete look of this sidebar.
+/// kvim publishes the text, the indent guides, the depth, the state, the
+/// recorded Git state, the symbolic-link fact, and the icon role of one row.
+/// The host owns every glyph and every color, so this function is the
+/// complete look of this sidebar. The temporary worktree of this run holds no
+/// repository, so every row publishes no Git state, and the git column stays
+/// blank.
 fn draw(cells: &mut CellBuffer, editor: &EmbeddedEditor) {
     cells.reset();
     for (line, row) in editor.file_rows().iter().enumerate() {
@@ -244,9 +250,27 @@ fn draw(cells: &mut CellBuffer, editor: &EmbeddedEditor) {
         } else {
             " "
         };
+        // A host that reproduces the look of kvim appends the published
+        // suffix behind the label of a symbolic link; a host that draws its
+        // own mark reads `FileRow::is_symlink` alone.
+        let link = if row.is_symlink() {
+            FILE_SIDEBAR_LINK_SUFFIX
+        } else {
+            ""
+        };
+        // A host that reproduces the look of kvim draws the glyph that
+        // `FileRowGit::glyph` names for the recorded state; a host that draws
+        // its own marks matches on the state instead.
+        let git = row.git().map_or(" ", FileRowGit::glyph);
         // The guides already hold the leading blank of the workspace-root
         // header, so the host draws them exactly as kvim publishes them.
-        let text = format!("{mark}{}{}{}", row.guides(), glyph(row.kind()), row.label());
+        let text = format!(
+            "{mark}{}{}{}{}{link} {git}",
+            row.guides(),
+            glyph(row.kind()),
+            icon(row.icon_role()),
+            row.label(),
+        );
         cells.set_stringn(
             SIDEBAR_AREA.x,
             SIDEBAR_AREA.y + line,
@@ -267,6 +291,20 @@ const fn glyph(kind: FileRowKind) -> &'static str {
         FileRowKind::OpenDirectory => "▾ ",
         FileRowKind::LoadingDirectory => "… ",
         FileRowKind::Note => "· ",
+    }
+}
+
+/// Returns the glyph that this host paints for one icon role.
+///
+/// kvim names the role and paints no glyph, because every glyph of its own
+/// icon table needs a patched font that a host may not hold. This table is
+/// the host's own choice of a plain character for each role that a file row
+/// can carry.
+const fn icon(role: Option<IconRole>) -> &'static str {
+    match role {
+        Some(IconRole::Directory) => "D ",
+        Some(_) => "F ",
+        None => "  ",
     }
 }
 

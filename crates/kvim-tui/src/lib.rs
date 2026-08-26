@@ -117,8 +117,8 @@ pub use embed::{
     GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal, Saturated,
 };
 pub use file_sidebar::{
-    FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowKind, FileSidebarInput,
-    FileSidebarOutcome,
+    FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_LINK_SUFFIX, FILE_SIDEBAR_ROWS_MAX, FileRow,
+    FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome,
 };
 pub use kvim_ui::{
     AdaptiveSplit, CloseOutcome, Direction, LayoutChange, LayoutFit, ListMotion, Orientation,

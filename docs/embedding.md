@@ -169,9 +169,10 @@ set. It names its own vocabulary, the paths of `kvim-path`, and the geometry of
 `kvim-ui`.
 
 `EmbeddedEditor::file_rows` returns the drawable rows. One `FileRow` carries the
-label, the indent guides, the depth, one `FileRowKind`, and the selection of one
-line. It carries no color, no icon, and no cell, so the host owns the whole look
-of its sidebar. `FileRowKind` names the five states of one line: `File`,
+label, the indent guides, the depth, one `FileRowKind`, the selection, the
+recorded Git state, the symbolic-link fact, and the icon role of one line. It
+carries no color, no glyph, and no cell, so the host owns the whole look of its
+sidebar. `FileRowKind` names the five states of one line: `File`,
 `ClosedDirectory`, `OpenDirectory`, `LoadingDirectory`, and `Note`. A `Note` row
 reports a bounded read, a failed read, or the number of entries that the
 hidden-entry policy keeps out of the rows; it names no entry and takes no
@@ -182,6 +183,28 @@ leading blank that the file tree of kvim draws, because the workspace-root
 header of that tree is no sibling of the first entries. A host that draws the
 guides as they are published reproduces the look of kvim.
 [`windows.md`](windows.md) owns the guide rule itself.
+
+`FileRow::git` returns the recorded Git state of the row as `FileRowGit`, or
+`None` while the row carries no state. A `Note` row and a row of a workspace
+that no read has covered yet both report `None`. The variant order rises in
+the same severity order as `kvim_workspace::GitStatus`, so a host ranks two
+states the way kvim ranks them. `FileRowGit::glyph` returns the mark that
+kvim's own file tree draws for a state. A host that reproduces the look of
+kvim draws that glyph; a host that draws its own marks matches on the state
+instead.
+
+`FileRow::is_symlink` reports whether the row names a symbolic link. The label
+carries no suffix for it. `FILE_SIDEBAR_LINK_SUFFIX` is the suffix that kvim's
+own file tree draws behind such a row, so a host that reproduces the look of
+kvim appends that constant itself.
+
+`FileRow::icon_role` returns the icon role of the row as `kvim_tui::IconRole`,
+or `None` for a `Note` row. The role reaches the host regardless of
+`FileTreeIcons`, the icon-visibility setting of kvim's own file tree, because a
+host may want the role even while kvim would draw no icon of its own. kvim
+publishes no icon glyph, because every glyph needs a patched font that a host
+may not hold. A host that wants kvim's own icon color reads
+`Theme::style(ThemeRole::Icon(role))`; the glyph stays the host's own choice.
 
 `EmbeddedEditor::file_sidebar` applies one `FileSidebarInput`. `Move` takes one
 `kvim_ui::ListMotion`, which stops at the first and the last row and never

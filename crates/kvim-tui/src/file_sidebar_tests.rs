@@ -10,6 +10,7 @@ use std::time::Duration;
 
 use ratatui::layout::Rect;
 
+use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
 use kvim_ui::{ListMotion, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK};
 use kvim_workspace::WorkspaceRequest;
@@ -93,6 +94,62 @@ fn workspace(name: &str) -> TempDir {
     directory.file("src/deep/inner.rs", "pub const ONE: u32 = 1;\n");
     directory.file("readme.md", "one line\n");
     directory
+}
+
+/// Creates one workspace whose entries cover every recorded Git state.
+fn git_state_workspace(name: &str) -> TempDir {
+    let directory = TempDir::new(name);
+    directory.file("staged.rs", "");
+    directory.file("modified.rs", "");
+    directory.file("staged-and-modified.rs", "");
+    directory.file("new.rs", "");
+    directory.file("notes.log", "");
+    directory.file("conflict.rs", "");
+    directory
+}
+
+/// Returns one ordinary record of `git status --porcelain=v2 -z`.
+fn git_record(field: &str, path: &str) -> String {
+    format!(
+        "1 {field} N... 100644 100644 100644 \
+         78981922613b2afb6025042ff6bd878ac1994e85 \
+         78981922613b2afb6025042ff6bd878ac1994e85 {path}\0"
+    )
+}
+
+/// Returns the recorded status output that covers every Git state that
+/// [`git_state_workspace`] builds.
+fn git_state_output() -> String {
+    format!(
+        "{}{}{}? new.rs\0! notes.log\0u UU N... 100644 100644 100644 100644 \
+         aa bb cc conflict.rs\0",
+        git_record("M.", "staged.rs"),
+        git_record(".M", "modified.rs"),
+        git_record("MM", "staged-and-modified.rs"),
+    )
+}
+
+/// Answers one queued command of one Git status read, as the event loop does.
+fn answer_git(session: &mut Session, stdout: &[u8]) {
+    let request = session
+        .take_git_request()
+        .expect("the sidebar queues one Git status read");
+    let output = ProcessOutput {
+        status_code: Some(0),
+        stdout: stdout.to_vec(),
+        stderr: Vec::new(),
+    };
+    let _ = session.apply_git_result(request.publish(&output));
+}
+
+/// Publishes one recorded status output, as the event loop does.
+///
+/// The read takes two commands: the first learns the place of the workspace
+/// root inside its repository, and the workspace root of every test is its own
+/// repository top level, so the first answer reports an empty prefix.
+fn publish_git(session: &mut Session, output: &str) {
+    answer_git(session, b"\n");
+    answer_git(session, output.as_bytes());
 }
 
 #[test]
@@ -320,10 +377,90 @@ fn a_note_row_reports_its_directory_and_takes_no_selection() {
     assert_eq!(note.label(), "(1 hidden item)");
     assert!(!note.is_selected());
     assert!(!note.kind().is_selectable());
+    // A note row names no entry, so it carries no Git state, no link, and no
+    // icon role.
+    assert_eq!(note.git(), None);
+    assert!(!note.is_symlink());
+    assert_eq!(note.icon_role(), None);
 
     // The last row is the note, so the move stops on the entry above it.
     let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::LastRow));
     assert!(row_of(&session, "kept.rs").is_selected());
+}
+
+#[test]
+fn a_row_names_every_recorded_git_state() {
+    let directory = git_state_workspace("file-sidebar-git-state");
+    let mut session = editor(&directory.path);
+    read_directories(&mut session);
+    publish_git(&mut session, &git_state_output());
+
+    assert_eq!(
+        row_of(&session, "staged.rs").git(),
+        Some(FileRowGit::Staged)
+    );
+    assert_eq!(
+        row_of(&session, "modified.rs").git(),
+        Some(FileRowGit::Modified)
+    );
+    assert_eq!(
+        row_of(&session, "staged-and-modified.rs").git(),
+        Some(FileRowGit::StagedAndModified)
+    );
+    assert_eq!(
+        row_of(&session, "new.rs").git(),
+        Some(FileRowGit::Untracked)
+    );
+    assert_eq!(
+        row_of(&session, "notes.log").git(),
+        Some(FileRowGit::Ignored)
+    );
+    assert_eq!(
+        row_of(&session, "conflict.rs").git(),
+        Some(FileRowGit::Conflicted)
+    );
+}
+
+#[test]
+fn a_row_names_no_git_state_before_a_read_publishes_one() {
+    let directory = workspace("file-sidebar-git-none");
+    let mut session = editor(&directory.path);
+    read_directories(&mut session);
+
+    assert_eq!(row_of(&session, "readme.md").git(), None);
+}
+
+#[test]
+fn a_symbolic_link_row_names_its_link() {
+    use std::os::unix::fs::symlink;
+
+    let directory = workspace("file-sidebar-symlink");
+    symlink(
+        directory.join("readme.md"),
+        directory.join("readme-link.md"),
+    )
+    .expect("the temporary directory supports links");
+    let mut session = editor(&directory.path);
+    read_directories(&mut session);
+
+    assert!(row_of(&session, "readme-link.md").is_symlink());
+    assert!(!row_of(&session, "readme.md").is_symlink());
+}
+
+#[test]
+fn a_directory_row_and_a_file_row_name_their_icon_roles() {
+    let directory = workspace("file-sidebar-icon-role");
+    let mut session = editor(&directory.path);
+    read_directories(&mut session);
+
+    assert_eq!(
+        row_of(&session, "src").icon_role(),
+        Some(IconRole::Directory)
+    );
+    assert_eq!(
+        row_of(&session, "readme.md").icon_role(),
+        Some(IconRole::Document)
+    );
 }
 
 #[test]
