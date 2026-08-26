@@ -7,7 +7,7 @@ use ratatui::style::{Color, Style};
 use crate::which_key::{ColumnLayout, column_layout};
 use crate::{
     WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyHint, WhichKeyIcon,
-    WhichKeyOverlay, WhichKeyStyles,
+    WhichKeyOverlay, WhichKeyPlacement, WhichKeyStyles,
 };
 
 /// The title that the standalone editor gives its overlay.
@@ -36,13 +36,39 @@ fn row_of(target: &Buffer, y: u16) -> String {
 
 /// Renders one hint list into a body band of the supplied size.
 fn painted(hints: &[WhichKeyHint<'_>], width: u16, height: u16) -> Buffer {
+    painted_page(hints, width, height, 0).0
+}
+
+/// Renders one page of a hint list and returns the buffer with its report.
+fn painted_page(
+    hints: &[WhichKeyHint<'_>],
+    width: u16,
+    height: u16,
+    page: usize,
+) -> (Buffer, WhichKeyPlacement) {
     let body = Rect::new(0, 0, width, height);
     let mut target = Buffer::empty(body);
-    WhichKeyOverlay::new(TITLE, hints, styles())
+    let drawn = WhichKeyOverlay::new(TITLE, hints, styles())
         .expect("the hints stay inside every bound")
+        .at_page(page)
         .render(&mut target, body)
         .expect("the band covers the whole cell buffer");
-    target
+    (target, drawn)
+}
+
+/// Builds one hint list of the named length, with one distinct key per row.
+fn long_hints(rows: usize) -> (Vec<String>, Vec<String>) {
+    let keys = (0..rows).map(|index| format!("k{index}")).collect();
+    let labels = (0..rows).map(|index| format!("Command {index}")).collect();
+    (keys, labels)
+}
+
+/// Zips one key list and one label list into hints.
+fn hints_of<'a>(keys: &'a [String], labels: &'a [String]) -> Vec<WhichKeyHint<'a>> {
+    keys.iter()
+        .zip(labels)
+        .map(|(key, label)| WhichKeyHint::new(key, label))
+        .collect()
 }
 
 #[test]
@@ -214,6 +240,11 @@ fn the_overlay_states_both_of_its_bounds() {
             max: WHICH_KEY_HINTS_MAX,
         }
     );
+    let most = vec![WhichKeyHint::new("a", "First"); WHICH_KEY_HINTS_MAX];
+    assert!(
+        WhichKeyOverlay::new(TITLE, &most, styles()).is_ok(),
+        "the pages reach the hints of an accepted list, and the bound stands"
+    );
 
     let long = "a".repeat(WHICH_KEY_TEXT_CHARS_MAX + 1);
     let hints = [WhichKeyHint::new("a", &long)];
@@ -270,4 +301,103 @@ fn a_band_outside_the_buffer_returns_the_error_and_changes_no_cell() {
         WhichKeyError::Area { body, buffer }
     );
     assert_eq!(target, untouched, "a refused band paints no cell");
+}
+
+#[test]
+fn the_pages_of_a_long_list_reach_every_hint_exactly_once() {
+    // Ninety-one keys is the size of one measured host idle list, and no
+    // terminal band of this height holds them together.
+    let (keys, labels) = long_hints(91);
+    let hints = hints_of(&keys, &labels);
+
+    let mut reached: Vec<usize> = Vec::new();
+    let mut page = 0;
+    let pages = loop {
+        let (target, drawn) = painted_page(&hints, 60, 24, page);
+        assert_eq!(drawn.total(), 91, "the report names the complete list");
+        assert_eq!(drawn.page(), page);
+        let range = drawn.drawn();
+        assert!(!range.is_empty(), "every page holds one hint");
+        // The row below the title starts the first column, so it names the
+        // first hint of the reported range. The widest key is three cells.
+        let title_row = (0..target.area.bottom())
+            .find(|y| row_of(&target, *y).starts_with(" Which Key"))
+            .expect("the page paints its title row");
+        let key = &keys[range.start];
+        let padding = " ".repeat(3 - key.chars().count() + 2);
+        assert!(
+            row_of(&target, title_row + 1)
+                .starts_with(&format!(" {key}{padding}{}", labels[range.start])),
+            "the first painted row is the first hint of the reported range"
+        );
+        reached.extend(range);
+        if !drawn.has_next_page() {
+            break drawn.pages();
+        }
+        assert!(drawn.has_previous_page() == (page > 0));
+        page += 1;
+    };
+
+    assert!(pages > 1, "one frame does not hold ninety-one hints");
+    assert_eq!(page + 1, pages, "the walk ends on the last page");
+    let mut sorted = reached.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(sorted.len(), reached.len(), "no hint appears on two pages");
+    assert_eq!(
+        reached.len(),
+        91,
+        "the pages together cover every hint of the list"
+    );
+    assert_eq!(
+        sorted,
+        (0..91).collect::<Vec<usize>>(),
+        "no hint is skipped"
+    );
+}
+
+#[test]
+fn a_list_that_fits_holds_one_page_that_no_step_changes() {
+    let hints = [
+        WhichKeyHint::new("/", "Toggle the comment"),
+        WhichKeyHint::new("C-w", "+3 commands"),
+    ];
+    let (first, drawn) = painted_page(&hints, 40, 12, 0);
+    assert_eq!(drawn.drawn(), 0..2, "the one page draws every hint");
+    assert_eq!(drawn.total(), 2);
+    assert_eq!(drawn.pages(), 1);
+    assert!(!drawn.has_next_page());
+    assert!(!drawn.has_previous_page());
+
+    let (stepped, again) = painted_page(&hints, 40, 12, 3);
+    assert_eq!(again, drawn, "a step of a single page changes nothing");
+    assert_eq!(stepped, first, "the painted cells stay the same");
+}
+
+#[test]
+fn a_page_past_the_end_draws_the_last_page() {
+    let (keys, labels) = long_hints(91);
+    let hints = hints_of(&keys, &labels);
+    let (last, drawn) = painted_page(&hints, 60, 24, usize::MAX);
+    assert_eq!(drawn.page(), drawn.pages() - 1, "the page clamps");
+    assert!(!drawn.has_next_page());
+    assert_eq!(drawn.drawn().end, 91, "the last page ends at the last hint");
+
+    let (same, again) = painted_page(&hints, 60, 24, drawn.pages() - 1);
+    assert_eq!(again, drawn);
+    assert_eq!(same, last, "the clamped page paints the last page");
+}
+
+#[test]
+fn a_frame_that_holds_no_hint_reports_no_page() {
+    let hints = [WhichKeyHint::new("a", "First")];
+    let (_, drawn) = painted_page(&hints, 30, 3, 0);
+    assert_eq!(drawn.pages(), 0, "the band holds no title row with a hint");
+    assert_eq!(drawn.drawn(), 0..0);
+    assert_eq!(drawn.total(), 1, "the report still names the whole list");
+
+    let (_, empty) = painted_page(&[], 30, 12, 0);
+    assert_eq!(empty.total(), 0);
+    assert_eq!(empty.pages(), 0);
+    assert!(!empty.has_next_page());
 }

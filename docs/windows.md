@@ -786,14 +786,18 @@ because the editor reported nothing. See [`input-actions.md`](input-actions.md).
 
 Public `kvim-ui` widgets accept explicit ratatui styles and semantic roles. They
 do not depend on the standalone `Theme` or on host-domain state. Which-key
-presentation consumes hints from the active shared resolver.
+presentation consumes hints from the active shared resolver. A hint list that
+outgrows the frame holds one page for each frame of columns, and the render
+reports the page it drew as one `WhichKeyPlacement`. See
+[`input-actions.md`](input-actions.md).
 
 Every render validates that its rectangle fits the supplied
 `ratatui::Buffer`. Invalid geometry returns a typed error before any cell
 changes. Rendering performs no input or output and writes only inside its area.
 
-`WhichKeyOverlay::render` therefore returns `Result<(), WhichKeyError>` and
-reports `WhichKeyError::Area`, and `SidebarState::render` reports
+`WhichKeyOverlay::render` therefore returns
+`Result<WhichKeyPlacement, WhichKeyError>` and reports `WhichKeyError::Area`,
+and `SidebarState::render` reports
 `SidebarError::Area`, for a rectangle that names one cell outside the buffer.
 An empty rectangle names no cell, so every buffer accepts it. The check runs
 before the first write, because `ratatui::Buffer` panics on a cell outside its

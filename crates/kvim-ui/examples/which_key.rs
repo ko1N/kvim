@@ -6,6 +6,10 @@
 //! from the registry that dispatch reads, so a hint can never disagree with the
 //! command that its key reaches.
 //!
+//! The example then paints an idle list that one frame cannot hold. It steps
+//! through the pages of that list, prints the position that each render
+//! reports, and checks that the steps reach every key exactly once.
+//!
 //! The example needs no editor, no filesystem, and no terminal.
 //!
 //! Run it with:
@@ -146,6 +150,10 @@ const KEYS_MAX: u8 = 3;
 /// The wait before the overlay first appears.
 const WHICH_KEY_DELAY: Duration = Duration::from_millis(500);
 
+/// The number of keys of the idle list that the paging part of the example
+/// paints. One measured host list holds this many.
+const IDLE_KEYS: usize = 91;
+
 /// The body band that the host gives the overlay.
 const BODY: Rect = Rect {
     x: 0,
@@ -213,6 +221,62 @@ fn main() {
     // The widget takes final texts, so the host owns every label, icon, and
     // color that it paints.
     println!("{}", printable(&painted(&hints)));
+
+    step_through_a_long_list();
+}
+
+/// Paints one idle list that one frame cannot hold, one page at a time.
+///
+/// A pending prefix names a handful of next keys, and an idle list names the
+/// first key of every scope that answers. A measured host list holds 91 of
+/// them, and a terminal of 24 rows shows only a part. The overlay therefore
+/// holds one page for each frame of columns, and every render reports the page
+/// it drew, so a host binds one key that steps through the list.
+fn step_through_a_long_list() {
+    let keys: Vec<String> = (0..IDLE_KEYS).map(|index| format!("g{index}")).collect();
+    let labels: Vec<String> = (0..IDLE_KEYS)
+        .map(|index| format!("Run command {index}"))
+        .collect();
+    let rows: Vec<WhichKeyHint<'_>> = keys
+        .iter()
+        .zip(&labels)
+        .map(|(key, label)| WhichKeyHint::new(key, label))
+        .collect();
+    let overlay = WhichKeyOverlay::new(" Which Key ", &rows, WhichKeyStyles::default())
+        .expect("the idle list stays inside every bound");
+
+    let mut reached: Vec<usize> = Vec::new();
+    let mut page = 0;
+    loop {
+        let mut target = Buffer::empty(BODY);
+        let drawn = overlay
+            .at_page(page)
+            .render(&mut target, BODY)
+            .expect("the band covers the cell buffer of this example");
+        let range = drawn.drawn();
+        // A host paints this position beside the overlay, in its own style.
+        println!(
+            "page {} of {}: keys {} to {} of {}",
+            drawn.page() + 1,
+            drawn.pages(),
+            range.start + 1,
+            range.end,
+            drawn.total()
+        );
+        println!("{}", printable(&target));
+        reached.extend(range);
+        if !drawn.has_next_page() {
+            break;
+        }
+        page += 1;
+    }
+
+    let mut once = reached.clone();
+    once.sort_unstable();
+    once.dedup();
+    assert_eq!(once.len(), reached.len(), "no key appears on two pages");
+    assert_eq!(once.len(), IDLE_KEYS, "the steps reach every key");
+    println!("the {IDLE_KEYS} keys arrived over {} pages", page + 1);
 }
 
 /// Renders the derived hints into one cell buffer.

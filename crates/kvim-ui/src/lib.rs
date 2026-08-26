@@ -34,7 +34,9 @@
 //! [`WhichKeyOverlay`] renders the keys that may follow a pending key sequence.
 //! It holds no binding table: the caller derives its hints from the one shared
 //! registry of `kvim-keymap` and supplies final texts, optional icons, and its
-//! own styles.
+//! own styles. A list that outgrows the frame holds one page for each frame of
+//! columns, and every render reports the page it drew as one
+//! [`WhichKeyPlacement`].
 //!
 //! Every value is pure and deterministic. The crate reads no clock, no
 //! filesystem, and no terminal. One layout calculation converts the tree and
@@ -129,7 +131,7 @@ pub use sidebar::{
 pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabStrip};
 pub use which_key::{
     WHICH_KEY_BODY_SHARE, WHICH_KEY_COLUMN_ROWS_MAX, WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX,
-    WhichKeyError, WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyStyles,
+    WhichKeyError, WhichKeyHint, WhichKeyIcon, WhichKeyOverlay, WhichKeyPlacement, WhichKeyStyles,
 };
 pub use window::{
     AdaptiveSplit, ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit,

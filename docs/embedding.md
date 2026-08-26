@@ -143,8 +143,15 @@ Bound the idle list before you draw it. It can approach
 `kvim_ui::WHICH_KEY_HINTS_MAX`, which is 256 and refuses a longer hint list
 instead of cutting it. Kvim's own preset holds 81 distinct first keys in Normal
 mode, 56 in Visual mode, and 48 in the sidebar, and the list spans up to three
-scopes. A host pages or filters the result and never hands the raw list to
+scopes. A host bounds or filters the list before it hands it to
 `WhichKeyOverlay`.
+
+One frame of columns holds far fewer rows than that bound. The overlay pages an
+accepted list: `WhichKeyOverlay::at_page` names the page, and the render
+returns one `kvim_ui::WhichKeyPlacement` that names the drawn rows, the size of
+the list, the drawn page, and the number of pages. Bind one key that steps the
+page, and paint the reported position beside the overlay.
+See [`input-actions.md`](input-actions.md).
 
 `BindingScope::RegisterSelection` binds no key. Kvim's own resolver cancels an
 open register selection on any key that the registry does not bind. A host

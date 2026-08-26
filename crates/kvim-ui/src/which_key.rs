@@ -8,11 +8,28 @@
 //!
 //! The overlay covers the bottom of one body band. It fills the width with
 //! columns of equal width, so the keys and the labels of all columns align. It
-//! bounds its own height, and its title row reports every hint that no column
-//! holds.
+//! bounds its own height, and its title row reports every hint that follows the
+//! page it drew.
+//!
+//! A list that outgrows the frame holds one page for each frame of columns.
+//! [`WhichKeyOverlay::at_page`] names the page, and
+//! [`WhichKeyOverlay::render`] reports the page it drew, so a host binds one
+//! key that steps through the list and paints the position it reads back.
+//!
+//! The overlay holds a page rather than a [`ListViewport`](crate::ListViewport)
+//! because the two answer different questions. The viewport moves one window of
+//! lines until it shows a selected item, and the overlay holds no selection: a
+//! host names the position itself. The viewport also stops its window at the
+//! last line, so two neighbouring windows overlap, while a reader who steps
+//! through a hint list must meet every hint exactly once. The layout is
+//! column-major as well, so a window that slid by one row would move every hint
+//! into another column on every step.
 //!
 //! `examples/which_key.rs` builds one registry, feeds it a pending key, derives
-//! the hints, and prints the rendered buffer.
+//! the hints, and prints the rendered buffer. It then steps through a list that
+//! one frame cannot hold.
+
+use std::ops::Range;
 
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -39,7 +56,8 @@ pub const WHICH_KEY_TEXT_CHARS_MAX: usize = 128;
 /// The largest number of hint rows that one overlay column holds.
 ///
 /// The bound keeps the overlay short for a prefix that reaches many commands,
-/// even in a tall terminal. The overlay reports the hints that it drops.
+/// even in a tall terminal. A list that outgrows one frame of columns holds
+/// several pages, and the overlay reports the page it drew.
 pub const WHICH_KEY_COLUMN_ROWS_MAX: usize = 10;
 
 /// The share of the body band that the overlay may cover.
@@ -183,10 +201,113 @@ impl<'a> WhichKeyHint<'a> {
 pub struct WhichKeyStyles {
     /// The style of the overlay background, of every label, and of every gap.
     pub surface: Style,
-    /// The style of the title row and of the dropped-hint note.
+    /// The style of the title row and of the note that counts the hints
+    /// behind the drawn page.
     pub title: Style,
     /// The style of every key text.
     pub key: Style,
+}
+
+/// The page that one render drew, and the size of the complete hint list.
+///
+/// A frame holds a whole number of columns of a bounded height, so a hint list
+/// that outgrows one frame holds several pages. Every hint belongs to exactly
+/// one page: the pages never overlap, and together they cover the list. The
+/// value reports which of them the render drew, so a host paints the position
+/// and knows whether a further step reaches another page.
+///
+/// A frame that holds no hint reports no page at all. An empty hint list and a
+/// body band that cannot hold the title row with one hint both report zero
+/// pages and an empty range.
+///
+/// # Examples
+///
+/// ```
+/// use ratatui::buffer::Buffer;
+/// use ratatui::layout::Rect;
+///
+/// use kvim_ui::{WhichKeyHint, WhichKeyOverlay, WhichKeyStyles};
+///
+/// let body = Rect::new(0, 0, 24, 8);
+/// let mut target = Buffer::empty(body);
+/// let hints = [
+///     WhichKeyHint::new("f", "Find"),
+///     WhichKeyHint::new("q", "Quit"),
+/// ];
+///
+/// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
+/// let drawn = overlay.render(&mut target, body)?;
+/// assert_eq!(drawn.drawn(), 0..2);
+/// assert_eq!(drawn.total(), 2);
+/// assert_eq!(drawn.pages(), 1);
+/// assert!(!drawn.has_next_page());
+/// # Ok::<(), kvim_ui::WhichKeyError>(())
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WhichKeyPlacement {
+    page: usize,
+    pages: usize,
+    first: usize,
+    shown: usize,
+    total: usize,
+}
+
+impl WhichKeyPlacement {
+    /// The report of a render that drew no hint.
+    const fn empty(total: usize) -> Self {
+        Self {
+            page: 0,
+            pages: 0,
+            first: 0,
+            shown: 0,
+            total,
+        }
+    }
+
+    /// Returns the positions of the drawn hints in the supplied hint list.
+    ///
+    /// The range indexes the slice that the caller gave
+    /// [`WhichKeyOverlay::new`], so the caller reads the drawn hints directly.
+    #[must_use]
+    pub const fn drawn(&self) -> Range<usize> {
+        self.first..self.first + self.shown
+    }
+
+    /// Returns the number of hints of the complete list.
+    #[must_use]
+    pub const fn total(&self) -> usize {
+        self.total
+    }
+
+    /// Returns the page that the render drew.
+    ///
+    /// The value is the page that [`WhichKeyOverlay::at_page`] named, clamped
+    /// to the last page of this frame.
+    #[must_use]
+    pub const fn page(&self) -> usize {
+        self.page
+    }
+
+    /// Returns the number of pages that the hint list holds in this frame.
+    ///
+    /// The count depends on the body band, because a wider or a taller frame
+    /// holds more hints on one page.
+    #[must_use]
+    pub const fn pages(&self) -> usize {
+        self.pages
+    }
+
+    /// Reports whether one further step reaches another page.
+    #[must_use]
+    pub const fn has_next_page(&self) -> bool {
+        self.page + 1 < self.pages
+    }
+
+    /// Reports whether one step back reaches another page.
+    #[must_use]
+    pub const fn has_previous_page(&self) -> bool {
+        self.page > 0
+    }
 }
 
 /// One validated which-key overlay.
@@ -194,6 +315,10 @@ pub struct WhichKeyStyles {
 /// The value borrows the hints and the title, so the caller keeps the final
 /// texts. Construction checks every bound of the content once, so the render
 /// then checks its geometry alone.
+///
+/// The overlay also holds the page of its own hint list. The page travels with
+/// the hints it indexes, because [`WhichKeyOverlay::at_page`] returns the
+/// overlay that owns both, so no render reads a page of an earlier list.
 ///
 /// # Examples
 ///
@@ -216,15 +341,56 @@ pub struct WhichKeyStyles {
 /// assert_eq!(target.cell((1, 6)).map(|cell| cell.symbol()), Some("f"));
 /// # Ok::<(), kvim_ui::WhichKeyError>(())
 /// ```
+///
+/// A list that outgrows the frame holds several pages. A host steps through
+/// them and meets every hint exactly once:
+///
+/// ```
+/// use ratatui::buffer::Buffer;
+/// use ratatui::layout::Rect;
+///
+/// use kvim_ui::{WhichKeyHint, WhichKeyOverlay, WhichKeyStyles};
+///
+/// // Forty keys, and a narrow band that holds one short column of them.
+/// let keys: Vec<String> = (0..40).map(|index| format!("k{index}")).collect();
+/// let hints: Vec<WhichKeyHint<'_>> = keys
+///     .iter()
+///     .map(|key| WhichKeyHint::new(key, "Run the command"))
+///     .collect();
+/// let body = Rect::new(0, 0, 30, 10);
+/// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
+///
+/// let mut page = 0;
+/// let mut reached = 0;
+/// loop {
+///     let mut target = Buffer::empty(body);
+///     let drawn = overlay.at_page(page).render(&mut target, body)?;
+///     assert_eq!(drawn.drawn().start, reached, "the pages leave no gap");
+///     assert_eq!(drawn.total(), 40);
+///     reached = drawn.drawn().end;
+///     if !drawn.has_next_page() {
+///         break;
+///     }
+///     page += 1;
+/// }
+/// assert_eq!(reached, 40, "the steps reach every hint");
+/// assert!(page > 0, "one frame does not hold forty hints");
+/// # Ok::<(), kvim_ui::WhichKeyError>(())
+/// ```
 #[derive(Clone, Copy, Debug)]
 pub struct WhichKeyOverlay<'a> {
     title: &'a str,
     hints: &'a [WhichKeyHint<'a>],
     styles: WhichKeyStyles,
+    page: usize,
 }
 
 impl<'a> WhichKeyOverlay<'a> {
-    /// Validates one hint list and its title.
+    /// Validates one hint list and its title, and opens it at its first page.
+    ///
+    /// The bound refuses a list above [`WHICH_KEY_HINTS_MAX`] rather than
+    /// cutting it. Paging changes nothing about that bound: it reaches the
+    /// hints of an accepted list, and a caller still bounds its own list first.
     ///
     /// # Errors
     ///
@@ -254,19 +420,38 @@ impl<'a> WhichKeyOverlay<'a> {
             title,
             hints,
             styles,
+            page: 0,
         })
     }
 
-    /// Paints the overlay over the bottom of one body band.
+    /// Returns the overlay opened at the named page of its own hint list.
+    ///
+    /// The page counts frames of columns, from zero. A page above the last one
+    /// draws the last page instead, because the number of pages depends on the
+    /// body band and a caller learns it from the render alone. The returned
+    /// value owns both the hints and the page, so a page of an earlier list
+    /// never reaches a render.
+    #[must_use]
+    pub const fn at_page(mut self, page: usize) -> Self {
+        self.page = page;
+        self
+    }
+
+    /// Paints one page of the overlay over the bottom of one body band.
     ///
     /// The overlay covers the text behind it, so it blanks its rectangle first.
     /// It spreads the hints over columns of equal width, and every column keeps
-    /// the width of the widest hint, so the keys and the labels of all columns
-    /// align. A body band that cannot hold the title row and one hint over its
-    /// own share paints nothing, which keeps the text behind it visible.
+    /// the width of the widest hint of the complete list, so the keys and the
+    /// labels of all columns and of every page align. A body band that cannot
+    /// hold the title row and one hint over its own share paints nothing, which
+    /// keeps the text behind it visible.
     ///
     /// The render writes no cell outside `body` and performs no input and no
     /// output beyond the cell buffer.
+    ///
+    /// The returned [`WhichKeyPlacement`] names the drawn hints, the size of
+    /// the complete list, and the page among the pages of this frame. A host
+    /// paints that position and steps to the next page from it.
     ///
     /// # Errors
     ///
@@ -274,16 +459,23 @@ impl<'a> WhichKeyOverlay<'a> {
     /// does not hold. The buffer keeps every cell in that case, so a host that
     /// supplies a stale rectangle reads no partial overlay. An empty band names
     /// no cell, so every buffer accepts it and the render paints nothing.
-    pub fn render(&self, target: &mut Buffer, body: Rect) -> Result<(), WhichKeyError> {
+    pub fn render(
+        &self,
+        target: &mut Buffer,
+        body: Rect,
+    ) -> Result<WhichKeyPlacement, WhichKeyError> {
         let buffer = *target.area();
         if !fits(body, buffer) {
             return Err(WhichKeyError::Area { body, buffer });
         }
+        let total = self.hints.len();
         if body.is_empty() || self.hints.is_empty() {
-            return Ok(());
+            return Ok(WhichKeyPlacement::empty(total));
         }
         // Every column keeps the width of the widest hint. A hidden icon
         // reserves no cell, which keeps that alignment without a patched font.
+        // The measure reads the complete list, so one hint keeps its cells
+        // while the reader steps from one page to the next.
         let icon_cells = self
             .hints
             .iter()
@@ -300,22 +492,37 @@ impl<'a> WhichKeyOverlay<'a> {
         let rows_max = usize::from((body.height / WHICH_KEY_BODY_SHARE).saturating_sub(TITLE_ROWS))
             .min(WHICH_KEY_COLUMN_ROWS_MAX);
         let cells = usize::from(body.width).saturating_sub(LEFT_PAD_CELLS);
-        let layout = column_layout(self.hints.len(), column_cells, cells, rows_max);
-        let shown = layout.shown(self.hints.len());
-        if shown == 0 {
-            return Ok(());
+        // One page holds one full frame of columns. The pages therefore cover
+        // the list without a gap and without an overlap, so a reader who steps
+        // through them meets every hint exactly once.
+        let capacity = column_layout(total, column_cells, cells, rows_max).shown(total);
+        if capacity == 0 {
+            return Ok(WhichKeyPlacement::empty(total));
         }
+        let pages = total.div_ceil(capacity);
+        let page = self.page.min(pages - 1);
+        let first = page * capacity;
+        let hints = &self.hints[first..(first + capacity).min(total)];
+
+        // A last page that holds fewer hints than one frame spreads them over
+        // its own columns, so it never paints an empty column or an empty row.
+        let layout = column_layout(hints.len(), column_cells, cells, rows_max);
+        let shown = layout.shown(hints.len());
+        debug_assert!(
+            shown == hints.len(),
+            "one page never holds more hints than one frame of columns"
+        );
         let Ok(height) = u16::try_from(layout.rows_per_column) else {
             debug_assert!(false, "the row bound keeps the overlay height small");
-            return Ok(());
+            return Ok(WhichKeyPlacement::empty(total));
         };
         let height = height.saturating_add(TITLE_ROWS);
         let area = Rect::new(body.x, body.bottom() - height, body.width, height);
         fill(target, area, " ");
         target.set_style(area, self.styles.surface);
-        self.render_title(target, area, self.hints.len() - shown);
+        self.render_title(target, area, total - first - shown);
 
-        for (index, hint) in self.hints.iter().take(shown).enumerate() {
+        for (index, hint) in hints.iter().enumerate() {
             let column = index / layout.rows_per_column;
             let offset = index % layout.rows_per_column;
             let (Some(x), Ok(offset)) = (
@@ -349,16 +556,23 @@ impl<'a> WhichKeyOverlay<'a> {
                 self.styles.surface,
             );
         }
-        Ok(())
+        Ok(WhichKeyPlacement {
+            page,
+            pages,
+            first,
+            shown,
+            total,
+        })
     }
 
     /// Renders the title row of the overlay.
     ///
-    /// A prefix that reaches more hints than the bounded overlay holds loses the
-    /// last ones. The title row names how many hints the overlay dropped, so a
-    /// reader never believes an incomplete list, and the reader reaches those
-    /// commands by typing the next key instead.
-    fn render_title(&self, target: &mut Buffer, area: Rect, dropped: usize) {
+    /// A prefix that reaches more hints than one page holds keeps the rest on
+    /// the pages behind it. The title row names how many hints follow the drawn
+    /// page, so a reader never believes an incomplete list. The reader reaches
+    /// those commands by typing the next key, or by stepping to the next page
+    /// where the host binds that step.
+    fn render_title(&self, target: &mut Buffer, area: Rect, following: usize) {
         target.set_stringn(
             area.x,
             area.y,
@@ -366,10 +580,10 @@ impl<'a> WhichKeyOverlay<'a> {
             usize::from(area.width),
             self.styles.title,
         );
-        if dropped == 0 {
+        if following == 0 {
             return;
         }
-        let note = format!("+{dropped} more ");
+        let note = format!("+{following} more ");
         let width = usize::from(area.width);
         // The note never covers the title, so a narrow overlay keeps its name
         // and drops the count instead.

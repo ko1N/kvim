@@ -522,7 +522,8 @@ composes its workspace through the composer. It builds the context from the
 composer's own overlay ownership, host-global scope, and input-owning surface,
 so the listed keys and the keys that a press reaches never disagree. The idle
 list can approach `WHICH_KEY_HINTS_MAX`, which refuses a longer list rather
-than cutting it, so a host bounds or pages the result before it draws it. See
+than cutting it, so a host bounds its own list first. The overlay pages an
+accepted list, so a host reaches every row of it. Paging changes no bound. See
 [`embedding.md`](embedding.md).
 
 `WhichKeyView::interruptions` publishes the third list. A host calls it while a
@@ -573,10 +574,34 @@ column, which clips at the body edge.
 The overlay bounds its height twice. It covers at most half of the body band, so
 the buffer text around the cursor never disappears behind it, and one column
 holds at most ten rows even in a tall terminal. A body band that cannot hold the
-title row and one mapping over its own half shows no overlay. A prefix that
-reaches more mappings than the bounded columns hold loses the last ones, and the
-title row names how many rows the overlay dropped, for example `+2 more`. The
-reader reaches those mappings by typing the next key.
+title row and one mapping over its own half shows no overlay.
+
+A list that holds more rows than one frame of columns holds several pages. One
+page is one full frame of columns, so the pages cover the list without a gap
+and without an overlap, and a reader who steps through them meets every row
+exactly once. `WhichKeyOverlay::at_page` names the page, and it returns the
+overlay that owns both the rows and the page, so a page of an earlier list
+never reaches a render. A page above the last one draws the last page instead,
+because the number of pages depends on the body band and a caller learns it
+from the render.
+
+The page counts frames of columns, not rows. A first-visible row would repack
+every column on every step, because the overlay fills one column from top to
+bottom before it starts the next one, and it would stop its last window at the
+end of the list, so the last step would repeat rows that the reader already
+met. The overlay therefore holds a page and not a `kvim_ui::ListViewport`,
+which moves one window of lines until it shows a selected item. The overlay
+holds no selection. See [`windows.md`](windows.md).
+
+Every render reports one `WhichKeyPlacement`. It names the drawn rows, the size
+of the complete list, the drawn page, and the number of pages of that frame, so
+a host paints the position and knows whether a further step reaches another
+page. The overlay draws no position marker of its own.
+
+The title row names how many rows follow the drawn page, for example `+2 more`.
+The reader reaches those mappings by typing the next key, or by stepping to the
+next page where the host binds that step. The standalone editor draws the first
+page only, so its title row keeps the count it always showed.
 
 Every row carries one icon, which the group of its command selects. The group is
 a property of the command, so `input` owns it beside the identifier and the
