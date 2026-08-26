@@ -12,7 +12,7 @@ use std::num::NonZeroU32;
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
-use kvim_ui::{SidebarInput, SidebarMotion, SidebarRow, SidebarState, TabStrip, sidebar_guides};
+use kvim_ui::{ListMotion, SidebarInput, SidebarRow, SidebarState, TabStrip, sidebar_guides};
 use kvim_workspace::{
     DiffContent, Expansion, GitStatus, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff,
     align_hunk,
@@ -394,10 +394,10 @@ impl ReviewSurface {
     fn move_panel(&mut self, motion: Motion) -> ReviewOutcome {
         let before = self.changes.selected().cloned();
         let input = SidebarInput::Move(match motion {
-            Motion::Down(rows) => SidebarMotion::Down(rows),
-            Motion::Up(rows) => SidebarMotion::Up(rows),
-            Motion::ToRow(row) => SidebarMotion::ToRow(row),
-            Motion::LastRow => SidebarMotion::LastRow,
+            Motion::Down(rows) => ListMotion::Down(rows),
+            Motion::Up(rows) => ListMotion::Up(rows),
+            Motion::ToRow(row) => ListMotion::ToRow(row),
+            Motion::LastRow => ListMotion::LastRow,
         });
         let _ = self.changes.reduce(&input);
         if self.changes.selected().cloned() == before {

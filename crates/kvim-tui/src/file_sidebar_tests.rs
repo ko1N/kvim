@@ -11,7 +11,7 @@ use std::time::Duration;
 use ratatui::layout::Rect;
 
 use kvim_settings::EditorSettings;
-use kvim_ui::{SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK, SidebarMotion};
+use kvim_ui::{ListMotion, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK};
 use kvim_workspace::WorkspaceRequest;
 use kvim_workspace::temp::TempDir;
 
@@ -81,7 +81,7 @@ fn select(session: &mut Session, label: &str) {
         .iter()
         .position(|row| row.label() == label)
         .unwrap_or_else(|| panic!("the sidebar shows a row named {label}"));
-    let outcome = session.reduce_file_sidebar(FileSidebarInput::Move(SidebarMotion::ToRow(row)));
+    let outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::ToRow(row)));
     assert_eq!(outcome, FileSidebarOutcome::Applied);
     assert!(row_of(session, label).is_selected());
 }
@@ -104,7 +104,7 @@ fn the_first_listing_reaches_the_tree_as_work_and_never_as_a_read_of_the_facade(
     // read, so a facade that read the directory itself would show rows here.
     assert!(session.file_rows().is_empty());
     assert_eq!(
-        session.reduce_file_sidebar(FileSidebarInput::Move(SidebarMotion::Down(1))),
+        session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::Down(1))),
         FileSidebarOutcome::Applied
     );
     assert_eq!(
@@ -149,7 +149,7 @@ fn an_expansion_leaves_the_listing_as_work_and_shows_no_entry_before_it_returns(
     assert_eq!(labels(&session), vec!["src", "readme.md"]);
 
     // Moving and drawing over the waiting directory reads nothing either.
-    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(SidebarMotion::LastRow));
+    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::LastRow));
     assert_eq!(labels(&session), vec!["src", "readme.md"]);
 
     read_directories(&mut session);
@@ -284,7 +284,7 @@ fn one_sidebar_input_latches_the_redraw_request_of_the_host() {
     read_directories(&mut session);
     while session.take_event().is_some() {}
 
-    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(SidebarMotion::Down(1)));
+    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::Down(1)));
     let published = session
         .take_event()
         .expect("one sidebar input asks the host for one frame");
@@ -322,7 +322,7 @@ fn a_note_row_reports_its_directory_and_takes_no_selection() {
     assert!(!note.kind().is_selectable());
 
     // The last row is the note, so the move stops on the entry above it.
-    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(SidebarMotion::LastRow));
+    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::LastRow));
     assert!(row_of(&session, "kept.rs").is_selected());
 }
 
@@ -334,7 +334,7 @@ fn the_facade_reports_no_deadline_of_its_own() {
 
     // The sidebar reads no clock, so its inputs arm no timer.
     let before = session.next_deadline();
-    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(SidebarMotion::Down(1)));
+    let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::Down(1)));
     assert_eq!(session.next_deadline(), before);
     let _tick = session.tick(Duration::ZERO);
 }

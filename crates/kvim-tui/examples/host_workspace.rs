@@ -55,8 +55,8 @@ use kvim_runtime::{
 use kvim_settings::EditorSettings;
 use kvim_tui::{EditorEvent, EditorShutdown, EmbeddedEditor};
 use kvim_ui::{
-    ChildSide, CloseOutcome, Composition, CompositionEffect, Direction, Orientation, RegionKind,
-    RowKind, SidebarInput, SidebarMotion, SidebarRow, SidebarSide, SidebarState, SurfacePlacement,
+    ChildSide, CloseOutcome, Composition, CompositionEffect, Direction, ListMotion, Orientation,
+    RegionKind, RowKind, SidebarInput, SidebarRow, SidebarSide, SidebarState, SurfacePlacement,
     WhichKeyHint, WhichKeyOverlay, WhichKeyStyles, WindowLimits, WorkspaceComposer,
 };
 use kvim_workspace::temp::TempRepository;
@@ -690,9 +690,9 @@ async fn apply_surface(
         }
         (Surface::Tree, Action::SidebarDown | Action::SidebarUp) => {
             let motion = if command == Action::SidebarDown {
-                SidebarMotion::Down(1)
+                ListMotion::Down(1)
             } else {
-                SidebarMotion::Up(1)
+                ListMotion::Up(1)
             };
             let _event = host.tree.reduce(&SidebarInput::Move(motion));
             InputContextSnapshot::idle(Table::Tree)

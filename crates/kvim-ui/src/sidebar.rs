@@ -22,7 +22,7 @@ use ratatui::style::Style;
 use thiserror::Error;
 
 use crate::layout::fits;
-use crate::list::{ListItem, ListPlacement, ListViewport};
+use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport};
 
 /// The largest number of rows that one sidebar holds.
 ///
@@ -274,7 +274,7 @@ impl<R> SidebarRow<R> {
     /// # Examples
     ///
     /// ```
-    /// use kvim_ui::{RowKind, SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+    /// use kvim_ui::{ListMotion, RowKind, SidebarInput, SidebarRow, SidebarState};
     ///
     /// // A collapsed directory hides the file below it.
     /// let mut sidebar = SidebarState::new(3);
@@ -288,7 +288,7 @@ impl<R> SidebarRow<R> {
     ///
     /// // A downward move skips the hidden file and lands on the next visible row.
     /// sidebar.select(&"src");
-    /// sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1)));
+    /// sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1)));
     /// assert_eq!(sidebar.selected(), Some(&"tests"));
     /// // The collapsed subtree contributes no line to the scroll.
     /// assert_eq!(sidebar.total_lines(), 2);
@@ -528,29 +528,15 @@ impl SidebarAction {
     }
 }
 
-/// One bounded move of the sidebar selection, measured in rows.
-///
-/// The move stops at the first and the last row, so it never wraps. An inert
-/// row takes no selection, so the move takes the nearest selectable row in the
-/// direction of travel, and the nearest one behind it when that direction holds
-/// none.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SidebarMotion {
-    /// Move down the given number of rows.
-    Down(usize),
-    /// Move up the given number of rows.
-    Up(usize),
-    /// Move to the row of the given index.
-    ToRow(usize),
-    /// Move to the last row.
-    LastRow,
-}
-
 /// One input that the sidebar reduces into at most one event.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SidebarInput {
     /// Move the selection.
-    Move(SidebarMotion),
+    ///
+    /// An inert row takes no selection, so the move takes the nearest
+    /// selectable row in the direction of travel, and the nearest one behind
+    /// it when that direction holds none.
+    Move(ListMotion),
     /// Act on the selected row, as a double click or `Enter` does.
     Activate,
     /// Ask the host for one named action on the selected row.
@@ -596,7 +582,7 @@ pub enum SidebarEvent<R> {
 /// # Examples
 ///
 /// ```
-/// use kvim_ui::{RowKind, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+/// use kvim_ui::{ListMotion, RowKind, SidebarEvent, SidebarInput, SidebarRow, SidebarState};
 ///
 /// // The host names its own rows. The sidebar copies the identity only.
 /// let mut sidebar = SidebarState::new(2);
@@ -610,12 +596,12 @@ pub enum SidebarEvent<R> {
 ///
 /// // The first move selects a row and reports the change.
 /// assert_eq!(
-///     sidebar.reduce(&SidebarInput::Move(SidebarMotion::ToRow(0))),
+///     sidebar.reduce(&SidebarInput::Move(ListMotion::ToRow(0))),
 ///     Some(SidebarEvent::SelectionChanged { row: "src" }),
 /// );
 /// // The move skips the inert row and scrolls it into the viewport.
 /// assert_eq!(
-///     sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+///     sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1))),
 ///     Some(SidebarEvent::SelectionChanged { row: "tests" }),
 /// );
 /// assert_eq!(sidebar.first_line(), 1);
@@ -822,7 +808,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// # Examples
     ///
     /// ```
-    /// use kvim_ui::{RowKind, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow, SidebarState};
+    /// use kvim_ui::{ListMotion, RowKind, SidebarEvent, SidebarInput, SidebarRow, SidebarState};
     ///
     /// // A task section sits above a worktree section.
     /// let mut sidebar = SidebarState::new(4);
@@ -844,7 +830,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// // A downward move from no selection skips both hidden tasks in one
     /// // step and lands on the worktree row.
     /// assert_eq!(
-    ///     sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+    ///     sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1))),
     ///     Some(SidebarEvent::SelectionChanged { row: "src" }),
     /// );
     /// ```
@@ -1017,25 +1003,25 @@ impl<R: Clone + Eq> SidebarState<R> {
 
     /// Moves the selection by one bounded row move.
     ///
-    /// [`SidebarMotion::Down`] and [`SidebarMotion::Up`] count visible rows
+    /// [`ListMotion::Down`] and [`ListMotion::Up`] count visible rows
     /// only, so a collapsed subtree is absent from the count and a move over
     /// one lands on the next visible row at or above the depth of the
-    /// collapsed row. [`SidebarMotion::ToRow`] and [`SidebarMotion::LastRow`]
+    /// collapsed row. [`ListMotion::ToRow`] and [`ListMotion::LastRow`]
     /// address visible rows only, through [`Self::nearest_selectable`].
-    fn move_selection(&mut self, motion: SidebarMotion) -> Option<SidebarEvent<R>> {
+    fn move_selection(&mut self, motion: ListMotion) -> Option<SidebarEvent<R>> {
         let last = self.rows.len().checked_sub(1)?;
         let current = self.selected.unwrap_or(0);
         let (target, travel) = match motion {
-            SidebarMotion::Down(step) => (
+            ListMotion::Down(step) => (
                 self.step_visible(current, step, Travel::Forward),
                 Travel::Forward,
             ),
-            SidebarMotion::Up(step) => (
+            ListMotion::Up(step) => (
                 self.step_visible(current, step, Travel::Backward),
                 Travel::Backward,
             ),
-            SidebarMotion::ToRow(row) => (row.min(last), Travel::Forward),
-            SidebarMotion::LastRow => (last, Travel::Backward),
+            ListMotion::ToRow(row) => (row.min(last), Travel::Forward),
+            ListMotion::LastRow => (last, Travel::Backward),
         };
         // Every row may report information instead of an entry, so the move
         // finds no row at all and the selection stays where it was.

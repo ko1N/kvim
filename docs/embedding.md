@@ -177,8 +177,10 @@ guides as they are published reproduces the look of kvim.
 [`windows.md`](windows.md) owns the guide rule itself.
 
 `EmbeddedEditor::file_sidebar` applies one `FileSidebarInput`. `Move` takes one
-`kvim_ui::SidebarMotion`, which stops at the first and the last row and never
-wraps. `Open` opens the selected directory or activates the selected file.
+`kvim_ui::ListMotion`, which stops at the first and the last row and never
+wraps. See [List Motion](windows.md#list-motion) for the row space that
+`ListMotion::ToRow` names. `Open` opens the selected directory or activates
+the selected file.
 `Close` closes the selected directory or selects the directory that holds the
 selected row. `Activate` activates the selected file or opens and closes the
 selected directory.

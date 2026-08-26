@@ -977,7 +977,7 @@ impl EmbeddedEditor {
     /// ```
     /// use ratatui::layout::Rect;
     ///
-    /// use kvim_tui::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, SidebarMotion};
+    /// use kvim_tui::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, ListMotion};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -992,7 +992,7 @@ impl EmbeddedEditor {
     /// // The first listing has not arrived, so the tree shows no row and the
     /// // move changes nothing. The call still touches no filesystem.
     /// assert_eq!(
-    ///     editor.file_sidebar(FileSidebarInput::Move(SidebarMotion::Down(1))),
+    ///     editor.file_sidebar(FileSidebarInput::Move(ListMotion::Down(1))),
     ///     FileSidebarOutcome::Applied,
     /// );
     /// ```

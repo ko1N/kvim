@@ -15,7 +15,9 @@
 //! The example needs no editor, no filesystem, and no terminal. It prints what
 //! the selector answers and asserts every fact that it prints.
 
-use kvim_ui::{SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate};
+use kvim_ui::{
+    ListMotion, SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
+};
 
 /// The identity of one task of this host. The selector copies it and reads
 /// nothing inside it.
@@ -227,6 +229,18 @@ fn show_the_window() {
         selector.first_line(),
         selector.candidates_len()
     );
+
+    // A picker jumps straight to a row, exactly as a sidebar does. Neither
+    // move was reachable through `select_next` and `select_previous` alone.
+    selector.apply_motion(ListMotion::ToRow(1));
+    assert_eq!(
+        selector.selected_row(),
+        Some(1),
+        "the jump lands on the named row, not a step away from it"
+    );
+    selector.apply_motion(ListMotion::LastRow);
+    assert_eq!(selector.selected_row(), Some(BOARD.len() - 1));
+    println!("a direct jump reached row {}", BOARD.len() - 1);
 
     // An empty list and a query that keeps nothing both show no placement,
     // but the candidate count tells the two apart.

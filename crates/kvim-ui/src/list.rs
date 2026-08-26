@@ -177,6 +177,37 @@ impl ListPlacement {
     }
 }
 
+/// One bounded move of a list selection, measured in rows of the receiving
+/// list's own row space.
+///
+/// The move stops at the first and the last row of that space, so it never
+/// wraps. [`SidebarState`](crate::SidebarState) and
+/// [`Selector`](crate::Selector) both answer every variant, but each names a
+/// different row space. `SidebarState` counts every row of its complete flat
+/// row list, hidden rows included. `Selector` counts only the rows of
+/// [`Selector::matches`](crate::Selector::matches), the rows that the current
+/// query keeps. The same index value can therefore name two different rows,
+/// or no row at all, across the two lists. See [`ListMotion::ToRow`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ListMotion {
+    /// Move down the given number of rows.
+    Down(usize),
+    /// Move up the given number of rows.
+    Up(usize),
+    /// Move to the row of the given index, in the row space of the list that
+    /// receives the motion.
+    ///
+    /// [`SidebarState`](crate::SidebarState) indexes its complete flat row
+    /// list, hidden rows included. A hidden target resolves like an inert
+    /// row: to the nearest selectable row in the direction of travel, then to
+    /// the nearest one behind it. [`Selector`](crate::Selector) indexes
+    /// [`Selector::matches`](crate::Selector::matches) instead, so it never
+    /// resolves to a row that the current query does not keep.
+    ToRow(usize),
+    /// Move to the last row.
+    LastRow,
+}
+
 /// One window over a bounded list: a height, a scroll margin, and an offset.
 ///
 /// The viewport holds no item. [`ListViewport::reconcile`] takes the measure

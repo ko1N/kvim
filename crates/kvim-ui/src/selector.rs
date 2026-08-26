@@ -14,6 +14,13 @@
 //! offset of its own, the same way [`SidebarState`](crate::SidebarState) reads
 //! its own placements. See `docs/windows.md`.
 //!
+//! [`Selector::apply_motion`] answers the same [`ListMotion`] that
+//! [`SidebarState`](crate::SidebarState) answers, so a host picker reaches the
+//! last row, jumps to a row, and moves by a count, exactly as a host sidebar
+//! does. [`Selector::select_next`] and [`Selector::select_previous`] stay as
+//! thin wrappers over a single-row [`ListMotion::Down`] and [`ListMotion::Up`].
+//! See `docs/windows.md`.
+//!
 //! The module is pure. It reads no clock, no filesystem, and no terminal.
 //!
 //! `examples/selector.rs` narrows one host-owned task board with one query. It
@@ -27,7 +34,7 @@
 use kvim_fuzzy::rank;
 use ratatui::layout::Rect;
 
-use crate::list::{ListItem, ListPlacement, ListViewport};
+use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport};
 
 /// The largest number of candidates that one selector holds.
 ///
@@ -162,15 +169,6 @@ impl SelectorPlacement {
     pub fn area(&self, selector: Rect) -> Rect {
         self.placement.area(selector)
     }
-}
-
-/// The direction of one selection move.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum Step {
-    /// Move away from the query.
-    Next,
-    /// Move toward the query.
-    Previous,
 }
 
 /// The bounded selector: one query, one candidate list, and one stable
@@ -414,29 +412,76 @@ impl<R> Selector<R> {
     /// Moves the selection one row toward the end of the list.
     ///
     /// The list ends at both edges, because a wrap would move the reader past
-    /// the best match without a key that says so.
+    /// the best match without a key that says so. A thin wrapper over
+    /// [`ListMotion::Down`], kept beside [`Selector::apply_motion`] because a
+    /// single-row step is the most common move and costs a host nothing extra
+    /// to name directly.
     pub fn select_next(&mut self) {
-        self.select(Step::Next);
+        self.apply_motion(ListMotion::Down(1));
     }
 
     /// Moves the selection one row toward the query.
+    ///
+    /// A thin wrapper over [`ListMotion::Up`]. See [`Selector::select_next`].
     pub fn select_previous(&mut self) {
-        self.select(Step::Previous);
+        self.apply_motion(ListMotion::Up(1));
     }
 
-    /// Moves the selection by one step inside the matched rows.
-    fn select(&mut self, step: Step) {
-        let Some(row) = self.selected_row() else {
-            self.selected = self.matches.first().copied();
-            self.reconcile_viewport();
+    /// Moves the selection by one bounded row move.
+    ///
+    /// The move stops at the first and the last row of [`Selector::matches`],
+    /// so it never wraps. [`ListMotion::ToRow`] names a position inside
+    /// [`Selector::matches`], the row space that [`Selector::selected_row`]
+    /// also answers, not a position inside the candidate list. See
+    /// [`ListMotion::ToRow`] for how that row space differs from
+    /// [`SidebarState`](crate::SidebarState)'s.
+    ///
+    /// An empty match list takes no motion and keeps no selection.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_ui::{ListMotion, Selector, SelectorCandidate};
+    ///
+    /// let mut selector = Selector::default();
+    /// selector.set_candidates(
+    ///     (0..5)
+    ///         .map(|index| SelectorCandidate::new(index, format!("row {index}"), ""))
+    ///         .collect(),
+    ///     false,
+    /// );
+    ///
+    /// // A picker jumps straight to the last row, exactly as a sidebar does.
+    /// selector.apply_motion(ListMotion::LastRow);
+    /// assert_eq!(selector.selected_row(), Some(4));
+    ///
+    /// // A picker also jumps to a named row.
+    /// selector.apply_motion(ListMotion::ToRow(1));
+    /// assert_eq!(selector.selected_row(), Some(1));
+    ///
+    /// // The move stops at the first row instead of wrapping.
+    /// selector.apply_motion(ListMotion::Up(4));
+    /// assert_eq!(selector.selected_row(), Some(0));
+    /// ```
+    pub fn apply_motion(&mut self, motion: ListMotion) {
+        let Some(last) = self.matches.len().checked_sub(1) else {
             return;
         };
-        let last = self.matches.len().saturating_sub(1);
-        let next = match step {
-            Step::Previous => row.saturating_sub(1),
-            Step::Next => row.saturating_add(1).min(last),
+        // `refilter` always selects the first match while `matches` holds
+        // one, so `selected_row` answers `Some` here. `unwrap_or(0)` guards
+        // that invariant without a panic if it ever slips.
+        debug_assert!(
+            self.selected_row().is_some(),
+            "refilter always selects the first match while matches holds one row"
+        );
+        let current = self.selected_row().unwrap_or(0);
+        let target = match motion {
+            ListMotion::Down(step) => current.saturating_add(step).min(last),
+            ListMotion::Up(step) => current.saturating_sub(step),
+            ListMotion::ToRow(row) => row.min(last),
+            ListMotion::LastRow => last,
         };
-        self.selected = self.matches.get(next).copied();
+        self.selected = self.matches.get(target).copied();
         self.reconcile_viewport();
     }
 

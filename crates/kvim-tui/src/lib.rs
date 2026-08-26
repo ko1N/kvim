@@ -121,10 +121,9 @@ pub use file_sidebar::{
     FileSidebarOutcome,
 };
 pub use kvim_ui::{
-    AdaptiveSplit, CloseOutcome, Direction, LayoutChange, LayoutFit, Orientation, Region,
-    RegionKind, SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX,
-    SPLIT_WEIGHT_TOTAL, Sidebar, SidebarMotion, SidebarSide, SplitError, WINDOWS_MAX, WindowId,
-    WindowLayout,
+    AdaptiveSplit, CloseOutcome, Direction, LayoutChange, LayoutFit, ListMotion, Orientation,
+    Region, RegionKind, SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX,
+    SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLayout,
 };
 pub use language::{
     DiagnosticJump, FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, FormatOnSave, LANGUAGE_OUTBOX_MAX,

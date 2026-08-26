@@ -137,6 +137,85 @@ fn the_selection_stops_at_both_ends_of_the_list() {
 }
 
 #[test]
+fn apply_motion_moves_by_a_count_and_stops_at_both_ends() {
+    let mut selector = selector(&[
+        (Entry::First, "a", ""),
+        (Entry::Second, "b", ""),
+        (Entry::Third, "c", ""),
+    ]);
+    selector.apply_motion(ListMotion::Down(1));
+    assert_eq!(selector.selected_row(), Some(1));
+    selector.apply_motion(ListMotion::Up(1));
+    assert_eq!(selector.selected_row(), Some(0));
+
+    // The move stops at each end instead of wrapping, the way `SidebarState`
+    // stops instead of wrapping.
+    selector.apply_motion(ListMotion::Up(9));
+    assert_eq!(selector.selected_row(), Some(0));
+    selector.apply_motion(ListMotion::Down(9));
+    assert_eq!(selector.selected_row(), Some(2));
+}
+
+#[test]
+fn apply_motion_to_row_indexes_matches_not_the_candidate_list() {
+    let mut selector = selector(&[
+        (Entry::First, "zebra", ""),
+        (Entry::Second, "main", ""),
+        (Entry::Third, "manual", ""),
+    ]);
+    selector.set_query("ma");
+    assert_eq!(
+        selector.matches().len(),
+        2,
+        "the query keeps two candidates"
+    );
+
+    // Row 1 of the matched list is `Entry::Third`, not `Entry::Second`, the
+    // candidate that row 1 would name in the unfiltered candidate list.
+    selector.apply_motion(ListMotion::ToRow(1));
+    assert_eq!(
+        selector.selected(),
+        selector.candidate(selector.matches()[1])
+    );
+    assert_eq!(
+        selector.selected().map(SelectorCandidate::id),
+        Some(&Entry::Third)
+    );
+
+    selector.apply_motion(ListMotion::ToRow(100));
+    assert_eq!(
+        selector.selected_row(),
+        Some(1),
+        "a row past the end clamps to the last matched row"
+    );
+}
+
+#[test]
+fn apply_motion_reconciles_the_window_after_a_direct_jump() {
+    let mut selector = long_selector(LONG_LIST_ROWS);
+    selector.set_height_rows(5);
+    let total = u32::try_from(LONG_LIST_ROWS).expect("forty fits u32");
+
+    selector.apply_motion(ListMotion::LastRow);
+    assert_eq!(selector.selected_row(), Some(LONG_LIST_ROWS - 1));
+    assert!(shows(&selector, LONG_LIST_ROWS - 1));
+    assert_eq!(
+        selector.first_line(),
+        total - 5,
+        "a direct jump to the last row still stops the window at the end"
+    );
+
+    selector.apply_motion(ListMotion::ToRow(0));
+    assert_eq!(selector.selected_row(), Some(0));
+    assert!(shows(&selector, 0));
+    assert_eq!(
+        selector.first_line(),
+        0,
+        "a direct jump to the first row scrolls the window back to the top"
+    );
+}
+
+#[test]
 fn a_candidate_list_above_the_bound_reports_the_truncation() {
     let mut selector = Selector::default();
     let candidates = (0..SELECTOR_CANDIDATES_MAX + 8)

@@ -24,7 +24,7 @@
 //! [`EmbeddedEditor::apply`]: super::embed::EmbeddedEditor::apply
 
 use kvim_path::WorktreeRelativePath;
-use kvim_ui::{SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX, SidebarMotion};
+use kvim_ui::{ListMotion, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX};
 
 use super::embed::EditorEvent;
 
@@ -204,10 +204,10 @@ impl FileRow {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{FileSidebarInput, SidebarMotion};
+/// use kvim_tui::{FileSidebarInput, ListMotion};
 ///
-/// let down = FileSidebarInput::Move(SidebarMotion::Down(1));
-/// assert_eq!(down, FileSidebarInput::Move(SidebarMotion::Down(1)));
+/// let down = FileSidebarInput::Move(ListMotion::Down(1));
+/// assert_eq!(down, FileSidebarInput::Move(ListMotion::Down(1)));
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FileSidebarInput {
@@ -216,7 +216,7 @@ pub enum FileSidebarInput {
     /// The move stops at the first and the last row, so it never wraps. A
     /// [`FileRowKind::Note`] row takes no selection, so the move takes the
     /// nearest entry row in the direction of travel.
-    Move(SidebarMotion),
+    Move(ListMotion),
     /// Open the selected directory, or activate the selected file.
     ///
     /// An open directory stays open, so this input only ever takes the reader

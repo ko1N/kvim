@@ -115,7 +115,7 @@ pub use guides::{
     sidebar_guides,
 };
 pub use layout::{Region, RegionKind, WindowLayout};
-pub use list::{LIST_VIEWPORT_LINES_MAX, ListItem, ListPlacement, ListViewport};
+pub use list::{LIST_VIEWPORT_LINES_MAX, ListItem, ListMotion, ListPlacement, ListViewport};
 pub use selector::{
     SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
     SelectorPlacement,
@@ -123,8 +123,8 @@ pub use selector::{
 pub use sidebar::{
     RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
     SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SIDEBAR_SECTIONS_MAX,
-    SidebarAction, SidebarCanvas, SidebarError, SidebarEvent, SidebarInput, SidebarMotion,
-    SidebarPlacement, SidebarRow, SidebarState,
+    SidebarAction, SidebarCanvas, SidebarError, SidebarEvent, SidebarInput, SidebarPlacement,
+    SidebarRow, SidebarState,
 };
 pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabStrip};
 pub use which_key::{

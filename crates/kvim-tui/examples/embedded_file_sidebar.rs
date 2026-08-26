@@ -39,7 +39,7 @@ use kvim_runtime::{Runtime, RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
 use kvim_settings::EditorSettings;
 use kvim_tui::{
     EditorCapacity, EditorShutdown, EditorWork, EmbeddedEditor, FileRow, FileRowKind,
-    FileSidebarInput, FileSidebarOutcome, SidebarMotion,
+    FileSidebarInput, FileSidebarOutcome, ListMotion,
 };
 use kvim_workspace::temp::TempDir;
 
@@ -136,7 +136,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     // The host moves the selection with the bounded motions of `kvim-ui`. The
     // move never wraps and never rests on a row that reports about a directory.
-    let _outcome = editor.file_sidebar(FileSidebarInput::Move(SidebarMotion::ToRow(0)));
+    let _outcome = editor.file_sidebar(FileSidebarInput::Move(ListMotion::ToRow(0)));
     println!("selected {}", selected_label(&editor));
 
     // The open changes the tree and reads nothing. The directory reports that
@@ -157,7 +157,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
     // The reader steps onto one file and activates it. The sidebar opens no
     // buffer: the activation returns from the input that produced it, and the
     // host decides the effect.
-    let _outcome = editor.file_sidebar(FileSidebarInput::Move(SidebarMotion::Down(1)));
+    let _outcome = editor.file_sidebar(FileSidebarInput::Move(ListMotion::Down(1)));
     let outcome = editor.file_sidebar(FileSidebarInput::Activate);
     match outcome {
         FileSidebarOutcome::Activated { path } => {

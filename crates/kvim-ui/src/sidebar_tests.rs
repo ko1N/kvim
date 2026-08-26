@@ -7,10 +7,9 @@ use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 
 use crate::{
-    RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
+    ListMotion, RowKind, SIDEBAR_ACTION_CHARS_MAX, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROW_DEPTH_MAX,
     SIDEBAR_ROW_DRAWS_MAX, SIDEBAR_ROW_LINES_MAX, SIDEBAR_ROWS_MAX, SIDEBAR_SECTIONS_MAX,
-    SidebarAction, SidebarError, SidebarEvent, SidebarInput, SidebarMotion, SidebarRow,
-    SidebarState,
+    SidebarAction, SidebarError, SidebarEvent, SidebarInput, SidebarRow, SidebarState,
 };
 
 /// The row identity that the host owns. The sidebar only compares the value.
@@ -115,11 +114,11 @@ fn a_scroll_counts_terminal_rows_instead_of_rows() {
     sidebar.select(&0);
     assert_eq!(sidebar.first_line(), 0);
     // One row down moves the offset by the height of that row, not by one row.
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1)));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1)));
     assert_eq!(sidebar.first_line(), 1);
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1)));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1)));
     assert_eq!(sidebar.first_line(), 3);
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::LastRow));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::LastRow));
     assert_eq!(sidebar.first_line(), 5);
 }
 
@@ -185,15 +184,15 @@ fn a_scroll_margin_keeps_rows_around_the_selection() {
     let mut sidebar = single_rows(9, 20);
     sidebar.set_scroll_margin(3);
     sidebar.select(&0);
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::ToRow(5)));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::ToRow(5)));
 
     // The margin holds three rows below the selection inside the viewport.
     assert_eq!(sidebar.first_line(), 0);
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::ToRow(6)));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::ToRow(6)));
     assert_eq!(sidebar.first_line(), 1);
 
     // The margin stops at the last row instead of scrolling past it.
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::LastRow));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::LastRow));
     assert_eq!(sidebar.first_line(), 11);
 }
 
@@ -251,7 +250,7 @@ fn an_empty_sidebar_reduces_every_input_without_an_event() {
     let action = SidebarAction::new("open").expect("the name stays inside the bound");
 
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(2))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Down(2))),
         None
     );
     assert_eq!(sidebar.reduce(&SidebarInput::Activate), None);
@@ -274,28 +273,25 @@ fn a_move_skips_the_inert_rows_and_stops_at_the_two_ends() {
         .expect("the rows stay inside the bounds");
 
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::ToRow(0))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::ToRow(0))),
         Some(SidebarEvent::SelectionChanged { row: 1 }),
     );
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(2))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Down(2))),
         Some(SidebarEvent::SelectionChanged { row: 4 }),
     );
     // The last row is inert, so the move takes the nearest row behind it.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::LastRow)),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::LastRow)),
         None
     );
     assert_eq!(sidebar.selected(), Some(&4));
     // A move up stops at the first selectable row and never wraps.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Up(9))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Up(9))),
         Some(SidebarEvent::SelectionChanged { row: 1 }),
     );
-    assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Up(9))),
-        None
-    );
+    assert_eq!(sidebar.reduce(&SidebarInput::Move(ListMotion::Up(9))), None);
 }
 
 #[test]
@@ -532,12 +528,12 @@ fn a_downward_move_over_a_collapsed_parent_lands_on_the_next_visible_row() {
     // The move counts visible rows only, so it skips both hidden children of
     // `a` and lands directly on `b`, the next visible row.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1))),
         Some(SidebarEvent::SelectionChanged { row: 3 }),
     );
     // The same move back up returns to `a` in one step.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Up(1))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Up(1))),
         Some(SidebarEvent::SelectionChanged { row: 0 }),
     );
 }
@@ -549,7 +545,7 @@ fn to_row_on_a_hidden_row_resolves_like_an_inert_row() {
     // Row 1 is `a/1`, hidden below the collapsed `a`. The move takes the
     // nearest visible, selectable row in the direction of travel.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::ToRow(1))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::ToRow(1))),
         Some(SidebarEvent::SelectionChanged { row: 3 }),
     );
 }
@@ -562,7 +558,7 @@ fn last_row_moves_to_the_last_visible_selectable_row() {
     // Row 4, `b/1`, is the last row of the flat list and it is hidden below
     // the collapsed `b`, so the last visible row, `b`, takes the selection.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::LastRow)),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::LastRow)),
         Some(SidebarEvent::SelectionChanged { row: 3 }),
     );
 }
@@ -627,15 +623,12 @@ fn a_move_crosses_a_collapsed_section_without_entering_it() {
     // A downward move from no selection skips both hidden tasks in one step
     // and lands directly on the next visible row.
     assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1))),
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1))),
         Some(SidebarEvent::SelectionChanged { row: 2 }),
     );
     // The same move back up returns to the section boundary without landing
     // on either hidden task.
-    assert_eq!(
-        sidebar.reduce(&SidebarInput::Move(SidebarMotion::Up(1))),
-        None,
-    );
+    assert_eq!(sidebar.reduce(&SidebarInput::Move(ListMotion::Up(1))), None,);
 }
 
 #[test]

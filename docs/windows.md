@@ -305,6 +305,36 @@ first, and every present bound stays well below it.
 Call `reconcile` after every change of the items, the selection, the height, or
 the margin. The placements describe the state of the last reconciliation.
 
+### List Motion
+
+`ListMotion` is the one motion type that `SidebarState` and `Selector` both
+answer. It replaces `SidebarMotion`, which is gone from the public surface.
+The rename is a clean break: no alias remains, because both crates stay
+below version 1.0 and the one embedding host upgrades deliberately. A host
+that read `SidebarMotion` renames its import to `ListMotion`. The four
+variants and their sidebar behavior stay the same.
+
+`ListMotion` holds four variants. `Down(usize)` and `Up(usize)` move by a row
+count and stop at both edges. `ToRow(usize)` moves to a named row. `LastRow`
+moves to the last row. No variant wraps.
+
+`ToRow` names a row inside the row space of the list that receives the
+motion, and the two present lists keep different row spaces. `SidebarState`
+indexes its complete flat row list, hidden rows included. A hidden target
+resolves like an inert row: to the nearest selectable row in the direction
+of travel, then to the nearest one behind it. `Selector` indexes `matches`
+instead, the row space that `selected_row` and `SelectorPlacement::index`
+also use, so `ToRow` never resolves to a row that the current query drops.
+The same index value can therefore name two different rows, or no row at
+all, across the two lists. A host that reuses one `ToRow` value across both
+lists reads the row space of each list first.
+
+`Selector::apply_motion` answers `ListMotion` the same way
+`SidebarState::reduce` answers a `SidebarInput::Move`. `select_next` and
+`select_previous` stay as public methods, now as thin wrappers over a
+single-row `ListMotion::Down` and `ListMotion::Up`, so a present host keeps
+its call sites unchanged.
+
 ## Sidebars
 
 `SidebarState<RowId>` owns selection and viewport state only. Rows, actions,
@@ -517,6 +547,10 @@ candidate directly, with no further lookup through `matches`.
 the number of matched rows. A host reads this count to tell two empty cases
 apart. Zero names a list with no candidate at all. A positive count beside an
 empty `matches` names a query that keeps nothing.
+
+`apply_motion` answers every `ListMotion` over the row space of `matches`, so
+a host picker reaches the last row, jumps to a row, and moves by a count,
+exactly as a host sidebar does. See [List Motion](#list-motion).
 
 ## Chrome
 

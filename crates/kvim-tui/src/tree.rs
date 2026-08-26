@@ -28,8 +28,8 @@ use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
 use kvim_ui::{
-    RowKind, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_INDENT_CELLS, SidebarCanvas, SidebarEvent,
-    SidebarInput, SidebarMotion, SidebarRow, SidebarState, sidebar_guides,
+    ListMotion, RowKind, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_INDENT_CELLS, SidebarCanvas,
+    SidebarEvent, SidebarInput, SidebarRow, SidebarState, sidebar_guides,
 };
 use kvim_workspace::{
     DirectoryListing, EntryKind, Expansion, FileClipboard, FileOperation, FileTree, GitStatus,
@@ -464,10 +464,10 @@ impl TreeSidebar {
     pub(super) fn move_selection(&mut self, motion: TreeMotion) {
         self.sync_rows();
         let motion = match motion {
-            TreeMotion::Down(step) => SidebarMotion::Down(step),
-            TreeMotion::Up(step) => SidebarMotion::Up(step),
-            TreeMotion::ToRow(row) => SidebarMotion::ToRow(row),
-            TreeMotion::LastRow => SidebarMotion::LastRow,
+            TreeMotion::Down(step) => ListMotion::Down(step),
+            TreeMotion::Up(step) => ListMotion::Up(step),
+            TreeMotion::ToRow(row) => ListMotion::ToRow(row),
+            TreeMotion::LastRow => ListMotion::LastRow,
         };
         // An empty tree and a tree whose rows all report a read both leave the
         // selection where it was, so the reduction reports no event.
@@ -918,10 +918,10 @@ impl TreeSidebar {
         let activated = match input {
             FileSidebarInput::Move(motion) => {
                 self.move_selection(match motion {
-                    SidebarMotion::Down(step) => TreeMotion::Down(step),
-                    SidebarMotion::Up(step) => TreeMotion::Up(step),
-                    SidebarMotion::ToRow(row) => TreeMotion::ToRow(row),
-                    SidebarMotion::LastRow => TreeMotion::LastRow,
+                    ListMotion::Down(step) => TreeMotion::Down(step),
+                    ListMotion::Up(step) => TreeMotion::Up(step),
+                    ListMotion::ToRow(row) => TreeMotion::ToRow(row),
+                    ListMotion::LastRow => TreeMotion::LastRow,
                 });
                 None
             }

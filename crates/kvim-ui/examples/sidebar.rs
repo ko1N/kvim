@@ -31,8 +31,8 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use kvim_ui::{
-    RowKind, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK, SidebarAction, SidebarCanvas, SidebarEvent,
-    SidebarInput, SidebarMotion, SidebarPlacement, SidebarRow, SidebarState, sidebar_guides,
+    ListMotion, RowKind, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK, SidebarAction, SidebarCanvas,
+    SidebarEvent, SidebarInput, SidebarPlacement, SidebarRow, SidebarState, sidebar_guides,
 };
 
 /// The identity of one host row.
@@ -227,7 +227,7 @@ fn main() {
 
     // A downward move crosses the collapsed subtree in one step.
     sidebar.select(&EntryId(3));
-    let moved = sidebar.reduce(&SidebarInput::Move(SidebarMotion::Down(1)));
+    let moved = sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1)));
     println!("selection: {moved:?}");
     assert_eq!(
         sidebar.selected(),
@@ -245,7 +245,7 @@ fn main() {
     // The viewport shows a part of the list, so the reader travels to the last
     // visible row. The sidebar scrolls the deeper rows into view, and the drawn
     // cells below hold their guides.
-    sidebar.reduce(&SidebarInput::Move(SidebarMotion::LastRow));
+    sidebar.reduce(&SidebarInput::Move(ListMotion::LastRow));
     assert_eq!(sidebar.selected(), Some(&EntryId(8)));
     println!(
         "viewport:  {} lines of {} terminal rows, first line {}",
