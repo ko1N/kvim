@@ -375,9 +375,18 @@ impl fmt::Display for BindingScope {
 /// message line, so it opens no second input mechanism. See `docs/files.md`.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TreePrompt {
-    /// Create one file inside the destination directory.
+    /// Create one entry inside the destination directory.
+    ///
+    /// The line reads one path, not only one name. A separator at the end of
+    /// the path creates a directory, and the names before the last one create
+    /// the directories that the workspace does not hold yet. See
+    /// `docs/files.md`.
     AddFile,
     /// Create one directory inside the destination directory.
+    ///
+    /// [`TreePrompt::AddFile`] reads the same path and creates a directory
+    /// too, so this prompt is redundant and it is a candidate for removal. It
+    /// stays because removing a published prompt breaks an embedding host.
     AddDirectory,
     /// Give the selected entry another name.
     Rename,

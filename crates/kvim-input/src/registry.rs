@@ -1004,7 +1004,12 @@ fn add_picker_bindings(table: &mut Vec<Binding>) {
 /// holds no leader sequence. `n` and `N` move between the search matches, and
 /// `Esc` and `Ctrl-C` end the search, as they do in a buffer window. `Ctrl-E`
 /// and `q` both close the sidebar, the directional focus keys leave it, and the
-/// directional resize keys change its width. See `docs/input-actions.md`.
+/// directional resize keys change its width.
+///
+/// `a` reads one path, so it creates a file, a directory, or a file inside new
+/// directories. The preset therefore binds no second add key, and `A` stays
+/// free. [`Command::TreeAddDirectory`] still opens its own prompt for a host
+/// that binds it. See `docs/input-actions.md`.
 fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('j'), Command::MoveDown);
     add_tree(table, ch('k'), Command::MoveUp);
@@ -1022,7 +1027,6 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree(table, ch('h'), Command::TreeCollapseEntry);
     add_tree(table, ch('R'), Command::TreeRefresh);
     add_tree(table, ch('a'), Command::TreeAddFile);
-    add_tree(table, ch('A'), Command::TreeAddDirectory);
     add_tree(table, ch('d'), Command::TreeDelete);
     add_tree(table, ch('r'), Command::TreeRename);
     add_tree(table, ch('y'), Command::TreeCopyEntry);

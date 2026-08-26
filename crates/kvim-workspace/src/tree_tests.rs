@@ -839,6 +839,76 @@ fn a_create_adds_the_entry_and_selects_it() {
     assert_eq!(outcome.changed, vec![root]);
 }
 
+/// The typed path may name directories that the workspace does not hold yet.
+/// The plan then holds one create for each missing level, so a failure names
+/// the level that failed instead of the whole path.
+#[test]
+fn a_create_makes_every_missing_directory_above_the_entry() {
+    let directory = TempDir::new("mutate-create-nested");
+    directory.file("docs/kept.md", "kept");
+    let root = root_of(&directory);
+
+    let outcome = MutationPlan::stage(
+        &FileOperation::Create {
+            path: relative("docs/deep/nested/new.rs"),
+            kind: EntryKind::File,
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect("every missing level is free")
+    .apply()
+    .expect("the directory is writable");
+
+    assert!(root.join("docs/deep").is_dir());
+    assert!(root.join("docs/deep/nested").is_dir());
+    assert!(root.join("docs/deep/nested/new.rs").is_file());
+    assert_eq!(
+        fs::read_to_string(root.join("docs/kept.md")).expect("the file exists"),
+        "kept",
+        "a level that already holds a directory keeps its entries"
+    );
+    assert_eq!(
+        outcome.selection,
+        Some(root.join("docs/deep/nested/new.rs"))
+    );
+    assert_eq!(
+        outcome.changed,
+        vec![
+            root.join("docs"),
+            root.join("docs/deep"),
+            root.join("docs/deep/nested"),
+        ],
+        "every directory that gained an entry needs a new read"
+    );
+}
+
+#[test]
+fn a_create_refuses_a_level_that_holds_a_file_and_names_it() {
+    let directory = TempDir::new("mutate-create-through-file");
+    directory.file("main.rs", "kept");
+    let root = root_of(&directory);
+
+    let error = MutationPlan::stage(
+        &FileOperation::Create {
+            path: relative("main.rs/deep/new.rs"),
+            kind: EntryKind::File,
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect_err("no entry can live inside a file");
+
+    match error {
+        MutationError::NotADirectory { path } => assert_eq!(path, root.join("main.rs")),
+        other => panic!("the refusal must name the level that holds the file: {other}"),
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("main.rs")).expect("the file exists"),
+        "kept"
+    );
+}
+
 #[test]
 fn a_create_refuses_an_existing_path() {
     let directory = TempDir::new("mutate-create-collision");

@@ -221,6 +221,9 @@ semantic_commands! {
     TreeSelectParent => ("tree-select-parent", "Select the parent directory"),
     TreeRefresh => ("tree-refresh", "Read the workspace directories again"),
     TreeAddFile => ("tree-add-file", "Add one file"),
+    // `TreeAddFile` reads one path, so it creates a directory as well. This
+    // command is therefore redundant, and it is a candidate for removal. It
+    // stays because removing a published command breaks an embedding host.
     TreeAddDirectory => ("tree-add-directory", "Add one directory"),
     TreeDelete => ("tree-delete", "Delete the selected entry"),
     TreeRename => ("tree-rename", "Rename the selected entry"),

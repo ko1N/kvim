@@ -59,7 +59,7 @@ use kvim_language::{
     LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
     SyntaxHighlighter, SyntaxTree, buffer_position, content_changes, document_position,
 };
-use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, TerminalEvent};
@@ -695,21 +695,28 @@ impl PromptSeed {
 
 /// Returns the largest number of characters that one prompt accepts.
 ///
-/// An add-name or a rename prompt reuses [`TREE_NAME_BYTES_MAX`] here as a
-/// character count, not a byte count. One character never encodes in fewer
-/// bytes than itself. This cap therefore never stops a reader short of a name
-/// that `check_name` then accepts. A name built from wide characters can still
-/// pass this cap. Such a name can still meet the byte bound at submission. That
-/// later refusal names the real limit, so the reader learns the true bound
-/// instead of meeting a silent block while still typing.
+/// A prompt reuses a byte bound here as a character count, not a byte count.
+/// One character never encodes in fewer bytes than itself. Such a cap therefore
+/// never stops a reader short of a text that the submission then accepts. A
+/// text built from wide characters can still pass this cap and still meet the
+/// byte bound at submission. That later refusal names the real limit, so the
+/// reader learns the true bound instead of meeting a silent block while still
+/// typing.
+///
+/// A rename prompt reads one entry name, so it takes [`TREE_NAME_BYTES_MAX`].
+/// An add prompt reads one path, so it takes [`WORKTREE_PATH_BYTES_MAX`], the
+/// bound of the whole path. The submission then applies the two bounds that one
+/// path carries: every name meets [`TREE_NAME_BYTES_MAX`], and the number of
+/// names meets the component bound of `kvim-path`. A path that meets both
+/// bounds stays under this cap, so the cap blocks no acceptable path. See
+/// `docs/files.md`.
 const fn prompt_chars_max(kind: PromptKind) -> usize {
     match kind {
         PromptKind::CommandLine => COMMAND_LINE_CHARS_MAX,
         PromptKind::Search => SEARCH_QUERY_CHARS_MAX,
         PromptKind::Tree(TreePrompt::Search) => TREE_SEARCH_CHARS_MAX,
-        PromptKind::Tree(TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename) => {
-            TREE_NAME_BYTES_MAX
-        }
+        PromptKind::Tree(TreePrompt::AddFile | TreePrompt::AddDirectory) => WORKTREE_PATH_BYTES_MAX,
+        PromptKind::Tree(TreePrompt::Rename) => TREE_NAME_BYTES_MAX,
         PromptKind::Picker => PICKER_QUERY_CHARS_MAX,
     }
 }

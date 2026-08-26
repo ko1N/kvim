@@ -492,6 +492,42 @@ prompt while no entry is selected also starts empty; the submitted name then
 reports the same refusal that an empty prompt reported before the seed
 existed.
 
+The add-file prompt reads one path below the destination directory, not only
+one name, so one key creates every form of new entry:
+
+| Typed text | Result |
+|---|---|
+| `bla.txt` | One file `bla.txt` |
+| `bla/` | One directory `bla` |
+| `bla/bla.txt` | The directory `bla`, and the file `bla.txt` inside it |
+| `a/b/c/` | The directories `a`, `a/b`, and `a/b/c` |
+
+A separator at the end of the text makes the last name a directory. A text that
+ends with no separator makes the last name the kind of the command, which is a
+file for the add-file prompt and a directory for the add-directory prompt. Every
+name before the last one names a directory.
+
+Only `/` divides the names, because kvim runs on macOS and on Linux. A backslash
+is an ordinary character of one name there, so `a\b` creates one entry whose
+name holds the backslash.
+
+Every name of the path obeys the rules that one entry name obeys. The prompt
+refuses an empty text, a name above the byte bound, a path above the component
+bound, a name of `.` or `..`, a separator at the start, and two separators
+beside each other.
+
+A directory of the path that the workspace already holds needs no create, and
+the operation creates only the missing levels. A level that holds a file
+refuses the whole operation and names that file, because no entry can live
+inside a file.
+
+The rename prompt still reads one entry name and refuses a path, because a
+rename resolves the typed name against the directory of the selected entry.
+
+The add-file prompt covers the add-directory prompt, so the key preset binds one
+add key only. The `tree-add-directory` command stays published for an embedding
+host. See [`input-actions.md`](input-actions.md).
+
 The tree runs one workspace operation at a time, as the file operations do. The
 event loop takes the next directory read after every completed operation, so the
 reads of one reveal or one refresh reach the worker in order. A cancelled,
@@ -727,13 +763,23 @@ A directory above the entry bound shows its first entries in the order above and
 reports the truncation as one visible row. The tree never shows a partial
 directory without that report. An unreadable directory reports the same way.
 
-The add-file, add-directory, and rename prompts reuse `TREE_NAME_BYTES_MAX` as
-the largest number of characters that a reader may type. One character never
-encodes in fewer bytes than itself. This cap therefore never stops a reader
-short of a name that the byte bound then accepts. A name built from wide
-characters can still pass this cap and later meet the byte bound at
-submission. That refusal names the real limit, so the reader learns the true
+The rename prompt reuses `TREE_NAME_BYTES_MAX` as the largest number of
+characters that a reader may type, because it reads one entry name. The add-file
+and add-directory prompts read one path, so they reuse `WORKTREE_PATH_BYTES_MAX`
+of `kvim-path` instead.
+
+One character never encodes in fewer bytes than itself. Such a cap therefore
+never stops a reader short of a text that the submission then accepts. A text
+built from wide characters can still pass this cap and later meet the byte bound
+at submission. That refusal names the real limit, so the reader learns the true
 bound instead of meeting a silent block while still typing.
+
+The submission of one add prompt applies the two bounds that one path carries.
+Every name of the path meets `TREE_NAME_BYTES_MAX`. The number of names of the
+whole contained path meets `WORKTREE_PATH_COMPONENTS_MAX` of `kvim-path`. The
+destination directory holds names of its own, so that count covers the
+destination and the typed path together. A path that meets both bounds stays
+under the typing cap, so the cap blocks no acceptable path.
 
 ## Workspace Mutations
 
@@ -742,6 +788,8 @@ directories. kvim validates the complete mutation before it changes anything on
 disk. Validation checks:
 
 - that the source exists and is a supported kind,
+- that every level above a new entry holds a directory, or holds no entry at
+  all,
 - that the destination holds no entry, or that the user approved the overwrite
   of exactly that entry,
 - that the source and the destination name two entries,
@@ -751,6 +799,13 @@ disk. Validation checks:
 - that a directory does not receive one of its own parents,
 - which loaded buffers the mutation affects,
 - whether an affected buffer is dirty.
+
+One create may name directories that the workspace does not hold yet. The plan
+then holds one create for each missing level, from the top down, and one create
+for the entry itself. The path carries the component bound of `kvim-path`, so
+that bound also bounds the number of creates of one plan. A failure of one level removes every entry that the same
+call already made, so the reader learns which level failed and the workspace
+keeps the state that it held before the call.
 
 A mutation plan contains capability-relative operations only. Kvim revalidates
 every source, parent, and destination immediately before commit. It never

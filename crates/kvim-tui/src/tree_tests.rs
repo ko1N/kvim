@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 
 use kvim_input::{BindingScope, Mode};
 use kvim_language::LspError;
-use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+use kvim_path::{WORKTREE_PATH_COMPONENTS_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{
     FileWatcher, ProcessOutput, WATCH_COALESCE_WINDOW, WatchBatch, WatchCoverage, WatchEvent,
     WatchFidelity, WatchKind,
@@ -38,7 +38,7 @@ use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_cover
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
     GENERATED_NAMES, RowState, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeRefusal, check_name,
-    delete_question, overwrite_question, root_label, selected_cell,
+    delete_question, overwrite_question, parse_new_entry, root_label, selected_cell,
 };
 
 const NOW: Duration = Duration::ZERO;
@@ -451,11 +451,7 @@ fn the_text_operations_open_the_prompt_of_the_message_line() {
     // `r` opens the rename prompt seeded with the selected entry, so its
     // start line differs from these empty prompts. The rename tests below
     // cover the seeded prompt on its own.
-    let cases = [
-        ('a', "new file: "),
-        ('A', "new directory: "),
-        ('/', "search: "),
-    ];
+    let cases = [('a', "new file: "), ('/', "search: ")];
     for (key, prefix) in cases {
         let (_dir, mut session) = workspace();
         reveal(&mut session);
@@ -1103,21 +1099,251 @@ fn a_refused_mutation_reports_it_and_changes_nothing() {
 }
 
 #[test]
-fn a_name_that_holds_a_path_is_refused_before_the_worker_runs() {
+fn a_rename_to_a_path_is_refused_before_the_worker_runs() {
     let (_dir, mut session) = workspace();
     reveal(&mut session);
 
-    press(&mut session, 'a');
-    type_keys(&mut session, "nested/file.rs");
-    press_code(&mut session, KeyCode::Enter);
+    rename_to(&mut session, "nested/file.rs");
 
     assert_eq!(
         message_line(&session),
-        "the name must hold one entry name, not a path"
+        "the name must hold one entry name, not a path",
+        "a rename reads one entry name, not a path"
     );
     assert!(
         session.take_workspace_request().is_none(),
         "a refused name reaches no worker"
+    );
+}
+
+#[test]
+fn an_added_text_that_ends_with_a_separator_creates_a_directory() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The selected file names the destination directory, which is the root.
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'a');
+    answer(&mut session, "bla/");
+    drain(&mut session);
+
+    assert_eq!(message(&session), "");
+    assert!(
+        dir.join("bla").is_dir(),
+        "the trailing separator names a kind"
+    );
+    assert!(selected(&session).ends_with("bla"));
+}
+
+#[test]
+fn an_added_path_creates_the_directory_and_the_file_inside_it() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'a');
+    answer(&mut session, "bla/bla.txt");
+    drain(&mut session);
+
+    assert_eq!(message(&session), "");
+    assert!(dir.join("bla").is_dir());
+    assert!(dir.join("bla").join("bla.txt").is_file());
+    assert!(selected(&session).ends_with("bla.txt"));
+    assert!(
+        sidebar_rows(&session)
+            .iter()
+            .any(|row| row.starts_with('▌') && row.ends_with("bla.txt")),
+        "the new file appears inside its new directory and holds the selection"
+    );
+}
+
+#[test]
+fn an_added_path_creates_every_missing_directory() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'a');
+    answer(&mut session, "a/b/c/");
+    drain(&mut session);
+
+    assert_eq!(message(&session), "");
+    assert!(dir.join("a").is_dir());
+    assert!(dir.join("a").join("b").is_dir());
+    assert!(dir.join("a").join("b").join("c").is_dir());
+}
+
+/// The workspace holds `docs` already, so the create makes the missing levels
+/// alone and keeps every entry that the existing level holds.
+#[test]
+fn an_added_path_keeps_a_level_that_already_holds_a_directory() {
+    let (dir, mut session) = workspace();
+    dir.file(
+        "docs/kept.md",
+        "kept
+",
+    );
+    reveal(&mut session);
+
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'a');
+    answer(&mut session, "docs/deep/file.rs");
+    drain(&mut session);
+
+    assert_eq!(message(&session), "");
+    assert!(dir.join("docs").join("deep").join("file.rs").is_file());
+    assert_eq!(
+        fs::read_to_string(dir.join("docs").join("kept.md")).expect("the file exists"),
+        "kept\n",
+        "an existing level keeps its entries"
+    );
+}
+
+#[test]
+fn an_added_path_refuses_a_level_that_holds_a_file_and_names_it() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    press(&mut session, 'a');
+    answer(&mut session, "README.md/inside.rs");
+    drain(&mut session);
+
+    assert_eq!(
+        message(&session),
+        format!("{} is not a directory", dir.join("README.md").display()),
+        "the refusal names the level that holds the file"
+    );
+    assert!(
+        dir.join("README.md").is_file(),
+        "a refused create changes no entry"
+    );
+    assert!(!dir.join("README.md").join("inside.rs").exists());
+}
+
+#[test]
+fn an_added_path_refuses_a_parent_directory_component() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    press(&mut session, 'a');
+    answer(&mut session, "../escape.rs");
+
+    assert_eq!(
+        message_line(&session),
+        TreeRefusal::OutsideWorkspace.message(),
+        "a path that leaves the workspace names its own cause"
+    );
+    assert!(session.take_workspace_request().is_none());
+    assert!(!dir.path.join("..").join("escape.rs").exists());
+}
+
+#[test]
+fn parse_new_entry_reads_the_kind_from_the_trailing_separator() {
+    assert_eq!(
+        parse_new_entry("bla.txt", EntryKind::File),
+        Ok((PathBuf::from("bla.txt"), EntryKind::File))
+    );
+    assert_eq!(
+        parse_new_entry("bla/", EntryKind::File),
+        Ok((PathBuf::from("bla"), EntryKind::Directory))
+    );
+    assert_eq!(
+        parse_new_entry("bla/bla.txt", EntryKind::File),
+        Ok((PathBuf::from("bla/bla.txt"), EntryKind::File))
+    );
+    assert_eq!(
+        parse_new_entry("a/b/c/", EntryKind::File),
+        Ok((PathBuf::from("a/b/c"), EntryKind::Directory))
+    );
+    assert_eq!(
+        parse_new_entry("bla", EntryKind::Directory),
+        Ok((PathBuf::from("bla"), EntryKind::Directory)),
+        "the add-directory command still names a directory"
+    );
+}
+
+/// kvim runs on macOS and on Linux, where `/` alone divides the names. A
+/// backslash therefore stays an ordinary character of one name.
+#[test]
+fn parse_new_entry_keeps_a_backslash_inside_one_name() {
+    assert_eq!(
+        parse_new_entry("a\\b", EntryKind::File),
+        Ok((PathBuf::from("a\\b"), EntryKind::File))
+    );
+}
+
+#[test]
+fn parse_new_entry_refuses_a_malformed_path() {
+    let cases = [
+        ("", TreeRefusal::EmptyName),
+        ("   ", TreeRefusal::EmptyName),
+        ("/", TreeRefusal::EmptyName),
+        ("/bla", TreeRefusal::EmptyComponent),
+        ("bla//bla", TreeRefusal::EmptyComponent),
+        ("bla//", TreeRefusal::EmptyComponent),
+        ("bla/ /bla", TreeRefusal::EmptyComponent),
+    ];
+    for (text, expected) in cases {
+        assert_eq!(
+            parse_new_entry(text, EntryKind::File),
+            Err(expected),
+            "{text:?} names no path"
+        );
+    }
+}
+
+#[test]
+fn parse_new_entry_refuses_a_name_above_the_byte_bound() {
+    let name = "a".repeat(TREE_NAME_BYTES_MAX + 1);
+    assert_eq!(
+        parse_new_entry(&format!("kept/{name}"), EntryKind::File),
+        Err(TreeRefusal::NameTooLong),
+        "every name of the path meets the byte bound of one entry name"
+    );
+}
+
+#[test]
+fn an_added_path_above_the_component_bound_is_refused_and_names_the_bound() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    let deep = vec!["x"; WORKTREE_PATH_COMPONENTS_MAX + 1].join("/");
+    press(&mut session, 'a');
+    answer(&mut session, &deep);
+
+    assert_eq!(
+        message_line(&session),
+        format!("the path holds more than {WORKTREE_PATH_COMPONENTS_MAX} names")
+    );
+    assert!(
+        session.take_workspace_request().is_none(),
+        "a refused path reaches no worker"
+    );
+}
+
+#[test]
+fn the_sidebar_binds_no_second_add_key() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+
+    let before = message_line(&session);
+
+    press(&mut session, 'A');
+
+    assert!(
+        session.visible().prompt.is_none(),
+        "`a` reads a path, so the preset leaves `A` free"
+    );
+    assert_eq!(
+        message_line(&session),
+        before,
+        "an unbound key changes nothing"
     );
 }
 

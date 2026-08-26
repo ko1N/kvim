@@ -16,7 +16,7 @@
 //! identity for each row.
 
 use std::env;
-use std::path::{Path, PathBuf};
+use std::path::{MAIN_SEPARATOR, Path, PathBuf};
 use std::sync::Arc;
 
 use ratatui::buffer::Buffer as CellBuffer;
@@ -24,7 +24,10 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use kvim_editor::{SearchDirection, Viewport};
-use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
+use kvim_path::{
+    WORKTREE_PATH_COMPONENTS_MAX, WorktreeDirectoryPath, WorktreeRelativePath,
+    WorktreeRelativePathError, WorktreeRoot,
+};
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
 use kvim_ui::{
@@ -260,12 +263,19 @@ pub(super) enum TreeRefusal {
     EmptyName,
     /// The name holds a path component instead of one entry name.
     NameHasPath,
+    /// The path holds no name between two separators.
+    EmptyComponent,
     /// The name holds more bytes than [`TREE_NAME_BYTES_MAX`] allows.
     NameTooLong,
+    /// The path holds more names than [`WORKTREE_PATH_COMPONENTS_MAX`] allows.
+    PathTooDeep,
     /// The file-operation clipboard holds no entry.
     ClipboardEmpty,
     /// The tree lost the entry between the question and the answer.
     EntryGone,
+    /// The path leaves the workspace root, or names a component that no entry
+    /// of a workspace holds.
+    OutsideWorkspace,
     /// One workspace operation is already running.
     Busy,
 }
@@ -277,11 +287,16 @@ impl TreeRefusal {
             Self::NoSelection => "the file tree shows no selected entry".to_owned(),
             Self::EmptyName => "the name is empty".to_owned(),
             Self::NameHasPath => "the name must hold one entry name, not a path".to_owned(),
+            Self::EmptyComponent => "the path holds no name between two separators".to_owned(),
             Self::NameTooLong => {
                 format!("the name holds more than {TREE_NAME_BYTES_MAX} bytes")
             }
+            Self::PathTooDeep => {
+                format!("the path holds more than {WORKTREE_PATH_COMPONENTS_MAX} names")
+            }
             Self::ClipboardEmpty => "the file clipboard holds no entry".to_owned(),
             Self::EntryGone => "the file tree no longer shows the entry".to_owned(),
+            Self::OutsideWorkspace => "the path leaves the workspace root".to_owned(),
             Self::Busy => "one workspace operation is already running".to_owned(),
         }
     }
@@ -730,19 +745,26 @@ impl TreeSidebar {
 
     /// Returns the creation of one entry inside the destination directory.
     ///
+    /// The text names one path below the destination directory, not only one
+    /// name, so one prompt creates a file, a directory, or a file inside
+    /// directories that the workspace does not hold yet. `kind` names the kind
+    /// of the last name while the text ends with no separator. See
+    /// [`parse_new_entry`] and `docs/files.md`.
+    ///
     /// # Errors
     ///
-    /// Returns [`TreeRefusal`] for an empty name and for a name that holds a
-    /// path component.
+    /// Returns [`TreeRefusal`] for an empty text, for a path that holds no name
+    /// between two separators, for a name above the byte bound, and for a path
+    /// above the component bound.
     pub(super) fn stage_create(
         &self,
-        name: &str,
+        text: &str,
         kind: EntryKind,
     ) -> Result<FileOperation, TreeRefusal> {
-        let name = check_name(name)?;
+        let (path, kind) = parse_new_entry(text, kind)?;
         let destination = self.destination_target()?;
         Ok(FileOperation::Create {
-            path: contained_child(&destination, name)?,
+            path: contained_child(&destination, &path)?,
             kind,
         })
     }
@@ -1066,21 +1088,89 @@ impl TreeSidebar {
     }
 }
 
-/// Returns the contained path of one entry name inside a directory.
+/// Returns the contained path of one relative path inside a directory.
+///
+/// The destination directory holds names of its own, so the component bound of
+/// [`WorktreeRelativePath`] applies to the joined path and not to the typed
+/// path alone. A joined path above that bound therefore refuses here, and it
+/// names the bound. Every other rejected path reports a lost entry, as it did
+/// before this function accepted more than one name.
 fn contained_child(
     directory: &WorktreeDirectoryPath,
-    name: &str,
+    child: impl AsRef<Path>,
 ) -> Result<WorktreeRelativePath, TreeRefusal> {
     let base = directory
         .relative_path()
         .map_or_else(PathBuf::new, |path| path.as_path().to_path_buf());
-    WorktreeRelativePath::new(base.join(name)).map_err(|_| TreeRefusal::EntryGone)
+    WorktreeRelativePath::new(base.join(child)).map_err(|error| match error {
+        WorktreeRelativePathError::PathComponentsLimit { .. } => TreeRefusal::PathTooDeep,
+        WorktreeRelativePathError::Absolute
+        | WorktreeRelativePathError::Empty
+        | WorktreeRelativePathError::ParentTraversal
+        | WorktreeRelativePathError::PathBytesLimit { .. }
+        | WorktreeRelativePathError::UnsupportedComponent { .. } => TreeRefusal::OutsideWorkspace,
+    })
+}
+
+/// Returns the relative path and the entry kind that one add prompt names.
+///
+/// The text names one path below the destination directory. A separator at the
+/// end makes the last name a directory. A text that ends with no separator
+/// makes the last name the kind that `kind` carries, which is the kind of the
+/// command that opened the prompt. Every name before the last one names a
+/// directory, and the staging creates the directories that the workspace does
+/// not hold yet.
+///
+/// Only the platform separator divides the names. That separator is `/` on
+/// macOS and on Linux, so a backslash stays an ordinary character of one name
+/// and creates one entry whose name holds it.
+///
+/// Each name passes [`check_name`], so every name of the path obeys the rules
+/// that one entry name obeys. A name of `.` or `..` passes [`check_name`] and
+/// [`WorktreeRelativePath::new`] rejects it, so such a path never reaches the
+/// worker.
+///
+/// # Errors
+///
+/// Returns [`TreeRefusal::EmptyName`] for a text that holds no name,
+/// [`TreeRefusal::EmptyComponent`] for a separator at the start and for two
+/// separators beside each other, and the refusals of [`check_name`] for one
+/// name of the path.
+fn parse_new_entry(text: &str, kind: EntryKind) -> Result<(PathBuf, EntryKind), TreeRefusal> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Err(TreeRefusal::EmptyName);
+    }
+    let (body, kind) = match text.strip_suffix(MAIN_SEPARATOR) {
+        Some(body) => (body, EntryKind::Directory),
+        None => (text, kind),
+    };
+    if body.trim().is_empty() {
+        return Err(TreeRefusal::EmptyName);
+    }
+    let mut path = PathBuf::new();
+    for name in body.split(MAIN_SEPARATOR) {
+        // The text holds one name at least, so an empty part here names one
+        // missing directory beside a separator instead of an empty prompt.
+        let name = check_name(name).map_err(|refusal| match refusal {
+            TreeRefusal::EmptyName => TreeRefusal::EmptyComponent,
+            other => other,
+        })?;
+        path.push(name);
+    }
+    Ok((path, kind))
 }
 
 /// Returns the entry name that a prompt line holds.
 ///
-/// The name must be one entry name, so the mutation stays inside the
-/// destination directory that the tree selected.
+/// The name must be one entry name. A rename reads one name, and
+/// [`parse_new_entry`] applies this function to each name of one path, so one
+/// rule answers for both prompts.
+///
+/// The function rejects an empty name, a name above [`TREE_NAME_BYTES_MAX`],
+/// and a name that holds a separator. It accepts `.` and `..`, which
+/// [`WorktreeRelativePath::new`] rejects later, so no such name reaches the
+/// worker.
 fn check_name(name: &str) -> Result<&str, TreeRefusal> {
     let name = name.trim();
     if name.is_empty() {

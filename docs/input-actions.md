@@ -1163,8 +1163,7 @@ behind them.
 | `Enter` | Open the selected file, or expand the selected directory |
 | `Space` | Expand or collapse the selected directory |
 | `R` | Read the workspace directories again |
-| `a` | Add one file |
-| `A` | Add one directory |
+| `a` | Add one file, one directory, or both |
 | `d` | Delete the selected entry, after a confirmation |
 | `r` | Rename the selected entry |
 | `y` | Copy the selected entry |
@@ -1189,9 +1188,15 @@ a number of steps, as it names one line in a buffer. The half-page and the
 full-page moves read their size from the visible rows of the sidebar, and the
 selected row keeps the same scroll margin that a buffer window keeps.
 
-`a`, `A`, `r`, and `/` read one line through the prompt of the message line, not
+`a`, `r`, and `/` read one line through the prompt of the message line, not
 through a second input mechanism. The prompt returns the keys to the sidebar
 when it closes. `Esc` and `Ctrl-C` cancel the prompt.
+
+`a` reads one path, not only one name. `bla.txt` creates one file. `bla/`
+creates one directory. `bla/bla.txt` creates the directory `bla` and the file
+`bla.txt` inside it. The preset therefore binds no second add key, and `A` is
+free for a host to bind. The `tree-add-directory` command still opens its own
+prompt for a host that binds it. See [`files.md`](files.md).
 
 `d` destroys data, so it asks before it deletes. The question names the entry,
 and it names the count of several entries. The answer `y` performs the removal,

@@ -6,6 +6,11 @@
 //! [`MutationPlan::apply`] then performs the filesystem work through a staged
 //! replacement, so a failure of one path leaves no partial result.
 //!
+//! One create may name directories that the workspace does not hold yet. The
+//! staging then produces one create for each missing level and one create for
+//! the entry itself, so a failure names the exact level that failed. A level
+//! that holds another kind of entry refuses the whole create.
+//!
 //! A destination that holds an entry refuses the mutation. [`Overwrite`] names
 //! the destinations that one confirmed answer approved, and only those
 //! destinations lose their entries. The commit parks each replaced entry under
@@ -30,8 +35,8 @@ use cap_std::fs::Dir;
 use thiserror::Error;
 
 use kvim_path::{
-    ResolvedWorktreePath, WorktreeConfinementError, WorktreeDirectoryPath, WorktreeRelativePath,
-    WorktreeRoot,
+    ResolvedWorktreePath, WORKTREE_PATH_COMPONENTS_MAX, WorktreeConfinementError,
+    WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot,
 };
 
 use super::buffer::BufferId;
@@ -92,6 +97,10 @@ pub enum Overwrite {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileOperation {
     /// Create one empty file or one empty directory.
+    ///
+    /// The path may name directories that the workspace does not hold yet. The
+    /// staging then creates every missing directory above the entry, and it
+    /// refuses a level that holds another kind of entry. See `docs/files.md`.
     Create {
         /// The path of the new entry.
         path: WorktreeRelativePath,
@@ -328,10 +337,21 @@ struct Relocation {
     replaces: bool,
 }
 
+/// One entry that a create makes.
+#[derive(Clone, Debug)]
+struct PlannedEntry {
+    path: StagedPath,
+    kind: EntryKind,
+}
+
 /// The validated filesystem work of one mutation.
+///
+/// A create names every level that the workspace does not hold yet, from the
+/// top down, and the entry itself last. Every level before the last one is a
+/// directory, because a directory must exist before its child.
 #[derive(Clone, Debug)]
 enum PlannedWork {
-    Create { path: StagedPath, kind: EntryKind },
+    Create(Vec<PlannedEntry>),
     Copy(Vec<Relocation>),
     Move(Vec<Relocation>),
     Discard(Vec<StagedPath>),
@@ -435,7 +455,7 @@ impl MutationPlan {
     pub fn apply(self) -> Result<MutationOutcome, MutationError> {
         let root = &self.root;
         match &self.work {
-            PlannedWork::Create { path, kind } => create(root, path, *kind)?,
+            PlannedWork::Create(entries) => create(root, entries)?,
             PlannedWork::Copy(relocations) => transfer(root, TransferMode::Copy, relocations)?,
             PlannedWork::Move(relocations) => transfer(root, TransferMode::Move, relocations)?,
             PlannedWork::Discard(paths) => discard(root, paths)?,
@@ -483,23 +503,83 @@ fn transfer_destination(
     })
 }
 
-/// Validates one create operation.
+/// Validates one create operation and every missing directory above it.
+///
+/// The path may name directories that the workspace does not hold yet, so the
+/// plan holds one create for each missing level and one create for the entry
+/// itself. A level that already holds a directory needs no create. A level that
+/// holds another kind of entry refuses the operation and names that entry,
+/// because no new entry can live inside it. See `docs/files.md`.
 fn stage_create(
     path: &WorktreeRelativePath,
     kind: EntryKind,
     root: &Arc<WorktreeRoot>,
 ) -> Result<MutationPlan, MutationError> {
+    // The levels answer before the leaf resolves, because a level that holds a
+    // file makes the leaf uncontained. The refusal must name the level that
+    // holds the file, not the path that the reader typed.
+    let parent = parent_of(path.as_path()).to_path_buf();
+    let mut entries = Vec::new();
+    let mut level = PathBuf::new();
+    for component in parent.components() {
+        level.push(component);
+        if matches!(create_level(root, &level)?, CreateLevel::Present) {
+            continue;
+        }
+        let missing =
+            WorktreeRelativePath::new(&level).expect("a prefix of a contained path is contained");
+        entries.push(PlannedEntry {
+            path: StagedPath::stage(root, &missing)?,
+            kind: EntryKind::Directory,
+        });
+    }
     let staged = StagedPath::stage(root, path)?;
-    let parent = parent_of(staged.as_path()).to_path_buf();
-    check_existing_directory(root, &parent)?;
     check_free(root, &staged)?;
+    let mut changed: Vec<PathBuf> = entries
+        .iter()
+        .map(|entry| display_path(root, parent_of(entry.path.as_path())))
+        .collect();
+    changed.push(display_path(root, &parent));
+    changed.sort();
+    changed.dedup();
+    let selection = staged.display_path(root);
+    entries.push(PlannedEntry { path: staged, kind });
+    debug_assert!(
+        entries.len() <= WORKTREE_PATH_COMPONENTS_MAX,
+        "the plan holds one create for each name of a contained path, and \
+         WorktreeRelativePath bounds that count"
+    );
     Ok(MutationPlan {
         root: Arc::clone(root),
-        selection: Some(staged.display_path(root)),
-        changed: vec![display_path(root, &parent)],
-        work: PlannedWork::Create { path: staged, kind },
+        selection: Some(selection),
+        changed,
+        work: PlannedWork::Create(entries),
         updates: Vec::new(),
     })
+}
+
+/// Whether one level above a new entry already holds a directory.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CreateLevel {
+    /// The level holds a directory, so the create skips it.
+    Present,
+    /// The level holds no entry, so the create makes it.
+    Missing,
+}
+
+/// Returns whether one level above a new entry already holds a directory.
+fn create_level(root: &WorktreeRoot, path: &Path) -> Result<CreateLevel, MutationError> {
+    match root.directory().metadata(path) {
+        Ok(metadata) if metadata.is_dir() => Ok(CreateLevel::Present),
+        Ok(_) => Err(MutationError::NotADirectory {
+            path: display_path(root, path),
+        }),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(CreateLevel::Missing),
+        Err(source) => Err(MutationError::Filesystem {
+            path: display_path(root, path),
+            source,
+        }),
+    }
 }
 
 /// Validates one delete operation.
@@ -800,25 +880,82 @@ fn check_existing_directory(root: &WorktreeRoot, path: &Path) -> Result<(), Muta
     }
 }
 
-/// Creates one empty file or one empty directory.
+/// Creates every planned entry, or leaves the workspace unchanged.
+fn create(root: &WorktreeRoot, entries: &[PlannedEntry]) -> Result<(), MutationError> {
+    let mut staged = StagedCreate::new(root);
+    for entry in entries {
+        staged.create(entry)?;
+    }
+    staged.commit();
+    Ok(())
+}
+
+/// One create that either makes every entry or leaves no trace.
 ///
-/// Both calls fail when the path exists, so the collision check of the staging
-/// step cannot be defeated by a concurrent write.
-fn create(root: &WorktreeRoot, path: &StagedPath, kind: EntryKind) -> Result<(), MutationError> {
-    path.revalidate(root)?;
-    let directory = root.directory();
-    let created = match kind {
-        EntryKind::Directory => directory.create_dir(path.as_path()),
-        EntryKind::File => {
-            let mut options = cap_std::fs::OpenOptions::new();
-            options.write(true).create_new(true);
-            directory.open_with(path.as_path(), &options).map(drop)
+/// The call makes the levels in order, because a directory must exist before
+/// its child. A failure of one level removes every entry that the same call
+/// already made, so the reader learns which level failed and the workspace
+/// keeps the state that it held before the call.
+#[derive(Debug)]
+struct StagedCreate<'a> {
+    root: &'a WorktreeRoot,
+    made: Vec<PathBuf>,
+    settled: bool,
+}
+
+impl<'a> StagedCreate<'a> {
+    /// Creates one empty create.
+    fn new(root: &'a WorktreeRoot) -> Self {
+        Self {
+            root,
+            made: Vec::new(),
+            settled: false,
         }
-    };
-    created.map_err(|source| MutationError::Filesystem {
-        path: path.display_path(root),
-        source,
-    })
+    }
+
+    /// Makes one empty file or one empty directory.
+    ///
+    /// Both calls fail when the path exists, so the collision check of the
+    /// staging step cannot be defeated by a concurrent write.
+    fn create(&mut self, entry: &PlannedEntry) -> Result<(), MutationError> {
+        entry.path.revalidate(self.root)?;
+        let directory = self.root.directory();
+        let path = entry.path.as_path();
+        let created = match entry.kind {
+            EntryKind::Directory => directory.create_dir(path),
+            EntryKind::File => {
+                let mut options = cap_std::fs::OpenOptions::new();
+                options.write(true).create_new(true);
+                directory.open_with(path, &options).map(drop)
+            }
+        };
+        created.map_err(|source| MutationError::Filesystem {
+            path: entry.path.display_path(self.root),
+            source,
+        })?;
+        self.made.push(path.to_path_buf());
+        Ok(())
+    }
+
+    /// Keeps every entry that the call made.
+    fn commit(mut self) {
+        self.settled = true;
+    }
+}
+
+impl Drop for StagedCreate<'_> {
+    fn drop(&mut self) {
+        if self.settled {
+            return;
+        }
+        let directory = self.root.directory();
+        // The unwind runs in reverse order, so each directory holds no entry of
+        // this call before the call removes it. Every step is best effort,
+        // because the mutation already reports the first cause.
+        for path in self.made.iter().rev() {
+            let _ = remove_tree(directory, path);
+        }
+    }
 }
 
 /// Copies or moves every entry, or leaves the workspace unchanged.
