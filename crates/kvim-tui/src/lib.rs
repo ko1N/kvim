@@ -30,7 +30,9 @@
 //! [`InputRequest`], [`EditorShutdown`], [`EditorDrain`], [`ShutdownDrain`],
 //! [`Completed`], [`EditorWork`], [`ClipboardAccess`], the file sidebar values
 //! [`FileRow`], [`FileRowKind`], [`FileSidebarInput`], [`FileSidebarOutcome`],
-//! and [`RegionFocus`], the forwarded `kvim-ui` geometry values, and the
+//! and [`RegionFocus`], the candidate menu of one prompt line
+//! ([`LineCompletion`], [`CompletionCycle`], [`CompletionOutcome`], and
+//! [`draw_completion_menu`]), the forwarded `kvim-ui` geometry values, and the
 //! bounds of each one. A host composes one editor from these values alone.
 //! `crates/kvim-tui/examples/embedded_editor.rs` uses nothing else, and
 //! `crates/kvim-tui/examples/embedded_file_sidebar.rs` adds the file sidebar
@@ -110,6 +112,10 @@ mod tests;
 
 pub use buffer_view::RegionFocus;
 pub use clipboard::ClipboardAccess;
+pub use completion::{
+    COMPLETION_CANDIDATES_MAX, COMPLETION_COLUMNS_MAX, COMPLETION_ROWS_MAX, CompletionCycle,
+    CompletionOutcome, LineCompletion, draw_completion_menu,
+};
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
 pub use driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
 pub use embed::{

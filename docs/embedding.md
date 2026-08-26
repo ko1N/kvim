@@ -342,6 +342,76 @@ Rendering returns an optional cursor position and cursor-shape request. The
 host decides whether to apply either request. The editor names its own cursor
 shape and owns no terminal sequence.
 
+### The Candidate Menu
+
+A prompt line offers candidates for the text that a reader typed. kvim
+publishes that menu, so a host writes no second one and no second appearance
+can drift.
+
+`LineCompletion` is the model. `LineCompletion::open` takes the typed text, the
+candidates of the host, the character bound of its prompt line, and one
+`CompletionCycle` that names the direction of the key that opened the menu.
+`LineCompletion::cycle` moves the selection and wraps at both ends.
+`LineCompletion::selected` returns the candidate that the prompt line shows,
+`LineCompletion::candidates` returns every candidate, and
+`LineCompletion::selected_row` names the selected one among them.
+`LineCompletion::outcome` reports one `CompletionOutcome`: `Missed` while no
+candidate answered the line, `Completed` while one candidate answered it alone,
+and `Listed` while several candidates need a choice.
+`LineCompletion::into_typed` returns the typed text and drops the menu, so a
+cancelled menu restores the prompt line exactly.
+
+The typed text and every candidate are the text of one line without the prompt
+prefix. The prompt paints its own `:` or its own marker in front of that line.
+The model holds line text alone, and the painter draws the model alone, so a
+prompt prefix reaches no row of the menu. A host that repeats its prefix inside
+a candidate therefore shows the prefix twice, which is the defect that this
+split removes.
+
+`LineCompletion` is not a `kvim_ui::Selector`. A selector ranks candidates
+against a query through `kvim-fuzzy`, keeps a viewport, and stops at the first
+and the last row. A menu receives candidates that a producer already filtered by
+the typed prefix, ranks nothing, wraps at both ends, and restores the typed text
+on a cancel. The two behaviours differ, so the facade publishes two types
+instead of bending either one.
+
+#### One Menu Painter
+
+`kvim_tui::draw_completion_menu` paints one `LineCompletion` exactly as kvim's
+own command line paints it. The call takes four arguments and reads nothing
+else:
+
+- the `ratatui::Buffer` that the host owns;
+- the band that the menu may cover, which is the body band in kvim;
+- one `Theme`, the palette that the host already holds for its own surfaces;
+- the menu, which carries every fact that the painter draws.
+
+The painter owns the layout. The menu takes the last rows of the band and
+starts at the left edge of it, so it sits under the prompt line that it
+describes and covers no band below. It keeps one cell beside its text on both
+sides, and it carries no rail and no border. The selected row takes the popup
+selection color of the palette.
+
+The painter draws nothing while the menu holds one candidate alone, because one
+candidate needs no choice.
+
+`COMPLETION_ROWS_MAX` bounds the rows and `COMPLETION_COLUMNS_MAX` bounds the
+width. A menu with more candidates than rows spends its last row on `...`, and a
+candidate wider than the menu loses its start behind a `<`.
+`COMPLETION_CANDIDATES_MAX` bounds the candidate list itself, and that bound
+refuses rather than cuts: `LineCompletion::open` returns `None` for a longer
+list, so a host ranks and shortens its own source instead of reading a menu that
+dropped candidates in silence.
+
+kvim's own command line draws through this one call.
+`crates/kvim-tui/src/render.rs` holds no second menu-drawing path, so the look
+that a host reaches and the look that the standalone editor shows cannot drift
+apart.
+
+[`windows.md`](windows.md) owns the placement rule and the bounds.
+`crates/kvim-tui/examples/completion_menu.rs` opens one menu over host-owned
+candidates, cycles it, draws it, and cancels it.
+
 ## Editor Events
 
 `EditorEvent` includes these facts and requests:
@@ -546,6 +616,7 @@ The required examples are:
 - `crates/kvim-ui/examples/split_windows.rs`
 - `crates/kvim-ui/examples/tab_strip.rs`
 - `crates/kvim-ui/examples/which_key.rs`
+- `crates/kvim-tui/examples/completion_menu.rs`
 - `crates/kvim-tui/examples/embedded_editor.rs`
 - `crates/kvim-tui/examples/embedded_file_sidebar.rs`
 - `crates/kvim-tui/examples/host_workspace.rs`

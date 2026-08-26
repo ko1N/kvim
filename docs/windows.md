@@ -767,6 +767,24 @@ carries the selection color of a popup list, which the picker uses for its own
 selected row. The list is decoration: it changes no buffer text, no cursor
 position, and no line mapping.
 
+kvim publishes the list, so a host that offers candidates of its own draws the
+same list and writes no second one. `kvim_tui::LineCompletion` is the model, and
+`kvim_tui::draw_completion_menu` is the painter. `COMPLETION_ROWS_MAX` names the
+eight rows, `COMPLETION_COLUMNS_MAX` names the 48 cells, and
+`COMPLETION_CANDIDATES_MAX` bounds the candidate list. That last bound refuses
+rather than cuts: a longer list opens no menu. kvim's own command line draws
+through the published painter, so the standalone list and a host list cannot
+drift apart. [`embedding.md`](embedding.md) owns the host contract.
+
+The published entry carries the candidate alone. The typed text and every
+candidate are the text of one line without the `:` prefix, which the command
+line itself paints, so no row of the list repeats that prefix.
+
+The list is no `kvim_ui::Selector`. A selector ranks candidates against a query
+and stops at the first and the last row. The list receives candidates that a
+producer already filtered by the typed prefix, wraps at both ends, and restores
+the typed text on a cancel. The two behaviours differ, so kvim keeps two types.
+
 The list and the notification overlay both reach the last rows of the body
 band. The list draws over the notification overlay. The user cycles the list
 with a key and reads it now. The overlay reports background work that no key

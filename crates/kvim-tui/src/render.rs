@@ -14,7 +14,8 @@ use kvim_ui::RegionKind;
 
 use super::buffer_view::{BracketHighlight, RegionFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{render_message, render_statusline, shell_areas};
-use super::overlay::{render_completion, render_float, render_notifications, render_which_key};
+use super::completion::draw_completion_menu;
+use super::overlay::{render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::review::draw_review;
 use super::session::Visible;
@@ -226,7 +227,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     // notification overlay, which reports background work instead. See
     // `docs/windows.md`.
     if let Some(completion) = view.prompt.and_then(|prompt| prompt.completion.as_ref()) {
-        render_completion(target, bands.body, theme, completion);
+        draw_completion_menu(target, bands.body, theme, completion);
     }
     if let Some(rows) = view.which_key {
         // The overlay reads the one icon setting of the file tree, so a
