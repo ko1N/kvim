@@ -198,9 +198,10 @@ guides as they are published reproduces the look of kvim.
 
 `FileRow::git` returns the recorded Git state of the row as `FileRowGit`, or
 `None` while the row carries no state. `ThemeRole::TreeGit` names the same
-state, so a host colors a row of its own from the published palette. A `Note` row and a row of a workspace
-that no read has covered yet both report `None`. The variant order rises in
-the same severity order as `kvim_workspace::GitStatus`, so a host ranks two
+state, so a host colors a row of its own from the published palette. A `Note`
+row and a row of a workspace that no read has covered yet both report `None`.
+The variant order rises in the same severity order as
+`kvim_workspace::GitStatus`, so a host ranks two
 states the way kvim ranks them. `FileRowGit::glyph` returns the mark that
 kvim's own file tree draws for a state. A host that reproduces the look of
 kvim draws that glyph; a host that draws its own marks matches on the state

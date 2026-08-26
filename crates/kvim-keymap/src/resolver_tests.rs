@@ -1195,8 +1195,8 @@ fn cancelling_focus() -> DispatchContext<Table> {
 
 #[test]
 fn a_declaring_scope_cancels_on_input_that_nothing_takes() {
-    // `F5` reaches no binding of either scope and types no character, so the
-    // declaration of the focused scope names the outcome.
+    // `PageDown` reaches no binding of either scope and types no character, so
+    // the declaration of the focused scope names the outcome.
     let mut resolver = resolver();
     let key = Key::plain(KeyCode::PageDown);
 

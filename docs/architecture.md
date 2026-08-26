@@ -256,6 +256,16 @@ host reads that section before it reuses one value across both.
 `Selector::apply_motion` answers every variant, so a host picker reaches the
 last row and jumps to a row exactly as a host sidebar does.
 
+`ListMotion::Parent` climbs to the nearest earlier row of a smaller depth that a
+reader can select, so a host tree binds one key and writes no depth scan.
+`parent_row` publishes that climb as a pure function over one iterator of
+`ParentScanRow`, which names the depth, the section, and the selectable state of
+one row. One iterator refuses a short or misordered argument that three parallel
+slices would accept, and neither caller allocates. `SidebarState<R>` answers the
+motion, `kvim_workspace::FileTree::select_parent` calls the same rule, and
+`Selector<R>` keeps its row, because a match list carries no depth.
+[`windows.md`](windows.md) owns the rule.
+
 `Selector<R>` publishes that window beside its ranking. `set_height_rows`,
 `set_scroll_margin`, `first_line`, `total_lines`, and `placements` read or
 write the one viewport, and one `SelectorPlacement` names the row position and
@@ -275,6 +285,10 @@ name for what a key reaches. The row carries two independent facts:
 `WhichKeyOverlayRow::key_style` marks whether the key continues the pending
 sequence or abandons it. Both fields are public, so a struct literal outside
 this repository names the new one.
+`WhichKeyOverlay::placement_for` answers that same `WhichKeyPlacement` from the
+hints and the body rectangle, without a buffer and without a mutable borrow, so
+a host that writes "page 1 of 2" into a title reads the count before it draws.
+Both entry points call one private geometry, so one capacity rule remains.
 [`input-actions.md`](input-actions.md) owns these rules.
 
 `kvim-keymap` publishes three which-key lists and one registry helper.
@@ -298,6 +312,18 @@ focused surface at any moment. The outcome names the owner and the command. The
 resolver drops its key prefix alone, so the host resets the named surface
 before it runs the command. Every consumer matches the enum, so a host that
 ignores the outcome does not compile.
+[`input-actions.md`](input-actions.md) owns the rule, and
+[`embedding.md`](embedding.md) owns the host contract.
+
+`kvim-keymap` also publishes `UnboundInput` on `InputContextSnapshot`, beside
+`TextFallback`. A scope that waits for one answer it does not bind declares
+`UnboundInput::Cancels`, so input that no binding, no extension, no
+interruption, and no text fallback took ends that scope. The default is
+`UnboundInput::Ignored`, so a present host keeps its behavior. The resolver
+answers a cancelling scope with `Dispatch::Cancelled`, and `kvim-ui` carries it
+to a host as `Composition::Cancelled`, which names the surface and no command.
+kvim's own `BindingScope::RegisterSelection` declares the rule instead of
+holding a special case outside the registry.
 [`input-actions.md`](input-actions.md) owns the rule, and
 [`embedding.md`](embedding.md) owns the host contract.
 
@@ -355,11 +381,13 @@ that holds a growing vocabulary carries `#[non_exhaustive]`, because a host
 binds the members it wants and ignoring a new member is the correct answer.
 `EditorEvent` and `Dispatch` are of the first kind. `kvim_input::Command` is of
 the second: it names every editor command, a host binds the ones it publishes,
-and a new command breaks nothing. Neither `kvim-tui` nor `kvim-ui` adds a
-`#[non_exhaustive]` attribute to a published enum, because every enum of the
-facade is of the first kind. A new
-variant is therefore a breaking change, by design. The compile error is how a
-host learns that a new behavior exists. The compile error forces the host to
+and a new command breaks nothing. `kvim_syntax::SyntaxRole` and
+`kvim_syntax::LimitKind` are of the second kind for the same reason, so the
+three carry `#[non_exhaustive]` and are no exception to reconcile. Neither
+`kvim-tui` nor `kvim-ui` adds a `#[non_exhaustive]` attribute to a published
+enum, because every enum of the facade is of the first kind. A new variant is
+therefore a breaking change, by design. The compile error is how a host learns
+that a new behavior exists. The compile error forces the host to
 decide how it handles that behavior. `Dispatch::Interrupted` proves the rule.
 Plan 029 published it as a new variant, not a flag. Every consumer must handle
 the new variant or fail to build. A host that ignored the interruption would
@@ -370,17 +398,35 @@ a breaking facade change already requires. The rejected alternative is
 a wildcard arm. A wildcard arm ships the wrong behavior with no compile error
 to catch it.
 
+The rule covers the payload of a variant as well as the variant list. A changed
+payload type stops the build of a host that names the variant, exactly as a new
+variant does, and the compile error serves the same purpose: the host must read
+the new type and decide again. So a payload change is a breaking facade change,
+and it takes the same obligations as a new variant. `ThemeRole::TreeGit` proves
+this half. Its payload moved from `kvim_workspace::GitStatus` to `FileRowGit`.
+The role named a type of a package that the supported set
+excludes, so a host could answer the role only by depending on an unsupported
+crate. The change closes that hole. It also shows why the rule cannot rest on
+the variant list alone: a facade stays sound only while every payload type is
+itself a supported one, and correcting a payload is therefore normal facade
+work rather than an accident. `#[non_exhaustive]` on the enum would not soften
+this break either, because the wildcard arm covers an unnamed variant and not a
+named variant with a new payload.
+
 Every surface that this section names is such a facade. This includes the
 selector with its window and its candidate count, the list viewport with
 `ListItem`, `ListPlacement`, and `ListWindow`, the `window_for_height` answer of
-both lists, the `ListMotion` vocabulary of both lists, the
-tree and section mechanics of the sidebar, the indent guide rule, the three
-which-key lists, the paged which-key overlay with `WhichKeyPlacement` and
-`WhichKeyOverlayRow`, `Registry::all_bindings`, the interrupted
-dispatch outcome, the adaptive split rule with `AdaptiveSplit`, and the
-embedded file sidebar. Each surface carries rustdoc, one owning document, and
-the dedicated example of its feature. `crates/kvim/tests/repository_policy.rs`
-proves that last link, so the same rule governs all of them.
+both lists, the `ListMotion` vocabulary of both lists, the parent climb with
+`parent_row` and `ParentScanRow`, the tree and section mechanics of the
+sidebar, the indent guide rule, the three which-key lists, the paged
+which-key overlay with `WhichKeyPlacement`,
+`WhichKeyOverlayRow`, and `placement_for`, `Registry::all_bindings`, the
+interrupted dispatch outcome, the cancelling scope with `UnboundInput` and the
+cancelled dispatch outcome, the adaptive split rule with `AdaptiveSplit`, and
+the embedded file sidebar with `draw_file_row`. Each surface carries rustdoc,
+one owning document, and the dedicated example of its feature.
+`crates/kvim/tests/repository_policy.rs` proves that last link, so the same
+rule governs all of them.
 
 Continuous integration checks minimal features, each required feature, default
 features, and all valid feature combinations. This matrix is exact:
