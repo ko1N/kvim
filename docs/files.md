@@ -803,9 +803,10 @@ disk. Validation checks:
 One create may name directories that the workspace does not hold yet. The plan
 then holds one create for each missing level, from the top down, and one create
 for the entry itself. The path carries the component bound of `kvim-path`, so
-that bound also bounds the number of creates of one plan. A failure of one level removes every entry that the same
-call already made, so the reader learns which level failed and the workspace
-keeps the state that it held before the call.
+that bound also bounds the number of creates of one plan. A failure of one
+level removes every entry that the same call already made, so the reader learns
+which level failed and the workspace keeps the state that it held before the
+call.
 
 A mutation plan contains capability-relative operations only. Kvim revalidates
 every source, parent, and destination immediately before commit. It never

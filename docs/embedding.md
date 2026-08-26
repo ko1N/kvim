@@ -479,22 +479,20 @@ precedence that a host keeps is the precedence that the standalone editor shows.
 `crates/kvim-tui/src/chrome.rs` and `crates/kvim-tui/src/buffer_view.rs` hold no
 shedding rule of their own.
 
-A statusline usually names the mode. `EmbeddedEditor::input_context` publishes
-one `InputContextSnapshot`, and its `scope` names the owner of the keys. The
-owner is `BindingScope::Mode(Mode)` while the editor holds them, and `Mode`
-renders its own label, so a host builds the mode segment from that value. The
-scope names another owner while a prompt, the file sidebar, or the picker holds
-the keys, because the scope reports who reads the next key.
+A statusline usually names the mode. `EmbeddedEditor::mode` answers the editing
+mode of the editor, and `Mode` renders its own label, so a host builds the mode
+segment from that value.
+
+`EmbeddedEditor::input_context` answers a different question. It publishes one
+`InputContextSnapshot`, and its `scope` names the owner of the keys. The owner
+is `BindingScope::Mode(Mode)` while the editor holds them, and it names a
+prompt, the file sidebar, or the picker while one of those reads them. A host
+that builds its mode segment from the scope alone therefore loses its mode
+label whenever a prompt opens. The standalone editor keeps the mode on its
+statusline through a prompt, and a host reaches the same fact through
+`EmbeddedEditor::mode`.
 
 `crates/kvim-ui/examples/chrome_band.rs` is one complete host of one band.
-
-
-`EmbeddedEditor::mode` answers the editing mode of the editor. A host names the
-mode in a segment of its own band. `EmbeddedEditor::input_context` answers the
-scope that owns the keys instead, so it names a prompt, a sidebar, or a picker
-while one of those reads them. A host that reads the scope alone therefore
-loses its mode label whenever a prompt opens. The standalone editor keeps the
-mode on its statusline through a prompt, and a host reaches the same fact here.
 
 ## Editor Events
 

@@ -1107,17 +1107,22 @@ async fn two_editors_on_different_roots_edit_render_and_shut_down_independently(
 
 #[test]
 fn a_host_draws_one_statusline_band_with_a_mode_segment() {
-    // A host showed no mode at all, because nothing named it. The published
-    // context names the scope of the editor, and one scope is the mode, so the
-    // host renders its own label from it. See `docs/embedding.md`.
+    // A host showed no mode at all, because nothing named it. The editor
+    // answers its own mode, so the host renders its own label from that value
+    // and keeps the label while another scope reads the keys. See
+    // `docs/embedding.md`.
     let directory = TempDir::new("embedded-statusline-band");
     let mut editor = embedded(&directory.path, AREA);
     let _ = editor.command(Command::InsertBeforeCursor, None, None, NOW);
-    let BindingScope::Mode(mode) = editor.input_context().scope else {
-        panic!("the focused editor publishes the mode as its scope");
-    };
-    let label = format!(" {mode} ");
+    let label = format!(" {} ", editor.mode());
     assert_eq!(label, " Insert ");
+
+    // The scope answers who reads the next key, which is a different question.
+    // It names the mode only while the editor itself holds the keys.
+    assert_eq!(
+        editor.input_context().scope,
+        BindingScope::Mode(editor.mode())
+    );
 
     // The band of `kvim-ui` holds the shedding rule, so the host ranks its own
     // parts and keeps the precedence of the editor.

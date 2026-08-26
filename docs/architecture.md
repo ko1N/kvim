@@ -312,6 +312,18 @@ a host that writes "page 1 of 2" into a title reads the count before it draws.
 Both entry points call one private geometry, so one capacity rule remains.
 [`input-actions.md`](input-actions.md) owns these rules.
 
+`kvim-ui` also publishes the shedding rule of every one-row band. `ChromeBand`
+holds a list of `BandSegment`, and each segment carries the text that the caller
+already rendered, one `BandSide` for the edge that it sits against, and one
+`BandRank`. `ChromeBand::placements` answers one `BandPlacement` for each kept
+segment. A band that cannot hold every segment sheds the lowest rank first, the
+highest rank survives every shed, and two segments of one rank shed the later
+one first. `BAND_SEGMENTS_MAX` bounds the list, and `ChromeBand::new` answers
+`BandError` for a longer one instead of cutting it. The band names no subject,
+no color, and no glyph, so a host fills it with its own parts and keeps kvim's
+precedence. The statusline and the winbar of kvim draw through the same band,
+so no second shedding rule exists. [`windows.md`](windows.md) owns the rule.
+
 `kvim-keymap` publishes three which-key lists and one registry helper.
 `Resolver::which_key` returns one `WhichKeyView`, and `WhichKeyView::hints`
 reports the hints of every scope that extends the pending prefix. Each hint
@@ -366,6 +378,36 @@ and not of one row. `RegionFocus` names one region, and a region is one editor
 window or one sidebar, so both surfaces of kvim report the focus with one
 published value. [`embedding.md`](embedding.md) owns the painter.
 [`embedding.md`](embedding.md) owns the surface.
+
+`FILE_SIDEBAR_MARK_CELLS` and `FILE_SIDEBAR_SELECTION_MARK` publish the left
+column of that row, as `FILE_SIDEBAR_ICON_CELLS` publishes the icon gutter. The
+first names the width that every row reserves, and the second names the glyph
+that kvim draws there on the selected row of a focused sidebar. A host that
+draws its own tree beside kvim's reserves the same width, so the left columns of
+the two trees line up, and it chooses its own glyph or draws kvim's. The width
+of the Git mark at the right edge stays private, because a host that draws no
+Git mark of its own reserves no cell for one. [`windows.md`](windows.md) owns
+the mark rule.
+
+The embedded facade also publishes the candidate menu of one prompt line.
+`LineCompletion` is the model, `CompletionCycle` names the direction of the key
+that opened it, `CompletionOutcome` reports whether one candidate answered the
+line alone, and `draw_completion_menu` paints the model. `COMPLETION_ROWS_MAX`,
+`COMPLETION_COLUMNS_MAX`, and `COMPLETION_CANDIDATES_MAX` bound the rows, the
+width, and the candidate list, and the last one refuses a longer list rather
+than cutting it. The model holds the line without its prompt prefix, so no row
+repeats a prefix that the prompt itself paints. kvim's own command line draws
+through the same call, so no second appearance exists. The menu is no
+`Selector`: a selector ranks against a query and stops at both ends, while a
+menu wraps at both ends and restores the typed text on a cancel, so the facade
+publishes two types. [`windows.md`](windows.md) owns the placement rule.
+
+`EmbeddedEditor::mode` answers the editing mode of one editor. A host that names
+the mode in a band of its own reads this value. `EmbeddedEditor::input_context`
+answers the scope that owns the keys instead, so it names a prompt, a sidebar,
+or a picker while one of those reads them. The two answer different questions,
+and a host that read the scope alone would lose its mode label whenever a prompt
+opened. [`embedding.md`](embedding.md) owns the host contract.
 
 `kvim-core` and `kvim-settings` are the vocabulary of those signatures.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and
@@ -464,9 +506,15 @@ sidebar, the indent guide rule, the three which-key lists, the paged
 which-key overlay with `WhichKeyPlacement`,
 `WhichKeyOverlayRow`, and `placement_for`, `Registry::all_bindings`, the
 interrupted dispatch outcome, the cancelling scope with `UnboundInput` and the
-cancelled dispatch outcome, the adaptive split rule with `AdaptiveSplit`, and
-the embedded file sidebar with `draw_file_row`. Each surface carries rustdoc,
-one owning document, and the dedicated example of its feature.
+cancelled dispatch outcome, the adaptive split rule with `AdaptiveSplit`, the
+one-row band with `ChromeBand`, `BandSegment`, `BandSide`, `BandRank`,
+`BandPlacement`, `BandError`, and `BAND_SEGMENTS_MAX`, the prompt line with
+`EditedLine` and `LineChange`, the candidate menu with `LineCompletion`,
+`CompletionCycle`, `CompletionOutcome`, and `draw_completion_menu`, the editing
+mode of the embedded editor, and the embedded file sidebar with `draw_file_row`,
+`RegionFocus`, `FILE_SIDEBAR_MARK_CELLS`, and `FILE_SIDEBAR_SELECTION_MARK`.
+Each surface carries rustdoc, one owning document, and the dedicated example of
+its feature.
 `crates/kvim/tests/repository_policy.rs` proves that last link, so the same
 rule governs all of them.
 

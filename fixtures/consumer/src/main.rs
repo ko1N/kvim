@@ -21,7 +21,8 @@ use kvim_editor::{
 };
 use kvim_fuzzy::{rank, score_candidate};
 use kvim_input::{
-    Command, PromptEdit, Registry as InputRegistry, Resolution, Resolver as InputResolver,
+    Command, EditedLine, LineChange, PromptEdit, Registry as InputRegistry, Resolution,
+    Resolver as InputResolver,
 };
 use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
@@ -31,9 +32,15 @@ use kvim_lsp::{DiagnosticsLimits, DocumentRevision, ManagerLimits, WaitPolicy};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::{EditorSettings, FileSettings, InputSettings};
 use kvim_syntax::{HighlightLimits, NeverCancelled, SyntaxHighlighter};
-use kvim_tui::{EditorAccess, EditorCapacity, EditorEvent, FileRowGit};
+use kvim_tui::{
+    COMPLETION_CANDIDATES_MAX, COMPLETION_COLUMNS_MAX, COMPLETION_ROWS_MAX, CompletionCycle,
+    CompletionOutcome, EditorAccess, EditorCapacity, EditorEvent, FILE_SIDEBAR_MARK_CELLS,
+    FILE_SIDEBAR_SELECTION_MARK, FileRowGit, LineCompletion, RegionFocus, Theme,
+    draw_completion_menu,
+};
 use kvim_ui::{
-    ChildSide, Orientation, SELECTOR_CANDIDATES_MAX, Selector, SelectorCandidate, WindowLimits,
+    BAND_SEGMENTS_MAX, BandError, BandPlacement, BandRank, BandSegment, BandSide, ChildSide,
+    ChromeBand, Orientation, SELECTOR_CANDIDATES_MAX, Selector, SelectorCandidate, WindowLimits,
     WindowTree,
 };
 
@@ -50,6 +57,12 @@ const KEYS_MAX: u8 = 2;
 
 /// The wait before a which-key overlay would appear.
 const WHICH_KEY_DELAY: Duration = Duration::from_millis(500);
+
+/// The largest number of characters that the prompt line of this host accepts.
+///
+/// The host states this bound, because kvim publishes the line and never the
+/// prompt that owns it.
+const PROMPT_CHARS_MAX: usize = 256;
 
 /// The commands that this host owns.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -109,6 +122,8 @@ fn main() {
     check_ui();
     check_lsp();
     check_embedded_editor();
+    check_prompt_line();
+    check_chrome();
     println!("every public kvim facade compiles and answers.");
 }
 
@@ -307,6 +322,79 @@ fn check_embedded_editor() {
     );
 }
 
+/// Edits one host-owned prompt line through the published vocabulary.
+///
+/// The line holds the text and the cursor, and the host holds what the prompt
+/// is for. Every edit reports one `LineChange`, and the match below names every
+/// variant of it.
+fn check_prompt_line() {
+    let mut line = EditedLine::opened(String::from("write"), PROMPT_CHARS_MAX);
+    assert_eq!(line.apply(PromptEdit::CursorLineStart), LineChange::CursorMoved);
+    assert_eq!(line.apply(PromptEdit::Insert('q')), LineChange::TextChanged);
+    let accepted = line_change_name(line.apply(PromptEdit::Accept));
+    println!(
+        "a host line holds {:?} with the cursor at {} and answers {accepted}",
+        line.text(),
+        line.cursor()
+    );
+}
+
+/// Returns the stable name of one line change.
+///
+/// The match names every variant, so a new one stops this build until the host
+/// decides what it means for its own line.
+fn line_change_name(change: LineChange) -> &'static str {
+    match change {
+        LineChange::TextChanged => "text-changed",
+        LineChange::CursorMoved => "cursor-moved",
+        LineChange::Unchanged => "unchanged",
+        LineChange::Deferred => "deferred",
+    }
+}
+
+/// Builds one band of host-owned parts and one menu of host-owned candidates.
+///
+/// The band answers where every kept part sits, and the menu paints itself, so
+/// this host writes no shedding rule and no second menu.
+fn check_chrome() {
+    let segments = vec![
+        BandSegment::left(" ONLINE ", BandRank::new(2)),
+        BandSegment::right("3 unread ", BandRank::new(0)),
+    ];
+    assert!(segments.len() <= BAND_SEGMENTS_MAX);
+    let band = match ChromeBand::new(segments) {
+        Ok(band) => band,
+        Err(BandError::Limit { actual, max }) => panic!("{actual} segments pass the bound {max}"),
+    };
+    let row = Rect::new(0, 0, 40, 1);
+    let kept: Vec<BandPlacement<'_>> = band.placements(row);
+    let sides: Vec<BandSide> = kept.iter().map(|placement| placement.segment.side).collect();
+    println!("a host band keeps {} parts on the sides {sides:?}", kept.len());
+
+    let candidates = vec![String::from("write"), String::from("wq")];
+    assert!(candidates.len() <= COMPLETION_CANDIDATES_MAX);
+    let completion = LineCompletion::open("w", candidates, PROMPT_CHARS_MAX, CompletionCycle::Next)
+        .expect("two candidates stay inside the bound");
+    let outcome = match completion.outcome() {
+        CompletionOutcome::Missed => "missed",
+        CompletionOutcome::Completed => "completed",
+        CompletionOutcome::Listed => "listed",
+    };
+    let mut cells = Buffer::empty(HOST_AREA);
+    draw_completion_menu(&mut cells, HOST_AREA, Theme::new(), &completion);
+    println!(
+        "a host menu reports {outcome} over at most {COMPLETION_ROWS_MAX} rows of \
+         {COMPLETION_COLUMNS_MAX} cells and selects {:?}",
+        completion.selected()
+    );
+
+    println!(
+        "a host tree reserves {FILE_SIDEBAR_MARK_CELLS} cell for {FILE_SIDEBAR_SELECTION_MARK:?} \
+         while its region reports {:?}",
+        RegionFocus::Focused
+    );
+}
+
 /// Returns the stable name of one editor event.
 ///
 /// The match names every variant, so this build fails until the consumer
@@ -323,10 +411,6 @@ fn event_name(event: &EditorEvent) -> &'static str {
     }
 }
 
-/// Returns the stable name of one file-sidebar Git state.
-///
-/// The match names every variant of a second facade enum, so the same
-/// exhaustive-enum contract as `event_name` exercises `FileRowGit` too.
 /// Names one edit of a prompt line.
 ///
 /// The match is exhaustive on purpose. `PromptEdit` names an edit that a host
@@ -350,6 +434,10 @@ fn prompt_edit_name(edit: PromptEdit) -> &'static str {
     }
 }
 
+/// Returns the stable name of one file-sidebar Git state.
+///
+/// The match names every variant of a second facade enum, so the same
+/// exhaustive-enum contract as `event_name` exercises `FileRowGit` too.
 fn git_state_name(git: FileRowGit) -> &'static str {
     match git {
         FileRowGit::Ignored => "ignored",
