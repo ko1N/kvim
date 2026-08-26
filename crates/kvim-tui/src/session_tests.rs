@@ -29,7 +29,7 @@ use crate::language::{LanguageRequest, LanguageRequestKind};
 use crate::log::LOG_ENTRIES_MAX;
 use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
-    Redraw, RunState, Session, test_root,
+    PromptSeed, Redraw, RunState, Session, test_root,
 };
 use kvim_ui::{SidebarSide, WindowId};
 
@@ -1656,6 +1656,38 @@ fn the_prompt_cursor_counts_characters_and_not_bytes() {
         "the word delete stops at the cursor as well"
     );
     assert_eq!(prompt_cursor(&session), 0);
+}
+
+#[test]
+fn the_rename_seed_does_not_panic_for_a_name_with_no_stem() {
+    // A submitted rename to `.` or `..` is later refused, but the seed
+    // builds before any check runs, so it must still open without a panic.
+    // The filesystem refuses to hold an entry literally named `.` or `..`,
+    // so this test calls the constructor directly instead of driving it
+    // through a real rename key over a real entry.
+    for name in [".", ".."] {
+        let seed = PromptSeed::before_extension(name.to_owned());
+        assert_eq!(
+            seed.cursor,
+            name.chars().count(),
+            "a name with no stem places the cursor at its end"
+        );
+    }
+}
+
+#[test]
+fn every_prompt_but_rename_still_opens_with_the_cursor_after_its_text() {
+    // `Session::prompt_seed` answers every other prompt kind with the same
+    // catch-all arm, so one representative of it, driven through the command
+    // line and the search prompt, stands for the rest; each specific prompt
+    // kind keeps its own dedicated coverage elsewhere.
+    let mut session = session(60, 10);
+    press(&mut session, ':');
+    assert_eq!(prompt_cursor(&session), 0, "the command line opens empty");
+    press_code(&mut session, KeyCode::Esc);
+
+    press(&mut session, '/');
+    assert_eq!(prompt_cursor(&session), 0, "the search prompt opens empty");
 }
 
 /// The message that the test action of a confirmation reports.

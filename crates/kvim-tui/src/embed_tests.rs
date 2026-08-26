@@ -95,9 +95,11 @@ fn reveal_tree(session: &mut Session) {
 /// Runs one file-tree prompt: the command, the typed line, and `Enter`.
 fn run_tree_prompt(session: &mut Session, command: Command, text: &str) {
     let _ = session.apply_command(command, None, None, NOW);
-    // A rename prompt opens holding the present name, so the typed text
-    // replaces the seed instead of following it. The count comes from the
-    // prompt itself, because a rendered line clips at the terminal width.
+    // A rename prompt opens holding the present name, with the cursor before
+    // the extension, so the typed text replaces the seed only after the
+    // cursor moves to the end. The count comes from the prompt itself,
+    // because a rendered line clips at the terminal width.
+    let _ = session.apply_command(Command::PromptCursorLineEnd, None, None, NOW);
     let seeded = session
         .visible()
         .prompt

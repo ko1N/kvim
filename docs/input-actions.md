@@ -285,6 +285,9 @@ cancelled completion replaces the whole line as well and follows the same rule.
 A new prompt places its position after the text that it starts with, so a
 reader continues where the seed ends. One seed answers both what the line
 starts with and where the position starts, so no caller decides that twice.
+The rename prompt is the one exception: it opens with the position at the end
+of the stem, before the extension, because a reader edits the stem more often
+than the extension. See `docs/files.md`.
 
 ## Confirmation
 

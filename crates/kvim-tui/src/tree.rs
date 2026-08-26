@@ -1006,12 +1006,12 @@ impl TreeSidebar {
     /// Returns the name of the selected entry, for the rename prompt to seed.
     ///
     /// The rename prompt reads a bare entry name, not a path, so the seed
-    /// carries the whole name, including any extension. A reader edits the
-    /// stem more often than the extension, but sometimes edits both, and the
-    /// prompt line has no cursor position to place before the extension. The
-    /// caller opens an empty prompt while no row is selected, and the
-    /// submitted rename then reports [`TreeRefusal::NoSelection`], exactly as
-    /// it did before the prompt seeded a name. See `docs/files.md`.
+    /// carries the whole name, including any extension. The caller places the
+    /// cursor at the end of the stem, before the extension, so a reader who
+    /// edits the stem never moves the cursor first. The caller opens an empty
+    /// prompt while no row is selected, and the submitted rename then reports
+    /// [`TreeRefusal::NoSelection`], exactly as it did before the prompt
+    /// seeded a name. See `docs/files.md`.
     pub(super) fn selected_entry_name(&self) -> Option<String> {
         self.selected_entry().ok().map(|path| entry_name(&path))
     }

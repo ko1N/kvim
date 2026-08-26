@@ -142,8 +142,11 @@ fn answer(session: &mut Session, text: &str) {
 /// its characters, exactly as a reader would before retyping the whole name.
 fn rename_to(session: &mut Session, name: &str) {
     press(session, 'r');
-    // The count comes from the prompt itself. A rendered message line clips at
-    // the terminal width, so a longer seed would leave characters behind.
+    // The prompt opens with the cursor before the extension, so it moves to
+    // the end before the seed clears. The count comes from the prompt
+    // itself. A rendered message line clips at the terminal width, so a
+    // longer seed would leave characters behind.
+    press_code(session, KeyCode::End);
     let seed_chars = session
         .visible()
         .prompt
@@ -152,6 +155,32 @@ fn rename_to(session: &mut Session, name: &str) {
         press_code(session, KeyCode::Backspace);
     }
     answer(session, name);
+}
+
+/// Returns the cursor of the open prompt, counted in characters.
+fn prompt_cursor(session: &Session) -> usize {
+    session.visible().prompt.map_or(0, |prompt| prompt.cursor)
+}
+
+/// Creates one workspace that holds a single named file, and reveals it.
+///
+/// The reveal selects the first and only row, so a test opens the rename
+/// prompt over `name` without navigating the tree first. `H` shows dotfiles,
+/// so a leading dot in `name` still leaves the entry selected; it changes
+/// nothing for a name that holds no leading dot.
+fn workspace_with_one_file(name: &str) -> (TempDir, Session) {
+    let dir = TempDir::new("tree-rename-cursor");
+    dir.file(name, "");
+    let root = dir.path.clone();
+    let mut session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        EditorSettings::default(),
+        test_root(root),
+    );
+    drain(&mut session);
+    reveal(&mut session);
+    press(&mut session, 'H');
+    (dir, session)
 }
 
 /// Renders one session and returns the terminal cell buffer.
@@ -473,9 +502,94 @@ fn the_rename_key_seeds_the_whole_name_including_the_extension() {
     assert_eq!(
         message_line(&session),
         "rename: README.md",
-        "the seed keeps the extension, because the prompt has no cursor \
-         position to place before it"
+        "the seed keeps the extension, even though the cursor opens before it"
     );
+    assert_eq!(
+        prompt_cursor(&session),
+        6,
+        "the cursor opens after `README`, at the end of the stem"
+    );
+}
+
+#[test]
+fn a_reader_who_types_right_after_rename_edits_the_stem_and_keeps_the_extension() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    // Two steps down select "README.md".
+
+    press(&mut session, 'r');
+    for _ in 0.."README".chars().count() {
+        press_code(&mut session, KeyCode::Backspace);
+    }
+    type_keys(&mut session, "GUIDE");
+    press_code(&mut session, KeyCode::Enter);
+    drain(&mut session);
+
+    assert!(
+        dir.join("GUIDE.md").exists(),
+        "the extension survives, because the cursor opened before it and no \
+         motion key was needed to reach the stem"
+    );
+    assert!(!dir.join("README.md").exists());
+}
+
+#[test]
+fn the_rename_cursor_opens_at_the_end_of_the_stem() {
+    let cases: [(&str, usize, &str); 7] = [
+        (
+            "notes.md",
+            5,
+            "the cursor opens after `notes`, before `.md`",
+        ),
+        (
+            "Makefile",
+            8,
+            "a name with no dot places the cursor at the end",
+        ),
+        (
+            ".gitignore",
+            10,
+            "the leading dot of a dotfile is not an extension separator, so \
+             the cursor opens at the end",
+        ),
+        (
+            ".config.toml",
+            7,
+            "the leading dot still is not a separator, so the stem is \
+             `.config`",
+        ),
+        (
+            "archive.tar.gz",
+            11,
+            "the cursor opens before the LAST extension, because kvim holds \
+             no table of compound extensions such as `.tar.gz`",
+        ),
+        (
+            "trailing.",
+            8,
+            "a trailing dot is still a separator, so the cursor opens \
+             before it",
+        ),
+        (
+            "café.md",
+            4,
+            "the cursor counts characters, so the two-byte `é` still counts \
+             as one character before the dot",
+        ),
+    ];
+
+    for (name, cursor, reason) in cases {
+        let (_dir, mut session) = workspace_with_one_file(name);
+        press(&mut session, 'r');
+        assert_eq!(
+            session.visible().prompt.map(|prompt| prompt.text.clone()),
+            Some(name.to_owned()),
+            "{name}: the whole name still seeds the prompt"
+        );
+        assert_eq!(prompt_cursor(&session), cursor, "{name}: {reason}");
+    }
 }
 
 #[test]
@@ -1103,6 +1217,9 @@ fn a_file_with_a_long_name_created_outside_kvim_can_be_renamed() {
     // seed longer than the terminal. The seed always holds the whole
     // selected name, so this test counts that name directly instead.
     press(&mut session, 'r');
+    // The cursor opens before the extension, so it moves to the end before
+    // the whole seed clears.
+    press_code(&mut session, KeyCode::End);
     for _ in 0..long_name.chars().count() {
         press_code(&mut session, KeyCode::Backspace);
     }

@@ -721,6 +721,31 @@ impl PromptSeed {
         let cursor = text.chars().count();
         Self { text, cursor }
     }
+
+    /// Places the cursor at the end of the stem of a file name.
+    ///
+    /// A reader who renames a file edits the stem more often than the
+    /// extension, so the cursor opens where that edit starts.
+    /// [`Path::file_stem`] already treats the leading dot of a dotfile as
+    /// part of the name and not a separator, so `.gitignore` keeps its whole
+    /// name as the stem and the cursor opens at its end, exactly like
+    /// `Makefile`, which holds no dot at all. A name with more than one dot,
+    /// such as `archive.tar.gz`, places the cursor before the LAST dot,
+    /// because kvim holds no table of compound extensions such as `.tar.gz`
+    /// to place it earlier, and such a table would be a second vocabulary to
+    /// maintain. A name with no stem, such as `.` or `..`, places the cursor
+    /// at the end; a submitted rename to such a name is later refused, but
+    /// the seed builds before any check runs, so it must not panic. See
+    /// `docs/files.md`.
+    fn before_extension(text: String) -> Self {
+        let cursor = Path::new(&text)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or(text.as_str())
+            .chars()
+            .count();
+        Self { text, cursor }
+    }
 }
 
 /// One move of the cursor of a prompt line.
@@ -2890,8 +2915,10 @@ impl Session {
     /// Every prompt starts empty, except the rename prompt, which starts with
     /// the name of the selected entry. A reader who wants to change one
     /// character of a long name then edits it in place, instead of typing the
-    /// whole name again. Every prompt places the cursor after its text, so a
-    /// reader continues where the seed ends.
+    /// whole name again. Every prompt places the cursor after its text,
+    /// except the rename prompt, which opens at the end of the stem, before
+    /// the extension, because a reader edits the stem more often. See
+    /// [`PromptSeed::before_extension`].
     ///
     /// A rename prompt while no entry is selected still starts empty; the
     /// submitted rename then reports [`TreeRefusal::NoSelection`], exactly as
@@ -2899,7 +2926,7 @@ impl Session {
     fn prompt_seed(&self, kind: PromptKind) -> PromptSeed {
         match kind {
             PromptKind::Tree(TreePrompt::Rename) => {
-                PromptSeed::after(self.tree.selected_entry_name().unwrap_or_default())
+                PromptSeed::before_extension(self.tree.selected_entry_name().unwrap_or_default())
             }
             PromptKind::CommandLine
             | PromptKind::Search

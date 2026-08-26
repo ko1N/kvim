@@ -473,13 +473,24 @@ prompt of the message line. The tree opens no second input mechanism.
 
 The rename prompt starts with the name of the selected entry, so a reader who
 changes one character never retypes the whole name. The seed keeps the whole
-name, including any extension, because the prompt line holds no cursor
-position to place before the extension. The seed adds no directory part,
-because a rename resolves the typed name against the directory of the
-selected entry. The add-file and add-directory prompts start empty, because
-they name a new entry, not an existing one. A rename prompt while no entry is
-selected also starts empty; the submitted name then reports the same refusal
-that an empty prompt reported before the seed existed.
+name, including any extension. Its cursor opens at the end of the stem,
+before the extension, so a reader who edits the stem never moves the cursor
+first.
+
+`Path::file_stem` decides where the stem ends. A name with no dot, such as
+`Makefile`, places the cursor at the end, because the whole name is the stem.
+The leading dot of a dotfile is not an extension separator, so `.gitignore`
+keeps its whole name as the stem and its cursor opens at the end too, and
+`.config.toml` keeps `.config` as its stem. A name with more than one dot,
+such as `archive.tar.gz`, places the cursor before the LAST dot, after
+`archive.tar`, because kvim holds no table of compound extensions such as
+`.tar.gz`, and such a table would be a second vocabulary to maintain. The
+seed adds no directory part, because a rename resolves the typed name against
+the directory of the selected entry. The add-file and add-directory prompts
+start empty, because they name a new entry, not an existing one. A rename
+prompt while no entry is selected also starts empty; the submitted name then
+reports the same refusal that an empty prompt reported before the seed
+existed.
 
 The tree runs one workspace operation at a time, as the file operations do. The
 event loop takes the next directory read after every completed operation, so the
