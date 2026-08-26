@@ -223,6 +223,43 @@ the result arrives offers the files.
 Every candidate comes from a walk that starts at the workspace root, so no
 candidate reaches outside that root.
 
+## The Prompt Line
+
+One prompt line serves the command line, the search prompt, the picker query,
+and the three file-tree prompts. The line holds the text and one cursor
+position. The position counts characters, because a character is the unit that
+a reader inserts and deletes. It is never larger than the number of characters
+of the text, so it always names a character boundary. The terminal counts
+cells, so the drawing converts the position once, where the width of a
+character is known.
+
+Every edit of the line applies at that position:
+
+| Edit | Effect on the text | Effect on the position |
+|---|---|---|
+| A printable key | Write the character before the position | One character forward |
+| `Backspace` | Remove the character before the position | One character back |
+| `Ctrl-W` | Remove the word before the position, and the blanks before that word | Back over every removed character |
+| `Tab` or `Shift-Tab` | Write the candidate over the whole line | After the written candidate |
+| `Esc` or `Ctrl-C` over an open candidate list | Restore the text that the reader typed | After the restored text |
+| `Enter`, `Esc`, or `Ctrl-C` | Close the prompt | The position closes with it |
+
+The bound of the line counts the whole line and not the text before the
+position, so an insert in the middle meets the same limit as one at the end.
+
+`Backspace` on the empty line cancels the prompt, like Vim. The empty line
+alone decides that, and not the position, so a `Backspace` at the start of a
+written line removes nothing and keeps the prompt open. `Ctrl-W` never closes
+a prompt, because a host can bind that chord for its own purpose.
+
+A completion writes its candidate over the whole line, so the reader continues
+after that candidate, as they do in Vim and in readline. The restore of a
+cancelled completion replaces the whole line as well and follows the same rule.
+
+A new prompt places its position after the text that it starts with, so a
+reader continues where the seed ends. One seed answers both what the line
+starts with and where the position starts, so no caller decides that twice.
+
 ## Confirmation
 
 An action that destroys data asks the user first. The question sits on the

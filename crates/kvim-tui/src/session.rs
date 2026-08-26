@@ -564,27 +564,40 @@ fn clip_message_line(text: impl Into<String>) -> String {
     text.chars().take(MESSAGE_CHARS_MAX).collect()
 }
 
-/// Removes the word before the end of one written line.
+/// Returns where the word before `at` starts inside one written line.
 ///
-/// The prompt line and the answer of a confirmation both end at the cursor, so
-/// the edit works on the end of the text. It removes the run of trailing blanks
-/// first and then the run of trailing non-blanks, which is the rule of Vim, of
-/// readline, and of every terminal shell. An empty text changes nothing.
-fn delete_word_backward(text: &mut String) -> Redraw {
-    if text.is_empty() {
-        return Redraw::Skipped;
+/// `at` is a byte offset that names a character boundary. The walk passes the
+/// run of blanks before `at` first and then the run of non-blanks, which is the
+/// rule of Vim, of readline, and of every terminal shell. A line that holds
+/// nothing before `at` holds no word to remove and returns `None`.
+fn word_start_before(text: &str, at: usize) -> Option<usize> {
+    let before = text.get(..at)?;
+    if before.is_empty() {
+        return None;
     }
-    let start = text
+    let start = before
         .trim_end()
         .char_indices()
         .rev()
         .find(|&(_, value)| value.is_whitespace())
         .map_or(0, |(index, value)| index + value.len_utf8());
     debug_assert!(
-        start < text.len(),
-        "the last character of a written line is a blank or a non-blank, so the walk always \
+        start < at,
+        "the last character before the cursor is a blank or a non-blank, so the walk always \
          removes at least one character"
     );
+    Some(start)
+}
+
+/// Removes the word before the end of one written line.
+///
+/// The answer of a confirmation holds no cursor, so it always ends where the
+/// edit works from. An empty text changes nothing. [`PromptLine`] holds a
+/// cursor and removes the word before it instead.
+fn delete_word_backward(text: &mut String) -> Redraw {
+    let Some(start) = word_start_before(text, text.len()) else {
+        return Redraw::Skipped;
+    };
     text.truncate(start);
     Redraw::Needed
 }
@@ -656,6 +669,30 @@ impl Message {
     }
 }
 
+/// The text and the cursor position that one new prompt line starts with.
+///
+/// The seed is the one place that decides where an opened prompt puts its
+/// cursor, so a prompt that seeds text never spreads that decision over the
+/// callers. See `docs/input-actions.md`.
+#[derive(Debug)]
+struct PromptSeed {
+    /// The text that the line starts with.
+    text: String,
+    /// The cursor position, counted in characters of `text`.
+    cursor: usize,
+}
+
+impl PromptSeed {
+    /// Places the cursor after the whole text.
+    ///
+    /// A reader who opens a seeded prompt continues at the end of the seed,
+    /// exactly as they continue after the text that they typed themselves.
+    fn after(text: String) -> Self {
+        let cursor = text.chars().count();
+        Self { text, cursor }
+    }
+}
+
 /// One open line prompt and the text that it holds.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct PromptLine {
@@ -663,6 +700,16 @@ pub(super) struct PromptLine {
     pub(super) kind: PromptKind,
     /// The text after the prompt character.
     pub(super) text: String,
+    /// The cursor position, counted in characters from the start of the text.
+    ///
+    /// Every edit applies here: an insert writes before the cursor, a backward
+    /// delete removes the character before it, and a backward word delete
+    /// removes the word before it. The position never passes the number of
+    /// characters of the text, so it always names a character boundary. This
+    /// type owns every change of `text`, which keeps the two in step. The
+    /// terminal counts cells and not characters, so the drawing converts the
+    /// position once. See `docs/input-actions.md`.
+    pub(super) cursor: usize,
     /// The open completion of the line, while one candidate is written.
     ///
     /// The completion belongs to the prompt, so a closed prompt drops it and no
@@ -671,6 +718,102 @@ pub(super) struct PromptLine {
 }
 
 impl PromptLine {
+    /// Opens the line of one prompt over the text and the cursor of a seed.
+    fn opened(kind: PromptKind, seed: PromptSeed) -> Self {
+        let chars = seed.text.chars().count();
+        debug_assert!(
+            seed.cursor <= chars,
+            "`PromptSeed` counts the cursor in the characters of its own text"
+        );
+        Self {
+            kind,
+            text: seed.text,
+            cursor: seed.cursor.min(chars),
+            completion: None,
+        }
+    }
+
+    /// Returns the byte offset of the cursor inside the text.
+    ///
+    /// The cursor counts characters, and every edit of this type keeps it
+    /// inside the text, so the walk misses only at the end of the line.
+    fn cursor_offset(&self) -> usize {
+        debug_assert!(
+            self.cursor <= self.text.chars().count(),
+            "every edit of this type keeps the cursor inside the text"
+        );
+        self.text
+            .char_indices()
+            .nth(self.cursor)
+            .map_or(self.text.len(), |(offset, _)| offset)
+    }
+
+    /// Writes one character before the cursor and steps the cursor over it.
+    ///
+    /// The bound counts the whole line and not the text before the cursor, so
+    /// an insert in the middle of the line meets the same limit as one at its
+    /// end. See [`Self::chars_max`].
+    fn insert(&mut self, value: char) -> Redraw {
+        if self.text.chars().count() >= self.chars_max() {
+            return Redraw::Skipped;
+        }
+        let offset = self.cursor_offset();
+        // The insert continues from the line as it is shown, so the closed
+        // completion leaves the written candidate in the text and the next
+        // completion starts from the new line.
+        self.completion = None;
+        self.text.insert(offset, value);
+        self.cursor += 1;
+        Redraw::Needed
+    }
+
+    /// Removes the character before the cursor and steps the cursor back.
+    ///
+    /// A cursor at the start of the line removes nothing, because no character
+    /// stands before it. The caller closes the empty prompt, so this method
+    /// never decides that.
+    fn delete_backward(&mut self) -> Redraw {
+        self.completion = None;
+        let offset = self.cursor_offset();
+        let Some(removed) = self.text[..offset].chars().next_back() else {
+            return Redraw::Skipped;
+        };
+        self.text.remove(offset - removed.len_utf8());
+        self.cursor -= 1;
+        Redraw::Needed
+    }
+
+    /// Removes the word before the cursor, and the blanks before that word.
+    ///
+    /// The text after the cursor stays, and the cursor steps back over every
+    /// removed character.
+    fn delete_word_backward(&mut self) -> Redraw {
+        self.completion = None;
+        let offset = self.cursor_offset();
+        let Some(start) = word_start_before(&self.text, offset) else {
+            return Redraw::Skipped;
+        };
+        let removed = self.text[start..offset].chars().count();
+        debug_assert!(
+            removed <= self.cursor,
+            "the removed characters all stand before the cursor"
+        );
+        self.text.replace_range(start..offset, "");
+        self.cursor -= removed;
+        Redraw::Needed
+    }
+
+    /// Writes one whole line and places the cursor after it.
+    ///
+    /// A completion replaces the whole line with its candidate, so the reader
+    /// continues after that candidate, as they do in Vim and in readline. The
+    /// restore of a cancelled completion replaces the whole line as well and
+    /// follows the same rule.
+    fn write_line(&mut self, text: String) {
+        self.cursor = text.chars().count();
+        self.text = text;
+    }
+
     /// Returns the largest number of characters that the prompt accepts.
     ///
     /// An add-name or a rename prompt reuses [`TREE_NAME_BYTES_MAX`] here as a
@@ -722,7 +865,7 @@ impl PromptLine {
                 open
             }
         };
-        self.text = completion.selected().to_owned();
+        self.write_line(completion.selected().to_owned());
         let outcome = completion.outcome();
         self.completion = Some(completion);
         outcome
@@ -2616,14 +2759,10 @@ impl Session {
     ///
     /// The prompt returns input to the scope that owned it, so a file-tree
     /// prompt returns the keys to the sidebar. [`Self::prompt_seed`] is the
-    /// one place that decides what text the line starts with, so every
-    /// caller opens a prompt the same way.
+    /// one place that decides what text the line starts with and where its
+    /// cursor stands, so every caller opens a prompt the same way.
     fn open_prompt(&mut self, kind: PromptKind) -> Redraw {
-        self.prompt = Some(PromptLine {
-            kind,
-            text: self.prompt_seed(kind),
-            completion: None,
-        });
+        self.prompt = Some(PromptLine::opened(kind, self.prompt_seed(kind)));
         // The new line asks for its own walk, and it asks when it first holds a
         // path argument. A seeded rename line asks for none either, because
         // `sync_completion_walk` only ever queues a walk for `CommandLine`.
@@ -2632,29 +2771,28 @@ impl Session {
         Redraw::Needed
     }
 
-    /// Returns the text that a new prompt line starts with.
+    /// Returns the text and the cursor that a new prompt line starts with.
     ///
     /// Every prompt starts empty, except the rename prompt, which starts with
     /// the name of the selected entry. A reader who wants to change one
     /// character of a long name then edits it in place, instead of typing the
-    /// whole name again. The prompt line holds no cursor position, so the
-    /// seed places the cursor after the seeded text, exactly where a reader
-    /// edits a name.
+    /// whole name again. Every prompt places the cursor after its text, so a
+    /// reader continues where the seed ends.
     ///
     /// A rename prompt while no entry is selected still starts empty; the
     /// submitted rename then reports [`TreeRefusal::NoSelection`], exactly as
     /// it did before the prompt seeded a name. See `docs/files.md`.
-    fn prompt_seed(&self, kind: PromptKind) -> String {
+    fn prompt_seed(&self, kind: PromptKind) -> PromptSeed {
         match kind {
             PromptKind::Tree(TreePrompt::Rename) => {
-                self.tree.selected_entry_name().unwrap_or_default()
+                PromptSeed::after(self.tree.selected_entry_name().unwrap_or_default())
             }
             PromptKind::CommandLine
             | PromptKind::Search
             | PromptKind::Tree(
                 TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Search,
             )
-            | PromptKind::Picker => String::new(),
+            | PromptKind::Picker => PromptSeed::after(String::new()),
         }
     }
 
@@ -3015,35 +3153,34 @@ impl Session {
         };
         match edit {
             PromptEdit::Insert(value) => {
-                if prompt.text.chars().count() >= prompt.chars_max() {
+                if prompt.insert(value) == Redraw::Skipped {
                     return Redraw::Skipped;
                 }
-                // The insert continues from the line as it is shown, so the
-                // closed completion leaves the written candidate in the text
-                // and the next completion starts from the new line.
-                prompt.completion = None;
-                prompt.text.push(value);
                 self.sync_picker_query();
                 self.sync_completion_walk();
                 Redraw::Needed
             }
             PromptEdit::DeleteBackward => {
-                prompt.completion = None;
-                // Backspace on the empty line cancels the prompt, like Vim.
-                if prompt.text.pop().is_none() {
+                // Backspace on the empty line cancels the prompt, like Vim. The
+                // line alone decides that, and not the cursor, so a backspace
+                // at the start of a written line removes nothing and keeps the
+                // prompt open.
+                if prompt.text.is_empty() {
                     self.close_prompt();
                     return Redraw::Needed;
+                }
+                if prompt.delete_backward() == Redraw::Skipped {
+                    return Redraw::Skipped;
                 }
                 self.sync_picker_query();
                 self.sync_completion_walk();
                 Redraw::Needed
             }
             PromptEdit::DeleteWordBackward => {
-                prompt.completion = None;
                 // A host can bind `Ctrl-W` as its own prefix, so a stray chord
                 // must never close a prompt of this editor. Unlike `Backspace`,
                 // the chord therefore leaves the empty line open.
-                if delete_word_backward(&mut prompt.text) == Redraw::Skipped {
+                if prompt.delete_word_backward() == Redraw::Skipped {
                     return Redraw::Skipped;
                 }
                 self.sync_picker_query();
@@ -3057,7 +3194,7 @@ impl Session {
                 // the typed text, so a second cancel closes the prompt. Only
                 // the command line completes, so no picker query changes here.
                 if let Some(completion) = prompt.completion.take() {
-                    prompt.text = completion.into_typed();
+                    prompt.write_line(completion.into_typed());
                     return Redraw::Needed;
                 }
                 self.close_prompt();

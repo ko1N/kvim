@@ -102,6 +102,24 @@ fn prompt_text(session: &Session) -> String {
         .map_or_else(String::new, |prompt| prompt.text.clone())
 }
 
+/// Returns the cursor of the open prompt, counted in characters.
+fn prompt_cursor(session: &Session) -> usize {
+    session.visible().prompt.map_or(0, |prompt| prompt.cursor)
+}
+
+/// Places the cursor of the open prompt at one character position.
+///
+/// The prompt publishes no motion key yet, so a test that edits inside the
+/// line places the cursor itself, exactly as the seed of a prompt does.
+fn place_prompt_cursor(session: &mut Session, cursor: usize) {
+    let prompt = session.prompt.as_mut().expect("the test opened a prompt");
+    assert!(
+        cursor <= prompt.text.chars().count(),
+        "the test places the cursor inside the line"
+    );
+    prompt.cursor = cursor;
+}
+
 /// Reports whether the open prompt holds a completion.
 fn completing(session: &Session) -> bool {
     session
@@ -1032,6 +1050,25 @@ fn the_command_line_completes_a_path_with_the_ranking_of_the_picker() {
 }
 
 #[test]
+fn a_completion_places_the_cursor_after_the_written_candidate() {
+    let mut session = session(60, 12);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/m");
+    answer_completion_walk(&mut session, walked_files());
+
+    // The candidate replaces the whole line, so the reader continues after it.
+    press_code(&mut session, KeyCode::Tab);
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+    assert_eq!(prompt_cursor(&session), 13);
+
+    // The cancelled completion restores the typed text, and the cursor follows
+    // that text to its end.
+    press_code(&mut session, KeyCode::Esc);
+    assert_eq!(prompt_text(&session), "e src/m");
+    assert_eq!(prompt_cursor(&session), 7);
+}
+
+#[test]
 fn the_command_line_offers_no_path_before_the_walk_answers() {
     let mut session = session(60, 12);
     press(&mut session, ':');
@@ -1382,6 +1419,113 @@ fn the_control_w_chord_removes_one_word_from_the_prompt_line() {
     press(&mut session, 'i');
     assert_eq!(session.mode(), Mode::Normal);
     assert_eq!(prompt_text(&session), "i");
+}
+
+#[test]
+fn every_prompt_edit_moves_the_cursor_with_the_text() {
+    let mut session = session(40, 10);
+    press(&mut session, ':');
+    assert_eq!(
+        prompt_cursor(&session),
+        0,
+        "an empty prompt opens with the cursor at the start"
+    );
+
+    type_keys(&mut session, "e write");
+    assert_eq!(
+        prompt_cursor(&session),
+        7,
+        "each insert steps the cursor over its own character"
+    );
+
+    press_code(&mut session, KeyCode::Backspace);
+    assert_eq!(prompt_text(&session), "e writ");
+    assert_eq!(prompt_cursor(&session), 6);
+
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(prompt_text(&session), "e ");
+    assert_eq!(prompt_cursor(&session), 2);
+}
+
+#[test]
+fn an_insert_writes_before_the_cursor_and_keeps_the_rest_of_the_line() {
+    let mut session = session(40, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e main.rs");
+    place_prompt_cursor(&mut session, 2);
+
+    type_keys(&mut session, "src/");
+    assert_eq!(prompt_text(&session), "e src/main.rs");
+    assert_eq!(
+        prompt_cursor(&session),
+        6,
+        "the cursor stays after the written characters"
+    );
+}
+
+#[test]
+fn a_backspace_at_the_start_of_a_written_line_removes_nothing() {
+    let mut session = session(40, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "quit");
+    place_prompt_cursor(&mut session, 0);
+
+    assert_eq!(
+        press_code(&mut session, KeyCode::Backspace),
+        Redraw::Skipped,
+        "no character stands before the start of the line"
+    );
+    assert_eq!(prompt_text(&session), "quit");
+    assert_eq!(prompt_cursor(&session), 0);
+    assert!(
+        session.visible().prompt.is_some(),
+        "only the empty line closes the prompt"
+    );
+}
+
+#[test]
+fn a_word_delete_removes_the_word_before_the_cursor_alone() {
+    let mut session = session(40, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "e src/main.rs");
+    place_prompt_cursor(&mut session, 6);
+
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(
+        prompt_text(&session),
+        "e main.rs",
+        "the text after the cursor stays"
+    );
+    assert_eq!(prompt_cursor(&session), 2);
+}
+
+#[test]
+fn the_prompt_cursor_counts_characters_and_not_bytes() {
+    let mut session = session(40, 10);
+    press(&mut session, ':');
+    type_keys(&mut session, "eä語");
+    assert_eq!(
+        prompt_cursor(&session),
+        3,
+        "three characters stand before the cursor, and six bytes"
+    );
+
+    place_prompt_cursor(&mut session, 1);
+    type_keys(&mut session, "ß");
+    assert_eq!(prompt_text(&session), "eßä語");
+    assert_eq!(prompt_cursor(&session), 2);
+
+    press_code(&mut session, KeyCode::Backspace);
+    assert_eq!(prompt_text(&session), "eä語");
+    assert_eq!(prompt_cursor(&session), 1);
+
+    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
+    assert_eq!(
+        prompt_text(&session),
+        "ä語",
+        "the word delete stops at the cursor as well"
+    );
+    assert_eq!(prompt_cursor(&session), 0);
 }
 
 /// The message that the test action of a confirmation reports.
