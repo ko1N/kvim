@@ -22,6 +22,7 @@ use ratatui::style::Style;
 use thiserror::Error;
 
 use crate::layout::fits;
+use crate::list::{ListItem, ListPlacement, ListViewport};
 
 /// The largest number of rows that one sidebar holds.
 ///
@@ -427,10 +428,7 @@ pub(crate) fn sidebar_visibility<R>(rows: &[SidebarRow<R>], sections: &[bool]) -
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SidebarPlacement<R> {
     row: R,
-    index: usize,
-    first_line: u16,
-    lines: NonZeroU16,
-    top_row: u16,
+    placement: ListPlacement,
 }
 
 impl<R> SidebarPlacement<R> {
@@ -443,7 +441,7 @@ impl<R> SidebarPlacement<R> {
     /// Returns the position of the row in the row list.
     #[must_use]
     pub const fn index(&self) -> usize {
-        self.index
+        self.placement.index()
     }
 
     /// Returns the first visible line of the row.
@@ -452,19 +450,19 @@ impl<R> SidebarPlacement<R> {
     /// first visible row.
     #[must_use]
     pub const fn first_line(&self) -> u16 {
-        self.first_line
+        self.placement.first_line()
     }
 
     /// Returns the number of visible lines of the row.
     #[must_use]
     pub const fn lines(&self) -> u16 {
-        self.lines.get()
+        self.placement.lines()
     }
 
     /// Returns the offset of the row from the top of the sidebar, in rows.
     #[must_use]
     pub const fn top_row(&self) -> u16 {
-        self.top_row
+        self.placement.top_row()
     }
 
     /// Returns the rectangle of the visible part inside one sidebar rectangle.
@@ -473,16 +471,7 @@ impl<R> SidebarPlacement<R> {
     /// larger viewport still writes inside a smaller rectangle.
     #[must_use]
     pub fn area(&self, sidebar: Rect) -> Rect {
-        if self.top_row >= sidebar.height {
-            return Rect::new(sidebar.x, sidebar.bottom(), sidebar.width, 0);
-        }
-        let height = self.lines.get().min(sidebar.height - self.top_row);
-        Rect::new(
-            sidebar.x,
-            sidebar.y.saturating_add(self.top_row),
-            sidebar.width,
-            height,
-        )
+        self.placement.area(sidebar)
     }
 }
 
@@ -645,11 +634,12 @@ pub struct SidebarState<R> {
     /// [`Self::set_rows`] and [`Self::set_sections`] both recompute this and
     /// every later read uses the stored result.
     visible: Vec<bool>,
-    total_lines: u32,
     selected: Option<usize>,
-    first_line: u32,
-    height_rows: u16,
-    margin_rows: u16,
+    /// The one window over the row list. It owns the viewport height, the
+    /// scroll margin, the first visible line, the total line count, and the
+    /// rule that keeps the selected row inside the window. See
+    /// [`ListViewport`].
+    viewport: ListViewport,
     placements: Vec<SidebarPlacement<R>>,
 }
 
@@ -660,11 +650,8 @@ impl<R> Default for SidebarState<R> {
             rows: Vec::new(),
             sections: Vec::new(),
             visible: Vec::new(),
-            total_lines: 0,
             selected: None,
-            first_line: 0,
-            height_rows: 0,
-            margin_rows: 0,
+            viewport: ListViewport::default(),
             placements: Vec::new(),
         }
     }
@@ -675,7 +662,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     #[must_use]
     pub fn new(height_rows: u16) -> Self {
         Self {
-            height_rows,
+            viewport: ListViewport::new(height_rows),
             ..Self::default()
         }
     }
@@ -703,7 +690,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// Returns the number of terminal rows that every row occupies together.
     #[must_use]
     pub const fn total_lines(&self) -> u32 {
-        self.total_lines
+        self.viewport.total_lines()
     }
 
     /// Returns the identity of the selected row.
@@ -721,13 +708,13 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// Returns the first visible terminal row of the row list.
     #[must_use]
     pub const fn first_line(&self) -> u32 {
-        self.first_line
+        self.viewport.first_line()
     }
 
     /// Returns the viewport height, in terminal rows.
     #[must_use]
     pub const fn height_rows(&self) -> u16 {
-        self.height_rows
+        self.viewport.height_rows()
     }
 
     /// Returns the visible part of every visible row, in layout order.
@@ -884,15 +871,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// [`sidebar_visibility`] and share this recovery, so the rule that turns
     /// a lost selection into the nearest visible row lives once.
     fn recompute_visibility(&mut self, previous: Option<(usize, R)>) {
-        let visible = sidebar_visibility(&self.rows, &self.sections);
-        self.total_lines = self
-            .rows
-            .iter()
-            .zip(&visible)
-            .filter(|&(_, &visible)| visible)
-            .map(|(row, _)| u32::from(row.height_rows()))
-            .sum::<u32>();
-        self.visible = visible;
+        self.visible = sidebar_visibility(&self.rows, &self.sections);
         self.selected = previous.and_then(|(index, id)| {
             self.index_of(&id)
                 .or_else(|| self.nearest_selectable(index, Travel::Forward))
@@ -905,7 +884,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// The sidebar scrolls the selected row back into the viewport, so a resize
     /// never hides it.
     pub fn set_height_rows(&mut self, height_rows: u16) {
-        self.height_rows = height_rows;
+        self.viewport.set_height_rows(height_rows);
         self.reconcile();
     }
 
@@ -914,7 +893,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// The margin stops at half the viewport, so a small viewport still shows
     /// the selected row.
     pub fn set_scroll_margin(&mut self, margin_rows: u16) {
-        self.margin_rows = margin_rows;
+        self.viewport.set_scroll_margin(margin_rows);
         self.reconcile();
     }
 
@@ -1125,102 +1104,35 @@ impl<R: Clone + Eq> SidebarState<R> {
         }
     }
 
-    /// Returns the first terminal row of one row of the list.
+    /// Moves the viewport until it shows the selection, then names the rows
+    /// that it places.
     ///
-    /// A hidden row contributes no line, so it is absent from the sum.
-    fn line_of(&self, index: usize) -> u32 {
-        self.rows[..index]
-            .iter()
-            .zip(&self.visible)
-            .filter(|&(_, &visible)| visible)
-            .map(|(row, _)| u32::from(row.height_rows()))
-            .sum()
-    }
-
-    /// Moves the viewport until it shows the selection, then places the rows.
-    ///
-    /// The margin stops at half the viewport and at the last terminal row, so
-    /// the sidebar never scrolls past its rows to satisfy a margin that no row
-    /// can fill. A row that is taller than the viewport shows its first line.
+    /// [`ListViewport`] owns the offset rule and the clipping. This method
+    /// hands it the measure of every row and takes back the visible part of
+    /// each placed row, which it names with the host identity of that row.
     fn reconcile(&mut self) {
         debug_assert_eq!(
             self.rows.len(),
             self.visible.len(),
             "set_rows always stores one visibility flag for every row"
         );
+        let items = self
+            .rows
+            .iter()
+            .zip(&self.visible)
+            .map(|(row, &visible)| ListItem::new(row.height_rows).with_visible(visible));
+        self.viewport.reconcile(items, self.selected);
         self.placements.clear();
-        if self.height_rows == 0 || self.rows.is_empty() {
-            self.first_line = 0;
-            return;
-        }
-        let height = u32::from(self.height_rows);
-        let last_start = self.total_lines.saturating_sub(height);
-        self.first_line = match self.selected {
-            None => self.first_line.min(last_start),
-            Some(index) => {
-                let start = self.line_of(index);
-                let end = start + u32::from(self.rows[index].height_rows()) - 1;
-                let margin = u32::from(self.margin_rows).min((height - 1) / 2);
-                let low = start.saturating_sub(margin);
-                let high = (end + margin).min(self.total_lines - 1);
-                self.first_line
-                    .min(low)
-                    .max((high + 1).saturating_sub(height))
-                    .min(last_start)
-                    .min(start)
-            }
-        };
-        self.place_rows();
-        debug_assert!(
-            self.selected.is_none_or(|index| {
-                self.placements
+        self.placements
+            .extend(
+                self.viewport
+                    .placements()
                     .iter()
-                    .any(|placement| placement.index == index)
-            }),
-            "the reconciled offset always shows the selected row"
-        );
-    }
-
-    /// Places every visible row that the viewport shows and clips the two
-    /// ends.
-    ///
-    /// A hidden row contributes no line, so it never reaches the loop body
-    /// that turns a line range into one placement.
-    fn place_rows(&mut self) {
-        let height = u32::from(self.height_rows);
-        let mut line = 0_u32;
-        for (index, row) in self.rows.iter().enumerate() {
-            if !self.visible[index] {
-                continue;
-            }
-            let end = line + u32::from(row.height_rows());
-            if end <= self.first_line {
-                line = end;
-                continue;
-            }
-            if line >= self.first_line + height {
-                break;
-            }
-            let first_line = self.first_line.saturating_sub(line);
-            let top_row = line.saturating_sub(self.first_line);
-            let visible_lines = (u32::from(row.height_rows()) - first_line).min(height - top_row);
-            let (Ok(first_line), Ok(top_row), Some(lines)) = (
-                u16::try_from(first_line),
-                u16::try_from(top_row),
-                u16::try_from(visible_lines).ok().and_then(NonZeroU16::new),
-            ) else {
-                debug_assert!(false, "one visible part stays inside the viewport height");
-                return;
-            };
-            self.placements.push(SidebarPlacement {
-                row: row.id.clone(),
-                index,
-                first_line,
-                lines,
-                top_row,
-            });
-            line = end;
-        }
+                    .map(|placement| SidebarPlacement {
+                        row: self.rows[placement.index()].id.clone(),
+                        placement: *placement,
+                    }),
+            );
     }
 }
 

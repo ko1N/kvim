@@ -264,11 +264,59 @@ only while that rectangle holds two children at the minimum, so the layout
 publishes 20 cells and 3 rows as the smallest window. A rectangle that is too
 small keeps the subtree that holds the focused window instead.
 
+## List Viewport
+
+`ListViewport` owns the one scroll rule of every bounded list of `kvim-ui`. It
+holds a viewport height in terminal rows, a scroll margin, and the first
+visible line of the list. It holds no item: the caller owns every item value,
+and `reconcile` takes the measure of each item and the position of the selected
+one.
+
+One `ListItem` is the measure of one item: the terminal lines it occupies, and
+whether it is visible. A list of one line for each item builds every item with
+`ListItem::single`, so a uniform list is the simple case of the same rule, not a
+second rule. The viewport publishes one entry point for both cases, because two
+entry points would let the two rules drift apart.
+
+The viewport takes the visibility of each item instead of a list of visible
+items alone. A collapsed sidebar subtree and a collapsed sidebar section both
+hide items, and the caller indexes its own list by position. One index space
+therefore serves the selection, the placements, and the caller's own list, and
+no mapping table stands between them. A hidden item contributes no line to the
+total, to the scroll margin, or to the placements.
+
+`reconcile` moves the window until it shows the selection, then publishes one
+`ListPlacement` for each item that the window shows. A placement names the
+position of the item, its first visible line, how many lines the window shows,
+and its offset from the top of the window. It carries no host identity, so one
+placement shape serves every list. A caller that names its rows wraps the
+placement with its own identity, the way `SidebarPlacement<R>` does.
+
+The margin stops at half the window, so a short window still shows the selected
+item. The window stops at the last line of the list, so it never scrolls past
+the items to satisfy a margin that no item can fill. An item that is taller than
+the window shows its first line. The reconciled offset always shows the selected
+item, and a debug assertion holds that invariant.
+
+`LIST_VIEWPORT_LINES_MAX` bounds the total line count at 1048576. The bound
+keeps every sum of the offset rule inside `u32`. Each caller bounds its own list
+first, and every present bound stays well below it.
+
+Call `reconcile` after every change of the items, the selection, the height, or
+the margin. The placements describe the state of the last reconciliation.
+
 ## Sidebars
 
 `SidebarState<RowId>` owns selection and viewport state only. Rows, actions,
 styles, labels, and semantic meaning are borrowed host inputs. Each row supplies
 a bounded, variable height in terminal rows.
+
+The sidebar holds one `ListViewport` and writes no offset rule of its own. It
+hands the viewport one `ListItem` for each row, with the height of the row and
+whether a collapsed ancestor or a collapsed section hides it, and it names each
+returned `ListPlacement` with the host identity of its row. `set_height_rows`,
+`set_scroll_margin`, `first_line`, `total_lines`, and `height_rows` all read or
+write that one viewport. See [List Viewport](#list-viewport).
 
 Selection and scrolling count terminal rows, not only item indexes. Layout
 publishes clipped visible row placements. A host callback renders each placement

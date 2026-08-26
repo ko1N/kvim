@@ -10,6 +10,12 @@
 //! viewport. Rows, heights, styles, labels, and the meaning of every action
 //! stay with the host, and one host callback draws every cell.
 //!
+//! [`ListViewport`] holds the one scroll rule that every bounded list of the
+//! crate uses: a height, a scroll margin, a first visible line, and the window
+//! that keeps the selected item visible without scrolling past the end of the
+//! list. It reads the height of each item, so a list of one line for each item
+//! is the simple case of the same rule. [`SidebarState`] holds one.
+//!
 //! [`Selector`] holds the mechanism that narrows a bounded candidate list
 //! through a query: the query, the ranked matches, and a selection that
 //! survives a refiltering while the query still matches it. It names no path,
@@ -91,6 +97,7 @@
 mod composer;
 mod guides;
 mod layout;
+mod list;
 mod selector;
 mod sidebar;
 mod tabs;
@@ -106,6 +113,7 @@ pub use guides::{
     sidebar_guides,
 };
 pub use layout::{Region, RegionKind, WindowLayout};
+pub use list::{LIST_VIEWPORT_LINES_MAX, ListItem, ListPlacement, ListViewport};
 pub use selector::{
     SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
 };
