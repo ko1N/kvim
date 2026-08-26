@@ -49,11 +49,15 @@ use super::theme::{Theme, ThemeRole};
 /// The number of rows that the sidebar title occupies.
 pub(super) const TREE_TITLE_ROWS: u16 = 1;
 
-/// The largest number of characters that one entry name accepts.
+/// The largest number of bytes that one entry name accepts.
 ///
 /// The bound protects the prompt line against a name that no filesystem
-/// accepts. Every common filesystem stops at 255 bytes for one name.
-pub(super) const TREE_NAME_CHARS_MAX: usize = 128;
+/// accepts. A Linux filesystem such as ext4 stops one name at 255 raw bytes.
+/// macOS stops one name at 255 UTF-16 code units instead. One UTF-8 byte
+/// never encodes less than one UTF-16 code unit of the same character. A name
+/// within 255 UTF-8 bytes therefore stays within the macOS limit too. The
+/// unit is bytes, because that unit matches what both filesystems enforce.
+pub(super) const TREE_NAME_BYTES_MAX: usize = 255;
 
 /// The marker of one expanded directory row, while the tree hides its icons.
 pub(super) const EXPANDED_MARKER: &str = "▾ ";
@@ -248,7 +252,7 @@ pub(super) enum TreeRefusal {
     EmptyName,
     /// The name holds a path component instead of one entry name.
     NameHasPath,
-    /// The name holds more characters than the bound allows.
+    /// The name holds more bytes than [`TREE_NAME_BYTES_MAX`] allows.
     NameTooLong,
     /// The file-operation clipboard holds no entry.
     ClipboardEmpty,
@@ -260,15 +264,17 @@ pub(super) enum TreeRefusal {
 
 impl TreeRefusal {
     /// Returns the message that the message line shows.
-    pub(super) const fn message(self) -> &'static str {
+    pub(super) fn message(self) -> String {
         match self {
-            Self::NoSelection => "the file tree shows no selected entry",
-            Self::EmptyName => "the name is empty",
-            Self::NameHasPath => "the name must hold one entry name, not a path",
-            Self::NameTooLong => "the name is too long",
-            Self::ClipboardEmpty => "the file clipboard holds no entry",
-            Self::EntryGone => "the file tree no longer shows the entry",
-            Self::Busy => "one workspace operation is already running",
+            Self::NoSelection => "the file tree shows no selected entry".to_owned(),
+            Self::EmptyName => "the name is empty".to_owned(),
+            Self::NameHasPath => "the name must hold one entry name, not a path".to_owned(),
+            Self::NameTooLong => {
+                format!("the name holds more than {TREE_NAME_BYTES_MAX} bytes")
+            }
+            Self::ClipboardEmpty => "the file clipboard holds no entry".to_owned(),
+            Self::EntryGone => "the file tree no longer shows the entry".to_owned(),
+            Self::Busy => "one workspace operation is already running".to_owned(),
         }
     }
 }
@@ -1072,7 +1078,7 @@ fn check_name(name: &str) -> Result<&str, TreeRefusal> {
     if name.is_empty() {
         return Err(TreeRefusal::EmptyName);
     }
-    if name.chars().count() > TREE_NAME_CHARS_MAX {
+    if name.len() > TREE_NAME_BYTES_MAX {
         return Err(TreeRefusal::NameTooLong);
     }
     let one_component = Path::new(name)

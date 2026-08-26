@@ -710,10 +710,19 @@ the same loss and offer the same manual refresh.
 | Characters of one search query | `TREE_SEARCH_CHARS_MAX` | 64 | A search query is a short name fragment. |
 | Directories of one search read | `TREE_SEARCH_READS_MAX` | 64 | One search reveals the matches around the reader instead of walking a complete workspace. |
 | Matches of one search | `TREE_SEARCH_MATCHES_MAX` | 256 | The reader refines the query instead of stepping through more marks. |
+| Bytes of one entry name | `TREE_NAME_BYTES_MAX` | 255 | A Linux filesystem such as ext4 stops one name at 255 raw bytes. macOS stops one name at 255 UTF-16 code units instead. One UTF-8 byte never encodes less than one UTF-16 code unit. A name within 255 UTF-8 bytes therefore stays within the macOS limit too. |
 
 A directory above the entry bound shows its first entries in the order above and
 reports the truncation as one visible row. The tree never shows a partial
 directory without that report. An unreadable directory reports the same way.
+
+The add-file, add-directory, and rename prompts reuse `TREE_NAME_BYTES_MAX` as
+the largest number of characters that a reader may type. One character never
+encodes in fewer bytes than itself. This cap therefore never stops a reader
+short of a name that the byte bound then accepts. A name built from wide
+characters can still pass this cap and later meet the byte bound at
+submission. That refusal names the real limit, so the reader learns the true
+bound instead of meeting a silent block while still typing.
 
 ## Workspace Mutations
 

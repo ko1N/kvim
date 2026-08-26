@@ -102,7 +102,7 @@ use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_are
 use super::review::{ReviewOutcome, ReviewSurface};
 use super::theme::Theme;
 use super::tree::{
-    GitPublication, TREE_NAME_CHARS_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
+    GitPublication, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
     TreeRefusal, TreeSidebar, delete_question, overwrite_question,
 };
 use super::window::{WindowOutcome, Windows};
@@ -672,6 +672,15 @@ pub(super) struct PromptLine {
 
 impl PromptLine {
     /// Returns the largest number of characters that the prompt accepts.
+    ///
+    /// An add-name or a rename prompt reuses [`TREE_NAME_BYTES_MAX`] here as a
+    /// character count, not a byte count. One character never encodes in
+    /// fewer bytes than itself. This cap therefore never stops a reader short
+    /// of a name that `check_name` then accepts. A name built from wide
+    /// characters can still pass this cap. Such a name can still meet the
+    /// byte bound at submission. That later refusal names the real limit, so
+    /// the reader learns the true bound instead of meeting a silent block
+    /// while still typing.
     const fn chars_max(&self) -> usize {
         match self.kind {
             PromptKind::CommandLine => COMMAND_LINE_CHARS_MAX,
@@ -679,7 +688,7 @@ impl PromptLine {
             PromptKind::Tree(TreePrompt::Search) => TREE_SEARCH_CHARS_MAX,
             PromptKind::Tree(
                 TreePrompt::AddFile | TreePrompt::AddDirectory | TreePrompt::Rename,
-            ) => TREE_NAME_CHARS_MAX,
+            ) => TREE_NAME_BYTES_MAX,
             PromptKind::Picker => PICKER_QUERY_CHARS_MAX,
         }
     }

@@ -37,8 +37,8 @@ use crate::file_sidebar::FileRowGit;
 use crate::session::{FileRequestFailure, Redraw, Session, test_root, watch_coverage_note};
 use crate::theme::{Theme, ThemeRole};
 use crate::tree::{
-    GENERATED_NAMES, MARK_CELLS, RowState, TREE_TITLE_ROWS, delete_question, overwrite_question,
-    root_label,
+    GENERATED_NAMES, MARK_CELLS, RowState, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeRefusal,
+    check_name, delete_question, overwrite_question, root_label,
 };
 
 const NOW: Duration = Duration::ZERO;
@@ -998,6 +998,118 @@ fn a_name_that_holds_a_path_is_refused_before_the_worker_runs() {
     assert!(
         session.take_workspace_request().is_none(),
         "a refused name reaches no worker"
+    );
+}
+
+#[test]
+fn check_name_accepts_a_name_at_the_byte_limit() {
+    let name = "a".repeat(TREE_NAME_BYTES_MAX);
+    assert_eq!(check_name(&name), Ok(name.as_str()));
+}
+
+#[test]
+fn check_name_refuses_a_name_one_byte_over_the_limit_and_names_the_real_limit() {
+    let name = "a".repeat(TREE_NAME_BYTES_MAX + 1);
+    assert_eq!(check_name(&name), Err(TreeRefusal::NameTooLong));
+    assert_eq!(
+        TreeRefusal::NameTooLong.message(),
+        format!("the name holds more than {TREE_NAME_BYTES_MAX} bytes")
+    );
+}
+
+/// The byte bound measures bytes, not characters. An ASCII name of more
+/// characters than the old 128-character bound now passes. A shorter
+/// multi-byte name that the old bound accepted now refuses.
+#[test]
+fn check_name_measures_bytes_not_characters() {
+    let long_ascii_name = "a".repeat(200);
+    assert!(
+        check_name(&long_ascii_name).is_ok(),
+        "200 ASCII bytes stays under the byte bound, above the old character bound"
+    );
+
+    let short_multi_byte_name = "中".repeat(90);
+    assert_eq!(
+        check_name(&short_multi_byte_name),
+        Err(TreeRefusal::NameTooLong),
+        "90 characters at three bytes each holds 270 bytes, above the byte bound, \
+         even though 90 characters stayed under the old character bound"
+    );
+}
+
+#[test]
+fn check_name_refuses_an_empty_name_unchanged() {
+    assert_eq!(check_name(""), Err(TreeRefusal::EmptyName));
+    assert_eq!(check_name("   "), Err(TreeRefusal::EmptyName));
+}
+
+#[test]
+fn the_add_prompt_accepts_typing_a_name_at_the_byte_limit() {
+    let (dir, mut session) = workspace();
+    reveal(&mut session);
+
+    // The selected file names the destination directory, which is the root.
+    press(&mut session, 'j');
+    press(&mut session, 'j');
+    let name = "a".repeat(TREE_NAME_BYTES_MAX);
+    press(&mut session, 'a');
+    type_keys(&mut session, &name);
+    press_code(&mut session, KeyCode::Enter);
+    drain(&mut session);
+
+    assert_eq!(
+        message(&session),
+        "",
+        "the prompt line accepts every character of a name at the byte limit"
+    );
+    assert!(
+        dir.join(&name).exists(),
+        "the accepted name reaches the workspace"
+    );
+}
+
+/// Reproduces the reported defect. A file that a filesystem accepts, created
+/// outside kvim with a name past the old 128-character bound, could not be
+/// renamed. The old bound refused the name before the worker ran.
+///
+/// The long-named file exists before the session starts, exactly as a file
+/// that another program created before this kvim session ever opened the
+/// workspace.
+#[test]
+fn a_file_with_a_long_name_created_outside_kvim_can_be_renamed() {
+    let dir = TempDir::new("tree");
+    let long_name = format!("{}.txt", "a".repeat(196));
+    let long_path = dir.file(&long_name, "external\n");
+    let mut session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        EditorSettings::default(),
+        test_root(dir.path.clone()),
+    );
+    drain(&mut session);
+
+    session.open_path(long_path.clone());
+    drain_file(&mut session);
+    reveal(&mut session);
+    assert!(
+        selected(&session).ends_with(&long_name),
+        "the reveal selects the entry that existed before the session started"
+    );
+
+    // `rename_to` reads its seed length from the rendered message line. The
+    // terminal width clips that rendered line, so `rename_to` cannot serve a
+    // seed longer than the terminal. The seed always holds the whole
+    // selected name, so this test counts that name directly instead.
+    press(&mut session, 'r');
+    for _ in 0..long_name.chars().count() {
+        press_code(&mut session, KeyCode::Backspace);
+    }
+    answer(&mut session, "renamed.txt");
+    drain(&mut session);
+
+    assert!(!long_path.exists(), "the rename leaves no source");
+    assert!(
+        dir.join("renamed.txt").exists(),
+        "the rename reaches the workspace"
     );
 }
 
