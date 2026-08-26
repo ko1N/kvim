@@ -35,3 +35,36 @@ fn a_short_terminal_drops_the_body_before_the_message_line() {
     let three = shell_areas(Rect::new(0, 0, 40, 3));
     assert_eq!(three.body.height, 1);
 }
+
+#[test]
+fn the_popup_region_ends_on_the_statusline_row() {
+    for height in 0..=8u16 {
+        let areas = shell_areas(Rect::new(0, 0, 40, height));
+        let region = areas.above_command_line();
+        assert_eq!(
+            region.height,
+            areas.body.height + areas.statusline.height,
+            "the region holds exactly the body and the statusline rows"
+        );
+        assert_eq!(region.x, areas.body.x);
+        assert_eq!(region.y, areas.body.y);
+        if height > 1 {
+            assert_eq!(
+                region.bottom(),
+                areas.statusline.bottom(),
+                "the region ends where the statusline ends, directly above the message line"
+            );
+        }
+    }
+}
+
+#[test]
+fn a_terminal_of_height_two_gives_the_popup_region_one_row() {
+    let areas = shell_areas(Rect::new(0, 0, 40, 2));
+    let region = areas.above_command_line();
+    assert_eq!(
+        region,
+        Rect::new(0, 0, 40, 1),
+        "the empty body and the one-row statusline compose to one row"
+    );
+}

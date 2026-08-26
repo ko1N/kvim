@@ -56,6 +56,32 @@ pub(super) struct ShellAreas {
     pub(super) message: Rect,
 }
 
+impl ShellAreas {
+    /// Returns the rectangle that a popup above the command line may draw
+    /// into.
+    ///
+    /// The body and the statusline are contiguous in every height branch of
+    /// [`shell_areas`], so their union is one rectangle. Its bottom edge sits
+    /// on the statusline's bottom edge, directly above the message line. A
+    /// popup that anchors at the bottom of this rectangle therefore ends on
+    /// the statusline row, the way a wildmenu sits above the command line of
+    /// Vim. The command-line candidate list draws through this rectangle. See
+    /// `docs/windows.md`.
+    pub(super) fn above_command_line(&self) -> Rect {
+        debug_assert_eq!(
+            self.body.bottom(),
+            self.statusline.y,
+            "shell_areas keeps the body and the statusline contiguous"
+        );
+        Rect::new(
+            self.body.x,
+            self.body.y,
+            self.body.width,
+            self.body.height + self.statusline.height,
+        )
+    }
+}
+
 /// Splits the terminal into the three chrome bands.
 pub(super) fn shell_areas(area: Rect) -> ShellAreas {
     let empty = Rect::new(area.x, area.y, area.width, 0);
@@ -132,6 +158,24 @@ pub(super) fn draw_band(
     }
 }
 
+/// Whether the statusline shows its parts or its background alone.
+///
+/// The command-line candidate list ends on the statusline row and covers only
+/// the cells that its own width reaches, so a part beside it would survive at
+/// some terminal widths and not at others. The statusline therefore decides
+/// its own visibility as one fact for the whole row: every part hides while a
+/// list is open, at every width, and the row keeps its background so it never
+/// reads as a gap. See `docs/windows.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum StatuslineParts {
+    /// The statusline shows the mode, the format-on-save state, and the
+    /// cursor position.
+    Shown,
+    /// The statusline shows its background alone, because a candidate list
+    /// covers the row.
+    Hidden,
+}
+
 /// Renders the mode, the format-on-save state, and the cursor position into
 /// the statusline band.
 ///
@@ -143,6 +187,11 @@ pub(super) fn draw_band(
 ///
 /// A buffer that no formatter can format reports no state at all, so `format`
 /// is `None` there and the band shows the mode and the position alone.
+///
+/// `parts` names whether the row shows those parts at all. The statusline
+/// always paints its own background first, so a caller that passes
+/// [`StatuslineParts::Hidden`] still gets a row that reads as chrome, not as a
+/// gap.
 pub(super) fn render_statusline(
     target: &mut CellBuffer,
     area: Rect,
@@ -150,11 +199,15 @@ pub(super) fn render_statusline(
     mode: Mode,
     cursor: Cursor,
     format: Option<FormatOnSave>,
+    parts: StatuslineParts,
 ) {
     if area.is_empty() {
         return;
     }
     target.set_style(area, theme.style(ThemeRole::Statusline));
+    if parts == StatuslineParts::Hidden {
+        return;
+    }
 
     let mode_text = format!(" {mode} ");
     let position = format!("{}:{} ", cursor.line().get() + 1, cursor.column().get() + 1);

@@ -1900,9 +1900,13 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     let before = cursor_position(&session);
     open_completion(&mut session);
 
-    // The body band ends above the statusline, so the list takes the last body
-    // rows and the two chrome bands below it stay readable.
-    let first = 22 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
+    // The body band and the statusline band together end above the message
+    // line, so the list takes their last rows and ends on the statusline row,
+    // directly above the command line. The statusline shows no part while the
+    // list is open, so its row holds the list alone and nothing survives
+    // beside it, even on this eighty-cell row.
+    let first = 23 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
+    let last = 22;
     for (offset, candidate) in COMMAND_CANDIDATES.iter().enumerate() {
         let y = first + u16::try_from(offset).expect("the list is short");
         assert_eq!(
@@ -1912,15 +1916,18 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
             row(&session, y)
         );
     }
-    assert_eq!(
-        row(&session, 22),
-        statusline_without_state(80, "Normal", "1:1"),
-        "the list covers no cell of the statusline"
+    assert!(
+        !row(&session, last).contains("Normal") && !row(&session, last).contains("1:1"),
+        "the statusline row shows no mode and no cursor position while the list is open: {}",
+        row(&session, last)
     );
+    // The statusline keeps its own background where the list does not reach,
+    // so the row reads as chrome and not as a gap.
+    assert_eq!(style_at(&session, 70, last).bg, Some(SURFACE));
     assert_eq!(
         row(&session, 23),
         ":diagnostics",
-        "the list covers no cell of the message line"
+        "the list covers no cell of the message line, so the command line stays visible"
     );
     // The list is decoration, so it moves no cursor and it leaves the rows
     // above it unchanged.
@@ -1956,12 +1963,14 @@ fn one_candidate_completes_the_command_line_without_a_list() {
 
 #[test]
 fn the_candidate_list_reports_the_candidates_that_it_hides() {
-    // The body band of this terminal holds three rows, and the completion
-    // offers more candidates, so the list spends its last row on the note.
+    // The body band and the statusline band of this terminal together hold
+    // four rows, and the completion offers more candidates, so the list
+    // clips to that region and spends its last row, the statusline row, on
+    // the note.
     let mut session = session(40, 5);
     open_completion(&mut session);
 
-    for (offset, candidate) in COMMAND_CANDIDATES.iter().take(2).enumerate() {
+    for (offset, candidate) in COMMAND_CANDIDATES.iter().take(3).enumerate() {
         let y = u16::try_from(offset).expect("the list is short");
         // The list is a panel of its own width, so the winbar row that it
         // reaches keeps the scroll position beside it.
@@ -1971,23 +1980,23 @@ fn the_candidate_list_reports_the_candidates_that_it_hides() {
             row(&session, y)
         );
     }
-    assert_eq!(
-        row(&session, 2),
-        " ...",
-        "the last row reports the hidden candidates: {}",
-        row(&session, 2)
-    );
+    // The statusline shows no part while the list is open, so nothing
+    // survives beside the note on the statusline row.
     assert_eq!(
         row(&session, 3),
-        statusline_without_state(40, "Normal", "1:1")
+        " ...",
+        "the last row of the region reports the hidden candidates: {}",
+        row(&session, 3)
     );
     assert_eq!(row(&session, 4), ":diagnostics");
 }
 
 #[test]
 fn the_candidate_list_covers_the_notification_overlay() {
-    // The notification overlay reaches the last body rows as well, and this
-    // terminal is narrow enough for both to want the same cells.
+    // The notification overlay reaches the last body rows, and this terminal
+    // is narrow enough for both to want the same cells. The list now ends one
+    // row lower than the overlay, on the statusline row, so it still reaches
+    // the overlay's last row without ending on it.
     let mut session = session(40, 24);
     start_indexing(&mut session, NOW, "index", "Building compile-time-deps");
     assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
@@ -1995,12 +2004,12 @@ fn the_candidate_list_covers_the_notification_overlay() {
 
     // The user cycles the list with a key and reads it now, so the list draws
     // over the overlay. See `docs/windows.md`.
-    let last = row(&session, 21);
+    let overlay_row = row(&session, 21);
     assert!(
-        last.starts_with(" write") && last.ends_with("rust-analyzer ⠋"),
-        "the list covers the left cells of the overlay row: {last}"
+        overlay_row.starts_with(" wq") && overlay_row.ends_with("rust-analyzer ⠋"),
+        "the list covers the left cells of the overlay row: {overlay_row}"
     );
-    assert!(row(&session, 20).starts_with(" wq"));
+    assert!(row(&session, 20).starts_with(" quit"));
 }
 
 #[test]
@@ -2008,22 +2017,75 @@ fn a_narrow_terminal_keeps_the_command_line_readable() {
     let mut session = session(20, 10);
     open_completion(&mut session);
 
-    // The list bounds its width by the body band, so it reaches no cell outside
-    // the terminal, and the command line below it stays complete.
+    // The list bounds its width by the body band, so it reaches no cell
+    // outside the terminal, and the command line below it stays complete.
     assert_eq!(row(&session, 9), ":diagnostics");
-    assert_eq!(
-        row(&session, 8),
-        statusline_without_state(20, "Normal", "1:1")
-    );
     let buffer = draw(&session);
-    for y in 2..8u16 {
+    for y in 3..9u16 {
         assert!(
             row_of(&buffer, y).chars().count() <= 20,
             "row {y} stays inside the terminal"
         );
     }
-    // The list takes the last body rows, so its first row holds the first
-    // candidate.
-    let first = 8 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
+    // The list takes the last rows of the body and the statusline together,
+    // so its first row holds the first candidate and its last row, the
+    // statusline row, holds the last one. The statusline shows no part while
+    // the list is open, so nothing survives past the end of the list on that
+    // twenty-cell row.
+    let first = 9 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
     assert_eq!(row(&session, first), " diagnostics");
+    assert_eq!(row(&session, 8), " write");
+}
+
+#[test]
+fn a_two_row_terminal_shows_the_menu_in_its_one_row() {
+    // Height two leaves an empty body and a one-row statusline, so the region
+    // above the command line holds one row. No candidate fits beside the
+    // note, so the list spends that one row on the note alone. The statusline
+    // shows no part while the list is open, so no fragment of the mode
+    // survives beside the note, even though the note itself is narrower than
+    // the mode label.
+    let mut session = session(20, 2);
+    open_completion(&mut session);
+
+    assert_eq!(row(&session, 0), " ...");
+    assert_eq!(row(&session, 1), ":diagnostics");
+    let buffer = draw(&session);
+    assert_eq!(
+        buffer.area().height,
+        2,
+        "the list draws no row outside the two-row terminal"
+    );
+}
+
+#[test]
+fn the_statusline_shows_no_part_while_a_list_is_open() {
+    // A `.rs` buffer carries a format-on-save state, so the statusline
+    // ordinarily shows the mode, the state, and the cursor position
+    // together. The terminal is eighty cells wide, wide enough that the mode
+    // alone would otherwise survive beside a narrow list.
+    let directory = TempDir::new("render-completion-hides-statusline");
+    let code = directory.write("code.rs", "fn code() {}\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(
+        Rect::new(0, 0, 80, 24),
+        settings,
+        test_root(directory.path.clone()),
+    );
+    open_file(&mut session, code);
+    assert_eq!(row(&session, 22), statusline(80, "Normal", "fmt:on", "1:1"));
+
+    open_completion(&mut session);
+    let statusline_row = row(&session, 22);
+    assert!(
+        !statusline_row.contains("Normal")
+            && !statusline_row.contains("fmt:on")
+            && !statusline_row.contains("1:1"),
+        "the statusline row shows no mode, no format state, and no cursor \
+         position while the list is open: {statusline_row}"
+    );
+    // The statusline keeps its own background past the end of the list, so
+    // the row reads as chrome and not as a gap.
+    assert_eq!(style_at(&session, 70, 22).bg, Some(SURFACE));
 }

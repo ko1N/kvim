@@ -13,7 +13,7 @@ use kvim_input::Mode;
 use kvim_ui::RegionKind;
 
 use super::buffer_view::{BracketHighlight, RegionFocus, WindowView, cursor_cell, render_window};
-use super::chrome::{render_message, render_statusline, shell_areas};
+use super::chrome::{StatuslineParts, render_message, render_statusline, shell_areas};
 use super::completion::draw_completion_menu;
 use super::overlay::{render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
@@ -54,6 +54,9 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             &view.tree.root_label(),
             review,
         );
+        // The review draws no candidate list, because the early return here
+        // runs before the list draws, so the statusline always shows its
+        // parts in this branch.
         render_statusline(
             target,
             bands.statusline,
@@ -61,6 +64,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             view.editing.mode(),
             Cursor::ORIGIN,
             view.focused_format_on_save(),
+            StatuslineParts::Shown,
         );
         render_message(
             target,
@@ -183,6 +187,18 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         }
     }
 
+    // The candidate list ends on the statusline row, and its own width covers
+    // only some of that row at some terminal widths. The statusline therefore
+    // decides its own visibility as one fact for the whole row instead of
+    // leaving a part to survive beside the list at the widths the list does
+    // not reach. See `docs/windows.md`.
+    let completion = view.prompt.and_then(|prompt| prompt.completion.as_ref());
+    let statusline_parts = if completion.is_some() {
+        StatuslineParts::Hidden
+    } else {
+        StatuslineParts::Shown
+    };
+
     // The statusline reports the mode of the editor, and the cursor and the
     // format-on-save state of the focused window. That window keeps the report
     // while a sidebar holds the keys, because the statusline names the place
@@ -198,6 +214,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         view.editing.mode(),
         focused_cursor,
         view.focused_format_on_save(),
+        statusline_parts,
     );
     render_message(
         target,
@@ -224,10 +241,13 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         );
     }
     // The list answers the last key of the user, so it paints over the
-    // notification overlay, which reports background work instead. See
+    // notification overlay, which reports background work instead. It draws
+    // into the body and the statusline together, so its last row lands
+    // directly above the message line, on the statusline row. The statusline
+    // already drew no part there, so the list stands where the mode was. See
     // `docs/windows.md`.
-    if let Some(completion) = view.prompt.and_then(|prompt| prompt.completion.as_ref()) {
-        draw_completion_menu(target, bands.body, theme, completion);
+    if let Some(completion) = completion {
+        draw_completion_menu(target, bands.above_command_line(), theme, completion);
     }
     if let Some(rows) = view.which_key {
         // The overlay reads the one icon setting of the file tree, so a

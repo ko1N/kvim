@@ -764,17 +764,24 @@ then the which-key overlay, and the picker last over the complete terminal.
 ### Command-Line Candidate List
 
 The candidate list of the command-line completion takes the last rows of the
-body band. The statusline and the message line stay below it. The command line
-that the list describes therefore always stays visible. The list appears only
-while more than one candidate matches, because one candidate needs no choice.
-[`input-actions.md`](input-actions.md) owns the keys that cycle it.
+region that the body band and the statusline band form together. The list
+ends directly above the command line that it describes, the way a wildmenu
+sits above the command line of Vim. The message line stays below the list, so
+the command line always stays visible. The statusline shows no part while a
+list is open: no mode, no format-on-save state, and no cursor position, at
+every terminal width. It keeps its own background, so the row reads as chrome
+and never as a gap. The reader is then choosing a candidate, not reading the
+mode. The list appears only while more than one candidate matches, because one
+candidate needs no choice. [`input-actions.md`](input-actions.md) owns the
+keys that cycle it.
 
-The list shows at most eight rows, and never more rows than the body band
-holds. A list that holds more candidates than rows replaces its last row with
-`...`, so no candidate disappears without a note. The language float reports a
-lost row the same way. See [`language-services.md`](language-services.md). The
-shown candidates always hold the selected one, so a cycle moves the shown
-candidates instead of hiding the selection.
+The list shows at most eight rows, and never more rows than the region above
+the command line holds. A list that holds more candidates than rows replaces
+its last row with `...`, so no candidate disappears without a note. The
+language float reports a lost row the same way. See
+[`language-services.md`](language-services.md). The shown candidates always
+hold the selected one, so a cycle moves the shown candidates instead of hiding
+the selection.
 
 The list is at most 48 cells wide, and never wider than the body band. A
 candidate that is wider than the list loses its start, and a `<` marks the cut.
