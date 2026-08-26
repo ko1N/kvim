@@ -36,7 +36,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 
-use kvim_input::{BindingScope, Command, InputContextSnapshot, PasteText};
+use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText};
 use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
@@ -1028,6 +1028,19 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> Reduction {
         self.editor.paste(text, now)
+    }
+
+    /// Returns the editing mode of this editor.
+    ///
+    /// A host names the mode in a band of its own, and the mode answers
+    /// whatever reads the next key. [`EmbeddedEditor::input_context`] reports
+    /// the scope that owns the keys instead, so it names a prompt, a sidebar,
+    /// or a picker while one of those holds them. A host that wants the mode
+    /// to stay on its statusline through a prompt reads this, exactly as the
+    /// standalone editor does. See `docs/embedding.md`.
+    #[must_use]
+    pub const fn mode(&self) -> Mode {
+        self.editor.mode()
     }
 
     /// Returns the input context that this editor publishes.

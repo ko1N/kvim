@@ -445,6 +445,14 @@ the keys, because the scope reports who reads the next key.
 
 `crates/kvim-ui/examples/chrome_band.rs` is one complete host of one band.
 
+
+`EmbeddedEditor::mode` answers the editing mode of the editor. A host names the
+mode in a segment of its own band. `EmbeddedEditor::input_context` answers the
+scope that owns the keys instead, so it names a prompt, a sidebar, or a picker
+while one of those reads them. A host that reads the scope alone therefore
+loses its mode label whenever a prompt opens. The standalone editor keeps the
+mode on its statusline through a prompt, and a host reaches the same fact here.
+
 ## Editor Events
 
 `EditorEvent` includes these facts and requests:
