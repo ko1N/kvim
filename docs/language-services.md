@@ -1450,6 +1450,10 @@ line itself, because that line holds the text that the float describes. When
 neither side holds the complete float, it takes the larger side and clips its
 height there, so it stays anchored to the cursor.
 
+A focused sidebar leaves every window unfocused, so no window reports a cursor
+cell. The float then takes the bottom of the body band, because no visible
+cursor can anchor it. See [`windows.md`](windows.md).
+
 The float belongs to one window, so it never reaches outside that window
 rectangle. In a split it sits inside its own window. It starts at the cursor
 column and moves left until its right edge sits inside the window.

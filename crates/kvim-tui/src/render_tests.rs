@@ -12,6 +12,7 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 
 use kvim_clipboard::ClipboardFailure;
+use kvim_input::Mode;
 use kvim_language::{
     LanguageEvent, LanguageOutcome, LanguageServerId, LspError, ProgressPercentage, ProgressReport,
     ProgressStage, ProgressToken, SessionGeneration,
@@ -208,6 +209,39 @@ fn open_file(session: &mut Session, path: PathBuf) {
         .take_file_request()
         .expect("the open queued one file request");
     let _ = session.apply_file_result(request.run());
+}
+
+/// The largest number of directory reads that one reveal of the tree runs.
+const TREE_READS_MAX: usize = 32;
+
+/// Creates a session whose workspace root is one temporary directory.
+///
+/// The file tree then shows that directory alone, so a test owns every row that
+/// the sidebar can select.
+fn session_over(directory: &TempDir, width: u16, height: u16) -> Session {
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    Session::new(
+        Rect::new(0, 0, width, height),
+        settings,
+        test_root(directory.path.clone()),
+    )
+}
+
+/// Reveals the file tree, which takes the focus, and runs its directory reads.
+///
+/// A directory read blocks, so a host hands it to its bounded worker service.
+/// The test runs it here and applies the typed result.
+fn reveal_file_tree(session: &mut Session) {
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
+    for _ in 0..TREE_READS_MAX {
+        let Some(request) = session.take_workspace_request() else {
+            return;
+        };
+        let _redraw = session.apply_workspace_result(request.run());
+    }
+    panic!("one reveal queues fewer directory reads than the bound of this test");
 }
 
 /// Creates a session that holds one typed text, with the cursor at the start of
@@ -781,6 +815,22 @@ fn a_mode_other_than_normal_paints_no_bracket_pair() {
 }
 
 #[test]
+fn a_focused_sidebar_paints_no_bracket_pair() {
+    let mut session = with_text(80, 8, "(alpha)\n");
+    assert_eq!(
+        highlighted_brackets(&session),
+        vec![(GUTTER, 1), (GUTTER + 6, 1)]
+    );
+
+    // `Ctrl-E` moves the keys to the file tree. The mode stays Normal, but `%`
+    // reaches no window while the sidebar owns the keys, so the window paints
+    // no pair.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('e'))), NOW);
+    assert_eq!(session.mode(), Mode::Normal);
+    assert!(highlighted_brackets(&session).is_empty());
+}
+
+#[test]
 fn a_wide_character_before_a_bracket_keeps_the_pair_on_its_own_cells() {
     let mut session = with_text(30, 8, "漢(x)\n");
     // The wide character is no bracket, so the line stays plain.
@@ -923,6 +973,60 @@ fn two_splits_paint_two_different_buffers() {
         !is_reversed(&session, 5, 1),
         "an unfocused window shows no cursor"
     );
+}
+
+#[test]
+fn a_focused_sidebar_leaves_the_one_window_unfocused() {
+    let directory = TempDir::new("render-tree-focus");
+    let path = directory.write("alpha.rs", "fn alpha() {}\n");
+    let mut session = session_over(&directory, 100, 12);
+    open_file(&mut session, path);
+    reveal_file_tree(&mut session);
+
+    // The sidebar holds the keys, so its title carries the focused color and
+    // the winbar of the one window carries the muted color.
+    assert_eq!(style_at(&session, 60, 0).fg, Some(TITLE));
+    assert_eq!(
+        style_at(&session, 1, 0).fg,
+        Some(MUTED),
+        "the one window is unfocused while the sidebar holds the keys"
+    );
+    // The selected row of the sidebar is the one cursor cell of the frame.
+    assert_eq!(cursor_position(&session), (60, 1));
+    // The statusline keeps the cursor of the focused window, which names the
+    // place the reader returns to.
+    assert_eq!(
+        row(&session, 10),
+        statusline(100, "Normal", "fmt:on", "1:1")
+    );
+
+    // `Ctrl-H` gives the keys back to the window left of the sidebar.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(style_at(&session, 1, 0).fg, Some(TITLE));
+    assert_eq!(style_at(&session, 60, 0).fg, Some(MUTED));
+    assert_eq!(cursor_position(&session), (GUTTER, 1));
+}
+
+#[test]
+fn a_focused_sidebar_leaves_every_window_of_a_split_unfocused() {
+    let directory = TempDir::new("render-tree-split-focus");
+    let path = directory.write("alpha.rs", "fn alpha() {}\n");
+    let mut session = session_over(&directory, 100, 12);
+    open_file(&mut session, path);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    assert_eq!(session.windows().window_count(), 2);
+    reveal_file_tree(&mut session);
+
+    // The sidebar takes 40 cells, so each window of the split holds 30 cells of
+    // the body band. Neither one carries the focused title color.
+    assert_eq!(style_at(&session, 1, 0).fg, Some(MUTED));
+    assert_eq!(style_at(&session, 31, 0).fg, Some(MUTED));
+
+    // `Ctrl-H` gives the keys back, and exactly one window carries the color
+    // again.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('h'))), NOW);
+    assert_eq!(style_at(&session, 31, 0).fg, Some(TITLE));
+    assert_eq!(style_at(&session, 1, 0).fg, Some(MUTED));
 }
 
 #[test]

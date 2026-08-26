@@ -448,6 +448,8 @@ region and keeps that identity, so a later reveal shows the same sidebar. One
 title row above the rows names the workspace root, and it carries the focused or
 the unfocused title color. The terminal draws its own cursor on the selected row
 while the sidebar holds the focus, so one frame still reports one cursor cell.
+Every editor window is unfocused at that moment, so no window reports a second
+cursor cell and no winbar carries the focused title color.
 
 ### Tree Rows
 
@@ -654,7 +656,9 @@ The terminal holds three bands. The window tree receives the body band only.
   format that no save performs. See
   [`language-services.md`](language-services.md). A band that cannot hold every
   part drops the format-on-save state first, then the cursor position. The mode
-  always survives, because the mode decides what the next key does.
+  always survives, because the mode decides what the next key does. The
+  statusline keeps the state and the position of the focused window while a
+  sidebar holds the keys, because it names the place the reader returns to.
 - The message line is the last row. It shows the last message, and the command
   line and the search prompt share it. An ordinary message takes the normal text
   color, so only a warning and a failure stand out. A confirmation shows its
@@ -709,8 +713,10 @@ The language float covers a part of one window instead of the body band. It sits
 beside the cursor cell of the focused window, so it never reaches outside that
 window rectangle, and a split places it inside its own window. It uses the same
 cursor cell that the frame reports for the terminal cursor, so the float and the
-cursor never disagree. [`language-services.md`](language-services.md) owns the
-placement rule and the bounds.
+cursor never disagree. A focused sidebar leaves every window without a cursor
+cell, so the float takes the bottom of the body band instead of pointing at a
+cursor that no window shows. [`language-services.md`](language-services.md) owns
+the placement rule and the bounds.
 
 The overlays paint in a fixed order over the window tree: the notification
 overlay first, then the language float, then the command-line candidate list,
@@ -1026,15 +1032,25 @@ quiet, because they separate text instead of holding it.
 ## Buffer Presentation
 
 Every window paints the buffer of its own leaf. Two windows therefore show two
-different files after `:e` in a split. The focused window paints the Visual
-selection, because the mode is global and belongs to the focused window. An
-unfocused window paints none.
+different files after `:e` in a split.
+
+A window is focused only while it holds the input focus. A focused sidebar holds
+that focus, so it leaves every window unfocused, including the one window of a
+terminal without a split. The focus decides the winbar title color, the Visual
+selection, the bracket pair, and the cursor cell of a window. The focused window
+still keeps its identity while a sidebar holds the focus, because the keys
+return to it.
+
+A window paints the Visual selection only while it holds the focus, because the
+mode is global and belongs to the region that holds the focus. Every other
+window paints none. The bracket pair follows the same rule, because a
+Normal-mode `%` reaches no window while a sidebar owns the keys.
 
 The terminal draws the cursor itself, because a cell grid cannot draw half a
-cell. One frame reports one cursor cell: the cell of the focused window, behind
-the gutter and after the horizontal scroll. An unfocused window reports no cell,
-so it shows no cursor. It still holds its own cursor position, so its relative
-line numbers count from that line.
+cell. One frame reports one cursor cell: the cell of the region that holds the
+focus, behind the gutter and after the horizontal scroll. An unfocused window
+reports no cell, so it shows no cursor. It still holds its own cursor position,
+so its relative line numbers count from that line.
 
 A prompt line counts its cursor in characters, and the terminal counts cells.
 The drawn cursor column is therefore the cell width of the prefix of the prompt

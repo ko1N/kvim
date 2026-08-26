@@ -72,13 +72,17 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         return None;
     }
 
-    let focused = view.windows.focused_window();
+    // A region is focused only while it holds the input focus, so a focused
+    // sidebar leaves every editor window unfocused. See `docs/windows.md`.
+    let focused_region = view.windows.focused_region();
     // The terminal draws its own cursor, so one frame reports at most one
-    // cursor cell: the one of the focused window. An unfocused window reports
-    // none, and the terminal then shows no cursor there. See `docs/windows.md`.
+    // cursor cell: the one of the region that holds the focus. Every other
+    // region reports none, and the terminal then shows no cursor there. See
+    // `docs/windows.md`.
     let mut cursor_at = None;
-    // The language float belongs to the focused window, so it needs that
-    // rectangle as well as the cursor cell inside it. See `docs/windows.md`.
+    // The language float belongs to the window that holds the focus, so it
+    // needs that rectangle as well as the cursor cell inside it. See
+    // `docs/windows.md`.
     let mut focused_area = None;
     // A focused sidebar owns the keys, so its selected row wins the one cursor
     // cell that a frame reports.
@@ -104,15 +108,16 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     continue;
                 };
                 let text = file.text();
-                let focus = if region.id == focused {
+                let focus = if region.id == focused_region {
                     WindowFocus::Focused
                 } else {
                     WindowFocus::Unfocused
                 };
                 // Every window owns its cursor, so its relative line numbers
                 // count from its own cursor line. The mode is global and belongs
-                // to the focused window, so only that window paints a selection.
-                // See `docs/windows.md`.
+                // to the region that holds the focus, so a window paints a
+                // selection only while it holds that focus. See
+                // `docs/windows.md`.
                 // The active search belongs to the active buffer only.
                 let searched = id == view.active && match_chars > 0;
                 let window = WindowView {
@@ -133,9 +138,9 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     highlights: view.highlights(id),
                     diagnostics: view.diagnostics(id),
                     focus,
-                    // The bracket pair answers a Normal-mode `%`, and the mode
-                    // belongs to the focused window, so only that window paints
-                    // the pair under its cursor.
+                    // The bracket pair answers a Normal-mode `%`, and that key
+                    // reaches no window while a sidebar holds the focus, so
+                    // only the focused window paints the pair.
                     brackets: if focus == WindowFocus::Focused
                         && view.editing.mode() == Mode::Normal
                     {
@@ -155,7 +160,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             // The file tree is the one sidebar of the first release. It paints
             // its own rows, so no editor window covers its rectangle.
             RegionKind::Sidebar(_) => {
-                let focus = if region.id == view.windows.focused_region() {
+                let focus = if region.id == focused_region {
                     WindowFocus::Focused
                 } else {
                     WindowFocus::Unfocused
@@ -178,10 +183,12 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     }
 
     // The statusline reports the mode of the editor, and the cursor and the
-    // format-on-save state of the focused window, because the keys act there.
+    // format-on-save state of the focused window. That window keeps the report
+    // while a sidebar holds the keys, because the statusline names the place
+    // the reader returns to. See `docs/windows.md`.
     let focused_cursor = view
         .windows
-        .state(focused)
+        .state(view.windows.focused_window())
         .map_or(Cursor::ORIGIN, WindowState::cursor);
     render_statusline(
         target,
