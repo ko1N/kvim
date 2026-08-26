@@ -2,6 +2,7 @@ use super::*;
 
 use std::sync::atomic::AtomicU64;
 
+use tokio::sync::Mutex;
 use tokio::time::timeout;
 
 /// The generated directory names that a workspace watch ignores.
@@ -9,6 +10,26 @@ const IGNORED: [&str; 5] = [".direnv", ".git", "__pycache__", "node_modules", "t
 
 /// The time that one test waits for the platform to report one change.
 const EVENT_WAIT: Duration = Duration::from_secs(5);
+
+/// The gate that gives one test the platform watcher of the whole process.
+///
+/// A platform watcher costs one event stream, and `notify` rebuilds that whole
+/// stream for every batch of paths. The host serializes those rebuilds, and one
+/// of them needs about half a second on macOS. Ten tests that register at the
+/// same time therefore pay ten of those latencies one after the other, and the
+/// last of them waits longer than [`EVENT_WAIT`]. That is why the watcher tests
+/// failed under the default thread count while every one of them passed alone.
+///
+/// The gate hands the resource to one test at a time, so each registration
+/// costs its own latency and [`EVENT_WAIT`] stays as it is. It costs almost no
+/// wall-clock time, because the host already performs this work one stream at a
+/// time. Every test that builds a platform watcher takes the gate first, so the
+/// guard drops after the watcher of that test.
+///
+/// The gate is a Tokio mutex, because an asynchronous test holds it across an
+/// await, and it needs no poison recovery: a test that panics under the gate
+/// releases it for the next one.
+static PLATFORM_WATCHER: Mutex<()> = Mutex::const_new(());
 
 /// The counter that keeps two temporary trees of one process apart.
 static TREE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -438,6 +459,7 @@ fn the_registration_never_follows_a_directory_link() {
 #[cfg(unix)]
 #[test]
 fn a_confinement_skipped_directory_remains_unregistered() {
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("registration-confinement-skip");
     let outside = TempTree::new("registration-confinement-skip-outside");
     std::os::unix::fs::symlink(&outside.path, tree.path.join("escape"))
@@ -464,6 +486,7 @@ fn a_non_utf8_descendant_is_reported_and_remains_retryable() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
 
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("registration-non-utf8-child");
     let name = OsString::from_vec(vec![0xff]);
     if fs::create_dir(tree.path.join(&name)).is_err() {
@@ -489,6 +512,7 @@ fn a_non_utf8_root_returns_the_typed_start_failure() {
     use std::ffi::OsString;
     use std::os::unix::ffi::OsStringExt as _;
 
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let parent = TempTree::new("registration-non-utf8-root");
     let path = parent.path.join(OsString::from_vec(vec![0xff]));
     if fs::create_dir(&path).is_err() {
@@ -573,6 +597,7 @@ fn a_walk_that_starts_above_the_root_adds_no_watch() {
 
 #[test]
 fn a_repeated_addition_of_one_directory_changes_no_watch() {
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("repeat");
     tree.dir("src");
     let watcher = RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
@@ -604,6 +629,7 @@ fn a_repeated_addition_of_one_directory_changes_no_watch() {
 
 #[test]
 fn overlapping_changed_directories_add_each_new_watch_once() {
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("overlapping-additions");
     tree.dir("src");
     let watcher = RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
@@ -658,6 +684,7 @@ fn an_unreadable_directory_keeps_the_rest_of_the_registration() {
 
 #[tokio::test]
 async fn a_change_of_one_watched_file_reaches_one_burst() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("events");
     tree.file("src/main.rs", "fn main() {}\n");
     tree.dir("target/debug");
@@ -688,6 +715,7 @@ async fn a_change_of_one_watched_file_reaches_one_burst() {
 
 #[tokio::test]
 async fn a_change_of_one_root_entry_reaches_one_burst() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("root-events");
     let mut watcher = started(&tree.path).await;
 
@@ -707,6 +735,7 @@ async fn a_change_of_one_root_entry_reaches_one_burst() {
 
 #[tokio::test]
 async fn a_directory_that_appears_after_the_walk_reports_a_change_inside_it() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("new-directory-events");
     tree.dir("src");
     let mut watcher = started(&tree.path).await;
@@ -738,6 +767,7 @@ async fn a_directory_that_appears_after_the_walk_reports_a_change_inside_it() {
 
 #[tokio::test]
 async fn an_ignored_directory_that_appears_after_the_walk_still_carries_no_watch() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("new-ignored");
     let mut watcher = started(&tree.path).await;
     let target = tree.path.join("target");
@@ -785,6 +815,7 @@ async fn an_ignored_directory_that_appears_after_the_walk_still_carries_no_watch
 
 #[tokio::test]
 async fn a_root_that_does_not_exist_ends_the_published_stream() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("missing-registration");
     let root = tree.root();
     fs::remove_dir_all(&tree.path).expect("the fixture root exists");
@@ -804,6 +835,7 @@ async fn a_root_that_does_not_exist_ends_the_published_stream() {
 
 #[test]
 fn the_start_places_no_watch_before_the_task_runs() {
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("deferred");
     tree.dir("src/tui");
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -836,6 +868,7 @@ fn the_start_places_no_watch_before_the_task_runs() {
 
 #[test]
 fn dropping_a_watcher_requests_best_effort_cancellation() {
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("drop-cancellation");
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
@@ -940,6 +973,7 @@ fn a_walk_of_a_directory_above_the_scan_bound_reports_the_gap() {
 
 #[test]
 fn a_directory_that_disappeared_before_the_batch_reports_no_gap() {
+    let _platform_watcher = PLATFORM_WATCHER.blocking_lock();
     let tree = TempTree::new("disappeared");
     let watcher = RecommendedWatcher::new(|_: notify::Result<notify::Event>| {}, Config::default())
         .expect("the platform builds one watcher");
@@ -1001,6 +1035,7 @@ fn the_watch_limit_of_the_host_names_its_own_cause() {
 
 #[tokio::test]
 async fn the_opening_burst_of_a_complete_registration_reports_no_gap() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("covered-burst");
     tree.dir("src/tui");
 
@@ -1015,6 +1050,7 @@ async fn the_opening_burst_of_a_complete_registration_reports_no_gap() {
 
 #[tokio::test]
 async fn the_opening_burst_of_a_truncated_registration_reports_the_gap() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("truncated-burst");
     tree.dir(&chain(WATCH_DEPTH_MAX + 2));
 
@@ -1047,6 +1083,7 @@ async fn the_opening_burst_of_a_truncated_registration_reports_the_gap() {
 
 #[tokio::test]
 async fn a_shutdown_during_the_registration_ends_the_watch() {
+    let _platform_watcher = PLATFORM_WATCHER.lock().await;
     let tree = TempTree::new("shutdown-early");
     tree.dir("src/tui/render");
     // The start returns before the registration runs, so this shutdown
