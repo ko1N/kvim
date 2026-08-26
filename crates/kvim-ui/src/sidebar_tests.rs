@@ -597,45 +597,107 @@ fn a_hidden_row_never_takes_the_selection_or_the_selection_focus() {
 }
 
 #[test]
-fn a_collapsed_section_hides_every_row_it_holds_and_contributes_no_line() {
+fn a_collapsed_section_shows_its_first_row_and_hides_the_rest() {
     let mut sidebar = two_sections();
 
     sidebar
         .set_sections(vec![true, false])
         .expect("two sections stay inside the bound");
 
-    // Only the section-1 row, `src`, stays visible.
-    assert_eq!(sidebar.total_lines(), 1);
+    // `task one` is the first row of section 0, so it stays visible, exactly
+    // as a collapsed tree row stays visible and hides only the rows below
+    // it. `task two` is the second row of the same section, so it hides.
+    assert_eq!(sidebar.total_lines(), 2);
     let placed: Vec<RowId> = sidebar
         .placements()
         .iter()
         .map(|placement| *placement.row())
         .collect();
-    assert_eq!(placed, vec![2]);
+    assert_eq!(placed, vec![0, 2]);
 }
 
 #[test]
-fn a_move_crosses_a_collapsed_section_without_entering_it() {
+fn a_move_crosses_a_collapsed_section_and_lands_on_its_first_row() {
     let mut sidebar = two_sections();
     sidebar
         .set_sections(vec![true, false])
         .expect("two sections stay inside the bound");
 
-    // A downward move from no selection skips both hidden tasks in one step
-    // and lands directly on the next visible row.
+    // A downward move from no selection skips the one hidden task and lands
+    // directly on the next visible row.
     assert_eq!(
         sidebar.reduce(&SidebarInput::Move(ListMotion::Down(1))),
         Some(SidebarEvent::SelectionChanged { row: 2 }),
     );
-    // The same move back up returns to the section boundary without landing
-    // on either hidden task.
-    assert_eq!(sidebar.reduce(&SidebarInput::Move(ListMotion::Up(1))), None,);
+    // The same move back up crosses the collapsed section and stops on its
+    // own first row, `task one`, because that row is selectable.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Up(1))),
+        Some(SidebarEvent::SelectionChanged { row: 0 }),
+    );
+}
+
+#[test]
+fn a_move_skips_a_collapsed_section_whose_first_row_is_inert() {
+    // The section's first row stays visible, but an inert row never takes
+    // the selection, so a host that draws an inert heading and collapses the
+    // section leaves that row on screen with no motion able to reach it.
+    let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Inert).with_section(0), // heading
+            SidebarRow::single(1, RowKind::Selectable).with_section(0), // task
+            SidebarRow::single(2, RowKind::Selectable).with_section(1), // src
+        ])
+        .expect("three rows stay inside every bound");
+    sidebar
+        .set_sections(vec![true, false])
+        .expect("two sections stay inside the bound");
+    sidebar.select(&2);
+
+    assert_eq!(sidebar.reduce(&SidebarInput::Move(ListMotion::Up(1))), None);
+    assert_eq!(sidebar.selected(), Some(&2));
+}
+
+#[test]
+fn a_selected_row_that_a_section_collapses_moves_to_a_visible_row() {
+    let mut sidebar = two_sections();
+    sidebar.select(&1); // task two
+
+    sidebar
+        .set_sections(vec![true, false])
+        .expect("two sections stay inside the bound");
+
+    // Task two hides, so the selection moves to the nearest visible row
+    // ahead of its old position.
+    assert_eq!(sidebar.selected(), Some(&2));
+}
+
+#[test]
+fn a_collapsed_sections_line_count_is_the_height_of_its_first_row() {
+    let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::new(0, height(2), RowKind::Selectable).with_section(0), // heading
+            SidebarRow::single(1, RowKind::Selectable).with_section(0),         // task, hides
+            SidebarRow::single(2, RowKind::Selectable).with_section(1),         // src
+        ])
+        .expect("three rows stay inside every bound");
+
+    sidebar
+        .set_sections(vec![true, false])
+        .expect("two sections stay inside the bound");
+
+    // The collapsed section contributes the two terminal rows of its own
+    // first row, plus the one row of the open section.
+    assert_eq!(sidebar.total_lines(), 3);
 }
 
 #[test]
 fn a_section_that_no_row_carries_still_collapses_correctly() {
     // Section 0's flag stays reachable even while no row of section 0
     // exists yet, so a host may declare a section before it publishes a row.
+    // Collapsing an empty section hides no row and changes nothing.
     let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
     sidebar
         .set_rows(vec![
@@ -644,11 +706,11 @@ fn a_section_that_no_row_carries_still_collapses_correctly() {
         .expect("one row stays inside every bound");
 
     sidebar
-        .set_sections(vec![false, true])
+        .set_sections(vec![true, false])
         .expect("two sections stay inside the bound");
 
-    assert_eq!(sidebar.total_lines(), 0);
-    assert!(sidebar.placements().is_empty());
+    assert_eq!(sidebar.total_lines(), 1);
+    assert!(!sidebar.placements().is_empty());
 }
 
 #[test]
@@ -681,15 +743,15 @@ fn a_refused_section_list_leaves_the_previous_sections_and_selection_in_place() 
 
 #[test]
 fn a_collapsed_section_and_a_collapsed_row_hide_together() {
-    // A section carries its own collapsed rows too. Collapsing the section
-    // hides them along with every other row of the section, exactly as it
-    // hides an uncollapsed row.
+    // A section carries its own collapsed rows too. `a` is the first row of
+    // section 0, so it stays visible whether or not the section collapses,
+    // exactly as it stays visible under its own collapsed flag.
     let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
     sidebar
         .set_rows(vec![
             SidebarRow::single(0, RowKind::Selectable)
                 .with_section(0)
-                .with_collapsed(true), // a, collapsed
+                .with_collapsed(true), // a, collapsed, first row of section 0
             SidebarRow::single(1, RowKind::Selectable)
                 .with_section(0)
                 .with_depth(1), // a/1, hidden below `a` alone
@@ -705,8 +767,9 @@ fn a_collapsed_section_and_a_collapsed_row_hide_together() {
         .set_sections(vec![true, false])
         .expect("two sections stay inside the bound");
 
-    // The section collapse now hides `a` as well, so only `src` remains.
-    assert_eq!(sidebar.total_lines(), 1);
+    // The section collapse hides no further row: `a` was already visible as
+    // the section's own first row, and `a/1` was already hidden below `a`.
+    assert_eq!(sidebar.total_lines(), 2);
 }
 
 #[test]
@@ -822,6 +885,44 @@ fn a_parent_motion_never_crosses_into_an_earlier_section() {
         None
     );
     assert_eq!(sidebar.selected(), Some(&1));
+}
+
+#[test]
+fn a_parent_motion_never_lands_on_a_hidden_row_of_a_collapsed_section() {
+    let mut sidebar: SidebarState<RowId> = SidebarState::new(4);
+    sidebar
+        .set_rows(vec![
+            SidebarRow::single(0, RowKind::Selectable).with_section(0), // heading, first row
+            SidebarRow::single(1, RowKind::Selectable)
+                .with_section(0)
+                .with_depth(1), // task, hides once the section collapses
+            SidebarRow::single(2, RowKind::Selectable)
+                .with_section(0)
+                .with_depth(2), // task detail, hides once the section collapses
+        ])
+        .expect("three rows stay inside every bound");
+    sidebar.select(&2);
+
+    // Before the section collapses, Parent climbs one depth at a time.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        Some(SidebarEvent::SelectionChanged { row: 1 }),
+    );
+
+    sidebar
+        .set_sections(vec![true])
+        .expect("one section stays inside the bound");
+
+    // Row 1 and row 2 hide, so the collapse already moved the selection to
+    // the section's own first row, row 0.
+    assert_eq!(sidebar.selected(), Some(&0));
+    // Parent from the section's own first row finds none, never the hidden
+    // row 1 that used to be its parent.
+    assert_eq!(
+        sidebar.reduce(&SidebarInput::Move(ListMotion::Parent)),
+        None
+    );
+    assert_eq!(sidebar.selected(), Some(&0));
 }
 
 #[test]

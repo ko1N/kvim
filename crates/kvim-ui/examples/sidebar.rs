@@ -9,8 +9,9 @@
 //!
 //! The rows below hold two sections over one flat list: a task section above a
 //! worktree tree. A collapsed directory hides its children, and a collapsed
-//! section hides every row that it holds. Both hidden kinds take no selection
-//! and contribute no line.
+//! section hides every row that it holds except its own first row, which
+//! stays visible, the same way a collapsed directory stays visible itself.
+//! Every hidden row takes no selection and contributes no line.
 //!
 //! The indent guides come from `sidebar_guides`, which draws one segment for
 //! each level from 1 to the depth of the row. A top-level row therefore carries
@@ -281,31 +282,42 @@ fn main() {
     }
     println!("{}", draw(&sidebar, &entries));
 
-    // Collapsing one section hides every row that it holds, exactly as a
-    // collapsed directory hides its subtree.
+    // Collapsing one section hides every row it holds except its own first
+    // row, exactly as a collapsed directory hides only the rows below it.
     sidebar
         .set_sections(vec![false, true])
         .expect("two sections stay inside the bound");
     println!("the host collapsed the {} section", SECTION_NAMES[WORKTREE]);
     assert_eq!(
         sidebar.total_lines(),
-        u32::from(ROW_LINES) * 2,
-        "the two task rows are the only rows that remain"
+        u32::from(ROW_LINES) * 3,
+        "the two task rows and the section's own first row remain"
     );
     assert!(
-        sidebar
-            .placements()
-            .iter()
-            .all(|placement| entry_of(&entries, placement.row()).section == TASKS),
-        "the collapsed section shows no row"
-    );
-    assert!(
-        sidebar.select(&EntryId(3)).is_none(),
-        "the collapsed section hides its own top-level row"
+        sidebar.placements().iter().all(|placement| {
+            let entry = entry_of(&entries, placement.row());
+            entry.section == TASKS || entry.id == EntryId(3)
+        }),
+        "the collapsed section shows only its own first row"
     );
     // The selected row went with its section, so the sidebar moved the
-    // selection to the nearest visible row instead of losing it.
-    assert_eq!(sidebar.selected(), Some(&EntryId(2)));
+    // selection to the nearest visible row instead of losing it: the
+    // section's own first row.
+    assert_eq!(sidebar.selected(), Some(&EntryId(3)));
+    // A deeper row of the same section stays hidden, so selecting it leaves
+    // the selection where it is.
+    assert!(
+        sidebar.select(&EntryId(6)).is_none(),
+        "the collapsed section hides every row after its own first row"
+    );
+    // The section's own first row stays selectable, so a host that binds a
+    // section toggle to it can still reach it and reopen the section.
+    sidebar.select(&EntryId(2));
+    assert_eq!(
+        sidebar.select(&EntryId(3)),
+        Some(SidebarEvent::SelectionChanged { row: EntryId(3) }),
+        "the collapsed section's own first row still takes the selection"
+    );
     println!("{}", draw(&sidebar, &entries));
 
     // The host decides what an action means. The sidebar only names it.

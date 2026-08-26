@@ -563,24 +563,37 @@ calls `set_sections` hides no row through this axis, and every present
 consumer keeps its current behavior without a change.
 
 `sidebar_visibility` is the one function that decides row visibility. It
-folds the section rule into the same pass as the depth-collapse rule: a row
-is hidden when a collapsed ancestor hides it, exactly as before, or when its
-own section is collapsed. A row inside a collapsed section is hidden
-regardless of its own subtree state, because the two rules combine with a
-logical and. `set_rows` and `set_sections` both change one input of that
-one function and share the same recovery afterward: the visibility list, the
-total line count, and the selection all recompute, and a selection that a
-new collapse hides moves to the nearest visible, selectable row, the same
-rule that a collapsed tree row already follows.
+folds the section rule into the same pass as the depth-collapse rule. A
+collapsed section hides every row it holds except its own first row, the
+same way a collapsed tree row stays visible itself and hides only the rows
+below it. The two axes therefore answer the same question the same way: a
+closed fold shows its own fold line, and a closed section shows its own
+name row. A row after the section's first row is hidden regardless of its
+own depth or its own collapsed flag, so a section's own row-collapse state
+adds no further hidden row once the section is collapsed.
+
+`set_rows` and `set_sections` both change one input of that one function
+and share the same recovery afterward: the visibility list, the total line
+count, and the selection all recompute, and a selection that a new
+collapse hides moves to the nearest visible, selectable row, the same rule
+that a collapsed tree row already follows.
 
 A section carries no header row of its own. `kvim-ui` publishes no drawn
 text for a section, the same way it publishes none for a tree row, so a host
 that wants a visible heading draws an ordinary row for it, at depth 0 in
-that section, and gives that row its own meaning. The changes panel of the
-diff view is the first consumer: `ChangesRow::Directory` and `ChangesRow::File`
-each carry a `ChangeSection`, ready to become a `with_section` index for a
-host that wants to show the staged and the unstaged files together. That
-conversion is a further change. `kvim-ui` publishes the mechanism alone.
+that section, and gives that row its own meaning. That row takes the
+selection only when its `RowKind` is `Selectable`. A host that draws an
+inert heading and collapses the section leaves that heading on screen with
+no motion able to reach it, because `kvim-ui` never changes the kind that
+the host chose. A host that wants a section toggle must give the name row a
+`Selectable` kind, so a motion or a direct `select` call can still reach it
+and reopen the section.
+
+The changes panel of the diff view is the first consumer:
+`ChangesRow::Directory` and `ChangesRow::File` each carry a `ChangeSection`,
+ready to become a `with_section` index for a host that wants to show the
+staged and the unstaged files together. That conversion is a further
+change. `kvim-ui` publishes the mechanism alone.
 
 ## Selector
 
