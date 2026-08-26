@@ -4,7 +4,18 @@
 //! no terminal. It holds no binding table: the caller derives its hints from
 //! the one shared registry, for example through the which-key view of a
 //! `kvim-keymap` resolver, and hands the widget the final key text, the final
-//! label, an optional icon, and its own styles.
+//! label, an optional icon, an optional key style, and its own styles.
+//!
+//! A row beside a pending prefix can carry two independent facts: the table
+//! that holds the key, and whether pressing the key continues the pending
+//! sequence or abandons it. [`WhichKeyHint::icon`] carries the first fact,
+//! because the table is a caller value that this crate cannot enumerate. The
+//! caller supplies one icon for each table it draws, exactly as it already
+//! does for a command group. [`WhichKeyHint::key_style`] carries the second
+//! fact as a style override for the key text, because the widget selects no
+//! color of its own and a caller therefore paints the two senses apart with
+//! two styles of its choosing. The two fields are independent: a row sets
+//! either, both, or neither.
 //!
 //! The overlay covers the bottom of one body band. It fills the width with
 //! columns of equal width, so the keys and the labels of all columns align. It
@@ -128,12 +139,20 @@ pub struct WhichKeyIcon<'a> {
     pub style: Style,
 }
 
-/// One row of the overlay: the next key, its final label, and its icon.
+/// One row of the overlay: the next key, its final label, its icon, and the
+/// style of its key text.
 ///
 /// The widget shows one level at a time, so the key text names the single key
 /// that may follow the pending sequence, never a complete sequence. Both texts
 /// are final: the caller resolved the key into its help form and the command
 /// into its label before it built the hint.
+///
+/// A row beside a pending prefix can carry two independent facts: which table
+/// holds the key, and whether the key continues the pending sequence or
+/// abandons it. [`WhichKeyHint::icon`] marks the first fact and
+/// [`WhichKeyHint::key_style`] marks the second, so a row loses neither. A row
+/// that sets neither field draws exactly as a row of a context with one table
+/// and no abandoning key draws.
 ///
 /// # Examples
 ///
@@ -143,6 +162,28 @@ pub struct WhichKeyIcon<'a> {
 /// let hint = WhichKeyHint::new("f", "+3 commands");
 /// assert_eq!(hint.key, "f");
 /// assert!(hint.icon.is_none());
+/// assert!(hint.key_style.is_none());
+/// ```
+///
+/// A row beside a pending prefix carries both facts at once: an icon names
+/// the table, and a key style marks the key as one that abandons the pending
+/// sequence.
+///
+/// ```
+/// use ratatui::style::{Color, Style};
+///
+/// use kvim_ui::{WhichKeyHint, WhichKeyIcon};
+///
+/// let icon = WhichKeyIcon {
+///     glyph: "#",
+///     style: Style::default().fg(Color::Cyan),
+/// };
+/// let abandons = Style::default().fg(Color::Red);
+/// let hint = WhichKeyHint::new("C-e", "Leave to chat")
+///     .with_icon(icon)
+///     .with_key_style(abandons);
+/// assert_eq!(hint.icon, Some(icon));
+/// assert_eq!(hint.key_style, Some(abandons));
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WhichKeyHint<'a> {
@@ -152,10 +193,13 @@ pub struct WhichKeyHint<'a> {
     pub label: &'a str,
     /// The icon of the row, or `None` while the caller shows no icon.
     pub icon: Option<WhichKeyIcon<'a>>,
+    /// The style of the key text, or `None` while the row keeps the overlay's
+    /// own key style.
+    pub key_style: Option<Style>,
 }
 
 impl<'a> WhichKeyHint<'a> {
-    /// Builds one hint without an icon.
+    /// Builds one hint without an icon and without a key style.
     #[inline]
     #[must_use]
     pub const fn new(key: &'a str, label: &'a str) -> Self {
@@ -163,6 +207,7 @@ impl<'a> WhichKeyHint<'a> {
             key,
             label,
             icon: None,
+            key_style: None,
         }
     }
 
@@ -172,6 +217,21 @@ impl<'a> WhichKeyHint<'a> {
     pub const fn with_icon(self, icon: WhichKeyIcon<'a>) -> Self {
         Self {
             icon: Some(icon),
+            ..self
+        }
+    }
+
+    /// Returns the hint with one style over its key text.
+    ///
+    /// The style replaces [`WhichKeyStyles::key`] for this row alone, so a
+    /// caller marks a row that abandons a pending sequence apart from a row
+    /// that continues it, without touching the icon that names the row's
+    /// table.
+    #[inline]
+    #[must_use]
+    pub const fn with_key_style(self, style: Style) -> Self {
+        Self {
+            key_style: Some(style),
             ..self
         }
     }
@@ -446,6 +506,10 @@ impl<'a> WhichKeyOverlay<'a> {
     /// hold the title row and one hint over its own share paints nothing, which
     /// keeps the text behind it visible.
     ///
+    /// [`WhichKeyHint::key_style`] repaints the key text in place. It adds no
+    /// cell of its own, so a page never changes width because a marked row
+    /// moved onto it or off it.
+    ///
     /// The render writes no cell outside `body` and performs no input and no
     /// output beyond the cell buffer.
     ///
@@ -544,7 +608,8 @@ impl<'a> WhichKeyOverlay<'a> {
                 let padding = " ".repeat(icon_cells - glyph);
                 write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
             }
-            write_cells(target, area, &mut cursor, y, hint.key, self.styles.key);
+            let key_style = hint.key_style.unwrap_or(self.styles.key);
+            write_cells(target, area, &mut cursor, y, hint.key, key_style);
             let padding = " ".repeat(key_cells - text_cells(hint.key) + KEY_GAP_CELLS);
             write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
             write_cells(

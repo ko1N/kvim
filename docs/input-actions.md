@@ -558,6 +558,18 @@ most two preceding scopes, and the largest scope of kvim's own preset holds 76
 of them. A host that draws both lists in one overlay must still respect
 `WHICH_KEY_HINTS_MAX`, because a host declares its own preceding scopes.
 
+A row of the combined overlay carries two independent facts: the scope that
+holds the key, and whether the key continues the pending sequence or
+abandons it. `kvim_ui::WhichKeyHint::icon` marks the scope, because the scope
+is a host value that `kvim-ui` cannot enumerate. The host gives one icon to
+each scope it draws, the same way it already marks a command group.
+`kvim_ui::WhichKeyHint::key_style` marks the second fact as a style override
+for the key text, because `kvim-ui` selects no color of its own. A host
+therefore paints an extension and an interruption apart with two styles of
+its choosing, without losing the scope icon of either row. A row that sets
+neither field draws exactly as a row of a context with one scope and no
+interruption draws.
+
 The overlay is generated from the active shared resolver, its pending sequence,
 and the same registry used for dispatch. It is never a separate hand-written
 list. `keymap` folds the extensions of the pending prefix into these hints,

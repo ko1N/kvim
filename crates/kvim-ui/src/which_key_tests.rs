@@ -195,6 +195,101 @@ fn one_icon_reserves_the_same_width_in_every_row() {
 }
 
 #[test]
+fn a_row_without_either_mark_draws_as_it_did_before_this_slice() {
+    let hints = [WhichKeyHint::new("a", "First")];
+    let target = painted(&hints, 16, 8);
+    assert_eq!(row_of(&target, 7), " a  First");
+    assert_eq!(
+        target
+            .cell((1, 7))
+            .expect("the overlay paints the key")
+            .style()
+            .fg,
+        Some(ACCENT),
+        "an unmarked row keeps the overlay's own key style"
+    );
+}
+
+#[test]
+fn a_key_style_marks_the_key_without_an_icon() {
+    let abandons = Style::default().fg(Color::Red);
+    let hints = [
+        WhichKeyHint::new("a", "First").with_key_style(abandons),
+        WhichKeyHint::new("b", "Second"),
+    ];
+    let target = painted(&hints, 16, 8);
+    assert_eq!(row_of(&target, 6), " a  First");
+    assert_eq!(row_of(&target, 7), " b  Second");
+    assert_eq!(
+        target
+            .cell((1, 6))
+            .expect("the overlay paints the marked key")
+            .style()
+            .fg,
+        Some(Color::Red),
+        "the row's own key style overrides the overlay's key style"
+    );
+    assert_eq!(
+        target
+            .cell((1, 7))
+            .expect("the overlay paints the unmarked key")
+            .style()
+            .fg,
+        Some(ACCENT),
+        "a row without a key style keeps the overlay's key style"
+    );
+}
+
+#[test]
+fn a_row_carries_an_icon_and_a_key_style_at_once() {
+    let icon = WhichKeyIcon {
+        glyph: "!",
+        style: Style::default().fg(Color::Magenta),
+    };
+    let abandons = Style::default().fg(Color::Red);
+    let hints = [
+        WhichKeyHint::new("a", "First")
+            .with_icon(icon)
+            .with_key_style(abandons),
+        WhichKeyHint::new("b", "Second"),
+    ];
+    let target = painted(&hints, 16, 8);
+    assert_eq!(row_of(&target, 6), " ! a  First");
+    assert_eq!(
+        row_of(&target, 7),
+        "   b  Second",
+        "an unmarked row keeps the reserved icon cell blank"
+    );
+    assert_eq!(
+        target
+            .cell((1, 6))
+            .expect("the overlay paints the icon")
+            .style()
+            .fg,
+        Some(Color::Magenta),
+        "the icon keeps its own style, which the key style does not touch"
+    );
+    assert_eq!(
+        target
+            .cell((3, 6))
+            .expect("the overlay paints the marked key")
+            .style()
+            .fg,
+        Some(Color::Red),
+        "the key style marks the row apart from its icon"
+    );
+    assert_eq!(
+        target
+            .cell((3, 7))
+            .expect("the overlay paints the unmarked key")
+            .style()
+            .fg,
+        Some(ACCENT),
+        "an unmarked row keeps the overlay's own key style beside a marked one"
+    );
+}
+
+#[test]
 fn the_title_row_reports_the_hints_that_no_column_holds() {
     let keys: Vec<String> = (0..12).map(|index| index.to_string()).collect();
     let labels: Vec<String> = (0..12).map(|index| format!("Command {index}")).collect();
@@ -400,4 +495,61 @@ fn a_frame_that_holds_no_hint_reports_no_page() {
     assert_eq!(empty.total(), 0);
     assert_eq!(empty.pages(), 0);
     assert!(!empty.has_next_page());
+}
+
+#[test]
+fn a_key_style_on_some_rows_leaves_the_page_width_unchanged() {
+    // Every key holds three cells, so a marker that added width would move
+    // the label column of a page that opens on a marked row.
+    let keys: Vec<String> = (0..40).map(|index| format!("k{index:02}")).collect();
+    let labels: Vec<String> = (0..40).map(|index| format!("Command {index}")).collect();
+    let abandons = Style::default().fg(Color::Red);
+    let hints: Vec<WhichKeyHint<'_>> = keys
+        .iter()
+        .zip(&labels)
+        .enumerate()
+        .map(|(index, (key, label))| {
+            let hint = WhichKeyHint::new(key, label);
+            // Every third row abandons the pending sequence, so a page opens
+            // on a marked row and the next page opens on an unmarked one.
+            if index % 3 == 0 {
+                hint.with_key_style(abandons)
+            } else {
+                hint
+            }
+        })
+        .collect();
+
+    let (first_page, drawn_first) = painted_page(&hints, 30, 12, 0);
+    let (second_page, drawn_second) = painted_page(&hints, 30, 12, 1);
+    assert!(drawn_first.pages() > 1, "the list outgrows one page");
+    assert_ne!(
+        drawn_first.drawn(),
+        drawn_second.drawn(),
+        "the two pages hold different rows"
+    );
+    assert_eq!(
+        first_page
+            .cell((1, 7))
+            .expect("the first page paints its first key")
+            .style()
+            .fg,
+        Some(Color::Red),
+        "the first page opens on a marked row"
+    );
+    assert_eq!(
+        second_page
+            .cell((1, 7))
+            .expect("the second page paints its first key")
+            .style()
+            .fg,
+        Some(ACCENT),
+        "the second page opens on an unmarked row"
+    );
+
+    // The label column starts six cells in on both pages: one pad cell, the
+    // three-cell key column, and the two-cell gap. The key style marker adds
+    // no cell, so the column stays put whether the opening row carries it.
+    assert_eq!(row_of(&first_page, 7).chars().nth(6), Some('C'));
+    assert_eq!(row_of(&second_page, 7).chars().nth(6), Some('C'));
 }

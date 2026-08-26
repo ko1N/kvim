@@ -6,6 +6,10 @@
 //! from the registry that dispatch reads, so a hint can never disagree with the
 //! command that its key reaches.
 //!
+//! It then paints one row that carries both facts that a row beside a pending
+//! prefix can carry: an icon names the scope, and a key style marks the row
+//! as one that abandons the pending sequence instead of continuing it.
+//!
 //! The example then paints an idle list that one frame cannot hold. It steps
 //! through the pages of that list, prints the position that each render
 //! reports, and checks that the steps reach every key exactly once.
@@ -222,7 +226,57 @@ fn main() {
     // color that it paints.
     println!("{}", printable(&painted(&hints)));
 
+    print_row_with_both_facts(&hints);
     step_through_a_long_list();
+}
+
+/// Paints one row that carries both facts beside the ordinary extensions.
+///
+/// A host that draws `WhichKeyView::hints` beside `WhichKeyView::interruptions`
+/// marks two independent facts on a row: the scope that holds the key, through
+/// `WhichKeyHint::icon`, and whether the key continues the pending sequence or
+/// abandons it, through `WhichKeyHint::key_style`. This registry binds no
+/// host-global scope, so the example stands in one interruption of its own: a
+/// key that returns focus to an embedding host, styled apart from the
+/// extensions above it.
+fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
+    let Some(extension) = hints.first() else {
+        return;
+    };
+    let extension_group = Group::of(extension.hint().commands());
+    let extension_key = extension.hint().key_label().to_string();
+    let extension_target = extension.hint().target().to_string();
+    let extension_row =
+        WhichKeyHint::new(&extension_key, &extension_target).with_icon(WhichKeyIcon {
+            glyph: extension_group.glyph(),
+            style: Style::default().fg(extension_group.color()),
+        });
+
+    // The interruption keeps its own icon, for the host-global scope that
+    // contributed it, and a key style that marks it apart from a row that
+    // continues the pending sequence.
+    let interruption_icon = WhichKeyIcon {
+        glyph: "!",
+        style: Style::default().fg(Color::Magenta),
+    };
+    let interruption_key_style = Style::default().fg(Color::Red);
+    let interruption_row = WhichKeyHint::new("C-e", "Leave to chat")
+        .with_icon(interruption_icon)
+        .with_key_style(interruption_key_style);
+
+    let rows = [extension_row, interruption_row];
+    let styles = WhichKeyStyles {
+        surface: Style::default().bg(Color::Black).fg(Color::Gray),
+        title: Style::default().fg(Color::Yellow),
+        key: Style::default().fg(Color::Yellow),
+    };
+    let mut target = Buffer::empty(BODY);
+    WhichKeyOverlay::new(" Which Key ", &rows, styles)
+        .expect("two rows stay inside every bound")
+        .render(&mut target, BODY)
+        .expect("the band covers the cell buffer of this example");
+    println!("an extension beside an interruption, each keeping its own icon:");
+    println!("{}", printable(&target));
 }
 
 /// Paints one idle list that one frame cannot hold, one page at a time.
