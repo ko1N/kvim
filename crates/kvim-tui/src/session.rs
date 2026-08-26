@@ -1129,6 +1129,21 @@ pub(super) fn test_root(path: PathBuf) -> Arc<WorktreeRoot> {
     Arc::new(WorktreeRoot::open(path).expect("the test workspace root exists"))
 }
 
+/// The gate that holds the tests which build one platform watcher.
+///
+/// One stream of the platform costs about half a second to build, and the
+/// platform serializes those builds across the process. Two such tests of one
+/// binary therefore wait for each other, and the second can pass the deadline
+/// that its own wait states. The gate runs them one at a time, so a deadline
+/// measures the watcher and not the load of the suite. `kvim-runtime` holds
+/// the same gate for the same reason.
+///
+/// The gate is a Tokio mutex, because an asynchronous test holds it across an
+/// await. It needs no recovery from a panic: a test that fails under the gate
+/// releases it for the next one.
+#[cfg(test)]
+pub(super) static PLATFORM_WATCHER: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The visible editor state of one terminal.
 ///
 /// # Examples

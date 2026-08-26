@@ -142,9 +142,12 @@ fn answer(session: &mut Session, text: &str) {
 /// its characters, exactly as a reader would before retyping the whole name.
 fn rename_to(session: &mut Session, name: &str) {
     press(session, 'r');
-    let seed_chars = message_line(session)
-        .strip_prefix("rename: ")
-        .map_or(0, |seed| seed.chars().count());
+    // The count comes from the prompt itself. A rendered message line clips at
+    // the terminal width, so a longer seed would leave characters behind.
+    let seed_chars = session
+        .visible()
+        .prompt
+        .map_or(0, |prompt| prompt.text.chars().count());
     for _ in 0..seed_chars {
         press_code(session, KeyCode::Backspace);
     }
@@ -2893,6 +2896,10 @@ fn a_created_file_reaches_the_editor_through_the_workspace_watcher() {
         .build()
         .expect("the test host provides a Tokio runtime");
     let batch = tokio.block_on(async {
+        // One platform stream costs about half a second and the platform
+        // serializes those builds, so two watcher tests of this binary would
+        // wait for each other and one could pass its own deadline.
+        let _platform_watcher = crate::session::PLATFORM_WATCHER.lock().await;
         let mut watcher = FileWatcher::start(test_root(root), &GENERATED_NAMES)
             .expect("the root is a readable directory");
         // The registration runs after the start, so the first burst reports the

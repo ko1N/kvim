@@ -151,6 +151,9 @@ async fn a_registration_that_fails_reports_that_no_watcher_runs() {
     let root = test_root(directory.path.clone());
     std::fs::remove_dir_all(&directory.path)
         .expect("the fixture root exists before watcher registration");
+    // The gate holds every test of this binary that builds one platform
+    // watcher, so one deadline measures the watcher and not the suite.
+    let _platform_watcher = crate::session::PLATFORM_WATCHER.lock().await;
     let mut watcher = FileWatcher::start(root, &GENERATED_NAMES).ok();
     assert!(
         watcher.is_some(),
