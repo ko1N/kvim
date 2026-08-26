@@ -41,7 +41,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
-| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
+| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the one scroll and motion rule of every bounded list, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -233,6 +233,46 @@ and the section count. A host supplies the row identities and the meaning. It
 writes no indent rule, no collapse rule, and no motion rule of its own.
 [`windows.md`](windows.md) owns these rules.
 
+`kvim-ui` also publishes the one scroll rule of every bounded list.
+`ListViewport` owns a height, a scroll margin, and the first visible line, and
+it keeps a selected item inside the window without scrolling past the end of
+the list. `ListItem` is the measure of one item, and `ListItem::single` builds
+a list of one line for each item, so a uniform list is the simple case of the
+same rule. `ListPlacement` names the visible part of one item and carries no
+host identity. `LIST_VIEWPORT_LINES_MAX` bounds the total line count.
+`SidebarState<R>` and `Selector<R>` each hold one viewport, so a host paints a
+bounded sidebar or a bounded picker without writing an offset rule of its own.
+[`windows.md`](windows.md) owns the rule.
+
+`ListMotion` is the one motion type that both lists answer. It replaces
+`SidebarMotion`, which is gone from the public surface with no alias, and a
+host renames its import. `ListMotion::ToRow` names a row of the row space of
+the list that receives it, and the two lists keep different row spaces, so a
+host reads that section before it reuses one value across both.
+`Selector::apply_motion` answers every variant, so a host picker reaches the
+last row and jumps to a row exactly as a host sidebar does.
+
+`Selector<R>` publishes that window beside its ranking. `set_height_rows`,
+`set_scroll_margin`, `first_line`, `total_lines`, and `placements` read or
+write the one viewport, and one `SelectorPlacement` names the row position and
+the matched candidate. `candidates_len` returns the number of held candidates,
+so a host separates a list with no candidate from a query that keeps nothing.
+The two cases show different text.
+
+`WhichKeyOverlay` pages a list that outgrows its frame. `at_page` consumes and
+returns the overlay, so a page and the rows it pages stay one value, and
+`render` answers one `WhichKeyPlacement` that names the drawn rows, the size of
+the complete list, the drawn page, and the number of pages. One page is one
+full frame of columns, so the pages reach every row exactly once.
+`WhichKeyOverlayRow` is the drawn row. It replaces `kvim_ui::WhichKeyHint`,
+which is gone with no alias, because `kvim_keymap::WhichKeyHint` keeps that
+name for what a key reaches. The row carries two independent facts:
+`WhichKeyOverlayRow::icon` marks the table that holds the key, and
+`WhichKeyOverlayRow::key_style` marks whether the key continues the pending
+sequence or abandons it. Both fields are public, so a struct literal outside
+this repository names the new one.
+[`input-actions.md`](input-actions.md) owns these rules.
+
 `kvim-keymap` publishes three which-key lists and one registry helper.
 `Resolver::which_key` returns one `WhichKeyView`, and `WhichKeyView::hints`
 reports the hints of every scope that extends the pending prefix. Each hint
@@ -298,8 +338,11 @@ increase, a migration note, updated rustdoc, and an updated dedicated example. A
 patch release must not intentionally break a documented public facade.
 
 Every surface that this section names is such a facade. This includes the
-selector, the tree and section mechanics of the sidebar, the indent guide
-rule, the three which-key lists, `Registry::all_bindings`, the interrupted
+selector with its window and its candidate count, the list viewport with
+`ListItem` and `ListPlacement`, the `ListMotion` vocabulary of both lists, the
+tree and section mechanics of the sidebar, the indent guide rule, the three
+which-key lists, the paged which-key overlay with `WhichKeyPlacement` and
+`WhichKeyOverlayRow`, `Registry::all_bindings`, the interrupted
 dispatch outcome, the adaptive split rule with `AdaptiveSplit`, and the
 embedded file sidebar. Each surface carries rustdoc, one owning document, and
 the dedicated example of its feature. `crates/kvim/tests/repository_policy.rs`

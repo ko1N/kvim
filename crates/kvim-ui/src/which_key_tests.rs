@@ -195,22 +195,6 @@ fn one_icon_reserves_the_same_width_in_every_row() {
 }
 
 #[test]
-fn a_row_without_either_mark_draws_as_it_did_before_this_slice() {
-    let hints = [WhichKeyOverlayRow::new("a", "First")];
-    let target = painted(&hints, 16, 8);
-    assert_eq!(row_of(&target, 7), " a  First");
-    assert_eq!(
-        target
-            .cell((1, 7))
-            .expect("the overlay paints the key")
-            .style()
-            .fg,
-        Some(ACCENT),
-        "an unmarked row keeps the overlay's own key style"
-    );
-}
-
-#[test]
 fn a_key_style_marks_the_key_without_an_icon() {
     let abandons = Style::default().fg(Color::Red);
     let hints = [

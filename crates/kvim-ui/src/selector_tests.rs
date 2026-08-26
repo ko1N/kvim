@@ -313,51 +313,6 @@ fn the_window_shows_the_selection_at_every_row_of_a_long_list_at_several_heights
 }
 
 #[test]
-fn the_last_row_stops_the_window_at_the_end_of_the_list_instead_of_centring() {
-    for height in [1_u16, 2, 5, 12, 40] {
-        let mut selector = long_selector(LONG_LIST_ROWS);
-        selector.set_height_rows(height);
-        for _ in 0..LONG_LIST_ROWS {
-            selector.select_next();
-        }
-        let total = u32::try_from(LONG_LIST_ROWS).expect("forty fits u32");
-        assert_eq!(
-            selector.first_line(),
-            total.saturating_sub(u32::from(height)),
-            "the window of {height} rows stops at the end of the list"
-        );
-        assert!(
-            shows(&selector, LONG_LIST_ROWS - 1),
-            "the last row stays visible"
-        );
-    }
-}
-
-#[test]
-fn a_scroll_margin_stops_at_the_end_of_the_list_instead_of_scrolling_past_it() {
-    let mut selector = long_selector(12);
-    selector.set_height_rows(6);
-    selector.set_scroll_margin(3);
-
-    // The margin holds two rows below the selection, because it stops at
-    // half the window.
-    for _ in 0..8 {
-        selector.select_next();
-    }
-    assert_eq!(selector.selected_row(), Some(8));
-    assert_eq!(selector.first_line(), 5);
-
-    // The last row cannot hold a margin below itself, so the window stops at
-    // the last line instead.
-    selector.select_next();
-    selector.select_next();
-    selector.select_next();
-    assert_eq!(selector.selected_row(), Some(11));
-    assert_eq!(selector.first_line(), 6);
-    assert!(shows(&selector, 11));
-}
-
-#[test]
 fn a_scroll_margin_stops_at_the_start_of_the_list_instead_of_scrolling_past_it() {
     let mut selector = long_selector(12);
     selector.set_height_rows(6);

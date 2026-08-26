@@ -12,6 +12,15 @@
 //! [`SidebarState`](crate::SidebarState) owns its rows, and a picker owns its
 //! candidates. Each call hands the viewport the measure of each item, and the
 //! viewport hands back the visible part of each item that the window shows.
+//!
+//! The viewport is a supporting type of the two lists that hold one. It
+//! therefore takes the example of its owning feature. `examples/sidebar.rs`
+//! drives the complete rule, because a sidebar row spans several lines and a
+//! collapsed subtree hides its rows:
+//!
+//! ```sh
+//! cargo run -p kvim-ui --example sidebar
+//! ```
 
 use std::num::NonZeroU16;
 
