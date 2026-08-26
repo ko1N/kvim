@@ -21,6 +21,10 @@ use super::theme::IconRole;
 ///
 /// Every row reserves the same width while the tree shows icons, so a row
 /// without an icon keeps the names of its neighbors aligned.
+///
+/// `file_sidebar` republishes this width as
+/// [`FILE_SIDEBAR_ICON_CELLS`](super::file_sidebar::FILE_SIDEBAR_ICON_CELLS),
+/// so a host aligns a tree of its own beside the file tree of the editor.
 pub(super) const ICON_CELLS: usize = 2;
 
 /// One icon glyph and the theme role that colors it.

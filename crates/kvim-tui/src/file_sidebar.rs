@@ -66,6 +66,17 @@ pub const FILE_SIDEBAR_LABEL_CHARS_MAX: usize = SIDEBAR_LABEL_CHARS_MAX;
 /// mark reads the fact instead of guessing the suffix.
 pub const FILE_SIDEBAR_LINK_SUFFIX: &str = "@";
 
+/// The number of cells that the icon column of one row occupies.
+///
+/// Every row reserves this width while the sidebar shows icons, so a row that
+/// carries no icon keeps the labels of its neighbours aligned. A host that
+/// draws a tree of its own beside the file tree of the editor reserves the
+/// same width, so the two icon columns line up. A host that reads it needs no
+/// icon table of its own: it chooses its own glyphs and keeps kvim's gutter.
+/// [`kvim_settings::FileTreeIcons`] hides every icon of the editor, so one
+/// setting answers for both trees.
+pub const FILE_SIDEBAR_ICON_CELLS: usize = ICON_CELLS;
+
 /// What one row of the file sidebar shows.
 ///
 /// The value carries the complete state of the row, so a host draws one row

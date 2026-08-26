@@ -221,6 +221,14 @@ a host may not hold. A host that wants kvim's own icon color reads
 `Theme::style(ThemeRole::Icon(role))`; the glyph stays the host's own choice,
 unless the host paints through `draw_file_row`, which draws kvim's own glyph.
 
+`FILE_SIDEBAR_ICON_CELLS` is the width that the icon column of one row takes.
+A host that draws a tree of its own beside the file tree of the editor reserves
+the same width, so the two icon columns line up in one window. A host needs no
+icon table from kvim to do this. It chooses the glyph of its own row, because
+its rows name its own domain, and it keeps kvim's gutter so the two trees read
+as one surface. `kvim_settings::FileTreeIcons` hides every icon of the editor,
+so one setting answers for both trees and a host adds no second switch.
+
 #### One Row Painter
 
 `kvim_tui::draw_file_row` paints one `FileRow` into one `kvim_ui::SidebarCanvas`
