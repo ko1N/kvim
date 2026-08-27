@@ -169,9 +169,56 @@ async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent
         let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
             .await
             .expect("bounded work must complete");
-        let _ = editor.apply(completion, Duration::ZERO);
+        let _ = editor
+            .apply(completion, Duration::ZERO)
+            .expect("ready returns this editor's completion");
     }
     panic!("bounded lifecycle did not produce the expected event");
+}
+
+#[tokio::test]
+async fn wrong_instance_completion_is_rejected_without_mutating_the_receiver() {
+    let first_root = TestRoot::new("completion-owner-first");
+    let second_root = TestRoot::new("completion-owner-second");
+    let area = Rect::new(0, 0, 30, 6);
+    let mut first = WorktreeEditor::builder(&first_root.0, area).open().unwrap();
+    let mut second = WorktreeEditor::builder(&second_root.0, area)
+        .open()
+        .unwrap();
+
+    assert_ne!(first.instance(), second.instance());
+    let _ = first.dispatch();
+    let _ = second.dispatch();
+    let completion = tokio::time::timeout(Duration::from_secs(2), first.ready())
+        .await
+        .expect("the first editor's local request completes");
+    let second_completion = tokio::time::timeout(Duration::from_secs(2), second.ready())
+        .await
+        .expect("the second editor's matching local request completes");
+    while second.take_event().is_some() {}
+    let mode_before = second.mode();
+    let context_before = second.input_context();
+
+    let error = second
+        .apply(completion, Duration::from_secs(60))
+        .expect_err("another editor must reject the completion in release builds");
+    assert_eq!(
+        error.kind(),
+        WorktreeApplyErrorKind::WrongInstance {
+            editor: second.instance(),
+            completion: first.instance(),
+        }
+    );
+    assert_eq!(second.mode(), mode_before);
+    assert_eq!(second.input_context(), context_before);
+    assert!(second.take_event().is_none());
+    second
+        .apply(second_completion, Duration::ZERO)
+        .expect("rejection does not consume the receiver's matching request state");
+
+    first
+        .apply(error.into_completion(), Duration::ZERO)
+        .expect("the producing editor accepts its recovered completion");
 }
 
 #[cfg(feature = "grammar-rust")]

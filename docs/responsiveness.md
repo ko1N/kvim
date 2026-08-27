@@ -196,8 +196,15 @@ typed rejection and cannot mutate state, advance a clock, or release another
 editor reservation.
 
 A publication gate stores only the newest request identity for each slot. The
-event loop checks the gate before it applies a result. The gate does not mutate
-visible state. The gate rejects an obsolete picker result, preview result,
+owner check runs before elapsed-time advancement and before the publication
+gate or result payload is touched. A rejected facade completion remains owned
+by `WorktreeApplyError`. The host recovers it with `into_completion` and routes
+it to the `WorktreeInstanceId` that produced it. Legacy direct driver
+operations reject a mismatched `Session` with `DriverError::WrongInstance`
+before dispatch, application, shutdown, or drain processing starts.
+
+The event loop checks the gate before it applies a result. The gate does not
+mutate visible state. It rejects an obsolete picker result, preview result,
 completion result, analysis result, formatting result, or language-server
 result.
 

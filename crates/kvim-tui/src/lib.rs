@@ -117,10 +117,12 @@ pub use completion::{
     CompletionOutcome, LineCompletion, draw_completion_menu,
 };
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
-pub use driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
+pub use driver::{
+    Completed, DriverApplyError, DriverError, EditorDriver, EditorWork, ShutdownDrain,
+};
 pub use embed::{
-    CursorRequest, CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorDrain,
-    EditorEvent, EditorInstanceId, EditorOpenError, EditorShutdown, EmbeddedEditor,
+    CursorRequest, CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorApplyError, EditorCapacity,
+    EditorDrain, EditorEvent, EditorInstanceId, EditorOpenError, EditorShutdown, EmbeddedEditor,
     EmbeddedEditorBuilder, GeometryError, InputRequest, PublishedEvent, Reduction,
     ReductionOutcome, Refusal, Saturated,
 };

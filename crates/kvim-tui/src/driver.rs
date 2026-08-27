@@ -22,6 +22,7 @@
 use std::fmt;
 use std::time::Duration;
 
+use thiserror::Error;
 use tokio::time::{Instant, timeout_at};
 use tokio_util::sync::CancellationToken;
 
@@ -108,6 +109,65 @@ impl Completed {
     }
 }
 
+/// A host routed a driver-owned value to another editor instance.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum DriverError {
+    /// The supplied editor does not belong to this driver or completion.
+    #[error("editor instance mismatch: expected {expected:?}, received {actual:?}")]
+    WrongInstance {
+        /// The instance that owns the operation.
+        expected: EditorInstanceId,
+        /// The instance supplied by the host.
+        actual: EditorInstanceId,
+    },
+}
+
+impl DriverError {
+    fn require(expected: EditorInstanceId, actual: EditorInstanceId) -> Result<(), Self> {
+        if expected != actual {
+            return Err(Self::WrongInstance { expected, actual });
+        }
+        Ok(())
+    }
+}
+
+/// A driver rejected an unapplied completion.
+pub struct DriverApplyError {
+    kind: DriverError,
+    completed: Completed,
+}
+
+impl DriverApplyError {
+    /// Returns the typed routing failure.
+    #[must_use]
+    pub const fn kind(&self) -> DriverError {
+        self.kind
+    }
+
+    /// Recovers the unapplied completion for routing to its owner.
+    #[must_use]
+    pub fn into_completed(self) -> Completed {
+        self.completed
+    }
+}
+
+impl fmt::Debug for DriverApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DriverApplyError")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for DriverApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.kind.fmt(formatter)
+    }
+}
+
+impl std::error::Error for DriverApplyError {}
+
 /// What one wait of the driver produced.
 enum Outcome {
     /// One request of the bounded spawner finished, or the spawner is gone.
@@ -170,8 +230,13 @@ impl Outcome {
 /// let mut driver = EditorDriver::new(session.instance(), spawner, results);
 /// assert_eq!(driver.instance(), session.instance());
 ///
-/// let _redraw = driver.dispatch(&mut session);
-/// let drain = driver.shutdown(&mut session, Duration::from_secs(5)).await;
+/// let _redraw = driver
+///     .dispatch(&mut session)
+///     .expect("the driver owns the session");
+/// let drain = driver
+///     .shutdown(&mut session, Duration::from_secs(5))
+///     .await
+///     .expect("the driver owns the session");
 /// assert!(drain.is_none(), "every task of this editor finished");
 /// # });
 /// ```
@@ -242,13 +307,18 @@ impl EditorDriver {
     ///
     /// The call publishes no editor fact. The host reads those facts through
     /// [`Session::take_event`], because the host decides their effect.
-    pub fn dispatch(&mut self, editor: &mut Session) -> Redraw {
-        debug_assert_eq!(
-            self.instance,
-            editor.instance(),
-            "one driver serves the one editor that it was created for"
-        );
-        dispatch(editor, &self.spawner, &self.gate, &mut self.language)
+    /// # Errors
+    ///
+    /// Returns [`DriverError::WrongInstance`] before dispatch when `editor`
+    /// does not belong to this driver.
+    pub fn dispatch(&mut self, editor: &mut Session) -> Result<Redraw, DriverError> {
+        DriverError::require(self.instance, editor.instance())?;
+        Ok(dispatch(
+            editor,
+            &self.spawner,
+            &self.gate,
+            &mut self.language,
+        ))
     }
 
     /// Waits for the next finished unit of background work.
@@ -280,22 +350,28 @@ impl EditorDriver {
     ///
     /// `now` is the elapsed time of the host, which the editor stamps on its
     /// log entries and its overlays. The editor reads no clock of its own.
-    pub fn apply(&mut self, editor: &mut Session, completed: Completed, now: Duration) -> Redraw {
-        debug_assert_eq!(
-            self.instance, completed.instance,
-            "one driver applies the work of the editor that it serves"
-        );
-        debug_assert_eq!(
-            self.instance,
-            editor.instance(),
-            "one driver serves the one editor that it was created for"
-        );
+    /// # Errors
+    ///
+    /// Returns [`DriverApplyError`] with the intact completion before any
+    /// mutation when the session or completion belongs to another instance.
+    pub fn apply(
+        &mut self,
+        editor: &mut Session,
+        completed: Completed,
+        now: Duration,
+    ) -> Result<Redraw, DriverApplyError> {
+        if let Err(kind) = DriverError::require(self.instance, editor.instance()) {
+            return Err(DriverApplyError { kind, completed });
+        }
+        if let Err(kind) = DriverError::require(self.instance, completed.instance) {
+            return Err(DriverApplyError { kind, completed });
+        }
         editor.advance_clock(now);
-        match completed.outcome {
+        Ok(match completed.outcome {
             Outcome::Work(event) => complete(editor, &self.gate, *event),
             Outcome::Language(event) => publish(editor, event),
             Outcome::Watch(batch) => publish_watch(editor, batch.as_ref().as_ref()),
-        }
+        })
     }
 
     /// Rejects new work, cancels pre-commit work, and closes every service.
@@ -315,12 +391,16 @@ impl EditorDriver {
     /// Returns [`ShutdownDrain`] when `deadline` expired first. The drain owns
     /// the remaining tasks and their delivery, and the host must keep its
     /// runtime alive until the drain completes.
-    pub async fn shutdown(self, editor: &mut Session, deadline: Duration) -> Option<ShutdownDrain> {
-        debug_assert_eq!(
-            self.instance,
-            editor.instance(),
-            "one driver serves the one editor that it was created for"
-        );
+    /// # Errors
+    ///
+    /// Returns [`DriverError::WrongInstance`] before shutdown starts when
+    /// `editor` does not belong to this driver.
+    pub async fn shutdown(
+        self,
+        editor: &mut Session,
+        deadline: Duration,
+    ) -> Result<Option<ShutdownDrain>, DriverError> {
+        DriverError::require(self.instance, editor.instance())?;
         let Self {
             instance,
             spawner,
@@ -341,15 +421,15 @@ impl EditorDriver {
         // tasks, so a committed side effect still reaches its reserved slot.
         let tasks = spawner.begin_shutdown();
         if timeout_at(expiry, tasks.wait()).await.is_err() {
-            return Some(ShutdownDrain {
+            return Ok(Some(ShutdownDrain {
                 instance,
                 tasks,
                 results,
                 gate,
-            });
+            }));
         }
         drain_results(editor, &gate, &mut results);
-        None
+        Ok(None)
     }
 }
 
@@ -381,14 +461,14 @@ impl ShutdownDrain {
     /// returns without a further deadline of its own. Every remaining result
     /// then reaches `editor`, which commits the reserved slot of each completed
     /// write and each completed workspace mutation.
-    pub async fn complete(mut self, editor: &mut Session) -> Redraw {
-        debug_assert_eq!(
-            self.instance,
-            editor.instance(),
-            "one drain serves the editor of the driver that produced it"
-        );
+    /// # Errors
+    ///
+    /// Returns [`DriverError::WrongInstance`] before waiting or draining when
+    /// `editor` does not belong to this drain.
+    pub async fn complete(mut self, editor: &mut Session) -> Result<Redraw, DriverError> {
+        DriverError::require(self.instance, editor.instance())?;
         self.tasks.wait().await;
-        drain_results(editor, &self.gate, &mut self.results)
+        Ok(drain_results(editor, &self.gate, &mut self.results))
     }
 }
 

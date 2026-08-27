@@ -59,6 +59,23 @@ Explicit consuming `shutdown` is required to observe mandatory durable-work
 events. Drop cancels internal owners before it shuts down the executor. Drop is
 a best-effort fallback and does not promise durable event delivery.
 
+The facade assigns each `WorktreeEditor` an opaque `WorktreeInstanceId`.
+`WorktreeCompletion` carries that identity privately. `WorktreeEditor::apply`
+returns `Result<WorktreeUpdate, WorktreeApplyError>`. A wrong editor returns
+`WorktreeApplyErrorKind::WrongInstance` before it advances elapsed time,
+releases or consumes a reservation, changes visible state, applies a service
+result, or publishes an event. The error retains the completion, and
+`WorktreeApplyError::into_completion` returns it for routing to its owner.
+Facade signatures expose no `kvim-tui` identity, completion, result, or error
+type.
+
+The legacy `EditorDriver` validates its `Session` at `dispatch`, `apply`,
+`shutdown`, and drain completion. These host-routable methods return
+`DriverError::WrongInstance` in every build profile. `EmbeddedEditor` owns its
+session and driver together, so its internal dispatch and shutdown pairings are
+infallible after construction. Its public `apply` returns `EditorApplyError`
+for a completion from another instance.
+
 `WorktreeCapabilities` defaults Git, watcher, language, and clipboard policies
 to `Disabled`. The facade starts none of those services by default.
 `ServicePolicy::BuiltIn` selects the supported production implementation. A

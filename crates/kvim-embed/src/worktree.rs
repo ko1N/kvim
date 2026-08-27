@@ -469,9 +469,80 @@ pub enum WorktreeCommandError {
     },
 }
 
+/// Facade-owned identity of one worktree editor.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WorktreeInstanceId(u64);
+
+impl WorktreeInstanceId {
+    /// Returns the process-local instance number.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// The kind of a failed completion application.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeApplyErrorKind {
+    /// The completion belongs to another editor.
+    WrongInstance {
+        /// The editor that received the completion.
+        editor: WorktreeInstanceId,
+        /// The editor that produced the completion.
+        completion: WorktreeInstanceId,
+    },
+}
+
+/// A completion that was routed to another worktree editor.
+///
+/// The error retains the opaque completion. Call [`Self::into_completion`] to
+/// route it to its owning editor without losing a reserved result.
+pub struct WorktreeApplyError {
+    kind: WorktreeApplyErrorKind,
+    completion: WorktreeCompletion,
+}
+
+impl WorktreeApplyError {
+    /// Returns the typed rejection kind.
+    #[must_use]
+    pub const fn kind(&self) -> WorktreeApplyErrorKind {
+        self.kind
+    }
+
+    /// Recovers the unapplied completion for correct routing.
+    #[must_use]
+    pub fn into_completion(self) -> WorktreeCompletion {
+        self.completion
+    }
+}
+
+impl fmt::Debug for WorktreeApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorktreeApplyError")
+            .field("kind", &self.kind)
+            .finish_non_exhaustive()
+    }
+}
+
+impl fmt::Display for WorktreeApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let WorktreeApplyErrorKind::WrongInstance { editor, completion } = self.kind;
+        write!(
+            formatter,
+            "completion belongs to instance {completion:?}, not editor {editor:?}"
+        )
+    }
+}
+
+impl StdError for WorktreeApplyError {}
+
 /// One opaque completed unit returned by [`WorktreeEditor::ready`].
 #[must_use = "apply the completion to the editor that produced it"]
-pub struct WorktreeCompletion(Completed);
+pub struct WorktreeCompletion {
+    instance: WorktreeInstanceId,
+    inner: Completed,
+}
 
 impl fmt::Debug for WorktreeCompletion {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -622,6 +693,7 @@ impl WorktreeEditorBuilder {
         })?;
         drop(_guard);
         Ok(WorktreeEditor {
+            instance: WorktreeInstanceId(inner.instance().get()),
             inner: Some(inner),
             runtime: Some(runtime),
             #[cfg(test)]
@@ -641,6 +713,7 @@ impl WorktreeEditorBuilder {
 /// durable work. Dropping the editor cancels its private runtime as a
 /// best-effort fallback and does not guarantee durable event delivery.
 pub struct WorktreeEditor {
+    instance: WorktreeInstanceId,
     inner: Option<EmbeddedEditor>,
     runtime: Option<TokioRuntime>,
     #[cfg(test)]
@@ -687,6 +760,12 @@ impl WorktreeEditor {
     fn inner_mut(&mut self) -> &mut EmbeddedEditor {
         self.inner.as_mut().expect("shutdown consumes the editor")
     }
+    /// Returns this editor's facade-owned routing identity.
+    #[must_use]
+    pub const fn instance(&self) -> WorktreeInstanceId {
+        self.instance
+    }
+
     /// Returns the accepted rectangle.
     #[must_use]
     pub fn area(&self) -> Rect {
@@ -790,11 +869,35 @@ impl WorktreeEditor {
             .as_ref()
             .expect("shutdown consumes the executor");
         let _guard = runtime.enter();
-        WorktreeCompletion(self.inner_mut().recv().await)
+        let completion = self.inner_mut().recv().await;
+        WorktreeCompletion {
+            instance: WorktreeInstanceId(completion.instance().get()),
+            inner: completion,
+        }
     }
     /// Applies one completion returned by this editor.
-    pub fn apply(&mut self, completion: WorktreeCompletion, now: Duration) -> WorktreeUpdate {
-        convert_redraw(self.inner_mut().apply(completion.0, now))
+    ///
+    /// Returns [`WorktreeApplyErrorKind::WrongInstance`] before any mutation when
+    /// another editor produced the completion.
+    pub fn apply(
+        &mut self,
+        completion: WorktreeCompletion,
+        now: Duration,
+    ) -> Result<WorktreeUpdate, WorktreeApplyError> {
+        if self.instance != completion.instance {
+            return Err(WorktreeApplyError {
+                kind: WorktreeApplyErrorKind::WrongInstance {
+                    editor: self.instance,
+                    completion: completion.instance,
+                },
+                completion,
+            });
+        }
+        let redraw = self
+            .inner_mut()
+            .apply(completion.inner, now)
+            .expect("facade identity validation matches the internal owner");
+        Ok(convert_redraw(redraw))
     }
     /// Consumes the editor and performs bounded shutdown.
     pub async fn shutdown(mut self, deadline: Duration) -> WorktreeShutdown {

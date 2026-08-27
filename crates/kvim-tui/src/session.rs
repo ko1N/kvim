@@ -2018,6 +2018,11 @@ impl Session {
         self.clock = self.clock.max(now);
     }
 
+    #[cfg(test)]
+    pub(super) const fn clock(&self) -> Duration {
+        self.clock
+    }
+
     /// Applies one normalized terminal event.
     ///
     /// # Examples

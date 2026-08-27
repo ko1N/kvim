@@ -256,9 +256,11 @@ async fn drive<C: TerminalControl>(
         // The driver owns the result routing, so the finished work reaches the
         // editor after the wait ended and not inside it.
         let step = match step {
-            Step::Completed(completed) => {
-                Step::Handled(driver.apply(&mut editor, completed, start.elapsed()))
-            }
+            Step::Completed(completed) => Step::Handled(
+                driver
+                    .apply(&mut editor, completed, start.elapsed())
+                    .expect("the standalone loop routes its driver's completion"),
+            ),
             other => other,
         };
         // A refused submission reports its state on the message line, so the
@@ -303,7 +305,9 @@ async fn drive<C: TerminalControl>(
 /// and keeps the bounded outbox free for the next durable operation. See
 /// `docs/embedding.md`.
 fn dispatch(driver: &mut EditorDriver, editor: &mut Session) -> Redraw {
-    let redraw = driver.dispatch(editor);
+    let redraw = driver
+        .dispatch(editor)
+        .expect("the standalone loop retains its driver's session");
     while editor.take_event().is_some() {}
     redraw
 }
@@ -314,8 +318,15 @@ fn dispatch(driver: &mut EditorDriver, editor: &mut Session) -> Redraw {
 /// expired deadline returns. No task of the editor outlives this call. See
 /// `docs/responsiveness.md`.
 async fn shutdown(driver: EditorDriver, editor: &mut Session) {
-    if let Some(drain) = driver.shutdown(editor, SHUTDOWN_DEADLINE).await {
-        let _redraw = drain.complete(editor).await;
+    if let Some(drain) = driver
+        .shutdown(editor, SHUTDOWN_DEADLINE)
+        .await
+        .expect("the standalone loop retains its driver's session")
+    {
+        let _redraw = drain
+            .complete(editor)
+            .await
+            .expect("the standalone drain retains its driver's session");
     }
 }
 

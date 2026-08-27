@@ -46,7 +46,7 @@ use kvim_ui::Direction;
 use kvim_workspace::FileOperation;
 
 use super::clipboard::ClipboardAccess;
-use super::driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
+use super::driver::{Completed, DriverApplyError, EditorDriver, EditorWork, ShutdownDrain};
 use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
 use super::session::{Redraw, RunState, Session};
 
@@ -410,7 +410,7 @@ impl EditorOutbox {
     /// The call cannot fail, because the operation reserved its slot before it
     /// started.
     pub(super) fn commit(&mut self, reservation: EventReservation, event: EditorEvent) {
-        debug_assert_eq!(
+        assert_eq!(
             reservation.instance, self.instance,
             "a reservation belongs to the outbox that created it"
         );
@@ -428,7 +428,7 @@ impl EditorOutbox {
 
     /// Releases the slot of one operation that produced no durable change.
     pub(super) fn release(&mut self, reservation: EventReservation) {
-        debug_assert_eq!(
+        assert_eq!(
             reservation.instance, self.instance,
             "a reservation belongs to the outbox that created it"
         );
@@ -524,6 +524,38 @@ pub enum EditorOpenError {
         /// The language service root.
         language: PathBuf,
     },
+}
+
+/// A completed value belongs to another editor instance.
+#[derive(Debug)]
+pub struct EditorApplyError {
+    source: DriverApplyError,
+}
+
+impl EditorApplyError {
+    /// Recovers the unapplied completion for routing to its owner.
+    #[must_use]
+    pub fn into_completed(self) -> Completed {
+        self.source.into_completed()
+    }
+}
+
+impl fmt::Display for EditorApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the completion belongs to another editor instance")
+    }
+}
+
+impl std::error::Error for EditorApplyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl From<DriverApplyError> for EditorApplyError {
+    fn from(source: DriverApplyError) -> Self {
+        Self { source }
+    }
 }
 
 /// A rectangle that no editor can use.
@@ -1188,7 +1220,9 @@ impl EmbeddedEditor {
     /// The call returns at once and starts no detached task. The host calls it
     /// after every input, every tick, and every applied result.
     pub fn dispatch(&mut self) -> Redraw {
-        self.driver.dispatch(&mut self.editor)
+        self.driver
+            .dispatch(&mut self.editor)
+            .expect("the facade constructs one driver with its owned session")
     }
 
     /// Waits for the next finished unit of background work of this editor.
@@ -1202,19 +1236,16 @@ impl EmbeddedEditor {
 
     /// Applies one finished unit of work as one editor transition.
     ///
-    /// # Panics
-    ///
-    /// Panics in a debug build when `completed` came from another editor. The
-    /// identity of every result names its editor, so a host that routes a
-    /// result to the wrong editor fails at once instead of showing the answer
-    /// of one worktree in another.
-    pub fn apply(&mut self, completed: Completed, now: Duration) -> Redraw {
-        debug_assert_eq!(
-            completed.instance(),
-            self.editor.instance(),
-            "one editor applies only the work that it submitted"
-        );
-        self.driver.apply(&mut self.editor, completed, now)
+    /// Returns [`EditorApplyError`] before any state change when `completed`
+    /// belongs to another editor.
+    pub fn apply(
+        &mut self,
+        completed: Completed,
+        now: Duration,
+    ) -> Result<Redraw, EditorApplyError> {
+        self.driver
+            .apply(&mut self.editor, completed, now)
+            .map_err(Into::into)
     }
 
     /// Ends every background service of this editor.
@@ -1224,7 +1255,11 @@ impl EmbeddedEditor {
     /// that can still commit, and returns the remaining events.
     pub async fn shutdown(self, deadline: Duration) -> EditorShutdown {
         let Self { mut editor, driver } = self;
-        match driver.shutdown(&mut editor, deadline).await {
+        match driver
+            .shutdown(&mut editor, deadline)
+            .await
+            .expect("the facade constructs one driver with its owned session")
+        {
             None => EditorShutdown::Finished {
                 events: drain_published(&mut editor),
             },
@@ -1288,7 +1323,10 @@ impl EditorDrain {
     #[must_use]
     pub async fn complete(self) -> Vec<PublishedEvent> {
         let Self { mut editor, drain } = self;
-        let _redraw = drain.complete(&mut editor).await;
+        let _redraw = drain
+            .complete(&mut editor)
+            .await
+            .expect("the drain retains its facade-owned session");
         drain_published(&mut editor)
     }
 }

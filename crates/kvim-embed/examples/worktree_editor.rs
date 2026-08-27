@@ -71,7 +71,9 @@ async fn drive_until(
             }
         }
         let completed = editor.ready().await;
-        editor.apply(completed, Duration::ZERO);
+        editor
+            .apply(completed, Duration::ZERO)
+            .expect("ready returns this editor's completion");
     }
     Err("the bounded editor drive did not produce the expected event".into())
 }
