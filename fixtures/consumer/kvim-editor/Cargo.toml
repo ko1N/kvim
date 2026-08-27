@@ -1,0 +1,14 @@
+[workspace]
+
+[package]
+name = "consume-kvim-editor"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+
+[dependencies]
+kvim-core = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }
+kvim-editor = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }
+kvim-input = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }
+kvim-settings = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }

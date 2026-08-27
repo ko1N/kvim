@@ -503,8 +503,9 @@ adapter for `WorktreeEditor`.
 `crates/kvim/tests/repository_policy.rs` proves that last link, so the same
 rule governs all of them.
 
-Continuous integration checks minimal features, each required feature, default
-features, and all valid feature combinations. This matrix is exact:
+Continuous integration checks minimal features, one representative grammar,
+default features, and all valid grammar combinations. Independent external
+consumers prove each supported package in isolation. The exact matrix is:
 
 | Crate | Default | Required CI combinations |
 |---|---|---|
@@ -512,9 +513,9 @@ features, and all valid feature combinations. This matrix is exact:
 | `kvim-keymap` | no optional production features | default |
 | `kvim-lsp` | no optional production features | default |
 | `kvim-ui` | no optional production features | default |
-| `kvim-syntax` | no grammar | no grammar, each grammar alone, `all-grammars` |
-| `kvim-embed` | in-memory only | default, `worktree`, each valid worktree grammar combination |
-| `kvim-tui` | internal only | no grammar, each forwarded grammar alone, `all-grammars` |
+| `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
+| `kvim-embed` | in-memory only | default, no-default, `worktree`, `grammar-rust`, `all-grammars` |
+| `kvim-tui` | internal only | no grammar, `grammar-rust`, `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
 The `kvim` binary enables `all-grammars`. Private `test-support` features are
@@ -528,12 +529,28 @@ gate on macOS and on Linux.
 
 | Gate | Command | It proves |
 |---|---|---|
-| Feature examples | `cargo run -p <package> --example <name>` for every required example of [`embedding.md`](embedding.md) | Every dedicated example still runs and still asserts its own facts. |
+| Feature examples | `scripts/run-required-examples.sh` | The script reads the authoritative list in [`embedding.md`](embedding.md), then runs every dedicated example. |
 | Example policy | `cargo test -p kvim --test repository_policy` | Every public feature module names an example file that exists, no extra example replaces a feature example, and every documented example link resolves. |
 | Rustdoc links | `cargo doc --workspace --no-deps --all-features` under `RUSTDOCFLAGS=-D warnings` | Every intra-doc link of the published documentation resolves. |
 | Dependency edges | `scripts/check-dependency-edges.sh` | Every direct and transitive kvim edge appears in the layer table above, each isolation charter reaches none of the external crates that it refuses, and every dependency of a supported package is reachable from the same revision or from crates.io. |
 | Syntax isolation | `cargo check -p kvim-syntax --no-default-features [--features …]` | The syntax package builds with no grammar, with one grammar, and with every grammar. |
-| External consumer | `scripts/check-external-consumer.sh` | `fixtures/consumer` compiles every combination of the matrix above as a revision-pinned Git dependency, without a shared parent workspace, with the development toolchain and with the minimum supported Rust version. |
+| External consumers | `scripts/check-external-consumer.sh` | Independent workspaces compile each supported package through revision-pinned Git dependencies. They cover memory and worktree lifecycles and the feature matrix with development and minimum supported Rust version toolchains. |
+
+The external-consumer script uses the checked-out repository's `origin` and the
+selected Git revision by default. It does not print the repository URL. Pass
+`--repository-url` to select a different repository explicitly. Continuous
+integration uses `--checked-out-repository`, a `file://` clone of the full-depth
+checkout. This preserves outside-workspace, revision-pinned Git behavior and
+makes pull-request merge commits available on macOS and Linux without remote
+authentication. Run it with `--local-source` to include uncommitted worktree
+files without remote authentication. Local mode copies the worktree into a
+temporary Git repository because Cargo Git dependencies cannot read uncommitted
+files.
+
+Each directory under `fixtures/consumer/` is an independent workspace. One
+fixture imports one supported package. The two `kvim-embed` fixtures may also
+import documented supported companion packages and ratatui. No facade fixture
+imports `kvim-tui`, `kvim-runtime`, `kvim-language`, or `kvim-workspace`.
 
 The dependency gate reads the layer table of this document, so the policy and
 the architecture cannot disagree. A new charter row changes both at once.

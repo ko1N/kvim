@@ -1,0 +1,11 @@
+[workspace]
+
+[package]
+name = "consume-kvim-path"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+
+[dependencies]
+kvim-path = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }

@@ -655,8 +655,15 @@ project, or runtime session. LSP is optional for highlighting and editor use.
 Cargo features let consumers disable unused languages and grammars.
 
 Public crates support revision-pinned Cargo Git dependencies without a shared
-parent workspace. [`architecture.md`](architecture.md) owns package stability,
-MSRV, ratatui compatibility, and the exact feature matrix.
+parent workspace. Each supported package has an independent fixture under
+`fixtures/consumer/`. The two `kvim-embed` fixtures drive complete memory and
+worktree lifecycles through supported production APIs. The external-consumer
+script derives remote mode from the checked-out repository's `origin` and never
+prints that URL. Pass `--repository-url` to select another repository. Run
+`scripts/check-external-consumer.sh --local-source` to verify uncommitted local
+changes without remote authentication. [`architecture.md`](architecture.md)
+owns package stability, MSRV, ratatui compatibility, and the exact feature
+matrix.
 
 A consumer of a private repository needs three more settings. It sets
 `net.git-fetch-with-cli = true` in its Cargo configuration, because Cargo's
@@ -672,8 +679,10 @@ supplies both programs there. The dependency URL must use the
 ## Public Examples
 
 Every public feature API has one dedicated, hermetic example. Module rustdoc
-links directly to its owning example. Continuous integration compiles and runs
-every example. One combined example does not replace a feature example.
+links directly to its owning example. Continuous integration runs
+`scripts/run-required-examples.sh` on macOS and Linux. The script reads the
+list below, so this document is the single source for required examples. One
+combined example does not replace a feature example.
 
 The required examples are:
 
