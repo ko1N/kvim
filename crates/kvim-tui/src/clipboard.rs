@@ -111,7 +111,7 @@ impl Default for SessionClipboard {
 /// use ratatui::layout::Rect;
 ///
 /// use kvim_settings::EditorSettings;
-/// use kvim_tui::{ClipboardAccess, Session};
+/// use kvim_tui::__private::{ClipboardAccess, Session};
 ///
 /// let root = std::sync::Arc::new(
 ///     kvim_path::WorktreeRoot::open(

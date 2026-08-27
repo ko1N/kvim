@@ -21,7 +21,7 @@
 //! [`EmbeddedEditor::apply`]. The host therefore drives the reads with the one
 //! work channel that it already drives for the editor.
 //!
-//! `crates/kvim-tui/examples/embedded_file_sidebar.rs` is one complete host of
+//! `crates/kvim-embed/examples/worktree_editor.rs` is one complete host of
 //! one such sidebar.
 //!
 //! [`EmbeddedEditor`]: super::embed::EmbeddedEditor
@@ -497,7 +497,7 @@ pub(super) const fn label_offset_cells(depth: usize) -> usize {
 ///
 /// ```
 /// use kvim_settings::FileTreeIcons;
-/// use kvim_tui::{EmbeddedEditor, RegionFocus, Theme, draw_file_row};
+/// use kvim_tui::__private::{EmbeddedEditor, RegionFocus, Theme, draw_file_row};
 /// use kvim_ui::{RowKind, SidebarRow, SidebarState};
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
@@ -767,7 +767,7 @@ pub(super) fn draw_git_mark(
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{FileSidebarInput, ListMotion};
+/// use kvim_tui::__private::{FileSidebarInput, ListMotion};
 ///
 /// let down = FileSidebarInput::Move(ListMotion::Down(1));
 /// assert_eq!(down, FileSidebarInput::Move(ListMotion::Down(1)));
@@ -832,7 +832,7 @@ impl FileSidebarOutcome {
     ///
     /// ```
     /// use kvim_path::WorktreeRelativePath;
-    /// use kvim_tui::{EditorEvent, FileSidebarOutcome};
+    /// use kvim_tui::__private::{EditorEvent, FileSidebarOutcome};
     ///
     /// let path = WorktreeRelativePath::new("src/main.rs").expect("the path is contained");
     /// let outcome = FileSidebarOutcome::Activated { path: path.clone() };

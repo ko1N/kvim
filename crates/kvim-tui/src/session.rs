@@ -1102,7 +1102,7 @@ pub(super) static PLATFORM_WATCHER: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 ///
 /// use kvim_settings::EditorSettings;
 /// use kvim_terminal::{Key, KeyCode, TerminalEvent};
-/// use kvim_tui::{Redraw, Session};
+/// use kvim_tui::__private::{Redraw, Session};
 ///
 /// let root = std::sync::Arc::new(
 ///     kvim_path::WorktreeRoot::open(
@@ -1361,7 +1361,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{ClipboardAccess, Session};
+    /// use kvim_tui::__private::{ClipboardAccess, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1425,7 +1425,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{EditorAccess, Session};
+    /// use kvim_tui::__private::{EditorAccess, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1477,7 +1477,7 @@ impl Session {
     ///
     /// use kvim_input::Command;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{EditorEvent, Session};
+    /// use kvim_tui::__private::{EditorEvent, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1521,7 +1521,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1567,7 +1567,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1627,7 +1627,7 @@ impl Session {
     ///
     /// use kvim_path::WorktreeRelativePath;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1679,7 +1679,7 @@ impl Session {
     ///
     /// use kvim_input::Command;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{EditorAccess, Refusal, Session};
+    /// use kvim_tui::__private::{EditorAccess, Refusal, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1721,7 +1721,7 @@ impl Session {
     ///
     /// use kvim_input::Command;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1755,7 +1755,7 @@ impl Session {
     ///
     /// use kvim_input::{Command, PasteText};
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -2034,7 +2034,7 @@ impl Session {
     ///
     /// use kvim_settings::EditorSettings;
     /// use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -3415,7 +3415,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{Redraw, Session};
+    /// use kvim_tui::__private::{Redraw, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(

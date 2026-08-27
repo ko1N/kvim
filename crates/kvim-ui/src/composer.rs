@@ -20,9 +20,8 @@
 //! The module is pure. It reads no clock, no filesystem, and no terminal, it
 //! starts no task, and it accepts no host input or render callback.
 //!
-//! `crates/kvim-tui/examples/host_workspace.rs` is one complete host of one
-//! such workspace: it composes a chat panel, one embedded editor, one review
-//! surface, and one two-line sidebar through one shared registry.
+//! `crates/kvim-ui/examples/composer.rs` is one complete host of opaque
+//! caller-owned surfaces through one shared registry.
 
 use std::fmt;
 use std::num::NonZeroU64;

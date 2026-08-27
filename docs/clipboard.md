@@ -42,7 +42,7 @@ holds the two policies:
   no test and no host reaches the platform clipboard by accident.
 - `ClipboardAccess::System` reaches the clipboard command of this platform.
 
-`Session::with_clipboard` and `EmbeddedEditorBuilder::clipboard` accept the
+`WorktreeEditorBuilder::capabilities` accepts the
 policy. The selection runs once, inside that call, because it reads the target
 platform and the executable search path. The `SessionClipboard` value stays
 private, so no host names a clipboard command, a selection, or an executor.

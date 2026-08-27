@@ -21,7 +21,11 @@ process, or registry state.
 
 The supported worktree facade keeps service construction private.
 `WorktreeCapabilities::language` defaults to `Disabled`.
-`ServicePolicy::BuiltIn` constructs services from the editor root and settings.
+`ServicePolicy::BuiltIn` constructs services from the editor root and settings
+and makes construction mandatory. `ServicePolicy::BestEffortBuiltIn` uses the
+same built-in registry but continues with language behavior unavailable when
+construction fails. The standalone uses this best-effort policy, so a language
+construction failure does not prevent file editing.
 No facade signature exposes a registry, session, runtime, or service handle.
 
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no

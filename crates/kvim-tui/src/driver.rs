@@ -59,7 +59,7 @@ use super::session::{
 ///
 /// ```no_run
 /// use kvim_runtime::Runtime;
-/// use kvim_tui::EditorWork;
+/// use kvim_tui::__private::EditorWork;
 ///
 /// let (spawner, results) = Runtime::<EditorWork>::new();
 /// drop((spawner, results));
@@ -210,7 +210,7 @@ impl Outcome {
 ///
 /// use kvim_runtime::Runtime;
 /// use kvim_settings::EditorSettings;
-/// use kvim_tui::{EditorDriver, EditorWork, Session};
+/// use kvim_tui::__private::{EditorDriver, EditorWork, Session};
 ///
 /// # let tokio_runtime = tokio::runtime::Builder::new_current_thread()
 /// #     .enable_all()

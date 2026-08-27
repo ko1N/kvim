@@ -2430,13 +2430,12 @@ fn an_indeterminate_save_keeps_dirty_state_and_queues_reconciliation() {
     let events = std::iter::from_fn(|| session.take_event()).collect::<Vec<_>>();
     assert!(events.iter().any(|published| matches!(
         published.event,
-        crate::EditorEvent::SaveReconciliationRequired { .. }
+        crate::__private::EditorEvent::SaveReconciliationRequired { .. }
     )));
-    assert!(
-        !events
-            .iter()
-            .any(|published| matches!(published.event, crate::EditorEvent::FileWritten { .. }))
-    );
+    assert!(!events.iter().any(|published| matches!(
+        published.event,
+        crate::__private::EditorEvent::FileWritten { .. }
+    )));
     assert!(message(&session).contains("cannot prove save"));
     drop(directory);
 }

@@ -13,42 +13,15 @@
 //! for each normalized terminal event. [`Theme`] maps a semantic role to one
 //! terminal style, so no call site names a color. The crate owns no terminal
 //! and no event loop: the `kvim` binary is the imperative shell of the
-//! standalone editor, and `crates/kvim-tui/examples/embedded_editor.rs` is the
+//! standalone editor, and `crates/kvim-embed/examples/worktree_editor.rs` is the
 //! imperative shell of one embedded editor. See `docs/responsiveness.md` and
 //! `docs/embedding.md`.
 //!
-//! # Public facades
+//! The crate provides internal presentation for `kvim-embed` and focused
+//! lower-level components. Its `__private` module is a non-contract adapter
+//! seam. External high-level hosts use `kvim-embed`.
 //!
-//! The crate publishes two facades, and every exported item belongs to one of
-//! them. No other item leaves the crate.
-//!
-//! The embedded facade is the supported external package. It holds
-//! [`EmbeddedEditor`], [`EmbeddedEditorBuilder`], [`EditorDriver`],
-//! [`EditorAccess`], [`EditorCapacity`], [`EditorInstanceId`], [`EditorEvent`],
-//! [`PublishedEvent`], [`Reduction`], [`ReductionOutcome`], [`Refusal`],
-//! [`Saturated`], [`CursorRequest`], [`CursorShape`], [`GeometryError`],
-//! [`InputRequest`], [`EditorShutdown`], [`EditorDrain`], [`ShutdownDrain`],
-//! [`Completed`], [`EditorWork`], [`ClipboardAccess`], the file sidebar values
-//! [`FileRow`], [`FileRowKind`], [`FileSidebarInput`], [`FileSidebarOutcome`],
-//! and [`RegionFocus`], the candidate menu of one prompt line
-//! ([`LineCompletion`], [`CompletionCycle`], [`CompletionOutcome`], and
-//! [`draw_completion_menu`]), the forwarded `kvim-ui` geometry values, and the
-//! bounds of each one. A host composes one editor from these values alone.
-//! `crates/kvim-tui/examples/embedded_editor.rs` uses nothing else, and
-//! `crates/kvim-tui/examples/embedded_file_sidebar.rs` adds the file sidebar
-//! alone.
-//!
-//! The standalone facade serves the `kvim` binary, which is the terminal
-//! adapter of this repository. It holds [`Session`], [`Windows`],
-//! [`AdaptiveSplit`], [`WindowOutcome`], [`Redraw`], [`RunState`],
-//! [`AnalysisRequest`], [`AnalysisResult`], [`Message`], [`MessageLevel`],
-//! [`Theme`], [`ThemeRole`], [`IconRole`], [`HostWorkspace`],
-//! [`HostReportRequest`], [`GENERATED_NAMES`], the language request values, and
-//! the failure values that the message line reports. These items compose one
-//! whole editor application. An external host composes its own workspace
-//! instead and uses the embedded facade.
-//!
-//! # Examples
+//! # Example
 //!
 //! ```
 //! use ratatui::layout::Rect;
@@ -110,6 +83,29 @@ mod window;
 #[cfg(test)]
 mod tests;
 
+#[doc(hidden)]
+pub mod __private {
+    //! Internal adapter seams for `kvim-embed`.
+    //!
+    //! These exports are not a supported host contract. They can change or
+    //! disappear without compatibility guarantees.
+
+    pub use crate::clipboard::ClipboardAccess;
+    pub use crate::diagnostics::{HostReportRequest, HostWorkspace};
+    pub use crate::driver::{Completed, EditorDriver, EditorWork};
+    pub use crate::embed::{
+        CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorDrain, EditorEvent,
+        EditorInstanceId, EditorOpenError, EditorShutdown, EmbeddedEditor, GeometryError,
+        InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal,
+    };
+    pub use crate::file_sidebar::{FileSidebarInput, FileSidebarOutcome};
+    pub use crate::session::{Redraw, RunState, Session};
+    pub use crate::theme::Theme;
+    pub use crate::tree::GENERATED_NAMES;
+    pub use crate::{Direction, ListMotion, RegionFocus, draw_file_row};
+    pub use kvim_terminal::{FocusChange, TerminalEvent};
+}
+
 pub use buffer_view::RegionFocus;
 pub use clipboard::ClipboardAccess;
 pub use completion::{
@@ -117,15 +113,6 @@ pub use completion::{
     CompletionOutcome, LineCompletion, draw_completion_menu,
 };
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
-pub use driver::{
-    Completed, DriverApplyError, DriverError, EditorDriver, EditorWork, ShutdownDrain,
-};
-pub use embed::{
-    CursorRequest, CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorApplyError, EditorCapacity,
-    EditorDrain, EditorEvent, EditorInstanceId, EditorOpenError, EditorShutdown, EmbeddedEditor,
-    EmbeddedEditorBuilder, GeometryError, InputRequest, PublishedEvent, Reduction,
-    ReductionOutcome, Refusal, Saturated,
-};
 pub use file_sidebar::{
     FILE_SIDEBAR_ICON_CELLS, FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_LINK_SUFFIX,
     FILE_SIDEBAR_MARK_CELLS, FILE_SIDEBAR_ROWS_MAX, FILE_SIDEBAR_SELECTION_MARK, FileRow,

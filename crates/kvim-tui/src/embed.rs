@@ -18,7 +18,7 @@
 //! [`EmbeddedEditor`] is the facade of this contract. It builds the model and
 //! the driver of one instance together, so a host names one root, one
 //! rectangle, and one named [`EditorCapacity`] and gets one independent
-//! editor. `crates/kvim-tui/examples/embedded_editor.rs` is the complete host
+//! editor. `crates/kvim-embed/examples/worktree_editor.rs` is the complete host
 //! of one such editor: it owns the input, the cell buffer, the spawner, the
 //! task supervision, and the cancellation.
 //!
@@ -42,6 +42,7 @@ use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
 use kvim_settings::{EditorSettings, SettingsError};
+use kvim_terminal::TerminalEvent;
 use kvim_ui::Direction;
 use kvim_workspace::FileOperation;
 
@@ -68,7 +69,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::EditorInstanceId;
+/// use kvim_tui::__private::EditorInstanceId;
 ///
 /// let first = EditorInstanceId::allocate();
 /// let second = EditorInstanceId::allocate();
@@ -98,7 +99,7 @@ impl EditorInstanceId {
     /// Returns the instance number.
     ///
     /// ```
-    /// use kvim_tui::EditorInstanceId;
+    /// use kvim_tui::__private::EditorInstanceId;
     ///
     /// assert!(EditorInstanceId::allocate().get() >= 1);
     /// ```
@@ -117,7 +118,7 @@ impl EditorInstanceId {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::EditorAccess;
+/// use kvim_tui::__private::EditorAccess;
 ///
 /// assert_eq!(EditorAccess::default(), EditorAccess::ReadWrite);
 /// ```
@@ -136,7 +137,7 @@ pub enum EditorAccess {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::Refusal;
+/// use kvim_tui::__private::Refusal;
 ///
 /// assert_eq!(Refusal::ViewOnly.note(), "the host granted read-only access");
 /// ```
@@ -175,7 +176,7 @@ pub struct Saturated;
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{Direction, EditorEvent, InputRequest};
+/// use kvim_tui::__private::{Direction, EditorEvent, InputRequest};
 ///
 /// let request = InputRequest::FocusBoundary(Direction::Left);
 /// assert_eq!(request.event(), EditorEvent::FocusBoundary(Direction::Left));
@@ -263,7 +264,7 @@ impl Reduction {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{Direction, EditorEvent};
+/// use kvim_tui::__private::{Direction, EditorEvent};
 ///
 /// let event = EditorEvent::FocusBoundary(Direction::Right);
 /// assert_eq!(event, EditorEvent::FocusBoundary(Direction::Right));
@@ -483,7 +484,7 @@ impl EditorOutbox {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::CursorShape;
+/// use kvim_tui::__private::CursorShape;
 ///
 /// assert_ne!(CursorShape::Bar, CursorShape::Block);
 /// ```
@@ -636,7 +637,7 @@ fn drain_published(editor: &mut Session) -> Vec<PublishedEvent> {
 ///
 /// ```
 /// use kvim_runtime::RuntimeLimits;
-/// use kvim_tui::EditorCapacity;
+/// use kvim_tui::__private::EditorCapacity;
 ///
 /// let limits = RuntimeLimits::new(32, 2, 2).expect("every capacity is nonzero");
 /// assert!(matches!(
@@ -664,7 +665,7 @@ pub enum EditorCapacity {
     ///
     /// Give the limits more than two worker permits. One directory read and
     /// one buffer analysis hold two permits together, and a save that finds no
-    /// free permit returns [`Saturated`] instead of writing the file.
+    /// free permit returns a saturation refusal instead of writing the file.
     Isolated(RuntimeLimits),
     /// The host built the spawner, so the host chose the capacity.
     Supplied {
@@ -710,7 +711,7 @@ impl EditorCapacity {
 /// ```
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_tui::{EditorAccess, EmbeddedEditor};
+/// use kvim_tui::__private::{EditorAccess, EmbeddedEditor};
 ///
 /// let root = std::sync::Arc::new(
 ///     kvim_path::WorktreeRoot::open(
@@ -733,6 +734,7 @@ pub struct EmbeddedEditorBuilder {
     capacity: EditorCapacity,
     language: Option<LanguageServices>,
     watcher: Option<FileWatcher>,
+    watcher_unavailable: bool,
     git_status: bool,
 }
 
@@ -790,6 +792,14 @@ impl EmbeddedEditorBuilder {
         self
     }
 
+    /// Reports that a requested watcher could not start.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn watcher_unavailable(mut self) -> Self {
+        self.watcher_unavailable = true;
+        self
+    }
+
     /// Sets whether this editor requests Git status.
     ///
     /// The compatibility facade enables Git status by default. A higher-level
@@ -817,6 +827,7 @@ impl EmbeddedEditorBuilder {
             capacity,
             language,
             watcher,
+            watcher_unavailable,
             git_status,
         } = self;
         if area.width == 0 || area.height == 0 {
@@ -831,10 +842,13 @@ impl EmbeddedEditorBuilder {
                 });
             }
         }
-        let editor = Session::new(area, settings, root)
+        let mut editor = Session::new(area, settings, root)
             .with_access(access)
             .with_clipboard(clipboard)
             .with_git_status(git_status);
+        if watcher_unavailable {
+            let _ = editor.report_watch_unavailable();
+        }
         let (spawner, results) = capacity.realize();
         let mut driver = EditorDriver::new(editor.instance(), spawner, results);
         if let Some(language) = language {
@@ -860,7 +874,7 @@ impl EmbeddedEditorBuilder {
 /// already produced, and [`EmbeddedEditor::insert_literal`] accepts the text
 /// fallback of the focused scope.
 ///
-/// `crates/kvim-tui/examples/embedded_editor.rs` is one complete host of one
+/// `crates/kvim-embed/examples/worktree_editor.rs` is one complete host of one
 /// such editor.
 ///
 /// # Examples
@@ -872,7 +886,7 @@ impl EmbeddedEditorBuilder {
 /// use ratatui::layout::Rect;
 ///
 /// use kvim_input::Command;
-/// use kvim_tui::{EditorShutdown, EmbeddedEditor};
+/// use kvim_tui::__private::{EditorShutdown, EmbeddedEditor};
 ///
 /// # let host_runtime = tokio::runtime::Builder::new_current_thread()
 /// #     .enable_all()
@@ -934,6 +948,7 @@ impl EmbeddedEditor {
             capacity: EditorCapacity::default(),
             language: None,
             watcher: None,
+            watcher_unavailable: false,
             git_status: true,
         }
     }
@@ -987,7 +1002,7 @@ impl EmbeddedEditor {
     /// rows. The host keeps one copy between frames and reads it again after
     /// one [`EditorEvent::RedrawRequested`].
     ///
-    /// `crates/kvim-tui/examples/embedded_file_sidebar.rs` draws these rows.
+    /// `crates/kvim-embed/examples/worktree_editor.rs` draws these rows.
     ///
     /// # Examples
     ///
@@ -996,7 +1011,7 @@ impl EmbeddedEditor {
     ///
     /// use ratatui::layout::Rect;
     ///
-    /// use kvim_tui::EmbeddedEditor;
+    /// use kvim_tui::__private::EmbeddedEditor;
     ///
     /// # let host_runtime = tokio::runtime::Builder::new_current_thread()
     /// #     .enable_all()
@@ -1062,7 +1077,7 @@ impl EmbeddedEditor {
     /// ```
     /// use ratatui::layout::Rect;
     ///
-    /// use kvim_tui::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, ListMotion};
+    /// use kvim_tui::__private::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, ListMotion};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1084,6 +1099,15 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn file_sidebar(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
         self.editor.reduce_file_sidebar(input)
+    }
+
+    /// Applies one normalized terminal event through the internal standalone resolver.
+    ///
+    /// This method is an implementation seam for `kvim-embed`. It is not a
+    /// supported `kvim-tui` host contract.
+    #[doc(hidden)]
+    pub fn input(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
+        self.editor.handle_event(event, now)
     }
 
     /// Applies one resolved editor command.

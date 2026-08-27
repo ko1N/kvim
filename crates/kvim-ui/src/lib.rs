@@ -67,7 +67,8 @@
 //! surfaces, `examples/sidebar.rs` renders two-line sidebar rows of one
 //! sectioned tree with state markers and indent guides, `examples/selector.rs`
 //! narrows one host-owned list with one query, `examples/which_key.rs` derives
-//! overlay hints from one shared registry and renders them, and
+//! overlay hints from one shared registry and renders them,
+//! `examples/composer.rs` drives opaque caller-owned surfaces, and
 //! `examples/chrome_band.rs` sheds the parts of one host-owned band:
 //!
 //! ```sh
@@ -75,15 +76,8 @@
 //! cargo run -p kvim-ui --example sidebar
 //! cargo run -p kvim-ui --example selector
 //! cargo run -p kvim-ui --example which_key
+//! cargo run -p kvim-ui --example composer
 //! cargo run -p kvim-ui --example chrome_band
-//! ```
-//!
-//! `crates/kvim-tui/examples/host_workspace.rs` composes host-owned chat, one
-//! embedded editor, one review surface, and one sidebar into one workspace
-//! through [`WorkspaceComposer`]:
-//!
-//! ```sh
-//! cargo run -p kvim-tui --example host_workspace
 //! ```
 //!
 //! ```

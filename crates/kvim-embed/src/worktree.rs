@@ -1,4 +1,7 @@
 //! Optional worktree-backed editor facade.
+//!
+//! `crates/kvim-embed/examples/worktree_editor.rs` demonstrates its complete
+//! lifecycle.
 
 use std::error::Error as StdError;
 use std::fmt;
@@ -7,18 +10,22 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText, is_register_name};
+use kvim_input::{
+    BindingScope, Command, InputContextSnapshot, Key, Mode, PasteText, is_register_name,
+};
 use kvim_language::{LanguageRegistry, LanguageServices};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{FileWatcher, RuntimeLimits};
 use kvim_settings::EditorSettings;
-use kvim_tui::{
+use kvim_tui::__private::{
     ClipboardAccess as TuiClipboardAccess, Completed, CursorShape as TuiCursorShape,
     EditorAccess as TuiEditorAccess, EditorCapacity as TuiEditorCapacity,
     EditorEvent as TuiEditorEvent, EditorShutdown as TuiEditorShutdown, EmbeddedEditor,
-    GeometryError as TuiGeometryError, InputRequest as TuiInputRequest,
+    GeometryError as TuiGeometryError, HostReportRequest as TuiHostReportRequest,
+    HostWorkspace as TuiHostWorkspace, InputRequest as TuiInputRequest,
     PublishedEvent as TuiPublishedEvent, Redraw as TuiRedraw, Reduction as TuiReduction,
     ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal, RunState as TuiRunState,
+    TerminalEvent as TuiTerminalEvent,
 };
 use kvim_ui::Direction;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode};
@@ -34,7 +41,7 @@ pub const WORKER_CAPACITY_MAX: usize = kvim_runtime::WORKER_CONCURRENCY_LIMIT_MA
 /// The maximum number of concurrent child processes.
 pub const PROCESS_CAPACITY_MAX: usize = kvim_runtime::PROCESS_CONCURRENCY_LIMIT;
 /// The maximum number of queued editor events.
-pub const EVENT_CAPACITY_MAX: usize = kvim_tui::EDITOR_EVENTS_MAX;
+pub const EVENT_CAPACITY_MAX: usize = kvim_tui::__private::EDITOR_EVENTS_MAX;
 
 /// Validated bounded execution capacity for one editor.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,8 +116,10 @@ pub enum ServicePolicy {
     /// Do not construct or start the service.
     #[default]
     Disabled,
-    /// Use kvim's production built-in service.
+    /// Use kvim's production built-in service and fail opening if it cannot start.
     BuiltIn,
+    /// Use kvim's production built-in service, but continue without it if startup fails.
+    BestEffortBuiltIn,
 }
 
 /// Explicit optional capabilities of one worktree editor.
@@ -243,6 +252,75 @@ impl WorkspaceOperation {
             _ => None,
         }
     }
+}
+
+/// The workspace root used by one host diagnostics report.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorktreeHostWorkspace {
+    /// The caller resolved the root.
+    Resolved {
+        /// The resolved root.
+        root: PathBuf,
+    },
+    /// The caller could not resolve the root.
+    Unresolved {
+        /// Why root resolution failed.
+        reason: String,
+    },
+}
+
+/// One bounded diagnostics probe for a worktree host.
+#[derive(Clone)]
+pub struct WorktreeHostReportRequest(TuiHostReportRequest);
+
+impl WorktreeHostReportRequest {
+    /// Creates a report request with kvim's built-in language registry.
+    #[must_use]
+    pub fn built_in(workspace: WorktreeHostWorkspace) -> Self {
+        let workspace = match workspace {
+            WorktreeHostWorkspace::Resolved { root } => TuiHostWorkspace::Resolved { root },
+            WorktreeHostWorkspace::Unresolved { reason } => TuiHostWorkspace::Unresolved { reason },
+        };
+        Self(TuiHostReportRequest::new(
+            LanguageRegistry::first_release(),
+            workspace,
+        ))
+    }
+
+    /// Probes the host and returns the plain-text report.
+    #[must_use]
+    pub fn run(self) -> String {
+        self.0.run()
+    }
+}
+
+/// One normalized, terminal-neutral input supplied by a host.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorktreeInput {
+    /// A normalized key press or repeat.
+    Key(Key),
+    /// One validated bracketed-paste block.
+    Paste(PasteText),
+    /// A new terminal or host-surface size.
+    Resize {
+        /// Width in terminal cells.
+        columns: u16,
+        /// Height in terminal cells.
+        rows: u16,
+    },
+    /// The host surface gained or lost focus.
+    Focus(WorktreeFocus),
+    /// Input that no binding accepts.
+    Unsupported,
+}
+
+/// One host-surface focus transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeFocus {
+    /// The surface gained focus.
+    Gained,
+    /// The surface lost focus.
+    Lost,
 }
 
 /// Why an input was refused before a side effect.
@@ -554,7 +632,7 @@ impl fmt::Debug for WorktreeCompletion {
 #[must_use = "complete the drain to observe durable-operation events"]
 pub struct WorktreeDrain {
     runtime: TokioRuntime,
-    drain: kvim_tui::EditorDrain,
+    drain: kvim_tui::__private::EditorDrain,
 }
 
 impl fmt::Debug for WorktreeDrain {
@@ -655,39 +733,55 @@ impl WorktreeEditorBuilder {
                 WorktreeAccess::ViewOnly => TuiEditorAccess::ViewOnly,
             })
             .capacity(TuiEditorCapacity::Isolated(limits))
-            .git_status(self.capabilities.git == ServicePolicy::BuiltIn)
+            .git_status(self.capabilities.git != ServicePolicy::Disabled)
             .clipboard(match self.capabilities.clipboard {
                 ServicePolicy::Disabled => TuiClipboardAccess::None,
-                ServicePolicy::BuiltIn => TuiClipboardAccess::System,
+                ServicePolicy::BuiltIn | ServicePolicy::BestEffortBuiltIn => {
+                    TuiClipboardAccess::System
+                }
             });
-        if self.capabilities.language == ServicePolicy::BuiltIn {
-            let language = LanguageServices::new(
+        let language = construct_service(self.capabilities.language, || {
+            LanguageServices::new(
                 LanguageRegistry::first_release(),
                 root.as_path().to_path_buf(),
                 self.settings,
             )
-            .map_err(|source| {
-                WorktreeOpenError::new(WorktreeOpenErrorKind::Language, None, source)
-            })?;
+        })
+        .map_err(|source| WorktreeOpenError::new(WorktreeOpenErrorKind::Language, None, source))?;
+        if let Some(language) = language {
             builder = builder.language(language);
         }
-        if self.capabilities.watcher == ServicePolicy::BuiltIn {
-            let watcher = FileWatcher::start(Arc::clone(&root), &kvim_tui::GENERATED_NAMES)
-                .map_err(|source| {
-                    WorktreeOpenError::new(WorktreeOpenErrorKind::Watcher, None, source)
-                })?;
+        let watcher = match self.capabilities.watcher {
+            ServicePolicy::Disabled => None,
+            ServicePolicy::BuiltIn => Some(
+                FileWatcher::start(Arc::clone(&root), &kvim_tui::__private::GENERATED_NAMES)
+                    .map_err(|source| {
+                        WorktreeOpenError::new(WorktreeOpenErrorKind::Watcher, None, source)
+                    })?,
+            ),
+            ServicePolicy::BestEffortBuiltIn => {
+                match FileWatcher::start(Arc::clone(&root), &kvim_tui::__private::GENERATED_NAMES) {
+                    Ok(watcher) => Some(watcher),
+                    Err(_) => {
+                        builder = builder.watcher_unavailable();
+                        None
+                    }
+                }
+            }
+        };
+        if let Some(watcher) = watcher {
             builder = builder.watcher(watcher);
         }
         let inner = builder.open().map_err(|error| match error {
-            kvim_tui::EditorOpenError::Settings(source) => {
+            kvim_tui::__private::EditorOpenError::Settings(source) => {
                 WorktreeOpenError::new(WorktreeOpenErrorKind::Settings, None, source)
             }
-            kvim_tui::EditorOpenError::Geometry(source) => WorktreeOpenError::new(
+            kvim_tui::__private::EditorOpenError::Geometry(source) => WorktreeOpenError::new(
                 WorktreeOpenErrorKind::Geometry,
                 None,
                 WorktreeGeometryError::from(source),
             ),
-            kvim_tui::EditorOpenError::LanguageRootMismatch { .. } => {
+            kvim_tui::__private::EditorOpenError::LanguageRootMismatch { .. } => {
                 unreachable!("facade constructs services from the same validated root")
             }
         })?;
@@ -699,6 +793,17 @@ impl WorktreeEditorBuilder {
             #[cfg(test)]
             capabilities: self.capabilities,
         })
+    }
+}
+
+fn construct_service<T, E>(
+    policy: ServicePolicy,
+    construct: impl FnOnce() -> Result<T, E>,
+) -> Result<Option<T>, E> {
+    match policy {
+        ServicePolicy::Disabled => Ok(None),
+        ServicePolicy::BuiltIn => construct().map(Some),
+        ServicePolicy::BestEffortBuiltIn => Ok(construct().ok()),
     }
 }
 
@@ -781,6 +886,22 @@ impl WorktreeEditor {
     /// Queues one contained file for asynchronous opening.
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
         convert_redraw(self.inner_mut().open_file(path))
+    }
+    /// Applies one normalized host input.
+    pub fn input(&mut self, input: WorktreeInput, now: Duration) -> WorktreeUpdate {
+        let input = match input {
+            WorktreeInput::Key(key) => TuiTerminalEvent::Key(key),
+            WorktreeInput::Paste(text) => TuiTerminalEvent::Paste(text),
+            WorktreeInput::Resize { columns, rows } => TuiTerminalEvent::Resize { columns, rows },
+            WorktreeInput::Focus(WorktreeFocus::Gained) => {
+                TuiTerminalEvent::Focus(kvim_tui::__private::FocusChange::Gained)
+            }
+            WorktreeInput::Focus(WorktreeFocus::Lost) => {
+                TuiTerminalEvent::Focus(kvim_tui::__private::FocusChange::Lost)
+            }
+            WorktreeInput::Unsupported => TuiTerminalEvent::Unsupported,
+        };
+        convert_redraw(self.inner_mut().input(input, now))
     }
     /// Applies a resolved command.
     ///

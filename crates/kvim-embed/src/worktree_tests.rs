@@ -32,7 +32,7 @@ fn event_conversion_owns_bounded_workspace_vocabulary() {
         paths: vec![WorktreeRelativePath::new("src/lib.rs").unwrap()],
     };
     let event = convert_published(TuiPublishedEvent {
-        instance: kvim_tui::EditorInstanceId::allocate(),
+        instance: kvim_tui::__private::EditorInstanceId::allocate(),
         event: TuiEditorEvent::WorkspaceReconciliationRequired { operation },
     });
     let WorktreeEvent::WorkspaceReconciliationRequired { operation } = event else {
@@ -74,6 +74,39 @@ fn default_construction_disables_every_optional_service() {
     assert_eq!(editor.capabilities().clipboard, ServicePolicy::Disabled);
     assert!(!editor.git_status_enabled());
     assert!(!editor.git_request_queued());
+}
+
+#[test]
+fn service_policy_controls_construction_failure() {
+    let mut disabled_calls = 0;
+    let disabled = construct_service(ServicePolicy::Disabled, || {
+        disabled_calls += 1;
+        Err::<(), _>(std::io::Error::other("must not run"))
+    })
+    .unwrap();
+    assert!(disabled.is_none());
+    assert_eq!(disabled_calls, 0);
+
+    let required = construct_service(ServicePolicy::BuiltIn, || {
+        Err::<(), _>(std::io::Error::other("startup refused"))
+    });
+    assert!(required.is_err());
+
+    let best_effort = construct_service(ServicePolicy::BestEffortBuiltIn, || {
+        Err::<(), _>(std::io::Error::other("startup refused"))
+    })
+    .unwrap();
+    assert!(best_effort.is_none());
+}
+
+#[test]
+fn successful_best_effort_service_is_retained() {
+    let service = construct_service(ServicePolicy::BestEffortBuiltIn, || {
+        Ok::<_, std::io::Error>(17)
+    })
+    .unwrap();
+
+    assert_eq!(service, Some(17));
 }
 
 #[test]
@@ -224,9 +257,9 @@ async fn wrong_instance_completion_is_rejected_without_mutating_the_receiver() {
 #[cfg(feature = "grammar-rust")]
 #[test]
 fn rust_feature_populates_the_registry_used_by_the_facade() {
-    assert!(
-        LanguageRegistry::first_release()
-            .adapter(Path::new("src/lib.rs"))
-            .is_ok()
-    );
+    let request = WorktreeHostReportRequest::built_in(WorktreeHostWorkspace::Unresolved {
+        reason: "test root unavailable".to_owned(),
+    });
+
+    assert!(request.run().contains("rust-analyzer"));
 }

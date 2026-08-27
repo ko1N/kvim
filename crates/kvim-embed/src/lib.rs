@@ -2,6 +2,8 @@
 //!
 //! [`MemoryEditor`] owns bounded text and modal state. It performs no input or
 //! output and requests no filesystem, process, Git, watcher, or language work.
+//! `crates/kvim-embed/examples/in_memory_editor.rs` demonstrates its complete
+//! lifecycle.
 
 #![deny(missing_docs)]
 
@@ -15,9 +17,10 @@ pub use worktree::{
     WorkspaceOperation, WorkspaceOperationKind, WorkspaceTransfer, WorktreeAccess,
     WorktreeApplyError, WorktreeApplyErrorKind, WorktreeCapabilities, WorktreeCapacity,
     WorktreeCommandError, WorktreeCompletion, WorktreeCursor, WorktreeCursorShape, WorktreeDrain,
-    WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeGeometryError,
-    WorktreeInputOutcome, WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError,
-    WorktreeOpenErrorKind, WorktreeRefusal, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
+    WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeFocus, WorktreeGeometryError,
+    WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput, WorktreeInputOutcome,
+    WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError, WorktreeOpenErrorKind,
+    WorktreeRefusal, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
 };
 
 use std::num::{NonZeroU16, NonZeroU32};

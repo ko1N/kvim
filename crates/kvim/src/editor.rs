@@ -1,20 +1,19 @@
 //! The terminal event loop of the standalone editor.
 //! Adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The loop is the imperative shell of the standalone editor, and the binary is
-//! its only owner. It owns raw mode, the alternate screen, standard input,
-//! standard output, the terminal event stream, the termination signals, the
-//! panic restoration, the cursor shape, the asynchronous runtime, the redraw
-//! schedule, and the shutdown order. `kvim-tui` owns none of these.
+//! This module is the imperative shell of the standalone editor. It alone owns
+//! raw mode, the alternate screen, terminal input and output, process signals,
+//! panic restoration, cursor application, redraw scheduling, and shutdown
+//! order. `WorktreeEditor` owns visible editor state and bounded background
+//! execution, but it owns no terminal and no process event loop.
 //!
-//! The loop reads normalized events, applies pure transitions to one
-//! [`Session`], and renders after a visible state change. It runs no
-//! unconditional frame loop, and it performs no filesystem, process, or
-//! language work. See `docs/responsiveness.md` and `docs/embedding.md`.
+//! The loop forwards normalized input to one `WorktreeEditor`, routes opaque
+//! completions back to that editor, and draws only after a visible change. It
+//! performs no filesystem, process, Git, language-server, formatter, or syntax
+//! work. See `docs/responsiveness.md` and `docs/embedding.md`.
 
 use std::io::{self, stdout};
-use std::path::PathBuf;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
@@ -23,33 +22,19 @@ use ratatui::layout::Rect;
 use thiserror::Error;
 use tokio::time::sleep;
 
-use kvim_language::{LanguageRegistry, LanguageServices};
-use kvim_path::WorktreeRoot;
-use kvim_runtime::{FileWatcher, Runtime};
+use kvim_embed::{
+    ServicePolicy, WorktreeCapabilities, WorktreeCursorShape, WorktreeEditor, WorktreeEvent,
+    WorktreeFocus, WorktreeInput, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
+};
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{
-    CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
-    TerminalSession, TerminationSource,
-};
-use kvim_tui::{
-    ClipboardAccess, Completed, CursorShape as EditorCursorShape, EditorDriver, EditorWork,
-    GENERATED_NAMES, Redraw, RunState, Session,
+    CrosstermControl, CursorShape, EventSource, FocusChange, TerminalControl, TerminalError,
+    TerminalEvent, TerminalSession, TerminationSource,
 };
 
-/// The number of consecutive terminal read failures that ends the editor.
-///
-/// One failure keeps the source usable, so the loop reports it and reads again.
-/// A run of failures means the terminal is gone, and the bound keeps the loop
-/// from spinning forever.
+/// Consecutive terminal read failures that end the editor.
 pub const EVENT_ERRORS_MAX: usize = 8;
-
-/// The time that the standalone editor waits for its background work at exit.
-///
-/// The worker deadline, the process deadline, and the language server shutdown
-/// deadline each bound one tracked task, so this value covers the longest of
-/// them. A deadline that still expires leaves the drain, and the binary then
-/// waits for that drain before it restores the terminal. See
-/// `docs/responsiveness.md`.
 const SHUTDOWN_DEADLINE: Duration = Duration::from_secs(15);
 
 /// A failure that ends the editor.
@@ -64,52 +49,33 @@ pub enum EditorError {
     /// The terminal event stream failed repeatedly.
     #[error("the terminal event stream failed {EVENT_ERRORS_MAX} times in a row")]
     EventStream(#[source] TerminalError),
+    /// The editor facade could not open.
+    #[error("the worktree editor could not open")]
+    Open(#[source] kvim_embed::WorktreeOpenError),
+    /// The initial path is outside the worktree.
+    #[error("the initial path is outside the worktree")]
+    InitialPath,
 }
 
 /// Whether the editor panics on purpose after its first frame.
-///
-/// The probe proves that the panic hook of the terminal session restores the
-/// terminal, because a panic aborts without running a destructor on some
-/// platforms. It is a diagnostic, not an editor feature. See
-/// `docs/architecture.md`.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum PanicProbe {
-    /// Run the editor normally.
+    /// Run normally.
     #[default]
     Disabled,
-    /// Panic after the first frame reaches the terminal.
+    /// Panic after the first frame.
     AfterFirstFrame,
 }
 
-/// The outcome of one loop iteration.
 enum Step {
-    /// The iteration applied a transition.
-    Handled(Redraw),
-    /// One unit of background work finished and still needs its transition.
-    Completed(Completed),
-    /// The editor must leave its event loop, because the terminal event stream
-    /// ended or the process received a termination signal.
+    Handled(WorktreeUpdate),
+    Input(TerminalEvent, Duration),
+    Completed(kvim_embed::WorktreeCompletion),
     Stop,
-    /// The terminal event stream reported one failure.
     Failed(TerminalError),
 }
 
 /// Runs the editor until it closes its last window.
-///
-/// The terminal returns to its original state on every exit path, including a
-/// panic and a termination signal. The panic hook of the terminal session owns
-/// the panic path, because a panic aborts without running a destructor on some
-/// platforms. A termination signal leaves the event loop instead, so the
-/// restore below writes the same steps as an ordinary exit.
-///
-/// The caller supplies one validated workspace root. The root is the
-/// containment boundary of every file operation and every document that a
-/// language server sees. See `docs/language-services.md`.
-///
-/// # Errors
-///
-/// Returns [`EditorError`] when a terminal control step fails, when a draw
-/// fails, or when the event stream fails [`EVENT_ERRORS_MAX`] times in a row.
 pub async fn run(
     settings: EditorSettings,
     root: WorktreeRoot,
@@ -118,31 +84,19 @@ pub async fn run(
 ) -> Result<(), EditorError> {
     let mut terminal =
         TerminalSession::enter(CrosstermControl::new()).map_err(EditorError::Terminal)?;
-    // The listener registers the process signal handlers, so it belongs beside
-    // the terminal setup and not inside the loop.
     let terminations = TerminationSource::from_process();
     let outcome = drive(&mut terminal, terminations, settings, root, path, probe).await;
     terminal.restore().map_err(EditorError::Terminal)?;
     outcome
 }
 
-/// Returns the terminal sequence of one editor cursor request.
-///
-/// The editor names the shape that its mode asks for, and this adapter is the
-/// one place that turns that request into a terminal sequence. See
-/// `docs/embedding.md`.
-const fn terminal_shape(shape: EditorCursorShape) -> CursorShape {
+const fn terminal_shape(shape: WorktreeCursorShape) -> CursorShape {
     match shape {
-        EditorCursorShape::Bar => CursorShape::Bar,
-        EditorCursorShape::Block => CursorShape::Block,
+        WorktreeCursorShape::Bar => CursorShape::Bar,
+        WorktreeCursorShape::Block => CursorShape::Block,
     }
 }
 
-/// Drives one editor session over the process terminal.
-///
-/// The loop leaves on the first termination request of `terminations`, so a
-/// `SIGTERM`, a `SIGINT`, or a `SIGHUP` ends the editor through the ordinary
-/// shutdown and the ordinary restore. See `docs/responsiveness.md`.
 async fn drive<C: TerminalControl>(
     session: &mut TerminalSession<C>,
     mut terminations: TerminationSource,
@@ -153,196 +107,168 @@ async fn drive<C: TerminalControl>(
 ) -> Result<(), EditorError> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(EditorError::Draw)?;
     let size = terminal.size().map_err(EditorError::Draw)?;
-    // The clipboard selection reads the platform and the executable search path
-    // once, here at the start, so no operation ever guesses. The editor and the
-    // registers name no platform, no command, and no selection. See
-    // `docs/clipboard.md`.
-    let root = Arc::new(root);
+    let area = Rect::new(0, 0, size.width, size.height);
     let root_path = root.as_path().to_path_buf();
-    let mut editor = Session::new(
-        Rect::new(0, 0, size.width, size.height),
-        settings,
-        Arc::clone(&root),
-    )
-    .with_clipboard(ClipboardAccess::System);
+    let capabilities = WorktreeCapabilities {
+        git: ServicePolicy::BuiltIn,
+        watcher: ServicePolicy::BestEffortBuiltIn,
+        language: ServicePolicy::BestEffortBuiltIn,
+        clipboard: ServicePolicy::BuiltIn,
+    };
+    let mut editor = WorktreeEditor::builder(&root_path, area)
+        .settings(settings)
+        .capabilities(capabilities)
+        .open()
+        .map_err(EditorError::Open)?;
+    if let Some(path) = path {
+        let relative = initial_path(&root_path, &path).ok_or(EditorError::InitialPath)?;
+        let _ = editor.open_file(relative);
+    }
+
     let mut events = EventSource::from_terminal();
-    // The binary is the host of its own editor, so it builds the bounded
-    // spawner and the driver itself. The file operations, the buffer analysis,
-    // the external commands, and the language sessions all leave this loop
-    // through that spawner, so the loop below performs no filesystem work, no
-    // process work, and no parsing. See `docs/embedding.md`.
-    let (spawner, results) = Runtime::<EditorWork>::new();
-    let mut driver = EditorDriver::new(editor.instance(), spawner, results);
-    // The language sessions run as background tasks of this runtime context, so
-    // the loop below never reads, writes, or waits for a server. A root that
-    // this constructor refuses leaves the editor fully usable without them.
-    if let Ok(language) =
-        LanguageServices::new(LanguageRegistry::first_release(), root_path, settings)
-    {
-        driver = driver.with_language(language);
-    }
-    // The watcher runs its platform callback and its coalescing task beside this
-    // loop, so no filesystem event ever reaches it directly. It ignores the
-    // generated directory names of the file tree, so it watches no build output
-    // directory and one build writes no event.
-    // The start places no watch and reads no directory. The coalescing task
-    // walks the workspace after the first frame, so a large workspace delays no
-    // frame. That task then reports the window that no watch covered, and the
-    // burst that reports it reads the workspace again.
-    // A host that refuses the watch leaves the editor fully usable with the
-    // refresh command. A registration that covers a part of the workspace
-    // reports that state with the burst that opens the stream.
-    // See `docs/files.md` and `docs/responsiveness.md`.
-    match FileWatcher::start(Arc::clone(&root), &GENERATED_NAMES) {
-        Ok(watcher) => driver = driver.with_watcher(watcher),
-        Err(_refused) => {
-            let _ = editor.report_watch_unavailable();
-        }
-    }
     let start = Instant::now();
     let mut errors = 0;
-
-    if let Some(path) = path {
-        editor.open_path(path);
-    }
-    // The first frame follows this dispatch unconditionally, so its report needs
-    // no redraw request of its own.
-    let _ = dispatch(&mut driver, &mut editor);
-    // The shape follows the mode, so the editor writes it once at the start and
-    // then only after a mode change. The sequence is decoration: a terminal that
-    // ignores it still shows its own cursor.
-    let mut shape = terminal_shape(editor.cursor_shape());
-    let _ = session.set_cursor_shape(shape);
-    terminal
-        .draw(|frame| editor.render(frame))
-        .map_err(EditorError::Draw)?;
+    let _ = dispatch(&mut editor);
+    let mut shape = draw(&mut terminal, session, &editor)?;
     assert!(
         probe == PanicProbe::Disabled,
         "the panic probe of the environment asks for this panic"
     );
-    // The elapsed time alone drives one state change, so the loop runs one
-    // catch-up transition for each deadline that already passed. It records that
-    // deadline: a transition that leaves the same deadline behind must not run
-    // again, or the loop would never await a terminal event and the editor would
-    // stop serving input. See `docs/responsiveness.md`.
-    let mut caught_up: Option<Duration> = None;
-    while editor.run_state() == RunState::Running {
+
+    let mut caught_up = None;
+    while editor.run_state() == WorktreeRunState::Running {
         let now = start.elapsed();
         let step = match editor.next_deadline() {
-            Some(deadline) if deadline > now => {
-                tokio::select! {
-                    event = events.next_event() => apply(&mut editor, event, start.elapsed()),
-                    completed = driver.recv() => Step::Completed(completed),
-                    _ = terminations.recv() => Step::Stop,
-                    () = sleep(deadline - now) => Step::Handled(editor.tick(start.elapsed())),
-                }
-            }
-            // The deadline already passed, so the transition runs before the
-            // loop waits for another event.
+            Some(deadline) if deadline > now => tokio::select! {
+                event = events.next_event() => apply_event(event, start.elapsed()),
+                completed = editor.ready() => Step::Completed(completed),
+                _ = terminations.recv() => Step::Stop,
+                () = sleep(deadline - now) => Step::Handled(editor.tick(start.elapsed())),
+            },
             Some(deadline) if caught_up != Some(deadline) => {
                 caught_up = Some(deadline);
                 Step::Handled(editor.tick(now))
             }
-            // The deadline stayed, so no further transition follows from the
-            // elapsed time alone. The loop waits for an event instead.
-            Some(_) | None => {
-                tokio::select! {
-                    event = events.next_event() => apply(&mut editor, event, start.elapsed()),
-                    completed = driver.recv() => Step::Completed(completed),
-                    _ = terminations.recv() => Step::Stop,
-                }
-            }
+            Some(_) | None => tokio::select! {
+                event = events.next_event() => apply_event(event, start.elapsed()),
+                completed = editor.ready() => Step::Completed(completed),
+                _ = terminations.recv() => Step::Stop,
+            },
         };
-        // The driver owns the result routing, so the finished work reaches the
-        // editor after the wait ended and not inside it.
         let step = match step {
+            Step::Input(event, now) => Step::Handled(editor.input(facade_input(event), now)),
             Step::Completed(completed) => Step::Handled(
-                driver
-                    .apply(&mut editor, completed, start.elapsed())
-                    .expect("the standalone loop routes its driver's completion"),
+                editor
+                    .apply(completed, start.elapsed())
+                    .expect("the standalone loop routes its facade completion"),
             ),
             other => other,
         };
-        // A refused submission reports its state on the message line, so the
-        // dispatch owns a visible change of its own and the frame must follow
-        // it as well as the transition above.
-        let dispatched = dispatch(&mut driver, &mut editor);
-        let next_shape = terminal_shape(editor.cursor_shape());
-        if next_shape != shape {
-            shape = next_shape;
-            let _ = session.set_cursor_shape(shape);
-        }
+        let dispatched = dispatch(&mut editor);
         match step {
-            Step::Handled(handled) => {
+            Step::Handled(update) => {
                 errors = 0;
-                if handled.or(dispatched) == Redraw::Needed {
-                    terminal
-                        .draw(|frame| editor.render(frame))
-                        .map_err(EditorError::Draw)?;
+                if update == WorktreeUpdate::Redraw || dispatched == WorktreeUpdate::Redraw {
+                    shape = draw(&mut terminal, session, &editor)?;
                 }
-            }
-            Step::Completed(_) => {
-                debug_assert!(false, "the match above turned every completion into a step");
+                let _ = shape;
             }
             Step::Stop => break,
             Step::Failed(error) => {
                 errors += 1;
                 if errors >= EVENT_ERRORS_MAX {
-                    shutdown(driver, &mut editor).await;
+                    shutdown(editor).await;
                     return Err(EditorError::EventStream(error));
                 }
             }
+            Step::Input(_, _) | Step::Completed(_) => {
+                unreachable!("input and completed work are applied above")
+            }
         }
     }
-    shutdown(driver, &mut editor).await;
+    shutdown(editor).await;
     Ok(())
 }
 
-/// Hands every queued request to its service and drains the published facts.
-///
-/// The standalone binary is the host of its own editor. It owns the terminal,
-/// the file tree, and the shutdown order itself, so it reads the published facts
-/// and keeps the bounded outbox free for the next durable operation. See
-/// `docs/embedding.md`.
-fn dispatch(driver: &mut EditorDriver, editor: &mut Session) -> Redraw {
-    let redraw = driver
-        .dispatch(editor)
-        .expect("the standalone loop retains its driver's session");
-    while editor.take_event().is_some() {}
-    redraw
+fn initial_path(root: &Path, path: &Path) -> Option<WorktreeRelativePath> {
+    let relative = if path.is_absolute() {
+        path.strip_prefix(root).ok()?
+    } else {
+        path
+    };
+    WorktreeRelativePath::new(relative).ok()
 }
 
-/// Ends every background service of the editor.
-///
-/// The binary owns the asynchronous runtime, so it waits for the drain that an
-/// expired deadline returns. No task of the editor outlives this call. See
-/// `docs/responsiveness.md`.
-async fn shutdown(driver: EditorDriver, editor: &mut Session) {
-    if let Some(drain) = driver
-        .shutdown(editor, SHUTDOWN_DEADLINE)
-        .await
-        .expect("the standalone loop retains its driver's session")
-    {
-        let _redraw = drain
-            .complete(editor)
-            .await
-            .expect("the standalone drain retains its driver's session");
+fn dispatch(editor: &mut WorktreeEditor) -> WorktreeUpdate {
+    let mut update = editor.dispatch();
+    while let Some(event) = editor.take_event() {
+        if matches!(event, WorktreeEvent::RedrawRequested) {
+            update = WorktreeUpdate::Redraw;
+        }
+    }
+    update
+}
+
+fn draw<C: TerminalControl>(
+    terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
+    session: &mut TerminalSession<C>,
+    editor: &WorktreeEditor,
+) -> Result<CursorShape, EditorError> {
+    let mut cursor = None;
+    terminal
+        .draw(|frame| {
+            let rendered = editor
+                .render(frame.buffer_mut())
+                .expect("the terminal frame uses the accepted editor area");
+            cursor = Some(rendered);
+            if let Some(position) = rendered.position {
+                frame.set_cursor_position(position);
+            }
+        })
+        .map_err(EditorError::Draw)?;
+    let shape = terminal_shape(cursor.expect("one draw renders one cursor").shape);
+    let _ = session.set_cursor_shape(shape);
+    Ok(shape)
+}
+
+async fn shutdown(editor: WorktreeEditor) {
+    let events = match editor.shutdown(SHUTDOWN_DEADLINE).await {
+        WorktreeShutdown::Finished { events } => events,
+        WorktreeShutdown::Draining(drain) => drain.complete().await,
+    };
+    // Shutdown reconciles every committed side effect before it returns these
+    // mandatory facts. The standalone process is exiting, so no observer can
+    // use them after terminal restoration. Consume them deliberately here.
+    for event in events {
+        match event {
+            WorktreeEvent::ActiveFileChanged { .. }
+            | WorktreeEvent::FileWritten { .. }
+            | WorktreeEvent::WorkspaceChanged { .. }
+            | WorktreeEvent::SaveReconciliationRequired { .. }
+            | WorktreeEvent::WorkspaceReconciliationRequired { .. }
+            | WorktreeEvent::FileActivated { .. }
+            | WorktreeEvent::RedrawRequested
+            | WorktreeEvent::FocusBoundary(_)
+            | WorktreeEvent::CloseRequested => {}
+        }
     }
 }
 
-/// Applies one read from the terminal event source.
-fn apply(
-    editor: &mut Session,
-    event: Option<Result<TerminalEvent, TerminalError>>,
-    now: Duration,
-) -> Step {
+fn apply_event(event: Option<Result<TerminalEvent, TerminalError>>, now: Duration) -> Step {
     match event {
-        Some(Ok(event)) => Step::Handled(editor.handle_event(event, now)),
+        Some(Ok(event)) => Step::Input(event, now),
         Some(Err(error)) => Step::Failed(error),
         None => Step::Stop,
     }
 }
 
-// The structural checks that once lived here now sit in
-// `crates/kvim/tests/repository_policy.rs`, beside the example policy. A check
-// that reads another crate is one repository rule, not one module rule.
+fn facade_input(event: TerminalEvent) -> WorktreeInput {
+    match event {
+        TerminalEvent::Key(key) => WorktreeInput::Key(key),
+        TerminalEvent::Paste(text) => WorktreeInput::Paste(text),
+        TerminalEvent::Resize { columns, rows } => WorktreeInput::Resize { columns, rows },
+        TerminalEvent::Focus(FocusChange::Gained) => WorktreeInput::Focus(WorktreeFocus::Gained),
+        TerminalEvent::Focus(FocusChange::Lost) => WorktreeInput::Focus(WorktreeFocus::Lost),
+        TerminalEvent::Unsupported => WorktreeInput::Unsupported,
+    }
+}

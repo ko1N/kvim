@@ -1,4 +1,8 @@
 use std::path::PathBuf;
+use std::time::Duration;
+
+use kvim_embed::{WorktreeEditor, WorktreeShutdown};
+use ratatui::layout::Rect;
 
 use super::{CliAction, CliError, host_report, parse_cli};
 
@@ -73,4 +77,21 @@ fn the_flag_prints_the_report_of_the_shared_builder() {
         !report.contains('\u{1b}'),
         "the report runs outside the alternate screen, so it carries no escape: {report}"
     );
+}
+
+#[tokio::test]
+async fn facade_lifecycle_runs_inside_the_binary_runtime() {
+    let root = std::env::current_dir().expect("the test process has a working directory");
+    let mut editor = WorktreeEditor::builder(root, Rect::new(0, 0, 40, 8))
+        .open()
+        .expect("the worktree facade opens inside Tokio");
+    let _ = editor.dispatch();
+    let completed = tokio::time::timeout(Duration::from_secs(10), editor.ready())
+        .await
+        .expect("initial work completes inside the host runtime");
+    editor
+        .apply(completed, Duration::ZERO)
+        .expect("the completion returns to its owner");
+    let shutdown = editor.shutdown(Duration::from_secs(10)).await;
+    assert!(matches!(shutdown, WorktreeShutdown::Finished { .. }));
 }
