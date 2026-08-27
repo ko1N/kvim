@@ -28,6 +28,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -40,7 +41,7 @@ use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText};
 use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
-use kvim_settings::EditorSettings;
+use kvim_settings::{EditorSettings, SettingsError};
 use kvim_ui::Direction;
 use kvim_workspace::FileOperation;
 
@@ -496,6 +497,25 @@ pub struct CursorRequest {
     pub shape: CursorShape,
 }
 
+/// One embedded editor could not be constructed.
+#[derive(Debug, Error)]
+pub enum EditorOpenError {
+    /// The supplied settings are invalid.
+    #[error("invalid editor settings")]
+    Settings(#[from] SettingsError),
+    /// The editor rectangle is invalid.
+    #[error(transparent)]
+    Geometry(#[from] GeometryError),
+    /// The language service root differs from the editor root.
+    #[error("the language service root {language:?} differs from the editor root {editor:?}")]
+    LanguageRootMismatch {
+        /// The editor worktree root.
+        editor: PathBuf,
+        /// The language service root.
+        language: PathBuf,
+    },
+}
+
 /// A rectangle that no editor can use.
 ///
 /// Every variant names the rectangle that the caller supplied, so a host can
@@ -731,10 +751,9 @@ impl EmbeddedEditorBuilder {
     ///
     /// # Errors
     ///
-    /// Returns [`GeometryError::Empty`] for a rectangle without a cell. The
-    /// layout, the viewports, and the cursor all follow that rectangle, so an
-    /// editor without cells could report no cursor cell.
-    pub fn open(self) -> Result<EmbeddedEditor, GeometryError> {
+    /// Returns [`EditorOpenError`] when geometry, settings, or optional
+    /// language services do not match the editor boundary.
+    pub fn open(self) -> Result<EmbeddedEditor, EditorOpenError> {
         let Self {
             root,
             area,
@@ -746,7 +765,16 @@ impl EmbeddedEditorBuilder {
             watcher,
         } = self;
         if area.width == 0 || area.height == 0 {
-            return Err(GeometryError::Empty { area });
+            return Err(GeometryError::Empty { area }.into());
+        }
+        let settings = settings.realize()?;
+        if let Some(services) = language.as_ref() {
+            if services.root() != root.as_path() {
+                return Err(EditorOpenError::LanguageRootMismatch {
+                    editor: root.as_path().to_path_buf(),
+                    language: services.root().to_path_buf(),
+                });
+            }
         }
         let editor = Session::new(area, settings, root)
             .with_access(access)

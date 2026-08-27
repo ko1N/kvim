@@ -1,6 +1,10 @@
 use std::num::NonZeroU8;
+use std::time::Duration;
 
-use super::{IndentSettings, IndentWidth, ShiftWidth, SplitRatio};
+use super::{
+    COUNT_MAX, EditorSettings, FILE_BYTES_MAX, IndentSettings, IndentWidth, NOTIFICATION_ROWS_MAX,
+    PENDING_KEYS_MAX, SettingsError, ShiftWidth, SplitRatio,
+};
 
 fn cells(value: u8) -> NonZeroU8 {
     NonZeroU8::new(value).expect("the test value is not zero")
@@ -56,4 +60,73 @@ fn split_ratio_rejects_values_outside_its_domain() {
     assert!(SplitRatio::new(f32::INFINITY).is_none());
     assert!(SplitRatio::new(0.0).is_none());
     assert!(SplitRatio::new(-1.0).is_none());
+}
+
+#[test]
+fn settings_realization_rejects_invalid_public_numeric_bounds() {
+    for settings in [
+        EditorSettings {
+            files: super::FileSettings {
+                max_file_bytes: FILE_BYTES_MAX + 1,
+                ..super::FileSettings::default()
+            },
+            ..EditorSettings::default()
+        },
+        EditorSettings {
+            input: super::InputSettings {
+                count_max: COUNT_MAX + 1,
+                ..super::InputSettings::default()
+            },
+            ..EditorSettings::default()
+        },
+        EditorSettings {
+            input: super::InputSettings {
+                pending_keys_max: PENDING_KEYS_MAX + 1,
+                ..super::InputSettings::default()
+            },
+            ..EditorSettings::default()
+        },
+        EditorSettings {
+            notifications: super::NotificationSettings {
+                rows_max: NOTIFICATION_ROWS_MAX + 1,
+                ..super::NotificationSettings::default()
+            },
+            ..EditorSettings::default()
+        },
+        EditorSettings {
+            windows: super::WindowSettings {
+                min_window_width_cells: 0,
+                ..super::WindowSettings::default()
+            },
+            ..EditorSettings::default()
+        },
+    ] {
+        assert!(matches!(
+            settings.realize(),
+            Err(SettingsError::InvalidBound { .. } | SettingsError::ZeroBound { .. })
+        ));
+    }
+}
+
+#[test]
+fn settings_realization_rejects_zero_timing_bounds() {
+    let settings = EditorSettings {
+        input: super::InputSettings {
+            which_key_delay: Duration::ZERO,
+            ..super::InputSettings::default()
+        },
+        ..EditorSettings::default()
+    };
+    assert!(matches!(
+        settings.realize(),
+        Err(SettingsError::ZeroDuration {
+            field: "input.which_key_delay"
+        })
+    ));
+}
+
+#[test]
+fn default_settings_realize_without_changes() {
+    let settings = EditorSettings::default();
+    assert_eq!(settings.realize(), Ok(settings));
 }

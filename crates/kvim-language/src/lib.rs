@@ -137,6 +137,7 @@ mod rust;
 #[cfg(feature = "grammar-scss")]
 mod scss;
 mod server;
+use server::{declarations_are_valid, marker_is_valid};
 mod services;
 mod session;
 #[cfg(feature = "grammar-sql")]
@@ -325,6 +326,43 @@ pub enum AnalysisError {
     /// The parser returned a range that the source does not hold.
     #[error("the language adapter returned malformed spans")]
     MalformedOutput,
+}
+
+pub const LANGUAGE_ADAPTERS_MAX: usize = 64;
+
+/// A public language registry declaration did not establish its invariants.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum RegistryError {
+    /// The registry declares too many adapters.
+    #[error("the language registry declares {actual} adapters, above its limit")]
+    TooManyAdapters {
+        /// The supplied adapter count.
+        actual: usize,
+    },
+    /// Two adapters claim one language name.
+    #[error("more than one language adapter owns the name {name}")]
+    DuplicateLanguageName {
+        /// The duplicated lower-case language name.
+        name: &'static str,
+    },
+    /// One adapter declares an invalid server table.
+    #[error("the language adapter {adapter} declares invalid language servers")]
+    InvalidServers {
+        /// The stable adapter identifier.
+        adapter: &'static str,
+    },
+    /// One adapter declares an invalid external formatter.
+    #[error("the language adapter {adapter} declares an invalid formatter")]
+    InvalidFormatter {
+        /// The stable adapter identifier.
+        adapter: &'static str,
+    },
+    /// One adapter declares an invalid root marker.
+    #[error("the language adapter {adapter} declares an invalid root marker")]
+    InvalidRootMarker {
+        /// The stable adapter identifier.
+        adapter: &'static str,
+    },
 }
 
 impl From<kvim_syntax::HighlightFailure> for AnalysisError {
@@ -1103,14 +1141,67 @@ impl LanguageRegistry {
     #[must_use]
     pub fn first_release() -> Self {
         Self::new(registered_adapters())
+            .expect("the built-in language registry is validated by its owning tests")
     }
 
     /// Creates a registry over an explicit adapter table.
     ///
-    /// The table is the one place that names the supported languages.
-    #[must_use]
-    pub const fn new(adapters: &'static [&'static dyn LanguageAdapter]) -> Self {
-        Self { adapters }
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] for duplicate aliases, duplicate server IDs,
+    /// conflicting server formatters, invalid formatter declarations, invalid
+    /// root markers, or server and marker bounds above their maxima.
+    pub fn new(adapters: &'static [&'static dyn LanguageAdapter]) -> Result<Self, RegistryError> {
+        if adapters.len() > LANGUAGE_ADAPTERS_MAX {
+            return Err(RegistryError::TooManyAdapters {
+                actual: adapters.len(),
+            });
+        }
+        for (index, adapter) in adapters.iter().enumerate() {
+            for (name_index, name) in adapter.language_names().iter().enumerate() {
+                if adapter.language_names()[..name_index]
+                    .iter()
+                    .any(|earlier| earlier.eq_ignore_ascii_case(name))
+                    || adapters[..index]
+                        .iter()
+                        .any(|earlier| earlier.supports_language(name))
+                {
+                    return Err(RegistryError::DuplicateLanguageName { name });
+                }
+            }
+            if adapters[..index]
+                .iter()
+                .any(|earlier| earlier.id() == adapter.id())
+            {
+                return Err(RegistryError::InvalidServers {
+                    adapter: adapter.id(),
+                });
+            }
+            if !declarations_are_valid(adapter.language_servers()) {
+                return Err(RegistryError::InvalidServers {
+                    adapter: adapter.id(),
+                });
+            }
+            if adapter
+                .language_servers()
+                .iter()
+                .flat_map(|declaration| declaration.root_markers)
+                .any(|marker| !marker_is_valid(marker))
+            {
+                return Err(RegistryError::InvalidRootMarker {
+                    adapter: adapter.id(),
+                });
+            }
+            if adapter
+                .external_formatter()
+                .is_some_and(|declaration| !formatter::declaration_is_valid(declaration))
+            {
+                return Err(RegistryError::InvalidFormatter {
+                    adapter: adapter.id(),
+                });
+            }
+        }
+        Ok(Self { adapters })
     }
 
     /// Returns the adapter table of this registry.

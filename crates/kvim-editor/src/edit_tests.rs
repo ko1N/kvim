@@ -995,7 +995,10 @@ fn set_register(session: &mut Session, value: RegisterValue) {
 #[test]
 fn paste_before_and_after_follows_the_characterwise_shape() {
     let mut after = Session::new("abc\n");
-    set_register(&mut after, RegisterValue::characterwise("XY"));
+    set_register(
+        &mut after,
+        RegisterValue::characterwise("XY").expect("the value is bounded"),
+    );
     place(&mut after, 0, 1);
     assert_eq!(
         after.apply(Command::PasteAfter, None),
@@ -1009,7 +1012,10 @@ fn paste_before_and_after_follows_the_characterwise_shape() {
     );
 
     let mut before = Session::new("abc\n");
-    set_register(&mut before, RegisterValue::characterwise("XY"));
+    set_register(
+        &mut before,
+        RegisterValue::characterwise("XY").expect("the value is bounded"),
+    );
     place(&mut before, 0, 1);
     before.apply(Command::PasteBefore, None);
     assert_eq!(before.text(), "aXYbc\n");
@@ -1018,13 +1024,19 @@ fn paste_before_and_after_follows_the_characterwise_shape() {
 #[test]
 fn paste_before_and_after_follows_the_linewise_shape() {
     let mut after = Session::new("one\ntwo\n");
-    set_register(&mut after, RegisterValue::linewise("new", LineEnding::Lf));
+    set_register(
+        &mut after,
+        RegisterValue::linewise("new", LineEnding::Lf).expect("the value is bounded"),
+    );
     after.apply(Command::PasteAfter, None);
     assert_eq!(after.text(), "one\nnew\ntwo\n");
     assert_eq!(after.position(), (1, 0));
 
     let mut before = Session::new("one\ntwo\n");
-    set_register(&mut before, RegisterValue::linewise("new", LineEnding::Lf));
+    set_register(
+        &mut before,
+        RegisterValue::linewise("new", LineEnding::Lf).expect("the value is bounded"),
+    );
     before.apply(Command::PasteBefore, None);
     assert_eq!(before.text(), "new\none\ntwo\n");
     assert_eq!(before.position(), (0, 0));
@@ -1034,7 +1046,10 @@ fn paste_before_and_after_follows_the_linewise_shape() {
 fn a_linewise_paste_after_the_last_line_opens_a_new_line() {
     for text in ["one", "one\n"] {
         let mut session = Session::new(text);
-        set_register(&mut session, RegisterValue::linewise("new", LineEnding::Lf));
+        set_register(
+            &mut session,
+            RegisterValue::linewise("new", LineEnding::Lf).expect("the value is bounded"),
+        );
         session.apply(Command::PasteAfter, None);
         assert_eq!(session.text(), "one\nnew\n", "{text:?}");
         assert_eq!(session.position(), (1, 0), "{text:?}");
@@ -1043,7 +1058,10 @@ fn a_linewise_paste_after_the_last_line_opens_a_new_line() {
 
 #[test]
 fn paste_before_and_after_follows_the_blockwise_shape() {
-    let block = || RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf);
+    let block = || {
+        RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf)
+            .expect("the value is bounded")
+    };
 
     let mut before = Session::new("ab\ncd\n");
     set_register(&mut before, block());
@@ -1061,7 +1079,8 @@ fn a_blockwise_paste_past_the_last_line_opens_the_missing_lines() {
     let mut session = Session::new("ab");
     set_register(
         &mut session,
-        RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf),
+        RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf)
+            .expect("the value is bounded"),
     );
     session.apply(Command::PasteBefore, None);
     // The buffer terminates its last line, and the save writes the file end
@@ -1072,7 +1091,10 @@ fn a_blockwise_paste_past_the_last_line_opens_the_missing_lines() {
 #[test]
 fn a_count_before_a_paste_repeats_the_value() {
     let mut session = Session::new("abc\n");
-    set_register(&mut session, RegisterValue::characterwise("X"));
+    set_register(
+        &mut session,
+        RegisterValue::characterwise("X").expect("the value is bounded"),
+    );
     session.apply(Command::PasteAfter, count(3));
     assert_eq!(session.text(), "aXXXbc\n");
 }
@@ -1090,7 +1112,10 @@ fn a_paste_without_a_register_value_changes_nothing() {
 #[test]
 fn a_visual_paste_replaces_the_selection_and_preserves_the_source_register() {
     let mut characters = Session::new("abcd\n");
-    set_register(&mut characters, RegisterValue::characterwise("XY"));
+    set_register(
+        &mut characters,
+        RegisterValue::characterwise("XY").expect("the value is bounded"),
+    );
     characters.apply(Command::EnterVisual, None);
     characters.apply(Command::MoveRight, None);
     assert_eq!(
@@ -1118,7 +1143,10 @@ fn a_visual_paste_replaces_the_selection_and_preserves_the_source_register() {
 #[test]
 fn a_visual_block_paste_replaces_the_rectangle_and_keeps_the_register() {
     let mut session = Session::new("abcdef\na\nabcdef\n");
-    set_register(&mut session, RegisterValue::characterwise("Z"));
+    set_register(
+        &mut session,
+        RegisterValue::characterwise("Z").expect("the value is bounded"),
+    );
     select_block(&mut session);
     assert_eq!(
         session.apply(Command::PasteBefore, None),
@@ -1210,7 +1238,10 @@ fn dot_repeat_replays_the_description_of_the_last_change() {
     assert_eq!(lines.text(), "three\n");
 
     let mut paste = Session::new("abc\n");
-    set_register(&mut paste, RegisterValue::characterwise("X"));
+    set_register(
+        &mut paste,
+        RegisterValue::characterwise("X").expect("the value is bounded"),
+    );
     paste.apply(Command::PasteAfter, None);
     paste.apply(Command::RepeatChange, None);
     assert_eq!(paste.text(), "aXXbc\n");

@@ -328,7 +328,8 @@ fn check_embedded_editor() {
 /// is for. Every edit reports one `LineChange`, and the match below names every
 /// variant of it.
 fn check_prompt_line() {
-    let mut line = EditedLine::opened(String::from("write"), PROMPT_CHARS_MAX);
+    let mut line = EditedLine::opened(String::from("write"), PROMPT_CHARS_MAX)
+        .expect("the seed meets the limit");
     assert_eq!(line.apply(PromptEdit::CursorLineStart), LineChange::CursorMoved);
     assert_eq!(line.apply(PromptEdit::Insert('q')), LineChange::TextChanged);
     let accepted = line_change_name(line.apply(PromptEdit::Accept));

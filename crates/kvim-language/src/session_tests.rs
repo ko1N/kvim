@@ -1461,7 +1461,7 @@ static SERVERLESS_REGISTRY: [&dyn LanguageAdapter; 1] = [&SERVERLESS];
 #[test]
 fn a_language_without_a_server_leaves_the_editor_usable() {
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&SERVERLESS_REGISTRY),
+        LanguageRegistry::new(&SERVERLESS_REGISTRY).expect("the test registry is valid"),
         PathBuf::from(ROOT),
         EditorSettings::default(),
     )
@@ -1550,7 +1550,7 @@ static TWO_SERVER_REGISTRY: [&dyn LanguageAdapter; 1] = [&TWO_SERVER];
 #[tokio::test]
 async fn one_failing_server_leaves_the_other_server_of_the_language_running() {
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&TWO_SERVER_REGISTRY),
+        LanguageRegistry::new(&TWO_SERVER_REGISTRY).expect("the test registry is valid"),
         PathBuf::from(ROOT),
         EditorSettings::default(),
     )
@@ -1746,7 +1746,7 @@ static UNUSED_REGISTRY: [&dyn LanguageAdapter; 1] = [&UNUSED];
 async fn a_server_starts_only_when_the_workspace_holds_one_of_its_root_markers() {
     let root = PathBuf::from(MARKER_ROOT);
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&GATED_REGISTRY),
+        LanguageRegistry::new(&GATED_REGISTRY).expect("the test registry is valid"),
         root.clone(),
         EditorSettings::default(),
     )
@@ -1780,7 +1780,7 @@ async fn a_server_starts_only_when_the_workspace_holds_one_of_its_root_markers()
 fn a_workspace_without_the_root_marker_starts_no_server_of_its_language() {
     let root = PathBuf::from(MARKER_ROOT);
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&UNUSED_REGISTRY),
+        LanguageRegistry::new(&UNUSED_REGISTRY).expect("the test registry is valid"),
         root.clone(),
         EditorSettings::default(),
     )

@@ -235,7 +235,8 @@ fn plan_characterwise(
     operator: Operator,
     range: CharRange,
 ) -> EditPlan {
-    let value = RegisterValue::characterwise(text_in_range(buffer, range));
+    let value =
+        RegisterValue::characterwise(text_in_range(buffer, range)).expect("the value is bounded");
     let start = range.start();
     let target = CursorTarget::At {
         line: buffer.char_to_line(start).get(),
@@ -265,7 +266,8 @@ fn plan_linewise(
     first: LineIndex,
     last: LineIndex,
 ) -> EditPlan {
-    let value = RegisterValue::linewise(lines_text(buffer, first, last), buffer.line_ending());
+    let value = RegisterValue::linewise(lines_text(buffer, first, last), buffer.line_ending())
+        .expect("the value is bounded");
     match operator {
         Operator::Yank => EditPlan {
             transaction: None,
@@ -344,7 +346,8 @@ fn plan_block(
         }
     }
 
-    let value = RegisterValue::blockwise(&pieces, buffer.line_ending());
+    let value =
+        RegisterValue::blockwise(&pieces, buffer.line_ending()).expect("the value is bounded");
     let transaction = match operator {
         Operator::Yank => None,
         // A block larger than the transaction bound applies no change, so the

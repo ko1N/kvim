@@ -120,8 +120,9 @@ pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
 pub use driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
 pub use embed::{
     CursorRequest, CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorDrain,
-    EditorEvent, EditorInstanceId, EditorShutdown, EmbeddedEditor, EmbeddedEditorBuilder,
-    GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal, Saturated,
+    EditorEvent, EditorInstanceId, EditorOpenError, EditorShutdown, EmbeddedEditor,
+    EmbeddedEditorBuilder, GeometryError, InputRequest, PublishedEvent, Reduction,
+    ReductionOutcome, Refusal, Saturated,
 };
 pub use file_sidebar::{
     FILE_SIDEBAR_ICON_CELLS, FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_LINK_SUFFIX,

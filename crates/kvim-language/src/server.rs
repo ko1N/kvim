@@ -271,7 +271,7 @@ impl RootMarkers {
 /// A marker carries no directory component, so the probe joins it to the root
 /// without leaving that root.
 #[must_use]
-fn marker_is_valid(marker: &str) -> bool {
+pub(super) fn marker_is_valid(marker: &str) -> bool {
     !marker.is_empty() && marker != "." && marker != ".." && !marker.contains(path::is_separator)
 }
 

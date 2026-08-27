@@ -6,6 +6,7 @@
 //! holds. See `docs/clipboard.md`.
 
 use std::collections::BTreeMap;
+use std::fmt;
 
 use kvim_core::LineEnding;
 
@@ -35,6 +36,34 @@ pub enum RegisterShape {
     Blockwise,
 }
 
+/// A public register value did not establish its size or shape invariant.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RegisterValueError {
+    /// The text exceeds [`REGISTER_BYTES_MAX`].
+    TooLarge {
+        /// The supplied byte count.
+        bytes: usize,
+    },
+    /// A linewise value does not end with the selected line ending.
+    MalformedLinewise,
+}
+
+impl fmt::Display for RegisterValueError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::TooLarge { bytes } => write!(
+                formatter,
+                "the register value holds {bytes} bytes, above the {REGISTER_BYTES_MAX}-byte limit"
+            ),
+            Self::MalformedLinewise => {
+                formatter.write_str("a linewise register value must end with a line ending")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RegisterValueError {}
+
 /// One register value: the stored text and the shape that a paste follows.
 ///
 /// # Examples
@@ -43,7 +72,7 @@ pub enum RegisterShape {
 /// use kvim_core::LineEnding;
 /// use kvim_editor::{RegisterShape, RegisterValue};
 ///
-/// let value = RegisterValue::linewise("one", LineEnding::Lf);
+/// let value = RegisterValue::linewise("one", LineEnding::Lf).expect("the value is bounded");
 /// assert_eq!(value.shape(), RegisterShape::Linewise);
 /// // A linewise value always ends with one line ending.
 /// assert_eq!(value.text(), "one\n");
@@ -59,27 +88,60 @@ impl RegisterValue {
     ///
     /// A linewise text must already end with one line ending. Prefer
     /// [`RegisterValue::linewise`], which appends a missing line ending.
-    #[must_use]
-    pub fn new(text: impl Into<String>, shape: RegisterShape) -> Self {
+    /// # Errors
+    ///
+    /// Returns [`RegisterValueError::TooLarge`] when `text` exceeds the
+    /// register byte limit. Returns [`RegisterValueError::MalformedLinewise`]
+    /// when explicit linewise text has no line ending.
+    pub fn new(text: impl Into<String>, shape: RegisterShape) -> Result<Self, RegisterValueError> {
         let text = text.into();
+        if text.len() > REGISTER_BYTES_MAX {
+            return Err(RegisterValueError::TooLarge { bytes: text.len() });
+        }
+        if shape == RegisterShape::Linewise && !(text.ends_with('\n') || text.ends_with('\r')) {
+            return Err(RegisterValueError::MalformedLinewise);
+        }
+        Ok(Self { text, shape })
+    }
+
+    fn from_validated(text: String, shape: RegisterShape) -> Self {
         debug_assert!(
             text.len() <= REGISTER_BYTES_MAX,
-            "the buffer bound and the clipboard bound both stay below the register bound"
+            "the caller checked the register byte limit"
+        );
+        debug_assert!(
+            shape != RegisterShape::Linewise || text.ends_with('\n') || text.ends_with('\r'),
+            "the caller normalized linewise register text"
         );
         Self { text, shape }
     }
 
     /// Creates a characterwise value.
-    #[must_use]
-    pub fn characterwise(text: impl Into<String>) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegisterValueError::TooLarge`] when `text` exceeds the limit.
+    pub fn characterwise(text: impl Into<String>) -> Result<Self, RegisterValueError> {
         Self::new(text, RegisterShape::Characterwise)
     }
 
     /// Creates a linewise value and appends a missing line ending.
-    #[must_use]
-    pub fn linewise(text: impl Into<String>, line_ending: LineEnding) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegisterValueError::TooLarge`] when the normalized text
+    /// exceeds the limit.
+    pub fn linewise(
+        text: impl Into<String>,
+        line_ending: LineEnding,
+    ) -> Result<Self, RegisterValueError> {
         let mut text = text.into();
         if !text.ends_with(line_ending.as_str()) {
+            if text.len().saturating_add(line_ending.as_str().len()) > REGISTER_BYTES_MAX {
+                return Err(RegisterValueError::TooLarge {
+                    bytes: text.len().saturating_add(line_ending.as_str().len()),
+                });
+            }
             text.push_str(line_ending.as_str());
         }
         Self::new(text, RegisterShape::Linewise)
@@ -89,8 +151,15 @@ impl RegisterValue {
     ///
     /// A line that the block does not reach contributes an empty text, so the
     /// rectangle keeps one register line for each selected buffer line.
-    #[must_use]
-    pub fn blockwise(lines: &[String], line_ending: LineEnding) -> Self {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RegisterValueError::TooLarge`] when the joined text exceeds
+    /// the limit.
+    pub fn blockwise(
+        lines: &[String],
+        line_ending: LineEnding,
+    ) -> Result<Self, RegisterValueError> {
         Self::new(lines.join(line_ending.as_str()), RegisterShape::Blockwise)
     }
 
@@ -131,7 +200,9 @@ impl RegisterValue {
     /// use kvim_core::LineEnding;
     /// use kvim_editor::RegisterValue;
     ///
-    /// let value = RegisterValue::characterwise("ab").repeated(3, LineEnding::Lf);
+    /// let value = RegisterValue::characterwise("ab")
+    ///     .expect("the value is bounded")
+    ///     .repeated(3, LineEnding::Lf);
     /// assert_eq!(value.text(), "ababab");
     /// ```
     #[must_use]
@@ -148,7 +219,7 @@ impl RegisterValue {
                 .collect::<Vec<_>>()
                 .join(line_ending.as_str()),
         };
-        Self::new(text, self.shape)
+        Self::from_validated(text, self.shape)
     }
 
     /// Returns this value with `other` appended to it.
@@ -164,8 +235,11 @@ impl RegisterValue {
     /// use kvim_core::LineEnding;
     /// use kvim_editor::RegisterValue;
     ///
-    /// let first = RegisterValue::linewise("one", LineEnding::Lf);
-    /// let joined = first.appended(&RegisterValue::linewise("two", LineEnding::Lf), LineEnding::Lf);
+    /// let first = RegisterValue::linewise("one", LineEnding::Lf)
+    ///     .expect("the value is bounded");
+    /// let second = RegisterValue::linewise("two", LineEnding::Lf)
+    ///     .expect("the value is bounded");
+    /// let joined = first.appended(&second, LineEnding::Lf);
     /// assert_eq!(joined.text(), "one\ntwo\n");
     /// ```
     #[must_use]
@@ -176,8 +250,11 @@ impl RegisterValue {
         let mut text = self.text.clone();
         text.push_str(&other.text);
         match self.shape {
-            RegisterShape::Linewise => Self::linewise(text, line_ending),
-            RegisterShape::Characterwise | RegisterShape::Blockwise => Self::new(text, self.shape),
+            RegisterShape::Linewise => Self::linewise(text, line_ending)
+                .expect("the append byte check keeps normalized linewise text bounded"),
+            RegisterShape::Characterwise | RegisterShape::Blockwise => {
+                Self::from_validated(text, self.shape)
+            }
         }
     }
 }
@@ -228,12 +305,18 @@ impl RegisterTarget {
 /// let mut registers = Registers::default();
 /// assert!(registers.unnamed().is_none());
 ///
-/// registers.set_unnamed(RegisterValue::characterwise("alpha"));
+/// registers.set_unnamed(
+///     RegisterValue::characterwise("alpha").expect("the value is bounded"),
+/// );
 /// assert_eq!(registers.unnamed().map(RegisterValue::text), Some("alpha"));
 /// assert_eq!(registers.revision(), 1);
 ///
 /// // A named write leaves the unnamed register and the revision unchanged.
-/// registers.write(Some('a'), RegisterValue::characterwise("beta"), LineEnding::Lf);
+/// registers.write(
+///     Some('a'),
+///     RegisterValue::characterwise("beta").expect("the value is bounded"),
+///     LineEnding::Lf,
+/// );
 /// assert_eq!(registers.value(Some('a')).map(RegisterValue::text), Some("beta"));
 /// assert_eq!(registers.revision(), 1);
 /// ```

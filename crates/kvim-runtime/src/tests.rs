@@ -7,9 +7,9 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    EVENT_QUEUE_CAPACITY, PROCESS_INPUT_BYTES_MAX, PROCESS_OUTPUT_BYTES_MAX, ProcessRequest,
-    PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeLimits, SaturatedResource,
-    SubmitError, WORKER_CONCURRENCY_LIMIT_MAX, WorkKind,
+    EVENT_QUEUE_CAPACITY, EVENT_QUEUE_CAPACITY_MAX, PROCESS_INPUT_BYTES_MAX,
+    PROCESS_OUTPUT_BYTES_MAX, ProcessRequest, PublicationGate, RequestSlot, Runtime, RuntimeError,
+    RuntimeLimits, SaturatedResource, SubmitError, WORKER_CONCURRENCY_LIMIT_MAX, WorkKind,
 };
 
 /// Blocks the worker thread until the request is cancelled.
@@ -32,6 +32,26 @@ fn default_limits_clamp_the_detected_parallelism() {
     assert_eq!(limits.event_queue(), EVENT_QUEUE_CAPACITY);
     assert!(limits.workers() >= 1);
     assert!(limits.workers() <= WORKER_CONCURRENCY_LIMIT_MAX);
+}
+
+#[test]
+fn runtime_limits_reject_capacities_outside_published_bounds() {
+    assert!(matches!(
+        RuntimeLimits::new(0, 1, 1),
+        Err(SubmitError::InvalidLimits)
+    ));
+    assert!(matches!(
+        RuntimeLimits::new(EVENT_QUEUE_CAPACITY_MAX + 1, 1, 1),
+        Err(SubmitError::InvalidLimits)
+    ));
+    assert!(matches!(
+        RuntimeLimits::new(1, WORKER_CONCURRENCY_LIMIT_MAX + 1, 1),
+        Err(SubmitError::InvalidLimits)
+    ));
+    assert!(matches!(
+        RuntimeLimits::new(1, 1, 9),
+        Err(SubmitError::InvalidLimits)
+    ));
 }
 
 #[test]

@@ -45,6 +45,12 @@ pub use watch::{
 /// The number of results that the runtime holds for the event loop.
 pub const EVENT_QUEUE_CAPACITY: usize = 256;
 
+/// The largest result queue that one runtime may reserve.
+///
+/// A runtime reserves one queue slot for each accepted request. This bound
+/// prevents a host configuration from retaining an unbounded number of results.
+pub const EVENT_QUEUE_CAPACITY_MAX: usize = 4_096;
+
 /// The number of external processes that run at the same time.
 pub const PROCESS_CONCURRENCY_LIMIT: usize = 8;
 
@@ -102,14 +108,21 @@ impl RuntimeLimits {
     ///
     /// # Errors
     ///
-    /// Returns [`SubmitError::InvalidLimits`] when any capacity is zero. A zero
-    /// capacity would reject every request.
+    /// Returns [`SubmitError::InvalidLimits`] when a capacity is zero or above
+    /// its published maximum. A zero capacity would reject every request, and
+    /// an excessive capacity would defeat the runtime resource bounds.
     pub const fn new(
         event_queue: usize,
         workers: usize,
         processes: usize,
     ) -> Result<Self, SubmitError> {
-        if event_queue == 0 || workers == 0 || processes == 0 {
+        if event_queue == 0
+            || event_queue > EVENT_QUEUE_CAPACITY_MAX
+            || workers == 0
+            || workers > WORKER_CONCURRENCY_LIMIT_MAX
+            || processes == 0
+            || processes > PROCESS_CONCURRENCY_LIMIT
+        {
             return Err(SubmitError::InvalidLimits);
         }
         Ok(Self {

@@ -749,7 +749,8 @@ impl PromptLine {
     fn opened(kind: PromptKind, seed: PromptSeed) -> Self {
         Self {
             kind,
-            line: EditedLine::opened_at(seed.text, seed.cursor, prompt_chars_max(kind)),
+            line: EditedLine::opened_at(seed.text, seed.cursor, prompt_chars_max(kind))
+                .expect("the seed meets the limit"),
             completion: None,
         }
     }
@@ -2786,7 +2787,8 @@ impl Session {
         }
         self.confirmation = Some(Confirmation {
             question: clip_message_line(question),
-            answer: EditedLine::opened(String::new(), CONFIRM_ANSWER_CHARS_MAX),
+            answer: EditedLine::opened(String::new(), CONFIRM_ANSWER_CHARS_MAX)
+                .expect("the seed meets the limit"),
             action,
         });
         self.sync_context();

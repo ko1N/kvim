@@ -114,7 +114,8 @@ below must always agree.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
-| Result queue capacity | `EVENT_QUEUE_CAPACITY` | 256 results | One editor keystroke starts few requests, so 256 results absorb a burst without hiding a stalled event loop. |
+| Result queue default | `EVENT_QUEUE_CAPACITY` | 256 results | One editor keystroke starts few requests, so 256 results absorb a burst without hiding a stalled event loop. |
+| Result queue maximum | `EVENT_QUEUE_CAPACITY_MAX` | 4,096 results | A supplied runtime can absorb a larger host burst without retaining an unbounded result queue. |
 | Process concurrency | `PROCESS_CONCURRENCY_LIMIT` | 8 processes | The editor runs few external commands together: one search, one formatter, and one clipboard command. Eight leaves headroom and still bounds the child count. |
 | Worker concurrency | `WORKER_CONCURRENCY_LIMIT_MAX` | 1 to 8 jobs | The runtime clamps the detected parallelism into this range, so a large host does not start dozens of parser threads for one editor. |
 | Process input | `PROCESS_INPUT_BYTES_MAX` | 8 MiB | A formatter receives one buffer. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for expansion. |

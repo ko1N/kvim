@@ -65,7 +65,7 @@ pub use command::{Command, CommandAuthority, CommandGroup};
 pub use command_line::{
     COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError, CommandPathArgument,
 };
-pub use edited_line::{EditedLine, LineChange};
+pub use edited_line::{EditedLine, EditedLineError, LineChange};
 pub use kvim_keymap::{Chord, Key, KeyCode, KeyLabel, KeySequence};
 pub use kvim_keymap::{
     ContextGeneration, Dispatch, DispatchContext, Input, InputContextSnapshot, PasteText, Phase,
