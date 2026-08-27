@@ -203,15 +203,29 @@ conflicts by semantic command identity, while keeping semantic commands
 available. Binding overrides reject duplicate sequences and unreachable
 prefixes. Review bindings remain planned independently from editor bindings.
 
-`WorktreePresentation` currently selects which-key ownership. It defaults to
-`Embedded`. `host_owned_which_key` fixes which-key ownership to the host for the
-editor lifetime. `WorktreeEditorBuilder::open` accepts only facade-resolved plus
-embedded which-key, or host-resolved plus host-owned which-key. It returns the
-typed `WorktreeOpenErrorKind::Presentation` before worktree or live editor state
-exists for either inconsistent combination. In host-owned mode kvim derives no
-internal which-key deadline or rows and paints no internal which-key overlay.
-The command line, statusline, and file sidebar remain kvim-owned until their
-independent layout work is implemented.
+`WorktreePresentation` independently selects command-line, statusline,
+which-key, and file-sidebar ownership. `standalone()` and the default keep all
+four surfaces embedded. `integrated_host()` assigns all four to the host.
+Builder methods support every mixed combination, and construction fixes the
+choices for the editor lifetime.
+
+The effective resolver still owns which-key presentation. Facade-resolved
+input requires embedded which-key. Host-resolved input requires host-owned
+which-key. `WorktreeEditorBuilder::open` returns
+`WorktreeOpenErrorKind::Presentation` before worktree or live editor state
+exists for either inconsistent combination.
+
+A host-owned command line additionally requires `WorktreeCommandSurface`.
+Opening without that marker returns `WorktreeOpenErrorKind::CommandSurface`
+before root validation or live state construction. A host-owned statusline
+requires no callback or capability.
+
+Kvim realizes presentation before it constructs the private session.
+Host-owned command and status rows have zero height and become body rows.
+Host-owned file-sidebar presentation prevents creation of the private sidebar
+region. Kvim therefore writes no blank placeholder cells for host-owned
+surfaces. Embedded ownership keeps the existing chrome, sidebar, cursor,
+viewport, and which-key behavior.
 
 ### Planned Editor Publication
 

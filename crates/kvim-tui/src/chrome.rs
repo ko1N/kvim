@@ -14,18 +14,10 @@ use kvim_editor::Cursor;
 use kvim_input::Mode;
 use kvim_ui::{BandRank, BandSegment, ChromeBand};
 
+use super::embed::EditorPresentation;
 use super::language::FormatOnSave;
 use super::session::{Confirmation, Message, MessageLevel, PromptLine};
 use super::theme::{Theme, ThemeRole};
-
-/// The number of rows that the statusline occupies.
-const STATUSLINE_ROWS: u16 = 1;
-
-/// The number of rows that the message line occupies.
-const MESSAGE_ROWS: u16 = 1;
-
-/// The number of rows that both chrome bands occupy together.
-const CHROME_ROWS: u16 = STATUSLINE_ROWS + MESSAGE_ROWS;
 
 /// How long the mode survives a narrow statusline.
 ///
@@ -60,13 +52,8 @@ impl ShellAreas {
     /// Returns the rectangle that a popup above the command line may draw
     /// into.
     ///
-    /// The body and the statusline are contiguous in every height branch of
-    /// [`shell_areas`], so their union is one rectangle. Its bottom edge sits
-    /// on the statusline's bottom edge, directly above the message line. A
-    /// popup that anchors at the bottom of this rectangle therefore ends on
-    /// the statusline row, the way a wildmenu sits above the command line of
-    /// Vim. The command-line candidate list draws through this rectangle. See
-    /// `docs/windows.md`.
+    /// The body and the statusline are contiguous for every realized
+    /// presentation, including a zero-height host-owned statusline.
     pub(super) fn above_command_line(&self) -> Rect {
         debug_assert_eq!(
             self.body.bottom(),
@@ -82,31 +69,27 @@ impl ShellAreas {
     }
 }
 
-/// Splits the terminal into the three chrome bands.
-pub(super) fn shell_areas(area: Rect) -> ShellAreas {
-    let empty = Rect::new(area.x, area.y, area.width, 0);
-    let row = |offset: u16| Rect::new(area.x, area.y + offset, area.width, 1);
-    match area.height {
-        0 => ShellAreas {
-            body: empty,
-            statusline: empty,
-            message: empty,
-        },
-        1 => ShellAreas {
-            body: empty,
-            statusline: empty,
-            message: row(0),
-        },
-        2 => ShellAreas {
-            body: empty,
-            statusline: row(0),
-            message: row(1),
-        },
-        height => ShellAreas {
-            body: Rect::new(area.x, area.y, area.width, height - CHROME_ROWS),
-            statusline: row(height - CHROME_ROWS),
-            message: row(height - MESSAGE_ROWS),
-        },
+/// Splits the accepted rectangle according to fixed presentation ownership.
+pub(super) fn shell_areas(area: Rect, presentation: EditorPresentation) -> ShellAreas {
+    let statusline_rows = u16::from(presentation.statusline_embedded());
+    let message_rows = u16::from(presentation.command_line_embedded());
+    let chrome_rows = statusline_rows + message_rows;
+    let body_height = area.height.saturating_sub(chrome_rows);
+    let body = Rect::new(area.x, area.y, area.width, body_height);
+    let statusline = if statusline_rows == 0 || area.height <= message_rows {
+        Rect::new(area.x, body.bottom(), area.width, 0)
+    } else {
+        Rect::new(area.x, body.bottom(), area.width, 1)
+    };
+    let message = if message_rows == 0 || area.height == 0 {
+        Rect::new(area.x, statusline.bottom(), area.width, 0)
+    } else {
+        Rect::new(area.x, area.bottom() - 1, area.width, 1)
+    };
+    ShellAreas {
+        body,
+        statusline,
+        message,
     }
 }
 

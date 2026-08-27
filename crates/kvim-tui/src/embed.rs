@@ -699,6 +699,55 @@ impl EditorCapacity {
     }
 }
 
+/// Fixed presentation ownership realized before session construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorPresentation {
+    command_line_embedded: bool,
+    statusline_embedded: bool,
+    which_key_embedded: bool,
+    file_sidebar_embedded: bool,
+}
+
+impl EditorPresentation {
+    /// Creates one realized presentation from facade-validated ownership.
+    #[must_use]
+    pub const fn new(
+        command_line_embedded: bool,
+        statusline_embedded: bool,
+        which_key_embedded: bool,
+        file_sidebar_embedded: bool,
+    ) -> Self {
+        Self {
+            command_line_embedded,
+            statusline_embedded,
+            which_key_embedded,
+            file_sidebar_embedded,
+        }
+    }
+
+    pub(super) const fn command_line_embedded(self) -> bool {
+        self.command_line_embedded
+    }
+
+    pub(super) const fn statusline_embedded(self) -> bool {
+        self.statusline_embedded
+    }
+
+    pub(super) const fn which_key_embedded(self) -> bool {
+        self.which_key_embedded
+    }
+
+    pub(super) const fn file_sidebar_embedded(self) -> bool {
+        self.file_sidebar_embedded
+    }
+}
+
+impl Default for EditorPresentation {
+    fn default() -> Self {
+        Self::new(true, true, true, true)
+    }
+}
+
 /// The construction of one embedded editor.
 ///
 /// The root and the rectangle are required, because the root bounds every file
@@ -736,7 +785,7 @@ pub struct EmbeddedEditorBuilder {
     watcher_unavailable: bool,
     git_status: bool,
     registry: Registry,
-    which_key_embedded: bool,
+    presentation: EditorPresentation,
 }
 
 impl EmbeddedEditorBuilder {
@@ -820,11 +869,11 @@ impl EmbeddedEditorBuilder {
         self
     }
 
-    /// Selects whether the private session derives and paints which-key rows.
+    /// Selects facade-validated presentation ownership.
     #[doc(hidden)]
     #[must_use]
-    pub fn which_key_embedded(mut self, embedded: bool) -> Self {
-        self.which_key_embedded = embedded;
+    pub fn presentation(mut self, presentation: EditorPresentation) -> Self {
+        self.presentation = presentation;
         self
     }
 
@@ -847,7 +896,7 @@ impl EmbeddedEditorBuilder {
             watcher_unavailable,
             git_status,
             registry,
-            which_key_embedded,
+            presentation,
         } = self;
         if area.width == 0 || area.height == 0 {
             return Err(GeometryError::Empty { area }.into());
@@ -861,11 +910,16 @@ impl EmbeddedEditorBuilder {
                 language: services.root().to_path_buf(),
             });
         }
-        let mut editor = Session::new_with_registry(area, settings, root, registry)
-            .with_access(access)
-            .with_clipboard(clipboard)
-            .with_git_status(git_status)
-            .with_embedded_which_key(which_key_embedded);
+        let mut editor = Session::new_with_registry_and_presentation(
+            area,
+            settings,
+            root,
+            registry,
+            presentation,
+        )
+        .with_access(access)
+        .with_clipboard(clipboard)
+        .with_git_status(git_status);
         if watcher_unavailable {
             let _ = editor.report_watch_unavailable();
         }
@@ -971,8 +1025,20 @@ impl EmbeddedEditor {
             watcher_unavailable: false,
             git_status: true,
             registry: Registry::first_release(),
-            which_key_embedded: true,
+            presentation: EditorPresentation::default(),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn region_areas(&self) -> Vec<(kvim_ui::RegionKind, Rect)> {
+        self.editor
+            .visible()
+            .windows
+            .layout()
+            .regions()
+            .iter()
+            .map(|region| (region.kind, region.area))
+            .collect()
     }
 
     /// Returns the identity that every event and every result of this editor

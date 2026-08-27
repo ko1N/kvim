@@ -121,6 +121,110 @@ fn watcher_open_error_keeps_the_facade_kind_and_source() {
 }
 
 #[test]
+fn every_presentation_combination_opens_and_writes_only_the_accepted_rectangle() {
+    let root = TestRoot::new("presentation-combinations");
+    let area = Rect::new(3, 2, 9, 4);
+    let buffer_area = Rect::new(0, 0, 16, 9);
+
+    for command_line in [SurfaceOwnership::Embedded, SurfaceOwnership::HostOwned] {
+        for statusline in [SurfaceOwnership::Embedded, SurfaceOwnership::HostOwned] {
+            for which_key in [SurfaceOwnership::Embedded, SurfaceOwnership::HostOwned] {
+                for file_sidebar in [SurfaceOwnership::Embedded, SurfaceOwnership::HostOwned] {
+                    let presentation = WorktreePresentation::standalone()
+                        .command_line(command_line)
+                        .statusline(statusline)
+                        .which_key(which_key)
+                        .file_sidebar(file_sidebar);
+                    let mut builder =
+                        WorktreeEditor::builder(&root.0, area).presentation(presentation);
+                    if command_line == SurfaceOwnership::HostOwned {
+                        builder = builder.command_surface(WorktreeCommandSurface::new());
+                    }
+                    if which_key == SurfaceOwnership::HostOwned {
+                        builder = builder.binding_mode(WorktreeBindingMode::HostResolved {
+                            reserved_escape: Key::ctrl(KeyCode::Char(']')),
+                        });
+                    }
+                    let editor = builder.open().unwrap();
+                    let mut cells = Buffer::filled(buffer_area, ratatui::buffer::Cell::new("#"));
+                    let cursor = editor.render(&mut cells).unwrap();
+                    assert!(
+                        cursor
+                            .position
+                            .is_none_or(|position| area.contains(position))
+                    );
+                    for y in buffer_area.y..buffer_area.bottom() {
+                        for x in buffer_area.x..buffer_area.right() {
+                            if !area.contains(Position::new(x, y)) {
+                                assert_eq!(cells[(x, y)].symbol(), "#");
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn host_owned_sidebar_allocates_no_columns_and_embedded_sidebar_keeps_its_geometry() {
+    let root = TestRoot::new("presentation-sidebar");
+    let area = Rect::new(0, 0, 80, 8);
+    let host_presentation =
+        WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut host = WorktreeEditor::builder(&root.0, area)
+        .presentation(host_presentation)
+        .open()
+        .unwrap();
+    let _ = host.command(Command::RevealInFileTree, None, None, Duration::ZERO);
+    let _ = host.command(Command::FocusWindowRight, None, None, Duration::ZERO);
+    let _ = host.command(Command::RevealInFileTree, None, None, Duration::ZERO);
+    let host_regions = host.region_areas();
+
+    assert_ne!(host.input_context().scope, BindingScope::Sidebar);
+    let mut embedded = WorktreeEditor::builder(&root.0, area).open().unwrap();
+    let _ = embedded.command(Command::RevealInFileTree, None, None, Duration::ZERO);
+    let embedded_regions = embedded.region_areas();
+
+    assert_eq!(host_regions.len(), 1);
+    assert_eq!(host_regions[0].0, kvim_ui::RegionKind::Surface);
+    assert_eq!(host_regions[0].1.width, area.width);
+    assert!(embedded_regions.iter().any(|(kind, region)| {
+        matches!(kind, kvim_ui::RegionKind::Sidebar(_)) && region.width == 40
+    }));
+}
+
+#[test]
+fn host_owned_command_line_requires_its_surface_before_root_or_live_state() {
+    let missing_root = std::env::temp_dir().join("kvim-missing-presentation-root");
+    let error = WorktreeEditor::builder(&missing_root, Rect::new(0, 0, 20, 3))
+        .presentation(WorktreePresentation::standalone().command_line(SurfaceOwnership::HostOwned))
+        .open()
+        .unwrap_err();
+    assert_eq!(error.kind(), WorktreeOpenErrorKind::CommandSurface);
+}
+
+#[test]
+fn integrated_host_opens_with_its_required_input_and_command_capabilities() {
+    let root = TestRoot::new("integrated-host-presentation");
+    let escape = Key::ctrl(KeyCode::Char(']'));
+    let editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .binding_mode(WorktreeBindingMode::HostResolved {
+            reserved_escape: escape,
+        })
+        .presentation(WorktreePresentation::integrated_host())
+        .command_surface(WorktreeCommandSurface::new())
+        .open()
+        .unwrap();
+
+    let context = editor
+        .binding_context()
+        .expect("the integrated host owns physical resolution");
+    assert_eq!(context.reserved_escape(), escape);
+    assert_eq!(editor.region_areas().len(), 1);
+}
+
+#[test]
 fn presentation_ownership_must_match_the_effective_resolver() {
     let root = TestRoot::new("presentation-ownership");
     let area = Rect::new(0, 0, 30, 6);

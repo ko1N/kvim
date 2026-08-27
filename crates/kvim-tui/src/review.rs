@@ -280,6 +280,12 @@ impl ReviewSurface {
         self.first_row
     }
 
+    /// Returns the number of diff-body rows in the current viewport.
+    #[cfg(test)]
+    pub(super) const fn height_rows(&self) -> usize {
+        self.height_rows
+    }
+
     /// Tells the review how many rows each region shows.
     pub(super) fn set_height_rows(&mut self, height_rows: u16) {
         // The strip of sections takes the first row of the review, so both

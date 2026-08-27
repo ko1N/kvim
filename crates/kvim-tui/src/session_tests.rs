@@ -27,6 +27,7 @@ use crate::clipboard::SessionClipboard;
 use crate::completion::{CompletionOutcome, LineCompletion};
 use crate::language::{LanguageRequest, LanguageRequestKind};
 use crate::log::LOG_ENTRIES_MAX;
+use crate::review::ReviewSurface;
 use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
     PromptSeed, Redraw, RunState, Session, test_root,
@@ -52,6 +53,17 @@ fn session(width: u16, height: u16) -> Session {
         Rect::new(0, 0, width, height),
         EditorSettings::default(),
         test_root(workspace_root()),
+    )
+}
+
+/// Creates a session with host-owned command and status rows.
+fn integrated_session(width: u16, height: u16) -> Session {
+    Session::new_with_registry_and_presentation(
+        Rect::new(0, 0, width, height),
+        EditorSettings::default(),
+        test_root(workspace_root()),
+        kvim_input::Registry::first_release(),
+        crate::embed::EditorPresentation::new(false, false, false, false),
     )
 }
 
@@ -4389,6 +4401,37 @@ fn the_review_owns_the_keys_and_gives_the_layout_back_unchanged() {
     // The buffer answers keys again.
     type_keys(&mut session, "dd");
     assert_ne!(session.buffer().to_string(), before);
+}
+
+#[test]
+fn integrated_review_uses_the_expanded_host_owned_body_height() {
+    let mut session = integrated_session(80, 10);
+    session.review = Some(ReviewSurface::new(
+        None,
+        None,
+        session.settings.diff,
+        session.settings.windows.resize_step_cells,
+        0,
+    ));
+    let _ = session.open_review();
+
+    let review = session
+        .visible()
+        .review
+        .expect("the integrated review is open");
+    assert_eq!(review.height_rows(), 8);
+
+    session
+        .set_area(Rect::new(0, 0, 80, 12))
+        .expect("the larger rectangle is valid");
+    assert_eq!(
+        session
+            .visible()
+            .review
+            .expect("resize keeps the integrated review open")
+            .height_rows(),
+        10,
+    );
 }
 
 #[test]

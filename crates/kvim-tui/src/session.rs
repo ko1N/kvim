@@ -87,8 +87,8 @@ use super::completion::{
 use super::diagnostics::{HOST_BUFFER_NAME, HostReportRequest, HostWorkspace};
 use super::embed::{
     CursorRequest, CursorShape, EditorAccess, EditorEvent, EditorInstanceId, EditorOutbox,
-    EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome,
-    Refusal, fits,
+    EditorPresentation, EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction,
+    ReductionOutcome, Refusal, fits,
 };
 use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
 use super::jumps::{JumpDirection, JumpEntry, JumpStep};
@@ -921,6 +921,7 @@ pub(super) struct ActiveSearch {
 /// cannot change the session through this value.
 pub(super) struct Visible<'a> {
     pub(super) area: Rect,
+    pub(super) presentation: EditorPresentation,
     pub(super) theme: Theme,
     pub(super) settings: &'a EditorSettings,
     pub(super) windows: &'a Windows,
@@ -1145,6 +1146,7 @@ pub struct Session {
     /// The outbox slot that the running workspace mutation owns.
     mutation_slot: Option<EventReservation>,
     area: Rect,
+    presentation: EditorPresentation,
     settings: EditorSettings,
     theme: Theme,
     root: Arc<WorktreeRoot>,
@@ -1291,7 +1293,13 @@ impl Session {
     /// is a cold-path bootstrap check, so an invalid table must fail at start.
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings, root: Arc<WorktreeRoot>) -> Self {
-        Self::new_with_registry(area, settings, root, Registry::first_release())
+        Self::new_with_registry_and_presentation(
+            area,
+            settings,
+            root,
+            Registry::first_release(),
+            EditorPresentation::default(),
+        )
     }
 
     /// Creates a session with one caller-selected validated registry.
@@ -1303,6 +1311,25 @@ impl Session {
         root: Arc<WorktreeRoot>,
         registry: Registry,
     ) -> Self {
+        Self::new_with_registry_and_presentation(
+            area,
+            settings,
+            root,
+            registry,
+            EditorPresentation::default(),
+        )
+    }
+
+    /// Creates a session with one realized fixed presentation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_registry_and_presentation(
+        area: Rect,
+        settings: EditorSettings,
+        root: Arc<WorktreeRoot>,
+        registry: Registry,
+        presentation: EditorPresentation,
+    ) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
         let instance = EditorInstanceId::allocate();
         let mut session = Self {
@@ -1313,6 +1340,7 @@ impl Session {
             write_slot: None,
             mutation_slot: None,
             area,
+            presentation,
             settings,
             theme: Theme::new(),
             root: Arc::clone(&root),
@@ -1322,7 +1350,11 @@ impl Session {
             file_outbox: None,
             file_pending: None,
             reload_due: false,
-            windows: Windows::new(active, shell_areas(area).body, settings.windows),
+            windows: Windows::new(
+                active,
+                shell_areas(area, presentation).body,
+                settings.windows,
+            ),
             tree: TreeSidebar::new(Arc::clone(&root)),
             tree_region: None,
             picker: None,
@@ -1353,7 +1385,7 @@ impl Session {
             log: EditorLog::default(),
             float: None,
             which_key: None,
-            embedded_which_key: true,
+            embedded_which_key: presentation.which_key_embedded(),
             notifications: NotificationBoard::default(),
             clock: Duration::ZERO,
             run: RunState::Running,
@@ -2147,6 +2179,7 @@ impl Session {
     pub(super) fn visible(&self) -> Visible<'_> {
         Visible {
             area: self.area,
+            presentation: self.presentation,
             theme: self.theme,
             settings: &self.settings,
             windows: &self.windows,
@@ -2197,9 +2230,10 @@ impl Session {
             return Redraw::Skipped;
         }
         self.area = area;
-        self.windows.set_terminal(shell_areas(area).body);
+        self.windows
+            .set_terminal(shell_areas(area, self.presentation).body);
         if let Some(review) = self.review.as_mut() {
-            review.set_height_rows(review_body_rows(area));
+            review.set_height_rows(review_body_rows(area, self.presentation));
         }
         Redraw::Needed
     }
@@ -4392,6 +4426,9 @@ impl Session {
     /// showing it never builds a second region. Returns `None` when the window
     /// tree cannot issue a region identity.
     fn show_sidebar(&mut self) -> Option<WindowId> {
+        if !self.presentation.file_sidebar_embedded() {
+            return None;
+        }
         match self.tree_region {
             Some(id) => {
                 self.windows.set_sidebar_visible(SidebarSide::Right, true);
@@ -4725,7 +4762,7 @@ impl Session {
     fn open_review(&mut self) -> Redraw {
         self.review_open = true;
         if let Some(review) = self.review.as_mut() {
-            review.set_height_rows(review_body_rows(self.area));
+            review.set_height_rows(review_body_rows(self.area, self.presentation));
         }
         self.request_diff_captures();
         self.sync_context();
@@ -4852,7 +4889,7 @@ impl Session {
                             unstaged,
                             self.settings.diff,
                             self.settings.windows.resize_step_cells,
-                            review_body_rows(self.area),
+                            review_body_rows(self.area, self.presentation),
                         ));
                     }
                 }
@@ -6476,10 +6513,10 @@ const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 /// The message that a missing `git` command shows once for each session.
 /// Returns the number of rows that one region of the review shows.
 ///
-/// The statusline and the message line take their own rows, so the review
-/// draws inside the body band alone.
-fn review_body_rows(area: Rect) -> u16 {
-    shell_areas(area).body.height
+/// The fixed presentation decides which chrome rows remain embedded, so the
+/// review uses the same body height as its painter and the window tree.
+fn review_body_rows(area: Rect, presentation: EditorPresentation) -> u16 {
+    shell_areas(area, presentation).body.height
 }
 
 /// Reports whether the sidebar owns one command.

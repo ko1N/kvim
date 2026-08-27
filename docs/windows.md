@@ -18,21 +18,25 @@ placement of every visible surface and of the open overlay.
 [`embedding.md`](embedding.md) owns the transition protocol that moves focus and
 overlay ownership.
 
-### Host-Owned Which-Key
+### Host-Owned Presentation
 
-`WorktreePresentation` now selects which-key ownership for one worktree editor.
-Embedded ownership remains the default and keeps the current overlay geometry.
-Host-owned ownership disables internal which-key deadlines, rows, and painting.
-The host reads one merged resolver model and places its own menu. Command-line,
-statusline, and sidebar layout ownership remain planned separately.
+`WorktreePresentation` independently selects command-line, statusline,
+which-key, and file-sidebar ownership for one worktree editor. Embedded
+ownership remains the default and keeps the existing geometry and behavior.
+`standalone()` embeds all surfaces. `integrated_host()` assigns all surfaces to
+the host. Mixed ownership is valid.
 
-### Planned Host Composition
+The effective resolver owns which-key presentation. Host-owned which-key uses
+the host resolver and disables internal deadlines, rows, and painting.
+Facade-owned resolution keeps embedded which-key.
 
-The planned host-composition facade will add independent command-line,
-statusline, and file-sidebar ownership without exposing private workspace or
-TUI types. Host-owned regions will be removed from kvim layout. Planned
-semantic command, status, and sidebar snapshots remain bounded and carry no
-host-domain identity.
+Presentation is realized before visible session state exists. A host-owned
+command or status row has zero height, so its cell row becomes part of the
+editor body. A host-owned file sidebar cannot create a window-tree sidebar
+region, so its columns remain available to editor windows. Kvim paints no blank
+placeholder region for any host-owned surface. Host-owned command-line
+presentation requires a facade command-surface capability at construction.
+Host-owned statusline presentation requires no callback.
 
 `WindowTree<SurfaceId>` contains opaque surface identities, split structure,
 validated ratios, focus, limits, and minimum dimensions. Host surface values,

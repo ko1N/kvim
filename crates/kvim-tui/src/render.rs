@@ -6,10 +6,10 @@
 
 use ratatui::Frame;
 use ratatui::buffer::Buffer as CellBuffer;
-use ratatui::layout::Position;
+use ratatui::layout::{Position, Rect};
 
 use kvim_editor::{Cursor, WindowState};
-use kvim_input::Mode;
+use kvim_input::{Mode, PromptKind};
 use kvim_ui::RegionKind;
 
 use super::buffer_view::{BracketHighlight, RegionFocus, WindowView, cursor_cell, render_window};
@@ -38,7 +38,7 @@ pub(super) fn frame(frame: &mut Frame<'_>, view: &Visible<'_>) {
 /// so this function writes no cell outside that rectangle. It returns the one
 /// cursor cell of the frame instead of moving a terminal cursor.
 pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Position> {
-    let bands = shell_areas(view.area);
+    let bands = shell_areas(view.area, view.presentation);
     let theme = view.theme;
     target.set_style(view.area, theme.style(ThemeRole::Text));
 
@@ -192,7 +192,11 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     // decides its own visibility as one fact for the whole row instead of
     // leaving a part to survive beside the list at the widths the list does
     // not reach. See `docs/windows.md`.
-    let completion = view.prompt.and_then(|prompt| prompt.completion.as_ref());
+    let completion = view
+        .presentation
+        .command_line_embedded()
+        .then(|| view.prompt.and_then(|prompt| prompt.completion.as_ref()))
+        .flatten();
     let statusline_parts = if completion.is_some() {
         StatuslineParts::Hidden
     } else {
@@ -216,12 +220,32 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         view.focused_format_on_save(),
         statusline_parts,
     );
+    let internal_prompt = view.prompt.filter(|prompt| {
+        matches!(
+            prompt.kind,
+            PromptKind::Search | PromptKind::Tree(_) | PromptKind::Picker
+        )
+    });
+    let internal_message_area = if bands.message.is_empty()
+        && view.picker.is_none()
+        && (view.confirmation.is_some() || internal_prompt.is_some())
+        && !bands.body.is_empty()
+    {
+        Rect::new(bands.body.x, bands.body.bottom() - 1, bands.body.width, 1)
+    } else {
+        bands.message
+    };
+    let visible_prompt = if bands.message.is_empty() {
+        internal_prompt
+    } else {
+        view.prompt
+    };
     render_message(
         target,
-        bands.message,
+        internal_message_area,
         theme,
         view.confirmation,
-        view.prompt,
+        visible_prompt,
         view.message,
     );
     // The notification overlay reports the background work of the editor, so

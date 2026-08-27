@@ -305,37 +305,137 @@ pub enum SurfaceOwnership {
     HostOwned,
 }
 
-/// Presentation ownership implemented for this slice.
+/// Presentation ownership implemented by one worktree editor.
 ///
-/// This value currently selects which-key ownership only. Later presentation
-/// work adds independent command-line, statusline, and sidebar fields without
-/// changing this default.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+/// The four choices are independent. Construction fixes them for the editor
+/// lifetime, so every frame uses one realized layout.
+///
+/// # Examples
+///
+/// ```
+/// use kvim_embed::{SurfaceOwnership, WorktreePresentation};
+///
+/// let presentation = WorktreePresentation::standalone()
+///     .command_line(SurfaceOwnership::HostOwned)
+///     .statusline(SurfaceOwnership::Embedded);
+/// assert_eq!(
+///     presentation.command_line_ownership(),
+///     SurfaceOwnership::HostOwned,
+/// );
+/// assert_eq!(
+///     presentation.statusline_ownership(),
+///     SurfaceOwnership::Embedded,
+/// );
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct WorktreePresentation {
+    command_line: SurfaceOwnership,
+    statusline: SurfaceOwnership,
     which_key: SurfaceOwnership,
+    file_sidebar: SurfaceOwnership,
+}
+
+impl Default for WorktreePresentation {
+    fn default() -> Self {
+        Self::standalone()
+    }
 }
 
 impl WorktreePresentation {
-    /// Selects kvim-owned which-key presentation.
+    /// Selects kvim-owned presentation for every surface.
     #[must_use]
     pub const fn standalone() -> Self {
         Self {
+            command_line: SurfaceOwnership::Embedded,
+            statusline: SurfaceOwnership::Embedded,
             which_key: SurfaceOwnership::Embedded,
+            file_sidebar: SurfaceOwnership::Embedded,
         }
     }
 
-    /// Selects host-owned which-key presentation.
+    /// Selects host-owned presentation for every surface.
+    #[must_use]
+    pub const fn integrated_host() -> Self {
+        Self {
+            command_line: SurfaceOwnership::HostOwned,
+            statusline: SurfaceOwnership::HostOwned,
+            which_key: SurfaceOwnership::HostOwned,
+            file_sidebar: SurfaceOwnership::HostOwned,
+        }
+    }
+
+    /// Selects command-line presentation ownership.
+    #[must_use]
+    pub const fn command_line(mut self, ownership: SurfaceOwnership) -> Self {
+        self.command_line = ownership;
+        self
+    }
+
+    /// Selects statusline presentation ownership.
+    #[must_use]
+    pub const fn statusline(mut self, ownership: SurfaceOwnership) -> Self {
+        self.statusline = ownership;
+        self
+    }
+
+    /// Selects which-key presentation ownership.
+    #[must_use]
+    pub const fn which_key(mut self, ownership: SurfaceOwnership) -> Self {
+        self.which_key = ownership;
+        self
+    }
+
+    /// Selects file-sidebar presentation ownership.
+    #[must_use]
+    pub const fn file_sidebar(mut self, ownership: SurfaceOwnership) -> Self {
+        self.file_sidebar = ownership;
+        self
+    }
+
+    /// Selects host-owned which-key presentation and embedded presentation for
+    /// every other surface.
     #[must_use]
     pub const fn host_owned_which_key() -> Self {
-        Self {
-            which_key: SurfaceOwnership::HostOwned,
-        }
+        Self::standalone().which_key(SurfaceOwnership::HostOwned)
+    }
+
+    /// Returns command-line presentation ownership.
+    #[must_use]
+    pub const fn command_line_ownership(self) -> SurfaceOwnership {
+        self.command_line
+    }
+
+    /// Returns statusline presentation ownership.
+    #[must_use]
+    pub const fn statusline_ownership(self) -> SurfaceOwnership {
+        self.statusline
     }
 
     /// Returns which-key presentation ownership.
     #[must_use]
-    pub const fn which_key(self) -> SurfaceOwnership {
+    pub const fn which_key_ownership(self) -> SurfaceOwnership {
         self.which_key
+    }
+
+    /// Returns file-sidebar presentation ownership.
+    #[must_use]
+    pub const fn file_sidebar_ownership(self) -> SurfaceOwnership {
+        self.file_sidebar
+    }
+}
+
+/// Proof that a host-owned command line has a visible host surface.
+///
+/// The marker carries no callback. Later command lifecycle APIs use the same
+/// construction capability without changing presentation ownership.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WorktreeCommandSurface;
+
+impl WorktreeCommandSurface {
+    /// Declares that the host can present editor command-line requests.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self
     }
 }
 
@@ -682,6 +782,8 @@ pub enum WorktreeOpenErrorKind {
     Geometry,
     /// The selected binding resolver and which-key owner are inconsistent.
     Presentation,
+    /// The selected presentation requires a missing host capability.
+    CommandSurface,
     /// The private asynchronous executor could not start.
     Executor,
     /// Built-in language services rejected the root.
@@ -737,6 +839,8 @@ impl fmt::Display for WorktreeOpenError {
             WorktreeOpenErrorKind::Presentation => {
                 formatter.write_str("binding resolution and which-key ownership are inconsistent")
             }
+            WorktreeOpenErrorKind::CommandSurface => formatter
+                .write_str("host-owned command-line presentation requires a command surface"),
             WorktreeOpenErrorKind::Executor => {
                 formatter.write_str("cannot start the editor executor")
             }
@@ -901,6 +1005,7 @@ pub struct WorktreeEditorBuilder {
     capabilities: WorktreeCapabilities,
     binding_mode: WorktreeBindingMode,
     presentation: WorktreePresentation,
+    command_surface: Option<WorktreeCommandSurface>,
 }
 
 impl WorktreeEditorBuilder {
@@ -934,16 +1039,31 @@ impl WorktreeEditorBuilder {
         self.binding_mode = binding_mode;
         self
     }
-    /// Selects which-key presentation ownership for the editor lifetime.
+    /// Selects independent presentation ownership for the editor lifetime.
     #[must_use]
     pub fn presentation(mut self, presentation: WorktreePresentation) -> Self {
         self.presentation = presentation;
         self
     }
+    /// Proves that the host can show a host-owned command line.
+    #[must_use]
+    pub fn command_surface(mut self, capability: WorktreeCommandSurface) -> Self {
+        self.command_surface = Some(capability);
+        self
+    }
     /// Opens the editor and its private executor.
     pub fn open(self) -> Result<WorktreeEditor, WorktreeOpenError> {
+        if self.presentation.command_line_ownership() == SurfaceOwnership::HostOwned
+            && self.command_surface.is_none()
+        {
+            return Err(WorktreeOpenError::new(
+                WorktreeOpenErrorKind::CommandSurface,
+                None,
+                WorktreePresentationError::MissingCommandSurface,
+            ));
+        }
         let valid_ownership = matches!(
-            (self.binding_mode, self.presentation.which_key()),
+            (self.binding_mode, self.presentation.which_key_ownership()),
             (
                 WorktreeBindingMode::FacadeResolved,
                 SurfaceOwnership::Embedded
@@ -956,7 +1076,7 @@ impl WorktreeEditorBuilder {
             return Err(WorktreeOpenError::new(
                 WorktreeOpenErrorKind::Presentation,
                 None,
-                WorktreePresentationError,
+                WorktreePresentationError::ResolverWhichKeyMismatch,
             ));
         }
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -988,7 +1108,12 @@ impl WorktreeEditorBuilder {
             .expect("built-in binding profiles are validated by focused tests");
         let mut builder = EmbeddedEditor::builder(Arc::clone(&root), self.area)
             .registry(registry)
-            .which_key_embedded(self.presentation.which_key() == SurfaceOwnership::Embedded)
+            .presentation(kvim_tui::__private::EditorPresentation::new(
+                self.presentation.command_line_ownership() == SurfaceOwnership::Embedded,
+                self.presentation.statusline_ownership() == SurfaceOwnership::Embedded,
+                self.presentation.which_key_ownership() == SurfaceOwnership::Embedded,
+                self.presentation.file_sidebar_ownership() == SurfaceOwnership::Embedded,
+            ))
             .settings(self.settings)
             .access(match self.access {
                 WorktreeAccess::ReadWrite => TuiEditorAccess::ReadWrite,
@@ -1061,8 +1186,12 @@ impl WorktreeEditorBuilder {
 }
 
 #[derive(Clone, Copy, Debug, Error)]
-#[error("the effective resolver must own which-key presentation")]
-struct WorktreePresentationError;
+enum WorktreePresentationError {
+    #[error("the effective resolver must own which-key presentation")]
+    ResolverWhichKeyMismatch,
+    #[error("host-owned command-line presentation requires a command surface")]
+    MissingCommandSurface,
+}
 
 fn construct_service<T, E>(
     policy: ServicePolicy,
@@ -1114,8 +1243,14 @@ impl WorktreeEditor {
             capabilities: WorktreeCapabilities::default(),
             binding_mode: WorktreeBindingMode::default(),
             presentation: WorktreePresentation::default(),
+            command_surface: None,
         }
     }
+    #[cfg(test)]
+    fn region_areas(&self) -> Vec<(kvim_ui::RegionKind, Rect)> {
+        self.inner().region_areas()
+    }
+
     #[cfg(test)]
     fn capabilities(&self) -> WorktreeCapabilities {
         self.capabilities

@@ -95,8 +95,8 @@ pub mod __private {
     pub use crate::driver::{Completed, EditorDriver, EditorWork};
     pub use crate::embed::{
         CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorDrain, EditorEvent,
-        EditorInstanceId, EditorOpenError, EditorShutdown, EmbeddedEditor, GeometryError,
-        InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal,
+        EditorInstanceId, EditorOpenError, EditorPresentation, EditorShutdown, EmbeddedEditor,
+        GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal,
     };
     pub use crate::file_sidebar::{FileSidebarInput, FileSidebarOutcome};
     pub use crate::session::{Redraw, RunState, Session};
