@@ -5,6 +5,21 @@
 
 #![deny(missing_docs)]
 
+#[cfg(feature = "worktree")]
+mod worktree;
+
+#[cfg(feature = "worktree")]
+pub use worktree::{
+    COMPLETION_CAPACITY_MAX, CapacityError, EVENT_CAPACITY_MAX, PROCESS_CAPACITY_MAX,
+    ServicePolicy, WORKER_CAPACITY_MAX, WORKSPACE_OPERATION_PATHS_MAX, WorkspaceEntryKind,
+    WorkspaceOperation, WorkspaceOperationKind, WorkspaceTransfer, WorktreeAccess,
+    WorktreeCapabilities, WorktreeCapacity, WorktreeCommandError, WorktreeCompletion,
+    WorktreeCursor, WorktreeCursorShape, WorktreeDrain, WorktreeEditor, WorktreeEditorBuilder,
+    WorktreeEvent, WorktreeGeometryError, WorktreeInputOutcome, WorktreeInputRequest,
+    WorktreeOpenError, WorktreeOpenErrorKind, WorktreeRefusal, WorktreeRunState, WorktreeShutdown,
+    WorktreeUpdate,
+};
+
 use std::num::{NonZeroU16, NonZeroU32};
 use std::time::Duration;
 

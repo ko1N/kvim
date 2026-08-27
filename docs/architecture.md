@@ -134,7 +134,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
 | 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` |
-| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-settings` |
+| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
 | 6 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
 
 External dependencies do not change the layer number. The default
@@ -144,10 +144,10 @@ crossterm backend. Rendering into a caller-owned `Buffer` needs no backend.
 `kvim-ui` and `kvim-tui` compile against this backend-neutral API. The
 standalone binary enables ratatui's `crossterm` feature at its composition
 root. This keeps terminal lifecycle and crossterm ownership outside the memory
-facade. The facade reuses `kvim-editor` viewport and modal state and adds no workspace
-presentation dependency. A later `worktree` feature can add the explicitly
-listed presentation dependencies without changing the default closure. Add
-those edges to the layer row when that feature exists. `kvim-ui` owns generic
+facade. The facade reuses `kvim-editor` viewport and modal state. Its
+`worktree` feature privately adapts `kvim-tui` and owns its Tokio executor.
+Grammar features imply `worktree` and forward to the matching `kvim-tui`
+language feature. The default dependency closure remains unchanged. `kvim-ui`
 ratatui geometry and rendering. No syntax-only consumer compiles LSP, ratatui,
 or the editor.
 

@@ -701,6 +701,7 @@ pub struct EmbeddedEditorBuilder {
     capacity: EditorCapacity,
     language: Option<LanguageServices>,
     watcher: Option<FileWatcher>,
+    git_status: bool,
 }
 
 impl EmbeddedEditorBuilder {
@@ -757,6 +758,17 @@ impl EmbeddedEditorBuilder {
         self
     }
 
+    /// Sets whether this editor requests Git status.
+    ///
+    /// The compatibility facade enables Git status by default. A higher-level
+    /// facade can disable it until its host grants that optional capability.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_status(mut self, enabled: bool) -> Self {
+        self.git_status = enabled;
+        self
+    }
+
     /// Builds the model and the driver of one independent editor.
     ///
     /// # Errors
@@ -773,6 +785,7 @@ impl EmbeddedEditorBuilder {
             capacity,
             language,
             watcher,
+            git_status,
         } = self;
         if area.width == 0 || area.height == 0 {
             return Err(GeometryError::Empty { area }.into());
@@ -788,7 +801,8 @@ impl EmbeddedEditorBuilder {
         }
         let editor = Session::new(area, settings, root)
             .with_access(access)
-            .with_clipboard(clipboard);
+            .with_clipboard(clipboard)
+            .with_git_status(git_status);
         let (spawner, results) = capacity.realize();
         let mut driver = EditorDriver::new(editor.instance(), spawner, results);
         if let Some(language) = language {
@@ -888,6 +902,7 @@ impl EmbeddedEditor {
             capacity: EditorCapacity::default(),
             language: None,
             watcher: None,
+            git_status: true,
         }
     }
 
@@ -1148,6 +1163,24 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn take_event(&mut self) -> Option<PublishedEvent> {
         self.editor.take_event()
+    }
+
+    /// Reports whether this editor may request Git status.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_status_enabled(&self) -> bool {
+        self.editor.git_status_enabled()
+    }
+
+    /// Reports whether a Git status request waits for dispatch.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_request_queued(&self) -> bool {
+        self.editor.git_request_queued()
     }
 
     /// Hands every queued request of this editor to its spawner.

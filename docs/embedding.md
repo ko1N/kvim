@@ -42,15 +42,33 @@ Do not add a common editor trait until shared behavior requires one.
 The default `kvim-embed` feature set is in-memory only. It must not compile
 `kvim-tui`, `kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-workspace`,
 `kvim-path`, `kvim-terminal`, Tokio, crossterm, notify, or cap-std. The
-`worktree` feature enables the worktree path and may forward grammar features
-only through that path.
+`worktree` feature enables the worktree path and forwards grammar features to
+both `kvim-language` and `kvim-tui` only through that path.
 
-Each editor owns bounded execution capacity internally. A host drives readiness,
-result application, and shutdown through facade methods. The public facade
-exposes no Tokio type, channel, generic work payload, or runtime handle. It may
-name stable lower-crate values when those values own their meaning, including
-commands, settings, paths, and ratatui geometry. It must not expose
-`kvim-runtime`, `kvim-language`, or `kvim-workspace` types.
+The `worktree` constructor owns a private Tokio executor and isolated bounded
+worker, result, and process capacity. `WorktreeCapacity` validates those three
+dimensions. Hosts call `dispatch`, await `ready`, pass the opaque
+`WorktreeCompletion` to `apply`, and consume `shutdown`. A timed-out shutdown
+returns `WorktreeDrain`, which owns the executor until mandatory events arrive.
+No public signature names Tokio, channels, runtime work payloads,
+`EditorDriver`, `Session`, or runtime, language, and workspace package types.
+Public asynchronous methods still require host polling. Their internal work
+runs on the private executor.
+
+Explicit consuming `shutdown` is required to observe mandatory durable-work
+events. Drop cancels internal owners before it shuts down the executor. Drop is
+a best-effort fallback and does not promise durable event delivery.
+
+`WorktreeCapabilities` defaults Git, watcher, language, and clipboard policies
+to `Disabled`. The facade starts none of those services by default.
+`ServicePolicy::BuiltIn` selects the supported production implementation. A
+requested language service or watcher that cannot construct fails `open` with a
+facade-owned `WorktreeOpenErrorKind` and keeps its private source chain.
+Clipboard selection is different: it selects platform commands during opening,
+but command availability and execution are runtime process outcomes. The
+facade reports those outcomes through its ordinary editor events.
+Filesystem file open, edit, render, and save remain core worktree behavior.
+
 
 The host owns terminal lifecycle, terminal input, signals, raw mode, alternate
 screen, panic restoration, cursor application, and final redraw scheduling.

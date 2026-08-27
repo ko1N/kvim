@@ -1387,6 +1387,20 @@ impl Session {
         self.clipboard_access
     }
 
+    /// Sets whether construction keeps the initial Git status request.
+    ///
+    /// This is an internal adapter seam for a facade that makes Git an
+    /// explicit optional capability. The compatibility constructor keeps its
+    /// existing enabled behavior.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_git_status(mut self, enabled: bool) -> Self {
+        if !enabled {
+            self.tree.disable_git_status();
+        }
+        self
+    }
+
     /// Injects one explicit clipboard boundary.
     ///
     /// The tests of this crate drive the deferred boundary without a platform
@@ -4795,6 +4809,24 @@ impl Session {
             return Redraw::Needed;
         }
         Redraw::Skipped
+    }
+
+    /// Reports whether Git status is enabled for this session.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_status_enabled(&self) -> bool {
+        self.tree.git_status_enabled()
+    }
+
+    /// Reports whether a Git status request waits for dispatch.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_request_queued(&self) -> bool {
+        self.tree.git_request_queued()
     }
 
     /// Takes the Git status read that the bounded process service must run.

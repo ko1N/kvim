@@ -19,6 +19,11 @@ invalid root markers, invalid bounds, and mismatched roots with typed errors.
 These checks run in release builds. A failed construction reserves no service,
 process, or registry state.
 
+The supported worktree facade keeps service construction private.
+`WorktreeCapabilities::language` defaults to `Disabled`.
+`ServicePolicy::BuiltIn` constructs services from the editor root and settings.
+No facade signature exposes a registry, session, runtime, or service handle.
+
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
 grammar by default. It provides one feature for each language and one
 `all-grammars` feature. `kvim-language` forwards these features without a

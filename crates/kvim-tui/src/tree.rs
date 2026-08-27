@@ -302,6 +302,17 @@ impl TreeRefusal {
     }
 }
 
+/// Whether this sidebar may request Git status.
+///
+/// The policy stays with the tree because each Git trigger reaches the tree.
+/// A disabled policy applies to construction, saves, refreshes, mutations, and
+/// watcher bursts for the complete session lifetime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitStatusPolicy {
+    Enabled,
+    Disabled,
+}
+
 /// The file-tree sidebar of one editor.
 #[derive(Debug)]
 pub(super) struct TreeSidebar {
@@ -324,6 +335,8 @@ pub(super) struct TreeSidebar {
     /// the sidebar never asks for two reads of one workspace. See
     /// `docs/git.md`.
     git_outbox: Option<GitStatusRequest>,
+    /// The policy that controls every Git status request for this session.
+    git_status: GitStatusPolicy,
     /// The published Git state of the workspace, while one read produced it.
     git: Option<GitStatusSnapshot>,
     /// The home directory of the user, while the environment names one.
@@ -346,6 +359,7 @@ impl TreeSidebar {
             outbox: None,
             pending: None,
             git_outbox: None,
+            git_status: GitStatusPolicy::Enabled,
             git: None,
             home: env::var_os("HOME")
                 .map(PathBuf::from)
@@ -386,6 +400,22 @@ impl TreeSidebar {
         self.outbox.take()
     }
 
+    /// Removes a queued Git status read before dispatch.
+    pub(super) fn disable_git_status(&mut self) {
+        self.git_status = GitStatusPolicy::Disabled;
+        self.git_outbox = None;
+        self.git = None;
+    }
+
+    pub(super) fn git_status_enabled(&self) -> bool {
+        self.git_status == GitStatusPolicy::Enabled
+    }
+
+    /// Reports whether Git status has a queued request.
+    pub(super) fn git_request_queued(&self) -> bool {
+        self.git_outbox.is_some()
+    }
+
     /// Returns the Git status read that the event loop must submit.
     pub(super) fn take_git_request(&mut self) -> Option<GitStatusRequest> {
         self.git_outbox.take()
@@ -398,6 +428,9 @@ impl TreeSidebar {
     /// point, and no timer does, because the renderer runs no unconditional
     /// frame loop. See `docs/git.md`.
     pub(super) fn request_git_status(&mut self) {
+        if self.git_status == GitStatusPolicy::Disabled {
+            return;
+        }
         self.git_outbox = Some(GitStatusRequest::new(Arc::clone(&self.root)));
     }
 
@@ -406,6 +439,9 @@ impl TreeSidebar {
     /// A newer refresh replaces the queued request, exactly as a new trigger
     /// does, so the sidebar still runs one read at a time. See `docs/git.md`.
     pub(super) fn resume_git_status(&mut self, request: GitStatusRequest) {
+        if self.git_status == GitStatusPolicy::Disabled {
+            return;
+        }
         self.git_outbox = Some(request);
     }
 
@@ -415,6 +451,9 @@ impl TreeSidebar {
     /// newer one replaced. This second check rejects a snapshot of another
     /// workspace root from the visible state itself.
     pub(super) fn apply_git_status(&mut self, snapshot: GitStatusSnapshot) -> GitPublication {
+        if self.git_status == GitStatusPolicy::Disabled {
+            return GitPublication::Obsolete;
+        }
         if snapshot.root() != &*self.root {
             return GitPublication::Obsolete;
         }
