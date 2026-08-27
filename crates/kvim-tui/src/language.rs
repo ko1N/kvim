@@ -17,7 +17,7 @@ use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kvim_core::BufferVersion;
+use kvim_core::BufferRevision;
 use kvim_language::{
     ContentChange, Diagnostic, DiagnosticSet, DiagnosticSeverity, DocumentPosition, FormatEdits,
     FormatterRequest, LANGUAGE_SERVERS_MAX, LanguageFormatter, LanguageRegistry, LanguageRequestId,
@@ -75,8 +75,8 @@ pub enum LanguageRequest {
         buffer: BufferId,
         /// The path of the document.
         path: PathBuf,
-        /// The buffer version of the text.
-        version: BufferVersion,
+        /// The buffer revision of the text.
+        revision: BufferRevision,
         /// The exact text of that buffer version.
         text: Arc<str>,
     },
@@ -86,8 +86,8 @@ pub enum LanguageRequest {
         buffer: BufferId,
         /// The path of the document.
         path: PathBuf,
-        /// The buffer version that the transaction produced.
-        version: BufferVersion,
+        /// The buffer revision that the transaction produced.
+        revision: BufferRevision,
         /// The changes of that transaction, in descending order.
         changes: Vec<ContentChange>,
     },
@@ -102,8 +102,8 @@ pub enum LanguageRequest {
         buffer: BufferId,
         /// The path of the document.
         path: PathBuf,
-        /// The buffer version that the question asks about.
-        version: BufferVersion,
+        /// The buffer revision that the question asks about.
+        revision: BufferRevision,
         /// The question.
         query: LanguageQuery,
     },
@@ -254,30 +254,32 @@ fn send_one(
     match request {
         LanguageRequest::Open {
             path,
-            version,
+            revision,
             text,
             ..
-        } => handle.open(path, *version, Arc::clone(text)).map(|()| None),
+        } => handle
+            .open(path, *revision, Arc::clone(text))
+            .map(|()| None),
         LanguageRequest::Change {
             path,
-            version,
+            revision,
             changes,
             ..
         } => handle
-            .change(path, *version, changes.clone())
+            .change(path, *revision, changes.clone())
             .map(|()| None),
         LanguageRequest::Close { path } => handle.close(path).map(|()| None),
         LanguageRequest::Query {
             path,
-            version,
+            revision,
             query,
             ..
         } => match *query {
             LanguageQuery::Definition(position) => {
-                handle.definition(path, *version, position).map(Some)
+                handle.definition(path, *revision, position).map(Some)
             }
-            LanguageQuery::Hover(position) => handle.hover(path, *version, position).map(Some),
-            LanguageQuery::Format => handle.format(path, *version).map(Some),
+            LanguageQuery::Hover(position) => handle.hover(path, *revision, position).map(Some),
+            LanguageQuery::Format => handle.format(path, *revision).map(Some),
         },
     }
 }
@@ -371,8 +373,8 @@ pub(super) enum QueryState {
 pub(super) struct PendingQuery {
     /// The buffer that the question asks about.
     pub(super) buffer: BufferId,
-    /// The buffer version that the question asks about.
-    pub(super) version: BufferVersion,
+    /// The buffer revision that the question asks about.
+    pub(super) revision: BufferRevision,
     /// Why the editor asked.
     pub(super) purpose: QueryPurpose,
     /// The servers that the question reached.
@@ -383,12 +385,12 @@ impl PendingQuery {
     /// Creates one question that waits for its dispatch.
     pub(super) const fn new(
         buffer: BufferId,
-        version: BufferVersion,
+        revision: BufferRevision,
         purpose: QueryPurpose,
     ) -> Self {
         Self {
             buffer,
-            version,
+            revision,
             purpose,
             dispatch: QueryDispatch::Queued,
         }

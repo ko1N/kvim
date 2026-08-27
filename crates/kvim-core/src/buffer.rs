@@ -113,11 +113,74 @@ pub enum EditError {
     },
 }
 
+/// The number of complete text replacements that one loaded buffer applied.
+///
+/// Edit versions restart at zero after replacement. The generation never
+/// restarts while the loaded buffer keeps its identity.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BufferGeneration(u64);
+
+impl BufferGeneration {
+    /// Returns the generation number.
+    #[must_use]
+    #[inline]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+
+    fn next(self) -> Self {
+        Self(
+            self.0
+                .checked_add(1)
+                .expect("a u64 generation counts more replacements than one loaded buffer applies"),
+        )
+    }
+}
+
+/// The text identity within one loaded buffer.
+///
+/// A generation distinguishes complete replacements. A version distinguishes
+/// edit transactions within that generation.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct BufferRevision {
+    generation: BufferGeneration,
+    version: BufferVersion,
+}
+
+impl BufferRevision {
+    /// Creates one text identity from its two dimensions.
+    #[must_use]
+    pub const fn new(generation: BufferGeneration, version: BufferVersion) -> Self {
+        Self {
+            generation,
+            version,
+        }
+    }
+
+    /// Returns the complete-replacement generation.
+    #[must_use]
+    pub const fn generation(self) -> BufferGeneration {
+        self.generation
+    }
+
+    /// Returns the edit version within the generation.
+    #[must_use]
+    pub const fn version(self) -> BufferVersion {
+        self.version
+    }
+}
+
+impl From<BufferVersion> for BufferRevision {
+    fn from(version: BufferVersion) -> Self {
+        Self::new(BufferGeneration::default(), version)
+    }
+}
+
 /// The number of state changes that one buffer applied.
 ///
 /// Background analysis, formatting, and language-server results carry the
-/// version that produced them, so the editor rejects an obsolete result.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+/// generation beside this version, so the editor rejects an obsolete result.
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct BufferVersion(u64);
 
 impl BufferVersion {
@@ -250,6 +313,7 @@ pub struct TextBuffer {
     line_ending: LineEnding,
     final_line_ending: FinalLineEnding,
     bytes_max: BufferBytesMax,
+    generation: BufferGeneration,
     version: BufferVersion,
     history: UndoHistory,
 }
@@ -312,6 +376,7 @@ impl TextBuffer {
             line_ending,
             final_line_ending,
             bytes_max,
+            generation: BufferGeneration::default(),
             version: BufferVersion(0),
             history: UndoHistory::new(),
         })
@@ -425,6 +490,32 @@ impl TextBuffer {
         self.line_ending
     }
 
+    /// Returns the complete text identity of this loaded buffer state.
+    #[must_use]
+    pub const fn revision(&self) -> BufferRevision {
+        BufferRevision::new(self.generation, self.version)
+    }
+
+    /// Replaces this text and advances its complete-replacement generation.
+    ///
+    /// `replacement` must be a newly loaded buffer at generation and version
+    /// zero. This method derives the next generation from `self`; callers
+    /// cannot supply a revision from another buffer. The replacement must use
+    /// the same validated byte limit.
+    pub fn advance_replacement(&mut self, mut replacement: Self) {
+        assert_eq!(
+            replacement.bytes_max, self.bytes_max,
+            "a replacement must preserve the persistent byte limit"
+        );
+        assert_eq!(
+            replacement.revision(),
+            BufferRevision::default(),
+            "a replacement must be newly loaded and must not carry another buffer revision"
+        );
+        replacement.generation = self.generation.next();
+        *self = replacement;
+    }
+
     /// Returns the number of state changes that the buffer applied.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
@@ -452,7 +543,7 @@ impl TextBuffer {
     ///     .expect("the position fits the buffer");
     ///
     /// assert_eq!(before.to_string(), "alpha\n");
-    /// assert_ne!(before.version(), buffer.version());
+    /// assert_ne!(before.revision(), buffer.revision());
     /// ```
     #[must_use]
     pub fn snapshot(&self) -> Self {
@@ -461,6 +552,7 @@ impl TextBuffer {
             line_ending: self.line_ending,
             final_line_ending: self.final_line_ending,
             bytes_max: self.bytes_max,
+            generation: self.generation,
             version: self.version,
             history: UndoHistory::new(),
         }

@@ -2409,10 +2409,10 @@ fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
         .take_file_request()
         .expect("write-quit queued one save request");
     let result = request.run();
-    let saved_version = match &result {
+    let saved_revision = match &result {
         FileResult::Saved {
             outcome: Ok(saved), ..
-        } => saved.version,
+        } => saved.revision,
         other => panic!("the save succeeds, got {other:?}"),
     };
 
@@ -2426,7 +2426,7 @@ fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
         !session.buffer().is_modified(),
         "the text history returned to its old saved position"
     );
-    assert_ne!(session.buffer().version(), saved_version);
+    assert_ne!(session.buffer().revision(), saved_revision);
 
     let _ = session.apply_file_result(result);
 
@@ -2691,16 +2691,49 @@ fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
         .take_language_request()
         .expect("the reload synchronizes the document");
     match synchronization {
-        LanguageRequest::Open { version, text, .. } => {
+        LanguageRequest::Open { revision, text, .. } => {
             assert_eq!(&*text, "fn main() { println!(); }\n");
             assert_eq!(
-                version,
-                session.buffer().version(),
-                "the server copy carries the version of the reloaded text"
+                revision,
+                session.buffer().revision(),
+                "the server copy carries the revision of the reloaded text"
             );
         }
         other => panic!("a reload opens the document again, not {other:?}"),
     }
+}
+
+#[test]
+fn a_generation_zero_analysis_is_rejected_after_reload_to_generation_one() {
+    let (directory, path, mut session) = opened_file(
+        "session-reload-analysis-generation",
+        "main.rs",
+        "fn old() {}\n",
+    );
+    let buffer = session.active();
+    let bytes_max = session.buffer().bytes_max();
+    let old = session
+        .take_analysis_request()
+        .expect("the generation-zero text needs analysis");
+
+    std::fs::write(&path, "fn new() {}\n").expect("the file is writable");
+    run_watch_reload(&mut session, &directory.path);
+
+    assert_eq!(
+        session.active(),
+        buffer,
+        "reload keeps the stable buffer identity"
+    );
+    assert_eq!(session.buffer().revision().generation().get(), 1);
+    assert_eq!(session.buffer().version().get(), 0);
+    assert_eq!(session.buffer().bytes_max(), bytes_max);
+
+    let cancellation = CancellationToken::new();
+    assert_eq!(
+        session.apply_analysis_result(old.run(&cancellation)),
+        Redraw::Skipped,
+        "a generation-zero result cannot publish into generation one"
+    );
 }
 
 #[test]

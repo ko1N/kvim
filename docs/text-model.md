@@ -73,12 +73,16 @@ every range and the resulting byte length before any text changes. Apply the
 complete transaction as one state change. A rejected transaction leaves text,
 generation, version, dirty state, and history unchanged.
 
-Each successful transaction increases the buffer version. A full reload or
-replacement retains `BufferId`, increases a monotonic buffer generation, and
-starts a new version sequence. Every text-derived background request carries
-buffer identity, generation, and version. A publication gate rejects a result
-that differs in any value. See [`responsiveness.md`](responsiveness.md) for the
-publication check.
+Each successful transaction increases the `BufferVersion` inside the current
+`BufferRevision`. The revision combines a monotonic `BufferGeneration` with that
+edit version. A full reload or replacement retains `BufferId`, increases the
+generation, and starts a new version sequence at zero. `TextBuffer` derives the
+next generation from the live buffer and accepts only a newly loaded replacement
+with the same `BufferBytesMax`. This prevents callers from installing a revision
+from another buffer. Every text-derived background request carries `BufferId`
+and the complete revision. A publication gate rejects a result that differs in
+either value. See [`responsiveness.md`](responsiveness.md) for the publication
+check.
 
 ## Undo And Redo
 

@@ -41,7 +41,7 @@ use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{ClipboardFailure, ClipboardNotice, ClipboardRead};
-use kvim_core::{BufferVersion, CharPosition, EditTransaction, LineIndex, TextBuffer};
+use kvim_core::{BufferRevision, CharPosition, EditTransaction, LineIndex, TextBuffer};
 use kvim_editor::{
     AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState,
     MOTION_COUNT_MAX, MoveDirection, RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX,
@@ -319,22 +319,10 @@ struct PendingReload {
     buffer: BufferId,
     /// The file target at the moment that the request left.
     target: FileTarget,
-    /// The buffer version at the moment that the request left.
-    version: BufferVersion,
+    /// The buffer revision at the moment that the request left.
+    revision: BufferRevision,
     /// Whether the reload may replace unsaved text.
     unsaved: UnsavedText,
-}
-
-/// Whether one search recomputation may trust the recorded buffer version.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SearchRefresh {
-    /// Recompute the matches only when the buffer version changed.
-    OnVersionChange,
-    /// Recompute them whatever the version says.
-    ///
-    /// A reload replaces the buffer, and the new buffer counts its versions
-    /// from the start, so the version gate cannot see that change.
-    Always,
 }
 
 /// The system clipboard operation that the editor waits for.
@@ -532,7 +520,7 @@ pub struct AnalysisResult {
 #[derive(Debug, Default)]
 pub(super) struct BufferAnalysis {
     syntax: BufferSyntax,
-    reuse: Option<(BufferVersion, SyntaxTree)>,
+    reuse: Option<(BufferRevision, SyntaxTree)>,
 }
 
 impl BufferAnalysis {
@@ -922,7 +910,8 @@ pub(super) enum ConfirmationRequest {
 pub(super) struct ActiveSearch {
     pub(super) query: SearchQuery,
     pub(super) matches: Vec<CharPosition>,
-    version: BufferVersion,
+    buffer: BufferId,
+    revision: BufferRevision,
 }
 
 /// Everything that one frame reads.
@@ -1237,7 +1226,7 @@ pub struct Session {
     ///
     /// One job runs at a time, so a newer buffer version replaces the job that
     /// it supersedes instead of adding a second one.
-    analysis_pending: Option<(BufferId, BufferVersion)>,
+    analysis_pending: Option<(BufferId, BufferRevision)>,
     /// The language-server requests, diagnostics, and per-buffer settings.
     ///
     /// The session never speaks the protocol. It builds bounded requests, and
@@ -2101,7 +2090,7 @@ impl Session {
     /// The overlay rows, the search matches, and the viewports all follow the
     /// state that the transition produced, so the next frame is consistent.
     fn settle(&mut self, now: Duration) -> Redraw {
-        self.refresh_search(SearchRefresh::OnVersionChange);
+        self.refresh_search();
         self.reconcile_viewports();
         self.reconcile_tree();
         self.reconcile_picker();
@@ -2464,10 +2453,10 @@ impl Session {
 
     /// Returns the syntax indent for a new line at one byte offset.
     fn indent_level(&self, byte: usize) -> AutoIndent {
-        let version = self.buffer().version();
+        let revision = self.buffer().revision();
         self.analysis
             .get(&self.active)
-            .and_then(|entry| entry.syntax.indent_level(version, byte))
+            .and_then(|entry| entry.syntax.indent_level(revision, byte))
             .map_or(AutoIndent::PreviousLine, |level| {
                 AutoIndent::Levels(level.get())
             })
@@ -2550,7 +2539,7 @@ impl Session {
             self.access == EditorAccess::ReadWrite || applied.is_empty(),
             "view-only access refuses every text change before the buffer sees it"
         );
-        let after = context.buffer.version();
+        let after = context.buffer.revision();
         if let Some(slot) = self.windows.state_mut(window) {
             *slot = state;
         }
@@ -2568,10 +2557,10 @@ impl Session {
     fn synchronize_language(
         &mut self,
         before: &TextBuffer,
-        after: BufferVersion,
+        after: BufferRevision,
         applied: &[EditTransaction],
     ) {
-        if after == before.version() {
+        if after == before.revision() {
             return;
         }
         let buffer = self.active;
@@ -2597,7 +2586,7 @@ impl Session {
         self.queue_language(LanguageRequest::Change {
             buffer,
             path,
-            version: after,
+            revision: after,
             changes,
         });
     }
@@ -2611,7 +2600,7 @@ impl Session {
     fn advance_syntax(
         &mut self,
         before: &TextBuffer,
-        after: BufferVersion,
+        after: BufferRevision,
         applied: &[EditTransaction],
     ) {
         let Some(entry) = self.analysis.get_mut(&self.active) else {
@@ -2620,7 +2609,7 @@ impl Session {
         let Some((version, tree)) = entry.reuse.take() else {
             return;
         };
-        if version != before.version() {
+        if version != before.revision() {
             return;
         }
         // One command commits at most one transaction. A longer list would need
@@ -3448,25 +3437,25 @@ impl Session {
         let buffer = self.active;
         let file = self.buffers.get(buffer)?;
         let adapter = self.languages.adapter(file.path()?).ok()?;
-        let version = file.text().version();
-        if self.analysis_pending == Some((buffer, version)) {
+        let revision = file.text().revision();
+        if self.analysis_pending == Some((buffer, revision)) {
             return None;
         }
         let entry = self.analysis.entry(buffer).or_default();
         if entry
             .syntax
             .analysis()
-            .is_some_and(|analysis| analysis.version() == version)
+            .is_some_and(|analysis| analysis.revision() == revision)
         {
             return None;
         }
-        let mut input = AnalysisInput::new(version, Arc::from(file.text().to_string()));
+        let mut input = AnalysisInput::new(revision, Arc::from(file.text().to_string()));
         if let Some((reuse_version, tree)) = &entry.reuse
-            && *reuse_version == version
+            && *reuse_version == revision
         {
             input = input.reusing(tree.clone());
         }
-        self.analysis_pending = Some((buffer, version));
+        self.analysis_pending = Some((buffer, revision));
         Some(AnalysisRequest {
             buffer,
             adapter,
@@ -3490,7 +3479,7 @@ impl Session {
             // The buffer left the list while the job ran.
             return Redraw::Skipped;
         };
-        let current = file.text().version();
+        let current = file.text().revision();
         let analysis = match result.outcome {
             Ok(analysis) => analysis,
             Err(error) => {
@@ -3613,7 +3602,7 @@ impl Session {
 
     /// Applies one typed result of the language services.
     ///
-    /// Every result passes the buffer-version gate before it changes visible
+    /// Every result passes the buffer-revision gate before it changes visible
     /// state, so an obsolete answer never reaches the screen.
     #[must_use]
     pub fn apply_language_event(&mut self, event: LanguageEvent) -> Redraw {
@@ -3626,16 +3615,16 @@ impl Session {
             }
             LanguageOutcome::Definition {
                 request,
-                version,
+                revision,
                 locations,
-            } => self.answer_query(request, Some(version), Answer::Definition(locations)),
+            } => self.answer_query(request, Some(revision), Answer::Definition(locations)),
             LanguageOutcome::Hover {
                 request,
-                version,
+                revision,
                 markup,
             } => self.answer_query(
                 request,
-                Some(version),
+                Some(revision),
                 markup.map_or(Answer::Empty, Answer::Hover),
             ),
             LanguageOutcome::Formatting { request, edits } => {
@@ -3731,7 +3720,7 @@ impl Session {
         Some(LanguageRequest::Open {
             buffer,
             path,
-            version: text.version(),
+            revision: text.revision(),
             text: Arc::from(text.to_string()),
         })
     }
@@ -3822,7 +3811,7 @@ impl Session {
     fn answer_query(
         &mut self,
         request: LanguageRequestId,
-        version: Option<BufferVersion>,
+        revision: Option<BufferRevision>,
         answer: Answer,
     ) -> Redraw {
         let Some(mut pending) = self.language.pending.take() else {
@@ -3834,7 +3823,7 @@ impl Session {
             self.language.pending = Some(pending);
             return Redraw::Skipped;
         }
-        if version.is_some_and(|version| !self.answers_current_buffer(&pending, version)) {
+        if revision.is_some_and(|revision| !self.answers_current_buffer(&pending, revision)) {
             return self.release_query(&pending);
         }
         let state = pending.resolve(request, answer);
@@ -3904,7 +3893,7 @@ impl Session {
             return self.report_language_notice(LanguageNotice::NoServer);
         };
         let text = file.text();
-        let version = text.version();
+        let revision = text.revision();
         let position = document_position(text, self.cursor().position(text));
         let query = match purpose {
             QueryPurpose::Definition => LanguageQuery::Definition(position),
@@ -3914,11 +3903,11 @@ impl Session {
                 return Redraw::Skipped;
             }
         };
-        self.language.pending = Some(PendingQuery::new(buffer, version, purpose));
+        self.language.pending = Some(PendingQuery::new(buffer, revision, purpose));
         self.queue_language(LanguageRequest::Query {
             buffer,
             path,
-            version,
+            revision,
             query,
         });
         Redraw::Skipped
@@ -3939,7 +3928,7 @@ impl Session {
             debug_assert!(false, "the path lookup returns a loaded buffer");
             return Redraw::Skipped;
         };
-        if !set.is_current(file.text().version()) {
+        if !set.is_current(file.text().revision()) {
             return Redraw::Skipped;
         }
         self.language.publish(buffer, server, set);
@@ -4071,13 +4060,13 @@ impl Session {
     }
 
     /// Reports whether one answer still describes the current buffer version.
-    fn answers_current_buffer(&self, pending: &PendingQuery, version: BufferVersion) -> bool {
-        if pending.version != version {
+    fn answers_current_buffer(&self, pending: &PendingQuery, revision: BufferRevision) -> bool {
+        if pending.revision != revision {
             return false;
         }
         self.buffers
             .get(pending.buffer)
-            .is_some_and(|file| file.text().version() == version)
+            .is_some_and(|file| file.text().revision() == revision)
     }
 
     /// Moves the cursor to the recorded jump target of the active buffer.
@@ -5316,7 +5305,7 @@ impl Session {
         // A clipboard answer arrives outside `handle_event`, so no `settle`
         // transition follows it. Refresh positions before the next frame reads
         // them against text that a Visual paste can shorten.
-        self.refresh_search(SearchRefresh::OnVersionChange);
+        self.refresh_search();
         let reported = self.report_clipboard(notice);
         self.reconcile_viewports();
         applied.or(reported)
@@ -5417,7 +5406,7 @@ impl Session {
             self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
             return Redraw::Needed;
         };
-        let version = file.text().version();
+        let revision = file.text().revision();
         self.start_file_request(
             FileRequest::Reload(ReloadRequest {
                 targets: vec![ReloadTarget {
@@ -5432,7 +5421,7 @@ impl Session {
                 targets: vec![PendingReload {
                     buffer,
                     target,
-                    version,
+                    revision,
                     unsaved,
                 }],
                 origin: ReloadOrigin::Command,
@@ -5485,7 +5474,7 @@ impl Session {
             pending.push(PendingReload {
                 buffer: id,
                 target,
-                version: file.text().version(),
+                revision: file.text().revision(),
                 unsaved: UnsavedText::Keep,
             });
         }
@@ -5581,26 +5570,26 @@ impl Session {
             );
             return self.start_save(then, FormatBeforeSave::Silent);
         };
-        let version = file.text().version();
+        let revision = file.text().revision();
         if let Some(LanguageFormatter::External(declaration)) =
             formatter(self.languages, Some(&path))
         {
             // The run carries the exact text of this version, because the
             // answer replaces that text.
             let content = file.text().to_string();
-            let request = FormatterRequest::new(declaration, path, version, content);
+            let request = FormatterRequest::new(declaration, path, file.text().revision(), content);
             self.language.start_format(buffer, then, request);
             return Redraw::Needed;
         }
         self.language.pending = Some(PendingQuery::new(
             buffer,
-            version,
+            revision,
             QueryPurpose::FormatBeforeSave(then),
         ));
         self.queue_language(LanguageRequest::Query {
             buffer,
             path,
-            version,
+            revision,
             query: LanguageQuery::Format,
         });
         Redraw::Needed
@@ -5622,7 +5611,7 @@ impl Session {
             Some(SaveRequest {
                 buffer,
                 content: render_content(active.text()),
-                version: active.text().version(),
+                revision: active.text().revision(),
                 expected: active.identity(),
                 snapshot: active.text().clone(),
                 files: self.settings.files,
@@ -5732,7 +5721,7 @@ impl Session {
             return false;
         }
         self.buffers.get(target.buffer).is_some_and(|file| {
-            file.target() == Some(&target.target) && file.text().version() == target.version
+            file.target() == Some(&target.target) && file.text().revision() == target.revision
         })
     }
 
@@ -5780,7 +5769,7 @@ impl Session {
             self.analysis_pending = None;
         }
         if buffer == self.active {
-            self.refresh_search(SearchRefresh::Always);
+            self.refresh_search();
         }
         self.reconcile_viewports();
         if origin == ReloadOrigin::Command {
@@ -5926,7 +5915,7 @@ impl Session {
         let lines = saved.lines;
         let name = saved.target.as_path().display().to_string();
         let bytes = saved.bytes;
-        let applied = target.apply_save(saved.target, saved.identity, saved.version);
+        let applied = target.apply_save(saved.target, saved.identity, saved.revision);
         // The saved file changed the working tree, so the recorded state of the
         // workspace changed with it.
         self.tree.request_git_status();
@@ -6089,7 +6078,7 @@ impl Session {
             return Redraw::Skipped;
         };
         let matches = query.matches(active.text(), &self.settings.search);
-        let version = active.text().version();
+        let revision = active.text().revision();
         let window = self.windows.focused_window();
         let Some(mut state) = self.windows.state(window) else {
             debug_assert!(false, "the layout always keeps the focused window visible");
@@ -6107,7 +6096,8 @@ impl Session {
         self.search = Some(ActiveSearch {
             query,
             matches,
-            version,
+            buffer: self.active,
+            revision,
         });
         if outcome == CommandOutcome::SearchMissed {
             self.set_message("no match", MessageLevel::Warning);
@@ -6229,20 +6219,21 @@ impl Session {
     ///
     /// The scan is bounded by the search limits of the `editor` module, so it
     /// stays inside the event-loop budget.
-    fn refresh_search(&mut self, refresh: SearchRefresh) {
+    fn refresh_search(&mut self) {
         let Some(active) = self.buffers.get(self.active) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
             return;
         };
-        let version = active.text().version();
+        let revision = active.text().revision();
         let Some(search) = self.search.as_mut() else {
             return;
         };
-        if search.version == version && refresh == SearchRefresh::OnVersionChange {
+        if search.buffer == self.active && search.revision == revision {
             return;
         }
         search.matches = search.query.matches(active.text(), &self.settings.search);
-        search.version = version;
+        search.buffer = self.active;
+        search.revision = revision;
     }
 
     /// Resizes every visible viewport to its text area and follows its cursor.

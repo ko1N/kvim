@@ -275,8 +275,9 @@ returns a level count, not a column count. The adapter also declares the width
 of one indent level for its language, and [`settings.md`](settings.md) keeps
 the override and the fallback width.
 
-The indent query must answer from the current buffer version without blocking the
-terminal event loop. When the parse result for that version is not yet available,
+The indent query must answer from the current buffer revision without blocking
+the terminal event loop. When the parse result for that revision is not yet
+available,
 the editor uses the fallback rule in [`text-model.md`](text-model.md) instead of
 waiting. A late result never rewrites a line that the user already typed.
 
@@ -532,7 +533,7 @@ The session owns:
 - protocol limits for open documents, in-flight requests, and every received
   list,
 - explicit deadlines for the handshake, for every request, and for shutdown,
-- buffer-version checks for every request and for every published result.
+- complete buffer-revision checks for every request and published result.
 
 The session runs as one tracked background task. The host or editor driver sends
 bounded requests through one queue and reads typed results from another queue.
@@ -551,7 +552,7 @@ every recorded process fact through one sink that never waits.
 
 `kvim-lsp` also owns the bounded restart loop, because that loop names no editor
 state. `kvim-language` owns the editor half over that seam: the open documents,
-the buffer versions, the pending requests, the diagnostic pulls, and the hover
+the buffer revisions, the pending requests, the diagnostic pulls, and the hover
 markup. It implements one `ServerConversation` for that half, and it translates
 every neutral `ProjectEvent` into one editor outcome. It also holds the language
 adapters, so no editor type crosses into `kvim-lsp`.
@@ -587,10 +588,10 @@ the editor fully usable with no diagnostics. kvim reports the state once and
 starts no further server for that language. A missing server is never an error
 path that degrades editing.
 
-A reload replaces the whole text of one buffer, and the reloaded buffer counts
-its versions from the start. kvim therefore synchronizes a reload as one fresh
-document open that carries the reloaded text and the reloaded buffer version,
-and it drops every queued change of that buffer. No obsolete version reaches the
+A reload replaces the whole text of one buffer and advances its generation while
+its edit version restarts at zero. kvim therefore synchronizes a reload as one
+fresh document open that carries the reloaded text and complete buffer revision.
+It drops every queued change of that buffer. No obsolete revision reaches the
 server, and the server copy replaces the old copy in one step. See
 [`files.md`](files.md).
 
@@ -1431,8 +1432,8 @@ visible state change and runs no frame loop.
 ## Diagnostics
 
 Diagnostics are decoration. They never change source text, line mappings, or the
-cursor position. A diagnostic carries the buffer version that produced it. kvim
-discards a diagnostic for an obsolete buffer version.
+cursor position. A diagnostic carries the complete buffer revision that produced
+it. kvim discards a diagnostic from an obsolete generation or edit version.
 
 kvim orders diagnostics by position, so diagnostic navigation is deterministic.
 The diagnostic float shows every diagnostic of the cursor position, not the
@@ -1545,9 +1546,9 @@ two-column language therefore receives the tab size two. See
 [`settings.md`](settings.md) for the resolution order.
 
 kvim applies the accepted answer of either formatter as one edit transaction, so
-one undo reverses a complete format. It rejects an answer whose buffer version
-is obsolete, and it never applies a change that was computed against different
-content.
+one undo reverses a complete format. It rejects an answer whose buffer revision
+is obsolete, including an equal edit version from an older generation. It never
+applies a change that was computed against different content.
 
 Formatting has an explicit deadline. A timeout leaves the buffer unchanged and
 does not block terminal input.

@@ -102,7 +102,7 @@ The save procedure is:
 3. Flush the temporary file.
 4. Rename the temporary file over the target path.
 5. Record the new file metadata with the buffer.
-6. Clear the dirty state if the live buffer still has the saved version.
+6. Clear the dirty state if the live buffer still has the saved revision.
 
 The rename replaces the file in one step, so a reader never observes a partial
 file. kvim preserves the existing file permissions and resolves a symlink to its
@@ -112,10 +112,10 @@ A save failure at any step leaves the buffer dirty and usable. The user keeps
 every unsaved change and can retry the save. A failed save never discards buffer
 content and never leaves the temporary file in place.
 
-Each save binds its result to the buffer version that produced the written
-content. If the live version changes while the save runs, kvim records the
-written target and file identity but keeps the live buffer dirty. A stale `:wq`
-result keeps the window open.
+Each save binds its result to the complete buffer revision that produced the
+written content. If the live generation or edit version changes while the save
+runs, kvim records the written target and file identity but keeps the live
+buffer dirty. A stale `:wq` result keeps the window open.
 
 An embedded driver reserves event capacity before it accepts a save. A
 successful save publishes `FileWritten` through that reservation. If capacity
@@ -214,13 +214,15 @@ no longer describes the file. Every text-derived result carries the buffer
 identity, generation, and version. The editor rejects a result from an older
 generation even when its version matches.
 
-A reload publishes only while the buffer still holds the version that the check
-compared. A buffer that the user changed while the check ran rejects the
-outcome, so no obsolete text reaches a buffer.
+A reload publishes only while the buffer still holds the complete revision that
+the check compared. The path and file target must also match. A result from a
+previous generation cannot replace newer text even when both edit versions are
+zero.
 
 The language server receives the reloaded text as one document synchronization
-that carries the reloaded buffer version, and kvim drops every queued change of
-that buffer, so no obsolete version reaches the server. See
+that carries the complete reloaded buffer revision. kvim drops every queued
+change of that buffer, so no obsolete generation or version reaches the server.
+See
 [`language-services.md`](language-services.md).
 
 A background check reports nothing when it finds nothing that the editor cannot

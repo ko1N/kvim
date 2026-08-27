@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kvim_core::TextBuffer;
-use kvim_settings::FileSettings;
 use tokio_util::sync::CancellationToken;
 
 use super::{

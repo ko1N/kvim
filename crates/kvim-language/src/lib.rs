@@ -71,7 +71,7 @@
 //!
 //! let buffer = TextBuffer::from_text("fn main() {}\n", kvim_core::BufferBytesMax::default())
 //!     .expect("the text is small");
-//! let input = AnalysisInput::new(buffer.version(), Arc::from(buffer.to_string()));
+//! let input = AnalysisInput::new(buffer.revision(), Arc::from(buffer.to_string()));
 //! let analysis = adapter
 //!     .analyze(&input, &mut SyntaxHighlighter::new(), &CancellationToken::new())
 //!     .expect("the source is valid Rust");
@@ -89,7 +89,9 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tree_sitter::{InputEdit, Point, Tree};
 
-use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange};
+use kvim_core::{
+    BufferRevision, BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange,
+};
 
 mod analysis;
 #[cfg(feature = "grammar-asm")]
@@ -646,10 +648,10 @@ impl SyntaxTree {
     }
 }
 
-/// The exact text of one buffer version, ready for analysis.
+/// The exact text of one buffer revision, ready for analysis.
 #[derive(Clone, Debug)]
 pub struct AnalysisInput {
-    version: BufferVersion,
+    revision: BufferRevision,
     source: Arc<str>,
     previous: Option<SyntaxTree>,
 }
@@ -657,9 +659,9 @@ pub struct AnalysisInput {
 impl AnalysisInput {
     /// Creates an input that parses the complete source.
     #[must_use]
-    pub const fn new(version: BufferVersion, source: Arc<str>) -> Self {
+    pub fn new(revision: impl Into<BufferRevision>, source: Arc<str>) -> Self {
         Self {
-            version,
+            revision: revision.into(),
             source,
             previous: None,
         }
@@ -675,10 +677,14 @@ impl AnalysisInput {
         self
     }
 
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced the source.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the exact source text.
@@ -688,10 +694,10 @@ impl AnalysisInput {
     }
 }
 
-/// The complete analysis of one buffer version.
+/// The complete analysis of one buffer revision.
 #[derive(Clone)]
 pub struct Analysis {
-    version: BufferVersion,
+    revision: BufferRevision,
     source: Arc<str>,
     tree: SyntaxTree,
     highlights: Vec<HighlightSpan>,
@@ -703,10 +709,14 @@ pub struct Analysis {
 }
 
 impl Analysis {
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced this result.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the syntax tree of that buffer version.
@@ -745,7 +755,7 @@ impl fmt::Debug for Analysis {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Analysis")
-            .field("version", &self.version)
+            .field("revision", &self.revision)
             .field("source_bytes", &self.source.len())
             .field("highlights", &self.highlights.len())
             .finish_non_exhaustive()
@@ -1298,8 +1308,12 @@ impl BufferSyntax {
     ///
     /// A result for an obsolete buffer version changes nothing and enters no
     /// cache, which `docs/responsiveness.md` requires.
-    pub fn accept(&mut self, current: BufferVersion, analysis: Analysis) -> Publication {
-        if analysis.version() != current {
+    pub fn accept(
+        &mut self,
+        current: impl Into<BufferRevision>,
+        analysis: Analysis,
+    ) -> Publication {
+        if analysis.revision() != current.into() {
             return Publication::Rejected;
         }
         self.accepted = Some(analysis);
@@ -1327,9 +1341,13 @@ impl BufferSyntax {
     /// receives `None` uses the previous-line fallback instead of waiting for a
     /// parse result, which keeps the terminal event loop free.
     #[must_use]
-    pub fn indent_level(&self, current: BufferVersion, byte: usize) -> Option<IndentLevel> {
+    pub fn indent_level(
+        &self,
+        current: impl Into<BufferRevision>,
+        byte: usize,
+    ) -> Option<IndentLevel> {
         let analysis = self.accepted.as_ref()?;
-        if analysis.version() != current {
+        if analysis.revision() != current.into() {
             return None;
         }
         analysis.indent_level(byte).ok()
@@ -1344,7 +1362,7 @@ fn analysis(
     indent: IndentRule,
 ) -> Analysis {
     Analysis {
-        version: input.version,
+        revision: input.revision,
         source: Arc::clone(&input.source),
         tree: SyntaxTree(tree),
         highlights,

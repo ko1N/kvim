@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use kvim_core::{BufferBytesMax, BufferVersion, LoadError, TextBuffer};
+use kvim_core::{BufferBytesMax, BufferRevision, LoadError, TextBuffer};
 use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
 
@@ -35,8 +35,8 @@ pub struct SaveRequest {
     pub target: FileTarget,
     /// The complete buffer text with the line ending of the buffer.
     pub content: String,
-    /// The buffer version that produced the saved content.
-    pub version: BufferVersion,
+    /// The buffer revision that produced the saved content.
+    pub revision: BufferRevision,
     /// The file state that kvim observed at load time or after the last save.
     pub expected: Option<FileIdentity>,
     /// The buffer copy that produces the persistent undo file.
@@ -177,8 +177,8 @@ pub struct SavedBuffer {
     pub bytes: u64,
     /// The number of lines in the saved snapshot.
     pub lines: usize,
-    /// The buffer version that produced the saved content.
-    pub version: BufferVersion,
+    /// The buffer revision that produced the saved content.
+    pub revision: BufferRevision,
 }
 
 impl FileRequest {
@@ -356,6 +356,6 @@ fn write(request: &SaveRequest) -> Result<SavedBuffer, SaveError> {
         identity: saved.identity,
         bytes: request.content.len() as u64,
         lines: request.snapshot.line_count(),
-        version: request.version,
+        revision: request.revision,
     })
 }

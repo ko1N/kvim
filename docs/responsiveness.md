@@ -184,13 +184,16 @@ skips a directory that already carries a watch, so one burst costs bounded time.
 
 ## Request Identity And Publication
 
-Each request carries editor instance identity, buffer identity where applicable,
-generation and version for text-derived work, a cancellation owner, and an
-explicit deadline. LSP requests also carry project and server identity. A newer
-request for the same slot makes an older request obsolete. Instance identity is
-validated before result application in every build profile. A wrong-instance
-result returns a typed rejection and cannot mutate state, advance a clock, or
-release another editor reservation.
+Each request carries editor instance identity and `BufferId` where applicable.
+Text-derived work also carries one `BufferRevision`, which combines the
+replacement generation and edit version. Analysis and syntax reuse, external
+and server formatting, diagnostics, hover, definition, language synchronization,
+reload checks, saves, and active-search caches use this complete identity. LSP
+requests also carry project and server identity. A newer request for the same
+slot makes an older request obsolete. Instance identity is validated before
+result application in every build profile. A wrong-instance result returns a
+typed rejection and cannot mutate state, advance a clock, or release another
+editor reservation.
 
 A publication gate stores only the newest request identity for each slot. The
 event loop checks the gate before it applies a result. The gate does not mutate
@@ -245,12 +248,12 @@ The editor records these outcomes:
 
 | Job | Outcome | Severity |
 |---|---|---|
-| `analysis` | A newer buffer version displaced the result. | `Info` |
+| `analysis` | A newer buffer revision displaced the result. | `Info` |
 | `analysis` | The worker service accepted no job. | `Warning` |
 | `analysis` | The job was cancelled, passed its deadline, or failed. | `Info` or `Warning` |
 | `analysis` | The adapter passed a bound, or returned no usable result. | `Warning` |
 | `walk` | The walk was cancelled, passed its deadline, or failed. | `Info` or `Warning` |
-| `formatter` | A newer buffer version displaced the answer. | `Info` |
+| `formatter` | A newer buffer revision displaced the answer. | `Info` |
 
 A cancelled job carries the `Info` severity, because a newer request in the
 same slot cancels the older one and that is a normal state. Every other outcome

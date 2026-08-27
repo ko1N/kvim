@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_core::{EditTransaction, TextBuffer, TextChange};
 use kvim_runtime::{ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeLimits};
-use kvim_settings::{FileSettings, LanguageSettings};
+use kvim_settings::LanguageSettings;
 
 use super::formatter::declaration_is_valid;
 use kvim_syntax::NeverCancelled;
@@ -2392,13 +2392,33 @@ fn a_formatted_document_of_an_obsolete_buffer_version_is_rejected() {
     );
 }
 
+#[test]
+fn a_formatted_document_of_an_obsolete_buffer_generation_is_rejected() {
+    let (mut text, request) = nix_run("{  }\n");
+    let document = request
+        .publish(&process_output(Some(0), b"{ }\n"))
+        .expect("the program reported success")
+        .expect("the program changed the document");
+    let replacement = TextBuffer::from_text("{  }\n", text.bytes_max())
+        .expect("the replacement fits the persistent limit");
+    text.advance_replacement(replacement);
+    let cursor = text.char_position(0).expect("the position exists");
+
+    assert_eq!(text.version().get(), 0);
+    assert_eq!(
+        document.transaction(&text, cursor),
+        Err(FormatterFailure::Obsolete),
+        "equal edit versions in different generations are not interchangeable"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_bounded_process_service_formats_one_buffer_off_the_event_loop() {
     let text = buffer("let value = 1;\n");
     let request = FormatterRequest::new(
         &UPPERCASE_FORMATTER,
         PathBuf::from("/workspace/main.kv"),
-        text.version(),
+        text.revision(),
         text.to_string(),
     );
 
@@ -2408,7 +2428,7 @@ async fn the_bounded_process_service_formats_one_buffer_off_the_event_loop() {
         .expect("the program changed the document");
 
     assert_eq!(document.text(), "LET VALUE = 1;\n");
-    assert_eq!(document.version(), text.version());
+    assert_eq!(document.revision(), text.revision());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

@@ -16,7 +16,7 @@ use kvim_lsp::{
     ContentChange, DocumentPosition, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX,
     LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError, ServerReport, SourceSpan,
 };
-use kvim_settings::{EditorSettings, FileSettings};
+use kvim_settings::EditorSettings;
 
 use crate::document::{MarkupKind, content_changes};
 use crate::markup::MarkupDocument;
@@ -710,14 +710,14 @@ async fn answers_a_definition_inside_the_workspace() {
 
     let LanguageOutcome::Definition {
         request: answered,
-        version,
+        revision,
         locations,
     } = harness.next().await
     else {
         panic!("the session answers the definition");
     };
     assert_eq!(answered, request);
-    assert_eq!(version, text.version());
+    assert_eq!(revision, text.revision());
     // The target outside the workspace root never reaches the editor.
     assert_eq!(locations.len(), 1);
     assert_eq!(locations[0].path, Path::new(DOCUMENT));

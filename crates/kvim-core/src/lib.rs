@@ -41,8 +41,8 @@ mod transaction;
 mod tests;
 
 pub use buffer::{
-    BUFFER_BYTES_MAX, BufferBytesMax, BufferBytesMaxError, BufferVersion, EditError,
-    FinalLineEnding, LineEnding, LoadError, TextBuffer,
+    BUFFER_BYTES_MAX, BufferBytesMax, BufferBytesMaxError, BufferGeneration, BufferRevision,
+    BufferVersion, EditError, FinalLineEnding, LineEnding, LoadError, TextBuffer,
 };
 pub use coordinates::{
     ByteOffset, CharPosition, CoordinateError, LineIndex, SourceColumn, TerminalColumn,
