@@ -28,6 +28,17 @@ construction fails. The standalone uses this best-effort policy, so a language
 construction failure does not prevent file editing.
 No facade signature exposes a registry, session, runtime, or service handle.
 
+No grammar feature is a supported configuration. In that configuration,
+`LanguageRegistry::first_release()` returns a valid empty registry and never
+panics. Path lookup returns `AnalysisError::UnsupportedPath`. Language-name
+lookup returns `None`. Analysis and formatter selection therefore return their
+existing typed unsupported or unavailable outcomes. Markup parsing remains
+available, and a fenced block stays plain because no adapter can highlight it.
+`LanguageServices::new` remains available and constructs an empty service set;
+a later path request returns `LspError::UnsupportedPath` without starting a
+process. A worktree facade can therefore use either built-in service policy
+without assuming that Rust or another language exists.
+
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
 grammar by default. It provides one feature for each language and one
 `all-grammars` feature. `kvim-language` forwards these features without a
@@ -103,10 +114,11 @@ The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
-The registry contains one adapter for each of assembly, Bash, C, C++, CSS,
-fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust, SCSS,
-SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig. Every match is
-case-sensitive. Twenty-two of the twenty-five adapters declare one language
+The complete `all-grammars` registry contains one adapter for each of assembly,
+Bash, C, C++, CSS, fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix,
+Python, Rust, SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig.
+Every match is case-sensitive. Twenty-two of the twenty-five adapters declare
+one language
 server: `asm-lsp` for assembly, `bash-language-server` for Bash, `clangd` for C
 and for C++, `vscode-css-language-server` for CSS and for SCSS, `fish-lsp` for
 fish, `glsl_analyzer` for GLSL, `gopls` for Go, `vscode-html-language-server`

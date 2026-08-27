@@ -389,6 +389,10 @@ impl MarkupBlock {
 /// let MarkupBody::Code { highlights, .. } = document.blocks()[0].body() else {
 ///     panic!("the fence stays a code block");
 /// };
+/// // A build without the named grammar keeps the fence as plain code.
+/// # #[cfg(not(feature = "grammar-rust"))]
+/// assert!(highlights.is_empty());
+/// # #[cfg(feature = "grammar-rust")]
 /// assert_eq!(highlights[0].role, SyntaxRole::Keyword);
 /// ```
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

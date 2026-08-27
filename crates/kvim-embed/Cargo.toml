@@ -10,6 +10,9 @@ name = "worktree_editor"
 required-features = ["worktree"]
 
 [features]
+# The default facade is the in-memory editor. `worktree` adds optional service
+# orchestration but no language adapter. Each grammar feature implies worktree
+# and forwards exactly its named adapter; an empty registry remains supported.
 default = []
 worktree = [
   "dep:kvim-language",

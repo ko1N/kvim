@@ -64,14 +64,20 @@ pub enum FormatterArgument {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{FormatterArgument, LanguageAdapter, MarkdownAdapter};
+/// use kvim_language::FormatterArgument;
 ///
+/// let argument = FormatterArgument::DocumentPath;
+/// assert_eq!(argument, FormatterArgument::DocumentPath);
+///
+/// # #[cfg(feature = "grammar-markdown")] {
+/// use kvim_language::{LanguageAdapter, MarkdownAdapter};
 /// let declaration = MarkdownAdapter::new()
 ///     .external_formatter()
-///     .expect("the Markdown adapter declares a formatter");
+///     .expect("the feature bundles Markdown with its formatter declaration");
 /// assert_eq!(declaration.program, "prettier");
 /// // `prettier` selects its parser from the file name of the document.
 /// assert_eq!(declaration.args[1], FormatterArgument::DocumentPath);
+/// # }
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FormatterDeclaration {
@@ -143,24 +149,24 @@ impl FormatterFailure {
 /// ```
 /// use std::path::PathBuf;
 ///
-/// use kvim_core::TextBuffer;
-/// use kvim_language::{FormatterRequest, LanguageAdapter, NixAdapter};
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, TextBuffer};
+/// use kvim_language::{FormatterArgument, FormatterDeclaration, FormatterRequest};
 ///
-/// let declaration = NixAdapter::new()
-///     .external_formatter()
-///     .expect("the Nix adapter declares a formatter");
-/// let buffer = TextBuffer::from_text("{  }\n", kvim_core::BufferBytesMax::default())
+/// static DECLARATION: FormatterDeclaration = FormatterDeclaration {
+///     program: "formatter",
+///     args: &[FormatterArgument::DocumentPath],
+/// };
+/// let buffer = TextBuffer::from_text("text\n", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let request = FormatterRequest::new(
-///     declaration,
-///     PathBuf::from("/work/flake.nix"),
+///     &DECLARATION,
+///     PathBuf::from("/work/document.txt"),
 ///     buffer.revision(),
 ///     buffer.to_string(),
 /// );
 /// let command = request.command();
-/// assert_eq!(command.program, "nixfmt");
-/// assert_eq!(command.stdin, b"{  }\n");
+/// assert_eq!(command.program, "formatter");
+/// assert_eq!(command.stdin, b"text\n");
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormatterRequest {

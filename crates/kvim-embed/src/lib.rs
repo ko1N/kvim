@@ -4,6 +4,12 @@
 //! output and requests no filesystem, process, Git, watcher, or language work.
 //! `crates/kvim-embed/examples/in_memory_editor.rs` demonstrates its complete
 //! lifecycle.
+//!
+//! The default feature set enables no worktree or grammar. Grammar features
+//! imply `worktree` and add only their named language adapters. A worktree with
+//! no grammar remains usable; its language registry is empty, so path-based
+//! language work reports typed unsupported outcomes and fenced markup stays
+//! plain.
 
 #![deny(missing_docs)]
 

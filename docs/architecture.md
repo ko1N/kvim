@@ -518,9 +518,12 @@ consumers prove each supported package in isolation. The exact matrix is:
 | `kvim-tui` | internal only | no grammar, `grammar-rust`, `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
-The `kvim` binary enables `all-grammars`. Private `test-support` features are
-not external combinations. Record an architectural reason before excluding any
-future combination.
+Its no-grammar registry is valid and empty. Path lookup is typed unsupported,
+language-name lookup returns none, fenced markup stays plain, and service
+construction starts no language process. No lower or facade layer may assume
+that Rust or another adapter exists. The `kvim` binary enables `all-grammars`.
+Private `test-support` features are not external combinations. Record an
+architectural reason before excluding any future combination.
 
 ## Enforced Policy
 

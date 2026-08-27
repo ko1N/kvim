@@ -5,8 +5,8 @@
 //! adapter supplies data: one [`LanguageCatalogEntry`], the comment tokens, the
 //! indent rule, the language servers, and the external formatter. Nothing above
 //! the trait names a language, so a release adds a language by registering one
-//! more adapter. This build registers 25 adapters, which
-//! `docs/language-services.md` names.
+//! more adapter. A build without a grammar feature registers no adapters; the
+//! registry and language services remain valid in that state.
 //!
 //! The catalog entry owns what selects and parses one language: the language
 //! names, the file extensions, the complete file names, and the Tree-sitter
@@ -58,17 +58,24 @@
 //!
 //! ```
 //! use std::path::Path;
-//! use std::sync::{Arc, OnceLock};
 //!
-//! use kvim_core::TextBuffer;
-//! use kvim_language::{AnalysisInput, LanguageRegistry, SyntaxHighlighter};
-//! use kvim_settings::FileSettings;
-//! use tokio_util::sync::CancellationToken;
+//! use kvim_language::{AnalysisError, LanguageRegistry};
 //!
 //! let registry = LanguageRegistry::first_release();
-//! let adapter = registry.adapter(Path::new("src/main.rs")).expect("the Rust adapter owns the path");
-//! assert_eq!(adapter.comment().line_token(), Some("//"));
+//! assert_eq!(
+//!     registry.adapter(Path::new("notes.txt")).err(),
+//!     Some(AnalysisError::UnsupportedPath),
+//! );
+//! assert!(registry.adapter_of_language("plain-text").is_none());
 //!
+//! # #[cfg(feature = "grammar-rust")] {
+//! use std::sync::Arc;
+//! use kvim_core::TextBuffer;
+//! use kvim_language::{AnalysisInput, SyntaxHighlighter};
+//! use tokio_util::sync::CancellationToken;
+//!
+//! let adapter = registry.adapter(Path::new("src/main.rs")).expect("the feature bundles Rust");
+//! assert_eq!(adapter.comment().line_token(), Some("//"));
 //! let buffer = TextBuffer::from_text("fn main() {}\n", kvim_core::BufferBytesMax::default())
 //!     .expect("the text is small");
 //! let input = AnalysisInput::new(buffer.revision(), Arc::from(buffer.to_string()));
@@ -76,6 +83,7 @@
 //!     .analyze(&input, &mut SyntaxHighlighter::new(), &CancellationToken::new())
 //!     .expect("the source is valid Rust");
 //! assert!(!analysis.highlights().is_empty());
+//! # }
 //! ```
 
 use std::ffi::OsStr;
@@ -945,24 +953,25 @@ pub trait LanguageAdapter: Send + Sync {
 /// use kvim_language::{AnalysisError, LanguageRegistry};
 ///
 /// let registry = LanguageRegistry::first_release();
-/// assert_eq!(registry.adapter(Path::new("lib.rs")).unwrap().id(), "rust");
-/// // A file name selects an adapter as an extension does.
-/// assert_eq!(registry.adapter(Path::new("flake.lock")).unwrap().id(), "json");
-/// // A registered language is the only match, and the match is
-/// // case-sensitive.
 /// assert_eq!(
 ///     registry.adapter(Path::new("notes.txt")).err(),
 ///     Some(AnalysisError::UnsupportedPath),
 /// );
+/// assert!(registry.adapter_of_language("console").is_none());
+///
+/// # #[cfg(feature = "grammar-rust")] {
+/// assert_eq!(registry.adapter(Path::new("lib.rs")).unwrap().id(), "rust");
+/// // Path matching is case-sensitive, but language-name matching folds ASCII case.
+/// assert_eq!(registry.adapter_of_language("Rust").unwrap().id(), "rust");
 /// assert_eq!(
 ///     registry.adapter(Path::new("LIB.RS")).err(),
 ///     Some(AnalysisError::UnsupportedPath),
 /// );
-/// // A language name selects an adapter without a path, and that match folds
-/// // ASCII case.
-/// assert_eq!(registry.adapter_of_language("Rust").unwrap().id(), "rust");
-/// // A name that no adapter declares selects nothing, which is no failure.
-/// assert!(registry.adapter_of_language("console").is_none());
+/// # }
+/// # #[cfg(feature = "grammar-json")] {
+/// // A complete file name can select an adapter as an extension does.
+/// assert_eq!(registry.adapter(Path::new("flake.lock")).unwrap().id(), "json");
+/// # }
 /// ```
 #[derive(Clone, Copy)]
 pub struct LanguageRegistry {
@@ -1142,12 +1151,16 @@ fn registered_adapters() -> &'static [&'static dyn LanguageAdapter] {
 impl LanguageRegistry {
     /// Returns the registry of this build.
     ///
-    /// The table holds one adapter for assembly, Bash, C, C++, CSS, fish,
-    /// GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust,
-    /// SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig. A
-    /// later release adds a language by registering one more adapter in the
-    /// table that this constructor names, or by building a registry with
-    /// [`LanguageRegistry::new`].
+    /// Each enabled `grammar-<language>` feature adds its adapter. A build
+    /// without grammar features returns a valid empty registry. In that build,
+    /// path lookup returns [`AnalysisError::UnsupportedPath`], language-name
+    /// lookup returns `None`, and this constructor does not panic.
+    ///
+    /// The complete `all-grammars` table holds assembly, Bash, C, C++, CSS,
+    /// fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python,
+    /// Rust, SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig.
+    /// A later release adds a language by registering one more adapter in this
+    /// table, or by building a registry with [`LanguageRegistry::new`].
     #[must_use]
     pub fn first_release() -> Self {
         Self::new(registered_adapters())
