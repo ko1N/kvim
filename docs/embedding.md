@@ -8,7 +8,7 @@ composition, external use, and public example rules.
 Kvim supplies bounded library capabilities. A host composes them. Kvim knows no
 host session, agent, tool, task, plan, or other host-domain concept.
 
-## Target Facade Contract
+## Facade Contract
 
 `kvim-embed` is the only supported high-level editor facade. Its default
 feature set publishes `MemoryEditor`. This concrete editor owns one bounded
@@ -33,10 +33,11 @@ Tokio, crossterm, notify, or cap-std. Terminal lifecycle remains host-owned.
 `crates/kvim-embed/examples/in_memory_editor.rs` opens supplied text, edits it,
 renders it, and drops the editor.
 
-The target facade has two rendered editor types. `MemoryEditor` edits supplied
-bounded text and renders to a caller-supplied ratatui buffer. It requires no
-worktree, filesystem, Git, watcher, process, or language service. `WorktreeEditor` is a separate type
-behind the `worktree` Cargo feature. It adds explicit worktree capabilities.
+The facade has two rendered editor types. `MemoryEditor` edits supplied bounded
+text and renders to a caller-supplied ratatui buffer. It requires no worktree,
+filesystem, Git, watcher, process, or language service. `WorktreeEditor` is a
+separate type behind the `worktree` Cargo feature. It adds explicit worktree
+capabilities.
 Do not add a common editor trait until shared behavior requires one.
 
 The default `kvim-embed` feature set is in-memory only. It must not compile
@@ -134,56 +135,43 @@ supported high-level integration.
 The host owns:
 
 - the set of worktrees, sessions, and visible surfaces,
-- workspace state, focus policy, and commands,
+- workspace state and focus policy outside each editor,
 - terminal lifecycle and terminal events,
-- asynchronous runtime startup and task supervision,
+- polling facade readiness and applying returned completions,
 - surface composition and final event effects,
 - cursor application and redraw scheduling.
 
-The host constructs the asynchronous runtime and supervises every returned
-driver future. It names one `EditorCapacity` for each editor. `Isolated` builds
-the bounded worker and process spawner of that editor alone. `SharedProcessPool`
-builds the worker permits and the result queue of that editor and shares the one
-process pool of the program. `Supplied` accepts the spawner that the host built
-itself. Capacity is isolated for one instance unless the named choice shares a
-pool.
-
-The host can supply watcher and LSP handles, and it grants one
-`ClipboardAccess` policy. These services are optional. The standalone `kvim`
-binary constructs its implementations and grants `ClipboardAccess::System`. See
-[`clipboard.md`](clipboard.md).
+Each `WorktreeEditor` owns a private Tokio executor and its bounded worker,
+process, result, and event capacity. The host selects those bounds with
+`WorktreeCapacity`. The host can enable built-in watcher, language, Git, and
+clipboard capabilities through `WorktreeCapabilities`. These services are
+optional. The standalone `kvim` binary enables the production policies that it
+uses. See [`clipboard.md`](clipboard.md).
 
 The standalone binary is one such host. It is the only layer that owns raw
 mode, the alternate screen, standard input, standard output, the terminal event
-stream, the termination signals, the panic restoration, the cursor shape, the
-asynchronous runtime, the redraw schedule, and the shutdown order. `kvim-tui`
-owns none of these, and a structural test in each of the two crates proves it.
+stream, termination signals, panic restoration, cursor application, redraw
+scheduling, and shutdown order. `kvim-tui` owns none of these.
 
 The host keeps every event loop free from filesystem, process, Git, LSP,
-formatter, and Tree-sitter work. It submits synchronous syntax work through its
-bounded worker spawner.
+formatter, and Tree-sitter work. `WorktreeEditor::dispatch` submits queued work
+to the facade-owned bounded executor without blocking the host loop.
 
-## Driver Responsibilities
+## Facade Execution Responsibilities
 
-The legacy `EditorDriver` owns the external services of one `kvim-tui`
-compatibility editor instance. The target `kvim-embed` facade owns the matching
-orchestration values and internal execution capacity. Neither contract exposes
-runtime handles to its host.
-
-The driver creates no runtime and starts no detached task. It submits work
-through the supplied spawner. It tracks every returned task until completion or
+The facade creates one private runtime during `WorktreeEditorBuilder::open` and
+starts no detached task. It tracks every submitted task until completion or
 cancellation.
 
-Closing one driver cannot cancel or drain another driver's services. Every
-event and result carries its instance identity. Several editors can use one root
-or different roots without sharing request or cancellation namespaces.
+Closing one editor cannot cancel or drain another editor's services. Every
+completion carries its instance identity. Several editors can use one root or
+different roots without sharing request or cancellation namespaces.
 
-Shutdown consumes the driver. It rejects new work, cancels pre-commit work,
+Shutdown consumes the editor. It rejects new work, cancels pre-commit work,
 closes optional services, and waits for tracked work until the supplied
 deadline. If the deadline expires while mandatory delivery remains, shutdown
-returns a bounded, must-use `ShutdownDrain`. The drain owns the remaining tasks,
-reservations, and event delivery. The host keeps its runtime alive until the
-drain completes.
+returns a bounded, must-use `WorktreeDrain`. The drain owns the private runtime,
+remaining tasks, reservations, and event delivery until `complete` returns.
 
 ## Embedded Editor
 
@@ -204,10 +192,9 @@ The editor accepts resolved surface commands, literal text, bounded paste, and
 time. It does not run another key-sequence resolver. Input reduction returns an
 `InputContextSnapshot` that the shared resolver uses for the next input.
 
-The legacy facade reserves one mandatory event slot before each save or
-workspace mutation. A `Committed` result consumes that slot and applies the
-staged visible transition. An `Unchanged` result releases it and reports the
-causal failure.
+The facade reserves one mandatory event slot before each save or workspace
+mutation. A `Committed` result consumes that slot and applies the staged visible
+transition. An `Unchanged` result releases it and reports the causal failure.
 
 An `Indeterminate` result consumes the slot with
 `SaveReconciliationRequired` or `WorkspaceReconciliationRequired`. It preserves

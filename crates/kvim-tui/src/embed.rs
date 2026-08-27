@@ -535,7 +535,6 @@ pub struct EditorApplyError {
 
 impl EditorApplyError {
     /// Recovers the unapplied completion for routing to its owner.
-    #[must_use]
     pub fn into_completed(self) -> Completed {
         self.source.into_completed()
     }
@@ -834,13 +833,13 @@ impl EmbeddedEditorBuilder {
             return Err(GeometryError::Empty { area }.into());
         }
         let settings = settings.realize()?;
-        if let Some(services) = language.as_ref() {
-            if services.root() != root.as_path() {
-                return Err(EditorOpenError::LanguageRootMismatch {
-                    editor: root.as_path().to_path_buf(),
-                    language: services.root().to_path_buf(),
-                });
-            }
+        if let Some(services) = language.as_ref()
+            && services.root() != root.as_path()
+        {
+            return Err(EditorOpenError::LanguageRootMismatch {
+                editor: root.as_path().to_path_buf(),
+                language: services.root().to_path_buf(),
+            });
         }
         let mut editor = Session::new(area, settings, root)
             .with_access(access)
@@ -1262,6 +1261,7 @@ impl EmbeddedEditor {
     ///
     /// Returns [`EditorApplyError`] before any state change when `completed`
     /// belongs to another editor.
+    #[allow(clippy::result_large_err)]
     pub fn apply(
         &mut self,
         completed: Completed,

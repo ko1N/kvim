@@ -145,7 +145,6 @@ impl DriverApplyError {
     }
 
     /// Recovers the unapplied completion for routing to its owner.
-    #[must_use]
     pub fn into_completed(self) -> Completed {
         self.completed
     }
@@ -354,6 +353,7 @@ impl EditorDriver {
     ///
     /// Returns [`DriverApplyError`] with the intact completion before any
     /// mutation when the session or completion belongs to another instance.
+    #[allow(clippy::result_large_err)]
     pub fn apply(
         &mut self,
         editor: &mut Session,

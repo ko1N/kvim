@@ -1100,8 +1100,8 @@ without worktree chrome, syntax, diagnostics, or service-owned decoration. It
 uses the same `kvim-editor` cursor and viewport rules. It paints configured
 absolute and relative line numbers, horizontally clips text by terminal-cell
 width, and reports one cursor cell. The host still owns the terminal cursor and
-terminal lifecycle. The transitional `kvim-tui` presentation below keeps its
-existing behavior unchanged.
+terminal lifecycle. The private `kvim-tui` worktree presentation below keeps
+its existing behavior unchanged.
 
 Every window paints the buffer of its own leaf. Two windows therefore show two
 different files after `:e` in a split.

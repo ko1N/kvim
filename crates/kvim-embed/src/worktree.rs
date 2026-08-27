@@ -577,7 +577,6 @@ impl WorktreeApplyError {
     }
 
     /// Recovers the unapplied completion for correct routing.
-    #[must_use]
     pub fn into_completion(self) -> WorktreeCompletion {
         self.completion
     }
@@ -657,7 +656,7 @@ pub enum WorktreeShutdown {
         events: Vec<WorktreeEvent>,
     },
     /// Committing work still needs to deliver events.
-    Draining(WorktreeDrain),
+    Draining(Box<WorktreeDrain>),
 }
 
 /// Builder for one worktree editor with explicit capabilities.
@@ -983,6 +982,7 @@ impl WorktreeEditor {
     ///
     /// Returns [`WorktreeApplyErrorKind::WrongInstance`] before any mutation when
     /// another editor produced the completion.
+    #[allow(clippy::result_large_err)]
     pub fn apply(
         &mut self,
         completion: WorktreeCompletion,
@@ -1028,10 +1028,10 @@ impl WorktreeEditor {
             TuiEditorShutdown::Draining(drain) => {
                 drop(_guard);
                 let runtime = self.runtime.take().expect("shutdown owns the executor");
-                WorktreeShutdown::Draining(WorktreeDrain {
+                WorktreeShutdown::Draining(Box::new(WorktreeDrain {
                     runtime,
                     drain: *drain,
-                })
+                }))
             }
         }
     }

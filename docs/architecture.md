@@ -217,9 +217,8 @@ editor. Its default dependency closure contains no `kvim-tui`, `kvim-runtime`,
 `kvim-language`, `kvim-lsp`, `kvim-workspace`, `kvim-path`, `kvim-terminal`,
 Tokio, crossterm, notify, or cap-std. The in-memory editor reuses the lower
 modal state and viewport. Its small plain-text painter remains local because
-the current full renderer is structurally tied to worktree, language, and
-transitional presentation state. This avoids a reverse dependency and avoids
-duplicating that full renderer.
+the full worktree renderer is structurally tied to worktree and language state.
+This avoids a reverse dependency and avoids duplicating that full renderer.
 
 `kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
 so its action list is public. A consumer that resolves keys itself reads the
@@ -594,16 +593,17 @@ imperative boundary.
   - Cost: compile time and platform-specific transitive code.
 - `ratatui`
   - Replaces: a local widget set, cell buffer, and layout implementation.
-  - May run: in `kvim-ui`, `kvim-tui`, and the standalone composition root,
-    which owns the terminal backend, the cell buffer of the process terminal,
-    and the draw call.
+  - May run: in `kvim-ui`, `kvim-tui`, `kvim-embed`, and the standalone
+    composition root. `kvim-embed` renders into a caller-owned cell buffer. The
+    standalone root owns the terminal backend and draw call.
   - Cost: compile time. Rendering cost stays bounded by the terminal buffer and
     the visible window content.
 - `unicode-width`
   - Replaces: local terminal-cell width tables.
-  - May run: in `kvim-ui` and `kvim-tui`, which lay out cells. `kvim-core`
-    defines the terminal-column coordinate type, but it does not measure cell
-    width, and `kvim-terminal` normalizes events rather than laying out cells.
+  - May run: in `kvim-ui`, `kvim-tui`, and `kvim-embed`, which lay out cells.
+    `kvim-core` defines the terminal-column coordinate type, but it does not
+    measure cell width, and `kvim-terminal` normalizes events rather than laying
+    out cells.
   - Cost: small. Work stays bounded to visible or otherwise bounded text.
 - `futures-util`
   - Replaces: a local polling loop over terminal events, and a local join over
@@ -615,9 +615,9 @@ imperative boundary.
   - Replaces: local thread pools, channels, deadlines, and child-process
     handling.
   - May run: in `kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-terminal`,
-    `kvim-tui`, and the standalone composition root. Public drivers return
-    futures and create no runtime. Every task starts through a caller-supplied
-    bounded spawner.
+    `kvim-tui`, `kvim-embed`, and the standalone composition root. Lower public
+    drivers return futures and create no runtime. `WorktreeEditor` privately
+    owns one runtime and bounded spawners.
   - Cost: compile time, supply-chain size, and a worker thread pool.
 - `tokio-util`
   - Replaces: local cancellation flags and shared shutdown state.

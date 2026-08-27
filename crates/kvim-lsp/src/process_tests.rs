@@ -107,7 +107,7 @@ async fn server_process_opens_a_fresh_custom_transport_for_each_attempt() {
         Ok(Transport::new(client_input, client_output))
     }));
 
-    for expected in [b'a', b'b'] {
+    for expected in *b"ab" {
         let (process, mut streams) = ServerProcess::open(&mut factory, |_| {})
             .expect("public owner accepts custom transport");
         streams

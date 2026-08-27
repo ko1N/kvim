@@ -4,10 +4,9 @@
 
 `kvim-runtime` owns reusable bounded scheduling, cancellation, deadlines, and
 result delivery. `kvim-embed` owns facade-facing readiness, completion,
-application, and shutdown values for one high-level editor. `EditorDriver` is a
-transitional internal owner for the `kvim-tui` compatibility path. The host
-event loop owns that instance's visible editor state. The standalone `kvim`
-binary owns the terminal event loop.
+application, private executor capacity, and shutdown values for one high-level
+editor. The host event loop owns terminal state and applies facade outcomes.
+The standalone `kvim` binary owns the terminal event loop.
 
 ## Event Loop
 
@@ -81,15 +80,9 @@ until an unrelated event paints the next frame.
 ## Bounded Work
 
 Run external commands through a bounded and cancellable process spawner. Run
-processor-bound work through a bounded worker spawner. The host supplies these
-spawners to an embedded driver and chooses isolated capacity or an explicitly
-shared pool. Bound queues, process concurrency, worker concurrency, input sizes,
-output sizes, caches, retries, and deadlines.
-
-The library creates no asynchronous runtime and starts no detached task. The
-host runs every returned driver future and supervises every submitted task.
-Synchronous syntax highlighting is bounded processor work. Submit it through the
-worker spawner. Never call it directly from an event loop.
+processor-bound work through a bounded worker spawner. `WorktreeEditor` owns
+these spawners on its private executor. `WorktreeCapacity` bounds result,
+process, worker, and event capacity for each editor.
 
 Submission never waits for capacity. When no permit or result slot is available,
 submission returns a typed saturated result immediately. The event loop then
@@ -331,12 +324,12 @@ Dropping a process future kills its child process. Dropping the runtime remains
 a best-effort safety net. Normal editor shutdown must use the explicit consuming
 shutdown operation.
 
-Embedded shutdown consumes one `EditorDriver`. It rejects new work, cancels
+Embedded shutdown consumes one `WorktreeEditor`. It rejects new work, cancels
 pre-commit work, closes its optional services, and waits only until the supplied
 deadline. It does not abort a task that can have committed a side effect. If the
-deadline expires first, shutdown returns a bounded, must-use `ShutdownDrain`.
-The drain owns remaining tasks, event reservations, and mandatory delivery. The
-host keeps its runtime alive until the drain completes.
+deadline expires first, shutdown returns a bounded, must-use `WorktreeDrain`.
+The drain owns the private executor, remaining tasks, event reservations, and
+mandatory delivery until `WorktreeDrain::complete` returns.
 
 Terminal restoration runs after runtime shutdown and also runs while the process
 unwinds from a panic. See [`architecture.md`](architecture.md) for the release
