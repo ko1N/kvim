@@ -124,20 +124,35 @@ impl Registry {
 
     /// Builds the hardcoded first-release registry.
     ///
-    /// The table is `docs/input-actions.md`. The first release parses no
-    /// configuration file, so this is a cold-path bootstrap: an invalid table is
-    /// a programming error and must fail loudly at startup.
+    /// This is the explicit standalone profile. It preserves the historic
+    /// first-release table exactly.
     ///
     /// # Panics
     ///
     /// Panics when the hardcoded table breaks a registry rule.
     #[must_use]
     pub fn first_release() -> Self {
+        Self::standalone()
+    }
+
+    /// Builds the validated standalone binding profile.
+    ///
+    /// This profile preserves the first-release key table exactly.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the hardcoded table breaks a registry rule.
+    #[must_use]
+    pub fn standalone() -> Self {
         let bindings = first_release_bindings();
         match Self::from_bindings(&bindings, PENDING_KEYS_MAX) {
             Ok(registry) => registry,
             Err(error) => panic!("the hardcoded first-release binding table is invalid: {error}"),
         }
+    }
+
+    pub(crate) fn first_release_bindings() -> Vec<Binding> {
+        first_release_bindings()
     }
 
     /// Returns the command that the exact sequence reaches in the scope.

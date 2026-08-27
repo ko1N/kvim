@@ -1051,6 +1051,22 @@ The planned standalone binding profile keeps this review entry. The planned
 embedded profile removes every binding that reaches `Command::OpenReview`,
 including `Space g g`, while semantic review execution remains available.
 
+`kvim_input::BindingProfile` now publishes the bounded semantic manifest that a
+host consumes instead of parsing the standalone table. Each entry carries the
+command identity, scope, validated sequence, group, description, text fallback,
+unbound behavior, and static-prefix interruption policy. That policy reports
+only resolver arbitration. A later facade transition validates editor-state
+cancellation before host focus changes. The standalone profile preserves the
+first-release table. The embedded profile leaves `Tab` and `Shift-Tab` unclaimed
+in Normal, Visual, and sidebar scopes, while Insert and prompt scopes retain
+indentation and completion. It adds `]j` and `[j` for forward and backward
+jumps, and `]s` and `[s` for review sections. Bounded semantic overrides disable
+every physical binding of one command, explicitly restore its first-release
+bindings, or replace all of its profile bindings with validated mappings. An
+override set rejects conflicting enable, disable, and replacement declarations
+for one command. It also rejects duplicate sequences, oversized sequences, and
+prefix pairs before dispatch.
+
 A planned standalone `ReviewSurface` has independent review bindings. It
 supports `from_candidates` without I/O and `for_worktree` with bounded Git
 capture. Integrated and standalone review share private state, relocation, and

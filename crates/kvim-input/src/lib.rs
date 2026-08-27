@@ -57,6 +57,7 @@ mod command;
 mod command_line;
 mod edited_line;
 mod mode;
+mod profile;
 mod reducer;
 mod registry;
 mod resolver;
@@ -72,6 +73,11 @@ pub use kvim_keymap::{
     SemanticPhases, TextFallback, TypedText,
 };
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
+pub use profile::{
+    BINDING_MANIFEST_ENTRIES_MAX, BINDING_OVERRIDES_MAX, BINDING_REPLACEMENTS_MAX,
+    BindingInterruptionPolicy, BindingManifest, BindingManifestEntry, BindingOverride,
+    BindingProfile, BindingProfileError, BindingReplacement, BindingReplacementError,
+};
 pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer, is_register_name};
 pub use registry::{Binding, Registry, RegistryError, WhichKeyRow, WhichKeyTarget};
 pub use resolver::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};
