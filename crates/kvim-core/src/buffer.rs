@@ -103,6 +103,9 @@ pub enum EditError {
         /// The buffer length, in characters.
         len_chars: usize,
     },
+    /// The resulting buffer would not end in a line terminator.
+    #[error("the edit would remove the final line terminator")]
+    MissingFinalLineTerminator,
     /// The resulting buffer would exceed its persistent byte limit.
     #[error("the edit would produce {bytes} bytes; the limit is {max_bytes} bytes")]
     TooLarge {
@@ -741,7 +744,9 @@ impl TextBuffer {
     /// # Errors
     ///
     /// Returns [`EditError`] when a range or the recorded cursor falls outside
-    /// the current buffer. The buffer stays unchanged in that case.
+    /// the current buffer, when the result has no final line terminator, or
+    /// when the result exceeds the persistent byte limit. The buffer stays
+    /// unchanged in each case.
     pub fn apply(&mut self, transaction: EditTransaction) -> Result<BufferVersion, EditError> {
         let len_chars = self.rope.len_chars();
         let cursor_before = transaction.cursor_before();
@@ -751,7 +756,11 @@ impl TextBuffer {
                 len_chars,
             });
         }
-        let mut resulting_bytes = self.logical_len_bytes() as u64;
+        // Stage the complete history entry and resulting rope. Validation must
+        // finish before either live text or history changes.
+        let mut changes = Vec::with_capacity(transaction.changes().len());
+        let mut removed_total = 0;
+        let mut inserted_total = 0;
         for change in transaction.changes() {
             let range = change.range();
             if range.end().get() > len_chars {
@@ -761,34 +770,8 @@ impl TextBuffer {
                     len_chars,
                 });
             }
-            let start_byte = self.rope.char_to_byte(range.start().get());
-            let end_byte = self.rope.char_to_byte(range.end().get());
-            let removed_bytes = (end_byte - start_byte) as u64;
-            resulting_bytes = resulting_bytes
-                .checked_sub(removed_bytes)
-                .expect("a validated range cannot remove more bytes than the buffer holds");
-            resulting_bytes = resulting_bytes
-                .checked_add(change.replacement().len() as u64)
-                .ok_or(EditError::TooLarge {
-                    bytes: u64::MAX,
-                    max_bytes: self.bytes_max.get(),
-                })?;
-        }
-        if resulting_bytes > self.bytes_max.get() {
-            return Err(EditError::TooLarge {
-                bytes: resulting_bytes,
-                max_bytes: self.bytes_max.get(),
-            });
-        }
-
-        // Stage the complete history entry from the current text, then change
-        // the rope. The entry holds both texts, so undo and redo replay it.
-        let mut changes = Vec::with_capacity(transaction.changes().len());
-        let mut removed_total = 0;
-        let mut inserted_total = 0;
-        for change in transaction.changes() {
-            let start = change.range().start().get();
-            let removed_chars = change.range().len_chars();
+            let start = range.start().get();
+            let removed_chars = range.len_chars();
             let removed: String = self.rope.slice(start..start + removed_chars).into();
             let inserted = change.replacement().to_owned();
             let inserted_chars = inserted.chars().count();
@@ -817,12 +800,40 @@ impl TextBuffer {
             cursor_before,
             cursor_after,
         };
+        let mut staged_rope = self.rope.clone();
+        replay(&mut staged_rope, &entry);
+        let staged_len_chars = staged_rope.len_chars();
+        let has_final_terminator = match self.final_line_ending {
+            FinalLineEnding::Present => {
+                staged_len_chars > 0 && is_line_break(staged_rope.char(staged_len_chars - 1))
+            }
+            FinalLineEnding::Absent => match self.line_ending {
+                LineEnding::Lf => {
+                    staged_len_chars > 0 && staged_rope.char(staged_len_chars - 1) == '\n'
+                }
+                LineEnding::Crlf => {
+                    staged_len_chars >= 2
+                        && staged_rope.char(staged_len_chars - 2) == '\r'
+                        && staged_rope.char(staged_len_chars - 1) == '\n'
+                }
+            },
+        };
+        if !has_final_terminator {
+            return Err(EditError::MissingFinalLineTerminator);
+        }
+        let resulting_bytes = logical_len_bytes(
+            staged_rope.len_bytes(),
+            self.line_ending,
+            self.final_line_ending,
+        ) as u64;
+        if resulting_bytes > self.bytes_max.get() {
+            return Err(EditError::TooLarge {
+                bytes: resulting_bytes,
+                max_bytes: self.bytes_max.get(),
+            });
+        }
 
-        replay(&mut self.rope, &entry);
-        debug_assert!(
-            self.ends_with_line_ending(),
-            "every transaction preserves the final rope terminator"
-        );
+        self.rope = staged_rope;
         debug_assert_eq!(
             self.rope.len_bytes() as u64,
             resulting_bytes

@@ -85,13 +85,6 @@ pub struct EditContext<'a> {
     pub language_indent_width: Option<NonZeroU8>,
     /// The registers of the editor session.
     pub registers: &'a mut Registers,
-    /// The transactions that the command applied, in application order.
-    ///
-    /// The caller starts every command with an empty list. It reads the list
-    /// afterwards to move a syntax tree over the change, so the next analysis
-    /// reparses incrementally instead of reading the complete buffer. An undo
-    /// and a redo record nothing here, because they replay recorded history.
-    pub applied: Vec<EditTransaction>,
 }
 
 impl EditContext<'_> {
@@ -106,7 +99,48 @@ impl EditContext<'_> {
     }
 
     fn indent(&self) -> IndentPolicy {
-        IndentPolicy::for_language(&self.settings.indent, self.language_indent_width)
+        let settings = &self.settings.indent;
+        IndentPolicy::new(
+            settings.expand_tab,
+            settings.tab_width,
+            settings.indent_columns(self.language_indent_width),
+        )
+    }
+}
+
+/// The typed result and incremental effect of one command.
+///
+/// One command applies at most one transaction. Undo and redo change text but
+/// return no incremental transaction because they replay buffer history.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandResult {
+    outcome: CommandOutcome,
+    transaction: Option<EditTransaction>,
+}
+
+impl CommandResult {
+    fn new(outcome: CommandOutcome, transaction: Option<EditTransaction>) -> Self {
+        debug_assert!(
+            transaction.is_none() || outcome == CommandOutcome::Changed,
+            "only a changed command can expose its newly applied transaction"
+        );
+        Self {
+            outcome,
+            transaction,
+        }
+    }
+
+    /// Returns the semantic outcome of the command.
+    #[must_use]
+    pub const fn outcome(&self) -> CommandOutcome {
+        self.outcome
+    }
+
+    /// Returns the transaction applied by the command, when incremental reuse
+    /// can consume it.
+    #[must_use]
+    pub const fn transaction(&self) -> Option<&EditTransaction> {
+        self.transaction.as_ref()
     }
 }
 
@@ -202,7 +236,6 @@ enum MotionResult {
 ///     search: None,
 ///     language_indent_width: None,
 ///     registers: &mut registers,
-///     applied: Vec::new(),
 /// };
 ///
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
@@ -212,9 +245,9 @@ enum MotionResult {
 ///
 /// // `d` waits for a motion, and `w` completes it.
 /// let pending = state.apply(&mut context, &mut window, Command::DeleteOverMotion, None);
-/// assert_eq!(pending, CommandOutcome::OperatorPending);
+/// assert_eq!(pending.outcome(), CommandOutcome::OperatorPending);
 /// let changed = state.apply(&mut context, &mut window, Command::MoveNextWordStart, None);
-/// assert_eq!(changed, CommandOutcome::Changed);
+/// assert_eq!(changed.outcome(), CommandOutcome::Changed);
 /// assert_eq!(context.buffer.to_string(), "beta\ngamma\n");
 ///
 /// // One undo reverses the complete change.
@@ -222,12 +255,13 @@ enum MotionResult {
 /// assert_eq!(context.buffer.to_string(), "alpha beta\ngamma\n");
 /// assert_eq!(state.mode(), Mode::Normal);
 /// ```
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct EditingState {
     mode: Mode,
     pending: Option<PendingOperator>,
     block_insert: Option<PendingBlockInsert>,
     repeat: Option<RepeatableChange>,
+    applied: Option<EditTransaction>,
     /// The register that qualifies the operation that is being composed.
     ///
     /// `"` and its name arrive with the first command of the operation, and an
@@ -237,7 +271,6 @@ pub struct EditingState {
 }
 
 impl EditingState {
-    /// Creates the Normal-mode state without a pending operator.
     #[must_use]
     pub fn new() -> Self {
         Self::default()
@@ -322,7 +355,7 @@ impl EditingState {
         window: &mut WindowState,
         command: Command,
         count: Option<NonZeroU32>,
-    ) -> CommandOutcome {
+    ) -> CommandResult {
         self.apply_indented(context, window, command, count, AutoIndent::PreviousLine)
     }
 
@@ -359,7 +392,6 @@ impl EditingState {
     ///     search: None,
     ///     language_indent_width: None,
     ///     registers: &mut registers,
-    ///     applied: Vec::new(),
     /// };
     ///
     /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
@@ -382,7 +414,7 @@ impl EditingState {
         command: Command,
         count: Option<NonZeroU32>,
         register: Option<char>,
-    ) -> CommandOutcome {
+    ) -> CommandResult {
         self.apply_indented_with_register(
             context,
             window,
@@ -406,7 +438,7 @@ impl EditingState {
         count: Option<NonZeroU32>,
         auto: AutoIndent,
         register: Option<char>,
-    ) -> CommandOutcome {
+    ) -> CommandResult {
         if register.is_some() {
             self.register = register;
         }
@@ -426,14 +458,15 @@ impl EditingState {
         command: Command,
         count: Option<NonZeroU32>,
         auto: AutoIndent,
-    ) -> CommandOutcome {
+    ) -> CommandResult {
+        self.applied = None;
         let outcome = self.dispatch(context, window, command, count, auto);
         // A register qualifies exactly one operation. A waiting operator holds
         // the operation open, so the name survives until its target arrives.
         if outcome != CommandOutcome::OperatorPending {
             self.register = None;
         }
-        outcome
+        CommandResult::new(outcome, self.applied.take())
     }
 
     /// Executes one semantic command without the register lifetime.
@@ -611,6 +644,17 @@ impl EditingState {
         context: &mut EditContext<'_>,
         window: &mut WindowState,
         text: &str,
+    ) -> CommandResult {
+        self.applied = None;
+        let outcome = self.insert_text_inner(context, window, text);
+        CommandResult::new(outcome, self.applied.take())
+    }
+
+    fn insert_text_inner(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        text: &str,
     ) -> CommandOutcome {
         if text.is_empty() {
             return CommandOutcome::Applied;
@@ -646,8 +690,11 @@ impl EditingState {
         &mut self,
         context: &mut EditContext<'_>,
         window: &mut WindowState,
-    ) -> CommandOutcome {
-        self.insert_line_break_indented(context, window, AutoIndent::PreviousLine)
+    ) -> CommandResult {
+        self.applied = None;
+        let outcome =
+            self.insert_line_break_indented_inner(context, window, AutoIndent::PreviousLine);
+        CommandResult::new(outcome, self.applied.take())
     }
 
     /// Inserts one line break with an explicit automatic indent.
@@ -656,6 +703,17 @@ impl EditingState {
     /// the syntax-tree level count. A caller without one passes
     /// [`AutoIndent::PreviousLine`] instead of waiting for a parse result.
     pub fn insert_line_break_indented(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        auto: AutoIndent,
+    ) -> CommandResult {
+        self.applied = None;
+        let outcome = self.insert_line_break_indented_inner(context, window, auto);
+        CommandResult::new(outcome, self.applied.take())
+    }
+
+    fn insert_line_break_indented_inner(
         &mut self,
         context: &mut EditContext<'_>,
         window: &mut WindowState,
@@ -681,6 +739,17 @@ impl EditingState {
     /// Returns [`CommandOutcome::Unhandled`] in that case. See
     /// `docs/language-services.md`.
     pub fn toggle_comment(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        comment: Option<&str>,
+    ) -> CommandResult {
+        self.applied = None;
+        let outcome = self.toggle_comment_inner(context, window, comment);
+        CommandResult::new(outcome, self.applied.take())
+    }
+
+    fn toggle_comment_inner(
         &mut self,
         context: &mut EditContext<'_>,
         window: &mut WindowState,
@@ -714,6 +783,16 @@ impl EditingState {
         &mut self,
         context: &mut EditContext<'_>,
         window: &mut WindowState,
+    ) -> CommandResult {
+        self.applied = None;
+        let outcome = self.delete_backward_inner(context, window);
+        CommandResult::new(outcome, self.applied.take())
+    }
+
+    fn delete_backward_inner(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
     ) -> CommandOutcome {
         // The delete moves the text after the cursor, so a pending block
         // rectangle no longer describes the buffer.
@@ -731,6 +810,16 @@ impl EditingState {
     /// changes nothing. The delete is one transaction, so one undo reverses it,
     /// and it writes no register.
     pub fn delete_word_backward(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+    ) -> CommandResult {
+        self.applied = None;
+        let outcome = self.delete_word_backward_inner(context, window);
+        CommandResult::new(outcome, self.applied.take())
+    }
+
+    fn delete_word_backward_inner(
         &mut self,
         context: &mut EditContext<'_>,
         window: &mut WindowState,
@@ -757,12 +846,14 @@ impl EditingState {
         context: &mut EditContext<'_>,
         window: &mut WindowState,
         transaction: EditTransaction,
-    ) -> CommandOutcome {
+    ) -> CommandResult {
+        self.applied = None;
         let plan = EditPlan {
             transaction: Some(transaction),
             ..EditPlan::unchanged()
         };
-        self.commit(context, window, plan)
+        let outcome = self.commit(context, window, plan);
+        CommandResult::new(outcome, self.applied.take())
     }
 
     /// Moves the cursor to the first match of a query.
@@ -1287,7 +1378,9 @@ impl EditingState {
         };
         match change {
             RepeatableChange::Command { command, count } => {
-                self.apply_indented(context, window, command, count, auto)
+                let result = self.apply_indented(context, window, command, count, auto);
+                self.applied = result.transaction;
+                result.outcome
             }
             RepeatableChange::OperatorMotion {
                 operator,
@@ -1296,7 +1389,9 @@ impl EditingState {
                 motion_count,
             } => {
                 self.pending = Some(PendingOperator { operator, count });
-                self.apply_indented(context, window, motion, motion_count, auto)
+                let result = self.apply_indented(context, window, motion, motion_count, auto);
+                self.applied = result.transaction;
+                result.outcome
             }
         }
     }
@@ -1317,7 +1412,7 @@ impl EditingState {
             match context.buffer.apply(transaction) {
                 Ok(_) => {
                     changed = true;
-                    context.applied.push(recorded);
+                    self.applied = Some(recorded);
                 }
                 Err(EditError::TooLarge { .. }) => return CommandOutcome::Rejected,
                 Err(error) => debug_assert!(

@@ -1,13 +1,13 @@
-use super::{INDENT_COLUMNS_MAX, IndentPolicy, ShiftDirection};
-use kvim_settings::{IndentSettings, ShiftWidth};
 use std::num::NonZeroU8;
+
+use super::{INDENT_COLUMNS_MAX, IndentPolicy, ShiftDirection};
 
 fn cells(value: u8) -> NonZeroU8 {
     NonZeroU8::new(value).expect("the test value is not zero")
 }
 
 fn default_policy() -> IndentPolicy {
-    IndentPolicy::from_settings(&IndentSettings::default())
+    IndentPolicy::new(true, cells(4), cells(4))
 }
 
 #[test]
@@ -19,12 +19,8 @@ fn the_default_policy_uses_four_space_soft_tabs() {
 }
 
 #[test]
-fn the_shift_width_follows_an_explicit_setting() {
-    let settings = IndentSettings {
-        shift_width: ShiftWidth::Cells(cells(2)),
-        ..IndentSettings::default()
-    };
-    let policy = IndentPolicy::from_settings(&settings);
+fn the_shift_width_uses_the_resolved_input() {
+    let policy = IndentPolicy::new(true, cells(4), cells(2));
     assert_eq!(policy.shift_width(), cells(2));
     assert_eq!(policy.shift_columns(4, ShiftDirection::Right), 6);
 }
@@ -67,11 +63,7 @@ fn rendering_and_shifting_stay_bounded() {
 
 #[test]
 fn a_hard_tab_policy_renders_tabs_and_spaces() {
-    let settings = IndentSettings {
-        expand_tab: false,
-        ..IndentSettings::default()
-    };
-    let policy = IndentPolicy::from_settings(&settings);
+    let policy = IndentPolicy::new(false, cells(4), cells(4));
     assert_eq!(policy.render(9), "\t\t ");
     assert_eq!(policy.measure("\t\t code").columns, 9);
 }

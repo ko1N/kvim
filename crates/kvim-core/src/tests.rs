@@ -248,6 +248,28 @@ fn a_mixed_file_keeps_its_first_line_ending_for_new_lines() {
 }
 
 #[test]
+fn deleting_or_replacing_the_final_terminator_is_rejected_atomically() {
+    let mut buffer = buffer("abc\n");
+    buffer.mark_saved();
+    let version = buffer.version();
+    let cursor = buffer.char_position(3).expect("the cursor exists");
+    let terminator = range(&buffer, 3, 4);
+
+    for replacement in ["", "x"] {
+        let transaction =
+            EditTransaction::single(cursor, TextChange::replace(terminator, replacement));
+        assert_eq!(
+            buffer.apply(transaction),
+            Err(EditError::MissingFinalLineTerminator)
+        );
+        assert_eq!(buffer.to_string(), "abc\n");
+        assert_eq!(buffer.version(), version);
+        assert!(!buffer.is_modified());
+        assert_eq!(buffer.undo(), None);
+    }
+}
+
+#[test]
 fn edits_enforce_the_persistent_byte_limit_atomically() {
     let limit = BufferBytesMax::new(8).expect("the test limit is valid");
     let mut buffer = TextBuffer::from_text("abc\n", limit).expect("the text fits");
@@ -411,13 +433,20 @@ fn the_history_keeps_at_most_the_entry_bound() {
 
 #[test]
 fn the_history_keeps_at_most_the_retained_byte_bound() {
-    let chunk_bytes = 1024 * 1024;
-    let kept = UNDO_HISTORY_BYTES_MAX / chunk_bytes;
-    let chunk = "a".repeat(chunk_bytes);
+    let content_bytes = 1024 * 1024;
+    let entry_bytes = content_bytes * 2;
+    let kept = UNDO_HISTORY_BYTES_MAX / entry_bytes;
+    let first = format!("{}\n", "a".repeat(content_bytes - 1));
+    let second = "b".repeat(content_bytes - 1);
 
-    let mut buffer = buffer("");
-    for _ in 0..kept + 1 {
-        replace(&mut buffer, 0, 0, &chunk);
+    let mut buffer = buffer(&first);
+    for edit in 0..kept + 1 {
+        let replacement = if edit % 2 == 0 {
+            &second
+        } else {
+            &first[..content_bytes - 1]
+        };
+        replace(&mut buffer, 0, content_bytes - 1, replacement);
     }
 
     let mut undone = 0;
@@ -463,9 +492,9 @@ fn undo_restores_the_original_text_for_generated_edit_sequences() {
         let mut buffer = buffer(ORIGINAL);
         let mut applied = 0;
         for _ in 0..16 {
-            let len = buffer.len_chars();
-            let start = next() % (len + 1);
-            let end = start + next() % (len + 1 - start).min(6);
+            let editable_end = buffer.len_chars() - 1;
+            let start = next() % (editable_end + 1);
+            let end = start + next() % (editable_end + 1 - start).min(6);
             replace(&mut buffer, start, end, REPLACEMENTS[next() % 4]);
             applied += 1;
         }

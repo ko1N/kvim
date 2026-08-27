@@ -5,6 +5,10 @@ license.workspace = true
 rust-version.workspace = true
 version.workspace = true
 
+[[example]]
+name = "worktree_editor"
+required-features = ["worktree"]
+
 [features]
 default = []
 worktree = [

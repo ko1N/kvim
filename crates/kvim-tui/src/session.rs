@@ -2543,7 +2543,11 @@ impl Session {
     /// caller can lose a scroll position.
     fn edit<F>(&mut self, change: F) -> CommandOutcome
     where
-        F: FnOnce(&mut EditingState, &mut EditContext<'_>, &mut WindowState) -> CommandOutcome,
+        F: FnOnce(
+            &mut EditingState,
+            &mut EditContext<'_>,
+            &mut WindowState,
+        ) -> kvim_editor::CommandResult,
     {
         let language_indent_width = self.language_indent_width();
         let window = self.windows.focused_window();
@@ -2565,23 +2569,23 @@ impl Session {
             search: self.search.as_ref().map(|search| &search.query),
             language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
-        let outcome = change(&mut self.editing, &mut context, &mut state);
-        let applied = std::mem::take(&mut context.applied);
+        let result = change(&mut self.editing, &mut context, &mut state);
+        let outcome = result.outcome();
+        let applied = result.transaction();
         // Every text change passes one access gate before it reaches this
         // point, so a view-only editor produces no transaction at all. See
         // `docs/embedding.md`.
         debug_assert!(
-            self.access == EditorAccess::ReadWrite || applied.is_empty(),
+            self.access == EditorAccess::ReadWrite || applied.is_none(),
             "view-only access refuses every text change before the buffer sees it"
         );
         let after = context.buffer.revision();
         if let Some(slot) = self.windows.state_mut(window) {
             *slot = state;
         }
-        self.advance_syntax(&before, after, &applied);
-        self.synchronize_language(&before, after, &applied);
+        self.advance_syntax(&before, after, applied);
+        self.synchronize_language(&before, after, applied);
         outcome
     }
 
@@ -2595,7 +2599,7 @@ impl Session {
         &mut self,
         before: &TextBuffer,
         after: BufferRevision,
-        applied: &[EditTransaction],
+        applied: Option<&EditTransaction>,
     ) {
         if after == before.revision() {
             return;
@@ -2612,7 +2616,7 @@ impl Session {
             // The queued open already carries the newest text.
             return;
         }
-        let [transaction] = applied else {
+        let Some(transaction) = applied else {
             self.language.mark_resync(buffer);
             return;
         };
@@ -2638,7 +2642,7 @@ impl Session {
         &mut self,
         before: &TextBuffer,
         after: BufferRevision,
-        applied: &[EditTransaction],
+        applied: Option<&EditTransaction>,
     ) {
         let Some(entry) = self.analysis.get_mut(&self.active) else {
             return;
@@ -2651,8 +2655,8 @@ impl Session {
         }
         // One command commits at most one transaction. A longer list would need
         // the buffer between the transactions, which no caller holds.
-        let [transaction] = applied else {
-            if applied.is_empty() {
+        let Some(transaction) = applied else {
+            if after == before.revision() {
                 entry.reuse = Some((version, tree));
             }
             return;

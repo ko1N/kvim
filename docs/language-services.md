@@ -1375,6 +1375,13 @@ therefore hold at most `LANGUAGE_SERVERS_MAX` times `LSP_DIAGNOSTICS_MAX`
 entries, because only the servers of one adapter describe one buffer. The merge
 removes the duplicates, so the visible list is normally far shorter.
 
+A language-server session uses `TransportFactory::Process` by default. A host
+that already owns a server uses `TransportFactory::Custom`. The custom factory
+returns fresh `Transport` streams for the initial attempt and every restart, so
+it does not need to spawn a child. These streams implement Tokio `AsyncRead` and
+`AsyncWrite`; the protocol reader must own a partial frame across cancellation.
+The existing envelope queue and protocol byte limits bound data after transport.
+
 A language-server session owns a long-lived child process through the supplied
 process spawner. `LSP_SESSIONS_MAX` bounds those children per project, and the
 manager's process limit bounds them in aggregate. `PROCESS_CONCURRENCY_LIMIT` of

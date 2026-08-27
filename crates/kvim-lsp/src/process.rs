@@ -129,6 +129,27 @@ pub struct Transport {
     child: Option<Child>,
 }
 
+impl Transport {
+    /// Creates one caller-supplied transport over bounded asynchronous streams.
+    ///
+    /// The caller owns any remote endpoint and its lifecycle. Kvim owns these
+    /// stream halves after this call. The streams use Tokio's asynchronous I/O
+    /// traits because the protocol reader must retain a partly read frame across
+    /// cancellation.
+    #[must_use]
+    pub fn new(
+        input: impl AsyncWrite + Send + Unpin + 'static,
+        output: impl AsyncRead + Send + Unpin + 'static,
+    ) -> Self {
+        Self {
+            input: Box::new(input),
+            output: Box::new(output),
+            errors: None,
+            child: None,
+        }
+    }
+}
+
 #[cfg(any(test, feature = "test-support"))]
 impl Transport {
     /// Creates one transport over a prepared stream pair.
@@ -140,12 +161,7 @@ impl Transport {
         input: impl AsyncWrite + Send + Unpin + 'static,
         output: impl AsyncRead + Send + Unpin + 'static,
     ) -> Self {
-        Self {
-            input: Box::new(input),
-            output: Box::new(output),
-            errors: None,
-            child: None,
-        }
+        Self::new(input, output)
     }
 }
 
@@ -163,6 +179,18 @@ pub enum TransportFactory {
         /// The working directory of the child.
         root: PathBuf,
     },
+    /// Ask caller-owned code for the transport of each attempt.
+    ///
+    /// The callback runs once for the initial connection and once for each
+    /// restart. It may connect a socket, open an embedded server, or return any
+    /// other bounded asynchronous byte streams without starting a child.
+    ///
+    /// The caller must return fresh stream ownership for each call. The caller
+    /// also owns the remote endpoint lifecycle and must stop it when the stream
+    /// closes. Kvim bounds parsed frames and its envelope queue, but the caller
+    /// must bound buffering and work before bytes reach these streams. Return a
+    /// typed [`LspError`] without replacing its source when connection fails.
+    Custom(Box<dyn FnMut() -> Result<Transport, LspError> + Send>),
     /// Take the next prepared stream pair, which only tests supply.
     #[cfg(any(test, feature = "test-support"))]
     Prepared(Vec<Transport>),
@@ -222,6 +250,7 @@ impl TransportFactory {
                     child: Some(child),
                 })
             }
+            Self::Custom(create) => create(),
             #[cfg(any(test, feature = "test-support"))]
             Self::Prepared(prepared) => {
                 if prepared.is_empty() {

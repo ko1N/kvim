@@ -4,12 +4,10 @@
 //! wanted width, and moves an indent by one shift step. The `editor` module
 //! builds the transactions for the Visual `<` and `>` commands and for the
 //! automatic indent from these three primitives. This module holds no indent
-//! constant of its own: [`IndentSettings`] resolves the width of one indent
-//! level against the language of the buffer, and the policy renders it.
+//! constant of its own: the composition layer resolves the widths and gives the
+//! policy only the three values that text operations need.
 
 use std::num::NonZeroU8;
-
-use kvim_settings::IndentSettings;
 
 /// The largest indent width that [`IndentPolicy::render`] produces, in cells.
 ///
@@ -42,10 +40,12 @@ pub struct LineIndent {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::{IndentPolicy, ShiftDirection};
-/// use kvim_settings::IndentSettings;
+/// use std::num::NonZeroU8;
 ///
-/// let policy = IndentPolicy::from_settings(&IndentSettings::default());
+/// use kvim_core::{IndentPolicy, ShiftDirection};
+///
+/// let four = NonZeroU8::new(4).expect("four is not zero");
+/// let policy = IndentPolicy::new(true, four, four);
 /// let indent = policy.measure("    let value = 1;");
 /// assert_eq!(indent.char_len, 4);
 /// assert_eq!(indent.columns, 4);
@@ -61,43 +61,17 @@ pub struct IndentPolicy {
 }
 
 impl IndentPolicy {
-    /// Reads the policy of a buffer that no language adapter serves.
+    /// Creates a policy from resolved composition values.
     ///
-    /// The default policy uses four-space soft tabs, and the shift width follows
-    /// the tab width.
+    /// `tab_width` measures tab stops. `shift_width` controls automatic indent
+    /// and the `<` and `>` commands. The composition layer resolves language
+    /// and user settings before it creates this value.
     #[must_use]
-    pub fn from_settings(settings: &IndentSettings) -> Self {
-        Self::for_language(settings, None)
-    }
-
-    /// Reads the policy of a buffer of one language.
-    ///
-    /// `language_width` is the number of cells that one indent level takes in
-    /// the language of the buffer, or `None` for a buffer that no adapter
-    /// serves. The resolved width becomes the shift width, so the automatic
-    /// indent and the `<` and `>` commands step by the same number of cells,
-    /// as they do in Vim. [`IndentSettings::indent_columns`] owns the
-    /// resolution order.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use std::num::NonZeroU8;
-    ///
-    /// use kvim_core::IndentPolicy;
-    /// use kvim_settings::IndentSettings;
-    ///
-    /// let cells = NonZeroU8::new(2).expect("the literal 2 is not zero");
-    /// let policy = IndentPolicy::for_language(&IndentSettings::default(), Some(cells));
-    /// assert_eq!(policy.shift_width(), cells);
-    /// assert_eq!(policy.tab_width().get(), 4);
-    /// ```
-    #[must_use]
-    pub fn for_language(settings: &IndentSettings, language_width: Option<NonZeroU8>) -> Self {
+    pub const fn new(expand_tab: bool, tab_width: NonZeroU8, shift_width: NonZeroU8) -> Self {
         Self {
-            expand_tab: settings.expand_tab,
-            tab_width: settings.tab_width,
-            shift_width: settings.indent_columns(language_width),
+            expand_tab,
+            tab_width,
+            shift_width,
         }
     }
 
@@ -142,12 +116,12 @@ impl IndentPolicy {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::IndentPolicy;
-    /// use kvim_settings::IndentSettings;
+    /// use std::num::NonZeroU8;
     ///
-    /// let mut settings = IndentSettings::default();
-    /// settings.expand_tab = false;
-    /// let policy = IndentPolicy::from_settings(&settings);
+    /// use kvim_core::IndentPolicy;
+    ///
+    /// let four = NonZeroU8::new(4).expect("four is not zero");
+    /// let policy = IndentPolicy::new(false, four, four);
     /// assert_eq!(policy.render(6), "\t  ");
     /// ```
     #[must_use]

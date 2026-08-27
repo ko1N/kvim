@@ -195,7 +195,6 @@ impl MemoryEditor {
             search: None,
             language_indent_width: None,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         let outcome = self.editing.apply_with_register(
             &mut context,
@@ -205,7 +204,7 @@ impl MemoryEditor {
             register,
         );
         self.reconcile_window();
-        Ok(outcome)
+        Ok(outcome.outcome())
     }
 
     /// Applies literal text when Insert mode owns text input.
@@ -219,11 +218,11 @@ impl MemoryEditor {
             search: None,
             language_indent_width: None,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         let outcome = match self
             .editing
             .insert_text(&mut context, &mut self.window, text)
+            .outcome()
         {
             CommandOutcome::Changed => LiteralOutcome::Changed,
             CommandOutcome::Rejected => LiteralOutcome::Rejected,

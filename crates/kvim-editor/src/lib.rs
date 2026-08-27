@@ -34,7 +34,6 @@
 //!     search: None,
 //!     language_indent_width: None,
 //!     registers: &mut registers,
-//!     applied: Vec::new(),
 //! };
 //!
 //! let rows = NonZeroU16::new(24).expect("the literal 24 is not zero");
@@ -51,6 +50,7 @@
 //! );
 //!
 //! let outcome = state.apply(&mut context, &mut window, Command::PasteAfter, None);
+//! let outcome = outcome.outcome();
 //! assert_eq!(outcome, CommandOutcome::Changed);
 //! assert_eq!(context.buffer.to_string(), "fn main() {\nfn main() {\n    let value = 1;\n}\n");
 //! ```
@@ -85,8 +85,8 @@ pub use search::{
 };
 pub use selection::{AnchorPoint, ModeState, Selection};
 pub use state::{
-    CommandContext, CommandOutcome, EditContext, EditingState, INSERT_TEXT_BYTES_MAX,
-    MOTION_COUNT_MAX,
+    CommandContext, CommandOutcome, CommandResult, EditContext, EditingState,
+    INSERT_TEXT_BYTES_MAX, MOTION_COUNT_MAX,
 };
 pub use text_object::{
     Delimiter, DelimiterShape, TEXT_OBJECT_SCAN_CHARS_MAX, TextObject, TextObjectKind,

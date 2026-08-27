@@ -40,7 +40,6 @@ use super::viewport::Viewport;
 ///     search: None,
 ///     language_indent_width: None,
 ///     registers: &mut registers,
-///     applied: Vec::new(),
 /// };
 ///
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");

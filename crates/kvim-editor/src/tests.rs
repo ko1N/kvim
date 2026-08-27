@@ -9,9 +9,7 @@ use super::{
 };
 use kvim_core::TextBuffer;
 use kvim_input::{Command, Mode};
-use kvim_settings::{
-    CaseSensitivity, DisplaySettings, EditorSettings, FileSettings, SearchSettings,
-};
+use kvim_settings::{CaseSensitivity, DisplaySettings, EditorSettings, SearchSettings};
 
 /// Five lines that cover a long line, an indented line, an empty line, a line of
 /// blanks, and a last line without a terminator.
@@ -75,9 +73,8 @@ fn apply(
         search: None,
         language_indent_width: None,
         registers: &mut registers,
-        applied: Vec::new(),
     };
-    state.apply(&mut context, view, command, repeat)
+    state.apply(&mut context, view, command, repeat).outcome()
 }
 
 fn search(
@@ -99,9 +96,8 @@ fn search(
         search: Some(query),
         language_indent_width: None,
         registers: &mut registers,
-        applied: Vec::new(),
     };
-    state.apply(&mut context, view, command, None)
+    state.apply(&mut context, view, command, None).outcome()
 }
 
 fn position(view: &WindowState) -> (usize, usize) {

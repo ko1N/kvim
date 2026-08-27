@@ -2,8 +2,6 @@
 
 use super::*;
 
-use kvim_settings::FileSettings;
-
 /// `e` and a combining acute, then `x`, then `a` and two combining marks.
 const MARKED: &str = "e\u{301}xa\u{300}\u{308}\n";
 

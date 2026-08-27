@@ -212,7 +212,9 @@ the selection by one indent level. The comment toggle preserves the existing
 indent of each affected line.
 
 `kvim-core` supplies the indent measurement, the indent rendering, and the shift
-step. `kvim-editor` owns the automatic indent rule and the shift commands.
+step through `IndentPolicy`. It accepts only resolved tab and shift values.
+`kvim-editor` resolves `EditorSettings` and the language width into that policy,
+and owns the automatic indent rule and the shift commands.
 
 ## Automatic Indent
 
