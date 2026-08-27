@@ -132,8 +132,8 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-ui` | `kvim-keymap`, `kvim-fuzzy` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
-| 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
-| 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
+| 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-fuzzy`, `kvim-input`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` |
 | 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
 | 6 | `kvim` | `kvim-embed`, `kvim-path`, `kvim-settings`, `kvim-terminal` |
 
@@ -162,9 +162,9 @@ them.
 
 The alternative was to move `TerminalEvent` down into `kvim-keymap` and leave
 the crossterm conversion in `kvim-terminal`. That move is refused, because the
-value carries `Resize` and `Focus`, which are terminal facts and not key facts.
-A keymap crate that named them would own two charters. The accepted cost is that
-an external host of the embedded facade also compiles `kvim-terminal` and
+value carries `Resize`, which is a terminal fact and not a key fact. A keymap
+crate that named it would own two charters. The accepted cost is that an
+external host of the embedded facade also compiles `kvim-terminal` and
 crossterm, although `WorktreeEditor` names no terminal type.
 
 `kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
@@ -180,14 +180,10 @@ compiles ranking code that it does not use.
 `kvim-workspace` depends on `kvim-ui` because `Picker` holds one
 `Selector<usize>` for its query, its ranking, its match list, and its
 selection. `kvim-ui` is layer 2 and `kvim-workspace` is layer 3, so the edge
-adds no cycle. `kvim-workspace` keeps its direct dependency on `kvim-fuzzy`
-too, because it re-exports `score_candidate`, `FUZZY_NAME_WEIGHT`, and
-`FUZZY_TEXT_CHARS_MAX` for a consumer that scores a candidate of its own
-without the file, buffer, and picker vocabulary of `kvim-workspace`, and
-because its own public `rank_candidates` function clips its query and then
-calls `kvim_fuzzy::rank` over borrowed candidates. `kvim_fuzzy::rank` is the
-one ranking rule that `Picker`, the command-line completion, and `Selector<R>`
-all share.
+adds no cycle. The workspace crate does not re-export or wrap `kvim-fuzzy`.
+Consumers that score or rank their own candidates use the supported
+`kvim-fuzzy` package directly. Command-line completion in `kvim-tui` also calls
+`kvim_fuzzy::rank` directly over borrowed workspace candidates.
 
 `kvim-runtime` depends on `kvim-path` only for the portable filesystem watcher.
 The watcher uses one caller-supplied worktree capability for registration reads

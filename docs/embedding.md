@@ -120,8 +120,8 @@ required invariant before implementation changes it.
 | KV-A10 | `architecture.md` | Consumer and feature gates prove supported package contracts. |
 | KV-A11 | `language-services.md` | No-grammar and grammar feature behavior remains documented and valid. |
 | KV-A12 | `text-model.md` | Lower crates publish values that own their meaning and preserve text invariants. |
-| KV-A13 | `architecture.md` | A supported setting must have production behavior; `DisplaySettings::wrap` is no-op and is scheduled for removal. |
-| KV-A14 | `architecture.md` | A supported public path must have production behavior; stale paths are removed or implemented. |
+| KV-A13 | `architecture.md` | A supported setting has production behavior; the stale wrapping setting was removed before release. |
+| KV-A14 | `architecture.md` | A supported public path has production behavior; stale paths are removed before release. |
 
 ## Worktree Implementation Contract
 

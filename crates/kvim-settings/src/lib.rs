@@ -269,8 +269,6 @@ pub struct DisplaySettings {
     pub number: bool,
     /// Show the distance of every other line from the cursor line.
     pub relative_number: bool,
-    /// Wrap a long line onto the next terminal row.
-    pub wrap: bool,
     /// The vertical scroll margin, in rows.
     pub scrolloff_rows: u16,
     /// The horizontal scroll margin, in cells.
@@ -284,7 +282,6 @@ impl Default for DisplaySettings {
         Self {
             number: true,
             relative_number: true,
-            wrap: false,
             scrolloff_rows: 2,
             sidescrolloff_cells: 4,
             signcolumn: SignColumn::Always,
@@ -574,9 +571,6 @@ impl Default for LanguageSettings {
 /// let mut settings = EditorSettings::default();
 /// assert_eq!(settings.display.signcolumn, SignColumn::Always);
 /// assert_eq!(settings.indent.shift_width, ShiftWidth::FollowTabWidth);
-///
-/// settings.display.wrap = true;
-/// assert!(settings.display.wrap);
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EditorSettings {

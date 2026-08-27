@@ -25,21 +25,15 @@ pub enum EventRejection {
     /// The key event carried no normalized key.
     #[error("the terminal key event carries no normalized key")]
     Key(#[from] KeyRejection),
+    /// A focus event carries no normalized form because focus reporting is disabled.
+    #[error("the terminal reported focus while focus reporting is disabled")]
+    Focus,
     /// A mouse event carries no normalized form.
     #[error("the terminal reported a mouse event, which kvim does not read")]
     Mouse,
     /// A bracketed paste carried no bounded, non-empty block.
     #[error("the terminal paste block carries no bounded input")]
     Paste(#[from] PasteError),
-}
-
-/// The terminal focus transition that the terminal reported.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub enum FocusChange {
-    /// The terminal window became the focused window.
-    Gained,
-    /// The terminal window lost the focus.
-    Lost,
 }
 
 /// One normalized terminal event.
@@ -61,8 +55,6 @@ pub enum TerminalEvent {
         /// The new terminal height in cells.
         rows: u16,
     },
-    /// The terminal window gained or lost the focus.
-    Focus(FocusChange),
     /// The terminal reported input that no binding accepts.
     ///
     /// A key with an unsupported modifier and a paste block above
@@ -97,8 +89,7 @@ impl TerminalEvent {
             CrosstermEvent::Key(key) => Ok(Self::Key(normalize_key_event(key)?)),
             CrosstermEvent::Paste(text) => Ok(Self::Paste(PasteText::new(&text)?)),
             CrosstermEvent::Resize(columns, rows) => Ok(Self::Resize { columns, rows }),
-            CrosstermEvent::FocusGained => Ok(Self::Focus(FocusChange::Gained)),
-            CrosstermEvent::FocusLost => Ok(Self::Focus(FocusChange::Lost)),
+            CrosstermEvent::FocusGained | CrosstermEvent::FocusLost => Err(EventRejection::Focus),
             CrosstermEvent::Mouse(_) => Err(EventRejection::Mouse),
         }
     }
@@ -171,6 +162,7 @@ where
                 // sequence between the two presses of every multi-key binding.
                 Err(
                     EventRejection::Key(KeyRejection::Release)
+                    | EventRejection::Focus
                     | EventRejection::Mouse
                     | EventRejection::Paste(PasteError::Empty),
                 ) => continue,

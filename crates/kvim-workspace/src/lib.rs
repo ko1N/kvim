@@ -99,15 +99,13 @@ pub use file::{
     FileChange, FileIdentity, FileTarget, LoadedFile, OpenError, SaveError, SavedFile, identity,
     load, render_content, save,
 };
-// The scoring rule names no path and no buffer, so it lives in its own charter
-// and this crate consumes it. The re-export keeps the picker vocabulary of this
-// crate in one place. See `docs/files.md`.
+// The workspace crate uses the domain-neutral selector for picker ranking. It
+// does not re-export the lower-level fuzzy API. See `docs/files.md`.
 pub use git::{
     GIT_PATH_DEPTH_MAX, GIT_PREFIX_OUTPUT_BYTES_MAX, GIT_PROGRAM, GIT_STATUS_DEADLINE,
     GIT_STATUS_ENTRIES_MAX, GIT_STATUS_OUTPUT_BYTES_MAX, GitExecutionPolicy, GitStatus,
     GitStatusFailure, GitStatusRead, GitStatusRequest, GitStatusSnapshot,
 };
-pub use kvim_fuzzy::{FUZZY_NAME_WEIGHT, FUZZY_TEXT_CHARS_MAX, score_candidate};
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
     MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite, TakenDestination,
@@ -115,7 +113,7 @@ pub use mutation::{
 };
 pub use picker::{
     Acceptance, Candidate, CandidateTarget, PICKER_CANDIDATES_MAX, PICKER_MATCH_CHARS_MAX,
-    PICKER_QUERY_CHARS_MAX, Picker, PickerKind, PreviewTarget, rank_candidates,
+    PICKER_QUERY_CHARS_MAX, Picker, PickerKind, PreviewTarget,
 };
 pub use picker_request::{
     PICKER_PREVIEW_DEADLINE, PICKER_WALK_DEADLINE, PREVIEW_BYTES_MAX, PREVIEW_CONTEXT_LINES,

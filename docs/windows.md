@@ -1174,8 +1174,8 @@ overrides the margin for that command.
 The horizontal scroll margin is four columns and follows the same rule. Both
 margins belong to `EditorSettings`. See [`settings.md`](settings.md).
 
-Line wrapping is disabled by default. A long line scrolls horizontally inside
-its window. Rendering clips at the window edge deterministically.
+Line wrapping is not supported. A long line scrolls horizontally inside its
+window. Rendering clips at the window edge deterministically.
 
 Rendering uses terminal-cell widths, not byte counts or character counts. See
 [`text-model.md`](text-model.md) for the coordinate rule.

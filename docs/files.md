@@ -1012,18 +1012,16 @@ scores one candidate against one query, and `rank` turns those scores into
 one ordered list of source indexes. Neither name a path, a buffer, or a
 picker, so a host that ranks a list of its own values holds the same rule
 without this charter. [`architecture.md`](architecture.md) records the crate.
-`kvim-workspace` re-exports `score_candidate`, so the picker vocabulary of
-that crate stays in one place.
+Consumers call `kvim-fuzzy` directly instead of through a workspace wrapper.
 
 `Picker` keeps the file, search, and buffer vocabulary alone: the candidate
 list, the accepted target, and the preview. Its query, its ranking, its match
 list, and its selection live inside one `kvim_ui::Selector`, the
 domain-neutral mechanism that also serves a host of its own vocabulary.
-`Picker`'s public `rank_candidates` function and `Selector<R>` both clip or
-gather their own borrowed candidates and then call `kvim_fuzzy::rank`, so the
-rule that turns a score into an ordered list exists in one place, not two.
-[`architecture.md`](architecture.md) records the layer edge from
-`kvim-workspace` to `kvim-ui`.
+`Picker` and `Selector<R>` both use `kvim_fuzzy::rank`, so the rule that turns
+a score into an ordered list exists in one place. Command-line completion also
+calls that rule directly over borrowed workspace candidates.
+[`architecture.md`](architecture.md) records the layer edges.
 
 The fuzzy match is a subsequence match without case. Each matched character
 scores by its position: a character that follows the previous match scores most,

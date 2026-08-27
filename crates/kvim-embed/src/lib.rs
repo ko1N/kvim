@@ -23,7 +23,7 @@ pub use worktree::{
     WorkspaceOperation, WorkspaceOperationKind, WorkspaceTransfer, WorktreeAccess,
     WorktreeApplyError, WorktreeApplyErrorKind, WorktreeCapabilities, WorktreeCapacity,
     WorktreeCommandError, WorktreeCompletion, WorktreeCursor, WorktreeCursorShape, WorktreeDrain,
-    WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeFocus, WorktreeGeometryError,
+    WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeGeometryError,
     WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput, WorktreeInputOutcome,
     WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError, WorktreeOpenErrorKind,
     WorktreeRefusal, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,

@@ -32,7 +32,6 @@ structure, not a flat list of primitives.
 |---|---|
 | Line numbers | Enabled |
 | Relative line numbers | Enabled |
-| Line wrapping | Disabled |
 | Vertical scroll margin | 2 rows |
 | Horizontal scroll margin | 4 columns |
 | Sign column | Always visible |
@@ -217,10 +216,8 @@ maximum. These checks run in release builds and return typed errors for invalid
 consumer input. Debug assertions protect only invariants that a validated
 boundary already established.
 
-`DisplaySettings::wrap` is not part of the realized settings contract. Rendering
-uses horizontal scrolling until a separate wrapping architecture exists. Remove
-the raw field during the facade migration; do not preserve a setting that has no
-production behavior.
+Rendering uses horizontal scrolling. The first release has no line-wrapping
+setting because no wrapping architecture exists.
 
 ## Configuration Loading
 

@@ -16,12 +16,11 @@ use kvim_language::LspError;
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
-use kvim_terminal::{FocusChange, Key, KeyCode, PasteText, TerminalEvent};
+use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
     BUFFERS_MAX, BufferPathUpdate, Candidate, DurableOutcome, ExternalChange, FileRequest,
     FileResult, MutationOutcome, PickerRequest, PickerResult, SaveError, WorkspaceResult,
-    rank_candidates,
 };
 
 use crate::clipboard::SessionClipboard;
@@ -321,11 +320,6 @@ fn the_focused_file_tree_answers_the_resize_keys() {
 #[test]
 fn only_a_visible_change_requests_a_new_frame() {
     let mut session = session(40, 10);
-    // A focus change moves no cursor and shows no new text.
-    assert_eq!(
-        session.handle_event(TerminalEvent::Focus(FocusChange::Lost), NOW),
-        Redraw::Skipped
-    );
     // A resize to the same size changes no rectangle.
     assert_eq!(
         session.handle_event(
@@ -1039,9 +1033,9 @@ fn the_command_line_completes_a_path_with_the_ranking_of_the_picker() {
     // complete path as the picker does. The two names hold the same score and
     // the same width, so the source order decides between them.
     assert_eq!(
-        rank_candidates("src/m", &walked_files()),
-        [1, 3],
-        "the ranking of the completion is the ranking of the picker"
+        crate::completion::command_line_candidates("e src/m", &walked_files()),
+        ["e src/main.rs", "e src/mode.rs"],
+        "the completion applies the shared fuzzy ranking"
     );
 
     press_code(&mut session, KeyCode::Tab);

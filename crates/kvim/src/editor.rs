@@ -24,13 +24,13 @@ use tokio::time::sleep;
 
 use kvim_embed::{
     ServicePolicy, WorktreeCapabilities, WorktreeCursorShape, WorktreeEditor, WorktreeEvent,
-    WorktreeFocus, WorktreeInput, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
+    WorktreeInput, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
 };
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{
-    CrosstermControl, CursorShape, EventSource, FocusChange, TerminalControl, TerminalError,
-    TerminalEvent, TerminalSession, TerminationSource,
+    CrosstermControl, CursorShape, EventSource, TerminalControl, TerminalError, TerminalEvent,
+    TerminalSession, TerminationSource,
 };
 
 /// Consecutive terminal read failures that end the editor.
@@ -267,8 +267,6 @@ fn facade_input(event: TerminalEvent) -> WorktreeInput {
         TerminalEvent::Key(key) => WorktreeInput::Key(key),
         TerminalEvent::Paste(text) => WorktreeInput::Paste(text),
         TerminalEvent::Resize { columns, rows } => WorktreeInput::Resize { columns, rows },
-        TerminalEvent::Focus(FocusChange::Gained) => WorktreeInput::Focus(WorktreeFocus::Gained),
-        TerminalEvent::Focus(FocusChange::Lost) => WorktreeInput::Focus(WorktreeFocus::Lost),
         TerminalEvent::Unsupported => WorktreeInput::Unsupported,
     }
 }

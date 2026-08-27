@@ -39,8 +39,9 @@
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
+use kvim_fuzzy::rank;
 use kvim_input::CommandLineCommand;
-use kvim_workspace::{Candidate, rank_candidates};
+use kvim_workspace::{Candidate, PICKER_QUERY_CHARS_MAX};
 
 use super::cells::{text_cells, truncate_cells_left};
 use super::overlay::{OVERFLOW_NOTE, fill};
@@ -459,14 +460,24 @@ pub(super) fn command_line_candidates(line: &str, files: &[Candidate]) -> Vec<St
     let Some(argument) = CommandLineCommand::path_argument(line) else {
         return CommandLineCommand::names_matching(line);
     };
-    rank_candidates(argument.typed, files)
-        .into_iter()
-        // The menu refuses a longer list, so the producer ranks its files and
-        // offers the best candidates instead of an unbounded set.
-        .take(COMPLETION_CANDIDATES_MAX)
-        .filter_map(|index| files.get(index))
-        .map(|candidate| format!("{} {}", argument.name, candidate.relative_path().display()))
-        .collect()
+    let query: String = argument
+        .typed
+        .chars()
+        .take(PICKER_QUERY_CHARS_MAX)
+        .collect();
+    rank(
+        &query,
+        files
+            .iter()
+            .map(|candidate| (candidate.name(), candidate.directory())),
+    )
+    .into_iter()
+    // The menu refuses a longer list, so the producer ranks its files and
+    // offers the best candidates instead of an unbounded set.
+    .take(COMPLETION_CANDIDATES_MAX)
+    .filter_map(|index| files.get(index))
+    .map(|candidate| format!("{} {}", argument.name, candidate.relative_path().display()))
+    .collect()
 }
 
 #[cfg(test)]

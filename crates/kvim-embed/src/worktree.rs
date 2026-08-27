@@ -308,19 +308,8 @@ pub enum WorktreeInput {
         /// Height in terminal cells.
         rows: u16,
     },
-    /// The host surface gained or lost focus.
-    Focus(WorktreeFocus),
     /// Input that no binding accepts.
     Unsupported,
-}
-
-/// One host-surface focus transition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum WorktreeFocus {
-    /// The surface gained focus.
-    Gained,
-    /// The surface lost focus.
-    Lost,
 }
 
 /// Why an input was refused before a side effect.
@@ -893,12 +882,6 @@ impl WorktreeEditor {
             WorktreeInput::Key(key) => TuiTerminalEvent::Key(key),
             WorktreeInput::Paste(text) => TuiTerminalEvent::Paste(text),
             WorktreeInput::Resize { columns, rows } => TuiTerminalEvent::Resize { columns, rows },
-            WorktreeInput::Focus(WorktreeFocus::Gained) => {
-                TuiTerminalEvent::Focus(kvim_tui::__private::FocusChange::Gained)
-            }
-            WorktreeInput::Focus(WorktreeFocus::Lost) => {
-                TuiTerminalEvent::Focus(kvim_tui::__private::FocusChange::Lost)
-            }
             WorktreeInput::Unsupported => TuiTerminalEvent::Unsupported,
         };
         convert_redraw(self.inner_mut().input(input, now))

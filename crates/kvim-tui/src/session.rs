@@ -2063,8 +2063,6 @@ impl Session {
                 self.insert_owned_text(text.as_str()).or(closed)
             }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
-            // A focus change moves no cursor and shows no new text.
-            TerminalEvent::Focus(_) => Redraw::Skipped,
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
             TerminalEvent::Unsupported => {

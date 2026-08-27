@@ -103,7 +103,7 @@ pub mod __private {
     pub use crate::theme::Theme;
     pub use crate::tree::GENERATED_NAMES;
     pub use crate::{Direction, ListMotion, RegionFocus, draw_file_row};
-    pub use kvim_terminal::{FocusChange, TerminalEvent};
+    pub use kvim_terminal::TerminalEvent;
 }
 
 pub use buffer_view::RegionFocus;
