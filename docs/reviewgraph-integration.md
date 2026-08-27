@@ -37,6 +37,14 @@ preserved notices.
 
 ## Application Integration
 
+### Planned Standalone Review Facade
+
+A planned `ReviewSurface` will consume either bounded immutable candidates or
+bounded worktree capture. It will share private review state, relocation,
+snapshots, and painting with integrated review. The host owns focus, comment
+persistence, and all application meaning. These facade additions are not
+available in the current release.
+
 Application integration stays outside kvim:
 
 - A host can compose a ReviewGraph surface with an embedded kvim editor.

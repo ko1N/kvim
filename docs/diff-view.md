@@ -133,8 +133,17 @@ the first hunk of that file.
 
 ## Entering, Leaving, And Moving
 
-`<leader>gg` opens the review, which is the sequence that the reference Git
-interface uses, so the key that a reader already knows opens this one.
+The current integrated review opens with `<leader>gg` in standalone kvim. The
+review owns its keys and preserves the current window, viewport, and buffer
+while it draws over the window tree. The review surface survives a close, so
+read marks and the cursor remain available when the review opens again.
+
+A planned standalone `ReviewSurface` will be independent from editor bindings.
+It will support `from_candidates` without I/O and `for_worktree` with bounded Git
+capture. Integrated and standalone review will share private state, relocation,
+and painting. Snapshots will preserve bounded review position and read state,
+while comment persistence and host meaning remain outside kvim.
+
 
 The review draws over the window tree. It changes no window, no viewport, and no
 buffer, so leaving it restores the layout by drawing that tree again. Nothing is

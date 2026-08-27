@@ -1041,14 +1041,31 @@ sequence.
 
 ### The Review
 
-`<leader>gg` opens the review of the changes of the worktree. The review owns
-every key while it stays open, and it binds no key that changes a buffer.
+The current `<leader>gg` binding opens the integrated review in standalone kvim.
+The review owns every key while it stays open, and it binds no key that changes
+a buffer. It uses the motions that the buffer and sidebar already publish.
+`Ctrl-H` and `Ctrl-L` move focus between its two regions.
+[`diff-view.md`](diff-view.md) owns its keys, views, and live-update rules.
 
-The review holds two regions and moves both of them with the motions that the
-buffer and the sidebar already publish, so it adds no motion command of its own.
-`Ctrl-H` and `Ctrl-L` move the keys between the two regions.
-[`diff-view.md`](diff-view.md) owns the table of its keys, the rules of its two
-views, and its live updates.
+The planned standalone binding profile keeps this review entry. The planned
+embedded profile removes every binding that reaches `Command::OpenReview`,
+including `Space g g`, while semantic review execution remains available.
+
+A planned standalone `ReviewSurface` has independent review bindings. It
+supports `from_candidates` without I/O and `for_worktree` with bounded Git
+capture. Integrated and standalone review share private state, relocation, and
+painting. Snapshots preserve bounded review position and read state. The host
+persists comments and assigns all host-domain meaning.
+
+The planned host-resolved profile merges host-global and focused-surface leaders
+into one bounded registry and one which-key view. Host-global bindings receive
+first refusal. A focus change uses an addressed cancel-pending proposal followed
+by a validated resume transition. It cannot bypass counts, operators, registers,
+text objects, prefixes, or prompts. `Tab` and `Shift-Tab` remain editor-owned in
+Insert mode and internal prompts. Embedded Normal, Visual, and sidebar contexts
+may give these keys to host tab navigation. Recommended secondary semantic
+bindings are `]j`, `[j`, `]s`, and `[s`, subject to conflict validation when
+bindings are implemented.
 
 ### Text Objects
 

@@ -177,6 +177,15 @@ skips a directory that already carries a watch, so one burst costs bounded time.
 
 ## Request Identity And Publication
 
+### Planned Standalone Review Publication
+
+A planned standalone review surface follows the same boundary. Its worktree
+constructor performs bounded capture off the host event loop, and its supplied-
+candidate constructor performs no I/O. Both use addressed request identity,
+cancellation, deadlines, publication gates, bounded events, and consuming
+shutdown. Review snapshots and comments remain facade-owned neutral values; the
+host owns comment persistence and surface focus.
+
 Each request carries editor instance identity and `BufferId` where applicable.
 Text-derived work also carries one `BufferRevision`, which combines the
 replacement generation and edit version. Analysis and syntax reuse, external

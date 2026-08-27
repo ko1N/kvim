@@ -18,6 +18,15 @@ placement of every visible surface and of the open overlay.
 [`embedding.md`](embedding.md) owns the transition protocol that moves focus and
 overlay ownership.
 
+### Planned Host Composition
+
+The planned host-composition facade will let a host combine editor and review
+surfaces without exposing private workspace or TUI types. Presentation
+ownership will be independent for command line, statusline, which-key, and file
+sidebar. Each defaults to embedded; host-owned regions are removed from kvim
+layout. Planned semantic command, status, and sidebar snapshots remain bounded
+and carry no host-domain identity.
+
 `WindowTree<SurfaceId>` contains opaque surface identities, split structure,
 validated ratios, focus, limits, and minimum dimensions. Host surface values,
 buffer text, and terminal colors stay outside the tree.

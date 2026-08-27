@@ -50,7 +50,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
 | `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
 | `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
-| `kvim-embed` | The only supported high-level editor facade. It publishes rendered in-memory editing and an optional worktree editor. It owns facade lifecycle, outcomes, and bounded execution capacity. |
+| `kvim-embed` | The only supported high-level editor facade. It publishes the existing rendered `MemoryEditor` and optional `WorktreeEditor`. Planned host-composition additions and a standalone `ReviewSurface` will extend this facade. It owns facade lifecycle, outcomes, and bounded execution capacity. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
@@ -509,7 +509,7 @@ consumers prove each supported package in isolation. The exact matrix is:
 | `kvim-lsp` | no optional production features | default |
 | `kvim-ui` | no optional production features | default |
 | `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
-| `kvim-embed` | in-memory only | default, no-default, `worktree`, `grammar-rust`, `all-grammars` |
+| `kvim-embed` | in-memory only | default, no-default, `worktree`, `grammar-rust`, `all-grammars`; planned host-composition and review feature combinations remain documentation targets until implementation |
 | `kvim-tui` | internal only | no grammar, `grammar-rust`, `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
@@ -551,7 +551,20 @@ import documented supported companion packages and ratatui. No facade fixture
 imports `kvim-tui`, `kvim-runtime`, `kvim-language`, or `kvim-workspace`.
 
 The dependency gate reads the layer table of this document, so the policy and
-the architecture cannot disagree. A new charter row changes both at once.
+architecture cannot disagree. A new charter row changes both at once.
+
+## Planned Host And Review Surface
+
+The planned section below records host-composition additions and a standalone
+`ReviewSurface`. It does not make integrated review or the existing
+`WorktreeEditor` unavailable.
+
+`ReviewSurface::from_candidates` will accept bounded immutable candidates
+without I/O. `ReviewSurface::for_worktree` will perform bounded Git capture behind an
+explicit feature. Both will share private review state, anchor relocation,
+snapshots, and painting with integrated review. Neither will construct an
+editor or editor services. Hosts will own focus, comment persistence, and
+host-domain meaning.
 
 ## State Ownership
 

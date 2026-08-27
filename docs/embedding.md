@@ -11,9 +11,15 @@ host session, agent, tool, task, plan, or other host-domain concept.
 ## Facade Contract
 
 `kvim-embed` is the only supported high-level editor facade. Its default
-feature set publishes `MemoryEditor`. This concrete editor owns one bounded
-`TextBuffer`, one modal `EditingState`, registers, one window, validated
-`EditorSettings`, and its accepted rectangle. It applies caller-resolved
+feature set publishes `MemoryEditor`. `WorktreeEditor` is an existing separate
+rendered editor behind the `worktree` Cargo feature. The planned composition
+adds host-composition options and a separate `ReviewSurface`; those additions
+are not available in the current release. `MemoryEditor` remains the default
+path. `ReviewSurface` will be a separate rendered review surface behind the
+review/worktree feature family and will not require an editor. This
+`MemoryEditor` owns one bounded `TextBuffer`, one modal `EditingState`,
+registers, one window, validated `EditorSettings`, and its accepted rectangle.
+It applies caller-resolved
 `Command` values, literal Insert-mode text, and host-owned elapsed time. Elapsed
 time produces no transition because this editor has no timer-driven state. It
 renders plain text, line numbers, and the cursor into a caller-supplied ratatui
@@ -86,13 +92,13 @@ private source chain. `ServicePolicy::BestEffortBuiltIn` selects the same
 implementation but degrades a language construction failure to unavailable
 language behavior. A watcher startup failure reports that no watcher runs, then
 the editor remains usable and the refresh command reads the workspace by hand.
-File open, edit, render, and save remain available in both cases. The standalone uses best-effort built-in language and watcher
-services. It uses required built-in Git and clipboard policies. Git has no
-opening operation, and clipboard command availability is a runtime process
-outcome, so both policies remain active after the editor opens. The facade
+File open, edit, render, and save remain available in both cases. The
+standalone uses best-effort built-in language and watcher services. It uses
+required built-in Git and clipboard policies. Git has no opening operation, and
+clipboard command availability is a runtime process outcome, so both policies
+remain active after the editor opens. The facade
 reports runtime service outcomes through its ordinary editor events.
 Filesystem file open, edit, render, and save remain core worktree behavior.
-
 
 The host owns terminal lifecycle, terminal input, signals, raw mode, alternate
 screen, panic restoration, cursor application, and final redraw scheduling.
@@ -123,6 +129,59 @@ required invariant before implementation changes it.
 | KV-A12 | `text-model.md` | Lower crates publish values that own their meaning and preserve text invariants. |
 | KV-A13 | `architecture.md` | A supported setting has production behavior; the stale wrapping setting was removed before release. |
 | KV-A14 | `architecture.md` | A supported public path has production behavior; stale paths are removed before release. |
+
+## Planned Host Composition Contract
+
+This section defines planned host-composition additions. It does not change
+the existing `WorktreeEditor` contract described in the `Worktree
+Implementation Contract` below, and it does not imply that integrated review
+is unavailable.
+
+A host may own input routing for editor, review, chat, and other surfaces. It
+may merge host-global and focused-surface leader mappings into one bounded
+registry and one which-key view. Host-global bindings receive first refusal.
+Kvim also supports a simple embedded profile in which kvim owns resolution and
+which-key presentation.
+
+A focus change must use an addressed cancellation proposal and a validated
+resume transition. The proposal cannot bypass counts, operators, registers,
+text objects, prefixes, or prompts. The host supplies one configurable escape
+chord; kvim does not choose its physical key. `Tab` and `Shift-Tab` remain
+owned by Insert mode and internal prompts. Other embedded contexts may assign
+them to host tab navigation.
+
+`BindingProfile::Standalone` preserves the current preset. Planned
+`BindingProfile::Embedded` disables review-entry bindings and host-navigation
+conflicts by semantic command identity, while keeping semantic commands
+available. Binding overrides reject duplicate sequences and unreachable
+prefixes. Review bindings are independent from editor bindings.
+
+`WorktreePresentation` is a planned facade value with independent ownership for
+the command line, statusline, which-key, and file sidebar. Each surface is
+`Embedded` or `HostOwned`, defaults to `Embedded`, and is fixed at construction.
+Host-owned regions are removed from kvim layout. A host-owned command line
+requires a command-surface capability. Status and sidebar data remain semantic
+and bounded; kvim does not merge host and editor file-tree state.
+
+### Planned Editor Publication
+
+A planned addressed command catalog publishes stable identities, aliases,
+argument schemas, availability, and completion capability for one
+`WorktreeInstanceId`. The host owns the visible unified command line and
+history. Kvim owns command parsing, validation, completion, path confinement,
+and execution. `EditorStatusSnapshot` publishes semantic mode, path, modified
+state, cursor, access, diagnostics, and formatter facts, not formatted text.
+Planned sidebar rows publish bounded identity, path, depth, kind, loading,
+selection, Git, symlink, and icon-role facts.
+
+### Planned Standalone Review
+
+A planned `ReviewSurface` is an additional standalone surface. It does not
+replace the existing integrated review in `WorktreeEditor`. `ReviewSurface` will
+support `from_candidates` without I/O and `for_worktree` with bounded Git
+capture. Integrated and standalone review will share private state, relocation,
+and painting. Snapshots will preserve bounded review position and read state,
+while comment persistence and host meaning remain outside kvim.
 
 ## Worktree Implementation Contract
 
