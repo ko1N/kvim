@@ -1047,25 +1047,30 @@ a buffer. It uses the motions that the buffer and sidebar already publish.
 `Ctrl-H` and `Ctrl-L` move focus between its two regions.
 [`diff-view.md`](diff-view.md) owns its keys, views, and live-update rules.
 
-The planned standalone binding profile keeps this review entry. The planned
-embedded profile removes every binding that reaches `Command::OpenReview`,
-including `Space g g`, while semantic review execution remains available.
+The standalone binding profile keeps this review entry. The embedded profile
+removes every binding that reaches `Command::OpenReview`, including `Space g g`,
+while semantic review execution remains available.
 
-`kvim_input::BindingProfile` now publishes the bounded semantic manifest that a
+`kvim_input::BindingProfile` publishes the bounded semantic manifest that a
 host consumes instead of parsing the standalone table. Each entry carries the
 command identity, scope, validated sequence, group, description, text fallback,
 unbound behavior, and static-prefix interruption policy. That policy reports
-only resolver arbitration. A later facade transition validates editor-state
-cancellation before host focus changes. The standalone profile preserves the
-first-release table. The embedded profile leaves `Tab` and `Shift-Tab` unclaimed
-in Normal, Visual, and sidebar scopes, while Insert and prompt scopes retain
-indentation and completion. It adds `]j` and `[j` for forward and backward
-jumps, and `]s` and `[s` for review sections. Bounded semantic overrides disable
-every physical binding of one command, explicitly restore its first-release
-bindings, or replace all of its profile bindings with validated mappings. An
-override set rejects conflicting enable, disable, and replacement declarations
-for one command. It also rejects duplicate sequences, oversized sequences, and
-prefix pairs before dispatch.
+resolver arbitration. `WorktreeBindingMode::HostResolved` now publishes the
+embedded manifest and current binding context through `kvim-embed`. The host
+submits an instance- and generation-bound `WorktreeSemanticDispatch` after
+physical arbitration. A completed resolver command is accepted only when the
+active focus scope or picker overlay binds it. Direct `WorktreeEditor::command`
+remains a semantic API and does not claim a physical binding.
+
+The standalone profile preserves the first-release table. The embedded profile
+leaves `Tab` and `Shift-Tab` unclaimed in Normal, Visual, and sidebar scopes,
+while Insert and prompt scopes retain indentation and completion. It adds `]j`
+and `[j` for forward and backward jumps, and `]s` and `[s` for review sections.
+Bounded semantic overrides disable every physical binding of one command,
+explicitly restore its first-release bindings, or replace all of its profile
+bindings with validated mappings. An override set rejects conflicting enable,
+disable, and replacement declarations for one command. It also rejects
+duplicate sequences, oversized sequences, and prefix pairs before dispatch.
 
 A planned standalone `ReviewSurface` has independent review bindings. It
 supports `from_candidates` without I/O and `for_worktree` with bounded Git
@@ -1073,15 +1078,16 @@ capture. Integrated and standalone review share private state, relocation, and
 painting. Snapshots preserve bounded review position and read state. The host
 persists comments and assigns all host-domain meaning.
 
-The planned host-resolved profile merges host-global and focused-surface leaders
-into one bounded registry and one which-key view. Host-global bindings receive
-first refusal. A focus change uses an addressed cancel-pending proposal followed
-by a validated resume transition. It cannot bypass counts, operators, registers,
-text objects, prefixes, or prompts. `Tab` and `Shift-Tab` remain editor-owned in
-Insert mode and internal prompts. Embedded Normal, Visual, and sidebar contexts
-may give these keys to host tab navigation. Recommended secondary semantic
-bindings are `]j`, `[j`, `]s`, and `[s`, subject to conflict validation when
-bindings are implemented.
+Merged host-global and focused-surface leader resolution remains planned for
+the shared host registry and which-key work. Host-global bindings will receive
+first refusal. The implemented worktree facade already requires an addressed
+cancel-pending proposal and validated idle resume before a host focus change.
+It clears counts, operators, registers, text objects, and prompts atomically.
+Static pending prefixes remain host-resolver state and do not create kvim
+semantic state. `Tab` and `Shift-Tab` remain editor-owned in Insert mode and
+internal prompts. Embedded Normal, Visual, and sidebar contexts leave these
+keys available for host tab navigation. The implemented secondary semantic
+bindings are `]j`, `[j`, `]s`, and `[s`.
 
 ### Text Objects
 

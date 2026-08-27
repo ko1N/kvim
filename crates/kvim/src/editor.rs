@@ -156,7 +156,11 @@ async fn drive<C: TerminalControl>(
             },
         };
         let step = match step {
-            Step::Input(event, now) => Step::Handled(editor.input(facade_input(event), now)),
+            Step::Input(event, now) => Step::Handled(
+                editor
+                    .input(facade_input(event), now)
+                    .expect("the standalone editor owns its physical resolver"),
+            ),
             Step::Completed(completed) => Step::Handled(
                 editor
                     .apply(completed, start.elapsed())

@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kvim_input::{
-    BindingScope, Command, InputContextSnapshot, Key, Mode, PasteText, is_register_name,
+    BindingManifest, BindingProfile, BindingScope, Command, CommandOwner, ContextGeneration,
+    Dispatch, InputContextSnapshot, Key, Mode, PasteText, TypedText, is_register_name,
 };
 use kvim_language::{LanguageRegistry, LanguageServices};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
@@ -294,6 +295,179 @@ impl WorktreeHostReportRequest {
     }
 }
 
+/// How one worktree editor resolves physical bindings.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeBindingMode {
+    /// Kvim resolves the standalone binding profile inside the facade.
+    FacadeResolved,
+    /// The host resolves the embedded profile and reserves one escape key.
+    HostResolved {
+        /// One normalized physical key that the host always handles before kvim.
+        ///
+        /// [`Key`] represents exactly one non-empty key press. It cannot
+        /// represent an empty or multi-key sequence.
+        reserved_escape: Key,
+    },
+}
+
+impl Default for WorktreeBindingMode {
+    fn default() -> Self {
+        Self::FacadeResolved
+    }
+}
+
+impl WorktreeBindingMode {
+    const fn profile(self) -> BindingProfile {
+        match self {
+            Self::FacadeResolved => BindingProfile::Standalone,
+            Self::HostResolved { .. } => BindingProfile::Embedded,
+        }
+    }
+}
+
+/// Current bounded input metadata for a host-owned resolver.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WorktreeBindingContext {
+    instance: WorktreeInstanceId,
+    context: InputContextSnapshot<BindingScope>,
+    overlay_scope: Option<BindingScope>,
+    reserved_escape: Key,
+}
+
+impl WorktreeBindingContext {
+    /// Returns the addressed editor instance.
+    #[must_use]
+    pub const fn instance(&self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the context generation and semantic phases.
+    #[must_use]
+    pub const fn context(&self) -> InputContextSnapshot<BindingScope> {
+        self.context
+    }
+    /// Returns the optional scope that precedes the focused prompt scope.
+    #[must_use]
+    pub const fn overlay_scope(&self) -> Option<BindingScope> {
+        self.overlay_scope
+    }
+    /// Returns the physical key that the host always reserves.
+    #[must_use]
+    pub const fn reserved_escape(&self) -> Key {
+        self.reserved_escape
+    }
+}
+
+/// One addressed decision produced by a host-owned resolver.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WorktreeSemanticDispatch {
+    instance: WorktreeInstanceId,
+    generation: ContextGeneration,
+    decision: WorktreeDispatchDecision,
+}
+
+impl WorktreeSemanticDispatch {
+    /// Addresses one decision to the context that produced it.
+    #[must_use]
+    pub const fn new(
+        instance: WorktreeInstanceId,
+        generation: ContextGeneration,
+        decision: WorktreeDispatchDecision,
+    ) -> Self {
+        Self {
+            instance,
+            generation,
+            decision,
+        }
+    }
+}
+
+/// The semantic result of one host-owned resolution request.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WorktreeDispatchDecision {
+    /// One editor command completed.
+    Complete {
+        /// The semantic editor command selected by the host resolver.
+        command: Command,
+    },
+    /// A static key sequence waits in the host-owned resolver.
+    ///
+    /// This does not alter kvim's semantic reducer. The host owns and clears
+    /// the static prefix.
+    Pending,
+    /// A validated `i` or `a` prefix waits for a text-object selection.
+    ///
+    /// This decision is accepted only in a scope that binds text objects.
+    TextObjectPending,
+    /// The current context takes literal text.
+    TextFallback(TypedText),
+    /// No binding or text owner accepted the input.
+    Unbound,
+    /// A preceding host scope interrupted kvim's pending input.
+    Interrupted,
+}
+
+/// What addressed semantic dispatch did.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeDispatchOutcome {
+    /// The complete command was applied.
+    Complete(WorktreeInputOutcome),
+    /// Kvim retained semantic state for a later decision.
+    Pending,
+    /// Literal text was applied.
+    TextFallback(WorktreeInputOutcome),
+    /// Kvim cleared pending state after an unbound decision.
+    Unbound,
+    /// The host must complete a cancel-pending transition before acting.
+    Interrupted(CancelPendingProposal),
+}
+
+/// One instance- and generation-bound cancellation proposal.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CancelPendingProposal {
+    instance: WorktreeInstanceId,
+    generation: ContextGeneration,
+}
+
+/// A validated idle context returned after atomic cancellation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CancelPendingResume {
+    instance: WorktreeInstanceId,
+    context: InputContextSnapshot<BindingScope>,
+}
+
+impl CancelPendingResume {
+    /// Returns the addressed editor instance.
+    #[must_use]
+    pub const fn instance(self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the validated idle context.
+    #[must_use]
+    pub const fn context(self) -> InputContextSnapshot<BindingScope> {
+        self.context
+    }
+}
+
+/// Why addressed input or cancellation was refused.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorktreeDispatchError {
+    /// The value addresses another editor.
+    #[error("the input transition addresses another editor")]
+    WrongInstance,
+    /// The editor has published another context generation.
+    #[error("the input transition uses a stale context generation")]
+    StaleGeneration,
+    /// Host-owned dispatch is not enabled.
+    #[error("the editor owns its binding resolver")]
+    FacadeResolved,
+    /// Kvim has no semantic input to cancel.
+    #[error("the editor has no pending semantic input")]
+    NoPending,
+    /// The completed command is not bound in the addressed current context.
+    #[error("the resolved command is not valid in the current binding context")]
+    InvalidResolvedCommand,
+}
+
 /// One normalized, terminal-neutral input supplied by a host.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorktreeInput {
@@ -310,6 +484,14 @@ pub enum WorktreeInput {
     },
     /// Input that no binding accepts.
     Unsupported,
+}
+
+/// Why normalized physical input was refused before mutation.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorktreeInputError {
+    /// The host owns physical key and paste arbitration for this editor.
+    #[error("the host owns physical key and paste resolution")]
+    HostResolved,
 }
 
 /// Why an input was refused before a side effect.
@@ -668,6 +850,7 @@ pub struct WorktreeEditorBuilder {
     access: WorktreeAccess,
     capacity: WorktreeCapacity,
     capabilities: WorktreeCapabilities,
+    binding_mode: WorktreeBindingMode,
 }
 
 impl WorktreeEditorBuilder {
@@ -695,6 +878,12 @@ impl WorktreeEditorBuilder {
         self.capabilities = capabilities;
         self
     }
+    /// Selects facade-owned or host-owned physical binding resolution.
+    #[must_use]
+    pub fn binding_mode(mut self, binding_mode: WorktreeBindingMode) -> Self {
+        self.binding_mode = binding_mode;
+        self
+    }
     /// Opens the editor and its private executor.
     pub fn open(self) -> Result<WorktreeEditor, WorktreeOpenError> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
@@ -714,7 +903,18 @@ impl WorktreeEditorBuilder {
         )
         .expect("WorktreeCapacity validates runtime limits");
         let _guard = runtime.enter();
+        let registry = self
+            .binding_mode
+            .profile()
+            .registry()
+            .expect("built-in binding profiles are validated by focused tests");
+        let manifest = self
+            .binding_mode
+            .profile()
+            .manifest()
+            .expect("built-in binding profiles are validated by focused tests");
         let mut builder = EmbeddedEditor::builder(Arc::clone(&root), self.area)
+            .registry(registry)
             .settings(self.settings)
             .access(match self.access {
                 WorktreeAccess::ReadWrite => TuiEditorAccess::ReadWrite,
@@ -778,6 +978,8 @@ impl WorktreeEditorBuilder {
             instance: WorktreeInstanceId(inner.instance().get()),
             inner: Some(inner),
             runtime: Some(runtime),
+            binding_mode: self.binding_mode,
+            manifest: Arc::new(manifest),
             #[cfg(test)]
             capabilities: self.capabilities,
         })
@@ -809,6 +1011,8 @@ pub struct WorktreeEditor {
     instance: WorktreeInstanceId,
     inner: Option<EmbeddedEditor>,
     runtime: Option<TokioRuntime>,
+    binding_mode: WorktreeBindingMode,
+    manifest: Arc<BindingManifest>,
     #[cfg(test)]
     capabilities: WorktreeCapabilities,
 }
@@ -830,6 +1034,7 @@ impl WorktreeEditor {
             access: WorktreeAccess::default(),
             capacity: WorktreeCapacity::default(),
             capabilities: WorktreeCapabilities::default(),
+            binding_mode: WorktreeBindingMode::default(),
         }
     }
     #[cfg(test)]
@@ -876,16 +1081,34 @@ impl WorktreeEditor {
         convert_redraw(self.inner_mut().open_file(path))
     }
     /// Applies one normalized host input.
-    pub fn input(&mut self, input: WorktreeInput, now: Duration) -> WorktreeUpdate {
+    ///
+    /// Host-resolved editors reject keys, paste, and unsupported raw input
+    /// before mutation. Resize does not use a binding resolver and remains
+    /// accepted in both modes.
+    pub fn input(
+        &mut self,
+        input: WorktreeInput,
+        now: Duration,
+    ) -> Result<WorktreeUpdate, WorktreeInputError> {
+        if matches!(self.binding_mode, WorktreeBindingMode::HostResolved { .. })
+            && !matches!(input, WorktreeInput::Resize { .. })
+        {
+            return Err(WorktreeInputError::HostResolved);
+        }
         let input = match input {
             WorktreeInput::Key(key) => TuiTerminalEvent::Key(key),
             WorktreeInput::Paste(text) => TuiTerminalEvent::Paste(text),
             WorktreeInput::Resize { columns, rows } => TuiTerminalEvent::Resize { columns, rows },
             WorktreeInput::Unsupported => TuiTerminalEvent::Unsupported,
         };
-        convert_redraw(self.inner_mut().input(input, now))
+        Ok(convert_redraw(self.inner_mut().input(input, now)))
     }
-    /// Applies a resolved command.
+    /// Applies one direct semantic command.
+    ///
+    /// This method does not claim that a physical binding resolved in the
+    /// current scope. It remains available in both binding modes for host
+    /// actions such as menus and command palettes. Use [`Self::semantic_dispatch`]
+    /// for a command produced by the host-owned physical resolver.
     ///
     /// Returns [`WorktreeCommandError::InvalidRegisterName`] before changing
     /// editor state when `register` is not a canonical register name.
@@ -905,11 +1128,18 @@ impl WorktreeEditor {
             self.inner_mut().command(command, count, register, now),
         ))
     }
-    /// Inserts literal text in the active input context.
+    /// Inserts direct semantic text in the active input context.
+    ///
+    /// This method bypasses physical binding resolution. It remains available
+    /// in both binding modes for host-owned text entry.
     pub fn literal(&mut self, text: &str, now: Duration) -> WorktreeInputOutcome {
         convert_reduction(self.inner_mut().insert_literal(text, now))
     }
-    /// Applies bounded pasted text.
+    /// Applies direct semantic pasted text.
+    ///
+    /// This method bypasses physical binding resolution. In host-resolved mode,
+    /// the host must arbitrate the physical paste event before it calls this
+    /// method. [`Self::input`] rejects the raw paste path in that mode.
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> WorktreeInputOutcome {
         convert_reduction(self.inner_mut().paste(text, now))
     }
@@ -922,6 +1152,138 @@ impl WorktreeEditor {
     #[must_use]
     pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
         self.inner().input_context()
+    }
+    /// Returns bounded changing metadata for host-owned resolution.
+    #[must_use]
+    pub fn binding_context(&self) -> Option<WorktreeBindingContext> {
+        let WorktreeBindingMode::HostResolved { reserved_escape } = self.binding_mode else {
+            return None;
+        };
+        let (context, overlay_scope) = self.inner().binding_context();
+        Some(WorktreeBindingContext {
+            instance: self.instance,
+            context,
+            overlay_scope,
+            reserved_escape,
+        })
+    }
+    /// Returns the immutable embedded binding manifest for host-owned resolution.
+    ///
+    /// Polling this accessor does not clone or allocate binding entries.
+    #[must_use]
+    pub fn binding_manifest(&self) -> Option<&BindingManifest> {
+        matches!(self.binding_mode, WorktreeBindingMode::HostResolved { .. })
+            .then_some(self.manifest.as_ref())
+    }
+    /// Applies one addressed physical-resolution decision.
+    ///
+    /// Unlike [`Self::command`], this method validates a completed command
+    /// against the active focus and overlay scopes. Every decision is bound to
+    /// the instance and context generation that produced it.
+    pub fn semantic_dispatch(
+        &mut self,
+        dispatch: WorktreeSemanticDispatch,
+        now: Duration,
+    ) -> Result<WorktreeDispatchOutcome, WorktreeDispatchError> {
+        if !matches!(self.binding_mode, WorktreeBindingMode::HostResolved { .. }) {
+            return Err(WorktreeDispatchError::FacadeResolved);
+        }
+        let current = self.input_context();
+        if dispatch.instance != self.instance {
+            return Err(WorktreeDispatchError::WrongInstance);
+        }
+        if dispatch.generation != current.generation {
+            return Err(WorktreeDispatchError::StaleGeneration);
+        }
+        let outcome = match dispatch.decision {
+            WorktreeDispatchDecision::Interrupted => {
+                if current.phases.is_idle() {
+                    return Err(WorktreeDispatchError::NoPending);
+                }
+                return Ok(WorktreeDispatchOutcome::Interrupted(
+                    CancelPendingProposal {
+                        instance: self.instance,
+                        generation: current.generation,
+                    },
+                ));
+            }
+            WorktreeDispatchDecision::Complete { command } => {
+                let (_, overlay_scope) = self.inner().binding_context();
+                if !resolved_command_is_valid(
+                    self.manifest.as_ref(),
+                    current.scope,
+                    overlay_scope,
+                    command,
+                ) {
+                    return Err(WorktreeDispatchError::InvalidResolvedCommand);
+                }
+                WorktreeDispatchOutcome::Complete(convert_reduction(
+                    self.inner_mut()
+                        .semantic_dispatch(Dispatch::Surface { command }, now),
+                ))
+            }
+            WorktreeDispatchDecision::Pending => WorktreeDispatchOutcome::Pending,
+            WorktreeDispatchDecision::TextObjectPending => {
+                if !current.scope.binds_text_objects() {
+                    return Err(WorktreeDispatchError::InvalidResolvedCommand);
+                }
+                let _ = self.inner_mut().semantic_dispatch(Dispatch::Pending, now);
+                WorktreeDispatchOutcome::Pending
+            }
+            WorktreeDispatchDecision::TextFallback(text) => {
+                if current.text_fallback.owner() != Some(CommandOwner::Surface) {
+                    return Err(WorktreeDispatchError::InvalidResolvedCommand);
+                }
+                WorktreeDispatchOutcome::TextFallback(convert_reduction(
+                    self.inner_mut().semantic_dispatch(
+                        Dispatch::Text {
+                            owner: CommandOwner::Surface,
+                            text,
+                        },
+                        now,
+                    ),
+                ))
+            }
+            WorktreeDispatchDecision::Unbound => {
+                let _ = self.inner_mut().semantic_dispatch(Dispatch::Unbound, now);
+                WorktreeDispatchOutcome::Unbound
+            }
+        };
+        Ok(outcome)
+    }
+    /// Atomically clears pending editor input for one addressed proposal.
+    ///
+    /// The transition applies all cancellation effects, including operator
+    /// cancellation, before it returns the validated idle context.
+    pub fn cancel_pending(
+        &mut self,
+        proposal: CancelPendingProposal,
+        now: Duration,
+    ) -> Result<CancelPendingResume, WorktreeDispatchError> {
+        if proposal.instance != self.instance {
+            return Err(WorktreeDispatchError::WrongInstance);
+        }
+        let before = self.input_context();
+        if proposal.generation != before.generation {
+            return Err(WorktreeDispatchError::StaleGeneration);
+        }
+        if before.phases.is_idle() {
+            return Err(WorktreeDispatchError::NoPending);
+        }
+        let _ = self.inner_mut().cancel_pending(now);
+        let context = self.input_context();
+        assert!(
+            context.phases.is_idle(),
+            "the semantic reducer cancel transition clears every pending phase"
+        );
+        assert_ne!(
+            context.generation, before.generation,
+            "the semantic reducer cancel transition always advances its generation"
+        );
+        Ok(CancelPendingResume {
+            instance: self.instance,
+            context,
+        })
     }
     /// Returns the next host elapsed-time deadline.
     #[must_use]
@@ -1057,6 +1419,18 @@ fn convert_redraw(redraw: TuiRedraw) -> WorktreeUpdate {
         TuiRedraw::Needed => WorktreeUpdate::Redraw,
     }
 }
+fn resolved_command_is_valid(
+    manifest: &BindingManifest,
+    focus_scope: BindingScope,
+    overlay_scope: Option<BindingScope>,
+    command: Command,
+) -> bool {
+    manifest.entries().iter().any(|entry| {
+        entry.command() == command
+            && (entry.scope() == focus_scope || overlay_scope == Some(entry.scope()))
+    })
+}
+
 fn convert_reduction(reduction: TuiReduction) -> WorktreeInputOutcome {
     match reduction.outcome {
         TuiReductionOutcome::Applied => WorktreeInputOutcome::Applied,

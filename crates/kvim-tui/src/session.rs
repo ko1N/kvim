@@ -1289,6 +1289,18 @@ impl Session {
     /// is a cold-path bootstrap check, so an invalid table must fail at start.
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings, root: Arc<WorktreeRoot>) -> Self {
+        Self::new_with_registry(area, settings, root, Registry::first_release())
+    }
+
+    /// Creates a session with one caller-selected validated registry.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_registry(
+        area: Rect,
+        settings: EditorSettings,
+        root: Arc<WorktreeRoot>,
+        registry: Registry,
+    ) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
         let instance = EditorInstanceId::allocate();
         let mut session = Self {
@@ -1325,7 +1337,7 @@ impl Session {
             clipboard_access: ClipboardAccess::None,
             clipboard_activity: ClipboardActivity::Idle,
             clipboard_revision: 0,
-            resolver: Resolver::new(Registry::first_release(), settings.input),
+            resolver: Resolver::new(registry, settings.input),
             languages: LanguageRegistry::first_release(),
             analysis: BTreeMap::new(),
             analysis_pending: None,
@@ -1705,6 +1717,20 @@ impl Session {
         self.finish_input(redraw, now)
     }
 
+    /// Applies one host-owned resolver decision through kvim's grammar.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn apply_semantic_dispatch(
+        &mut self,
+        dispatch: kvim_input::Dispatch<Command>,
+        now: Duration,
+    ) -> Reduction {
+        self.begin_input(now);
+        let resolution = self.resolver.dispatch(dispatch);
+        let redraw = self.apply_resolution(resolution);
+        self.finish_input(redraw, now)
+    }
+
     /// Inserts one run of literal text.
     ///
     /// The host owns the text fallback of its focused scope, so it hands the
@@ -1785,6 +1811,14 @@ impl Session {
     #[must_use]
     pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
         self.resolver.snapshot()
+    }
+
+    /// Returns the focused context and optional resolver overlay scope.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding_context(&self) -> (InputContextSnapshot<BindingScope>, Option<BindingScope>) {
+        let context = self.resolver.dispatch_context();
+        (context.focus, context.overlay)
     }
 
     /// Cancels every pending semantic phase of this editor.

@@ -69,8 +69,8 @@ pub use command_line::{
 pub use edited_line::{EditedLine, EditedLineError, LineChange};
 pub use kvim_keymap::{Chord, Key, KeyCode, KeyLabel, KeySequence};
 pub use kvim_keymap::{
-    ContextGeneration, Dispatch, DispatchContext, Input, InputContextSnapshot, PasteText, Phase,
-    SemanticPhases, TextFallback, TypedText,
+    CommandOwner, ContextGeneration, Dispatch, DispatchContext, Input, InputContextSnapshot,
+    PasteText, Phase, SemanticPhases, TextFallback, TypedText,
 };
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 pub use profile::{

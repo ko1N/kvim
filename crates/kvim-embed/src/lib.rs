@@ -18,15 +18,18 @@ mod worktree;
 
 #[cfg(feature = "worktree")]
 pub use worktree::{
-    COMPLETION_CAPACITY_MAX, CapacityError, EVENT_CAPACITY_MAX, PROCESS_CAPACITY_MAX,
-    ServicePolicy, WORKER_CAPACITY_MAX, WORKSPACE_OPERATION_PATHS_MAX, WorkspaceEntryKind,
-    WorkspaceOperation, WorkspaceOperationKind, WorkspaceTransfer, WorktreeAccess,
-    WorktreeApplyError, WorktreeApplyErrorKind, WorktreeCapabilities, WorktreeCapacity,
-    WorktreeCommandError, WorktreeCompletion, WorktreeCursor, WorktreeCursorShape, WorktreeDrain,
+    COMPLETION_CAPACITY_MAX, CancelPendingProposal, CancelPendingResume, CapacityError,
+    EVENT_CAPACITY_MAX, PROCESS_CAPACITY_MAX, ServicePolicy, WORKER_CAPACITY_MAX,
+    WORKSPACE_OPERATION_PATHS_MAX, WorkspaceEntryKind, WorkspaceOperation, WorkspaceOperationKind,
+    WorkspaceTransfer, WorktreeAccess, WorktreeApplyError, WorktreeApplyErrorKind,
+    WorktreeBindingContext, WorktreeBindingMode, WorktreeCapabilities, WorktreeCapacity,
+    WorktreeCommandError, WorktreeCompletion, WorktreeCursor, WorktreeCursorShape,
+    WorktreeDispatchDecision, WorktreeDispatchError, WorktreeDispatchOutcome, WorktreeDrain,
     WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeGeometryError,
-    WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput, WorktreeInputOutcome,
-    WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError, WorktreeOpenErrorKind,
-    WorktreeRefusal, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
+    WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput, WorktreeInputError,
+    WorktreeInputOutcome, WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError,
+    WorktreeOpenErrorKind, WorktreeRefusal, WorktreeRunState, WorktreeSemanticDispatch,
+    WorktreeShutdown, WorktreeUpdate,
 };
 
 use std::num::{NonZeroU16, NonZeroU32};

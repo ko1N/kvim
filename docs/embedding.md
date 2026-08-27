@@ -12,10 +12,12 @@ host session, agent, tool, task, plan, or other host-domain concept.
 
 `kvim-embed` is the only supported high-level editor facade. Its default
 feature set publishes `MemoryEditor`. `WorktreeEditor` is an existing separate
-rendered editor behind the `worktree` Cargo feature. The planned composition
-adds host-composition options and a separate `ReviewSurface`; those additions
-are not available in the current release. `MemoryEditor` remains the default
-path. `ReviewSurface` will be a separate rendered review surface behind the
+rendered editor behind the `worktree` Cargo feature. Host-resolved input,
+bounded binding publication, and addressed cancellation are available on
+`WorktreeEditor`. Later composition slices will add merged host registries,
+presentation ownership, command and status publication, sidebars, and a
+separate `ReviewSurface`. `MemoryEditor` remains the default path.
+`ReviewSurface` is planned as a separate rendered review surface behind the
 review/worktree feature family and will not require an editor. This
 `MemoryEditor` owns one bounded `TextBuffer`, one modal `EditingState`,
 registers, one window, validated `EditorSettings`, and its accepted rectangle.
@@ -130,31 +132,49 @@ required invariant before implementation changes it.
 | KV-A13 | `architecture.md` | A supported setting has production behavior; the stale wrapping setting was removed before release. |
 | KV-A14 | `architecture.md` | A supported public path has production behavior; stale paths are removed before release. |
 
-## Planned Host Composition Contract
+## Host Composition Contract
 
-This section defines planned host-composition additions. It does not change
-the existing `WorktreeEditor` contract described in the `Worktree
-Implementation Contract` below, and it does not imply that integrated review
-is unavailable.
+`WorktreeBindingMode::FacadeResolved` keeps physical resolution inside kvim and
+uses `BindingProfile::Standalone`. `WorktreeBindingMode::HostResolved` selects
+`BindingProfile::Embedded`, publishes its bounded `BindingManifest`, and makes
+the host the only owner of physical key and paste arbitration. In that mode,
+`WorktreeEditor::input` rejects key, paste, and unsupported raw input before
+mutation. Resolver-independent resize input remains accepted.
 
-A host may own input routing for editor, review, chat, and other surfaces. It
-may merge host-global and focused-surface leader mappings into one bounded
-registry and one which-key view. Host-global bindings receive first refusal.
-Kvim also supports a simple embedded profile in which kvim owns resolution and
-which-key presentation.
+The direct `command`, `literal`, and `paste` methods are semantic APIs. They do
+not run or claim a physical binding. Hosts can use them for menus, command
+palettes, and already-arbitrated text. A physical resolver result instead uses
+`semantic_dispatch`, which validates the addressed instance, context
+generation, active focus scope, and active picker overlay before mutation.
 
-A focus change must use an addressed cancellation proposal and a validated
-resume transition. The proposal cannot bypass counts, operators, registers,
-text objects, prefixes, or prompts. The host supplies one configurable escape
-chord; kvim does not choose its physical key. `Tab` and `Shift-Tab` remain
-owned by Insert mode and internal prompts. Other embedded contexts may assign
-them to host tab navigation.
+The host reads `binding_context` after each transition. It contains the current
+semantic phases, active scope, optional picker overlay, generation, and the
+host-supplied reserved escape key. Static `Pending` belongs only to the host
+resolver. `TextObjectPending` updates kvim's semantic text-object phase.
+Complete, text fallback, unbound, and interrupted decisions retain their typed
+meanings at the facade boundary.
 
-`BindingProfile::Standalone` preserves the current preset. Planned
+An interrupted decision changes no editor state. It returns an instance- and
+generation-bound `CancelPendingProposal`. `cancel_pending` rejects a wrong
+instance, stale generation, or idle context before mutation. A successful call
+closes prompts and confirmations, clears counts, operators, registers, and text
+objects, applies operator cancellation effects, advances the generation, and
+only then returns an idle `CancelPendingResume`. The host changes focus only
+after that resume succeeds.
+
+The host-global scope and merged host registry are not facade features yet.
+A later change will add host-global first refusal, merged host and kvim leader
+mappings, and one host-owned which-key model.
+
+A host may ultimately compose input routing for editor, review, chat, and other
+surfaces. Kvim also supports the existing facade-resolved path in which kvim
+owns resolution and which-key presentation.
+
+`BindingProfile::Standalone` preserves the current preset.
 `BindingProfile::Embedded` disables review-entry bindings and host-navigation
 conflicts by semantic command identity, while keeping semantic commands
 available. Binding overrides reject duplicate sequences and unreachable
-prefixes. Review bindings are independent from editor bindings.
+prefixes. Review bindings remain planned independently from editor bindings.
 
 `WorktreePresentation` is a planned facade value with independent ownership for
 the command line, statusline, which-key, and file sidebar. Each surface is
@@ -621,10 +641,10 @@ or render callback.
 `Composition::Interrupted` names the key that cancelled a pending sequence. A
 complete binding of a preceding scope takes the key, so a host-global escape
 can leave a focused surface. The composer clears only its resolver prefix. The
-host must reset any semantic pending state through that surface's own API before
-it runs the interrupting command. `WorktreeEditor` does not currently expose
-such a reset operation, so direct multi-surface composition with its internal
-resolver is not a supported high-level integration.
+host resets semantic pending state before it runs the interrupting command.
+A host-resolved `WorktreeEditor` supports this reset through
+`semantic_dispatch` and `cancel_pending`; its facade-owned proposal and resume
+also validate editor identity and context generation.
 
 The host supplies the elapsed time with each reduction, and that time reaches
 the which-key overlay alone. `WorkspaceComposer::reduce` therefore takes the
@@ -683,9 +703,11 @@ the crossterm backend, signals, cursor application, redraw scheduling, and
 terminal restoration. The facade owns visible state, key resolution,
 background execution, completion routing, and consuming shutdown.
 
-`WorktreeEditor::input` accepts normalized terminal-neutral input. This keeps
-raw terminal ownership in the binary and preserves prompt and confirmation
-resolution inside the facade. The binary does not access `Session`,
+`WorktreeEditor::input` accepts normalized terminal-neutral input when
+`WorktreeBindingMode::FacadeResolved` is selected. This keeps raw terminal
+ownership in the binary and preserves prompt and confirmation resolution inside
+the facade. A host-resolved editor instead uses `semantic_dispatch` after its
+own physical arbitration. The binary does not access `Session`,
 `EditorDriver`, runtime handles, or completion payloads.
 
 The composer remains available as a lower-level component for hosts that own

@@ -37,7 +37,7 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 
-use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText};
+use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText, Registry};
 use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
@@ -735,6 +735,7 @@ pub struct EmbeddedEditorBuilder {
     watcher: Option<FileWatcher>,
     watcher_unavailable: bool,
     git_status: bool,
+    registry: Registry,
 }
 
 impl EmbeddedEditorBuilder {
@@ -810,6 +811,14 @@ impl EmbeddedEditorBuilder {
         self
     }
 
+    /// Selects the validated key registry used by the internal resolver.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn registry(mut self, registry: Registry) -> Self {
+        self.registry = registry;
+        self
+    }
+
     /// Builds the model and the driver of one independent editor.
     ///
     /// # Errors
@@ -828,6 +837,7 @@ impl EmbeddedEditorBuilder {
             watcher,
             watcher_unavailable,
             git_status,
+            registry,
         } = self;
         if area.width == 0 || area.height == 0 {
             return Err(GeometryError::Empty { area }.into());
@@ -841,7 +851,7 @@ impl EmbeddedEditorBuilder {
                 language: services.root().to_path_buf(),
             });
         }
-        let mut editor = Session::new(area, settings, root)
+        let mut editor = Session::new_with_registry(area, settings, root, registry)
             .with_access(access)
             .with_clipboard(clipboard)
             .with_git_status(git_status);
@@ -949,6 +959,7 @@ impl EmbeddedEditor {
             watcher: None,
             watcher_unavailable: false,
             git_status: true,
+            registry: Registry::first_release(),
         }
     }
 
@@ -1126,6 +1137,17 @@ impl EmbeddedEditor {
         self.editor.apply_command(command, count, register, now)
     }
 
+    /// Applies one host-owned resolver decision to kvim's semantic grammar.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn semantic_dispatch(
+        &mut self,
+        dispatch: kvim_input::Dispatch<Command>,
+        now: Duration,
+    ) -> Reduction {
+        self.editor.apply_semantic_dispatch(dispatch, now)
+    }
+
     /// Inserts one run of literal text.
     #[must_use]
     pub fn insert_literal(&mut self, text: &str, now: Duration) -> Reduction {
@@ -1159,6 +1181,16 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
         self.editor.input_context()
+    }
+
+    /// Returns the input context and optional overlay scope used for binding resolution.
+    ///
+    /// A picker prompt evaluates the picker scope before the prompt scope.
+    /// Other contexts have no overlay scope.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding_context(&self) -> (InputContextSnapshot<BindingScope>, Option<BindingScope>) {
+        self.editor.binding_context()
     }
 
     /// Cancels every pending semantic phase of this editor.
