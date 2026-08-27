@@ -601,10 +601,12 @@ Every accepted operation follows this state sequence:
 
 `Reserved -> Running -> Committed -> Published`
 
-Cancellation can stop `Reserved` or `Running` work before commit. Once commit
-starts, the task masks cancellation. It reports `Committed` and uses its
-reserved slot before the driver can finish shutdown. Failure releases the
-reservation. The driver never detaches or aborts a task that can be committed.
+Cancellation can stop `Reserved` or `Running` work before commit. For the
+current runtime API, starting a committing blocking closure is its commit point.
+Once that closure starts, the task reports its actual result and uses its
+reserved slot before the driver can finish shutdown. Failure before commit
+releases the reservation. The driver never detaches or aborts a task that can
+be committed.
 
 This sequence guarantees delivery after a side effect succeeds. Shutdown drains
 all mandatory events or returns `ShutdownDrain`. It never reports complete while

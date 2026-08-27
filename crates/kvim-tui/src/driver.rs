@@ -983,10 +983,10 @@ fn submit_workspace_work(
             return redraw;
         };
         let handle = gate.begin(WORKSPACE_SLOT, &spawner.cancellation_root());
-        // A mutation owns a reserved outbox slot, so its job masks cancellation
-        // and always reports whether the workspace changed. A directory read
-        // changes nothing durable, so a newer read may cancel it. See
-        // `docs/embedding.md`.
+        // A mutation owns a reserved outbox slot. Starting its blocking closure
+        // is the commit point, so the runtime always reports its actual result
+        // after that point. A directory read changes nothing durable, so a
+        // newer read may cancel it. See `docs/responsiveness.md`.
         let commits = request.commits();
         let job =
             |_cancellation: CancellationToken| EditorWork(WorkResult::Workspace(request.run()));
@@ -1020,10 +1020,10 @@ fn submit_file_work(
         return Redraw::Skipped;
     };
     let handle = gate.begin(FILE_SLOT, &spawner.cancellation_root());
-    // A save owns a reserved outbox slot, so its job masks cancellation and
-    // always reports whether the write reached the filesystem. An open and a
-    // reload change nothing durable, so a newer request may cancel them. See
-    // `docs/embedding.md`.
+    // A save owns a reserved outbox slot. Starting its blocking closure is the
+    // commit point, so the runtime always reports its actual result after that
+    // point. An open and a reload change nothing durable, so a newer request may
+    // cancel them. See `docs/responsiveness.md`.
     let commits = request.commits();
     let job = |_cancellation: CancellationToken| EditorWork(WorkResult::File(request.run()));
     let submitted = if commits {

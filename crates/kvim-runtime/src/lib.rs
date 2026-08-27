@@ -589,11 +589,14 @@ where
 
     /// Accepts one worker job that can commit a durable side effect.
     ///
-    /// The job masks cancellation once it starts, so the caller always learns
-    /// its outcome. A cancelled answer would release the reserved event slot of
-    /// a write that the filesystem already holds. Only the deadline still bounds
-    /// the job. Shutdown therefore waits for an accepted job of this kind and
-    /// never aborts it. See `docs/embedding.md`.
+    /// Starting the blocking closure is the commit point. Cancellation and the
+    /// deadline can stop the request before that point. After the closure
+    /// starts, the runtime waits for its actual result and keeps the reserved
+    /// result slot. An arbitrary blocking closure cannot be stopped safely
+    /// after it can mutate durable state.
+    ///
+    /// Shutdown therefore tracks every started job of this kind until it
+    /// publishes. See `docs/responsiveness.md`.
     ///
     /// Use [`Runtime::submit_worker`] for every job that changes no durable
     /// state, because a cancellation may drop that job without a loss.
@@ -651,7 +654,7 @@ where
     where
         F: FnOnce(CancellationToken) -> T + Send + 'static,
     {
-        self.accept_worker(request, deadline, Commit::Masked, job)
+        self.accept_worker(request, deadline, Commit::Committing, job)
     }
 
     fn accept_worker<F>(
@@ -853,9 +856,9 @@ enum Commit {
     /// The job changes no durable state, so a cancellation drops it and the
     /// caller keeps its previous visible state.
     Optional,
-    /// The job can commit a durable side effect, so it reports its outcome even
-    /// after a cancellation reached it.
-    Masked,
+    /// The blocking closure can commit a durable side effect. Starting the
+    /// closure is its explicit commit point.
+    Committing,
 }
 
 async fn run_worker_job<T, F>(
@@ -871,8 +874,10 @@ async fn run_worker_job<T, F>(
     F: FnOnce(CancellationToken) -> T + Send + 'static,
 {
     let cancellation = request.cancellation();
-    // Cancellation can arrive between submission and the first poll. Do not
-    // start blocking work that no caller will accept.
+    // Cancellation and the deadline can stop a job before its blocking closure
+    // starts. Starting a committing closure is its explicit commit point,
+    // because the runtime cannot identify or stop a later durable mutation
+    // inside an arbitrary closure.
     if cancellation.is_cancelled() || shutdown.is_cancelled() {
         result_slot.send(RuntimeEvent {
             request,
@@ -903,17 +908,28 @@ async fn run_worker_job<T, F>(
                 },
             },
         },
-        // The job started, so it can already hold a durable side effect. A
-        // cancelled answer would release the reserved event slot of that side
-        // effect, so the deadline alone bounds this job.
-        Commit::Masked => match time::timeout(deadline, &mut worker).await {
-            Ok(Ok(value)) => Ok(value),
-            Ok(Err(source)) => Err(RuntimeError::WorkerFailure(source)),
-            Err(_) => {
-                cancellation.cancel();
-                Err(RuntimeError::Timeout)
+        // Starting the closure is the commit point. Aborting a queued blocking
+        // task prevents that point. Tokio cannot abort it after it starts, so
+        // the join then returns the actual result.
+        Commit::Committing => {
+            let pre_commit_stop = tokio::select! {
+                biased;
+                () = shutdown.cancelled() => Some(RuntimeError::Cancelled),
+                () = cancellation.cancelled() => Some(RuntimeError::Cancelled),
+                () = time::sleep(deadline) => Some(RuntimeError::Timeout),
+                result = &mut worker => {
+                    return publish_worker_result(result_slot, request, result);
+                },
+            };
+            let stop =
+                pre_commit_stop.expect("every pre-commit stop branch names its runtime error");
+            worker.abort();
+            match (&mut worker).await {
+                Ok(value) => Ok(value),
+                Err(source) if source.is_cancelled() => Err(stop),
+                Err(source) => Err(RuntimeError::WorkerFailure(source)),
             }
-        },
+        }
     };
     result_slot.send(RuntimeEvent {
         request,
@@ -924,6 +940,21 @@ async fn run_worker_job<T, F>(
     if !worker.is_finished() {
         let _ = worker.await;
     }
+}
+
+/// Publishes one committing worker that completed before a stop condition.
+fn publish_worker_result<T>(
+    result_slot: mpsc::OwnedPermit<RuntimeEvent<T>>,
+    request: RequestHandle,
+    result: Result<T, tokio::task::JoinError>,
+) where
+    T: Send + 'static,
+{
+    result_slot.send(RuntimeEvent {
+        request,
+        kind: WorkKind::Worker,
+        result: result.map_err(RuntimeError::WorkerFailure),
+    });
 }
 
 async fn run_process<T, F>(

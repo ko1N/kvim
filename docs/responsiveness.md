@@ -101,10 +101,13 @@ Creating another client of a service does not create more capacity.
 
 The worker spawner accepts two kinds of job. An optional job changes no durable
 state, so a cancellation or deadline drops it and the caller keeps its previous
-visible state. A committing job can change durable state. A deadline can stop
-it only before commit begins. Once commit begins, it masks cancellation and
-owns its result reservation until it reports the actual outcome. Shutdown
-tracks the job until that publication. See [Mandatory Event
+visible state. A committing job can change durable state. For the current
+blocking-worker API, starting its closure is the explicit commit point. Before
+that point, cancellation or a deadline aborts a queued closure. If the closure
+already started, Tokio cannot stop it, so the runtime waits for its actual
+result. The job keeps its result reservation and tracked task until publication.
+Shutdown remains bounded through the must-use drain, which a host can wait on
+again after its own shutdown deadline. See [Mandatory Event
 Delivery](#mandatory-event-delivery).
 
 ### Runtime Bounds
@@ -214,10 +217,12 @@ operation before it starts. Accepted work follows `Reserved -> Running ->
 Committed -> Published`.
 
 Cancellation can stop work before commit. A deadline can stop work only before
-commit begins. Once commit starts, the operation owns its reservation until it
-publishes its actual `Committed`, `Unchanged`, or `Indeterminate` outcome. It
-must not report timeout, cancellation, or shutdown completion while durable
-state can still change. Failure before commit releases the reservation.
+commit begins. Starting the current blocking committing closure is its commit
+point. The runtime can abort the closure while Tokio still has it queued. Once
+the closure starts, the operation owns its reservation until it publishes its
+actual `Committed`, `Unchanged`, or `Indeterminate` outcome. It must not report
+timeout, cancellation, or shutdown completion while durable state can still
+change. Failure before commit releases the reservation.
 
 A successful write, workspace mutation, or review-comment submission publishes
 its typed event. An indeterminate filesystem outcome reserves mandatory delivery

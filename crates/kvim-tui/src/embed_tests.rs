@@ -23,8 +23,8 @@ use kvim_workspace::temp::TempDir;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode, WorkspaceRequest};
 
 use crate::embed::{
-    CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorShutdown,
-    EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
+    CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorOpenError,
+    EditorShutdown, EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
 };
 use crate::session::{Redraw, RunState, Session, test_root};
 
@@ -973,7 +973,11 @@ fn an_editor_rectangle_without_cells_returns_a_typed_error() {
     let refused = EmbeddedEditor::builder(test_root(directory.path.clone()), area)
         .open()
         .expect_err("a rectangle without cells builds no editor");
-    assert_eq!(refused, GeometryError::Empty { area });
+    assert!(matches!(
+        refused,
+        EditorOpenError::Geometry(GeometryError::Empty { area: refused_area })
+            if refused_area == area
+    ));
 }
 
 #[tokio::test]

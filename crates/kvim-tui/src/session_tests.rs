@@ -130,7 +130,8 @@ fn place_prompt_cursor(session: &mut Session, cursor: usize) {
         prompt.line.text().to_owned(),
         cursor,
         prompt.line.chars_max(),
-    );
+    )
+    .expect("the existing prompt text meets its existing limit");
 }
 
 /// Reports whether the open prompt holds a completion.
