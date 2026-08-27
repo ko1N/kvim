@@ -498,6 +498,7 @@ dependencies = [
  "kvim-core",
  "kvim-editor",
  "kvim-input",
+ "kvim-keymap",
  "kvim-language",
  "kvim-lsp",
  "kvim-path",

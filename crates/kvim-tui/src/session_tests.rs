@@ -373,6 +373,18 @@ fn the_which_key_deadline_is_the_only_time_driven_change() {
     );
 }
 
+#[test]
+fn host_owned_which_key_has_no_internal_deadline_or_rows() {
+    let mut session = session(60, 20).with_embedded_which_key(false);
+
+    press(&mut session, ' ');
+    assert_eq!(session.next_deadline(), None);
+    assert_eq!(session.tick(WHICH_KEY_DELAY), Redraw::Skipped);
+    assert!(session.visible().which_key.is_none());
+    press(&mut session, 'q');
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
 /// Feeds one bounded bracketed-paste block.
 fn paste(session: &mut Session, text: &str) -> Redraw {
     let block = PasteText::new(text).expect("the block is bounded");

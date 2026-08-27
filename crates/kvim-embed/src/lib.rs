@@ -14,12 +14,24 @@
 #![deny(missing_docs)]
 
 #[cfg(feature = "worktree")]
+mod composition;
+#[cfg(feature = "worktree")]
 mod worktree;
+
+#[cfg(feature = "worktree")]
+pub use composition::{
+    WORKTREE_BINDING_OVERRIDES_MAX, WORKTREE_GROUP_LABEL_BYTES_MAX, WORKTREE_HOST_BINDINGS_MAX,
+    WORKTREE_OWNER_LABEL_BYTES_MAX, WorktreeAddressedCommand, WorktreeBindingCompositionError,
+    WorktreeBindingConflictKind, WorktreeBindingContextError, WorktreeBindingFocus,
+    WorktreeBindingModel, WorktreeBindingOverride, WorktreeBindingOverrideError,
+    WorktreeHostBinding, WorktreeHostBindingError, WorktreeHostBindingLayer, WorktreeHostCommand,
+    WorktreeMergedCommand, WorktreeMergedScope,
+};
 
 #[cfg(feature = "worktree")]
 pub use worktree::{
     COMPLETION_CAPACITY_MAX, CancelPendingProposal, CancelPendingResume, CapacityError,
-    EVENT_CAPACITY_MAX, PROCESS_CAPACITY_MAX, ServicePolicy, WORKER_CAPACITY_MAX,
+    EVENT_CAPACITY_MAX, PROCESS_CAPACITY_MAX, ServicePolicy, SurfaceOwnership, WORKER_CAPACITY_MAX,
     WORKSPACE_OPERATION_PATHS_MAX, WorkspaceEntryKind, WorkspaceOperation, WorkspaceOperationKind,
     WorkspaceTransfer, WorktreeAccess, WorktreeApplyError, WorktreeApplyErrorKind,
     WorktreeBindingContext, WorktreeBindingMode, WorktreeCapabilities, WorktreeCapacity,
@@ -28,8 +40,8 @@ pub use worktree::{
     WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeGeometryError,
     WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput, WorktreeInputError,
     WorktreeInputOutcome, WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError,
-    WorktreeOpenErrorKind, WorktreeRefusal, WorktreeRunState, WorktreeSemanticDispatch,
-    WorktreeShutdown, WorktreeUpdate,
+    WorktreeOpenErrorKind, WorktreePresentation, WorktreeRefusal, WorktreeRunState,
+    WorktreeSemanticDispatch, WorktreeShutdown, WorktreeUpdate,
 };
 
 use std::num::{NonZeroU16, NonZeroU32};

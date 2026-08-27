@@ -295,6 +295,50 @@ impl WorktreeHostReportRequest {
     }
 }
 
+/// Who owns one selected presentation surface.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum SurfaceOwnership {
+    /// Kvim renders the surface inside its accepted rectangle.
+    #[default]
+    Embedded,
+    /// The host renders the surface from semantic state.
+    HostOwned,
+}
+
+/// Presentation ownership implemented for this slice.
+///
+/// This value currently selects which-key ownership only. Later presentation
+/// work adds independent command-line, statusline, and sidebar fields without
+/// changing this default.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WorktreePresentation {
+    which_key: SurfaceOwnership,
+}
+
+impl WorktreePresentation {
+    /// Selects kvim-owned which-key presentation.
+    #[must_use]
+    pub const fn standalone() -> Self {
+        Self {
+            which_key: SurfaceOwnership::Embedded,
+        }
+    }
+
+    /// Selects host-owned which-key presentation.
+    #[must_use]
+    pub const fn host_owned_which_key() -> Self {
+        Self {
+            which_key: SurfaceOwnership::HostOwned,
+        }
+    }
+
+    /// Returns which-key presentation ownership.
+    #[must_use]
+    pub const fn which_key(self) -> SurfaceOwnership {
+        self.which_key
+    }
+}
+
 /// How one worktree editor resolves physical bindings.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorktreeBindingMode {
@@ -636,6 +680,8 @@ pub enum WorktreeOpenErrorKind {
     Settings,
     /// Geometry is invalid.
     Geometry,
+    /// The selected binding resolver and which-key owner are inconsistent.
+    Presentation,
     /// The private asynchronous executor could not start.
     Executor,
     /// Built-in language services rejected the root.
@@ -688,6 +734,9 @@ impl fmt::Display for WorktreeOpenError {
             ),
             WorktreeOpenErrorKind::Settings => formatter.write_str("invalid editor settings"),
             WorktreeOpenErrorKind::Geometry => self.source.fmt(formatter),
+            WorktreeOpenErrorKind::Presentation => {
+                formatter.write_str("binding resolution and which-key ownership are inconsistent")
+            }
             WorktreeOpenErrorKind::Executor => {
                 formatter.write_str("cannot start the editor executor")
             }
@@ -851,6 +900,7 @@ pub struct WorktreeEditorBuilder {
     capacity: WorktreeCapacity,
     capabilities: WorktreeCapabilities,
     binding_mode: WorktreeBindingMode,
+    presentation: WorktreePresentation,
 }
 
 impl WorktreeEditorBuilder {
@@ -884,8 +934,31 @@ impl WorktreeEditorBuilder {
         self.binding_mode = binding_mode;
         self
     }
+    /// Selects which-key presentation ownership for the editor lifetime.
+    #[must_use]
+    pub fn presentation(mut self, presentation: WorktreePresentation) -> Self {
+        self.presentation = presentation;
+        self
+    }
     /// Opens the editor and its private executor.
     pub fn open(self) -> Result<WorktreeEditor, WorktreeOpenError> {
+        let valid_ownership = matches!(
+            (self.binding_mode, self.presentation.which_key()),
+            (
+                WorktreeBindingMode::FacadeResolved,
+                SurfaceOwnership::Embedded
+            ) | (
+                WorktreeBindingMode::HostResolved { .. },
+                SurfaceOwnership::HostOwned
+            )
+        );
+        if !valid_ownership {
+            return Err(WorktreeOpenError::new(
+                WorktreeOpenErrorKind::Presentation,
+                None,
+                WorktreePresentationError,
+            ));
+        }
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .enable_all()
             .build()
@@ -915,6 +988,7 @@ impl WorktreeEditorBuilder {
             .expect("built-in binding profiles are validated by focused tests");
         let mut builder = EmbeddedEditor::builder(Arc::clone(&root), self.area)
             .registry(registry)
+            .which_key_embedded(self.presentation.which_key() == SurfaceOwnership::Embedded)
             .settings(self.settings)
             .access(match self.access {
                 WorktreeAccess::ReadWrite => TuiEditorAccess::ReadWrite,
@@ -986,6 +1060,10 @@ impl WorktreeEditorBuilder {
     }
 }
 
+#[derive(Clone, Copy, Debug, Error)]
+#[error("the effective resolver must own which-key presentation")]
+struct WorktreePresentationError;
+
 fn construct_service<T, E>(
     policy: ServicePolicy,
     construct: impl FnOnce() -> Result<T, E>,
@@ -1035,6 +1113,7 @@ impl WorktreeEditor {
             capacity: WorktreeCapacity::default(),
             capabilities: WorktreeCapabilities::default(),
             binding_mode: WorktreeBindingMode::default(),
+            presentation: WorktreePresentation::default(),
         }
     }
     #[cfg(test)]

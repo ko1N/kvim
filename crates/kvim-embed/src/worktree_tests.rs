@@ -121,6 +121,41 @@ fn watcher_open_error_keeps_the_facade_kind_and_source() {
 }
 
 #[test]
+fn presentation_ownership_must_match_the_effective_resolver() {
+    let root = TestRoot::new("presentation-ownership");
+    let area = Rect::new(0, 0, 30, 6);
+
+    let default_editor = WorktreeEditor::builder(&root.0, area).open().unwrap();
+    drop(default_editor);
+
+    let host_editor = WorktreeEditor::builder(&root.0, area)
+        .binding_mode(WorktreeBindingMode::HostResolved {
+            reserved_escape: Key::ctrl(KeyCode::Char(']')),
+        })
+        .presentation(WorktreePresentation::host_owned_which_key())
+        .open()
+        .unwrap();
+    drop(host_editor);
+
+    let host_with_embedded = WorktreeEditor::builder(&root.0, area)
+        .binding_mode(WorktreeBindingMode::HostResolved {
+            reserved_escape: Key::ctrl(KeyCode::Char(']')),
+        })
+        .open()
+        .unwrap_err();
+    assert_eq!(
+        host_with_embedded.kind(),
+        WorktreeOpenErrorKind::Presentation
+    );
+
+    let facade_with_host = WorktreeEditor::builder(&root.0, area)
+        .presentation(WorktreePresentation::host_owned_which_key())
+        .open()
+        .unwrap_err();
+    assert_eq!(facade_with_host.kind(), WorktreeOpenErrorKind::Presentation);
+}
+
+#[test]
 fn host_resolved_dispatch_and_cancellation_are_addressed_and_atomic() {
     let root = TestRoot::new("host-resolved-cancel");
     let escape = Key::ctrl(KeyCode::Char(']'));
@@ -128,6 +163,7 @@ fn host_resolved_dispatch_and_cancellation_are_addressed_and_atomic() {
         .binding_mode(WorktreeBindingMode::HostResolved {
             reserved_escape: escape,
         })
+        .presentation(WorktreePresentation::host_owned_which_key())
         .open()
         .unwrap();
 
@@ -452,6 +488,7 @@ fn host_resolved_editor(root: &TestRoot) -> WorktreeEditor {
         .binding_mode(WorktreeBindingMode::HostResolved {
             reserved_escape: Key::ctrl(KeyCode::Char(']')),
         })
+        .presentation(WorktreePresentation::host_owned_which_key())
         .open()
         .unwrap()
 }

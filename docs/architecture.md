@@ -134,7 +134,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
 | 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-fuzzy`, `kvim-input`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` |
-| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
+| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
 | 6 | `kvim` | `kvim-embed`, `kvim-path`, `kvim-settings`, `kvim-terminal` |
 
 External dependencies do not change the layer number. The default
@@ -344,6 +344,16 @@ precedence. The statusline and the winbar of kvim draw through the same band,
 so no second shedding rule exists. [`windows.md`](windows.md) owns the rule.
 
 `kvim-keymap` publishes three which-key lists and one registry helper.
+`kvim-embed::WorktreeBindingModel` composes bounded host and kvim contributions
+into that generic registry. It projects editor host-leader contributions only
+into Normal, Visual, and sidebar scopes. Literal and internal pending contexts
+retain kvim ownership. Explicit bounded overrides select one addressed host or
+editor winner for duplicate and strict-prefix conflicts. The model rejects
+stale, ambiguous, contradictory, or uncovered overrides without using
+registration order. It validates the facade context by requiring its reserved
+escape key to complete one host-global command. It then projects the picker
+overlay intact. It publishes bounded owner and semantic group labels while
+leaving resolution and hint generation in `kvim-keymap`.
 `Resolver::which_key` returns one `WhichKeyView`, and `WhichKeyView::hints`
 reports the hints of every scope that extends the pending prefix. Each hint
 names its own scope. `WhichKeyView::interruptions` reports the complete one-key

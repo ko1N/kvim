@@ -389,6 +389,20 @@ arguments, such as a count or a motion, never a key value.
 Each command has a stable identifier and a short label. The which-key overlay
 and any help output derive their text from these labels.
 
+## Host Composition
+
+`WorktreeBindingModel` projects bounded host-global, host-leader,
+focused-context, and kvim manifest bindings into one validated generic
+registry. Host-global receives first refusal through `DispatchContext`.
+Chat focus excludes editor groups. Editor focus includes host and active editor
+groups. Review focus includes host and review groups.
+
+Every opaque host command publishes bounded owner and semantic group labels.
+The same registry supplies dispatch, idle hints, pending continuations, and
+interrupting host-command hints. Duplicate sequences and strict-prefix
+collisions are typed construction errors after deterministic sorting. No
+registration order chooses a winner.
+
 ## Mapping Registry
 
 The mapping registry maps a bounded key sequence to a generic command identity,
@@ -1078,10 +1092,11 @@ capture. Integrated and standalone review share private state, relocation, and
 painting. Snapshots preserve bounded review position and read state. The host
 persists comments and assigns all host-domain meaning.
 
-Merged host-global and focused-surface leader resolution remains planned for
-the shared host registry and which-key work. Host-global bindings will receive
-first refusal. The implemented worktree facade already requires an addressed
-cancel-pending proposal and validated idle resume before a host focus change.
+Merged host-global and focused-surface leader resolution uses
+`WorktreeBindingModel`, the generic registry, and the shared resolver.
+Host-global bindings receive first refusal. The implemented worktree facade
+requires an addressed cancel-pending proposal and validated idle resume before
+a host focus change.
 It clears counts, operators, registers, text objects, and prompts atomically.
 Static pending prefixes remain host-resolver state and do not create kvim
 semantic state. `Tab` and `Shift-Tab` remain editor-owned in Insert mode and

@@ -162,9 +162,36 @@ objects, applies operator cancellation effects, advances the generation, and
 only then returns an idle `CancelPendingResume`. The host changes focus only
 after that resume succeeds.
 
-The host-global scope and merged host registry are not facade features yet.
-A later change will add host-global first refusal, merged host and kvim leader
-mappings, and one host-owned which-key model.
+The host-global scope and merged host registry are facade features in
+host-resolved mode. `WorktreeBindingModel` merges bounded host-global,
+host-leader, focused-context, and kvim manifest bindings into one generic
+`kvim-keymap::Registry`. It projects each binding into a deterministic effective
+scope before registry validation. Duplicate sequences and unreachable prefixes
+therefore fail with typed errors, independent of registration order.
+
+The host-global scope receives first refusal through the existing
+`DispatchContext` order. Chat focus includes host and chat groups but no editor
+group. Editor focus includes host leader and focused contributions only in
+Normal, Visual, and sidebar contexts. Insert, picker, prompt, confirmation,
+register-selection, and operator-pending contexts retain kvim input ownership.
+Review focus includes host and review groups. The model publishes bounded owner
+and semantic group labels for each command. Hosts use the existing `Resolver`
+or `WorkspaceComposer` for dispatch, pending continuations, interruption hints,
+and one which-key model; no facade resolver runs in parallel.
+
+Composition rejects duplicate and strict-prefix conflicts by default. An
+explicit bounded override identifies the effective scope, physical sequence,
+and addressed host or editor command that wins. Composition rejects stale,
+nonexistent, ambiguous, uncovered, or contradictory overrides. It never uses
+registration order. Host and editor identities remain distinct when their
+string identifiers are equal.
+
+`WorktreeBindingModel::editor_context` validates the current
+`WorktreeBindingContext`, then projects it with its picker overlay. The
+host-supplied reserved escape key must resolve to one complete host-global
+command. Missing, pending, editor-owned, or ambiguous escape bindings fail with
+a typed error. The picker scope therefore precedes the focused prompt scope.
+Ordinary editor contexts publish no overlay.
 
 A host may ultimately compose input routing for editor, review, chat, and other
 surfaces. Kvim also supports the existing facade-resolved path in which kvim
@@ -176,12 +203,15 @@ conflicts by semantic command identity, while keeping semantic commands
 available. Binding overrides reject duplicate sequences and unreachable
 prefixes. Review bindings remain planned independently from editor bindings.
 
-`WorktreePresentation` is a planned facade value with independent ownership for
-the command line, statusline, which-key, and file sidebar. Each surface is
-`Embedded` or `HostOwned`, defaults to `Embedded`, and is fixed at construction.
-Host-owned regions are removed from kvim layout. A host-owned command line
-requires a command-surface capability. Status and sidebar data remain semantic
-and bounded; kvim does not merge host and editor file-tree state.
+`WorktreePresentation` currently selects which-key ownership. It defaults to
+`Embedded`. `host_owned_which_key` fixes which-key ownership to the host for the
+editor lifetime. `WorktreeEditorBuilder::open` accepts only facade-resolved plus
+embedded which-key, or host-resolved plus host-owned which-key. It returns the
+typed `WorktreeOpenErrorKind::Presentation` before worktree or live editor state
+exists for either inconsistent combination. In host-owned mode kvim derives no
+internal which-key deadline or rows and paints no internal which-key overlay.
+The command line, statusline, and file sidebar remain kvim-owned until their
+independent layout work is implemented.
 
 ### Planned Editor Publication
 
@@ -762,6 +792,7 @@ The required examples are:
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
 - `crates/kvim-lsp/examples/custom_lsp_transport.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
+- `crates/kvim-embed/examples/merged_leader.rs`
 - `crates/kvim-embed/examples/worktree_editor.rs`
 - `crates/kvim-ui/examples/composer.rs`
 - `crates/kvim-ui/examples/selector.rs`

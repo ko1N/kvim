@@ -736,6 +736,7 @@ pub struct EmbeddedEditorBuilder {
     watcher_unavailable: bool,
     git_status: bool,
     registry: Registry,
+    which_key_embedded: bool,
 }
 
 impl EmbeddedEditorBuilder {
@@ -819,6 +820,14 @@ impl EmbeddedEditorBuilder {
         self
     }
 
+    /// Selects whether the private session derives and paints which-key rows.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn which_key_embedded(mut self, embedded: bool) -> Self {
+        self.which_key_embedded = embedded;
+        self
+    }
+
     /// Builds the model and the driver of one independent editor.
     ///
     /// # Errors
@@ -838,6 +847,7 @@ impl EmbeddedEditorBuilder {
             watcher_unavailable,
             git_status,
             registry,
+            which_key_embedded,
         } = self;
         if area.width == 0 || area.height == 0 {
             return Err(GeometryError::Empty { area }.into());
@@ -854,7 +864,8 @@ impl EmbeddedEditorBuilder {
         let mut editor = Session::new_with_registry(area, settings, root, registry)
             .with_access(access)
             .with_clipboard(clipboard)
-            .with_git_status(git_status);
+            .with_git_status(git_status)
+            .with_embedded_which_key(which_key_embedded);
         if watcher_unavailable {
             let _ = editor.report_watch_unavailable();
         }
@@ -960,6 +971,7 @@ impl EmbeddedEditor {
             watcher_unavailable: false,
             git_status: true,
             registry: Registry::first_release(),
+            which_key_embedded: true,
         }
     }
 

@@ -1265,6 +1265,8 @@ pub struct Session {
     /// The open floating overlay of the language services.
     float: Option<Float>,
     which_key: Option<Vec<WhichKeyRow>>,
+    /// Whether this session derives and paints its private which-key overlay.
+    embedded_which_key: bool,
     /// The progress of every language server and every mirrored message.
     notifications: NotificationBoard,
     /// The elapsed time that the event loop reported last.
@@ -1351,6 +1353,7 @@ impl Session {
             log: EditorLog::default(),
             float: None,
             which_key: None,
+            embedded_which_key: true,
             notifications: NotificationBoard::default(),
             clock: Duration::ZERO,
             run: RunState::Running,
@@ -1452,6 +1455,17 @@ impl Session {
     #[must_use]
     pub fn with_access(mut self, access: EditorAccess) -> Self {
         self.access = access;
+        self
+    }
+
+    /// Selects whether this session derives and paints its private which-key overlay.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_embedded_which_key(mut self, embedded: bool) -> Self {
+        self.embedded_which_key = embedded;
+        if !embedded {
+            self.which_key = None;
+        }
         self
     }
 
@@ -2030,8 +2044,9 @@ impl Session {
     #[must_use]
     pub fn next_deadline(&self) -> Option<Duration> {
         let overlay = self
-            .resolver
-            .overlay_deadline()
+            .embedded_which_key
+            .then(|| self.resolver.overlay_deadline())
+            .flatten()
             .filter(|_| self.which_key.is_none());
         let notifications = self
             .notifications
@@ -2165,7 +2180,10 @@ impl Session {
         self.reconcile_picker();
         let mirrored = self.reconcile_clipboard();
         let advanced = self.notifications.advance(now, self.settings.notifications);
-        let rows = self.resolver.which_key(now);
+        let rows = self
+            .embedded_which_key
+            .then(|| self.resolver.which_key(now))
+            .flatten();
         if rows.as_deref() == self.which_key.as_deref() {
             return mirrored.or(advanced);
         }

@@ -6,6 +6,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [[example]]
+name = "merged_leader"
+required-features = ["worktree"]
+
+[[example]]
 name = "worktree_editor"
 required-features = ["worktree"]
 
@@ -15,6 +19,7 @@ required-features = ["worktree"]
 # and forwards exactly its named adapter; an empty registry remains supported.
 default = []
 worktree = [
+  "dep:kvim-keymap",
   "dep:kvim-language",
   "dep:kvim-lsp",
   "dep:kvim-path",
@@ -103,6 +108,7 @@ kvim-core.workspace = true
 kvim-editor.workspace = true
 kvim-input.workspace = true
 kvim-settings.workspace = true
+kvim-keymap = { workspace = true, optional = true }
 kvim-language = { workspace = true, optional = true }
 kvim-lsp = { workspace = true, optional = true }
 kvim-path = { workspace = true, optional = true }
