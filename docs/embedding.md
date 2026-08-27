@@ -142,6 +142,17 @@ The editor accepts resolved surface commands, literal text, bounded paste, and
 time. It does not run another key-sequence resolver. Input reduction returns an
 `InputContextSnapshot` that the shared resolver uses for the next input.
 
+The legacy facade reserves one mandatory event slot before each save or
+workspace mutation. A `Committed` result consumes that slot and applies the
+staged visible transition. An `Unchanged` result releases it and reports the
+causal failure.
+
+An `Indeterminate` result consumes the slot with
+`SaveReconciliationRequired` or `WorkspaceReconciliationRequired`. It preserves
+dirty or stale visible state and starts bounded reconciliation through the
+existing reload and tree-refresh requests. The facade never applies staged
+mutation path updates from an indeterminate result.
+
 `EmbeddedEditor` is the public facade of one instance. `EmbeddedEditor::builder`
 takes the validated root and the first rectangle, because both bound what the
 editor can reach. Every other setting has a default. `open` returns a typed

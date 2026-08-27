@@ -39,6 +39,10 @@ use kvim_path::{
     WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot,
 };
 
+use crate::durable::{
+    DurableOutcome, FailurePoint, Indeterminate, RecoveryAction, RecoveryFailure, fail_at,
+};
+
 use super::buffer::BufferId;
 use super::file::temporary_name;
 use super::tree::EntryKind;
@@ -452,19 +456,30 @@ impl MutationPlan {
     /// Returns [`MutationError::Confinement`] for a path that another program
     /// replaced, [`MutationError::Filesystem`] and the copy bounds when the
     /// filesystem refuses one step.
-    pub fn apply(self) -> Result<MutationOutcome, MutationError> {
+    pub fn apply(self) -> DurableOutcome<MutationOutcome, MutationError> {
+        let affected = self.changed.clone();
         let root = &self.root;
-        match &self.work {
-            PlannedWork::Create(entries) => create(root, entries)?,
-            PlannedWork::Copy(relocations) => transfer(root, TransferMode::Copy, relocations)?,
-            PlannedWork::Move(relocations) => transfer(root, TransferMode::Move, relocations)?,
-            PlannedWork::Discard(paths) => discard(root, paths)?,
+        let result = match &self.work {
+            PlannedWork::Create(entries) => create(root, entries),
+            PlannedWork::Copy(relocations) => transfer(root, TransferMode::Copy, relocations),
+            PlannedWork::Move(relocations) => transfer(root, TransferMode::Move, relocations),
+            PlannedWork::Discard(paths) => discard(root, paths),
+        };
+        match result {
+            Ok(()) => DurableOutcome::Committed(MutationOutcome {
+                updates: self.updates,
+                changed: self.changed,
+                selection: self.selection,
+            }),
+            Err(failure) if !failure.indeterminate && failure.recovery.is_empty() => {
+                DurableOutcome::Unchanged(failure.primary)
+            }
+            Err(failure) => DurableOutcome::Indeterminate(Indeterminate::from_operation(
+                failure.primary,
+                failure.recovery,
+                affected,
+            )),
         }
-        Ok(MutationOutcome {
-            updates: self.updates,
-            changed: self.changed,
-            selection: self.selection,
-        })
     }
 }
 
@@ -880,11 +895,34 @@ fn check_existing_directory(root: &WorktreeRoot, path: &Path) -> Result<(), Muta
     }
 }
 
+struct MutationFailure {
+    primary: MutationError,
+    recovery: Vec<RecoveryFailure>,
+    indeterminate: bool,
+}
+
+impl From<MutationError> for MutationFailure {
+    fn from(primary: MutationError) -> Self {
+        Self {
+            primary,
+            recovery: Vec::new(),
+            indeterminate: false,
+        }
+    }
+}
+
 /// Creates every planned entry, or leaves the workspace unchanged.
-fn create(root: &WorktreeRoot, entries: &[PlannedEntry]) -> Result<(), MutationError> {
+fn create(root: &WorktreeRoot, entries: &[PlannedEntry]) -> Result<(), MutationFailure> {
     let mut staged = StagedCreate::new(root);
     for entry in entries {
-        staged.create(entry)?;
+        if let Err(primary) = staged.create(entry) {
+            let recovery = staged.rollback();
+            return Err(MutationFailure {
+                primary,
+                recovery,
+                indeterminate: false,
+            });
+        }
     }
     staged.commit();
     Ok(())
@@ -941,6 +979,22 @@ impl<'a> StagedCreate<'a> {
     fn commit(mut self) {
         self.settled = true;
     }
+
+    fn rollback(&mut self) -> Vec<RecoveryFailure> {
+        let directory = self.root.directory();
+        let mut failures = Vec::new();
+        for path in self.made.iter().rev() {
+            if let Err(source) = remove_tree(directory, path) {
+                failures.push(RecoveryFailure::new(
+                    display_path(self.root, path),
+                    RecoveryAction::RemoveTemporary,
+                    source,
+                ));
+            }
+        }
+        self.settled = true;
+        failures
+    }
 }
 
 impl Drop for StagedCreate<'_> {
@@ -948,13 +1002,7 @@ impl Drop for StagedCreate<'_> {
         if self.settled {
             return;
         }
-        let directory = self.root.directory();
-        // The unwind runs in reverse order, so each directory holds no entry of
-        // this call before the call removes it. Every step is best effort,
-        // because the mutation already reports the first cause.
-        for path in self.made.iter().rev() {
-            let _ = remove_tree(directory, path);
-        }
+        let _ = self.rollback();
     }
 }
 
@@ -963,22 +1011,33 @@ fn transfer(
     root: &WorktreeRoot,
     mode: TransferMode,
     relocations: &[Relocation],
-) -> Result<(), MutationError> {
+) -> Result<(), MutationFailure> {
     let mut staged = StagedTransfer::new(root, mode);
     for relocation in relocations {
-        staged.stage(relocation)?;
+        if let Err(mut failure) = staged.stage(relocation) {
+            let mut recovery = staged.rollback();
+            failure.indeterminate |= !recovery.is_empty();
+            failure.recovery.append(&mut recovery);
+            return Err(failure);
+        }
     }
     staged.commit()
 }
 
 /// Removes every entry, or leaves the workspace unchanged.
-fn discard(root: &WorktreeRoot, paths: &[StagedPath]) -> Result<(), MutationError> {
+fn discard(root: &WorktreeRoot, paths: &[StagedPath]) -> Result<(), MutationFailure> {
     let mut staged = StagedDiscard::new(root);
     for path in paths {
-        staged.stage(path)?;
+        if let Err(primary) = staged.stage(path) {
+            let recovery = staged.rollback();
+            return Err(MutationFailure {
+                primary,
+                recovery,
+                indeterminate: false,
+            });
+        }
     }
-    staged.commit();
-    Ok(())
+    staged.commit()
 }
 
 /// One entry that waits under a temporary name for the commit.
@@ -1027,24 +1086,44 @@ impl<'a> StagedTransfer<'a> {
     }
 
     /// Puts one entry beside its destination under a temporary name.
-    fn stage(&mut self, relocation: &Relocation) -> Result<(), MutationError> {
-        relocation.origin.revalidate(self.root)?;
+    fn stage(&mut self, relocation: &Relocation) -> Result<(), MutationFailure> {
+        relocation
+            .origin
+            .revalidate(self.root)
+            .map_err(MutationFailure::from)?;
         let destination = relocation.destination.as_path();
         let temporary = parent_of(destination).join(temporary_name(destination));
         let directory = self.root.directory();
         match self.mode {
             TransferMode::Copy => {
-                if let Err(error) = copy_tree(self.root, relocation.origin.as_path(), &temporary) {
-                    let _ = remove_tree(directory, &temporary);
-                    return Err(error);
+                if let Err(primary) = copy_tree(self.root, relocation.origin.as_path(), &temporary)
+                {
+                    let recovery: Vec<RecoveryFailure> = remove_tree(directory, &temporary)
+                        .err()
+                        .map(|source| {
+                            RecoveryFailure::new(
+                                display_path(self.root, &temporary),
+                                RecoveryAction::RemoveTemporary,
+                                source,
+                            )
+                        })
+                        .into_iter()
+                        .collect();
+                    return Err(MutationFailure {
+                        primary,
+                        indeterminate: !recovery.is_empty(),
+                        recovery,
+                    });
                 }
             }
             TransferMode::Move => {
                 directory
                     .rename(relocation.origin.as_path(), directory, &temporary)
-                    .map_err(|source| MutationError::Filesystem {
-                        path: relocation.origin.display_path(self.root),
-                        source,
+                    .map_err(|source| {
+                        MutationFailure::from(MutationError::Filesystem {
+                            path: relocation.origin.display_path(self.root),
+                            source,
+                        })
                     })?;
             }
         }
@@ -1065,32 +1144,102 @@ impl<'a> StagedTransfer<'a> {
     /// The commit confirms the identity of an approved destination and parks it
     /// before it takes the name. It removes the parked entries only after every
     /// destination holds its new entry.
-    fn commit(mut self) -> Result<(), MutationError> {
+    fn commit(mut self) -> Result<(), MutationFailure> {
         let directory = self.root.directory();
         for index in 0..self.items.len() {
-            if self.items[index].replaces {
-                // The destination loses its entry in the next step, so its
-                // identity must still be the identity that the answer approved.
-                self.items[index].approved.revalidate(self.root)?;
-                self.items[index].parked = park(self.root, &self.items[index].destination)?;
-            }
-            let item = &self.items[index];
-            directory
-                .rename(&item.temporary, directory, &item.destination)
-                .map_err(|source| MutationError::Filesystem {
-                    path: display_path(self.root, &item.destination),
-                    source,
+            let step = (|| -> Result<(), MutationError> {
+                if self.items[index].replaces {
+                    self.items[index].approved.revalidate(self.root)?;
+                    self.items[index].parked = park(self.root, &self.items[index].destination)?;
+                }
+                let item = &self.items[index];
+                directory
+                    .rename(&item.temporary, directory, &item.destination)
+                    .map_err(|source| MutationError::Filesystem {
+                        path: display_path(self.root, &item.destination),
+                        source,
+                    })?;
+                self.items[index].committed = true;
+                fail_at(FailurePoint::MutationAfterRename).map_err(|source| {
+                    MutationError::Filesystem {
+                        path: display_path(self.root, &self.items[index].destination),
+                        source,
+                    }
                 })?;
-            self.items[index].committed = true;
+                Ok(())
+            })();
+            if let Err(primary) = step {
+                let recovery = self.rollback();
+                return Err(MutationFailure {
+                    primary,
+                    recovery,
+                    indeterminate: true,
+                });
+            }
         }
         self.settled = true;
-        // Every destination holds its new entry, so no parked entry can return.
+        let mut recovery = Vec::new();
         for item in &self.items {
             if let Some(parked) = &item.parked {
-                let _ = remove_tree(directory, parked);
+                let removed = fail_at(FailurePoint::MutationCleanup)
+                    .and_then(|()| remove_tree(directory, parked));
+                if let Err(source) = removed {
+                    recovery.push(RecoveryFailure::new(
+                        display_path(self.root, parked),
+                        RecoveryAction::RemoveParked,
+                        source,
+                    ));
+                }
             }
         }
-        Ok(())
+        if recovery.is_empty() {
+            Ok(())
+        } else {
+            Err(MutationFailure {
+                primary: MutationError::Filesystem {
+                    path: self.root.as_path().to_path_buf(),
+                    source: io::Error::other("cleanup after mutation commit failed"),
+                },
+                recovery,
+                indeterminate: true,
+            })
+        }
+    }
+
+    fn rollback(&mut self) -> Vec<RecoveryFailure> {
+        let directory = self.root.directory();
+        let mut failures = Vec::new();
+        for item in self.items.iter().rev() {
+            let restored = match (self.mode, item.committed) {
+                (TransferMode::Copy, false) => remove_tree(directory, &item.temporary),
+                (TransferMode::Move, false) => {
+                    directory.rename(&item.temporary, directory, &item.origin)
+                }
+                (TransferMode::Copy, true) => remove_tree(directory, &item.destination),
+                (TransferMode::Move, true) => {
+                    directory.rename(&item.destination, directory, &item.origin)
+                }
+            };
+            let restored = fail_at(FailurePoint::MutationRestore).and(restored);
+            if let Err(source) = restored {
+                failures.push(RecoveryFailure::new(
+                    display_path(self.root, &item.origin),
+                    RecoveryAction::RestoreOriginal,
+                    source,
+                ));
+            }
+            if let Some(parked) = &item.parked
+                && let Err(source) = directory.rename(parked, directory, &item.destination)
+            {
+                failures.push(RecoveryFailure::new(
+                    display_path(self.root, &item.destination),
+                    RecoveryAction::RestoreDestination,
+                    source,
+                ));
+            }
+        }
+        self.settled = true;
+        failures
     }
 }
 
@@ -1099,30 +1248,7 @@ impl Drop for StagedTransfer<'_> {
         if self.settled {
             return;
         }
-        let directory = self.root.directory();
-        // The unwind repairs a failed transfer. Every step is best effort,
-        // because the mutation already reports the first cause. It runs in
-        // reverse order, so each destination is free before its parked entry
-        // returns to it.
-        for item in self.items.iter().rev() {
-            match (self.mode, item.committed) {
-                (TransferMode::Copy, false) => {
-                    let _ = remove_tree(directory, &item.temporary);
-                }
-                (TransferMode::Move, false) => {
-                    let _ = directory.rename(&item.temporary, directory, &item.origin);
-                }
-                (TransferMode::Copy, true) => {
-                    let _ = remove_tree(directory, &item.destination);
-                }
-                (TransferMode::Move, true) => {
-                    let _ = directory.rename(&item.destination, directory, &item.origin);
-                }
-            }
-            if let Some(parked) = &item.parked {
-                let _ = directory.rename(parked, directory, &item.destination);
-            }
-        }
+        let _ = self.rollback();
     }
 }
 
@@ -1194,12 +1320,47 @@ impl<'a> StagedDiscard<'a> {
     }
 
     /// Removes every renamed entry.
-    fn commit(mut self) {
+    fn commit(mut self) -> Result<(), MutationFailure> {
         self.settled = true;
         let directory = self.root.directory();
+        let mut recovery = Vec::new();
         for item in &self.items {
-            let _ = remove_tree(directory, &item.temporary);
+            if let Err(source) = remove_tree(directory, &item.temporary) {
+                recovery.push(RecoveryFailure::new(
+                    display_path(self.root, &item.origin),
+                    RecoveryAction::RemoveParked,
+                    source,
+                ));
+            }
         }
+        if recovery.is_empty() {
+            Ok(())
+        } else {
+            Err(MutationFailure {
+                primary: MutationError::Filesystem {
+                    path: self.root.as_path().to_path_buf(),
+                    source: io::Error::other("cleanup after mutation commit failed"),
+                },
+                recovery,
+                indeterminate: true,
+            })
+        }
+    }
+
+    fn rollback(&mut self) -> Vec<RecoveryFailure> {
+        let directory = self.root.directory();
+        let mut failures = Vec::new();
+        for item in self.items.iter().rev() {
+            if let Err(source) = directory.rename(&item.temporary, directory, &item.origin) {
+                failures.push(RecoveryFailure::new(
+                    display_path(self.root, &item.origin),
+                    RecoveryAction::RestoreOriginal,
+                    source,
+                ));
+            }
+        }
+        self.settled = true;
+        failures
     }
 }
 
@@ -1208,10 +1369,7 @@ impl Drop for StagedDiscard<'_> {
         if self.settled {
             return;
         }
-        let directory = self.root.directory();
-        for item in &self.items {
-            let _ = directory.rename(&item.temporary, directory, &item.origin);
-        }
+        let _ = self.rollback();
     }
 }
 

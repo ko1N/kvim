@@ -227,10 +227,23 @@ actual `Committed`, `Unchanged`, or `Indeterminate` outcome. It must not report
 timeout, cancellation, or shutdown completion while durable state can still
 change. Failure before commit releases the reservation.
 
-A successful write, workspace mutation, or review-comment submission publishes
-its typed event. An indeterminate filesystem outcome reserves mandatory delivery
-and schedules bounded reconciliation before visible state claims agreement with
-disk.
+A successful write or workspace mutation publishes its typed event. An
+`Indeterminate` filesystem result publishes a typed reconciliation-required
+event through the same mandatory reservation. This event states that disk
+changed or might have changed without claiming a proven commit.
+
+`Unchanged` releases the reservation only when the operation proves no durable
+target changed. The result report preserves the primary source and every
+bounded restoration or cleanup source.
+
+The visible-state owner handles indeterminate results before it applies staged
+state. It keeps a save dirty. It withholds mutation path updates. It then queues
+bounded reload checks and tree reads through the normal file and workspace
+outboxes.
+
+These reconciliation requests use optional result capacity because the
+mandatory outcome is already recorded. A later read alone can establish
+agreement.
 
 `RedrawRequested` uses one coalesced latch. A full component event queue returns
 a typed `Saturated` outcome. It never silently drops the oldest or newest event.

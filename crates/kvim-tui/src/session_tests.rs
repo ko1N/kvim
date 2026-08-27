@@ -19,8 +19,9 @@ use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{FocusChange, Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
-    BUFFERS_MAX, BufferPathUpdate, Candidate, ExternalChange, FileResult, MutationOutcome,
-    PickerRequest, PickerResult, WorkspaceResult, rank_candidates,
+    BUFFERS_MAX, BufferPathUpdate, Candidate, DurableOutcome, ExternalChange, FileRequest,
+    FileResult, MutationOutcome, PickerRequest, PickerResult, SaveError, WorkspaceResult,
+    rank_candidates,
 };
 
 use crate::clipboard::SessionClipboard;
@@ -2390,6 +2391,57 @@ fn write_quit_keeps_a_newer_edit_when_the_save_result_is_stale() {
 }
 
 #[test]
+fn an_indeterminate_save_keeps_dirty_state_and_queues_reconciliation() {
+    let (directory, path, mut session) =
+        opened_file("session-save-indeterminate", "main.rs", "one\n");
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    refuse_language_requests(&mut session);
+    let request = session.take_file_request().expect("the save was queued");
+    let FileRequest::Save(request) = request else {
+        panic!("the request is a save");
+    };
+    let report = kvim_workspace::Indeterminate::new(
+        SaveError::Write(std::io::Error::other("metadata failed")),
+        Vec::new(),
+        vec![path.clone()],
+    )
+    .expect("the report stays inside its collection bounds");
+    let _ = session.apply_file_result(FileResult::Saved {
+        buffer: request.buffer,
+        requested: request.target,
+        outcome: DurableOutcome::Indeterminate(report),
+    });
+
+    assert!(session.buffer().is_modified());
+    assert!(
+        matches!(
+            session.take_workspace_request(),
+            Some(kvim_workspace::WorkspaceRequest::ReadDirectory { .. })
+        ),
+        "tree reconciliation queued"
+    );
+    assert!(
+        session.take_file_request().is_some(),
+        "reload reconciliation queued"
+    );
+    let events = std::iter::from_fn(|| session.take_event()).collect::<Vec<_>>();
+    assert!(events.iter().any(|published| matches!(
+        published.event,
+        crate::EditorEvent::SaveReconciliationRequired { .. }
+    )));
+    assert!(
+        !events
+            .iter()
+            .any(|published| matches!(published.event, crate::EditorEvent::FileWritten { .. }))
+    );
+    assert!(message(&session).contains("cannot prove save"));
+    drop(directory);
+}
+
+#[test]
 fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
     let directory = TempDir::new("session-undone-stale-write-quit");
     let path = directory.write("main.rs", "one\n");
@@ -2411,7 +2463,8 @@ fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
     let result = request.run();
     let saved_revision = match &result {
         FileResult::Saved {
-            outcome: Ok(saved), ..
+            outcome: DurableOutcome::Committed(saved),
+            ..
         } => saved.revision,
         other => panic!("the save succeeds, got {other:?}"),
     };
@@ -2773,7 +2826,7 @@ fn a_reload_result_for_a_moved_target_is_obsolete() {
     let moved = directory.join("moved.rs");
     std::fs::rename(path, &moved).expect("the file can move inside the worktree");
     let _ = session.apply_workspace_result(WorkspaceResult::Mutated {
-        outcome: Ok(MutationOutcome {
+        outcome: DurableOutcome::Committed(MutationOutcome {
             updates: vec![BufferPathUpdate {
                 buffer,
                 path: moved.clone(),

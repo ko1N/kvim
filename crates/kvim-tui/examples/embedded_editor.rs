@@ -279,6 +279,15 @@ fn report(events: &[PublishedEvent]) {
             EditorEvent::WorkspaceChanged { operation } => {
                 println!("editor {}: changed {operation:?}", published.instance.get());
             }
+            EditorEvent::SaveReconciliationRequired { path } => println!(
+                "editor {}: must reconcile save of {}",
+                published.instance.get(),
+                path.as_path().display()
+            ),
+            EditorEvent::WorkspaceReconciliationRequired { operation } => println!(
+                "editor {}: must reconcile {operation:?}",
+                published.instance.get()
+            ),
             EditorEvent::FileActivated { path } => println!(
                 "editor {}: the reader activated {}",
                 published.instance.get(),

@@ -65,14 +65,15 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, TerminalEvent};
 use kvim_ui::{Direction, RegionKind, SidebarSide, WindowId};
 use kvim_workspace::{
-    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget, EntryKind,
-    ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult, FileTarget, FileTree,
-    GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError, MutationOutcome, OpenError,
-    OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest,
-    PickerResult, PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget,
-    ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer,
-    TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult,
-    WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest, render_content,
+    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget,
+    DurableOutcome, EntryKind, ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult,
+    FileTarget, FileTree, GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError,
+    MutationOutcome, OpenError, OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX,
+    PickerKind, PickerRequest, PickerResult, PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome,
+    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError,
+    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
+    WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
+    render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -1847,6 +1848,23 @@ impl Session {
     fn publish_write(&mut self, slot: Option<EventReservation>, path: WorktreeRelativePath) {
         match slot {
             Some(slot) => self.events.commit(slot, EditorEvent::FileWritten { path }),
+            None => debug_assert!(
+                false,
+                "every save reserves its slot before the write starts"
+            ),
+        }
+    }
+
+    /// Publishes the mandatory reconciliation request of one uncertain save.
+    fn publish_save_reconciliation(
+        &mut self,
+        slot: Option<EventReservation>,
+        path: WorktreeRelativePath,
+    ) {
+        match slot {
+            Some(slot) => self
+                .events
+                .commit(slot, EditorEvent::SaveReconciliationRequired { path }),
             None => debug_assert!(
                 false,
                 "every save reserves its slot before the write starts"
@@ -4940,6 +4958,9 @@ impl Session {
             WorkspaceResult::Mutated { outcome } => self.publish_mutation(outcome),
         };
         self.reconcile_tree();
+        if self.reload_due {
+            self.start_watch_reload();
+        }
         redraw
     }
 
@@ -4960,21 +4981,43 @@ impl Session {
     ///
     /// The buffer paths, the affected directories, and the new selection change
     /// together, so no window shows a path that the workspace no longer holds.
-    fn publish_mutation(&mut self, outcome: Result<MutationOutcome, MutationError>) -> Redraw {
+    fn publish_mutation(
+        &mut self,
+        outcome: DurableOutcome<MutationOutcome, MutationError>,
+    ) -> Redraw {
         let slot = self.mutation_slot.take();
         // The pending operation names what the workspace performed, so the
         // fact reads it before the tree releases its request.
         let operation = self.tree.pending_mutation();
         let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(MutationError::Collision { entries }) => {
+            DurableOutcome::Committed(outcome) => outcome,
+            DurableOutcome::Unchanged(MutationError::Collision { entries }) => {
                 self.release_slot(slot);
                 return self.report_collision(entries);
             }
-            Err(error) => {
+            DurableOutcome::Unchanged(error) => {
                 self.release_slot(slot);
                 self.tree.abandon_request();
                 self.set_message(error.to_string(), MessageLevel::Error);
+                return Redraw::Needed;
+            }
+            DurableOutcome::Indeterminate(report) => {
+                match (slot, operation) {
+                    (Some(slot), Some(operation)) => {
+                        self.events.commit(
+                            slot,
+                            EditorEvent::WorkspaceReconciliationRequired { operation },
+                        );
+                    }
+                    (slot, _) => self.release_slot(slot),
+                }
+                self.tree.abandon_request();
+                self.tree.refresh_all();
+                self.reload_due = true;
+                self.set_message(
+                    format!("workspace change is uncertain: {report}"),
+                    MessageLevel::Error,
+                );
                 return Redraw::Needed;
             }
         };
@@ -5886,20 +5929,32 @@ impl Session {
         &mut self,
         buffer: BufferId,
         requested: &Path,
-        outcome: Result<SavedBuffer, SaveError>,
+        outcome: DurableOutcome<SavedBuffer, SaveError>,
         then: AfterSave,
         format: FormatBeforeSave,
     ) -> Redraw {
         let slot = self.write_slot.take();
         let saved = match outcome {
-            Ok(saved) => saved,
-            // A failed save keeps the buffer dirty and usable, so the user can
-            // repeat it. The write produced no durable change, so its reserved
-            // slot returns to the outbox.
-            Err(error) => {
+            DurableOutcome::Committed(saved) => saved,
+            DurableOutcome::Unchanged(error) => {
                 self.release_slot(slot);
                 self.set_message(
                     format!("cannot save {}: {error}", requested.display()),
+                    MessageLevel::Error,
+                );
+                return Redraw::Needed;
+            }
+            DurableOutcome::Indeterminate(report) => {
+                let relative = requested
+                    .strip_prefix(self.root.as_path())
+                    .ok()
+                    .and_then(|path| WorktreeRelativePath::new(path).ok())
+                    .expect("a pending save path belongs to the session root");
+                self.publish_save_reconciliation(slot, relative);
+                self.tree.refresh_all();
+                self.reload_due = true;
+                self.set_message(
+                    format!("cannot prove save of {}: {report}", requested.display()),
                     MessageLevel::Error,
                 );
                 return Redraw::Needed;

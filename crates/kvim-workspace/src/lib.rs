@@ -48,6 +48,7 @@ mod buffer;
 mod clipboard;
 mod diff;
 mod diff_capture;
+mod durable;
 mod file;
 mod git;
 mod mutation;
@@ -89,6 +90,10 @@ pub use diff_capture::{
     AuthorityProjection, DIFF_ANSWER_OUTPUT_BYTES_MAX, DIFF_BINARY_SCAN_BYTES,
     DIFF_CAPTURE_ATTEMPTS_MAX, DIFF_CAPTURE_DEADLINE, DIFF_PROCESS_OUTPUT_BYTES_MAX,
     DIFF_SOURCE_BYTES_MAX, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
+};
+pub use durable::{
+    DurableOutcome, INDETERMINATE_PATHS_MAX, Indeterminate, IndeterminateLimitError,
+    RECOVERY_FAILURES_MAX, RecoveryAction, RecoveryFailure,
 };
 pub use file::{
     FileChange, FileIdentity, FileTarget, LoadedFile, OpenError, SaveError, SavedFile, identity,

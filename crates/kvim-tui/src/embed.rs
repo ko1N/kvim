@@ -286,6 +286,16 @@ pub enum EditorEvent {
         /// The operation that the workspace performed.
         operation: FileOperation,
     },
+    /// One save reached a point where its durable state needs reconciliation.
+    SaveReconciliationRequired {
+        /// The contained path that a reload must check.
+        path: WorktreeRelativePath,
+    },
+    /// One workspace mutation reached an uncertain durable state.
+    WorkspaceReconciliationRequired {
+        /// The operation whose affected paths need reconciliation.
+        operation: FileOperation,
+    },
     /// The reader activated one file of the file sidebar.
     ///
     /// The editor opened no buffer. The fact reaches the host through the

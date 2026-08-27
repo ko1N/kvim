@@ -52,6 +52,29 @@ returns one typed durable outcome:
 | `Committed` | The operation proved its durable target state. |
 | `Indeterminate` | The operation cannot prove that its durable target stayed unchanged. |
 
+The durable boundary returns `DurableOutcome<T, E>`. `Unchanged(E)` proves that
+no target changed and keeps the causal error. `Committed(T)` proves the new
+target state.
+
+`Indeterminate(Indeterminate<E>)` preserves the first operation error, every
+bounded recovery failure, and the bounded affected-path set. Its public
+constructor rejects collections above `RECOVERY_FAILURES_MAX` or
+`INDETERMINATE_PATHS_MAX`.
+
+Atomic save becomes committed at rename. Metadata or readback failure after
+rename is indeterminate. Direct save becomes indeterminate when truncating open
+succeeds, including empty-content and synchronization failures. Temporary
+cleanup failure also makes the result indeterminate because kvim cannot prove
+the staging state was removed.
+
+Workspace mutation staging remains reversible. A failure before any durable
+change returns `Unchanged`. A failure after one commit rename, failed rollback,
+or cleanup after commit returns `Indeterminate`.
+
+Recovery reports keep at most `RECOVERY_FAILURES_MAX` failures. Affected paths
+keep at most `INDETERMINATE_PATHS_MAX` paths. One mutation uses the smaller
+`MUTATION_PATHS_MAX` operation bound.
+
 An `Indeterminate` outcome retains mandatory event capacity and schedules
 bounded reconciliation for every affected path. The editor keeps affected
 buffers dirty or externally changed until reconciliation proves agreement with
@@ -195,6 +218,18 @@ A deleted file and a renamed file reach the same missing state, because the path
 of the buffer names no file in either case. The buffer keeps its text and stays
 fully editable, because that text is then the only copy that kvim can write. A
 save writes the file again. A save and a successful reload both clear the mark.
+
+An indeterminate save publishes its reserved
+`SaveReconciliationRequired` event. It keeps the buffer dirty and queues the
+existing bounded reload comparison.
+
+An indeterminate mutation publishes its reserved
+`WorkspaceReconciliationRequired` event. It does not apply staged buffer path
+updates. It refreshes the tree through existing bounded reads and queues loaded
+buffer reconciliation.
+
+`FileWritten` and `WorkspaceChanged` remain definite commit facts. Visible
+state claims agreement only after the reconciliation reads complete.
 
 A reload takes the same path as an ordinary open: the same UTF-8 rule and the
 same restore of the persistent undo file. It also carries the live buffer's

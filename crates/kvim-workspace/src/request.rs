@@ -11,6 +11,8 @@ use kvim_core::{BufferBytesMax, BufferRevision, LoadError, TextBuffer};
 use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
 
+use crate::durable::DurableOutcome;
+
 use super::buffer::{BUFFERS_MAX, BufferId};
 use super::file::{self, FileChange, FileIdentity, FileTarget, OpenError, SaveError};
 use super::undo_file::{self, UndoRecord};
@@ -161,8 +163,8 @@ pub enum FileResult {
         buffer: BufferId,
         /// The path that the user named.
         requested: FileTarget,
-        /// The new file state, or the reason that the save changed nothing.
-        outcome: Result<SavedBuffer, SaveError>,
+        /// The durable save outcome.
+        outcome: DurableOutcome<SavedBuffer, SaveError>,
     },
 }
 
@@ -333,13 +335,17 @@ fn restore_undo(
 }
 
 /// Saves one buffer and writes its persistent undo file.
-fn write(request: &SaveRequest) -> Result<SavedBuffer, SaveError> {
-    let saved = file::save(
+fn write(request: &SaveRequest) -> DurableOutcome<SavedBuffer, SaveError> {
+    let saved = match file::save(
         &request.target,
         &request.content,
         request.expected,
         &request.files,
-    )?;
+    ) {
+        DurableOutcome::Unchanged(error) => return DurableOutcome::Unchanged(error),
+        DurableOutcome::Indeterminate(report) => return DurableOutcome::Indeterminate(report),
+        DurableOutcome::Committed(saved) => saved,
+    };
     if request.files.undo_file {
         // The undo file is an accelerator, not part of the save. A failure here
         // leaves the saved file correct.
@@ -351,7 +357,7 @@ fn write(request: &SaveRequest) -> Result<SavedBuffer, SaveError> {
             );
         }
     }
-    Ok(SavedBuffer {
+    DurableOutcome::Committed(SavedBuffer {
         target: saved.target,
         identity: saved.identity,
         bytes: request.content.len() as u64,
