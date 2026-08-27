@@ -119,6 +119,11 @@ tree still aligns. [`files.md`](files.md) owns the icon table.
 | Atomic save | Enabled |
 | Maximum file size | 4 MiB |
 
+The maximum file size remains raw in `FileSettings` for compatible settings
+overrides. `EditorSettings::realize` validates it. A composition boundary then
+constructs the core-owned `BufferBytesMax` value. Every created or reloaded
+buffer stores that value, so later edits cannot exceed the realized setting.
+
 [`files.md`](files.md) owns saving, conflicts, and persistent undo files. Format
 on save is the default for each new buffer. The per-buffer toggle does not
 change this default. The setting names no formatter: the language adapter

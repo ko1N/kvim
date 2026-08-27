@@ -192,7 +192,7 @@ enum MotionResult {
 /// use kvim_input::{Command, Mode};
 /// use kvim_settings::{EditorSettings, FileSettings};
 ///
-/// let mut buffer = TextBuffer::from_text("alpha beta\ngamma\n", &FileSettings::default())
+/// let mut buffer = TextBuffer::from_text("alpha beta\ngamma\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let settings = EditorSettings::default();
 /// let mut registers = Registers::default();
@@ -349,7 +349,7 @@ impl EditingState {
     /// use kvim_input::Command;
     /// use kvim_settings::{EditorSettings, FileSettings};
     ///
-    /// let mut buffer = TextBuffer::from_text("alpha\nbeta\n", &FileSettings::default())
+    /// let mut buffer = TextBuffer::from_text("alpha\nbeta\n", kvim_core::BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let settings = EditorSettings::default();
     /// let mut registers = Registers::default();

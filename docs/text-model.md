@@ -3,8 +3,9 @@
 ## Ownership
 
 The `core` module owns the text model: coordinates, edit transactions, undo, and
-redo. It performs no input or output. It depends on no other module except
-`settings`.
+redo. It performs no input or output. Its `BufferBytesMax` value owns the
+persistent byte-limit invariant. Settings convert their configured primitive
+into this value at composition boundaries.
 
 The `editor` module builds transactions from motions and operators. The `tui`
 module renders text and measures terminal cells. Neither module changes text
@@ -170,6 +171,18 @@ invariant, not broad editor configuration. Construction, transactions, undo,
 redo, reload transfer, and snapshots preserve it. A staged change above the
 limit returns a typed error before it changes text, generation, version, dirty
 state, or history.
+
+The limit applies to logical file-content bytes. When a file has no final line
+ending, the internal rope adds one synthetic terminator for editing. That
+terminator does not count against `BufferBytesMax`. The internal rope therefore
+holds at most the logical limit plus the selected terminator width: one byte for
+line feed or two bytes for carriage return and line feed.
+
+Each transaction calculates the exact resulting logical UTF-8 byte size from
+the current logical size, removed ranges, and replacement strings. It uses
+checked arithmetic and does not allocate a duplicate buffer for this check.
+Undo and redo can only restore previously valid states and assert that those
+states remain within the persistent limit.
 
 kvim rejects an oversized file before it publishes a buffer. Rejection happens
 before parsing, highlighting, or rendering. `EditorSettings` supplies the

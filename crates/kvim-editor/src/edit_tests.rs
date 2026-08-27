@@ -26,8 +26,8 @@ struct Session {
 
 impl Session {
     fn new(text: &str) -> Self {
-        let buffer =
-            TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+        let buffer = TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+            .expect("the test text is small");
         Self {
             buffer,
             settings: EditorSettings::default(),

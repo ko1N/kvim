@@ -207,7 +207,8 @@ fn rust() -> &'static dyn LanguageAdapter {
 }
 
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small")
 }
 
 /// Analyzes one buffer without a previous tree.

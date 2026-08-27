@@ -196,10 +196,11 @@ of the buffer names no file in either case. The buffer keeps its text and stays
 fully editable, because that text is then the only copy that kvim can write. A
 save writes the file again. A save and a successful reload both clear the mark.
 
-A reload takes the same path as an ordinary open: the same size limit, the same
-UTF-8 rule, and the same restore of the persistent undo file. A file that grew
-past the size limit therefore reloads no buffer. kvim reports that, marks the
-buffer as changed, and keeps its text.
+A reload takes the same path as an ordinary open: the same UTF-8 rule and the
+same restore of the persistent undo file. It also carries the live buffer's
+core-owned byte limit into every replacement and restored snapshot. A file that
+grew past that persistent limit therefore reloads no buffer. kvim reports that,
+marks the buffer as changed, and keeps its text.
 
 Every window that shows a reloaded buffer keeps its own cursor and its own first
 visible row. Both clamp to the new text, so a file that became shorter leaves no

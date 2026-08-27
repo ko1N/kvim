@@ -34,7 +34,7 @@ pub struct AnchorPoint {
 /// use kvim_input::Mode;
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("alpha\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("alpha\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let start = buffer.char_position(0).expect("the position exists");
 ///
@@ -170,7 +170,7 @@ impl ModeState {
 /// use kvim_editor::{ColumnLimit, Cursor, ModeState, Selection};
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("alpha\nbeta\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("alpha\nbeta\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let anchor = buffer.line_index(0).expect("the first line exists");
 /// let cursor = Cursor::clamped(&buffer, 1, 0, ColumnLimit::LastCharacter);

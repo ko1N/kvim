@@ -223,7 +223,7 @@ impl FormatEdits {
 /// use kvim_language::document_position;
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("let value = 1;\n", &FileSettings::default())?;
+/// let buffer = TextBuffer::from_text("let value = 1;\n", kvim_core::BufferBytesMax::default())?;
 /// let cursor = buffer.char_position(4).expect("the position exists");
 /// assert_eq!(document_position(&buffer, cursor).byte_column, 4);
 /// # Ok::<(), Box<dyn std::error::Error>>(())

@@ -48,7 +48,8 @@ const TEST_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is 
 
 /// Returns a buffer with the exact test document content.
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small")
 }
 
 /// Opens the test document and returns its buffer.

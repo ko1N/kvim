@@ -106,8 +106,12 @@ impl FileBuffer {
     /// Creates an empty buffer that holds no file.
     #[must_use]
     pub fn scratch(files: &FileSettings) -> Self {
-        let text = TextBuffer::from_text("", files)
-            .expect("an empty text never passes the file size limit");
+        let text = TextBuffer::from_text(
+            "",
+            kvim_core::BufferBytesMax::new(files.max_file_bytes)
+                .expect("settings are realized before buffers are created"),
+        )
+        .expect("an empty text never passes the file size limit");
         Self::generated(SCRATCH_BUFFER_NAME, text)
     }
 
@@ -121,12 +125,14 @@ impl FileBuffer {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::TextBuffer;
+    /// use kvim_core::{BufferBytesMax, TextBuffer};
     /// use kvim_settings::FileSettings;
     /// use kvim_workspace::FileBuffer;
     ///
     /// let files = FileSettings::default();
-    /// let text = TextBuffer::from_text("one\n", &files).expect("the text is short");
+    /// let limit = BufferBytesMax::new(files.max_file_bytes)
+    ///     .expect("the settings limit is validated");
+    /// let text = TextBuffer::from_text("one\n", limit).expect("the text is short");
     /// let buffer = FileBuffer::generated("[Logs]", text);
     /// assert_eq!(buffer.name(), "[Logs]");
     /// assert_eq!(buffer.path(), None);

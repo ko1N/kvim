@@ -208,7 +208,7 @@ pub(super) fn move_matching_bracket(
 /// use kvim_editor::matching_bracket;
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("call(alpha)\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("call(alpha)\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let start = buffer.char_position(0).expect("the buffer holds the position");
 /// // The cursor stands before the pair, so the search finds `(` first.

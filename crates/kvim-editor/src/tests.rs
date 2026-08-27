@@ -41,7 +41,8 @@ const MOTION_COMMANDS: &[Command] = &[
 ];
 
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small")
 }
 
 fn viewport(rows: u16, cells: u16) -> Viewport {

@@ -123,7 +123,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 0 | `kvim-path` | none |
 | 0 | `kvim-settings` | none |
 | 0 | `kvim-syntax` | none |
-| 1 | `kvim-core` | `kvim-settings` |
+| 1 | `kvim-core` | `kvim-settings` for indent realization only |
 | 1 | `kvim-runtime` | `kvim-path` |
 | 1 | `kvim-terminal` | `kvim-keymap` |
 | 2 | `kvim-clipboard` | `kvim-runtime` |
@@ -667,7 +667,9 @@ imperative boundary.
 ### The Text Model
 
 This dependency runs inside `kvim-core`, because the text storage is the text
-model. `kvim-core` runs no other dependency except `thiserror`.
+model. `kvim-core` also uses `thiserror` and receives indent settings for the
+current indent API. Buffer construction uses the core-owned `BufferBytesMax`
+value and does not accept broad file settings.
 
 - `ropey` 1.6
   - Replaces: a local rope or piece table, a local line index, and local

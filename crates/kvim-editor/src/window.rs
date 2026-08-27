@@ -30,7 +30,7 @@ use super::viewport::Viewport;
 /// use kvim_settings::{EditorSettings, FileSettings};
 ///
 /// let text = "line\n".repeat(100);
-/// let mut buffer = TextBuffer::from_text(&text, &FileSettings::default())
+/// let mut buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let settings = EditorSettings::default();
 /// let mut registers = Registers::default();

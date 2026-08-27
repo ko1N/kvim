@@ -7,7 +7,7 @@
 
 use std::sync::Arc;
 
-use kvim_core::{BufferVersion, LoadError, TextBuffer};
+use kvim_core::{BufferBytesMax, BufferVersion, LoadError, TextBuffer};
 use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
 
@@ -77,6 +77,8 @@ pub struct ReloadTarget {
     pub buffer: BufferId,
     /// The validated canonical target that the buffer holds.
     pub target: FileTarget,
+    /// The persistent byte limit of the live buffer being replaced.
+    pub bytes_max: BufferBytesMax,
     /// What the worker does with the file.
     pub trigger: ReloadTrigger,
 }
@@ -270,11 +272,14 @@ fn check(target: &ReloadTarget, files: &FileSettings) -> Result<ReloadOutcome, O
         (FileChange::Missing, _) => Ok(ReloadOutcome::Missing),
         (FileChange::Changed, ReloadTrigger::Compare(_)) => Ok(ReloadOutcome::Conflict),
         (FileChange::Changed, ReloadTrigger::Refresh(_) | ReloadTrigger::Read) => {
-            let opened = open(&OpenRequest {
-                root: target.target.root_handle(),
-                path: target.target.relative_path().clone(),
-                files: *files,
-            })?;
+            let opened = open_with_limit(
+                &OpenRequest {
+                    root: target.target.root_handle(),
+                    path: target.target.relative_path().clone(),
+                    files: *files,
+                },
+                target.bytes_max,
+            )?;
             if opened.target != target.target {
                 return Err(OpenError::Confinement(WorktreeConfinementError::Replaced));
             }
@@ -285,11 +290,19 @@ fn check(target: &ReloadTarget, files: &FileSettings) -> Result<ReloadOutcome, O
 
 /// Loads one file and restores its persistent undo history.
 fn open(request: &OpenRequest) -> Result<OpenedFile, OpenError> {
+    let bytes_max = BufferBytesMax::new(request.files.max_file_bytes)
+        .expect("settings are realized before file requests run");
+    open_with_limit(request, bytes_max)
+}
+
+fn open_with_limit(
+    request: &OpenRequest,
+    bytes_max: BufferBytesMax,
+) -> Result<OpenedFile, OpenError> {
     let loaded = file::load(&request.root, &request.path, &request.files)?;
-    let text =
-        TextBuffer::from_text(&loaded.text, &request.files).map_err(|error| match error {
-            LoadError::TooLarge { bytes, max_bytes } => OpenError::TooLarge { bytes, max_bytes },
-        })?;
+    let text = TextBuffer::from_text(&loaded.text, bytes_max).map_err(|error| match error {
+        LoadError::TooLarge { bytes, max_bytes } => OpenError::TooLarge { bytes, max_bytes },
+    })?;
     let text = restore_undo(text, &loaded.text, &loaded.target, &request.files);
     Ok(OpenedFile {
         target: loaded.target,
@@ -315,7 +328,7 @@ fn restore_undo(
         return text;
     };
     undo_file::read_record(&undo_path, content)
-        .and_then(|record| record.restore(content, files))
+        .and_then(|record| record.restore(content, &text))
         .unwrap_or(text)
 }
 

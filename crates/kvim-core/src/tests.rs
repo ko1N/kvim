@@ -1,13 +1,13 @@
 //! Behavior tests for the buffer, its coordinates, and its bounded history.
 
 use super::{
-    CharRange, CoordinateError, EditError, EditTransaction, FinalLineEnding, LineEnding, LoadError,
-    TextBuffer, TextChange, UNDO_HISTORY_BYTES_MAX, UNDO_HISTORY_ENTRIES_MAX,
+    BufferBytesMax, CharRange, CoordinateError, EditError, EditTransaction, FinalLineEnding,
+    LineEnding, LoadError, TextBuffer, TextChange, UNDO_HISTORY_BYTES_MAX,
+    UNDO_HISTORY_ENTRIES_MAX,
 };
-use kvim_settings::FileSettings;
 
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, BufferBytesMax::default()).expect("the test text is small")
 }
 
 fn range(buffer: &TextBuffer, start: usize, end: usize) -> CharRange {
@@ -57,7 +57,7 @@ fn one_transaction_changes_several_lines_and_reverses_as_one_step() {
 fn a_rejected_transaction_leaves_the_buffer_unchanged() {
     let mut buffer = buffer("abc");
     let short = buffer.char_position(3).expect("the position exists");
-    let long = TextBuffer::from_text("abcdefgh", &FileSettings::default())
+    let long = TextBuffer::from_text("abcdefgh", BufferBytesMax::default())
         .expect("the text is small")
         .char_position(8)
         .expect("the position exists");
@@ -248,6 +248,93 @@ fn a_mixed_file_keeps_its_first_line_ending_for_new_lines() {
 }
 
 #[test]
+fn edits_enforce_the_persistent_byte_limit_atomically() {
+    let limit = BufferBytesMax::new(8).expect("the test limit is valid");
+    let mut buffer = TextBuffer::from_text("abc\n", limit).expect("the text fits");
+    let cursor = buffer.char_position(3).expect("the cursor exists");
+
+    buffer
+        .apply(EditTransaction::single(
+            cursor,
+            TextChange::insert(cursor, "é"),
+        ))
+        .expect("the exact byte limit is accepted");
+    assert_eq!(buffer.len_bytes(), 6);
+    let version = buffer.version();
+    buffer.mark_saved();
+
+    assert_eq!(
+        buffer.apply(EditTransaction::single(
+            cursor,
+            TextChange::insert(cursor, "漢"),
+        )),
+        Err(EditError::TooLarge {
+            bytes: 9,
+            max_bytes: 8,
+        })
+    );
+    assert_eq!(buffer.to_string(), "abcé\n");
+    assert_eq!(buffer.version(), version);
+    assert!(!buffer.is_modified());
+
+    assert_eq!(buffer.undo(), Some(cursor));
+    assert_eq!(buffer.to_string(), "abc\n");
+    assert!(buffer.logical_len_bytes() <= buffer.bytes_max().get() as usize);
+    assert!(buffer.redo().is_some());
+    assert_eq!(buffer.to_string(), "abcé\n");
+    assert!(buffer.logical_len_bytes() <= buffer.bytes_max().get() as usize);
+}
+
+#[test]
+fn edits_of_a_file_without_a_terminator_use_logical_bytes() {
+    let limit = BufferBytesMax::new(8).expect("the test limit is valid");
+    let mut buffer = TextBuffer::from_text("1234567", limit).expect("the text fits");
+    let end = buffer.char_position(7).expect("the content end exists");
+
+    buffer
+        .apply(EditTransaction::single(end, TextChange::insert(end, "8")))
+        .expect("exactly eight logical bytes fit");
+    assert_eq!(buffer.logical_len_bytes(), 8);
+    assert_eq!(buffer.len_bytes(), 9);
+
+    assert_eq!(
+        buffer.apply(EditTransaction::single(end, TextChange::insert(end, "9"),)),
+        Err(EditError::TooLarge {
+            bytes: 9,
+            max_bytes: 8,
+        })
+    );
+    assert_eq!(buffer.to_string(), "12345678\n");
+}
+
+#[test]
+fn replacements_and_multiple_changes_use_the_complete_result_size() {
+    let limit = BufferBytesMax::new(8).expect("the test limit is valid");
+    let mut buffer = TextBuffer::from_text("abcdef\n", limit).expect("the text fits");
+    let cursor = buffer.char_position(0).expect("the cursor exists");
+    let changes = vec![
+        TextChange::replace(range(&buffer, 0, 3), "é"),
+        TextChange::replace(range(&buffer, 4, 6), "xyzq"),
+    ];
+    buffer
+        .apply(EditTransaction::new(cursor, changes).expect("the changes ascend"))
+        .expect("all removals and replacements produce exactly eight bytes");
+    assert_eq!(buffer.to_string(), "édxyzq\n");
+    assert_eq!(buffer.len_bytes(), 8);
+
+    let before = buffer.snapshot();
+    assert_eq!(before.bytes_max(), limit);
+    let changes = vec![
+        TextChange::insert(buffer.char_position(0).expect("the position exists"), "x"),
+        TextChange::delete(range(&buffer, 2, 3)),
+    ];
+    buffer
+        .apply(EditTransaction::new(cursor, changes).expect("the changes ascend"))
+        .expect("one inserted byte and one removed byte preserve the limit");
+    assert_eq!(buffer.len_bytes(), 8);
+}
+
+#[test]
 fn undo_and_redo_walk_the_history_in_both_directions() {
     let mut buffer = buffer("");
     replace(&mut buffer, 0, 0, "one");
@@ -342,18 +429,21 @@ fn the_history_keeps_at_most_the_retained_byte_bound() {
 
 #[test]
 fn an_oversized_text_never_becomes_a_buffer() {
-    let files = FileSettings {
-        max_file_bytes: 8,
-        ..FileSettings::default()
-    };
+    let limit = BufferBytesMax::new(8).expect("the test limit is valid");
+    let exact = TextBuffer::from_text("12345678", limit)
+        .expect("exactly eight logical file bytes fit despite the synthetic terminator");
+    assert_eq!(exact.logical_len_bytes(), 8);
+    assert_eq!(exact.len_bytes(), 9);
+    assert_eq!(exact.final_line_ending(), FinalLineEnding::Absent);
+
     assert_eq!(
-        TextBuffer::from_text("123456789", &files).unwrap_err(),
+        TextBuffer::from_text("123456789", limit).unwrap_err(),
         LoadError::TooLarge {
             bytes: 9,
             max_bytes: 8,
         }
     );
-    assert!(TextBuffer::from_text("12345678", &files).is_ok());
+    assert!(TextBuffer::from_text("1234567\n", limit).is_ok());
 }
 
 #[test]

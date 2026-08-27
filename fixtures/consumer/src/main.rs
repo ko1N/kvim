@@ -253,7 +253,7 @@ fn check_input() {
 /// buffer behind its own text field.
 fn check_editor() {
     let settings = EditorSettings::default();
-    let mut buffer = TextBuffer::from_text("alpha\nbeta\n", &FileSettings::default())
+    let mut buffer = TextBuffer::from_text("alpha\nbeta\n", kvim_core::BufferBytesMax::default())
         .expect("the text is small");
     let mut registers = Registers::default();
     let mut context = EditContext {

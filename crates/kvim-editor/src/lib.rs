@@ -24,7 +24,7 @@
 //! use kvim_input::Command;
 //! use kvim_settings::{EditorSettings, FileSettings};
 //!
-//! let mut buffer = TextBuffer::from_text("fn main() {\n    let value = 1;\n}\n", &FileSettings::default())
+//! let mut buffer = TextBuffer::from_text("fn main() {\n    let value = 1;\n}\n", kvim_core::BufferBytesMax::default())
 //!     .expect("the text is small");
 //! let settings = EditorSettings::default();
 //! let mut registers = Registers::default();

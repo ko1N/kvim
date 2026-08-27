@@ -69,7 +69,7 @@
 //! let adapter = registry.adapter(Path::new("src/main.rs")).expect("the Rust adapter owns the path");
 //! assert_eq!(adapter.comment().line_token(), Some("//"));
 //!
-//! let buffer = TextBuffer::from_text("fn main() {}\n", &FileSettings::default())
+//! let buffer = TextBuffer::from_text("fn main() {}\n", kvim_core::BufferBytesMax::default())
 //!     .expect("the text is small");
 //! let input = AnalysisInput::new(buffer.version(), Arc::from(buffer.to_string()));
 //! let analysis = adapter

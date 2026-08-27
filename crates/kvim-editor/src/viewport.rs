@@ -46,7 +46,7 @@ pub enum ViewportAlignment {
 /// use kvim_settings::{DisplaySettings, FileSettings};
 ///
 /// let text = "line\n".repeat(100);
-/// let buffer = TextBuffer::from_text(&text, &FileSettings::default())
+/// let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
 /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
@@ -145,7 +145,7 @@ impl Viewport {
     /// use kvim_settings::{DisplaySettings, FileSettings};
     ///
     /// let text = "line\n".repeat(100);
-    /// let buffer = TextBuffer::from_text(&text, &FileSettings::default())
+    /// let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
     /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");

@@ -12,7 +12,52 @@ use thiserror::Error;
 use super::coordinates::{ByteOffset, CharPosition, CoordinateError, LineIndex, SourceColumn};
 use super::history::{AppliedChange, AppliedTransaction, UndoHistory};
 use super::transaction::EditTransaction;
-use kvim_settings::FileSettings;
+
+/// The default and largest supported text-buffer size, in bytes.
+pub const BUFFER_BYTES_MAX: u64 = 4 * 1024 * 1024;
+
+/// A validated persistent limit for logical file-content bytes.
+///
+/// The limit excludes the synthetic final line terminator that [`TextBuffer`]
+/// keeps when [`FinalLineEnding::Absent`] records that the file had none.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BufferBytesMax(u64);
+
+impl BufferBytesMax {
+    /// Creates a buffer byte limit.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BufferBytesMaxError`] when `bytes` is zero or exceeds
+    /// [`BUFFER_BYTES_MAX`].
+    pub const fn new(bytes: u64) -> Result<Self, BufferBytesMaxError> {
+        if bytes == 0 || bytes > BUFFER_BYTES_MAX {
+            return Err(BufferBytesMaxError { bytes });
+        }
+        Ok(Self(bytes))
+    }
+
+    /// Returns the limit in bytes.
+    #[must_use]
+    #[inline]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+impl Default for BufferBytesMax {
+    fn default() -> Self {
+        Self(BUFFER_BYTES_MAX)
+    }
+}
+
+/// A rejected text-buffer byte limit.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+#[error("the buffer byte limit {bytes} must be between 1 and {BUFFER_BYTES_MAX}")]
+pub struct BufferBytesMaxError {
+    /// The rejected limit, in bytes.
+    pub bytes: u64,
+}
 
 /// The line-break characters that the rope counts as a line terminator.
 ///
@@ -57,6 +102,14 @@ pub enum EditError {
         position: usize,
         /// The buffer length, in characters.
         len_chars: usize,
+    },
+    /// The resulting buffer would exceed its persistent byte limit.
+    #[error("the edit would produce {bytes} bytes; the limit is {max_bytes} bytes")]
+    TooLarge {
+        /// The size of the rejected result, in bytes.
+        bytes: u64,
+        /// The persistent buffer limit, in bytes.
+        max_bytes: u64,
     },
 }
 
@@ -172,10 +225,9 @@ impl FinalLineEnding {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::{EditTransaction, TextBuffer, TextChange};
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, EditTransaction, TextBuffer, TextChange};
 ///
-/// let mut buffer = TextBuffer::from_text("fn main() {}\n", &FileSettings::default())
+/// let mut buffer = TextBuffer::from_text("fn main() {}\n", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// assert!(!buffer.is_modified());
 ///
@@ -197,6 +249,7 @@ pub struct TextBuffer {
     rope: Rope,
     line_ending: LineEnding,
     final_line_ending: FinalLineEnding,
+    bytes_max: BufferBytesMax,
     version: BufferVersion,
     history: UndoHistory,
 }
@@ -212,51 +265,85 @@ impl TextBuffer {
     ///
     /// # Errors
     ///
-    /// Returns [`LoadError::TooLarge`] when the text exceeds
-    /// [`FileSettings::max_file_bytes`]. The check runs before the buffer
-    /// exists, so an oversized file never reaches parsing or rendering.
+    /// Returns [`LoadError::TooLarge`] when the supplied logical file content
+    /// exceeds `bytes_max`. A synthetic final line terminator does not count
+    /// against this limit.
     ///
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::{LoadError, TextBuffer};
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, LoadError, TextBuffer};
     ///
-    /// let mut files = FileSettings::default();
-    /// files.max_file_bytes = 4;
+    /// let bytes_max = BufferBytesMax::new(4).expect("the limit is valid");
+    /// assert!(TextBuffer::from_text("four", bytes_max).is_ok());
     /// assert_eq!(
-    ///     TextBuffer::from_text("hello", &files).unwrap_err(),
+    ///     TextBuffer::from_text("hello", bytes_max).unwrap_err(),
     ///     LoadError::TooLarge { bytes: 5, max_bytes: 4 },
     /// );
     /// ```
-    pub fn from_text(text: &str, files: &FileSettings) -> Result<Self, LoadError> {
+    pub fn from_text(text: &str, bytes_max: BufferBytesMax) -> Result<Self, LoadError> {
+        let line_ending = LineEnding::detect(text);
+        let final_line_ending = FinalLineEnding::of_text(text);
         let bytes = text.len() as u64;
-        if bytes > files.max_file_bytes {
+        if bytes > bytes_max.get() {
             return Err(LoadError::TooLarge {
                 bytes,
-                max_bytes: files.max_file_bytes,
+                max_bytes: bytes_max.get(),
             });
         }
 
-        let line_ending = LineEnding::detect(text);
-        let final_line_ending = FinalLineEnding::of_text(text);
         let mut rope = Rope::from_str(text);
         if final_line_ending == FinalLineEnding::Absent {
             rope.insert(rope.len_chars(), line_ending.as_str());
         }
+        debug_assert!(
+            logical_len_bytes(rope.len_bytes(), line_ending, final_line_ending) as u64
+                <= bytes_max.get(),
+            "construction validates logical file-content bytes before creating the rope"
+        );
+        debug_assert!(
+            rope.len_bytes() as u64
+                <= bytes_max.get()
+                    + synthetic_terminator_bytes(line_ending, final_line_ending) as u64,
+            "the internal rope adds at most the selected synthetic terminator"
+        );
         Ok(Self {
             rope,
             line_ending,
             final_line_ending,
+            bytes_max,
             version: BufferVersion(0),
             history: UndoHistory::new(),
         })
     }
 
-    /// Returns the buffer length, in bytes.
+    /// Returns the persistent logical file-content byte limit of this buffer.
+    #[must_use]
+    pub const fn bytes_max(&self) -> BufferBytesMax {
+        self.bytes_max
+    }
+
+    /// Returns the internal buffer length, in bytes.
+    ///
+    /// This includes the synthetic final line terminator when
+    /// [`FinalLineEnding::Absent`] records that the file had none. Use
+    /// [`TextBuffer::logical_len_bytes`] for the bounded file-content measure.
     #[must_use]
     pub fn len_bytes(&self) -> usize {
         self.rope.len_bytes()
+    }
+
+    /// Returns the logical file-content length, in bytes.
+    ///
+    /// This subtracts only the synthetic final line terminator that the buffer
+    /// keeps when [`FinalLineEnding::Absent`] records that the file had none.
+    #[must_use]
+    pub fn logical_len_bytes(&self) -> usize {
+        logical_len_bytes(
+            self.rope.len_bytes(),
+            self.line_ending,
+            self.final_line_ending,
+        )
     }
 
     /// Returns the buffer length, in characters.
@@ -275,13 +362,12 @@ impl TextBuffer {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::TextBuffer;
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, TextBuffer};
     ///
-    /// let files = FileSettings::default();
-    /// assert_eq!(TextBuffer::from_text("one\ntwo\n", &files).unwrap().line_count(), 2);
-    /// assert_eq!(TextBuffer::from_text("one\ntwo", &files).unwrap().line_count(), 2);
-    /// assert_eq!(TextBuffer::from_text("", &files).unwrap().line_count(), 1);
+    /// let limit = BufferBytesMax::default();
+    /// assert_eq!(TextBuffer::from_text("one\ntwo\n", limit).unwrap().line_count(), 2);
+    /// assert_eq!(TextBuffer::from_text("one\ntwo", limit).unwrap().line_count(), 2);
+    /// assert_eq!(TextBuffer::from_text("", limit).unwrap().line_count(), 1);
     /// ```
     #[must_use]
     pub fn line_count(&self) -> usize {
@@ -306,8 +392,21 @@ impl TextBuffer {
     /// A caller that reads the file bytes elsewhere, such as a restored undo
     /// history, records what that file held, so the next save writes the same
     /// file end.
-    pub fn set_final_line_ending(&mut self, ending: FinalLineEnding) {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`EditError::TooLarge`] if the selected state would make the
+    /// logical file content exceed the persistent byte limit.
+    pub fn set_final_line_ending(&mut self, ending: FinalLineEnding) -> Result<(), EditError> {
+        let bytes = logical_len_bytes(self.rope.len_bytes(), self.line_ending, ending) as u64;
+        if bytes > self.bytes_max.get() {
+            return Err(EditError::TooLarge {
+                bytes,
+                max_bytes: self.bytes_max.get(),
+            });
+        }
         self.final_line_ending = ending;
+        Ok(())
     }
 
     /// Reports whether the buffer text ends with a line terminator.
@@ -341,10 +440,9 @@ impl TextBuffer {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::{EditTransaction, TextBuffer, TextChange};
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, EditTransaction, TextBuffer, TextChange};
     ///
-    /// let mut buffer = TextBuffer::from_text("alpha\n", &FileSettings::default())
+    /// let mut buffer = TextBuffer::from_text("alpha\n", BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let before = buffer.snapshot();
     ///
@@ -362,6 +460,7 @@ impl TextBuffer {
             rope: self.rope.clone(),
             line_ending: self.line_ending,
             final_line_ending: self.final_line_ending,
+            bytes_max: self.bytes_max,
             version: self.version,
             history: UndoHistory::new(),
         }
@@ -502,10 +601,9 @@ impl TextBuffer {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::TextBuffer;
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, TextBuffer};
     ///
-    /// let buffer = TextBuffer::from_text("one\r\ntwo\r\n", &FileSettings::default())
+    /// let buffer = TextBuffer::from_text("one\r\ntwo\r\n", BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let line = buffer.line_index(0).expect("the first line exists");
     /// assert_eq!(buffer.line_text(line), "one");
@@ -532,10 +630,9 @@ impl TextBuffer {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::TextBuffer;
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, TextBuffer};
     ///
-    /// let buffer = TextBuffer::from_text("one\ntw\u{f6}\n", &FileSettings::default())
+    /// let buffer = TextBuffer::from_text("one\ntw\u{f6}\n", BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let first = buffer.line_index(0).expect("the first line exists");
     /// let second = buffer.line_index(1).expect("the second line exists");
@@ -562,6 +659,7 @@ impl TextBuffer {
                 len_chars,
             });
         }
+        let mut resulting_bytes = self.logical_len_bytes() as u64;
         for change in transaction.changes() {
             let range = change.range();
             if range.end().get() > len_chars {
@@ -571,6 +669,24 @@ impl TextBuffer {
                     len_chars,
                 });
             }
+            let start_byte = self.rope.char_to_byte(range.start().get());
+            let end_byte = self.rope.char_to_byte(range.end().get());
+            let removed_bytes = (end_byte - start_byte) as u64;
+            resulting_bytes = resulting_bytes
+                .checked_sub(removed_bytes)
+                .expect("a validated range cannot remove more bytes than the buffer holds");
+            resulting_bytes = resulting_bytes
+                .checked_add(change.replacement().len() as u64)
+                .ok_or(EditError::TooLarge {
+                    bytes: u64::MAX,
+                    max_bytes: self.bytes_max.get(),
+                })?;
+        }
+        if resulting_bytes > self.bytes_max.get() {
+            return Err(EditError::TooLarge {
+                bytes: resulting_bytes,
+                max_bytes: self.bytes_max.get(),
+            });
         }
 
         // Stage the complete history entry from the current text, then change
@@ -611,6 +727,20 @@ impl TextBuffer {
         };
 
         replay(&mut self.rope, &entry);
+        debug_assert!(
+            self.ends_with_line_ending(),
+            "every transaction preserves the final rope terminator"
+        );
+        debug_assert_eq!(
+            self.rope.len_bytes() as u64,
+            resulting_bytes
+                + synthetic_terminator_bytes(self.line_ending, self.final_line_ending) as u64,
+            "the staged logical size and persistent final-line state determine internal bytes"
+        );
+        debug_assert!(
+            self.logical_len_bytes() as u64 <= self.bytes_max.get(),
+            "the staged transaction result was validated against the persistent limit"
+        );
         self.history.push(entry);
         self.version = self.version.next();
         Ok(self.version)
@@ -623,6 +753,7 @@ impl TextBuffer {
     pub fn undo(&mut self) -> Option<CharPosition> {
         let Self {
             rope,
+            bytes_max,
             version,
             history,
             ..
@@ -634,6 +765,15 @@ impl TextBuffer {
             rope.insert(start, &change.removed);
         }
         let cursor = entry.cursor_before;
+        debug_assert!(
+            rope.len_chars() > 0 && is_line_break(rope.char(rope.len_chars() - 1)),
+            "undo restores a state with a final rope terminator"
+        );
+        debug_assert!(
+            logical_len_bytes(rope.len_bytes(), self.line_ending, self.final_line_ending) as u64
+                <= bytes_max.get(),
+            "undo restores a state that previously satisfied the persistent limit"
+        );
         *version = version.next();
         Some(cursor)
     }
@@ -645,12 +785,22 @@ impl TextBuffer {
     pub fn redo(&mut self) -> Option<CharPosition> {
         let Self {
             rope,
+            bytes_max,
             version,
             history,
             ..
         } = self;
         let entry = history.step_forward()?;
         replay(rope, entry);
+        debug_assert!(
+            rope.len_chars() > 0 && is_line_break(rope.char(rope.len_chars() - 1)),
+            "redo restores a state with a final rope terminator"
+        );
+        debug_assert!(
+            logical_len_bytes(rope.len_bytes(), self.line_ending, self.final_line_ending) as u64
+                <= bytes_max.get(),
+            "redo restores a state that previously satisfied the persistent limit"
+        );
         let cursor = entry.cursor_after;
         *version = version.next();
         Some(cursor)
@@ -687,6 +837,28 @@ impl fmt::Display for TextBuffer {
 /// it here.
 fn is_line_break(value: char) -> bool {
     value == '\n' || LINE_BREAK_CHARS.contains(&value)
+}
+
+/// Returns the number of internal bytes that do not belong to file content.
+fn synthetic_terminator_bytes(
+    line_ending: LineEnding,
+    final_line_ending: FinalLineEnding,
+) -> usize {
+    match final_line_ending {
+        FinalLineEnding::Present => 0,
+        FinalLineEnding::Absent => line_ending.as_str().len(),
+    }
+}
+
+/// Returns the one byte measure governed by [`BufferBytesMax`].
+fn logical_len_bytes(
+    internal_bytes: usize,
+    line_ending: LineEnding,
+    final_line_ending: FinalLineEnding,
+) -> usize {
+    internal_bytes
+        .checked_sub(synthetic_terminator_bytes(line_ending, final_line_ending))
+        .expect("an absent final line ending means the rope holds its synthetic terminator")
 }
 
 /// Applies one recorded transaction to the rope.

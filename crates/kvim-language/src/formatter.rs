@@ -148,7 +148,7 @@ impl FormatterFailure {
 /// let declaration = NixAdapter::new()
 ///     .external_formatter()
 ///     .expect("the Nix adapter declares a formatter");
-/// let buffer = TextBuffer::from_text("{  }\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("{  }\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let request = FormatterRequest::new(
 ///     declaration,

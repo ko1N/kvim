@@ -107,7 +107,7 @@ impl PreferredColumn {
 /// use kvim_editor::{ColumnLimit, Cursor};
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("alpha\nx\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("alpha\nx\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// // The column clamps to the second line, which holds one character.
 /// let cursor = Cursor::clamped(&buffer, 1, 4, ColumnLimit::LastCharacter);

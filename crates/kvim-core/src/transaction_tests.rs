@@ -1,11 +1,9 @@
 use super::{CharRange, EditTransaction, TextChange, TransactionError};
-use crate::CharPosition;
-use crate::TextBuffer;
-use kvim_settings::FileSettings;
+use crate::{BufferBytesMax, CharPosition, TextBuffer};
 
 fn positions(text: &str, wanted: &[usize]) -> Vec<CharPosition> {
     let buffer =
-        TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+        TextBuffer::from_text(text, BufferBytesMax::default()).expect("the test text is small");
     wanted
         .iter()
         .map(|position| {

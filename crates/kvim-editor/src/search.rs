@@ -93,7 +93,7 @@ enum MatchCase {
 /// use kvim_editor::{SearchDirection, SearchQuery};
 /// use kvim_settings::{FileSettings, SearchSettings};
 ///
-/// let buffer = TextBuffer::from_text("foo\nFoo\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("foo\nFoo\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let settings = SearchSettings::default();
 ///

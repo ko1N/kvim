@@ -7,7 +7,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kvim_core::{CharRange, EditTransaction, TextBuffer, TextChange};
+use kvim_core::{BufferBytesMax, CharRange, EditTransaction, TextBuffer, TextChange};
 use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
 
@@ -27,7 +27,7 @@ fn files() -> FileSettings {
 
 /// Returns one buffer with the given text.
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &files()).expect("the test text is small")
+    TextBuffer::from_text(text, BufferBytesMax::default()).expect("the test text is small")
 }
 
 fn root(directory: &TempDir) -> Arc<WorktreeRoot> {
@@ -472,7 +472,7 @@ fn an_undo_record_restores_the_history_of_the_saved_file() {
     assert_eq!(decoded, record);
 
     let mut restored = decoded
-        .restore(&content, &files())
+        .restore(&content, &text)
         .expect("the replay reproduces the content");
     assert_eq!(restored.to_string(), content);
     assert!(
@@ -553,14 +553,14 @@ fn a_record_that_replays_into_other_text_is_ignored() {
     edit(&mut text, 0, 0, "zero\n");
     let record = UndoRecord::capture(&text);
     assert!(
-        record.restore(&text.to_string(), &files()).is_some(),
+        record.restore(&text.to_string(), &text).is_some(),
         "the matching content restores the history"
     );
 
     // A record whose replay reaches other text must not reach a buffer, even
     // when a caller skips the header check.
     assert!(
-        record.restore("zero\none\ntwo\n", &files()).is_none(),
+        record.restore("zero\none\ntwo\n", &text).is_none(),
         "the replay must reproduce the file content exactly"
     );
 }

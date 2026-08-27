@@ -3286,7 +3286,11 @@ impl Session {
     /// caller owns the text, so this step performs no filesystem work. See
     /// `docs/windows.md`.
     fn open_generated(&mut self, name: &str, snapshot: &str) -> Redraw {
-        let text = match TextBuffer::from_text(snapshot, &self.settings.files) {
+        let text = match TextBuffer::from_text(
+            snapshot,
+            kvim_core::BufferBytesMax::new(self.settings.files.max_file_bytes)
+                .expect("settings are realized"),
+        ) {
             Ok(text) => text,
             Err(error) => {
                 self.set_message(error.to_string(), MessageLevel::Error);
@@ -5419,6 +5423,7 @@ impl Session {
                 targets: vec![ReloadTarget {
                     buffer,
                     target: target.clone(),
+                    bytes_max: file.text().bytes_max(),
                     trigger: ReloadTrigger::Read,
                 }],
                 files: self.settings.files,
@@ -5470,6 +5475,7 @@ impl Session {
             targets.push(ReloadTarget {
                 buffer: id,
                 target: target.clone(),
+                bytes_max: file.text().bytes_max(),
                 trigger: if file.is_modified() {
                     ReloadTrigger::Compare(identity)
                 } else {
