@@ -3,10 +3,11 @@
 ## Ownership
 
 `kvim-runtime` owns reusable bounded scheduling, cancellation, deadlines, and
-result delivery. An `EditorDriver` owns request identity, routing, publication
-gates, tracked work, and shutdown for one embedded editor. The host event loop
-owns that instance's visible editor state. The standalone `kvim` binary owns the
-terminal event loop.
+result delivery. `kvim-embed` owns facade-facing readiness, completion,
+application, and shutdown values for one high-level editor. `EditorDriver` is a
+transitional internal owner for the `kvim-tui` compatibility path. The host
+event loop owns that instance's visible editor state. The standalone `kvim`
+binary owns the terminal event loop.
 
 ## Event Loop
 
@@ -99,12 +100,12 @@ Each service owns its permits until the work and the result delivery finish.
 Creating another client of a service does not create more capacity.
 
 The worker spawner accepts two kinds of job. An optional job changes no durable
-state, so a cancellation drops it and the caller keeps its previous visible
-state. A committing job can change durable state, so it masks cancellation once
-it starts and always reports its outcome. Only its deadline still bounds it. A
-caller that reserved the mandatory event of a side effect submits a committing
-job, because a cancelled answer would release that reservation after the
-filesystem already holds the change.
+state, so a cancellation or deadline drops it and the caller keeps its previous
+visible state. A committing job can change durable state. A deadline can stop
+it only before commit begins. Once commit begins, it masks cancellation and
+owns its result reservation until it reports the actual outcome. Shutdown
+tracks the job until that publication. See [Mandatory Event
+Delivery](#mandatory-event-delivery).
 
 ### Runtime Bounds
 
@@ -179,13 +180,13 @@ skips a directory that already carries a watch, so one burst costs bounded time.
 
 ## Request Identity And Publication
 
-Every background request has an explicit identity. LSP requests also carry
-project and server identity. A newer request for the same slot makes an older
-request obsolete. Every request has one cancellation owner and an explicit
-deadline.
-
-A request that reads or transforms buffer text also carries the buffer version
-that produced its input. See [`text-model.md`](text-model.md).
+Each request carries editor instance identity, buffer identity where applicable,
+generation and version for text-derived work, a cancellation owner, and an
+explicit deadline. LSP requests also carry project and server identity. A newer
+request for the same slot makes an older request obsolete. Instance identity is
+validated before result application in every build profile. A wrong-instance
+result returns a typed rejection and cannot mutate state, advance a clock, or
+release another editor reservation.
 
 A publication gate stores only the newest request identity for each slot. The
 event loop checks the gate before it applies a result. The gate does not mutate
@@ -211,10 +212,16 @@ workspace mutation, or review-comment submission. Saturation refuses the
 operation before it starts. Accepted work follows `Reserved -> Running ->
 Committed -> Published`.
 
-Cancellation can stop work before commit. Once commit starts, the tracked task
-masks cancellation and uses its reserved slot. Failure releases the reservation.
-A successful write, workspace mutation, or review-comment submission always
-publishes its typed event.
+Cancellation can stop work before commit. A deadline can stop work only before
+commit begins. Once commit starts, the operation owns its reservation until it
+publishes its actual `Committed`, `Unchanged`, or `Indeterminate` outcome. It
+must not report timeout, cancellation, or shutdown completion while durable
+state can still change. Failure before commit releases the reservation.
+
+A successful write, workspace mutation, or review-comment submission publishes
+its typed event. An indeterminate filesystem outcome reserves mandatory delivery
+and schedules bounded reconciliation before visible state claims agreement with
+disk.
 
 `RedrawRequested` uses one coalesced latch. A full component event queue returns
 a typed `Saturated` outcome. It never silently drops the oldest or newest event.

@@ -67,13 +67,17 @@ apply as transactions.
 A transaction is deterministic. Equal buffer content and equal transaction input
 produce equal buffer content and equal cursor result.
 
-Build a transaction against the current buffer version. Validate every range in
-the transaction before any text changes. Apply the complete transaction as one
-state change. A rejected transaction leaves the buffer unchanged.
+Build a transaction against the current buffer generation and version. Validate
+every range and the resulting byte length before any text changes. Apply the
+complete transaction as one state change. A rejected transaction leaves text,
+generation, version, dirty state, and history unchanged.
 
-Each successful transaction increases the buffer version. Background analysis,
-formatting, and language-server results carry the buffer version that produced
-them. See [`responsiveness.md`](responsiveness.md) for the version check.
+Each successful transaction increases the buffer version. A full reload or
+replacement retains `BufferId`, increases a monotonic buffer generation, and
+starts a new version sequence. Every text-derived background request carries
+buffer identity, generation, and version. A publication gate rejects a result
+that differs in any value. See [`responsiveness.md`](responsiveness.md) for the
+publication check.
 
 ## Undo And Redo
 
@@ -161,9 +165,15 @@ buffer text without it would lose the last line of the file.
 
 ## Size Limits
 
+`TextBuffer` owns a validated byte limit. The limit is a persistent buffer
+invariant, not broad editor configuration. Construction, transactions, undo,
+redo, reload transfer, and snapshots preserve it. A staged change above the
+limit returns a typed error before it changes text, generation, version, dirty
+state, or history.
+
 kvim rejects an oversized file before it publishes a buffer. Rejection happens
-before parsing, highlighting, or rendering. The maximum file size belongs to
-`EditorSettings`.
+before parsing, highlighting, or rendering. `EditorSettings` supplies the
+initial configured limit at the public construction boundary.
 
 The default maximum file size is 4 MiB. ReviewGraph uses the same bound for
 analysis sources. The rope holds a 4 MiB buffer without trouble, so the bound

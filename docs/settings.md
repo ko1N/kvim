@@ -204,8 +204,18 @@ bare primitive:
 - The sign column, the case sensitivity, the split placements, the file tree
   icons, and the check depth are modes, not boolean flags or strings.
 
-A constructor validates each value and establishes its invariant. An invalid
-value cannot exist.
+A constructor validates each value and establishes its invariant. Public fields
+do not bypass this boundary. Realization rejects zero resolver and window bounds,
+file limits outside their supported range, malformed linewise values, oversized
+registers and edited-line seeds, and runtime capacities above their published
+maximum. These checks run in release builds and return typed errors for invalid
+consumer input. Debug assertions protect only invariants that a validated
+boundary already established.
+
+`DisplaySettings::wrap` is not part of the realized settings contract. Rendering
+uses horizontal scrolling until a separate wrapping architecture exists. Remove
+the raw field during the facade migration; do not preserve a setting that has no
+production behavior.
 
 ## Configuration Loading
 

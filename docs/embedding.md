@@ -8,6 +8,65 @@ composition, external use, and public example rules.
 Kvim supplies bounded library capabilities. A host composes them. Kvim knows no
 host session, agent, tool, task, plan, or other host-domain concept.
 
+## Target Facade Contract
+
+`kvim-embed` is the only supported high-level editor facade. It publishes two
+rendered editor types. `MemoryEditor` edits supplied bounded text and renders to
+a caller-supplied ratatui buffer. It requires no worktree, filesystem, Git,
+watcher, process, or language service. `WorktreeEditor` is a separate type
+behind the `worktree` Cargo feature. It adds explicit worktree capabilities.
+Do not add a common editor trait until shared behavior requires one.
+
+The default `kvim-embed` feature set is in-memory only. It must not compile
+`kvim-tui`, `kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-workspace`,
+`kvim-path`, `kvim-terminal`, Tokio, crossterm, notify, or cap-std. The
+`worktree` feature enables the worktree path and may forward grammar features
+only through that path.
+
+Each editor owns bounded execution capacity internally. A host drives readiness,
+result application, and shutdown through facade methods. The public facade
+exposes no Tokio type, channel, generic work payload, or runtime handle. It may
+name stable lower-crate values when those values own their meaning, including
+commands, settings, paths, and ratatui geometry. It must not expose
+`kvim-runtime`, `kvim-language`, or `kvim-workspace` types.
+
+The host owns terminal lifecycle, terminal input, signals, raw mode, alternate
+screen, panic restoration, cursor application, and final redraw scheduling.
+The facade owns no such terminal operation.
+
+`kvim-tui` remains a temporary compatibility facade during additive migration.
+Migrate the executable, examples, and external consumers to `kvim-embed`.
+Then remove the old facade and its unsupported public type leakage. Do not add
+permanent aliases for that surface.
+
+## Audit Invariant Ownership
+
+Each audit item has one primary document owner. The listed owner records the
+required invariant before implementation changes it.
+
+| Finding | Owner | Required invariant |
+|---|---|---|
+| KV-A01 | `responsiveness.md` | A committing operation reports its actual durable outcome after commit begins. |
+| KV-A02 | `text-model.md` | Text-derived requests carry stable buffer identity, generation, and version. |
+| KV-A03 | `text-model.md` | A validated byte limit survives every buffer transition. |
+| KV-A04 | `files.md` | Filesystem operations report `Unchanged`, `Committed`, or `Indeterminate` and reconcile uncertainty. |
+| KV-A05 | `embedding.md` | Instance identity is validated in release builds before result application. |
+| KV-A06 | `embedding.md` | High-level editors own bounded execution behind facade-owned values. |
+| KV-A07 | `embedding.md` | Memory and worktree editors remain separate capability contracts. |
+| KV-A08 | `language-services.md` | Public language construction validates every declared bound, identity, and service root. |
+| KV-A09 | `settings.md` | Public settings and bounded value construction establish their invariants in release builds. |
+| KV-A10 | `architecture.md` | Consumer and feature gates prove supported package contracts. |
+| KV-A11 | `language-services.md` | No-grammar and grammar feature behavior remains documented and valid. |
+| KV-A12 | `text-model.md` | Lower crates publish values that own their meaning and preserve text invariants. |
+| KV-A13 | `architecture.md` | A supported setting must have production behavior; `DisplaySettings::wrap` is no-op and is scheduled for removal. |
+| KV-A14 | `architecture.md` | A supported public path must have production behavior; stale paths are removed or implemented. |
+
+## Legacy Embedding Contract
+
+The sections below describe the current `kvim-tui` compatibility facade. They
+do not define new supported high-level integrations. The target `kvim-embed`
+contract above takes precedence where the documents differ.
+
 ## Host Responsibilities
 
 The host owns:
@@ -44,9 +103,10 @@ bounded worker spawner.
 
 ## Driver Responsibilities
 
-`EditorDriver` owns the external services of one editor instance. It owns
-request identities, result routing, publication gates, service handles, tracked
-tasks, and shutdown state.
+The legacy `EditorDriver` owns the external services of one `kvim-tui`
+compatibility editor instance. The target `kvim-embed` facade owns the matching
+orchestration values and internal execution capacity. Neither contract exposes
+runtime handles to its host.
 
 The driver creates no runtime and starts no detached task. It submits work
 through the supplied spawner. It tracks every returned task until completion or

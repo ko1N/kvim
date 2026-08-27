@@ -42,8 +42,22 @@ The editor runs one file operation at a time. A second command reports that one
 operation is already running. This rule keeps a result from reaching a buffer
 state that a newer operation already replaced.
 
-A cancelled, timed out, or refused operation changes no buffer. The editor
-reports the typed failure and keeps every unsaved change.
+A cancelled, timed out, or refused operation changes no buffer only while the
+operation has not reached its durable commit point. A filesystem boundary
+returns one typed durable outcome:
+
+| Outcome | Meaning |
+|---|---|
+| `Unchanged` | The operation proved that it changed no durable target. |
+| `Committed` | The operation proved its durable target state. |
+| `Indeterminate` | The operation cannot prove that its durable target stayed unchanged. |
+
+An `Indeterminate` outcome retains mandatory event capacity and schedules
+bounded reconciliation for every affected path. The editor keeps affected
+buffers dirty or externally changed until reconciliation proves agreement with
+disk. A failed rename, direct write, cleanup, commit, or rollback must not
+report `Unchanged` without that proof. Error reporting preserves the first
+failure and every restoration failure.
 
 ## Buffer Identity
 
@@ -191,12 +205,13 @@ Every window that shows a reloaded buffer keeps its own cursor and its own first
 visible row. Both clamp to the new text, so a file that became shorter leaves no
 cursor and no viewport beyond its end.
 
-A reload replaces the whole buffer, so the reloaded buffer restarts its undo
-history and counts its versions from the start, as a fresh open does. The
-persistent undo file is not part of the reload: kvim writes it at save time, and
-its content check rejects a record that no longer describes the file. Everything
-that one buffer version guards restarts with the buffer: the accepted analysis,
-the reuse tree, the published diagnostics, and the matches of the active search.
+A reload replaces the whole buffer, so the reloaded buffer retains its stable
+`BufferId`, increases its monotonic generation, restarts its undo history, and
+starts its version sequence again. The persistent undo file is not part of the
+reload: kvim writes it at save time, and its content check rejects a record that
+no longer describes the file. Every text-derived result carries the buffer
+identity, generation, and version. The editor rejects a result from an older
+generation even when its version matches.
 
 A reload publishes only while the buffer still holds the version that the check
 compared. A buffer that the user changed while the check ran rejects the

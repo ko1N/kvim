@@ -48,8 +48,9 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
-| `kvim-tui` | The embedded editor and review presentation models and standalone presentation adapters. It owns visible state for one supplied editor instance. It owns no terminal and no event loop. |
+| `kvim-tui` | Transitional presentation implementation. It owns no terminal and no event loop. Its former embedding facade remains temporarily for migration only. |
 | `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
+| `kvim-embed` | The only supported high-level editor facade. It publishes rendered in-memory editing and an optional worktree editor. It owns facade lifecycle, outcomes, and bounded execution capacity. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
@@ -132,8 +133,9 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
-| 4 | `kvim-tui` | every library above, including `kvim-terminal` for the normalized event value alone |
-| 5 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
+| 4 | `kvim-tui` | presentation implementation and temporary compatibility facade |
+| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-settings`, `kvim-ui`, and optional worktree presentation dependencies |
+| 6 | `kvim` | `kvim-embed`, `kvim-terminal`, and required optional capabilities |
 
 External dependencies do not change the layer number. `kvim-ui` owns ratatui
 geometry and rendering. No syntax-only consumer compiles LSP, ratatui, or the
@@ -199,7 +201,12 @@ owns its meaning. A reverse dependency is a Cargo cycle, so it fails the build.
 
 The supported external packages are `kvim-path`, `kvim-fuzzy`, `kvim-core`,
 `kvim-settings`, `kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`,
-`kvim-lsp`, `kvim-ui`, and the embedded facade in `kvim-tui`.
+`kvim-lsp`, `kvim-ui`, and `kvim-embed`. `kvim-embed` is the only supported
+high-level editor facade. `kvim-tui` remains available during the additive
+migration. New host integrations must use `kvim-embed`. Remove the `kvim-tui`
+facade after the executable, examples, and external consumers use `kvim-embed`.
+The `kvim-tui` embedding references below describe compatibility behavior only.
+They do not authorize new high-level integrations.
 
 `kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
 so its action list is public. A consumer that resolves keys itself reads the
@@ -530,7 +537,8 @@ features, and all valid feature combinations. This matrix is exact:
 | `kvim-lsp` | no optional production features | default |
 | `kvim-ui` | no optional production features | default |
 | `kvim-syntax` | no grammar | no grammar, each grammar alone, `all-grammars` |
-| `kvim-tui` | no grammar | no grammar, each forwarded grammar alone, `all-grammars` |
+| `kvim-embed` | in-memory only | default, `worktree`, each valid worktree grammar combination |
+| `kvim-tui` | transitional only | no grammar, each forwarded grammar alone, `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
 The `kvim` binary enables `all-grammars`. Private `test-support` features are
@@ -942,6 +950,6 @@ learn that it failed. See [`responsiveness.md`](responsiveness.md).
   default value.
 - [`reviewgraph-integration.md`](reviewgraph-integration.md) owns the deferred
   ReviewGraph relationship and source attribution.
-- [`embedding.md`](embedding.md) owns host, driver, embedded editor, the
-  embedded file sidebar, the recipe that gives a host kvim's key preset, event
-  lifecycle, composition, external use, and public examples.
+- [`embedding.md`](embedding.md) owns host, facade lifecycle, facade outcomes,
+  compatibility migration, and public examples. `kvim-embed` owns the supported
+  high-level contract. `kvim-tui` owns temporary compatibility behavior only.

@@ -12,6 +12,13 @@ event loop through bounded runtime services. A bounded markup parse is pure and
 can run on the visible-state owner. Tree-sitter work cannot. See
 [`responsiveness.md`](responsiveness.md).
 
+The `kvim-language` public registry and service construction boundary validates
+all public declarations before it creates live state. It rejects duplicate
+aliases, duplicate server identifiers, conflicting formatter declarations,
+invalid root markers, invalid bounds, and mismatched roots with typed errors.
+These checks run in release builds. A failed construction reserves no service,
+process, or registry state.
+
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
 grammar by default. It provides one feature for each language and one
 `all-grammars` feature. `kvim-language` forwards these features without a
@@ -238,10 +245,10 @@ own header, and the Terraform module document repeats them. The adapter
 includes the file at compile time, so the single binary still needs no parser
 file and no query file on the host.
 
-Each analysis request carries the buffer version that produced its input. The
-publication gate rejects a result whose buffer version is obsolete. An obsolete
-result never changes visible state and never enters a cache. See
-[`text-model.md`](text-model.md) for buffer versions.
+Each analysis request carries the buffer identity, generation, and version that
+produced its input. The publication gate rejects a result with an obsolete value.
+An obsolete result never changes visible state and never enters a cache. See
+[`text-model.md`](text-model.md) for the identity rules.
 
 The adapter returns:
 
