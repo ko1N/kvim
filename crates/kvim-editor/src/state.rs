@@ -17,7 +17,7 @@
 
 use std::num::{NonZeroU8, NonZeroU32};
 
-use kvim_core::{EditTransaction, IndentPolicy, ShiftDirection, TextBuffer};
+use kvim_core::{EditError, EditTransaction, IndentPolicy, ShiftDirection, TextBuffer};
 use kvim_input::{Command, Mode};
 use kvim_settings::{COUNT_MAX, EditorSettings};
 
@@ -1319,6 +1319,7 @@ impl EditingState {
                     changed = true;
                     context.applied.push(recorded);
                 }
+                Err(EditError::TooLarge { .. }) => return CommandOutcome::Rejected,
                 Err(error) => debug_assert!(
                     false,
                     "the editor builds every range from the current buffer: {error}"

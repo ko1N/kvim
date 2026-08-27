@@ -133,13 +133,23 @@ The dependency direction is one-way, and Cargo enforces it:
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
-| 4 | `kvim-tui` | presentation implementation and temporary compatibility facade |
-| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-settings`, `kvim-ui`, and optional worktree presentation dependencies |
-| 6 | `kvim` | `kvim-embed`, `kvim-terminal`, and required optional capabilities |
+| 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` |
+| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-settings` |
+| 6 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
 
-External dependencies do not change the layer number. `kvim-ui` owns ratatui
-geometry and rendering. No syntax-only consumer compiles LSP, ratatui, or the
-editor.
+External dependencies do not change the layer number. The default
+`kvim-embed` path uses ratatui directly for its small plain-text memory view.
+The workspace disables ratatui default features because the default enables a
+crossterm backend. Rendering into a caller-owned `Buffer` needs no backend.
+`kvim-ui` and `kvim-tui` compile against this backend-neutral API. The
+standalone binary enables ratatui's `crossterm` feature at its composition
+root. This keeps terminal lifecycle and crossterm ownership outside the memory
+facade. The facade reuses `kvim-editor` viewport and modal state and adds no workspace
+presentation dependency. A later `worktree` feature can add the explicitly
+listed presentation dependencies without changing the default closure. Add
+those edges to the layer row when that feature exists. `kvim-ui` owns generic
+ratatui geometry and rendering. No syntax-only consumer compiles LSP, ratatui,
+or the editor.
 
 `kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
 `TerminalEvent` value alone, because `Session`, the standalone presentation
@@ -207,6 +217,15 @@ migration. New host integrations must use `kvim-embed`. Remove the `kvim-tui`
 facade after the executable, examples, and external consumers use `kvim-embed`.
 The `kvim-tui` embedding references below describe compatibility behavior only.
 They do not authorize new high-level integrations.
+
+`kvim-embed` defaults to an empty feature set and compiles only the in-memory
+editor. Its default dependency closure contains no `kvim-tui`, `kvim-runtime`,
+`kvim-language`, `kvim-lsp`, `kvim-workspace`, `kvim-path`, `kvim-terminal`,
+Tokio, crossterm, notify, or cap-std. The in-memory editor reuses the lower
+modal state and viewport. Its small plain-text painter remains local because
+the current full renderer is structurally tied to worktree, language, and
+transitional presentation state. This avoids a reverse dependency and avoids
+duplicating that full renderer.
 
 `kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
 so its action list is public. A consumer that resolves keys itself reads the

@@ -22,7 +22,7 @@ kvim-tui = { workspace = true, features = ["all-grammars"] }
 thiserror.workspace = true
 
 # Terminal
-ratatui.workspace = true
+ratatui = { workspace = true, features = ["crossterm"] }
 
 # Runtime
 tokio.workspace = true

@@ -495,6 +495,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "kvim-embed"
+version = "0.1.0"
+dependencies = [
+ "kvim-core",
+ "kvim-editor",
+ "kvim-input",
+ "kvim-settings",
+ "ratatui",
+ "thiserror",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "kvim-fuzzy"
 version = "0.1.0"
 

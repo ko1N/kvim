@@ -90,6 +90,17 @@ impl Viewport {
         self.left_column
     }
 
+    /// Returns this viewport with a new first visible source column.
+    ///
+    /// Terminal renderers use this after they reconcile terminal-cell width.
+    #[must_use]
+    pub const fn with_left_column(self, left_column: usize) -> Self {
+        Self {
+            left_column,
+            ..self
+        }
+    }
+
     /// Returns the window height, in rows.
     #[must_use]
     pub const fn height_rows(self) -> NonZeroU16 {

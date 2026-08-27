@@ -1,0 +1,23 @@
+[package]
+name = "kvim-embed"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[features]
+default = []
+
+[dependencies]
+# kvim crates
+kvim-core.workspace = true
+kvim-editor.workspace = true
+kvim-input.workspace = true
+kvim-settings.workspace = true
+
+# Basics
+thiserror.workspace = true
+
+# Terminal-neutral presentation
+ratatui = { workspace = true, default-features = false }
+unicode-width.workspace = true

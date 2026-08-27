@@ -72,6 +72,6 @@ pub use kvim_keymap::{
     SemanticPhases, TextFallback, TypedText,
 };
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
-pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer};
+pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer, is_register_name};
 pub use registry::{Binding, Registry, RegistryError, WhichKeyRow, WhichKeyTarget};
 pub use resolver::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};

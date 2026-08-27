@@ -10,10 +10,32 @@ host session, agent, tool, task, plan, or other host-domain concept.
 
 ## Target Facade Contract
 
-`kvim-embed` is the only supported high-level editor facade. It publishes two
-rendered editor types. `MemoryEditor` edits supplied bounded text and renders to
-a caller-supplied ratatui buffer. It requires no worktree, filesystem, Git,
-watcher, process, or language service. `WorktreeEditor` is a separate type
+`kvim-embed` is the only supported high-level editor facade. Its default
+feature set publishes `MemoryEditor`. This concrete editor owns one bounded
+`TextBuffer`, one modal `EditingState`, registers, one window, validated
+`EditorSettings`, and its accepted rectangle. It applies caller-resolved
+`Command` values, literal Insert-mode text, and host-owned elapsed time. Elapsed
+time produces no transition because this editor has no timer-driven state. It
+renders plain text, line numbers, and the cursor into a caller-supplied ratatui
+buffer.
+
+`MemoryEditor::open` validates the settings, applies its realized
+`files.max_file_bytes` value as the text byte limit, and validates nonempty
+geometry before it creates state. `MemoryEditor::resize` validates new geometry.
+`MemoryEditor::render` validates that the complete accepted rectangle fits the
+cell buffer before it changes a cell. Drop ends the pure in-memory lifecycle;
+there is no explicit close operation because cleanup cannot fail.
+
+The editor creates no worktree and has no service request type. Its default
+Cargo dependency closure contains no `kvim-tui`, `kvim-runtime`,
+`kvim-language`, `kvim-lsp`, `kvim-workspace`, `kvim-path`, `kvim-terminal`,
+Tokio, crossterm, notify, or cap-std. Terminal lifecycle remains host-owned.
+`crates/kvim-embed/examples/in_memory_editor.rs` opens supplied text, edits it,
+renders it, and drops the editor.
+
+The target facade has two rendered editor types. `MemoryEditor` edits supplied
+bounded text and renders to a caller-supplied ratatui buffer. It requires no
+worktree, filesystem, Git, watcher, process, or language service. `WorktreeEditor` is a separate type
 behind the `worktree` Cargo feature. It adds explicit worktree capabilities.
 Do not add a common editor trait until shared behavior requires one.
 
@@ -768,6 +790,7 @@ The required examples are:
 - `crates/kvim-keymap/examples/dispatch_keys.rs`
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
+- `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-ui/examples/chrome_band.rs`
 - `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
@@ -788,7 +811,8 @@ The LSP example starts itself as a deterministic fixture server. A UI example
 renders into a test buffer, or prints the state that it drives when the feature
 paints no cell. `host_workspace.rs` composes host-owned chat, a real
 embedded editor, a real review surface, and sidebar surfaces through one shared
-resolver. Editor, composition, and review examples use temporary worktrees.
+resolver. The in-memory editor example uses no temporary worktree. Worktree
+editor, composition, and review examples use temporary worktrees.
 
 No example requires a user-installed server, network access, terminal ownership,
 or this repository as input.

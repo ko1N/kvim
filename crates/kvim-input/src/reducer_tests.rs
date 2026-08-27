@@ -4,7 +4,7 @@ use kvim_keymap::{CommandOwner, Dispatch, PasteText, Phase, TextFallback, TypedT
 use kvim_settings::InputSettings;
 
 use super::{Reduction, SemanticOperation, SemanticReducer};
-use crate::{BindingScope, Command, InputContext, Mode, PromptKind};
+use crate::{BindingScope, Command, InputContext, Mode, PromptKind, is_register_name};
 
 fn reducer() -> SemanticReducer {
     SemanticReducer::new(InputSettings::default())
@@ -143,6 +143,16 @@ fn a_register_selection_takes_a_count_and_a_name_together() {
         reducer.reduce(surface(Command::DeleteOverMotion)).reduction,
         operation(Command::DeleteOverMotion, Some(2), Some('z'))
     );
+}
+
+#[test]
+fn register_name_predicate_accepts_only_canonical_names() {
+    for name in ['a', 'Z', '0', '9', '"', '_'] {
+        assert!(is_register_name(name), "{name:?} must name a register");
+    }
+    for name in [' ', '!', '界', '\n'] {
+        assert!(!is_register_name(name), "{name:?} must not name a register");
+    }
 }
 
 #[test]
