@@ -13,12 +13,13 @@ host session, agent, tool, task, plan, or other host-domain concept.
 `kvim-embed` is the only supported high-level editor facade. Its default
 feature set publishes `MemoryEditor`. `WorktreeEditor` is an existing separate
 rendered editor behind the `worktree` Cargo feature. Host-resolved input,
-bounded binding publication, and addressed cancellation are available on
-`WorktreeEditor`. Later composition slices will add merged host registries,
-presentation ownership, command and status publication, sidebars, and a
-separate `ReviewSurface`. `MemoryEditor` remains the default path.
-`ReviewSurface` is planned as a separate rendered review surface behind the
-review/worktree feature family and will not require an editor. This
+bounded binding publication, addressed cancellation, merged host registries,
+independent presentation ownership, semantic command/status/sidebar state, and
+standalone review are available through production facade APIs.
+`MemoryEditor` remains the default path.
+`ReviewSurface` is a separate rendered review surface behind the `review`
+feature. Supplied candidates require no editor or service runtime. The
+`worktree` feature adds bounded Git capture without constructing an editor.
 `MemoryEditor` owns one bounded `TextBuffer`, one modal `EditingState`,
 registers, one window, validated `EditorSettings`, and its accepted rectangle.
 It applies caller-resolved
@@ -837,9 +838,11 @@ Cargo features let consumers disable unused languages and grammars.
 
 Public crates support revision-pinned Cargo Git dependencies without a shared
 parent workspace. Each supported package has an independent fixture under
-`fixtures/consumer/`. The two `kvim-embed` fixtures drive complete memory and
-worktree lifecycles through supported production APIs. The external-consumer
-script derives remote mode from the checked-out repository's `origin` and never
+`fixtures/consumer/`. Eight facade fixtures drive complete memory and worktree
+editor lifecycles. They also prove host-resolved composition, mixed ownership,
+unified command/status/which-key, host-owned sidebar, supplied review, and
+worktree-captured review. The external-consumer script derives remote mode from
+the checked-out repository's `origin` and never
 prints that URL. Pass `--repository-url` to select another repository. Run
 `scripts/check-external-consumer.sh --local-source` to verify uncommitted local
 changes without remote authentication. [`architecture.md`](architecture.md)
@@ -874,12 +877,14 @@ The required examples are:
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
 - `crates/kvim-lsp/examples/custom_lsp_transport.rs`
+- `crates/kvim-embed/examples/host_owned_chrome.rs`
 - `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-embed/examples/merged_leader.rs`
 - `crates/kvim-embed/examples/supplied_review.rs`
 - `crates/kvim-embed/examples/unified_command_line.rs`
 - `crates/kvim-embed/examples/worktree_editor.rs`
+- `crates/kvim-embed/examples/worktree_review.rs`
 - `crates/kvim-ui/examples/composer.rs`
 - `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
@@ -896,8 +901,9 @@ example.
 
 The LSP example starts itself as a deterministic fixture server. A UI example
 renders into a test buffer, or prints the state that it drives when the feature
-paints no cell. The in-memory editor example uses no temporary worktree. Worktree
-editor, composition, and review examples use temporary worktrees.
+paints no cell. The in-memory editor example uses no temporary worktree.
+Worktree editor, composition, chrome, sidebar, and review examples use temporary
+worktrees.
 
 No example requires a user-installed server, network access, terminal ownership,
 or this repository as input.

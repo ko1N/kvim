@@ -122,9 +122,18 @@ jobs:
           set -euo pipefail
           cargo check --locked -p kvim-embed
           cargo check --locked -p kvim-embed --no-default-features
+          cargo check --locked -p kvim-embed --no-default-features --features review
           cargo check --locked -p kvim-embed --no-default-features --features worktree
           cargo check --locked -p kvim-embed --no-default-features --features grammar-rust
           cargo check --locked -p kvim-embed --no-default-features --features all-grammars
+
+      # Supplied review is a pure facade feature. It must not reach worktree
+      # services, terminal ownership, language support, or grammar packages.
+      - name: Prove supplied review dependency isolation
+        run: >-
+          ./scripts/check-dependency-edges.sh --reject-features kvim-embed review
+          crossterm kvim-language kvim-lsp kvim-runtime kvim-terminal notify
+          tokio tokio-util tree-sitter
 
       # Keep the existing forwarded grammar boundaries valid independently of
       # the high-level facade.

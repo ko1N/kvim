@@ -1,4 +1,7 @@
 //! Host and kvim binding composition for one host-owned resolver.
+//!
+//! `crates/kvim-embed/examples/merged_leader.rs` demonstrates one merged
+//! host/editor registry and which-key view.
 
 use std::fmt;
 use std::sync::Arc;

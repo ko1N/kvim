@@ -27,7 +27,7 @@ const SOURCE_DEPTH_MAX: usize = 8;
 ///
 /// `docs/embedding.md` owns this list. One feature has one example, and one
 /// combined example never replaces a feature example.
-const FEATURE_EXAMPLES: [(&str, &str); 23] = [
+const FEATURE_EXAMPLES: [(&str, &str); 25] = [
     (
         "crates/kvim-path/src/lib.rs",
         "crates/kvim-path/examples/confine_worktree_paths.rs",
@@ -101,6 +101,14 @@ const FEATURE_EXAMPLES: [(&str, &str); 23] = [
         "crates/kvim-embed/examples/worktree_editor.rs",
     ),
     (
+        "crates/kvim-embed/src/composition.rs",
+        "crates/kvim-embed/examples/merged_leader.rs",
+    ),
+    (
+        "crates/kvim-embed/src/review.rs",
+        "crates/kvim-embed/examples/supplied_review.rs",
+    ),
+    (
         "crates/kvim-tui/src/completion.rs",
         "crates/kvim-tui/examples/completion_menu.rs",
     ),
@@ -120,6 +128,33 @@ const FEATURE_EXAMPLES: [(&str, &str); 23] = [
         "crates/kvim-workspace/src/review.rs",
         "crates/kvim-tui/examples/worktree_diff_review.rs",
     ),
+];
+
+/// Every required external facade consumer and its accepted kvim dependencies.
+const FACADE_CONSUMERS: [(&str, &[&str]); 8] = [
+    (
+        "kvim-embed-memory",
+        &["kvim-embed", "kvim-input", "kvim-settings"],
+    ),
+    (
+        "kvim-embed-worktree",
+        &["kvim-embed", "kvim-input", "kvim-path"],
+    ),
+    (
+        "kvim-embed-host-composition",
+        &["kvim-embed", "kvim-input", "kvim-keymap"],
+    ),
+    (
+        "kvim-embed-mixed-presentation",
+        &["kvim-embed", "kvim-input"],
+    ),
+    (
+        "kvim-embed-unified-host",
+        &["kvim-embed", "kvim-input", "kvim-keymap"],
+    ),
+    ("kvim-embed-host-sidebar", &["kvim-embed"]),
+    ("kvim-embed-review-supplied", &["kvim-embed", "kvim-path"]),
+    ("kvim-embed-review-worktree", &["kvim-embed"]),
 ];
 
 /// Returns the complete set of example files that this repository publishes.
@@ -206,6 +241,44 @@ fn documentation(source: &str) -> impl Iterator<Item = &str> {
         .lines()
         .map(str::trim_start)
         .filter(|line| line.starts_with("//!") || line.starts_with("///"))
+}
+
+#[test]
+fn facade_consumers_are_independent_and_use_only_supported_dependencies() {
+    let root = repository_root();
+    for (fixture, accepted) in FACADE_CONSUMERS {
+        let manifest_path = root
+            .join("fixtures/consumer")
+            .join(fixture)
+            .join("Cargo.toml");
+        let manifest = fs::read_to_string(&manifest_path)
+            .unwrap_or_else(|_| panic!("{} is readable text", manifest_path.display()));
+        assert!(
+            manifest.lines().any(|line| line.trim() == "[workspace]"),
+            "{fixture} is an independent outside-workspace package"
+        );
+        for line in manifest.lines().map(str::trim) {
+            let Some((name, specification)) = line.split_once('=') else {
+                continue;
+            };
+            let name = name.trim();
+            if !name.starts_with("kvim-") {
+                continue;
+            }
+            assert!(
+                accepted.contains(&name),
+                "{fixture} imports unsupported {name}"
+            );
+            assert!(
+                specification.contains("default-features = false"),
+                "{fixture} disables default features for {name}"
+            );
+            assert!(
+                specification.contains("git = ") && specification.contains("rev = "),
+                "{fixture} revision-pins {name} as a Git dependency"
+            );
+        }
+    }
 }
 
 #[test]

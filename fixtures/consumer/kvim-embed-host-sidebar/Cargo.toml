@@ -1,0 +1,13 @@
+[workspace]
+
+[package]
+name = "consume-kvim-embed-host-sidebar"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+
+[dependencies]
+kvim-embed = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false, features = ["worktree"] }
+ratatui = { version = "0.29", default-features = false }
+tokio = { version = "1.47", features = ["rt", "time"] }

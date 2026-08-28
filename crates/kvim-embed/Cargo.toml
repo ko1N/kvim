@@ -6,6 +6,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [[example]]
+name = "host_owned_chrome"
+required-features = ["worktree"]
+
+[[example]]
 name = "host_sidebar"
 required-features = ["worktree"]
 
@@ -23,6 +27,10 @@ required-features = ["worktree"]
 
 [[example]]
 name = "worktree_editor"
+required-features = ["worktree"]
+
+[[example]]
+name = "worktree_review"
 required-features = ["worktree"]
 
 [features]

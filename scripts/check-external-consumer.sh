@@ -10,8 +10,12 @@ readonly FIXTURES_ROOT="$REPO_ROOT/fixtures/consumer"
 readonly CONSUMERS=(
     kvim-path kvim-fuzzy kvim-core kvim-settings kvim-keymap kvim-input
     kvim-editor kvim-syntax kvim-lsp kvim-ui kvim-embed-memory
-    kvim-embed-worktree
+    kvim-embed-worktree kvim-embed-host-composition
+    kvim-embed-mixed-presentation kvim-embed-unified-host
+    kvim-embed-host-sidebar kvim-embed-review-supplied
+    kvim-embed-review-worktree
 )
+readonly FIXTURE_FILES=(Cargo.toml src/main.rs)
 
 work=""
 source_copy=""
@@ -31,8 +35,8 @@ URL. HTTP URLs with user information, queries, or fragments are refused.
 
 Use --checked-out-repository to test the selected revision through a file URL
 to this checkout. Use --local-source to include uncommitted Cargo.toml,
-Cargo.lock, and crates/ changes in a temporary local Git repository. Local
-source mode needs no remote access.
+Cargo.lock, crates/, and fixture changes in a temporary local Git repository.
+Local source mode needs no remote access.
 USAGE
 }
 
@@ -51,12 +55,29 @@ is_secret_path() {
 
 is_allowed_source_path() {
     case "$1" in
-        Cargo.toml|Cargo.lock|crates/*) return 0 ;;
+        Cargo.toml|Cargo.lock|crates/*|fixtures/consumer/*/Cargo.toml|fixtures/consumer/*/src/*.rs)
+            return 0
+            ;;
         *) return 1 ;;
     esac
 }
 
+reject_source_symlinks() {
+    local path
+    while IFS= read -r -d '' path; do
+        is_allowed_source_path "$path" || continue
+        if [[ -L "$REPO_ROOT/$path" ]]; then
+            printf 'local source mode refuses a symbolic link in copied source\n' >&2
+            exit 1
+        fi
+    done < <(
+        git -C "$REPO_ROOT" ls-files -z -- Cargo.toml Cargo.lock crates fixtures/consumer
+        git -C "$REPO_ROOT" ls-files --others --exclude-standard -z -- Cargo.toml Cargo.lock crates fixtures/consumer
+    )
+}
+
 validate_changed_paths() {
+    reject_source_symlinks
     local path
     while IFS= read -r -d '' path; do
         if is_secret_path "$path"; then
@@ -73,16 +94,16 @@ validate_changed_paths() {
             printf 'local source mode refuses a tracked secret-bearing source path\n' >&2
             exit 1
         fi
-    done < <(git -C "$REPO_ROOT" ls-tree -r --name-only -z HEAD -- Cargo.toml Cargo.lock crates)
+    done < <(git -C "$REPO_ROOT" ls-tree -r --name-only -z HEAD -- Cargo.toml Cargo.lock crates fixtures/consumer)
 }
 
 prepare_local_source() {
     validate_changed_paths
     source_copy="$(mktemp -d)"
-    git -C "$REPO_ROOT" archive HEAD -- Cargo.toml Cargo.lock crates | tar -x -C "$source_copy"
+    git -C "$REPO_ROOT" archive HEAD -- Cargo.toml Cargo.lock crates fixtures/consumer | tar -x -C "$source_copy"
 
     # Apply tracked modifications, deletions, and both sides of renames exactly.
-    git -C "$REPO_ROOT" diff --binary --no-renames HEAD -- Cargo.toml Cargo.lock crates \
+    git -C "$REPO_ROOT" diff --binary --no-renames HEAD -- Cargo.toml Cargo.lock crates fixtures/consumer \
         | git -C "$source_copy" apply --binary --whitespace=nowarn
 
     local path
@@ -94,7 +115,7 @@ prepare_local_source() {
         fi
         mkdir -p "$source_copy/$(dirname "$path")"
         cp -P "$REPO_ROOT/$path" "$source_copy/$path"
-    done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z -- Cargo.toml Cargo.lock crates)
+    done < <(git -C "$REPO_ROOT" ls-files --others --exclude-standard -z -- Cargo.toml Cargo.lock crates fixtures/consumer)
 
     git -C "$source_copy" init --quiet
     git -C "$source_copy" add --all
@@ -121,6 +142,40 @@ validate_repository_url() {
             fi
             ;;
     esac
+}
+
+validate_fixture() {
+    local manifest="$1"
+    python3 - "$manifest" <<'PY'
+from pathlib import Path
+import sys
+import tomllib
+
+manifest_path = Path(sys.argv[1])
+with manifest_path.open("rb") as stream:
+    manifest = tomllib.load(stream)
+if "workspace" not in manifest:
+    raise SystemExit(f"{manifest_path}: consumer must declare an independent workspace")
+
+supported = {
+    "kvim-path", "kvim-fuzzy", "kvim-core", "kvim-settings", "kvim-keymap",
+    "kvim-input", "kvim-editor", "kvim-syntax", "kvim-lsp", "kvim-ui",
+    "kvim-embed",
+}
+for name, dependency in manifest.get("dependencies", {}).items():
+    if not name.startswith("kvim-"):
+        continue
+    if name not in supported:
+        raise SystemExit(f"{manifest_path}: private dependency {name} is not supported")
+    if not isinstance(dependency, dict):
+        raise SystemExit(f"{manifest_path}: {name} must be a pinned Git dependency")
+    if dependency.get("default-features") is not False:
+        raise SystemExit(f"{manifest_path}: {name} must disable default features")
+    if not isinstance(dependency.get("git"), str) or not dependency["git"]:
+        raise SystemExit(f"{manifest_path}: {name} needs a Git source")
+    if not isinstance(dependency.get("rev"), str) or not dependency["rev"]:
+        raise SystemExit(f"{manifest_path}: {name} needs a revision placeholder")
+PY
 }
 
 rewrite_dependencies() {
@@ -217,10 +272,22 @@ main() {
     fi
 
     work="$(mktemp -d)"
-    cp -R "$FIXTURES_ROOT/." "$work/"
-
-    local consumer
+    local consumer fixture_file source_file
     for consumer in "${CONSUMERS[@]}"; do
+        mkdir -p "$work/$consumer/src"
+        for fixture_file in "${FIXTURE_FILES[@]}"; do
+            source_file="$FIXTURES_ROOT/$consumer/$fixture_file"
+            if [[ ! -f "$source_file" || -L "$source_file" ]]; then
+                printf 'consumer fixture needs a regular allowlisted file: %s/%s\n' \
+                    "$consumer" "$fixture_file" >&2
+                exit 1
+            fi
+            cp "$source_file" "$work/$consumer/$fixture_file"
+        done
+    done
+
+    for consumer in "${CONSUMERS[@]}"; do
+        validate_fixture "$work/$consumer/Cargo.toml"
         rewrite_dependencies "$work/$consumer/Cargo.toml"
         run_consumer "$consumer"
     done

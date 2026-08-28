@@ -781,6 +781,10 @@ impl StdError for ReviewOpenError {
 }
 
 /// A pure rendered review over host-supplied immutable candidates.
+///
+/// `crates/kvim-embed/examples/supplied_review.rs` demonstrates the pure
+/// supplied-candidate lifecycle. `crates/kvim-embed/examples/worktree_review.rs`
+/// demonstrates bounded worktree capture.
 pub struct ReviewSurface {
     model: ReviewModel,
     config: ReviewConfig,
