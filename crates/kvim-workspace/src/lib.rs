@@ -33,11 +33,15 @@ mod file;
 #[cfg(feature = "services")]
 mod git;
 #[cfg(feature = "services")]
+mod hash;
+#[cfg(feature = "services")]
 mod mutation;
 #[cfg(feature = "services")]
 mod picker;
 #[cfg(feature = "services")]
 mod picker_request;
+#[cfg(feature = "services")]
+mod recovery;
 #[cfg(feature = "services")]
 mod request;
 mod review;
@@ -118,6 +122,11 @@ pub use picker_request::{
     PICKER_PREVIEW_DEADLINE, PICKER_WALK_DEADLINE, PREVIEW_BYTES_MAX, PREVIEW_CONTEXT_LINES,
     PREVIEW_LINE_CHARS_MAX, PREVIEW_LINES_MAX, PickerRequest, PickerResult, PickerSlot, Preview,
     PreviewError, PreviewKey, read_preview,
+};
+#[cfg(feature = "services")]
+pub use recovery::{
+    RECOVERY_RECORD_BYTES_MAX, RECOVERY_RECORD_VERSION, RecoveryBaseline, RecoveryError,
+    RecoveryRecord, read_recovery_record, recovery_record_path, write_recovery_record,
 };
 #[cfg(feature = "services")]
 pub use request::{

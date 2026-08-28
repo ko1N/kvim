@@ -24,6 +24,11 @@ pub(crate) enum FailurePoint {
     MutationAfterRenameAndRestore,
     MutationRestore,
     MutationCleanup,
+    RecoveryWrite,
+    RecoveryRename,
+    RecoveryCleanup,
+    RecoveryWriteAndCleanup,
+    RecoveryRenameAndCleanup,
 }
 
 #[cfg(test)]
@@ -45,10 +50,27 @@ pub(crate) fn fail_at(point: FailurePoint) -> io::Result<()> {
                     point,
                     FailurePoint::MutationAfterRename | FailurePoint::MutationRestore
                 )
+            || current.get() == Some(FailurePoint::RecoveryWriteAndCleanup)
+                && matches!(
+                    point,
+                    FailurePoint::RecoveryWrite | FailurePoint::RecoveryCleanup
+                )
+            || current.get() == Some(FailurePoint::RecoveryRenameAndCleanup)
+                && matches!(
+                    point,
+                    FailurePoint::RecoveryRename | FailurePoint::RecoveryCleanup
+                )
         {
-            if current.get() != Some(FailurePoint::MutationAfterRenameAndRestore)
-                || point == FailurePoint::MutationRestore
-            {
+            let keep_for_cleanup = matches!(
+                current.get(),
+                Some(FailurePoint::MutationAfterRenameAndRestore)
+                    | Some(FailurePoint::RecoveryWriteAndCleanup)
+                    | Some(FailurePoint::RecoveryRenameAndCleanup)
+            ) && !matches!(
+                point,
+                FailurePoint::MutationRestore | FailurePoint::RecoveryCleanup
+            );
+            if !keep_for_cleanup {
                 current.set(None);
             }
             Err(io::Error::other(format!("injected failure at {point:?}")))

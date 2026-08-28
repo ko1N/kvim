@@ -17,6 +17,7 @@ use std::path::{Path, PathBuf};
 use kvim_core::{CharRange, EditTransaction, FinalLineEnding, LineEnding, TextBuffer, TextChange};
 
 use super::file::{FileTarget, render_content};
+use super::hash::content_hash;
 
 /// The first bytes of every undo file.
 const UNDO_FILE_MAGIC: [u8; 8] = *b"KVIMUNDO";
@@ -126,7 +127,7 @@ impl UndoRecord {
         bytes.extend_from_slice(&UNDO_FILE_MAGIC);
         bytes.extend_from_slice(&UNDO_FILE_VERSION.to_le_bytes());
         bytes.extend_from_slice(&(content.len() as u64).to_le_bytes());
-        bytes.extend_from_slice(&content_hash(content).to_le_bytes());
+        bytes.extend_from_slice(&content_hash(content.as_bytes()).to_le_bytes());
         write_text(&mut bytes, &self.base);
         bytes.extend_from_slice(&(self.steps.len() as u64).to_le_bytes());
         for step in &self.steps {
@@ -154,7 +155,9 @@ impl UndoRecord {
         }
         // The recorded content identity decides whether this chain still
         // belongs to the file that the editor just loaded.
-        if reader.u64()? != content.len() as u64 || reader.u64()? != content_hash(content) {
+        if reader.u64()? != content.len() as u64
+            || reader.u64()? != content_hash(content.as_bytes())
+        {
             return None;
         }
         let base = reader.text()?;
@@ -243,7 +246,7 @@ pub fn undo_file_path(target: &FileTarget) -> Option<PathBuf> {
 pub(crate) fn undo_file_path_in(state: &Path, target: &FileTarget) -> PathBuf {
     let name = format!(
         "{:016x}.{UNDO_FILE_EXTENSION}",
-        content_hash_bytes(target.as_path().as_os_str().as_encoded_bytes())
+        content_hash(target.as_path().as_os_str().as_encoded_bytes())
     );
     state.join(UNDO_DIRECTORY).join(name)
 }
@@ -335,27 +338,6 @@ fn common_suffix_bytes(left: &str, right: &str) -> usize {
             _ => return shared,
         }
     }
-}
-
-/// Returns the FNV-1a 64-bit hash of one text.
-fn content_hash(text: &str) -> u64 {
-    content_hash_bytes(text.as_bytes())
-}
-
-/// Returns the FNV-1a 64-bit hash of one byte sequence.
-///
-/// The hash identifies content and paths inside kvim only. It is not a
-/// cryptographic hash and it protects against no attacker.
-fn content_hash_bytes(bytes: &[u8]) -> u64 {
-    const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-    const PRIME: u64 = 0x0000_0100_0000_01b3;
-
-    let mut hash = OFFSET;
-    for byte in bytes {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(PRIME);
-    }
-    hash
 }
 
 /// Writes one length-prefixed text.
