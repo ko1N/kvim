@@ -1080,13 +1080,6 @@ impl WorktreePresentation {
         self
     }
 
-    /// Selects host-owned which-key presentation and embedded presentation for
-    /// every other surface.
-    #[must_use]
-    pub const fn host_owned_which_key() -> Self {
-        Self::standalone().which_key(SurfaceOwnership::HostOwned)
-    }
-
     /// Returns command-line presentation ownership.
     #[must_use]
     pub const fn command_line_ownership(self) -> SurfaceOwnership {

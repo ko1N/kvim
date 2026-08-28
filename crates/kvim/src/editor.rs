@@ -23,8 +23,9 @@ use thiserror::Error;
 use tokio::time::sleep;
 
 use kvim_embed::{
-    ServicePolicy, WorktreeCapabilities, WorktreeCursorShape, WorktreeEditor, WorktreeEvent,
-    WorktreeInput, WorktreeRunState, WorktreeShutdown, WorktreeUpdate,
+    ServicePolicy, WorktreeBindingMode, WorktreeCapabilities, WorktreeCursorShape, WorktreeEditor,
+    WorktreeEvent, WorktreeInput, WorktreePresentation, WorktreeRunState, WorktreeShutdown,
+    WorktreeUpdate,
 };
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::EditorSettings;
@@ -75,6 +76,13 @@ enum Step {
     Failed(TerminalError),
 }
 
+pub(super) fn standalone_binary_preset() -> (WorktreeBindingMode, WorktreePresentation) {
+    (
+        WorktreeBindingMode::FacadeResolved,
+        WorktreePresentation::standalone(),
+    )
+}
+
 /// Runs the editor until it closes its last window.
 pub async fn run(
     settings: EditorSettings,
@@ -115,9 +123,12 @@ async fn drive<C: TerminalControl>(
         language: ServicePolicy::BestEffortBuiltIn,
         clipboard: ServicePolicy::BuiltIn,
     };
+    let (binding_mode, presentation) = standalone_binary_preset();
     let mut editor = WorktreeEditor::builder(&root_path, area)
         .settings(settings)
         .capabilities(capabilities)
+        .binding_mode(binding_mode)
+        .presentation(presentation)
         .open()
         .map_err(EditorError::Open)?;
     if let Some(path) = path {

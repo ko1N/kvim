@@ -14,7 +14,7 @@ Git command. This document owns what a reader sees.
 captured sections, cursor and selection state, read marks, panel state, focus,
 viewport state, and the selected diff view. The integrated editor adapts this
 model without adding review state. The same painter accepts the private model
-for integrated review and future standalone composition.
+for integrated and standalone review.
 
 Kvim owns the view and the neutral values alone. It learns nothing about a
 ticket, a session, an agent, or a review thread. A host composes those above the

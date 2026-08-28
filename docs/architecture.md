@@ -390,10 +390,11 @@ holding a special case outside the registry.
 [`embedding.md`](embedding.md) owns the host contract.
 
 The internal presentation implementation renders one built-in file sidebar.
-The supported `WorktreeEditor` facade exposes the complete rendered surface,
-but it does not expose file rows, a root label, direct sidebar input, or a
-custom row painter. Custom file-sidebar integration is deferred. Generic
-sidebar state and rendering remain public component APIs of `kvim-ui`.
+The supported `WorktreeEditor` facade renders that sidebar when presentation
+ownership is `Embedded`. When ownership is `HostOwned`, it publishes bounded
+semantic rows and accepts semantic sidebar commands. It never accepts host rows
+and never merges the host tree with the editor tree. Generic sidebar state and
+rendering remain public component APIs of `kvim-ui`.
 
 The built-in sidebar keeps its selection mark only while the sidebar has focus.
 When a long label reaches the fixed right-edge Git mark, its final three visible
@@ -502,9 +503,10 @@ private presentation and workspace types must not leak through `kvim-embed`.
 Every supported surface in this section carries rustdoc, one owning document,
 and the dedicated example of its feature. The supported set includes generic
 `kvim-ui` composition and sidebar components, prompt editing, candidate menus,
-the editing mode of `WorktreeEditor`, and the rendered worktree facade. It does
-not include private worktree file-row payloads or a multi-surface composer
-adapter for `WorktreeEditor`.
+the editing mode and semantic command, status, and sidebar publications of
+`WorktreeEditor`, the rendered worktree facade, and `ReviewSurface`. It does not
+include private `kvim-tui` adapter payloads or a multi-surface composer adapter
+for `WorktreeEditor`.
 `crates/kvim/tests/repository_policy.rs` proves that last link, so the same
 rule governs all of them.
 

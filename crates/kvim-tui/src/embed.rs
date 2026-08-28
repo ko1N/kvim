@@ -872,8 +872,8 @@ impl EmbeddedEditorBuilder {
 
     /// Sets whether this editor requests Git status.
     ///
-    /// The compatibility facade enables Git status by default. A higher-level
-    /// facade can disable it until its host grants that optional capability.
+    /// The caller enables this only after its host grants the optional Git
+    /// capability.
     #[doc(hidden)]
     #[must_use]
     pub fn git_status(mut self, enabled: bool) -> Self {

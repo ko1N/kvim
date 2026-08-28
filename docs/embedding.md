@@ -108,7 +108,7 @@ screen, panic restoration, cursor application, and final redraw scheduling.
 The facade owns no such terminal operation.
 
 `kvim-tui` is the internal presentation implementation behind the optional
-worktree facade. Its `#[doc(hidden)]` adapter module is a non-contract seam for
+worktree facade. Its `#[doc(hidden)]` adapter modules are non-contract seams for
 `kvim-embed` only. New hosts use `kvim-embed`.
 
 ## Audit Invariant Ownership
@@ -202,7 +202,8 @@ owns resolution and which-key presentation.
 `BindingProfile::Embedded` disables review-entry bindings and host-navigation
 conflicts by semantic command identity, while keeping semantic commands
 available. Binding overrides reject duplicate sequences and unreachable
-prefixes. Review bindings remain planned independently from editor bindings.
+prefixes. `ReviewBindingProfile` configures standalone review independently from
+editor bindings.
 
 `WorktreePresentation` independently selects command-line, statusline,
 which-key, and file-sidebar ownership. `standalone()` and the default keep all
@@ -286,12 +287,13 @@ cancels the active slot. The host owns line text, cursor, candidate selection,
 and history. It must close the session before a prompt focus change, using the
 same cancel-before-focus ordering as other pending input.
 
-### Planned Editor Publication
+### Editor Sidebar Publication
 
-Planned sidebar rows publish bounded identity, path, depth, kind, loading, selection,
-Git, symlink, and icon-role facts.
+Host-owned sidebar rows publish bounded identity, path, depth, kind, loading,
+selection, Git, symlink, and icon-role facts. Kvim publishes its tree separately
+and never accepts or merges host tree rows.
 
-### Planned Standalone Review
+### Standalone Review
 
 `ReviewSurface` is an additional standalone surface behind the `review`
 feature. It does not replace integrated review in `WorktreeEditor`.
@@ -484,12 +486,14 @@ still win. See [`input-actions.md`](input-actions.md).
 
 ### File Sidebar Support
 
-The worktree implementation renders its built-in file tree as part of the
-complete editor surface. The supported `WorktreeEditor` facade does not publish
-file-tree rows, a root label, custom row painters, or direct sidebar input.
-Custom file-sidebar integration is deferred. Hosts that need a separate tree
-can build one from the generic bounded sidebar components in `kvim-ui`, but
-those components do not expose the private tree state of `WorktreeEditor`.
+Embedded sidebar ownership renders the built-in file tree as part of the
+complete editor surface. Host-owned sidebar ownership removes that region and
+publishes `FileSidebarSnapshot` with bounded semantic rows.
+`WorktreeEditor::file_sidebar_command` accepts semantic movement, expansion,
+collapse, refresh, activation, and focus-boundary commands. Directory and Git
+work still uses facade dispatch, readiness, and application. The host owns
+placement and painting. Kvim does not accept host rows or merge host and editor
+trees. Generic bounded sidebar components remain available in `kvim-ui`.
 
 The internal row painter reserves the first cell for the selection mark and the
 last cell for the Git mark. It draws the selection mark only while the sidebar
@@ -812,10 +816,13 @@ reads no clock, and owns no terminal lifecycle.
 
 ### The Standalone Editor Uses The Worktree Facade
 
-Standalone kvim hosts one `WorktreeEditor`. The binary owns raw terminal input,
-the crossterm backend, signals, cursor application, redraw scheduling, and
-terminal restoration. The facade owns visible state, key resolution,
-background execution, completion routing, and consuming shutdown.
+Standalone kvim hosts one `WorktreeEditor`. It explicitly selects
+`WorktreeBindingMode::FacadeResolved` and `WorktreePresentation::standalone()`.
+The binary owns raw terminal input, the crossterm backend, signals, cursor
+application, redraw scheduling, and terminal restoration. The facade owns
+visible state, standalone key resolution, embedded command-line, statusline,
+sidebar, and which-key presentation, background execution, completion routing,
+and consuming shutdown.
 
 `WorktreeEditor::input` accepts normalized terminal-neutral input when
 `WorktreeBindingMode::FacadeResolved` is selected. This keeps raw terminal

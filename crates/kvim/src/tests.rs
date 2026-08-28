@@ -1,8 +1,12 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-use kvim_embed::{WorktreeEditor, WorktreeShutdown};
+use kvim_embed::{
+    SurfaceOwnership, WorktreeBindingMode, WorktreeEditor, WorktreePresentation, WorktreeShutdown,
+};
 use ratatui::layout::Rect;
+
+use crate::editor::standalone_binary_preset;
 
 use super::{CliAction, CliError, host_report, parse_cli};
 
@@ -76,6 +80,29 @@ fn the_flag_prints_the_report_of_the_shared_builder() {
     assert!(
         !report.contains('\u{1b}'),
         "the report runs outside the alternate screen, so it carries no escape: {report}"
+    );
+}
+
+#[test]
+fn standalone_binary_selects_the_traditional_bindings_and_internal_presentation() {
+    let (binding_mode, presentation) = standalone_binary_preset();
+    assert_eq!(binding_mode, WorktreeBindingMode::FacadeResolved);
+    assert_eq!(presentation, WorktreePresentation::standalone());
+    assert_eq!(
+        presentation.command_line_ownership(),
+        SurfaceOwnership::Embedded
+    );
+    assert_eq!(
+        presentation.statusline_ownership(),
+        SurfaceOwnership::Embedded
+    );
+    assert_eq!(
+        presentation.which_key_ownership(),
+        SurfaceOwnership::Embedded
+    );
+    assert_eq!(
+        presentation.file_sidebar_ownership(),
+        SurfaceOwnership::Embedded
     );
 }
 

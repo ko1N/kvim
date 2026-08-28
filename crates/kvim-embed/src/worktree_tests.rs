@@ -362,7 +362,7 @@ fn presentation_ownership_must_match_the_effective_resolver() {
         .binding_mode(WorktreeBindingMode::HostResolved {
             reserved_escape: Key::ctrl(KeyCode::Char(']')),
         })
-        .presentation(WorktreePresentation::host_owned_which_key())
+        .presentation(WorktreePresentation::standalone().which_key(SurfaceOwnership::HostOwned))
         .open()
         .unwrap();
     drop(host_editor);
@@ -379,7 +379,7 @@ fn presentation_ownership_must_match_the_effective_resolver() {
     );
 
     let facade_with_host = WorktreeEditor::builder(&root.0, area)
-        .presentation(WorktreePresentation::host_owned_which_key())
+        .presentation(WorktreePresentation::standalone().which_key(SurfaceOwnership::HostOwned))
         .open()
         .unwrap_err();
     assert_eq!(facade_with_host.kind(), WorktreeOpenErrorKind::Presentation);
@@ -392,7 +392,7 @@ fn embedded_profile_keeps_semantic_review_entry_executable() {
         .binding_mode(WorktreeBindingMode::HostResolved {
             reserved_escape: Key::ctrl(KeyCode::Char(']')),
         })
-        .presentation(WorktreePresentation::host_owned_which_key())
+        .presentation(WorktreePresentation::standalone().which_key(SurfaceOwnership::HostOwned))
         .open()
         .unwrap();
     assert!(editor.binding_context().is_some());
@@ -419,7 +419,7 @@ fn host_resolved_dispatch_and_cancellation_are_addressed_and_atomic() {
         .binding_mode(WorktreeBindingMode::HostResolved {
             reserved_escape: escape,
         })
-        .presentation(WorktreePresentation::host_owned_which_key())
+        .presentation(WorktreePresentation::standalone().which_key(SurfaceOwnership::HostOwned))
         .open()
         .unwrap();
 
@@ -744,7 +744,7 @@ fn host_resolved_editor(root: &TestRoot) -> WorktreeEditor {
         .binding_mode(WorktreeBindingMode::HostResolved {
             reserved_escape: Key::ctrl(KeyCode::Char(']')),
         })
-        .presentation(WorktreePresentation::host_owned_which_key())
+        .presentation(WorktreePresentation::standalone().which_key(SurfaceOwnership::HostOwned))
         .open()
         .unwrap()
 }
