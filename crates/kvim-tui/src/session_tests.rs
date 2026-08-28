@@ -12,7 +12,7 @@ use tokio_util::sync::CancellationToken;
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
 use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode};
-use kvim_language::LspError;
+use kvim_language::{Diagnostic, DiagnosticSeverity, DocumentPosition, LspError, SourceSpan};
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
@@ -2586,6 +2586,33 @@ fn opened_file(label: &str, name: &str, text: &str) -> (TempDir, PathBuf, Sessio
 }
 
 #[test]
+fn status_summarizes_diagnostics_by_semantic_severity() {
+    let diagnostic = |severity| Diagnostic {
+        span: SourceSpan::new(DocumentPosition::new(0, 0), DocumentPosition::new(0, 1)),
+        severity,
+        message: "status test".to_owned(),
+        source: "test".to_owned(),
+    };
+    let diagnostics = [
+        diagnostic(DiagnosticSeverity::Error),
+        diagnostic(DiagnosticSeverity::Warning),
+        diagnostic(DiagnosticSeverity::Information),
+        diagnostic(DiagnosticSeverity::Hint),
+        diagnostic(DiagnosticSeverity::Error),
+    ];
+
+    assert_eq!(
+        super::diagnostic_summary(&diagnostics),
+        super::EditorDiagnosticSummary {
+            errors: 2,
+            warnings: 1,
+            information: 1,
+            hints: 1,
+        }
+    );
+}
+
+#[test]
 fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
     let (directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
 
@@ -2631,6 +2658,14 @@ fn a_clean_buffer_reloads_after_an_external_change() {
 
     assert_eq!(session.buffer().to_string(), "one\ntwo\n");
     assert!(!session.buffer().is_modified());
+    assert_eq!(
+        session
+            .status()
+            .path
+            .and_then(|path| path.as_path().file_name()),
+        Some(std::ffi::OsStr::new("main.rs")),
+    );
+    assert!(!session.status().modified);
     assert_eq!(external(&session), None);
     assert_eq!(message(&session), "", "a background reload reports nothing");
 
@@ -3558,6 +3593,11 @@ fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
     run_file_request(&mut session);
     session.open_path(second);
     run_file_request(&mut session);
+
+    assert_eq!(
+        session.status().formatter,
+        super::EditorFormatterStatus::AvailableEnabled
+    );
 
     // Every new buffer follows the settings default, so its save formats first.
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);

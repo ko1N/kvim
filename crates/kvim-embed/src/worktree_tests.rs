@@ -655,6 +655,16 @@ async fn worktree_lifecycle_opens_edits_renders_saves_and_shuts_down() {
     fs::write(root.0.join("note.txt"), "hello\n").unwrap();
     let area = Rect::new(0, 0, 40, 8);
     let mut editor = WorktreeEditor::builder(&root.0, area).open().unwrap();
+    let opened_status = editor.status();
+    assert_eq!(opened_status.instance(), editor.instance());
+    assert_eq!(opened_status.mode(), Mode::Normal);
+    assert_eq!(opened_status.path(), None);
+    assert!(!opened_status.is_modified());
+    assert_eq!(opened_status.cursor().line(), 1);
+    assert_eq!(opened_status.cursor().column(), 1);
+    assert_eq!(opened_status.access(), WorktreeAccess::ReadWrite);
+    assert_eq!(opened_status.diagnostics().total(), 0);
+    assert_eq!(opened_status.formatter(), EditorFormatterState::Unavailable);
 
     let mut cells = Buffer::empty(area);
     let cursor = editor.render(&mut cells).unwrap();
@@ -665,6 +675,14 @@ async fn worktree_lifecycle_opens_edits_renders_saves_and_shuts_down() {
         matches!(event, WorktreeEvent::ActiveFileChanged { path: Some(path) } if path.as_path() == Path::new("note.txt"))
     })
     .await;
+    assert_eq!(
+        editor.status().path().map(WorktreeRelativePath::as_path),
+        Some(Path::new("note.txt"))
+    );
+    assert_eq!(
+        editor.status().formatter(),
+        EditorFormatterState::Unavailable
+    );
 
     assert_eq!(
         editor
@@ -676,9 +694,13 @@ async fn worktree_lifecycle_opens_edits_renders_saves_and_shuts_down() {
         editor.literal("saved ", Duration::ZERO),
         WorktreeInputOutcome::Applied
     );
+    assert_eq!(editor.status().mode(), Mode::Insert);
+    assert_eq!(editor.status().cursor().column(), 7);
+    assert!(editor.status().is_modified());
     editor
         .command(Command::ReturnToNormal, None, None, Duration::ZERO)
         .unwrap();
+    assert_eq!(editor.status().mode(), Mode::Normal);
     editor
         .command(Command::SaveBuffer, None, None, Duration::ZERO)
         .unwrap();
@@ -686,6 +708,8 @@ async fn worktree_lifecycle_opens_edits_renders_saves_and_shuts_down() {
         matches!(event, WorktreeEvent::FileWritten { path } if path.as_path() == Path::new("note.txt"))
     })
     .await;
+    assert!(!editor.status().is_modified());
+    assert_eq!(editor.status().cursor().column(), 7);
     assert!(
         !editor.git_request_queued(),
         "disabled Git status must not queue a process after a save"
@@ -705,6 +729,20 @@ async fn worktree_lifecycle_opens_edits_renders_saves_and_shuts_down() {
             let _events = drain.complete().await;
         }
     }
+}
+
+#[test]
+fn status_reports_view_only_access_without_reserving_a_host_status_row() {
+    let root = TestRoot::new("status-view-only");
+    let area = Rect::new(0, 0, 30, 4);
+    let editor = WorktreeEditor::builder(&root.0, area)
+        .access(WorktreeAccess::ViewOnly)
+        .presentation(WorktreePresentation::standalone().statusline(SurfaceOwnership::HostOwned))
+        .open()
+        .unwrap();
+
+    assert_eq!(editor.status().access(), WorktreeAccess::ViewOnly);
+    assert_eq!(editor.region_areas()[0].1.height, 3);
 }
 
 async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent) -> bool) {

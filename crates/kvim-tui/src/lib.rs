@@ -99,7 +99,9 @@ pub mod __private {
         GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal,
     };
     pub use crate::file_sidebar::{FileSidebarInput, FileSidebarOutcome};
-    pub use crate::session::{Redraw, RunState, Session};
+    pub use crate::session::{
+        EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, Redraw, RunState, Session,
+    };
     pub use crate::theme::Theme;
     pub use crate::tree::GENERATED_NAMES;
     pub use crate::{Direction, ListMotion, RegionFocus, draw_file_row};

@@ -54,10 +54,11 @@ use kvim_input::{
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
-    DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure, FormatterRequest,
-    HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
-    LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
-    SyntaxHighlighter, SyntaxTree, buffer_position, content_changes, document_position,
+    DiagnosticSeverity, DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure,
+    FormatterRequest, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter,
+    LanguageOutcome, LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication,
+    ServerReport, SyntaxHighlighter, SyntaxTree, buffer_position, content_changes,
+    document_position,
 };
 use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
@@ -917,9 +918,73 @@ pub(super) struct ActiveSearch {
 
 /// Everything that one frame reads.
 ///
+/// Semantic formatter availability and format-on-save state.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorFormatterStatus {
+    /// No formatter serves the active buffer.
+    Unavailable,
+    /// A formatter serves the buffer, but format-on-save is disabled.
+    AvailableDisabled,
+    /// A formatter serves the buffer and format-on-save is enabled.
+    AvailableEnabled,
+}
+
+/// Bounded counts of diagnostics for the active buffer.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EditorDiagnosticSummary {
+    pub errors: u16,
+    pub warnings: u16,
+    pub information: u16,
+    pub hints: u16,
+}
+
+/// Semantic editor facts shared by facade publication and statusline rendering.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorStatus<'a> {
+    pub instance: EditorInstanceId,
+    pub mode: Mode,
+    pub path: Option<&'a WorktreeRelativePath>,
+    pub modified: bool,
+    pub cursor: Cursor,
+    pub access: EditorAccess,
+    pub diagnostics: EditorDiagnosticSummary,
+    pub formatter: EditorFormatterStatus,
+}
+
+impl EditorStatus<'_> {
+    pub(super) const fn format_on_save(self) -> Option<FormatOnSave> {
+        match self.formatter {
+            EditorFormatterStatus::Unavailable => None,
+            EditorFormatterStatus::AvailableDisabled => Some(FormatOnSave::Disabled),
+            EditorFormatterStatus::AvailableEnabled => Some(FormatOnSave::Enabled),
+        }
+    }
+}
+
+fn diagnostic_summary(diagnostics: &[Diagnostic]) -> EditorDiagnosticSummary {
+    let mut summary = EditorDiagnosticSummary::default();
+    for diagnostic in diagnostics {
+        let count = match diagnostic.severity {
+            DiagnosticSeverity::Error => &mut summary.errors,
+            DiagnosticSeverity::Warning => &mut summary.warnings,
+            DiagnosticSeverity::Information => &mut summary.information,
+            DiagnosticSeverity::Hint => &mut summary.hints,
+        };
+        *count = count.saturating_add(1);
+    }
+    summary
+}
+
+/// The visible state of one frame.
+///
 /// The borrow set keeps rendering a pure function of visible state: a renderer
 /// cannot change the session through this value.
 pub(super) struct Visible<'a> {
+    pub(super) instance: EditorInstanceId,
+    pub(super) access: EditorAccess,
     pub(super) area: Rect,
     pub(super) presentation: EditorPresentation,
     pub(super) theme: Theme,
@@ -979,16 +1044,61 @@ impl Visible<'_> {
     /// formatter can format reports no state, because the state would promise
     /// an action that no save can perform.
     pub(super) fn focused_format_on_save(&self) -> Option<FormatOnSave> {
-        let Some(buffer) = self.windows.buffer(self.windows.focused_window()) else {
-            debug_assert!(false, "the focused window is always a leaf of the tree");
-            return None;
-        };
-        let path = self.buffers.get(buffer).and_then(FileBuffer::path);
-        if !has_formatter(self.languages, path) {
-            return None;
+        self.status().format_on_save()
+    }
+
+    /// Returns the semantic facts that status publication and rendering share.
+    pub(super) fn status(&self) -> EditorStatus<'_> {
+        editor_status(
+            self.active,
+            self.buffers,
+            self.windows,
+            self.editing.mode(),
+            self.settings,
+            self.languages,
+            self.language,
+            self.instance,
+            self.access,
+        )
+    }
+}
+
+fn editor_status<'a>(
+    active: BufferId,
+    buffers: &'a Buffers,
+    windows: &Windows,
+    mode: Mode,
+    settings: &EditorSettings,
+    languages: LanguageRegistry,
+    language: &LanguageState,
+    instance: EditorInstanceId,
+    access: EditorAccess,
+) -> EditorStatus<'a> {
+    let Some(buffer) = buffers.get(active) else {
+        unreachable!("the session always keeps the active buffer loaded");
+    };
+    let cursor = windows
+        .state(windows.focused_window())
+        .map_or(Cursor::ORIGIN, WindowState::cursor);
+    let diagnostics = diagnostic_summary(language.diagnostics(active));
+    let formatter = if !has_formatter(languages, buffer.path()) {
+        EditorFormatterStatus::Unavailable
+    } else {
+        let default = FormatOnSave::from_setting(settings.files.format_on_save);
+        match language.format_on_save(active, default) {
+            FormatOnSave::Disabled => EditorFormatterStatus::AvailableDisabled,
+            FormatOnSave::Enabled => EditorFormatterStatus::AvailableEnabled,
         }
-        let default = FormatOnSave::from_setting(self.settings.files.format_on_save);
-        Some(self.language.format_on_save(buffer, default))
+    };
+    EditorStatus {
+        instance,
+        mode,
+        path: buffer.target().map(FileTarget::relative_path),
+        modified: buffer.text().is_modified(),
+        cursor,
+        access,
+        diagnostics,
+        formatter,
     }
 }
 
@@ -2009,6 +2119,23 @@ impl Session {
         self.active
     }
 
+    /// Returns semantic editor facts without formatting or I/O.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn status(&self) -> EditorStatus<'_> {
+        editor_status(
+            self.active,
+            &self.buffers,
+            &self.windows,
+            self.editing.mode(),
+            &self.settings,
+            self.languages,
+            &self.language,
+            self.instance,
+            self.access,
+        )
+    }
+
     /// Returns the active editor mode.
     #[must_use]
     pub const fn mode(&self) -> Mode {
@@ -2178,6 +2305,8 @@ impl Session {
     /// Returns the borrowed state that one frame reads.
     pub(super) fn visible(&self) -> Visible<'_> {
         Visible {
+            instance: self.instance,
+            access: self.access,
             area: self.area,
             presentation: self.presentation,
             theme: self.theme,

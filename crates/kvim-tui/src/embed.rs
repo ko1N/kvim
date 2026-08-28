@@ -1238,6 +1238,13 @@ impl EmbeddedEditor {
         self.editor.paste(text, now)
     }
 
+    /// Returns semantic status facts for facade adaptation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn status(&self) -> super::session::EditorStatus<'_> {
+        self.editor.status()
+    }
+
     /// Returns the editing mode of this editor.
     ///
     /// A host names the mode in a band of its own, and the mode answers

@@ -227,16 +227,27 @@ region. Kvim therefore writes no blank placeholder cells for host-owned
 surfaces. Embedded ownership keeps the existing chrome, sidebar, cursor,
 viewport, and which-key behavior.
 
+The status snapshot is now a supported publication, not a planned addition.
+`WorktreeEditor::status` returns a cheap borrowed `EditorStatusSnapshot` for one
+`WorktreeInstanceId`. It includes the editing mode, active contained path,
+modified state, one-based logical cursor position, access, bounded diagnostic
+counts, and formatter availability with format-on-save state. It contains no
+preformatted labels or private implementation values. The host polls it after
+an applied transition, typically after `WorktreeUpdate::Redraw`; no separate
+status event exists.
+
+Embedded statusline rendering and facade publication derive mode, cursor, and
+formatter state from the same semantic session facts. A host-owned statusline
+still reserves zero rows.
+
 ### Planned Editor Publication
 
 A planned addressed command catalog publishes stable identities, aliases,
 argument schemas, availability, and completion capability for one
 `WorktreeInstanceId`. The host owns the visible unified command line and
 history. Kvim owns command parsing, validation, completion, path confinement,
-and execution. `EditorStatusSnapshot` publishes semantic mode, path, modified
-state, cursor, access, diagnostics, and formatter facts, not formatted text.
-Planned sidebar rows publish bounded identity, path, depth, kind, loading,
-selection, Git, symlink, and icon-role facts.
+and execution. Planned sidebar rows publish bounded identity, path, depth, kind,
+loading, selection, Git, symlink, and icon-role facts.
 
 ### Planned Standalone Review
 

@@ -21,12 +21,12 @@ use kvim_settings::EditorSettings;
 use kvim_tui::__private::{
     ClipboardAccess as TuiClipboardAccess, Completed, CursorShape as TuiCursorShape,
     EditorAccess as TuiEditorAccess, EditorCapacity as TuiEditorCapacity,
-    EditorEvent as TuiEditorEvent, EditorShutdown as TuiEditorShutdown, EmbeddedEditor,
-    GeometryError as TuiGeometryError, HostReportRequest as TuiHostReportRequest,
-    HostWorkspace as TuiHostWorkspace, InputRequest as TuiInputRequest,
-    PublishedEvent as TuiPublishedEvent, Redraw as TuiRedraw, Reduction as TuiReduction,
-    ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal, RunState as TuiRunState,
-    TerminalEvent as TuiTerminalEvent,
+    EditorEvent as TuiEditorEvent, EditorFormatterStatus as TuiFormatterStatus,
+    EditorShutdown as TuiEditorShutdown, EmbeddedEditor, GeometryError as TuiGeometryError,
+    HostReportRequest as TuiHostReportRequest, HostWorkspace as TuiHostWorkspace,
+    InputRequest as TuiInputRequest, PublishedEvent as TuiPublishedEvent, Redraw as TuiRedraw,
+    Reduction as TuiReduction, ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal,
+    RunState as TuiRunState, TerminalEvent as TuiTerminalEvent,
 };
 use kvim_ui::Direction;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode};
@@ -109,6 +109,139 @@ pub enum WorktreeAccess {
     ReadWrite,
     /// Permit viewing only.
     ViewOnly,
+}
+
+/// A logical one-based cursor position in buffer text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorCursorPosition {
+    line: usize,
+    column: usize,
+}
+
+impl EditorCursorPosition {
+    /// Returns the one-based logical line number.
+    #[must_use]
+    pub const fn line(self) -> usize {
+        self.line
+    }
+
+    /// Returns the one-based source-character column.
+    ///
+    /// This is not a terminal-cell column.
+    #[must_use]
+    pub const fn column(self) -> usize {
+        self.column
+    }
+}
+
+/// Bounded diagnostic counts for the active buffer.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EditorDiagnosticSummary {
+    errors: u16,
+    warnings: u16,
+    information: u16,
+    hints: u16,
+}
+
+impl EditorDiagnosticSummary {
+    /// Returns the number of error diagnostics.
+    #[must_use]
+    pub const fn errors(self) -> u16 {
+        self.errors
+    }
+    /// Returns the number of warning diagnostics.
+    #[must_use]
+    pub const fn warnings(self) -> u16 {
+        self.warnings
+    }
+    /// Returns the number of information diagnostics.
+    #[must_use]
+    pub const fn information(self) -> u16 {
+        self.information
+    }
+    /// Returns the number of hint diagnostics.
+    #[must_use]
+    pub const fn hints(self) -> u16 {
+        self.hints
+    }
+    /// Returns the bounded total diagnostic count.
+    #[must_use]
+    pub const fn total(self) -> u16 {
+        self.errors
+            .saturating_add(self.warnings)
+            .saturating_add(self.information)
+            .saturating_add(self.hints)
+    }
+}
+
+/// Semantic formatter state for the active buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorFormatterState {
+    /// No formatter serves this buffer.
+    Unavailable,
+    /// A formatter is available and format-on-save is disabled.
+    AvailableDisabled,
+    /// A formatter is available and format-on-save is enabled.
+    AvailableEnabled,
+}
+
+/// A cheap semantic snapshot for host-owned status presentation.
+///
+/// The snapshot borrows its bounded contained path from the editor. It owns no
+/// formatted statusline text and performs no input or output.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorStatusSnapshot<'a> {
+    instance: WorktreeInstanceId,
+    mode: Mode,
+    path: Option<&'a WorktreeRelativePath>,
+    modified: bool,
+    cursor: EditorCursorPosition,
+    access: WorktreeAccess,
+    diagnostics: EditorDiagnosticSummary,
+    formatter: EditorFormatterState,
+}
+
+impl<'a> EditorStatusSnapshot<'a> {
+    /// Returns the editor routing identity.
+    #[must_use]
+    pub const fn instance(self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the modal editing mode.
+    #[must_use]
+    pub const fn mode(self) -> Mode {
+        self.mode
+    }
+    /// Returns the active contained path, or `None` for a generated buffer.
+    #[must_use]
+    pub const fn path(self) -> Option<&'a WorktreeRelativePath> {
+        self.path
+    }
+    /// Reports whether active text differs from its saved state.
+    #[must_use]
+    pub const fn is_modified(self) -> bool {
+        self.modified
+    }
+    /// Returns the logical text cursor position.
+    #[must_use]
+    pub const fn cursor(self) -> EditorCursorPosition {
+        self.cursor
+    }
+    /// Returns the access granted by the host.
+    #[must_use]
+    pub const fn access(self) -> WorktreeAccess {
+        self.access
+    }
+    /// Returns bounded diagnostics for the active buffer.
+    #[must_use]
+    pub const fn diagnostics(self) -> EditorDiagnosticSummary {
+        self.diagnostics
+    }
+    /// Returns semantic formatter availability and format-on-save state.
+    #[must_use]
+    pub const fn formatter(self) -> EditorFormatterState {
+        self.formatter
+    }
 }
 
 /// Policy for an optional built-in service.
@@ -1357,6 +1490,58 @@ impl WorktreeEditor {
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> WorktreeInputOutcome {
         convert_reduction(self.inner_mut().paste(text, now))
     }
+    /// Returns one cheap semantic status snapshot.
+    ///
+    /// Poll this after [`WorktreeUpdate::Redraw`] when the host owns statusline
+    /// presentation. The snapshot borrows the active path and allocates no text.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_embed::{EditorFormatterState, WorktreeEditor};
+    /// use ratatui::layout::Rect;
+    ///
+    /// let directory = std::env::temp_dir().join("kvim-status-example");
+    /// std::fs::create_dir_all(&directory)?;
+    /// let editor = WorktreeEditor::builder(&directory, Rect::new(0, 0, 40, 6)).open()?;
+    /// let status = editor.status();
+    /// assert_eq!(status.instance(), editor.instance());
+    /// assert_eq!(status.cursor().line(), 1);
+    /// assert_eq!(status.formatter(), EditorFormatterState::Unavailable);
+    /// # std::fs::remove_dir_all(directory)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn status(&self) -> EditorStatusSnapshot<'_> {
+        let status = self.inner().status();
+        let diagnostics = status.diagnostics;
+        EditorStatusSnapshot {
+            instance: WorktreeInstanceId(status.instance.get()),
+            mode: status.mode,
+            path: status.path,
+            modified: status.modified,
+            cursor: EditorCursorPosition {
+                line: status.cursor.line().get() + 1,
+                column: status.cursor.column().get() + 1,
+            },
+            access: match status.access {
+                TuiEditorAccess::ReadWrite => WorktreeAccess::ReadWrite,
+                TuiEditorAccess::ViewOnly => WorktreeAccess::ViewOnly,
+            },
+            diagnostics: EditorDiagnosticSummary {
+                errors: diagnostics.errors,
+                warnings: diagnostics.warnings,
+                information: diagnostics.information,
+                hints: diagnostics.hints,
+            },
+            formatter: match status.formatter {
+                TuiFormatterStatus::Unavailable => EditorFormatterState::Unavailable,
+                TuiFormatterStatus::AvailableDisabled => EditorFormatterState::AvailableDisabled,
+                TuiFormatterStatus::AvailableEnabled => EditorFormatterState::AvailableEnabled,
+            },
+        }
+    }
+
     /// Returns the current modal mode.
     #[must_use]
     pub fn mode(&self) -> Mode {

@@ -8,7 +8,7 @@ use ratatui::Frame;
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 
-use kvim_editor::{Cursor, WindowState};
+use kvim_editor::Cursor;
 use kvim_input::{Mode, PromptKind};
 use kvim_ui::RegionKind;
 
@@ -203,21 +203,14 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         StatuslineParts::Shown
     };
 
-    // The statusline reports the mode of the editor, and the cursor and the
-    // format-on-save state of the focused window. That window keeps the report
-    // while a sidebar holds the keys, because the statusline names the place
-    // the reader returns to. See `docs/windows.md`.
-    let focused_cursor = view
-        .windows
-        .state(view.windows.focused_window())
-        .map_or(Cursor::ORIGIN, WindowState::cursor);
+    let status = view.status();
     render_statusline(
         target,
         bands.statusline,
         theme,
-        view.editing.mode(),
-        focused_cursor,
-        view.focused_format_on_save(),
+        status.mode,
+        status.cursor,
+        status.format_on_save(),
         statusline_parts,
     );
     let internal_prompt = view.prompt.filter(|prompt| {
