@@ -1,9 +1,8 @@
 //! The open review of one captured diff.
+//! Painter adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The surface owns the two captures that the changes panel shows, the view
-//! that draws them, and the cursor that walks their hunks. It performs no Git
-//! work and starts no process: the session captures and hands the candidates
-//! in. See `docs/diff-view.md`.
+//! The private model and painter are shared by integrated and standalone review
+//! composition. The integrated session adds only lifecycle adaptation.
 //!
 //! The module is pure. It reads no clock, no filesystem, and no process.
 
@@ -101,9 +100,62 @@ pub(super) enum ReviewOutcome {
     Unhandled,
 }
 
-/// The open review of one workspace.
+/// The integrated editor adapter around the reusable review model.
+///
+/// The adapter deliberately owns no review state. It keeps the existing
+/// session path while the model and painter remain usable without an editor.
 #[derive(Clone, Debug)]
 pub(super) struct ReviewSurface {
+    model: ReviewModel,
+}
+
+impl ReviewSurface {
+    /// Opens the integrated adapter over one reusable model.
+    pub(super) fn new(
+        staged: Option<WorktreeDiff>,
+        unstaged: Option<WorktreeDiff>,
+        settings: DiffSettings,
+        resize_step: u16,
+        height_rows: u16,
+    ) -> Self {
+        Self {
+            model: ReviewModel::new(staged, unstaged, settings, resize_step, height_rows),
+        }
+    }
+
+    /// Returns the reusable model rendered by this adapter.
+    const fn model(&self) -> &ReviewModel {
+        &self.model
+    }
+
+    /// Updates the model for the visible review height.
+    pub(super) fn set_height_rows(&mut self, height_rows: u16) {
+        self.model.set_height_rows(height_rows);
+    }
+
+    /// Applies one integrated review command to the model.
+    pub(super) fn apply(&mut self, command: Command, count: Option<NonZeroU32>) -> ReviewOutcome {
+        self.model.apply(command, count)
+    }
+
+    /// Replaces one captured section and relocates model state.
+    pub(super) fn reload(&mut self, section: ChangeSection, candidate: WorktreeDiff) {
+        self.model.reload(section, candidate);
+    }
+
+    /// Returns the visible diff-body height for integrated layout checks.
+    #[cfg(test)]
+    pub(super) const fn height_rows(&self) -> usize {
+        self.model.height_rows()
+    }
+}
+
+/// The complete private state of one review.
+///
+/// This model owns candidate sections, cursor and selection state, read marks,
+/// relocation, panel state, focus, viewport state, and the selected diff view.
+#[derive(Clone, Debug)]
+pub(super) struct ReviewModel {
     /// The staged half, when the capture published one.
     staged: Option<ReviewState>,
     /// The unstaged half, when the capture published one.
@@ -144,8 +196,8 @@ pub(super) struct ReviewSurface {
     resize_step_cells: u16,
 }
 
-impl ReviewSurface {
-    /// Opens one review over the two captured halves.
+impl ReviewModel {
+    /// Opens one reusable review model over the two captured halves.
     ///
     /// The cursor starts in the unstaged half when it publishes a change,
     /// because that is the half a reader works on. A workspace with staged work
@@ -784,6 +836,41 @@ pub(super) fn draw_review(
     root: &str,
     review: &ReviewSurface,
 ) {
+    ReviewPainter::new(theme, settings, root).draw(target, area, review.model());
+}
+
+/// The one painter for every private review composition path.
+pub(super) struct ReviewPainter<'a> {
+    theme: Theme,
+    settings: DiffSettings,
+    root: &'a str,
+}
+
+impl<'a> ReviewPainter<'a> {
+    /// Creates a painter from presentation values owned by the caller.
+    pub(super) const fn new(theme: Theme, settings: DiffSettings, root: &'a str) -> Self {
+        Self {
+            theme,
+            settings,
+            root,
+        }
+    }
+
+    /// Paints one reusable model into the accepted rectangle.
+    pub(super) fn draw(&self, target: &mut CellBuffer, area: Rect, review: &ReviewModel) {
+        draw_review_model(target, area, self.theme, self.settings, self.root, review);
+    }
+}
+
+/// Paints one review model into one rectangle.
+fn draw_review_model(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    settings: DiffSettings,
+    root: &str,
+    review: &ReviewModel,
+) {
     if area.width == 0 || area.height == 0 {
         return;
     }
@@ -842,7 +929,7 @@ pub(super) fn draw_review(
 /// The panel names the file alone, so this line carries the counts. An added
 /// line reads green and a removed line reads red, which is the vocabulary that
 /// every diff uses.
-fn draw_body_header(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+fn draw_body_header(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewModel) {
     let band = Rect::new(area.x, area.y, area.width, BODY_HEADER_ROWS);
     target.set_style(band, theme.style(ThemeRole::Winbar));
     let Some(path) = review.body_path() else {
@@ -924,7 +1011,7 @@ fn below(area: Rect) -> Option<Rect> {
 /// of its repository state, its name, and the number of files that it holds.
 /// The active tab sits on a light band and every other tab dims on the bar, so
 /// one glance names the section that the keys act on. See `docs/diff-view.md`.
-fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewModel) {
     // The bar sits above every tab, so it takes the surface band and the
     // active tab drops out of it onto the body color.
     target.set_style(area, theme.style(ThemeRole::TabInactive));
@@ -966,7 +1053,7 @@ fn draw_body(
     area: Rect,
     theme: Theme,
     settings: DiffSettings,
-    review: &ReviewSurface,
+    review: &ReviewModel,
 ) {
     // The body names its own file, so the lookup of one hunk never reaches
     // another file, whose hunks carry the same identities.
@@ -1062,7 +1149,7 @@ const fn settings_with(settings: DiffSettings, view: DiffView) -> DiffSettings {
 /// The sidebar owns the viewport, so the panel draws the rows that it places
 /// and a list longer than the region scrolls with its selection. Every row text
 /// is built already, so one frame walks no hunk.
-fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewModel) {
     let focused = review.focus() == ReviewFocus::Panel;
     let selected = review.changes().selected().cloned();
     let built = review.panel_rows();

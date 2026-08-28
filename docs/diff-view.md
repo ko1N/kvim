@@ -9,8 +9,12 @@ Git command. This document owns what a reader sees.
 
 ## Ownership
 
-`kvim-workspace` owns the pure values: the aligned rows of one hunk and the read
-state of one review. `kvim-tui` owns the drawing and the keys.
+`kvim-workspace` owns the pure diff values and anchor relocation.
+`kvim-tui` owns one private review model and one painter. The model owns both
+captured sections, cursor and selection state, read marks, panel state, focus,
+viewport state, and the selected diff view. The integrated editor adapts this
+model without adding review state. The same painter accepts the private model
+for integrated review and future standalone composition.
 
 Kvim owns the view and the neutral values alone. It learns nothing about a
 ticket, a session, an agent, or a review thread. A host composes those above the
