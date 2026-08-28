@@ -445,14 +445,31 @@ impl EditorDriver {
         if let Some(language) = language {
             let _expired = timeout_at(expiry, language.shutdown()).await;
         }
-        // The drop of the spawner inside this call rejects new work and cancels
-        // every request that has not committed yet. The drain keeps the tracked
-        // tasks, so a committed side effect still reaches its reserved slot.
+        // The drop of the normal spawner rejects new ordinary work and cancels
+        // every request that has not committed yet. Recovery remains alive
+        // until its ordered active-plus-successor state becomes idle.
         let tasks = spawner.begin_shutdown();
-        let recovery_tasks = recovery_spawner.begin_shutdown();
-        if timeout_at(expiry, async {
-            tokio::join!(tasks.wait(), recovery_tasks.wait());
-        })
+        if timeout_at(expiry, tasks.wait()).await.is_err() {
+            return Ok(Some(ShutdownDrain {
+                instance,
+                tasks,
+                results,
+                gate,
+                recovery: RecoveryDrain::Running(recovery_spawner),
+                recovery_results,
+                recovery_gate,
+            }));
+        }
+        drain_results(editor, &gate, &mut results);
+        if timeout_at(
+            expiry,
+            drive_recovery_until_idle(
+                editor,
+                &recovery_spawner,
+                &recovery_gate,
+                &mut recovery_results,
+            ),
+        )
         .await
         .is_err()
         {
@@ -461,12 +478,23 @@ impl EditorDriver {
                 tasks,
                 results,
                 gate,
-                recovery_tasks,
+                recovery: RecoveryDrain::Running(recovery_spawner),
                 recovery_results,
                 recovery_gate,
             }));
         }
-        drain_results(editor, &gate, &mut results);
+        let recovery_tasks = recovery_spawner.begin_shutdown();
+        if timeout_at(expiry, recovery_tasks.wait()).await.is_err() {
+            return Ok(Some(ShutdownDrain {
+                instance,
+                tasks,
+                results,
+                gate,
+                recovery: RecoveryDrain::Draining(recovery_tasks),
+                recovery_results,
+                recovery_gate,
+            }));
+        }
         drain_recovery_results(editor, &recovery_gate, &mut recovery_results);
         Ok(None)
     }
@@ -479,12 +507,17 @@ impl EditorDriver {
 /// The host must keep its asynchronous runtime alive until
 /// [`ShutdownDrain::complete`] returns. See `docs/embedding.md`.
 #[must_use = "the drain owns the mandatory events of every committed side effect"]
+enum RecoveryDrain {
+    Running(Runtime<EditorWork>),
+    Draining(RuntimeDrain),
+}
+
 pub struct ShutdownDrain {
     instance: EditorInstanceId,
     tasks: RuntimeDrain,
     results: EventReceiver<EditorWork>,
     gate: PublicationGate,
-    recovery_tasks: RuntimeDrain,
+    recovery: RecoveryDrain,
     recovery_results: EventReceiver<EditorWork>,
     recovery_gate: PublicationGate,
 }
@@ -510,13 +543,43 @@ impl ShutdownDrain {
     pub async fn complete(mut self, editor: &mut Session) -> Result<Redraw, DriverError> {
         DriverError::require(self.instance, editor.instance())?;
         self.tasks.wait().await;
-        self.recovery_tasks.wait().await;
         let redraw = drain_results(editor, &self.gate, &mut self.results);
+        match self.recovery {
+            RecoveryDrain::Running(spawner) => {
+                drive_recovery_until_idle(
+                    editor,
+                    &spawner,
+                    &self.recovery_gate,
+                    &mut self.recovery_results,
+                )
+                .await;
+                spawner.begin_shutdown().wait().await;
+            }
+            RecoveryDrain::Draining(tasks) => tasks.wait().await,
+        }
         Ok(redraw.or(drain_recovery_results(
             editor,
             &self.recovery_gate,
             &mut self.recovery_results,
         )))
+    }
+}
+
+async fn drive_recovery_until_idle(
+    editor: &mut Session,
+    spawner: &Runtime<EditorWork>,
+    gate: &PublicationGate,
+    results: &mut EventReceiver<EditorWork>,
+) {
+    while editor.has_queued_recovery_work() || editor.has_submitted_recovery_work() {
+        let _ = submit_recovery_work(editor, spawner, gate);
+        if !editor.has_submitted_recovery_work() {
+            continue;
+        }
+        let Some(event) = results.recv().await else {
+            break;
+        };
+        let _ = complete_recovery(editor, gate, Some(event));
     }
 }
 

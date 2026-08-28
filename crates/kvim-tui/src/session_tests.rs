@@ -2141,6 +2141,12 @@ fn run_file_request(session: &mut Session) {
     let _ = session.apply_file_result(request.run());
 }
 
+fn run_recovery_work(session: &mut Session) {
+    while let Some(checkpoint) = session.take_recovery_checkpoint() {
+        let _ = session.apply_recovery_checkpoint(checkpoint.run());
+    }
+}
+
 fn write_recovery_for_open_file(
     directory: &TempDir,
     target_path: &Path,
@@ -2400,6 +2406,161 @@ fn recovery_checkpoints_submit_once_and_coalesce_the_newest_pending_edit() {
         },
         "abcone\n"
     );
+}
+
+#[test]
+fn lifecycle_cleanup_removes_records_only_after_current_save_or_destructive_discard() {
+    for action in ["save", "reload", "quit", "forced-quit"] {
+        let directory = TempDir::new("session-recovery-lifecycle-cleanup");
+        let path = directory.write("main.rs", "one\n");
+        let mut session =
+            file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+        session.open_path(path);
+        run_file_request(&mut session);
+        press(&mut session, 'i');
+        press(&mut session, 'a');
+        press_code(&mut session, KeyCode::Esc);
+        let checkpoint = session.take_recovery_checkpoint().unwrap();
+        let record_path = checkpoint.path.clone();
+        let _ = session.apply_recovery_checkpoint(checkpoint.run());
+        assert!(record_path.exists());
+
+        match action {
+            "save" => {
+                press_ctrl(&mut session, 's');
+                run_file_request(&mut session);
+            }
+            "reload" => {
+                run_command(&mut session, "e");
+                answer(&mut session, "y");
+                run_file_request(&mut session);
+            }
+            "quit" => {
+                run_command(&mut session, "q");
+                answer(&mut session, "y");
+            }
+            "forced-quit" => run_command(&mut session, "q!"),
+            _ => unreachable!(),
+        }
+        run_recovery_work(&mut session);
+        assert!(
+            !record_path.exists(),
+            "{action} removes the recovery record"
+        );
+        assert!(session.pending_recovery().is_none());
+    }
+}
+
+#[test]
+fn cancelled_reload_and_quit_keep_the_recovery_record() {
+    for action in ["reload", "quit"] {
+        let directory = TempDir::new("session-recovery-lifecycle-cancel");
+        let path = directory.write("main.rs", "one\n");
+        let mut session =
+            file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+        session.open_path(path);
+        run_file_request(&mut session);
+        press(&mut session, 'i');
+        press(&mut session, 'a');
+        press_code(&mut session, KeyCode::Esc);
+        let checkpoint = session.take_recovery_checkpoint().unwrap();
+        let record_path = checkpoint.path.clone();
+        let _ = session.apply_recovery_checkpoint(checkpoint.run());
+
+        run_command(&mut session, if action == "reload" { "e" } else { "q" });
+        answer(&mut session, "n");
+
+        assert!(record_path.exists(), "cancelled {action} keeps recovery");
+        assert!(session.take_recovery_checkpoint().is_none());
+    }
+}
+
+#[test]
+fn failed_save_preserves_the_committed_recovery_record() {
+    let directory = TempDir::new("session-recovery-failed-save");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path.clone());
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let checkpoint = session.take_recovery_checkpoint().unwrap();
+    let record_path = checkpoint.path.clone();
+    let _ = session.apply_recovery_checkpoint(checkpoint.run());
+    std::fs::write(path, "external\n").expect("the test changes the file");
+
+    press_ctrl(&mut session, 's');
+    run_file_request(&mut session);
+
+    assert!(session.buffer().is_modified());
+    assert!(record_path.exists());
+    assert!(session.take_recovery_checkpoint().is_none());
+}
+
+#[test]
+fn stale_save_keeps_a_newer_checkpoint_instead_of_deleting_recovery() {
+    let directory = TempDir::new("session-recovery-stale-save-cleanup");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    press_ctrl(&mut session, 's');
+    refuse_language_requests(&mut session);
+    let save = session.take_file_request().unwrap().run();
+    press(&mut session, 'b');
+    let _ = session.apply_file_result(save);
+
+    let newest = session
+        .take_recovery_checkpoint()
+        .expect("the stale save retains the newer live edit");
+    assert!(matches!(newest.operation, RecoveryOperation::Write(_)));
+    assert_eq!(newest.baseline, RecoveryBaseline::saved("aone\n"));
+}
+
+#[test]
+fn a_clean_window_close_does_not_discard_a_recovery_candidate() {
+    let directory = TempDir::new("session-recovery-clean-close");
+    let path = directory.write("main.rs", "disk\n");
+    let record_path = write_recovery_for_open_file(
+        &directory,
+        &path,
+        RecoveryBaseline::saved("disk\n"),
+        "recovered\n",
+    );
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+
+    run_command(&mut session, "q");
+    run_recovery_work(&mut session);
+
+    assert!(record_path.exists());
+}
+
+#[test]
+fn cleanup_failure_warns_without_changing_the_successful_save_fact() {
+    let directory = TempDir::new("session-recovery-cleanup-failure");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    press_ctrl(&mut session, 's');
+    run_file_request(&mut session);
+    let cleanup = session.take_recovery_checkpoint().unwrap();
+    std::fs::create_dir_all(&cleanup.path).expect("the test blocks record deletion");
+    let _ = session.apply_recovery_checkpoint(cleanup.run());
+
+    assert!(!session.buffer().is_modified(), "the save remains current");
+    assert!(message(&session).contains("written"));
+    assert!(session.log.snapshot().contains("recovery"));
 }
 
 #[test]

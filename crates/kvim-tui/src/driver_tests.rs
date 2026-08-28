@@ -475,6 +475,30 @@ async fn the_driver_submits_every_syntax_request_through_the_caller_spawner() {
 }
 
 #[tokio::test]
+async fn shutdown_drains_a_checkpoint_and_its_ordered_cleanup_successor() {
+    let directory = TempDir::new("driver-shutdown-recovery-drain");
+    let path = directory.write("main.rs", ORIGINAL);
+    let mut editor =
+        editor_at(&directory.path).with_recovery_state_directory(directory.join("state"));
+    let (spawner, results) = Runtime::<EditorWork>::new();
+    let mut driver = EditorDriver::new(editor.instance(), spawner, results);
+    open_through(&mut driver, &mut editor, path).await;
+    type_one_character(&mut editor);
+    let _ = driver.dispatch(&mut editor);
+    let _ = editor.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    let _ = driver.dispatch(&mut editor);
+
+    let drain = driver
+        .shutdown(&mut editor, SHUTDOWN_WAIT)
+        .await
+        .expect("the driver owns this editor");
+
+    assert!(drain.is_none());
+    assert!(!editor.has_queued_recovery_work());
+    assert!(!editor.has_submitted_recovery_work());
+}
+
+#[tokio::test]
 async fn a_shutdown_waits_for_the_committed_write_and_publishes_its_fact() {
     let directory = TempDir::new("driver-shutdown-write");
     let path = directory.write("main.rs", ORIGINAL);

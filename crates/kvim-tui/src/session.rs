@@ -3112,13 +3112,17 @@ impl Session {
         }
     }
 
-    /// Suppresses queued work while preserving a submitted durable write.
+    /// Queues durable cleanup after any older submitted write.
     ///
-    /// A later dirty edit replaces the suppression with its newest checkpoint.
-    /// The submitted write remains the per-buffer ordering barrier until its
+    /// A later dirty edit replaces queued cleanup with its newest checkpoint.
+    /// A submitted write remains the per-buffer ordering barrier until its
     /// completion arrives.
     fn suppress_recovery_checkpoint(&mut self, buffer: BufferId) {
+        let cleanup = self.recovery_cleanup(buffer);
         let Some(state) = self.recovery.buffers.remove(&buffer) else {
+            if let Some(checkpoint) = cleanup {
+                self.queue_recovery_after_completion(buffer, checkpoint);
+            }
             return;
         };
         match state {
@@ -3158,6 +3162,25 @@ impl Session {
                 );
             }
         }
+    }
+
+    fn recovery_cleanup(&self, buffer: BufferId) -> Option<RecoveryCheckpoint> {
+        let file = self.buffers.get(buffer)?;
+        let state_directory = self.recovery.state_directory.as_ref()?;
+        let target = file.target()?.clone();
+        Some(RecoveryCheckpoint {
+            instance: self.instance,
+            buffer,
+            path: recovery_record_path(state_directory, &target),
+            target,
+            baseline: file.recovery_baseline().clone(),
+            revision: file.text().revision(),
+            operation: RecoveryOperation::Delete,
+        })
+    }
+
+    fn clear_pending_recovery(&mut self, buffer: BufferId) {
+        self.recovery.pending.remove(&buffer);
     }
 
     /// Sends the applied transaction of the active buffer to its server.
@@ -4113,6 +4136,20 @@ impl Session {
     /// from filesystem work.
     pub fn take_file_request(&mut self) -> Option<FileRequest> {
         self.file_outbox.take()
+    }
+
+    pub(super) fn has_queued_recovery_work(&self) -> bool {
+        self.recovery
+            .buffers
+            .values()
+            .any(|state| matches!(state, RecoveryState::Queued { .. }))
+    }
+
+    pub(super) fn has_submitted_recovery_work(&self) -> bool {
+        self.recovery
+            .buffers
+            .values()
+            .any(|state| matches!(state, RecoveryState::Submitted { .. }))
     }
 
     /// Takes one queued recovery checkpoint exactly once.
@@ -5956,10 +5993,10 @@ impl Session {
                     .map(Path::to_path_buf)
             })
             .collect();
-        self.buffers.apply_path_updates(&outcome.updates);
         for update in &outcome.updates {
             self.suppress_recovery_checkpoint(update.buffer);
         }
+        self.buffers.apply_path_updates(&outcome.updates);
         for path in closed {
             self.queue_language(LanguageRequest::Close { path });
         }
@@ -6894,26 +6931,33 @@ impl Session {
         origin: ReloadOrigin,
     ) -> Redraw {
         let buffer = target.buffer;
-        let Some(loaded) = self.buffers.get_mut(buffer) else {
-            debug_assert!(false, "the publication gate found the buffer");
-            return Redraw::Skipped;
+        let discarded = target.unsaved == UnsavedText::Discard;
+        let (name, lines, bytes) = {
+            let Some(loaded) = self.buffers.get_mut(buffer) else {
+                debug_assert!(false, "the publication gate found the buffer");
+                return Redraw::Skipped;
+            };
+            if target.unsaved == UnsavedText::Keep && loaded.is_modified() {
+                // The safety rule of this path: only the user decides to lose work,
+                // and only `:e!` carries that decision. A modified buffer receives
+                // the comparing trigger, which reads no text at all, and a buffer
+                // that changed while the check ran fails the version gate above.
+                debug_assert!(false, "a comparing target never carries reloaded text");
+                return Redraw::Skipped;
+            }
+            debug_assert!(
+                loaded.target() == Some(&file.target),
+                "a reload reads the path that its own buffer holds"
+            );
+            let lines = file.text.line_count();
+            let bytes = file.text.len_bytes();
+            loaded.reload(file.text, file.identity);
+            (loaded.name().to_owned(), lines, bytes)
         };
-        if target.unsaved == UnsavedText::Keep && loaded.is_modified() {
-            // The safety rule of this path: only the user decides to lose work,
-            // and only `:e!` carries that decision. A modified buffer receives
-            // the comparing trigger, which reads no text at all, and a buffer
-            // that changed while the check ran fails the version gate above.
-            debug_assert!(false, "a comparing target never carries reloaded text");
-            return Redraw::Skipped;
+        if discarded {
+            self.clear_pending_recovery(buffer);
+            self.suppress_recovery_checkpoint(buffer);
         }
-        debug_assert!(
-            loaded.target() == Some(&file.target),
-            "a reload reads the path that its own buffer holds"
-        );
-        let lines = file.text.line_count();
-        let bytes = file.text.len_bytes();
-        loaded.reload(file.text, file.identity);
-        let name = loaded.name().to_owned();
         self.clamp_windows_of(buffer);
         // The reloaded buffer counts its versions from the start, so every
         // value that a buffer version guards must restart with it.
@@ -7086,9 +7130,12 @@ impl Session {
         let bytes = saved.bytes;
         let applied =
             target.apply_save(saved.target, saved.identity, saved.revision, &saved.content);
-        self.suppress_recovery_checkpoint(buffer);
-        if applied == SaveApplyOutcome::Stale {
-            self.queue_recovery_checkpoint(buffer);
+        match applied {
+            SaveApplyOutcome::Current => {
+                self.clear_pending_recovery(buffer);
+                self.suppress_recovery_checkpoint(buffer);
+            }
+            SaveApplyOutcome::Stale => self.queue_recovery_checkpoint(buffer),
         }
         // The saved file changed the working tree, so the recorded state of the
         // workspace changed with it.
@@ -7118,6 +7165,8 @@ impl Session {
     /// holds unsaved changes, so only that close asks. See `docs/files.md`.
     fn close_window(&mut self, unsaved: UnsavedChanges) -> Redraw {
         let last_window = self.windows.window_count() == 1;
+        let discards_unsaved =
+            last_window && unsaved == UnsavedChanges::Discard && self.active_buffer().is_modified();
         if last_window && unsaved == UnsavedChanges::Ask && self.active_buffer().is_modified() {
             let buffer = self.active;
             let question = format!(
@@ -7128,6 +7177,10 @@ impl Session {
         }
         match self.windows.apply(Command::CloseWindow) {
             WindowOutcome::LastWindow => {
+                if discards_unsaved {
+                    self.clear_pending_recovery(self.active);
+                    self.suppress_recovery_checkpoint(self.active);
+                }
                 self.close_editor();
                 Redraw::Needed
             }
@@ -7176,8 +7229,9 @@ impl Session {
             .map(|path| LanguageRequest::Close {
                 path: path.to_path_buf(),
             });
-        self.buffers.remove(id);
+        self.clear_pending_recovery(id);
         self.suppress_recovery_checkpoint(id);
+        self.buffers.remove(id);
         self.language.forget(id);
         self.analysis.remove(&id);
         if let Some(request) = closed {
