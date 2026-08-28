@@ -372,11 +372,13 @@ published palette alone.
 
 `draw_file_row` publishes the look of that sidebar beside its facts. kvim's own
 file tree draws through the same call, so one appearance exists and no second
-one can drift. The call also names `RegionFocus`, because the selection mark
-belongs to the focused sidebar alone and the focus is a property of the sidebar
-and not of one row. `RegionFocus` names one region, and a region is one editor
-window or one sidebar, so both surfaces of kvim report the focus with one
-published value. [`embedding.md`](embedding.md) owns the painter.
+one can drift. Clipped row text fades across its final three visible cells
+toward the effective row background, before the fixed right-edge Git mark. The
+call also names `RegionFocus`, because the selection mark belongs to the
+focused sidebar alone and the focus is a property of the sidebar and not of one
+row. `RegionFocus` names one region, and a region is one editor window or one
+sidebar, so both surfaces of kvim report the focus with one published value.
+[`embedding.md`](embedding.md) owns the painter.
 [`embedding.md`](embedding.md) owns the surface.
 
 `FILE_SIDEBAR_MARK_CELLS` and `FILE_SIDEBAR_SELECTION_MARK` publish the left

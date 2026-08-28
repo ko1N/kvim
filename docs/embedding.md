@@ -279,10 +279,11 @@ focus of its own surfaces, so it already holds the value.
 
 The painter owns the layout of the row. The first cell holds the selection
 mark, the indent guides and the two glyph cells follow it, and the last cell
-holds the Git mark. A canvas narrower than that layout clips from the right
-edge and the Git mark keeps the last cell it has, so a very narrow sidebar
-still shows the start of every label. A host that wants a different layout
-reads the facts and paints its own cells instead.
+holds the Git mark. A canvas narrower than the text clips from the right edge.
+The final three visible text cells then fade toward the effective row
+background, while the Git mark keeps its own style in the last cell. Short
+text keeps its normal color. A host that wants a different layout reads the
+facts and paints its own cells instead.
 
 The selection mark belongs to `RegionFocus::Focused` alone. A sidebar that
 reports `RegionFocus::Unfocused` leaves the mark cell blank, and the selection
