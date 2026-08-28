@@ -132,8 +132,8 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-ui` | `kvim-keymap`, `kvim-fuzzy` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
-| 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
-| 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-fuzzy`, `kvim-input`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` (the `review` partition uses only `kvim-path`) |
+| 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-fuzzy`, `kvim-input`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` (the `review` partition uses only neutral input, path, settings, UI, and workspace review partitions) |
 | 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
 | 6 | `kvim` | `kvim-embed`, `kvim-path`, `kvim-settings`, `kvim-terminal` |
 
@@ -565,16 +565,32 @@ architecture cannot disagree. A new charter row changes both at once.
 
 ## Planned Host And Review Surface
 
-The planned section below records host-composition additions and a standalone
-`ReviewSurface`. It does not make integrated review or the existing
-`WorktreeEditor` unavailable.
+The supplied-review boundary uses explicit pure-review feature partitions in
+`kvim-workspace` and `kvim-tui`. The workspace partition owns diff values,
+alignment, anchors, relocation, and review state. The presentation partition
+owns the single review model and painter. The normal editor build enables both
+partitions and its integrated review adapts the same model and painter.
+`kvim-embed --no-default-features --features review` disables both crates'
+service partitions. Its normal dependency closure therefore contains no
+`kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-terminal`, Tokio, notify, or
+Tree-sitter package. These partitions are private implementation boundaries;
+`kvim-embed` remains the only supported high-level facade.
 
-`ReviewSurface::from_candidates` will accept bounded immutable candidates
-without I/O. `ReviewSurface::for_worktree` will perform bounded Git capture behind an
-explicit feature. Both will share private review state, anchor relocation,
-snapshots, and painting with integrated review. Neither will construct an
-editor or editor services. Hosts will own focus, comment persistence, and
-host-domain meaning.
+The `review` feature adds `ReviewSurface::from_candidates`. This constructor
+accepts bounded immutable facade values and performs no input or output. It
+reuses `blake3`, already present in the workspace, to derive deterministic
+private candidate authority from the bounded host identity. It reuses the
+private review model, anchor relocation, and painter used by integrated review.
+It does not construct an editor or call filesystem, Git, process, watcher,
+clipboard, language, or runtime APIs.
+
+The supplied-review dependency boundary is enforced with `cargo tree` over the
+exact review-only feature selection. Constructor-level source inspection is not
+dependency isolation.
+
+`ReviewSurface::for_worktree` remains planned. It will perform bounded Git
+capture behind the `worktree` feature. Hosts own focus, comment persistence,
+and host-domain meaning for both modes.
 
 ## State Ownership
 

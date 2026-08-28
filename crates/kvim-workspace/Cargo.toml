@@ -6,33 +6,46 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
+# The default partition owns filesystem and service behavior. Pure review
+# consumers disable defaults and select `review` alone.
+default = ["services"]
+review = []
+services = [
+  "review",
+  "dep:cap-std",
+  "dep:kvim-core",
+  "dep:kvim-runtime",
+  "dep:kvim-settings",
+  "dep:kvim-ui",
+  "dep:tokio-util",
+]
 # Publishes the temporary-directory helper of the `temp` module.
 #
 # Every filesystem test works inside its own directory and removes it when it
 # finishes, so no test reads or writes the editor state directory of the user.
 # The editor tests of `kvim-tui` need the same helper. The module is a test
 # seam, never editor behavior, so a normal build leaves it out.
-test-support = []
+test-support = ["services"]
 
 [dependencies]
 # kvim crates
-kvim-core.workspace = true
+kvim-core = { workspace = true, optional = true }
 kvim-path.workspace = true
-kvim-runtime.workspace = true
-kvim-settings.workspace = true
-kvim-ui.workspace = true
+kvim-runtime = { workspace = true, optional = true }
+kvim-settings = { workspace = true, optional = true }
+kvim-ui = { workspace = true, optional = true }
 
 # Basics
 thiserror.workspace = true
 
 # Filesystem confinement
-cap-std.workspace = true
+cap-std = { workspace = true, optional = true }
 
 # Review identity
 blake3.workspace = true
 
 # Runtime
-tokio-util.workspace = true
+tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Runtime

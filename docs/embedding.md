@@ -292,12 +292,17 @@ Git, symlink, and icon-role facts.
 
 ### Planned Standalone Review
 
-A planned `ReviewSurface` is an additional standalone surface. It does not
-replace the existing integrated review in `WorktreeEditor`. `ReviewSurface` will
-support `from_candidates` without I/O and `for_worktree` with bounded Git
-capture. Integrated and standalone review will share private state, relocation,
-and painting. Snapshots will preserve bounded review position and read state,
-while comment persistence and host meaning remain outside kvim.
+`ReviewSurface` is an additional standalone surface behind the `review`
+feature. It does not replace integrated review in `WorktreeEditor`.
+`ReviewSurface::from_candidates` accepts bounded immutable candidates and
+performs no input or output. It uses facade-owned commands, events, errors, and
+snapshots. Snapshot restoration relocates durable anchors without guessing.
+The host owns focus policy, file opening, comment persistence, and comment
+meaning.
+
+`ReviewSurface::for_worktree` remains planned. It will add bounded Git capture
+behind the `worktree` feature. Both paths share private review state,
+relocation, and painting with integrated review.
 
 ## Worktree Implementation Contract
 
@@ -860,6 +865,7 @@ The required examples are:
 - `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-embed/examples/merged_leader.rs`
+- `crates/kvim-embed/examples/supplied_review.rs`
 - `crates/kvim-embed/examples/unified_command_line.rs`
 - `crates/kvim-embed/examples/worktree_editor.rs`
 - `crates/kvim-ui/examples/composer.rs`

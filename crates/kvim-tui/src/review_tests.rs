@@ -727,6 +727,7 @@ fn a_half_that_fills_again_opens_its_tab_in_its_own_place() {
     );
 }
 
+#[cfg(feature = "editor")]
 #[test]
 fn integrated_adapter_forwards_commands_and_uses_the_model_painter() {
     let staged = candidate(vec![added("staged.txt", 7, &["staged"])], [60; 32]);

@@ -2,17 +2,17 @@
 //!
 //! The crate is the sole owner of visible editor state.
 //!
-//! [`Windows`] owns the split tree, the sidebars, the focus, and one cached
-//! [`WindowLayout`]. Both are pure values: they read no clock, no filesystem,
-//! and no terminal, and they hold no buffer text and no color. One layout
-//! calculation converts the tree and the terminal rectangle into the exact
+//! With the default `editor` feature, `Windows` owns the split tree, the
+//! sidebars, the focus, and one cached `WindowLayout`. Both are pure values.
+//! They read no clock, filesystem, or terminal. They hold no buffer text or
+//! color. One layout calculation converts the tree and terminal rectangle into
 //! rectangle of every visible region. No other code computes a rectangle. See
 //! `docs/windows.md`.
 //!
-//! [`Session`] owns the visible editor state and applies one pure transition
-//! for each normalized terminal event. [`Theme`] maps a semantic role to one
-//! terminal style, so no call site names a color. The crate owns no terminal
-//! and no event loop: the `kvim` binary is the imperative shell of the
+//! With the default `editor` feature, `Session` owns the visible editor state
+//! and applies one pure transition for each normalized terminal event. `Theme`
+//! maps a semantic role to one terminal style, so no call site names a color.
+//! The crate owns no terminal and no event loop. The `kvim` binary is the
 //! standalone editor, and `crates/kvim-embed/examples/worktree_editor.rs` is the
 //! imperative shell of one embedded editor. See `docs/responsiveness.md` and
 //! `docs/embedding.md`.
@@ -21,68 +21,66 @@
 //! lower-level components. Its `__private` module is a non-contract adapter
 //! seam. External high-level hosts use `kvim-embed`.
 //!
-//! # Example
+//! # Editor example
 //!
-//! ```
-//! use ratatui::layout::Rect;
-//!
-//! use kvim_settings::WindowSettings;
-//! use kvim_tui::{AdaptiveSplit, Direction, LayoutChange, Orientation, Windows};
-//! use kvim_workspace::BufferId;
-//!
-//! let mut windows = Windows::new(
-//!     BufferId::new(1),
-//!     Rect::new(0, 0, 120, 40),
-//!     WindowSettings::default(),
-//! );
-//!
-//! // A terminal that holds one window always splits vertically.
-//! assert_eq!(windows.adaptive_orientation(AdaptiveSplit::Normal), Orientation::Vertical);
-//! let right = windows.split_adaptive(AdaptiveSplit::Normal).expect("the terminal is wide");
-//! assert_eq!(windows.focused_window(), right);
-//!
-//! // The resize command names the direction that the edge moves. The focused
-//! // window sits on the right, so its right edge holds no neighbor and the
-//! // command moves the left edge left, which grows the window.
-//! let before = windows.layout().area(right).expect("the window is visible");
-//! assert_eq!(windows.resize(Direction::Left), LayoutChange::Changed);
-//! let after = windows.layout().area(right).expect("the window is visible");
-//! assert_eq!(after.width, before.width + 6);
-//! ```
+//! Run `cargo run -p kvim-ui --example split_windows` for a maintained layout
+//! example. The default `editor` feature publishes the complete editor API.
 
 // The crate is one supported external package. Every published item names
 // its own contract, so no implementation API can reach a consumer by accident.
 #![deny(missing_docs)]
 
+#[cfg(feature = "editor")]
 mod buffer_view;
+#[cfg_attr(not(feature = "editor"), allow(dead_code))]
 mod cells;
 mod changes;
+#[cfg(feature = "editor")]
 mod chrome;
+#[cfg(feature = "editor")]
 mod clipboard;
+#[cfg(feature = "editor")]
 mod completion;
+#[cfg(feature = "editor")]
 mod diagnostics;
 mod diff_view;
+#[cfg(feature = "editor")]
 mod driver;
+#[cfg(feature = "editor")]
 mod embed;
+#[cfg(feature = "editor")]
 mod file_sidebar;
+#[cfg(feature = "editor")]
 mod icons;
+#[cfg(feature = "editor")]
 mod jumps;
+#[cfg(feature = "editor")]
 mod language;
+#[cfg(feature = "editor")]
 mod log;
+#[cfg(feature = "editor")]
 mod markup;
+#[cfg(feature = "editor")]
 mod notify;
+#[cfg(feature = "editor")]
 mod overlay;
+#[cfg(feature = "editor")]
 mod picker;
+#[cfg(feature = "editor")]
 mod render;
 mod review;
+#[cfg(feature = "editor")]
 mod session;
 mod theme;
+#[cfg(feature = "editor")]
 mod tree;
+#[cfg(feature = "editor")]
 mod window;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "editor"))]
 mod tests;
 
+#[cfg(feature = "editor")]
 #[doc(hidden)]
 pub mod __private {
     //! Internal adapter seams for `kvim-embed`.
@@ -102,10 +100,13 @@ pub mod __private {
         FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowIdentity,
         FileRowKind, FileRowNoticeKind, FileSidebarInput, FileSidebarOutcome,
     };
+    pub use crate::review::{
+        ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter, ReviewRestore,
+    };
     pub use crate::session::{
         EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, Redraw, RunState, Session,
     };
-    pub use crate::theme::IconRole;
+    pub use crate::theme::{IconRole, Theme};
     pub use crate::tree::{
         FILE_SIDEBAR_DEPTH_MAX, FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX, GENERATED_NAMES,
     };
@@ -113,32 +114,55 @@ pub mod __private {
     pub use kvim_terminal::TerminalEvent;
 }
 
+#[cfg(feature = "review")]
+#[doc(hidden)]
+pub mod __review {
+    //! Internal pure-review adapter seam for `kvim-embed`.
+
+    pub use crate::review::{
+        ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter, ReviewRestore,
+    };
+    pub use crate::theme::Theme;
+}
+
+#[cfg(feature = "editor")]
 pub use buffer_view::RegionFocus;
+#[cfg(feature = "editor")]
 pub use clipboard::ClipboardAccess;
+#[cfg(feature = "editor")]
 pub use completion::{
     COMPLETION_CANDIDATES_MAX, COMPLETION_COLUMNS_MAX, COMPLETION_ROWS_MAX, CompletionCycle,
     CompletionOutcome, LineCompletion, draw_completion_menu,
 };
+#[cfg(feature = "editor")]
 pub use diagnostics::{HOST_PROGRAMS_MAX, HostReportRequest, HostWorkspace};
+#[cfg(feature = "editor")]
 pub use file_sidebar::{
     FILE_SIDEBAR_ICON_CELLS, FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_LINK_SUFFIX,
     FILE_SIDEBAR_MARK_CELLS, FILE_SIDEBAR_ROWS_MAX, FILE_SIDEBAR_SELECTION_MARK, FileRow,
     FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome, draw_file_row,
 };
+#[cfg(feature = "editor")]
 pub use kvim_ui::{
     AdaptiveSplit, CloseOutcome, Direction, LayoutChange, LayoutFit, ListMotion, Orientation,
     Region, RegionKind, SIDEBAR_WIDTH_MAX_CELLS, SIDEBAR_WIDTH_MIN_CELLS, SPLIT_DEPTH_MAX,
     SPLIT_WEIGHT_TOTAL, Sidebar, SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLayout,
 };
+#[cfg(feature = "editor")]
 pub use language::{
     DiagnosticJump, FLOAT_COLUMNS_MAX, FLOAT_ROWS_MAX, FormatOnSave, LANGUAGE_OUTBOX_MAX,
     LanguageQuery, LanguageRequest, LanguageRequestKind,
 };
+#[cfg(feature = "editor")]
 pub use picker::PickerFailure;
+#[cfg(feature = "editor")]
 pub use session::{
     AnalysisRequest, AnalysisResult, CONFIRM_ANSWER_CHARS_MAX, FileRequestFailure,
     HostProbeFailure, MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
 };
+#[cfg(feature = "editor")]
 pub use theme::{IconRole, Theme, ThemeRole};
+#[cfg(feature = "editor")]
 pub use tree::GENERATED_NAMES;
+#[cfg(feature = "editor")]
 pub use window::{WindowOutcome, Windows};

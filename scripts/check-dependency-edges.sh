@@ -224,12 +224,14 @@ usage() {
 Usage: check-dependency-edges.sh
        check-dependency-edges.sh --reject <crate> <forbidden crate>...
        check-dependency-edges.sh --reject-default <crate> <forbidden crate>...
+       check-dependency-edges.sh --reject-features <crate> <features> <forbidden crate>...
 
 Without arguments the script checks every rule of docs/architecture.md.
 
 With `--reject` it checks the all-feature dependency tree of <crate>.
 With `--reject-default` it checks the default-feature dependency tree instead.
-Both modes require that the tree holds none of the crates that follow. Use them
+With `--reject-features` it checks the named comma-separated feature selection.
+All modes require that the tree holds none of the crates that follow. Use them
 for a rule that one job must report under its own name.
 USAGE
 }
@@ -242,6 +244,8 @@ reject_named_edges() {
     local -a cargo_args=(--quiet -p "$name" -e normal --prefix none --no-dedupe)
     if [[ "$features" == "all" ]]; then
         cargo_args+=(--all-features)
+    elif [[ "$features" != "default" ]]; then
+        cargo_args+=(--no-default-features --features "$features")
     fi
     reached="$(cargo tree "${cargo_args[@]}" |
         awk '{ print $1 }' | sort -u)"
@@ -264,10 +268,24 @@ main() {
         exit 0
     fi
 
-    if [[ "${1:-}" == "--reject" || "${1:-}" == "--reject-default" ]]; then
+    if [[ "${1:-}" == "--reject" || "${1:-}" == "--reject-default" || "${1:-}" == "--reject-features" ]]; then
         local features="all"
         if [[ "$1" == "--reject-default" ]]; then
             features="default"
+        elif [[ "$1" == "--reject-features" ]]; then
+            shift
+            if [[ "$#" -lt 3 ]]; then
+                usage >&2
+                exit 2
+            fi
+            local subject="$1"
+            features="$2"
+            shift 2
+            reject_named_edges "$subject" "$features" "$@"
+            if [[ "$failures" -gt 0 ]]; then
+                exit 1
+            fi
+            return
         fi
         shift
         if [[ "$#" -lt 2 ]]; then

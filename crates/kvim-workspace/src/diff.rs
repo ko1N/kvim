@@ -77,6 +77,9 @@ use blake3::Hasher;
 use kvim_path::WorktreeRelativePath;
 use thiserror::Error;
 
+/// The domain separator of every authority projection.
+const PROJECTION_DOMAIN: &[u8] = b"kvim.diff.projection.v1";
+
 /// The number of bytes in every digest of this module.
 pub const DIGEST_BYTES: usize = 32;
 
@@ -1720,6 +1723,40 @@ impl WorktreeDiff {
     #[must_use]
     pub fn files(&self) -> &[FileDiff] {
         &self.files
+    }
+
+    /// Returns a BLAKE3 projection of all published candidate content.
+    ///
+    /// Capture authority and review freshness use this one canonical value.
+    #[must_use]
+    pub(crate) fn authority_projection(&self) -> [u8; DIGEST_BYTES] {
+        let mut hasher = Hasher::new();
+        hasher.update(PROJECTION_DOMAIN);
+        self.old_side().absorb_into(&mut hasher);
+        hasher.update(&[u8::from(self.truncation().is_truncated())]);
+        absorb_count(&mut hasher, self.files().len());
+        for file in self.files() {
+            for side in [DiffSide::Old, DiffSide::New] {
+                let Some(published) = file.change().side(side) else {
+                    hasher.update(&[0]);
+                    continue;
+                };
+                hasher.update(&[1]);
+                absorb(
+                    &mut hasher,
+                    published.path().as_path().as_os_str().as_encoded_bytes(),
+                );
+                hasher.update(published.mode().as_octal().as_bytes());
+                match file.content() {
+                    DiffContent::Text(text) => absorb(&mut hasher, &text.side_bytes(side)),
+                    DiffContent::Binary
+                    | DiffContent::SymbolicLink
+                    | DiffContent::Submodule
+                    | DiffContent::Unsupported => absorb(&mut hasher, &[]),
+                }
+            }
+        }
+        *hasher.finalize().as_bytes()
     }
 
     /// Reports whether a bound stopped the collection of this candidate.

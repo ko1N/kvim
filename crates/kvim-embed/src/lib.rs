@@ -15,8 +15,20 @@
 
 #[cfg(feature = "worktree")]
 mod composition;
+#[cfg(feature = "review")]
+mod review;
 #[cfg(feature = "worktree")]
 mod worktree;
+
+#[cfg(feature = "review")]
+pub use review::{
+    REVIEW_CANDIDATE_ID_BYTES_MAX, REVIEW_CANDIDATES_MAX, REVIEW_EVENTS_MAX, REVIEW_FILE_HUNKS_MAX,
+    REVIEW_FILES_MAX, REVIEW_HUNK_LINES_MAX, REVIEW_ROOT_LABEL_BYTES_MAX,
+    REVIEW_SNAPSHOT_ANCHORS_MAX, ReviewAnchor, ReviewCandidate, ReviewCandidateId, ReviewCommand,
+    ReviewCommentBody, ReviewConfig, ReviewError, ReviewEvent, ReviewFile, ReviewFileChange,
+    ReviewFocus, ReviewHunk, ReviewInput, ReviewLine, ReviewLineOrigin, ReviewRenderOutcome,
+    ReviewSection, ReviewSnapshot, ReviewSurface, ReviewUpdate,
+};
 
 #[cfg(feature = "worktree")]
 pub use composition::{

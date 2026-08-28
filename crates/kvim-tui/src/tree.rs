@@ -127,6 +127,8 @@ pub(super) const GIT_MARK_CELLS: u16 = 1;
 /// checked box for an entry that the ignore rules name. [`FileRowGit::glyph`]
 /// of `file_sidebar.rs` holds the one table, so the standalone tree and a host
 /// that draws kvim's own marks can never disagree about one state.
+#[allow(dead_code)]
+#[cfg(test)]
 pub(super) const fn git_mark(status: GitStatus) -> &'static str {
     host_git_state(status).glyph()
 }
@@ -1477,6 +1479,7 @@ pub(super) fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: us
 /// The changes panel of the review records a [`GitStatus`], so this call
 /// converts once and hands the drawing to the one published painter of a Git
 /// mark. See `docs/git.md`.
+#[allow(dead_code)]
 pub(super) fn render_git_mark(
     canvas: &mut SidebarCanvas<'_>,
     status: GitStatus,

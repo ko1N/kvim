@@ -14,6 +14,10 @@ name = "merged_leader"
 required-features = ["worktree"]
 
 [[example]]
+name = "supplied_review"
+required-features = ["review"]
+
+[[example]]
 name = "unified_command_line"
 required-features = ["worktree"]
 
@@ -26,7 +30,15 @@ required-features = ["worktree"]
 # orchestration but no language adapter. Each grammar feature implies worktree
 # and forwards exactly its named adapter; an empty registry remains supported.
 default = []
+review = [
+  "dep:kvim-path",
+  "dep:kvim-tui",
+  "dep:kvim-workspace",
+  "kvim-tui/review",
+  "kvim-workspace/review",
+]
 worktree = [
+  "review",
   "dep:kvim-keymap",
   "dep:kvim-language",
   "dep:kvim-lsp",
@@ -35,6 +47,8 @@ worktree = [
   "dep:kvim-tui",
   "dep:kvim-ui",
   "dep:kvim-workspace",
+  "kvim-tui/editor",
+  "kvim-workspace/services",
   "dep:tokio",
 ]
 grammar-asm = ["worktree", "kvim-language/grammar-asm", "kvim-tui/grammar-asm"]
@@ -121,11 +135,12 @@ kvim-language = { workspace = true, optional = true }
 kvim-lsp = { workspace = true, optional = true }
 kvim-path = { workspace = true, optional = true }
 kvim-runtime = { workspace = true, optional = true }
-kvim-tui = { workspace = true, optional = true }
+kvim-tui = { workspace = true, optional = true, default-features = false }
 kvim-ui = { workspace = true, optional = true }
-kvim-workspace = { workspace = true, optional = true }
+kvim-workspace = { workspace = true, optional = true, default-features = false }
 
 # Basics
+blake3.workspace = true
 thiserror.workspace = true
 
 # Runtime

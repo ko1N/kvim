@@ -46,9 +46,9 @@ kvim-runtime = { path = "crates/kvim-runtime" }
 kvim-settings = { path = "crates/kvim-settings" }
 kvim-syntax = { path = "crates/kvim-syntax" }
 kvim-terminal = { path = "crates/kvim-terminal" }
-kvim-tui = { path = "crates/kvim-tui" }
+kvim-tui = { path = "crates/kvim-tui", default-features = false }
 kvim-ui = { path = "crates/kvim-ui" }
-kvim-workspace = { path = "crates/kvim-workspace" }
+kvim-workspace = { path = "crates/kvim-workspace", default-features = false }
 
 # Basics
 thiserror = "2.0"

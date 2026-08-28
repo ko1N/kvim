@@ -33,9 +33,9 @@ use kvim_runtime::{ProcessOutput, ProcessRequest, RuntimeError};
 use crate::diff::{
     BaseRevision, CandidateAuthority, DIFF_FILE_HUNKS_MAX, DIFF_FILES_MAX, DIFF_HUNK_LINES_MAX,
     DIGEST_BYTES, DiffChange, DiffComparison, DiffContent, DiffLimit, DiffLine, DiffLineText,
-    DiffOldSide, DiffSide, DiffTarget, DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority,
-    Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine, NewLineRange, OldLine,
-    OldLineRange, TextDiff, WorktreeDiff, absorb, absorb_count,
+    DiffOldSide, DiffTarget, DiffTruncation, FileDiff, FileMode, FileSide, HeadAuthority, Hunk,
+    HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine, NewLineRange, OldLine, OldLineRange,
+    TextDiff, WorktreeDiff, absorb,
 };
 use crate::git::GitExecutionPolicy;
 
@@ -72,9 +72,6 @@ pub const DIFF_SOURCE_BYTES_MAX: usize = 1024 * 1024;
 /// Git inspects the same window, so an untracked file and a tracked file take
 /// the same answer.
 pub const DIFF_BINARY_SCAN_BYTES: usize = 8000;
-
-/// The domain separator of every authority projection of this module.
-const PROJECTION_DOMAIN: &[u8] = b"kvim.diff.projection.v1";
 
 /// The domain separator of every status digest of this module.
 const STATUS_DOMAIN: &[u8] = b"kvim.diff.status.v1";
@@ -204,33 +201,7 @@ impl AuthorityProjection {
     /// Derives the projection of one collected candidate.
     #[must_use]
     pub fn of(diff: &WorktreeDiff) -> Self {
-        let mut hasher = Hasher::new();
-        hasher.update(PROJECTION_DOMAIN);
-        diff.old_side().absorb_into(&mut hasher);
-        hasher.update(&[u8::from(diff.truncation().is_truncated())]);
-        absorb_count(&mut hasher, diff.files().len());
-        for file in diff.files() {
-            for side in [DiffSide::Old, DiffSide::New] {
-                let Some(published) = file.change().side(side) else {
-                    hasher.update(&[0]);
-                    continue;
-                };
-                hasher.update(&[1]);
-                absorb(
-                    &mut hasher,
-                    published.path().as_path().as_os_str().as_encoded_bytes(),
-                );
-                hasher.update(published.mode().as_octal().as_bytes());
-                match file.content() {
-                    DiffContent::Text(text) => absorb(&mut hasher, &text.side_bytes(side)),
-                    DiffContent::Binary
-                    | DiffContent::SymbolicLink
-                    | DiffContent::Submodule
-                    | DiffContent::Unsupported => absorb(&mut hasher, &[]),
-                }
-            }
-        }
-        Self(*hasher.finalize().as_bytes())
+        Self(diff.authority_projection())
     }
 
     /// Returns the digest bytes.
