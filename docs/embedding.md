@@ -298,7 +298,13 @@ feature. It does not replace integrated review in `WorktreeEditor`.
 performs no input or output. It uses facade-owned commands, events, errors, and
 snapshots. Snapshot restoration relocates durable anchors without guessing.
 The host owns focus policy, file opening, comment persistence, and comment
-meaning.
+meaning. `ReviewConfig` selects `ReviewBindingProfile::Standalone` or
+`ReviewBindingProfile::HostResolved` independently from editor bindings. It can
+also supply bounded semantic review overrides. `ReviewSurface::bindings`
+publishes the realized review-only manifest for host arbitration. The facade
+accepts `ReviewInput` after arbitration. It does not resolve raw keys for
+`ReviewSurface`. The standalone profile keeps the traditional review table. The host-resolved profile leaves `Tab` and
+`Shift-Tab` unclaimed and publishes `]s` and `[s` for section navigation.
 
 `ReviewSurface::for_worktree` adds bounded Git capture behind the `worktree`
 feature. The surface privately owns capture dispatch, readiness, application,

@@ -19,7 +19,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(feature = "worktree")]
 use std::time::Duration;
 
-use kvim_input::Command;
+use kvim_input::{
+    BINDING_OVERRIDES_MAX, BindingManifest, BindingOverride, BindingProfileError, Command,
+    ReviewBindingProfile,
+};
 use kvim_path::WorktreeRelativePath;
 #[cfg(feature = "worktree")]
 use kvim_path::WorktreeRoot;
@@ -295,6 +298,8 @@ pub struct ReviewConfig {
     root_label: Box<str>,
     diff: DiffSettings,
     resize_step_cells: u16,
+    binding_profile: ReviewBindingProfile,
+    binding_overrides: Vec<BindingOverride>,
 }
 impl ReviewConfig {
     /// Creates configuration for one caller-owned rectangle.
@@ -305,6 +310,8 @@ impl ReviewConfig {
             root_label: "Review".into(),
             diff: DiffSettings::default(),
             resize_step_cells: 6,
+            binding_profile: ReviewBindingProfile::Standalone,
+            binding_overrides: Vec::new(),
         }
     }
     /// Sets and owns the bounded panel heading.
@@ -315,6 +322,34 @@ impl ReviewConfig {
         self.root_label = label.into();
         Ok(self)
     }
+    /// Selects an independent review binding profile.
+    #[must_use]
+    pub fn binding_profile(mut self, profile: ReviewBindingProfile) -> Self {
+        self.binding_profile = profile;
+        self
+    }
+
+    /// Sets bounded semantic review binding overrides.
+    ///
+    /// The method validates the count before it copies the caller's slice.
+    /// Remaining review-domain and registry validation occurs during construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReviewError::Bindings`] when the override count exceeds the
+    /// published limit.
+    pub fn binding_overrides(mut self, overrides: &[BindingOverride]) -> Result<Self, ReviewError> {
+        if overrides.len() > BINDING_OVERRIDES_MAX {
+            return Err(ReviewError::Bindings(
+                BindingProfileError::TooManyOverrides {
+                    overrides: overrides.len(),
+                },
+            ));
+        }
+        self.binding_overrides = overrides.to_vec();
+        Ok(self)
+    }
+
     /// Selects the initial view.
     #[must_use]
     pub fn view(mut self, view: DiffView) -> Self {
@@ -653,6 +688,9 @@ pub enum ReviewError {
     /// A snapshot names different candidate identities.
     #[error("the snapshot candidate identity does not match this review")]
     SnapshotCandidate,
+    /// The independent review binding profile is invalid.
+    #[error(transparent)]
+    Bindings(#[from] BindingProfileError),
     /// Worktree capture is unavailable for a supplied-candidate surface.
     #[cfg(feature = "worktree")]
     #[error("this review surface has no worktree capture lifecycle")]
@@ -749,6 +787,7 @@ pub struct ReviewSurface {
     staged_id: Option<ReviewCandidateId>,
     unstaged_id: Option<ReviewCandidateId>,
     events: VecDeque<ReviewEvent>,
+    bindings: BindingManifest,
     #[cfg(feature = "worktree")]
     worktree: Option<WorktreeReview>,
 }
@@ -781,6 +820,9 @@ impl ReviewSurface {
             return Err(ReviewError::RootLabelCapacity);
         }
         validate_candidates(&candidates)?;
+        let bindings = config
+            .binding_profile
+            .manifest_with_overrides(&config.binding_overrides)?;
         let mut staged = None;
         let mut unstaged = None;
         let mut staged_id = None;
@@ -812,9 +854,19 @@ impl ReviewSurface {
             staged_id,
             unstaged_id,
             events: VecDeque::with_capacity(REVIEW_EVENTS_MAX),
+            bindings,
             #[cfg(feature = "worktree")]
             worktree: None,
         })
+    }
+
+    /// Returns the bounded review-only binding manifest.
+    ///
+    /// This manifest is independent from editor entry bindings. Removing
+    /// `Command::OpenReview` from an editor profile cannot change it.
+    #[must_use]
+    pub const fn bindings(&self) -> &BindingManifest {
+        &self.bindings
     }
 
     /// Reduces one semantic input.
@@ -1414,6 +1466,10 @@ impl ReviewSurface {
         let unstaged_id = unstaged
             .as_ref()
             .map(|candidate| ReviewCandidateId(candidate.revision().to_hex().into_boxed_str()));
+        let bindings = config
+            .binding_profile
+            .manifest_with_overrides(&config.binding_overrides)
+            .expect("worktree review bindings were validated before side effects");
         let model = ReviewModel::new(
             staged,
             unstaged,
@@ -1427,6 +1483,7 @@ impl ReviewSurface {
             staged_id,
             unstaged_id,
             events: VecDeque::with_capacity(REVIEW_EVENTS_MAX),
+            bindings,
             worktree: None,
         }
     }
@@ -1691,6 +1748,9 @@ fn validate_review_config(config: &ReviewConfig) -> Result<(), ReviewError> {
     if config.root_label.len() > REVIEW_ROOT_LABEL_BYTES_MAX {
         return Err(ReviewError::RootLabelCapacity);
     }
+    config
+        .binding_profile
+        .manifest_with_overrides(&config.binding_overrides)?;
     Ok(())
 }
 

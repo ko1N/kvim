@@ -77,6 +77,7 @@ pub use profile::{
     BINDING_MANIFEST_ENTRIES_MAX, BINDING_OVERRIDES_MAX, BINDING_REPLACEMENTS_MAX,
     BindingInterruptionPolicy, BindingManifest, BindingManifestEntry, BindingOverride,
     BindingProfile, BindingProfileError, BindingReplacement, BindingReplacementError,
+    ReviewBindingProfile,
 };
 pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer, is_register_name};
 pub use registry::{Binding, Registry, RegistryError, WhichKeyRow, WhichKeyTarget};

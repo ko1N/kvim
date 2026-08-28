@@ -1,4 +1,5 @@
 use super::*;
+use kvim_input::{BindingOverride, BindingScope, Command, Key, KeyCode, ReviewBindingProfile};
 use ratatui::layout::Rect;
 use std::path::Path;
 
@@ -26,6 +27,85 @@ fn surface(id: &str, line: &str) -> ReviewSurface {
         ReviewConfig::new(Rect::new(0, 0, 80, 16)),
     )
     .expect("test candidate is valid")
+}
+
+#[test]
+fn review_bindings_are_independent_from_editor_entry_and_navigation() {
+    let standalone = surface("candidate-1", "one");
+    assert!(standalone.bindings().entries().iter().any(|entry| {
+        entry.command() == Command::NextReviewSection
+            && entry.sequence().keys() == [Key::plain(KeyCode::Tab)]
+    }));
+
+    let config = ReviewConfig::new(Rect::new(0, 0, 80, 16))
+        .binding_profile(ReviewBindingProfile::HostResolved);
+    let mut host = ReviewSurface::from_candidates(&[candidate("candidate-1", "one")], config)
+        .expect("host review bindings are valid");
+    assert!(
+        !host
+            .bindings()
+            .entries()
+            .iter()
+            .any(|entry| { entry.sequence().keys() == [Key::plain(KeyCode::Tab)] })
+    );
+    assert!(host.bindings().entries().iter().any(|entry| {
+        entry.command() == Command::NextReviewSection
+            && entry.sequence().keys()
+                == [
+                    Key::plain(KeyCode::Char(']')),
+                    Key::plain(KeyCode::Char('s')),
+                ]
+    }));
+    assert_eq!(
+        host.input(ReviewInput::command(ReviewCommand::NextSection)),
+        Ok(ReviewUpdate::Unchanged),
+        "semantic navigation remains callable without a physical editor entry binding"
+    );
+}
+
+#[test]
+fn review_binding_overrides_reject_editor_scopes() {
+    let replacement = kvim_input::BindingReplacement::new(
+        BindingScope::Mode(kvim_input::Mode::Normal),
+        &[Key::plain(KeyCode::Char('x'))],
+        Command::NextHunk,
+    )
+    .expect("the sequence is bounded");
+    let result = ReviewSurface::from_candidates(
+        &[candidate("candidate-1", "one")],
+        ReviewConfig::new(Rect::new(0, 0, 80, 16))
+            .binding_overrides(&[BindingOverride::Replace(replacement)])
+            .expect("the override count is bounded"),
+    );
+    assert!(matches!(result, Err(ReviewError::Bindings(_))));
+}
+
+#[test]
+fn review_config_rejects_override_count_before_copying() {
+    let overrides = vec![BindingOverride::Disable(Command::NextHunk); BINDING_OVERRIDES_MAX + 1];
+    let result = ReviewConfig::new(Rect::new(0, 0, 80, 16)).binding_overrides(&overrides);
+    assert!(matches!(
+        result,
+        Err(ReviewError::Bindings(
+            BindingProfileError::TooManyOverrides { overrides }
+        )) if overrides == BINDING_OVERRIDES_MAX + 1
+    ));
+}
+
+#[test]
+fn review_binding_overrides_reject_editor_commands() {
+    let config = ReviewConfig::new(Rect::new(0, 0, 80, 16))
+        .binding_overrides(&[BindingOverride::Enable(Command::OpenReview)])
+        .expect("the override count is bounded");
+    let result = ReviewSurface::from_candidates(&[candidate("candidate-1", "one")], config);
+    assert!(matches!(
+        result,
+        Err(ReviewError::Bindings(
+            BindingProfileError::InconsistentCommand {
+                command: Command::OpenReview
+            }
+        ))
+    ));
 }
 
 #[test]

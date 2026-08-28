@@ -386,6 +386,32 @@ fn presentation_ownership_must_match_the_effective_resolver() {
 }
 
 #[test]
+fn embedded_profile_keeps_semantic_review_entry_executable() {
+    let root = TestRoot::new("semantic-review-entry");
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .binding_mode(WorktreeBindingMode::HostResolved {
+            reserved_escape: Key::ctrl(KeyCode::Char(']')),
+        })
+        .presentation(WorktreePresentation::host_owned_which_key())
+        .open()
+        .unwrap();
+    assert!(editor.binding_context().is_some());
+    assert!(
+        !editor
+            .binding_manifest()
+            .expect("host-resolved mode publishes a manifest")
+            .entries()
+            .iter()
+            .any(|entry| { entry.command() == Command::OpenReview })
+    );
+
+    editor
+        .command(Command::OpenReview, None, None, Duration::ZERO)
+        .expect("direct semantic review entry remains executable");
+    assert_eq!(editor.input_context().scope, BindingScope::Review);
+}
+
+#[test]
 fn host_resolved_dispatch_and_cancellation_are_addressed_and_atomic() {
     let root = TestRoot::new("host-resolved-cancel");
     let escape = Key::ctrl(KeyCode::Char(']'));

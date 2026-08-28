@@ -1086,11 +1086,18 @@ bindings with validated mappings. An override set rejects conflicting enable,
 disable, and replacement declarations for one command. It also rejects
 duplicate sequences, oversized sequences, and prefix pairs before dispatch.
 
-A planned standalone `ReviewSurface` has independent review bindings. It
-supports `from_candidates` without I/O and `for_worktree` with bounded Git
-capture. Integrated and standalone review share private state, relocation, and
-painting. Snapshots preserve bounded review position and read state. The host
-persists comments and assigns all host-domain meaning.
+`kvim_input::ReviewBindingProfile` now configures a standalone review separately
+from editor bindings. `Standalone` keeps all first-release review keys, including
+`Tab` and `Shift-Tab`. `HostResolved` leaves those two keys unclaimed and
+publishes `]s` and `[s` for next and previous review sections. Both profiles use
+the shared bounded manifest and semantic override validation. Review overrides
+must stay in `BindingScope::Review`.
+
+`ReviewConfig` selects this profile and accepts independent bounded overrides.
+`ReviewSurface::bindings` publishes the realized review-only manifest for host
+arbitration. The host submits the selected semantic `ReviewInput`; the review
+facade does not resolve raw keys. Disabling `Command::OpenReview` in an editor
+profile does not change an existing review surface or its semantic navigation.
 
 Merged host-global and focused-surface leader resolution uses
 `WorktreeBindingModel`, the generic registry, and the shared resolver.

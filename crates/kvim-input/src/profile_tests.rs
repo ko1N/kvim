@@ -226,6 +226,107 @@ fn manifest_publishes_scope_semantics_and_command_metadata() {
 }
 
 #[test]
+fn review_profiles_separate_section_tabs_from_secondary_bindings() {
+    let standalone = ReviewBindingProfile::Standalone
+        .registry()
+        .expect("the standalone review profile is valid");
+    assert_eq!(
+        standalone.command(BindingScope::Review, &[Key::plain(KeyCode::Tab)]),
+        Some(Command::NextReviewSection)
+    );
+    assert_eq!(
+        standalone.command(BindingScope::Review, &[ch(']'), ch('s')]),
+        None
+    );
+
+    let host = ReviewBindingProfile::HostResolved
+        .registry()
+        .expect("the host-resolved review profile is valid");
+    assert_eq!(
+        host.command(BindingScope::Review, &[Key::plain(KeyCode::Tab)]),
+        None
+    );
+    assert_eq!(
+        host.command(BindingScope::Review, &[Key::plain(KeyCode::BackTab)]),
+        None
+    );
+    assert_eq!(
+        host.command(BindingScope::Review, &[ch(']'), ch('s')]),
+        Some(Command::NextReviewSection)
+    );
+    assert_eq!(
+        host.command(BindingScope::Review, &[ch('['), ch('s')]),
+        Some(Command::PreviousReviewSection)
+    );
+    assert!(
+        host.bindings(BindingScope::Mode(Mode::Normal))
+            .next()
+            .is_none()
+    );
+}
+
+#[test]
+fn review_overrides_reject_commands_outside_review_domain() {
+    for override_ in [
+        BindingOverride::Enable(Command::OpenReview),
+        BindingOverride::Disable(Command::Undo),
+        BindingOverride::Replace(replacement(BindingScope::Review, &[ch('x')], Command::Undo)),
+    ] {
+        assert!(matches!(
+            ReviewBindingProfile::Standalone.with_overrides(&[override_]),
+            Err(BindingProfileError::InconsistentCommand { .. })
+        ));
+    }
+}
+
+#[test]
+fn review_profiles_use_shared_overrides_conflicts_and_manifest_metadata() {
+    let custom = replacement(BindingScope::Review, &[ch('x')], Command::NextHunk);
+    let registry = ReviewBindingProfile::HostResolved
+        .with_overrides(&[BindingOverride::Replace(custom)])
+        .expect("the review replacement is valid");
+    assert_eq!(
+        registry.command(BindingScope::Review, &[ch('x')]),
+        Some(Command::NextHunk)
+    );
+    assert!(matches!(
+        ReviewBindingProfile::Standalone.with_overrides(&[BindingOverride::Replace(replacement(
+            BindingScope::Mode(Mode::Normal),
+            &[ch('x')],
+            Command::NextHunk,
+        ))]),
+        Err(BindingProfileError::InconsistentScope { .. })
+    ));
+    assert!(matches!(
+        ReviewBindingProfile::Standalone.with_overrides(&[BindingOverride::Replace(replacement(
+            BindingScope::Review,
+            &[ch('j')],
+            Command::NextHunk,
+        ))]),
+        Err(BindingProfileError::Registry(
+            RegistryError::DuplicateSequence { .. }
+        ))
+    ));
+
+    let manifest = ReviewBindingProfile::HostResolved
+        .manifest()
+        .expect("the review manifest is valid");
+    assert!(
+        manifest
+            .entries()
+            .iter()
+            .all(|entry| entry.scope() == BindingScope::Review)
+    );
+    let section = manifest
+        .entries()
+        .iter()
+        .find(|entry| entry.command() == Command::NextReviewSection)
+        .expect("the secondary section binding is published");
+    assert_eq!(section.group(), Command::NextReviewSection.group());
+    assert_eq!(section.description(), Command::NextReviewSection.label());
+}
+
+#[test]
 fn manifest_applies_semantic_overrides() {
     let manifest = BindingProfile::Standalone
         .manifest_with_overrides(&[BindingOverride::Disable(Command::OpenReview)])
