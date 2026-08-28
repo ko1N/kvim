@@ -7,10 +7,31 @@
 //! palette is tokyonight night with a darkened base color and surface color.
 //! See `docs/windows.md`.
 
-use kvim_language::{MarkupRole, SyntaxRole};
 use ratatui::style::{Color, Modifier, Style};
 
-use super::file_sidebar::FileRowGit;
+#[cfg(feature = "editor")]
+pub(crate) use super::file_sidebar::FileRowGit;
+#[cfg(feature = "editor")]
+use kvim_language::{MarkupRole, SyntaxRole};
+
+/// The Git state used by pure review painting.
+#[cfg(not(feature = "editor"))]
+/// The source-control state used by review painting.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileRowGit {
+    /// Ignored by source control.
+    Ignored,
+    /// Not tracked by source control.
+    Untracked,
+    /// Changed in the index only.
+    Staged,
+    /// Changed in the worktree only.
+    Modified,
+    /// Changed in both the index and worktree.
+    StagedAndModified,
+    /// Holds an unresolved conflict.
+    Conflicted,
+}
 
 /// The editor background.
 const BASE: Color = Color::Rgb(0x11, 0x13, 0x17);
@@ -67,27 +88,35 @@ const INFO: Color = Color::Rgb(0x0d, 0xb9, 0xd7);
 const HINT: Color = Color::Rgb(0x1a, 0xbc, 0x9c);
 
 /// The color of an attribute, a macro, and a preprocessor directive.
+#[cfg(feature = "editor")]
 const SYNTAX_ATTRIBUTE: Color = Color::Rgb(0x7d, 0xcf, 0xff);
 
 /// The color of a comment.
+#[cfg(feature = "editor")]
 const SYNTAX_COMMENT: Color = Color::Rgb(0x56, 0x5f, 0x89);
 
 /// The color of a constructor and of a statement.
+#[cfg(feature = "editor")]
 const SYNTAX_CONSTRUCTOR: Color = Color::Rgb(0xbb, 0x9a, 0xf7);
 
 /// The color of a delimiter and of an operator.
+#[cfg(feature = "editor")]
 const SYNTAX_OPERATOR: Color = Color::Rgb(0x89, 0xdd, 0xff);
 
 /// The color of a keyword.
+#[cfg(feature = "editor")]
 const SYNTAX_KEYWORD: Color = Color::Rgb(0x9d, 0x7c, 0xd8);
 
 /// The color of a property.
+#[cfg(feature = "editor")]
 const SYNTAX_PROPERTY: Color = Color::Rgb(0x73, 0xda, 0xca);
 
 /// The color of a string literal.
+#[cfg(feature = "editor")]
 const SYNTAX_STRING: Color = Color::Rgb(0x9e, 0xce, 0x6a);
 
 /// The color of a type name.
+#[cfg(feature = "editor")]
 const SYNTAX_TYPE: Color = Color::Rgb(0x2a, 0xc3, 0xde);
 
 /// The meaning of one icon.
@@ -231,29 +260,20 @@ pub enum ThemeRole {
     /// One icon of the file tree or of the which-key overlay.
     Icon(IconRole),
     /// One markup role of one server answer.
+    #[cfg(feature = "editor")]
     Markup(MarkupRole),
     /// One glyph that the float draws for a markup document, such as a
     /// thematic break or the marker of a list item.
     MarkupStructure,
     /// One syntax role of a language adapter.
+    #[cfg(feature = "editor")]
     Syntax(SyntaxRole),
 }
 
 /// The one style lookup of the editor.
 ///
-/// # Examples
-///
-/// ```
-/// use kvim_tui::{Theme, ThemeRole};
-///
-/// let theme = Theme::new();
-/// // The editor background is the darkened base color of the palette.
-/// let text = theme.style(ThemeRole::Text);
-/// assert_eq!(text.bg, Some(ratatui::style::Color::Rgb(0x11, 0x13, 0x17)));
-/// // The winbar band uses the darkened surface color instead.
-/// let winbar = theme.style(ThemeRole::Winbar);
-/// assert_eq!(winbar.bg, Some(ratatui::style::Color::Rgb(0x16, 0x1a, 0x20)));
-/// ```
+/// The default `editor` feature publishes this internal palette through the
+/// normal lower-level API. Pure review hosts use it only through `kvim-embed`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Theme {
     base: Color,
@@ -388,12 +408,14 @@ impl Theme {
             // A markup role decorates the surface band of the float, so it
             // carries a foreground color and a modifier only. A background of
             // its own would cut a hole into that band. See `docs/windows.md`.
+            #[cfg(feature = "editor")]
             ThemeRole::Markup(role) => markup_style(role),
             ThemeRole::MarkupStructure => Style::new().fg(NON_TEXT),
             ThemeRole::Error => Style::new().fg(ERROR),
             ThemeRole::Warning => Style::new().fg(WARNING),
             ThemeRole::Info => Style::new().fg(INFO),
             ThemeRole::Hint => Style::new().fg(HINT),
+            #[cfg(feature = "editor")]
             ThemeRole::Syntax(syntax) => syntax_style(syntax),
         }
     }
@@ -406,6 +428,7 @@ impl Theme {
 ///
 /// The role vocabulary is non-exhaustive, so a role that a later release of
 /// `kvim-syntax` adds paints as plain text until this theme names it.
+#[cfg(feature = "editor")]
 fn syntax_style(role: SyntaxRole) -> Style {
     let style = Style::new();
     match role {
@@ -434,6 +457,7 @@ fn syntax_style(role: SyntaxRole) -> Style {
 /// carries the italic one, and the link role carries the underline, so a reader
 /// separates them without a color of their own. A code span takes the color of
 /// a string literal, because both hold source text. See `docs/windows.md`.
+#[cfg(feature = "editor")]
 fn markup_style(role: MarkupRole) -> Style {
     let style = Style::new();
     match role {
@@ -472,6 +496,6 @@ const fn icon_color(role: IconRole) -> Color {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "editor"))]
 #[path = "theme_tests.rs"]
 mod tests;

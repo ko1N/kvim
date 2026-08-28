@@ -112,18 +112,25 @@ impl LanguageServerId {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{LanguageAdapter, RustAdapter};
+/// use kvim_language::{LanguageServerDeclaration, ServerFormatting};
 /// use kvim_settings::LanguageSettings;
 ///
-/// let declaration = *RustAdapter::new()
-///     .language_servers()
-///     .first()
-///     .expect("the Rust adapter declares a language server");
-/// assert_eq!(declaration.id, "rust_analyzer");
-/// assert_eq!(declaration.language_id, "rust");
-/// // The adapter maps the language-neutral setting onto its own server option.
-/// let options = declaration.options(LanguageSettings::default());
-/// assert_eq!(options["check"]["command"], "clippy");
+/// let declaration = LanguageServerDeclaration {
+///     id: "example",
+///     program: "example-language-server",
+///     args: &["--stdio"],
+///     language_id: "example",
+///     formatting: ServerFormatting::Disabled,
+///     root_markers: &[],
+///     initialization_options: |_| serde_json::Value::Null,
+///     workspace_settings: None,
+/// };
+/// assert_eq!(declaration.id, "example");
+/// assert_eq!(declaration.language_id, "example");
+/// assert_eq!(
+///     declaration.options(LanguageSettings::default()),
+///     serde_json::Value::Null,
+/// );
 /// ```
 #[derive(Clone, Copy)]
 pub struct LanguageServerDeclaration {
@@ -271,7 +278,7 @@ impl RootMarkers {
 /// A marker carries no directory component, so the probe joins it to the root
 /// without leaving that root.
 #[must_use]
-fn marker_is_valid(marker: &str) -> bool {
+pub(super) fn marker_is_valid(marker: &str) -> bool {
     !marker.is_empty() && marker != "." && marker != ".." && !marker.contains(path::is_separator)
 }
 

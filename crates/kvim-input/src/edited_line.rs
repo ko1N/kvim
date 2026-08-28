@@ -16,7 +16,39 @@
 //!
 //! `examples/edited_line.rs` holds one complete line of a host.
 
+use std::fmt;
+
 use super::resolver::PromptEdit;
+
+/// A public edited-line seed did not establish its bound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditedLineError {
+    /// The maximum character count is zero.
+    ZeroLimit,
+    /// The seed exceeds the supplied character limit.
+    SeedTooLong {
+        /// The seed character count.
+        chars: usize,
+        /// The inclusive character limit.
+        chars_max: usize,
+    },
+}
+
+impl fmt::Display for EditedLineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroLimit => {
+                formatter.write_str("the edited-line character limit must not be zero")
+            }
+            Self::SeedTooLong { chars, chars_max } => write!(
+                formatter,
+                "the edited-line seed holds {chars} characters, above the {chars_max}-character limit"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for EditedLineError {}
 
 /// What one applied edit did to an [`EditedLine`].
 ///
@@ -66,7 +98,8 @@ pub enum LineChange {
 /// ```
 /// use kvim_input::{EditedLine, LineChange, PromptEdit};
 ///
-/// let mut line = EditedLine::opened(String::from("write"), 16);
+/// let mut line = EditedLine::opened(String::from("write"), 16)
+///     .expect("the seed meets the limit");
 /// assert_eq!(line.cursor(), 5);
 ///
 /// assert_eq!(line.apply(PromptEdit::CursorLineStart), LineChange::CursorMoved);
@@ -97,11 +130,15 @@ impl EditedLine {
     /// ```
     /// use kvim_input::EditedLine;
     ///
-    /// let line = EditedLine::opened(String::from("näme"), 8);
+    /// let line = EditedLine::opened(String::from("näme"), 8)
+    ///     .expect("the seed meets the limit");
     /// assert_eq!(line.cursor(), 4);
     /// ```
-    #[must_use]
-    pub fn opened(text: String, chars_max: usize) -> Self {
+    /// # Errors
+    ///
+    /// Returns [`EditedLineError`] when the limit is zero or the seed exceeds
+    /// it.
+    pub fn opened(text: String, chars_max: usize) -> Result<Self, EditedLineError> {
         let cursor = text.chars().count();
         Self::opened_at(text, cursor, chars_max)
     }
@@ -117,21 +154,31 @@ impl EditedLine {
     /// ```
     /// use kvim_input::EditedLine;
     ///
-    /// let line = EditedLine::opened_at(String::from("notes.md"), 5, 16);
+    /// let line = EditedLine::opened_at(String::from("notes.md"), 5, 16)
+    ///     .expect("the seed meets the limit");
     /// assert_eq!(line.cursor(), 5);
     /// ```
-    #[must_use]
-    pub fn opened_at(text: String, cursor: usize, chars_max: usize) -> Self {
+    /// # Errors
+    ///
+    /// Returns [`EditedLineError`] when the limit is zero or the seed exceeds
+    /// it. A cursor above the seed still clamps to the end.
+    pub fn opened_at(
+        text: String,
+        cursor: usize,
+        chars_max: usize,
+    ) -> Result<Self, EditedLineError> {
+        if chars_max == 0 {
+            return Err(EditedLineError::ZeroLimit);
+        }
         let chars = text.chars().count();
-        debug_assert!(
-            chars <= chars_max,
-            "the caller states a bound that its own seed meets"
-        );
-        Self {
+        if chars > chars_max {
+            return Err(EditedLineError::SeedTooLong { chars, chars_max });
+        }
+        Ok(Self {
             text,
             cursor: cursor.min(chars),
             chars_max,
-        }
+        })
     }
 
     /// Returns the text of the line.

@@ -1,17 +1,19 @@
 use std::cell::RefCell;
+use std::error::Error;
 use std::ffi::OsString;
 use std::path::PathBuf;
 use std::time::Duration;
 
 use serde_json::{Value, json};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
 use tokio::process::{Child, Command};
 use tokio::sync::mpsc;
 use tokio::time;
 
 use super::{
     ErrorRecorder, LSP_RESULT_ID_BYTES_MAX, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX,
-    ServerProcess, ServerReport, SynchronizationMode, TransportFactory, diagnostics_model,
-    synchronization_mode,
+    ServerProcess, ServerReport, SynchronizationMode, Transport, TransportFactory,
+    diagnostics_model, synchronization_mode,
 };
 
 /// The shell that runs every child of these tests.
@@ -84,6 +86,59 @@ async fn is_running(pid: u32) -> bool {
         .await
         .expect("the probe runs")
         .success()
+}
+
+#[tokio::test]
+async fn server_process_opens_a_fresh_custom_transport_for_each_attempt() {
+    let attempts = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let created = attempts.clone();
+    let mut factory = TransportFactory::Custom(Box::new(move || {
+        created.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let (client, mut server) = duplex(256);
+        let (client_output, client_input) = tokio::io::split(client);
+        tokio::spawn(async move {
+            let mut byte = [0_u8; 1];
+            server
+                .read_exact(&mut byte)
+                .await
+                .expect("read request byte");
+            server.write_all(&byte).await.expect("write response byte");
+        });
+        Ok(Transport::new(client_input, client_output))
+    }));
+
+    for expected in *b"ab" {
+        let (process, mut streams) = ServerProcess::open(&mut factory, |_| {})
+            .expect("public owner accepts custom transport");
+        streams
+            .writer
+            .notify("test/attempt", json!({ "byte": expected }))
+            .await
+            .expect("write request frame");
+        drop(streams);
+        process.close().await;
+    }
+    assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
+}
+
+#[test]
+fn server_process_preserves_a_custom_transport_error_source() {
+    let mut factory = TransportFactory::Custom(Box::new(|| {
+        Err(super::LspError::Io(std::io::Error::new(
+            std::io::ErrorKind::ConnectionRefused,
+            "fixture refused connection",
+        )))
+    }));
+
+    let error = ServerProcess::open(&mut factory, |_| {})
+        .err()
+        .expect("the custom transport fails");
+    assert!(matches!(error, super::LspError::Io(_)));
+    let source = error
+        .source()
+        .and_then(|source| source.downcast_ref::<std::io::Error>())
+        .expect("the typed input/output cause remains available");
+    assert_eq!(source.kind(), std::io::ErrorKind::ConnectionRefused);
 }
 
 #[test]

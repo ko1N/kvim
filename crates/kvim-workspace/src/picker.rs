@@ -12,7 +12,6 @@
 
 use std::path::{Path, PathBuf};
 
-use kvim_fuzzy::rank;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_ui::{Selector, SelectorCandidate};
 
@@ -515,56 +514,6 @@ impl Picker {
             PickerKind::Files | PickerKind::Buffers => query,
         }
     }
-}
-
-/// Returns the indexes of the candidates that `query` keeps, with the best
-/// first.
-///
-/// The function is pure, so one query and one candidate list always produce one
-/// order. The picker ranks its rows with it, and the command-line completion
-/// ranks the path argument of `:e` with it, so one ranking rule serves both.
-/// See `docs/files.md`.
-///
-/// The order is total, so two equal queries always produce one order:
-///
-/// 1. the higher score first,
-/// 2. then the shorter row,
-/// 3. then the earlier candidate of the source.
-///
-/// An empty query keeps every candidate and the order of the source, because
-/// every candidate then holds the same score. The query stops at
-/// [`PICKER_QUERY_CHARS_MAX`] characters.
-///
-/// The ranking rule itself lives in [`kvim_fuzzy::rank`]. This function is the
-/// clipping boundary: it clips `query`, then hands borrowed name and
-/// directory pairs to that one shared rule, so the command-line completion
-/// ranks a candidate list on every typed character with no allocation beyond
-/// the returned index list.
-///
-/// # Examples
-///
-/// ```
-/// use kvim_path::{WorktreeRelativePath, WorktreeRoot};
-/// use kvim_workspace::{Candidate, rank_candidates};
-///
-/// let root = WorktreeRoot::open(std::env::current_dir()?)?;
-/// let candidates = [
-///     Candidate::file(&root, WorktreeRelativePath::new("src/session.rs")?),
-///     Candidate::file(&root, WorktreeRelativePath::new("src/main.rs")?),
-/// ];
-/// assert_eq!(rank_candidates("main", &candidates), [1]);
-/// assert_eq!(rank_candidates("", &candidates), [0, 1]);
-/// # Ok::<(), Box<dyn std::error::Error>>(())
-/// ```
-#[must_use]
-pub fn rank_candidates(query: &str, candidates: &[Candidate]) -> Vec<usize> {
-    let query = clip(query, PICKER_QUERY_CHARS_MAX);
-    rank(
-        &query,
-        candidates
-            .iter()
-            .map(|candidate| (candidate.name.as_str(), candidate.directory.as_str())),
-    )
 }
 
 #[cfg(test)]

@@ -1,8 +1,7 @@
 //! Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo.
 //!
-//! The crate performs no input and no output. It depends on no other crate
-//! except `settings`. A caller reads a file elsewhere and hands the text to
-//! [`TextBuffer::from_text`].
+//! The crate performs no input and no output. A caller reads a file elsewhere
+//! and hands the text and a validated limit to [`TextBuffer::from_text`].
 //!
 //! The crate keeps its parts in private modules and re-exports the public
 //! items from this file. `ropey` is the text storage. The rope stays private, so
@@ -12,10 +11,11 @@
 //! # Examples
 //!
 //! ```
-//! use kvim_core::{CharRange, EditTransaction, TextBuffer, TextChange};
-//! use kvim_settings::FileSettings;
+//! use kvim_core::{
+//!     BufferBytesMax, CharRange, EditTransaction, TextBuffer, TextChange,
+//! };
 //!
-//! let mut buffer = TextBuffer::from_text("let x = 1;\n", &FileSettings::default())
+//! let mut buffer = TextBuffer::from_text("let x = 1;\n", BufferBytesMax::default())
 //!     .expect("the text is small");
 //!
 //! let cursor = buffer.char_position(8).expect("the position exists");
@@ -40,7 +40,10 @@ mod transaction;
 #[cfg(test)]
 mod tests;
 
-pub use buffer::{BufferVersion, EditError, FinalLineEnding, LineEnding, LoadError, TextBuffer};
+pub use buffer::{
+    BUFFER_BYTES_MAX, BufferBytesMax, BufferBytesMaxError, BufferGeneration, BufferRevision,
+    BufferVersion, EditError, FinalLineEnding, LineEnding, LoadError, TextBuffer,
+};
 pub use coordinates::{
     ByteOffset, CharPosition, CoordinateError, LineIndex, SourceColumn, TerminalColumn,
 };

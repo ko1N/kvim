@@ -18,7 +18,9 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use kvim_core::{BufferVersion, CharPosition, CharRange, EditTransaction, TextBuffer, TextChange};
+use kvim_core::{
+    BufferRevision, BufferVersion, CharPosition, CharRange, EditTransaction, TextBuffer, TextChange,
+};
 use kvim_runtime::{ProcessOutput, ProcessRequest, RuntimeError};
 use kvim_settings::FILE_BYTES_MAX;
 
@@ -62,14 +64,20 @@ pub enum FormatterArgument {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{FormatterArgument, LanguageAdapter, MarkdownAdapter};
+/// use kvim_language::FormatterArgument;
 ///
+/// let argument = FormatterArgument::DocumentPath;
+/// assert_eq!(argument, FormatterArgument::DocumentPath);
+///
+/// # #[cfg(feature = "grammar-markdown")] {
+/// use kvim_language::{LanguageAdapter, MarkdownAdapter};
 /// let declaration = MarkdownAdapter::new()
 ///     .external_formatter()
-///     .expect("the Markdown adapter declares a formatter");
+///     .expect("the feature bundles Markdown with its formatter declaration");
 /// assert_eq!(declaration.program, "prettier");
 /// // `prettier` selects its parser from the file name of the document.
 /// assert_eq!(declaration.args[1], FormatterArgument::DocumentPath);
+/// # }
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FormatterDeclaration {
@@ -134,31 +142,31 @@ impl FormatterFailure {
     }
 }
 
-/// One bounded run of the external formatter of one buffer version.
+/// One bounded run of the external formatter over one buffer revision.
 ///
 /// # Examples
 ///
 /// ```
 /// use std::path::PathBuf;
 ///
-/// use kvim_core::TextBuffer;
-/// use kvim_language::{FormatterRequest, LanguageAdapter, NixAdapter};
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, TextBuffer};
+/// use kvim_language::{FormatterArgument, FormatterDeclaration, FormatterRequest};
 ///
-/// let declaration = NixAdapter::new()
-///     .external_formatter()
-///     .expect("the Nix adapter declares a formatter");
-/// let buffer = TextBuffer::from_text("{  }\n", &FileSettings::default())
+/// static DECLARATION: FormatterDeclaration = FormatterDeclaration {
+///     program: "formatter",
+///     args: &[FormatterArgument::DocumentPath],
+/// };
+/// let buffer = TextBuffer::from_text("text\n", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let request = FormatterRequest::new(
-///     declaration,
-///     PathBuf::from("/work/flake.nix"),
-///     buffer.version(),
+///     &DECLARATION,
+///     PathBuf::from("/work/document.txt"),
+///     buffer.revision(),
 ///     buffer.to_string(),
 /// );
 /// let command = request.command();
-/// assert_eq!(command.program, "nixfmt");
-/// assert_eq!(command.stdin, b"{  }\n");
+/// assert_eq!(command.program, "formatter");
+/// assert_eq!(command.stdin, b"text\n");
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormatterRequest {
@@ -166,8 +174,8 @@ pub struct FormatterRequest {
     declaration: &'static FormatterDeclaration,
     /// The document that the formatter formats.
     path: PathBuf,
-    /// The buffer version that produced the content below.
-    version: BufferVersion,
+    /// The buffer revision that produced the content below.
+    revision: BufferRevision,
     /// The exact buffer text of that version.
     content: String,
 }
@@ -181,7 +189,7 @@ impl FormatterRequest {
     pub fn new(
         declaration: &'static FormatterDeclaration,
         path: PathBuf,
-        version: BufferVersion,
+        revision: impl Into<BufferRevision>,
         content: String,
     ) -> Self {
         debug_assert!(
@@ -191,7 +199,7 @@ impl FormatterRequest {
         Self {
             declaration,
             path,
-            version,
+            revision: revision.into(),
             content,
         }
     }
@@ -202,10 +210,14 @@ impl FormatterRequest {
         &self.path
     }
 
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that this run formats.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the bounded command of one formatter run.
@@ -267,26 +279,30 @@ impl FormatterRequest {
             return Ok(None);
         }
         Ok(Some(FormattedDocument {
-            version: self.version,
+            revision: self.revision,
             text: formatted.to_owned(),
         }))
     }
 }
 
-/// The document that one external formatter produced for one buffer version.
+/// The document that one external formatter produced for one buffer revision.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormattedDocument {
-    /// The buffer version that produced the text below.
-    version: BufferVersion,
+    /// The buffer revision that produced the text below.
+    revision: BufferRevision,
     /// The formatted document.
     text: String,
 }
 
 impl FormattedDocument {
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced this document.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the formatted document.
@@ -310,7 +326,7 @@ impl FormattedDocument {
         buffer: &TextBuffer,
         cursor: CharPosition,
     ) -> Result<EditTransaction, FormatterFailure> {
-        if buffer.version().get() != self.version.get() {
+        if buffer.revision() != self.revision {
             return Err(FormatterFailure::Obsolete);
         }
         let (Ok(start), Ok(end)) = (

@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use kvim_path::WorktreeRelativePath;
 use kvim_ui::{RowKind, SidebarRow, SidebarState};
 
-use kvim_workspace::{DiffChange, DiffContent, FileDiff, GitStatus, LineOrigin, ReviewState};
+use kvim_workspace::{DiffChange, DiffContent, FileDiff, LineOrigin, ReviewState};
+
+use crate::theme::FileRowGit as GitStatus;
 
 /// The two sections that the panel shows.
 ///

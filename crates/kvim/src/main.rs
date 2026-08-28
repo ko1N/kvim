@@ -14,10 +14,9 @@ use std::error::Error;
 use std::path::PathBuf;
 use std::process::ExitCode;
 
-use kvim_language::LanguageRegistry;
+use kvim_embed::{WorktreeHostReportRequest, WorktreeHostWorkspace};
 use kvim_path::WorktreeRoot;
 use kvim_settings::EditorSettings;
-use kvim_tui::{HostReportRequest, HostWorkspace};
 use thiserror::Error as ErrorDerive;
 
 use crate::editor::PanicProbe;
@@ -133,7 +132,8 @@ fn workspace_root() -> Result<WorktreeRoot, String> {
 /// Returns the host report of this machine as plain text.
 ///
 /// The report names every external program that kvim runs, and whether this
-/// host holds it. `kvim-tui` owns the builder, and the `:diagnostics` command
+/// host holds it. The internal presentation layer owns the shared builder, and
+/// `kvim-embed` publishes this facade-owned wrapper. The `:diagnostics` command
 /// of the editor runs the same one, so the flag and the command can never
 /// disagree about what the host holds.
 ///
@@ -142,12 +142,12 @@ fn workspace_root() -> Result<WorktreeRoot, String> {
 /// bounded worker service instead. See `docs/architecture.md`.
 fn host_report() -> String {
     let workspace = match workspace_root() {
-        Ok(root) => HostWorkspace::Resolved {
+        Ok(root) => WorktreeHostWorkspace::Resolved {
             root: root.as_path().to_path_buf(),
         },
-        Err(reason) => HostWorkspace::Unresolved { reason },
+        Err(reason) => WorktreeHostWorkspace::Unresolved { reason },
     };
-    HostReportRequest::new(LanguageRegistry::first_release(), workspace).run()
+    WorktreeHostReportRequest::built_in(workspace).run()
 }
 
 /// Writes one error and every cause below it.

@@ -46,7 +46,7 @@ pub enum ViewportAlignment {
 /// use kvim_settings::{DisplaySettings, FileSettings};
 ///
 /// let text = "line\n".repeat(100);
-/// let buffer = TextBuffer::from_text(&text, &FileSettings::default())
+/// let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
 /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");
@@ -88,6 +88,17 @@ impl Viewport {
     #[must_use]
     pub const fn left_column(self) -> usize {
         self.left_column
+    }
+
+    /// Returns this viewport with a new first visible source column.
+    ///
+    /// Terminal renderers use this after they reconcile terminal-cell width.
+    #[must_use]
+    pub const fn with_left_column(self, left_column: usize) -> Self {
+        Self {
+            left_column,
+            ..self
+        }
     }
 
     /// Returns the window height, in rows.
@@ -145,7 +156,7 @@ impl Viewport {
     /// use kvim_settings::{DisplaySettings, FileSettings};
     ///
     /// let text = "line\n".repeat(100);
-    /// let buffer = TextBuffer::from_text(&text, &FileSettings::default())
+    /// let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
     /// let cells = NonZeroU16::new(80).expect("the literal 80 is not zero");

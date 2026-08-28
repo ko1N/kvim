@@ -177,7 +177,7 @@ pub enum TextObjectKind {
 /// use kvim_input::Command;
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("call(alpha)\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("call(alpha)\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let cursor = Cursor::clamped(&buffer, 0, 6, ColumnLimit::LastCharacter);
 ///

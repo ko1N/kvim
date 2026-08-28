@@ -450,10 +450,16 @@ const fn phase_of(pending: bool) -> Phase {
 /// Reports whether one character names a register.
 ///
 /// The accepted set is the ASCII alphanumeric characters, the unnamed register
-/// `"`, and the black-hole register `_`. Every other character is an invalid
-/// selection, which resets the register phase.
+/// `"`, and the black-hole register `_`. Every other character is invalid.
+///
+/// ```
+/// use kvim_input::is_register_name;
+///
+/// assert!(is_register_name('a'));
+/// assert!(!is_register_name('!'));
+/// ```
 #[inline]
-const fn is_register_name(value: char) -> bool {
+pub const fn is_register_name(value: char) -> bool {
     value.is_ascii_alphanumeric() || matches!(value, '"' | '_')
 }
 

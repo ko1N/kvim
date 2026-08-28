@@ -2,7 +2,6 @@ use std::path::Path;
 use std::sync::Arc;
 
 use kvim_core::TextBuffer;
-use kvim_settings::FileSettings;
 use tokio_util::sync::CancellationToken;
 
 use super::{
@@ -66,7 +65,7 @@ fn spans(document: &MarkupDocument, index: usize) -> &[HighlightSpan] {
 /// The path selects the adapter, so this helper takes the selection that
 /// an open file takes and never the one that a fence takes.
 fn buffer_spans(source: &str) -> Vec<HighlightSpan> {
-    let version = TextBuffer::from_text("", &FileSettings::default())
+    let version = TextBuffer::from_text("", kvim_core::BufferBytesMax::default())
         .expect("the empty text is small")
         .version();
     LanguageRegistry::first_release()

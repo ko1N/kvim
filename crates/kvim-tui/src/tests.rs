@@ -10,7 +10,7 @@ use ratatui::layout::Rect;
 use kvim_core::TextBuffer;
 use kvim_editor::EditingState;
 use kvim_input::Command;
-use kvim_settings::{DisplaySettings, FileSettings, HorizontalSplitPlacement, WindowSettings};
+use kvim_settings::{DisplaySettings, HorizontalSplitPlacement, WindowSettings};
 use kvim_workspace::BufferId;
 
 use super::buffer_view::WINBAR_ROWS;
@@ -192,7 +192,8 @@ fn a_split_and_a_terminal_resize_keep_the_scroll_offset() {
     // Scroll the window down and right, so both offsets leave the buffer start.
     let line = "x".repeat(400);
     let text = format!("{line}\n").repeat(200);
-    let buffer = TextBuffer::from_text(&text, &FileSettings::default()).expect("the text is small");
+    let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
+        .expect("the text is small");
     let mut state = tree.state(scrolled).expect("the window exists");
     EditingState::new().move_to(&buffer, &mut state, 120, 300);
     *tree.state_mut(scrolled).expect("the window exists") =
@@ -231,7 +232,8 @@ fn a_new_window_opens_at_the_place_of_its_source_window() {
     let source = tree.focused_window();
     let line = "y".repeat(400);
     let text = format!("{line}\n").repeat(200);
-    let buffer = TextBuffer::from_text(&text, &FileSettings::default()).expect("the text is small");
+    let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
+        .expect("the text is small");
     let mut state = tree.state(source).expect("the window exists");
     EditingState::new().move_to(&buffer, &mut state, 90, 200);
     *tree.state_mut(source).expect("the window exists") =

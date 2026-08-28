@@ -124,20 +124,35 @@ impl Registry {
 
     /// Builds the hardcoded first-release registry.
     ///
-    /// The table is `docs/input-actions.md`. The first release parses no
-    /// configuration file, so this is a cold-path bootstrap: an invalid table is
-    /// a programming error and must fail loudly at startup.
+    /// This is the explicit standalone profile. It preserves the historic
+    /// first-release table exactly.
     ///
     /// # Panics
     ///
     /// Panics when the hardcoded table breaks a registry rule.
     #[must_use]
     pub fn first_release() -> Self {
+        Self::standalone()
+    }
+
+    /// Builds the validated standalone binding profile.
+    ///
+    /// This profile preserves the first-release key table exactly.
+    ///
+    /// # Panics
+    ///
+    /// Panics when the hardcoded table breaks a registry rule.
+    #[must_use]
+    pub fn standalone() -> Self {
         let bindings = first_release_bindings();
         match Self::from_bindings(&bindings, PENDING_KEYS_MAX) {
             Ok(registry) => registry,
             Err(error) => panic!("the hardcoded first-release binding table is invalid: {error}"),
         }
+    }
+
+    pub(crate) fn first_release_bindings() -> Vec<Binding> {
+        first_release_bindings()
     }
 
     /// Returns the command that the exact sequence reaches in the scope.
@@ -358,6 +373,42 @@ fn add_tree(bindings: &mut Vec<Binding>, key: Key, command: Command) {
 /// Adds one binding of the file-tree sidebar over a key sequence.
 fn add_tree_keys(bindings: &mut Vec<Binding>, keys: &[Key], command: Command) {
     bindings.push(Binding::surface(BindingScope::Sidebar, keys, command));
+}
+
+pub(super) fn add_embedded_secondary_bindings(bindings: &mut Vec<Binding>) {
+    let normal = BindingScope::Mode(Mode::Normal);
+    bindings.push(Binding::surface(
+        normal,
+        &[ch(']'), ch('j')],
+        Command::JumpForward,
+    ));
+    bindings.push(Binding::surface(
+        normal,
+        &[ch('['), ch('j')],
+        Command::JumpBack,
+    ));
+    bindings.push(Binding::surface(
+        BindingScope::Review,
+        &[ch(']'), ch('s')],
+        Command::NextReviewSection,
+    ));
+    bindings.push(Binding::surface(
+        BindingScope::Review,
+        &[ch('['), ch('s')],
+        Command::PreviousReviewSection,
+    ));
+}
+
+pub(super) fn is_review_tab_navigation(sequence: &[Key]) -> bool {
+    sequence == [Key::plain(KeyCode::Tab)] || sequence == [Key::plain(KeyCode::BackTab)]
+}
+
+pub(super) fn is_embedded_host_navigation(scope: BindingScope, sequence: &[Key]) -> bool {
+    matches!(
+        scope,
+        BindingScope::Mode(Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
+            | BindingScope::Sidebar
+    ) && is_review_tab_navigation(sequence)
 }
 
 /// Builds the complete first-release binding table.

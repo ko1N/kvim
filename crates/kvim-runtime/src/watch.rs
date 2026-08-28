@@ -286,7 +286,6 @@ impl WatchCoverage {
 pub struct WatchBatch {
     root: Option<Arc<WorktreeRoot>>,
     directories: BTreeSet<PathBuf>,
-    content_changed: bool,
     fidelity: WatchFidelity,
     coverage: WatchCoverage,
 }
@@ -316,7 +315,6 @@ impl WatchBatch {
             None => self.root = Some(Arc::clone(&event.root)),
         }
         if !event.kind.changes_listing() {
-            self.content_changed = true;
             return;
         }
         let Some(directory) = event.path.parent() else {
@@ -364,12 +362,6 @@ impl WatchBatch {
     #[must_use]
     pub fn root(&self) -> Option<&WorktreeRoot> {
         self.root.as_deref()
-    }
-
-    /// Reports whether the burst changed the content or metadata of one entry.
-    #[must_use]
-    pub const fn changed_content(&self) -> bool {
-        self.content_changed
     }
 
     /// Returns whether the burst holds every event of its window.

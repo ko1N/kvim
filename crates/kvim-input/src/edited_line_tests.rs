@@ -7,7 +7,7 @@ const CHARS_MAX: usize = 32;
 
 /// Returns one line over `text`, with the cursor after it.
 fn line(text: &str) -> EditedLine {
-    EditedLine::opened(text.to_owned(), CHARS_MAX)
+    EditedLine::opened(text.to_owned(), CHARS_MAX).expect("the test seed meets the limit")
 }
 
 /// Reports whether the cursor names a character boundary inside the text.
@@ -115,7 +115,8 @@ fn every_edit_leaves_the_cursor_on_a_character_boundary() {
 
 #[test]
 fn the_word_delete_stops_at_the_cursor_and_keeps_the_text_after_it() {
-    let mut line = EditedLine::opened_at(String::from("one two three"), 7, CHARS_MAX);
+    let mut line = EditedLine::opened_at(String::from("one two three"), 7, CHARS_MAX)
+        .expect("the seed meets the limit");
     assert_eq!(
         line.apply(PromptEdit::DeleteWordBackward),
         LineChange::TextChanged
@@ -130,7 +131,7 @@ fn the_word_delete_stops_at_the_cursor_and_keeps_the_text_after_it() {
 
 #[test]
 fn the_bound_refuses_an_insert_instead_of_cutting_the_line() {
-    let mut line = EditedLine::opened(String::from("abc"), 4);
+    let mut line = EditedLine::opened(String::from("abc"), 4).expect("the seed meets the limit");
     assert_eq!(line.apply(PromptEdit::Insert('d')), LineChange::TextChanged);
     assert_eq!(
         line.apply(PromptEdit::Insert('e')),
@@ -151,7 +152,7 @@ fn the_bound_refuses_an_insert_instead_of_cutting_the_line() {
 
 #[test]
 fn a_written_line_above_the_bound_changes_nothing() {
-    let mut line = EditedLine::opened(String::from("ab"), 4);
+    let mut line = EditedLine::opened(String::from("ab"), 4).expect("the seed meets the limit");
     assert_eq!(line.write(String::from("abcde")), LineChange::Unchanged);
     assert_eq!(line.text(), "ab", "the bound refuses rather than cuts");
     assert_eq!(line.cursor(), 2);
@@ -167,7 +168,23 @@ fn a_written_line_above_the_bound_changes_nothing() {
 
 #[test]
 fn a_seeded_cursor_never_passes_the_characters_of_its_text() {
-    let line = EditedLine::opened_at(String::from("näme"), 99, CHARS_MAX);
+    let line = EditedLine::opened_at(String::from("näme"), 99, CHARS_MAX)
+        .expect("the seed meets the limit");
     assert_eq!(line.cursor(), 4);
     assert!(holds_the_cursor_rule(&line));
+}
+
+#[test]
+fn public_open_rejects_zero_limits_and_oversized_seeds() {
+    assert_eq!(
+        EditedLine::opened(String::new(), 0),
+        Err(EditedLineError::ZeroLimit)
+    );
+    assert_eq!(
+        EditedLine::opened_at(String::from("three"), 2, 4),
+        Err(EditedLineError::SeedTooLong {
+            chars: 5,
+            chars_max: 4,
+        })
+    );
 }

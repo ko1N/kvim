@@ -64,21 +64,10 @@ jobs:
       - name: Keep the job on the development Rust version
         run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
 
-      # `docs/embedding.md` names these eight examples. Each one owns one public
-      # feature, needs no installed server, no network, and no terminal, and
-      # returns a failure exit code when its own assertions do not hold.
-      - name: Run every dedicated feature example
-        run: |
-          set -euo pipefail
-          cargo run --locked -p kvim-syntax --example highlight \
-            --no-default-features --features grammar-rust
-          cargo run --locked -p kvim-lsp --example lsp_diagnostics
-          cargo run --locked -p kvim-ui --example sidebar
-          cargo run --locked -p kvim-ui --example split_windows
-          cargo run --locked -p kvim-ui --example which_key
-          cargo run --locked -p kvim-tui --example embedded_editor
-          cargo run --locked -p kvim-tui --example host_workspace
-          cargo run --locked -p kvim-tui --example worktree_diff_review
+      # `docs/embedding.md` owns this list. The script reads that document, so
+      # continuous integration cannot retain a contradictory partial list.
+      - name: Run every required example
+        run: ./scripts/run-required-examples.sh
 
       - name: Check that every feature module names its own example
         run: cargo test --locked -p kvim --test repository_policy
@@ -126,6 +115,37 @@ jobs:
           cargo check --locked -p kvim-syntax --no-default-features --features grammar-rust
           cargo check --locked -p kvim-syntax --no-default-features --features all-grammars
 
+      # The public facade is memory-only by default. Worktree and grammar
+      # closures remain explicit and independently selectable.
+      - name: Check the embedded facade feature matrix
+        run: |
+          set -euo pipefail
+          cargo check --locked -p kvim-embed
+          cargo check --locked -p kvim-embed --no-default-features
+          cargo check --locked -p kvim-embed --no-default-features --features review
+          cargo check --locked -p kvim-embed --no-default-features --features worktree
+          cargo check --locked -p kvim-embed --no-default-features --features grammar-rust
+          cargo check --locked -p kvim-embed --no-default-features --features all-grammars
+
+      # Supplied review is a pure facade feature. It must not reach worktree
+      # services, terminal ownership, language support, or grammar packages.
+      - name: Prove supplied review dependency isolation
+        run: >-
+          ./scripts/check-dependency-edges.sh --reject-features kvim-embed review
+          crossterm kvim-language kvim-lsp kvim-runtime kvim-terminal notify
+          tokio tokio-util tree-sitter
+
+      # Keep the existing forwarded grammar boundaries valid independently of
+      # the high-level facade.
+      - name: Check the language and presentation grammar matrices
+        run: |
+          set -euo pipefail
+          for package in kvim-language kvim-tui; do
+            cargo check --locked -p "$package" --no-default-features
+            cargo check --locked -p "$package" --no-default-features --features grammar-rust
+            cargo check --locked -p "$package" --no-default-features --features all-grammars
+          done
+
       # `docs/architecture.md` keeps `kvim-lsp` at layer 2. A consumer that wants
       # diagnostics alone must therefore compile no terminal interface and no
       # editor state.
@@ -165,10 +185,11 @@ jobs:
       - name: Keep the job on the development Rust version
         run: echo "RUSTUP_TOOLCHAIN=1.97.1" >> "$GITHUB_ENV"
 
-      # The fixture is its own workspace root and reaches the packages through
-      # one revision-pinned Git dependency, exactly like an outside repository.
-      - name: Compile the external consumer over the public feature matrix
-        run: ./scripts/check-external-consumer.sh
+      # Each fixture is an independent workspace. A file URL still makes Cargo
+      # clone this checkout as an outside-workspace, revision-pinned dependency.
+      # This also makes pull-request merge commits available without remote auth.
+      - name: Compile every independent external consumer
+        run: ./scripts/check-external-consumer.sh --checked-out-repository
 
   msrv:
     name: MSRV (${{ matrix.os }})
@@ -197,7 +218,7 @@ jobs:
       - name: Test workspace libraries with the minimum supported Rust version
         run: nix develop .#msrv -c cargo test --workspace --lib --tests --locked
 
-      # The declared minimum only holds when an outside repository can also
-      # build the packages with it.
-      - name: Compile the external consumer with the minimum supported Rust version
-        run: nix develop .#msrv -c ./scripts/check-external-consumer.sh
+      # Use the same outside-workspace, revision-pinned file clone as the
+      # development-toolchain job.
+      - name: Compile every independent external consumer with the minimum supported Rust version
+        run: nix develop .#msrv -c ./scripts/check-external-consumer.sh --checked-out-repository

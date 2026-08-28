@@ -389,6 +389,20 @@ arguments, such as a count or a motion, never a key value.
 Each command has a stable identifier and a short label. The which-key overlay
 and any help output derive their text from these labels.
 
+## Host Composition
+
+`WorktreeBindingModel` projects bounded host-global, host-leader,
+focused-context, and kvim manifest bindings into one validated generic
+registry. Host-global receives first refusal through `DispatchContext`.
+Chat focus excludes editor groups. Editor focus includes host and active editor
+groups. Review focus includes host and review groups.
+
+Every opaque host command publishes bounded owner and semantic group labels.
+The same registry supplies dispatch, idle hints, pending continuations, and
+interrupting host-command hints. Duplicate sequences and strict-prefix
+collisions are typed construction errors after deterministic sorting. No
+registration order chooses a winner.
+
 ## Mapping Registry
 
 The mapping registry maps a bounded key sequence to a generic command identity,
@@ -1041,14 +1055,61 @@ sequence.
 
 ### The Review
 
-`<leader>gg` opens the review of the changes of the worktree. The review owns
-every key while it stays open, and it binds no key that changes a buffer.
+The current `<leader>gg` binding opens the integrated review in standalone kvim.
+The review owns every key while it stays open, and it binds no key that changes
+a buffer. It uses the motions that the buffer and sidebar already publish.
+`Ctrl-H` and `Ctrl-L` move focus between its two regions.
+[`diff-view.md`](diff-view.md) owns its keys, views, and live-update rules.
 
-The review holds two regions and moves both of them with the motions that the
-buffer and the sidebar already publish, so it adds no motion command of its own.
-`Ctrl-H` and `Ctrl-L` move the keys between the two regions.
-[`diff-view.md`](diff-view.md) owns the table of its keys, the rules of its two
-views, and its live updates.
+The standalone binding profile keeps this review entry. The embedded profile
+removes every binding that reaches `Command::OpenReview`, including `Space g g`,
+while semantic review execution remains available.
+
+`kvim_input::BindingProfile` publishes the bounded semantic manifest that a
+host consumes instead of parsing the standalone table. Each entry carries the
+command identity, scope, validated sequence, group, description, text fallback,
+unbound behavior, and static-prefix interruption policy. That policy reports
+resolver arbitration. `WorktreeBindingMode::HostResolved` now publishes the
+embedded manifest and current binding context through `kvim-embed`. The host
+submits an instance- and generation-bound `WorktreeSemanticDispatch` after
+physical arbitration. A completed resolver command is accepted only when the
+active focus scope or picker overlay binds it. Direct `WorktreeEditor::command`
+remains a semantic API and does not claim a physical binding.
+
+The standalone profile preserves the first-release table. The embedded profile
+leaves `Tab` and `Shift-Tab` unclaimed in Normal, Visual, and sidebar scopes,
+while Insert and prompt scopes retain indentation and completion. It adds `]j`
+and `[j` for forward and backward jumps, and `]s` and `[s` for review sections.
+Bounded semantic overrides disable every physical binding of one command,
+explicitly restore its first-release bindings, or replace all of its profile
+bindings with validated mappings. An override set rejects conflicting enable,
+disable, and replacement declarations for one command. It also rejects
+duplicate sequences, oversized sequences, and prefix pairs before dispatch.
+
+`kvim_input::ReviewBindingProfile` now configures a standalone review separately
+from editor bindings. `Standalone` keeps all first-release review keys, including
+`Tab` and `Shift-Tab`. `HostResolved` leaves those two keys unclaimed and
+publishes `]s` and `[s` for next and previous review sections. Both profiles use
+the shared bounded manifest and semantic override validation. Review overrides
+must stay in `BindingScope::Review`.
+
+`ReviewConfig` selects this profile and accepts independent bounded overrides.
+`ReviewSurface::bindings` publishes the realized review-only manifest for host
+arbitration. The host submits the selected semantic `ReviewInput`; the review
+facade does not resolve raw keys. Disabling `Command::OpenReview` in an editor
+profile does not change an existing review surface or its semantic navigation.
+
+Merged host-global and focused-surface leader resolution uses
+`WorktreeBindingModel`, the generic registry, and the shared resolver.
+Host-global bindings receive first refusal. The implemented worktree facade
+requires an addressed cancel-pending proposal and validated idle resume before
+a host focus change.
+It clears counts, operators, registers, text objects, and prompts atomically.
+Static pending prefixes remain host-resolver state and do not create kvim
+semantic state. `Tab` and `Shift-Tab` remain editor-owned in Insert mode and
+internal prompts. Embedded Normal, Visual, and sidebar contexts leave these
+keys available for host tab navigation. The implemented secondary semantic
+bindings are `]j`, `[j`, `]s`, and `[s`.
 
 ### Text Objects
 

@@ -41,7 +41,7 @@ use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{ClipboardFailure, ClipboardNotice, ClipboardRead};
-use kvim_core::{BufferVersion, CharPosition, EditTransaction, LineIndex, TextBuffer};
+use kvim_core::{BufferRevision, CharPosition, EditTransaction, LineIndex, TextBuffer};
 use kvim_editor::{
     AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState,
     MOTION_COUNT_MAX, MoveDirection, RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX,
@@ -54,10 +54,11 @@ use kvim_input::{
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
-    DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure, FormatterRequest,
-    HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter, LanguageOutcome,
-    LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication, ServerReport,
-    SyntaxHighlighter, SyntaxTree, buffer_position, content_changes, document_position,
+    DiagnosticSeverity, DocumentPosition, FormatEdits, FormattedDocument, FormatterFailure,
+    FormatterRequest, HighlightSpan, LanguageAdapter, LanguageEvent, LanguageFormatter,
+    LanguageOutcome, LanguageRegistry, LanguageRequestId, LanguageServerId, LspError, Publication,
+    ServerReport, SyntaxHighlighter, SyntaxTree, buffer_position, content_changes,
+    document_position,
 };
 use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
@@ -65,14 +66,15 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, TerminalEvent};
 use kvim_ui::{Direction, RegionKind, SidebarSide, WindowId};
 use kvim_workspace::{
-    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget, EntryKind,
-    ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult, FileTarget, FileTree,
-    GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError, MutationOutcome, OpenError,
-    OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX, PickerKind, PickerRequest,
-    PickerResult, PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome, ReloadRequest, ReloadTarget,
-    ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer,
-    TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult,
-    WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest, render_content,
+    Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget,
+    DurableOutcome, EntryKind, ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult,
+    FileTarget, FileTree, GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError,
+    MutationOutcome, OpenError, OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX,
+    PickerKind, PickerRequest, PickerResult, PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome,
+    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError,
+    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
+    WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
+    render_content,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -86,8 +88,8 @@ use super::completion::{
 use super::diagnostics::{HOST_BUFFER_NAME, HostReportRequest, HostWorkspace};
 use super::embed::{
     CursorRequest, CursorShape, EditorAccess, EditorEvent, EditorInstanceId, EditorOutbox,
-    EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome,
-    Refusal, fits,
+    EditorPresentation, EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction,
+    ReductionOutcome, Refusal, fits,
 };
 use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
 use super::jumps::{JumpDirection, JumpEntry, JumpStep};
@@ -319,22 +321,10 @@ struct PendingReload {
     buffer: BufferId,
     /// The file target at the moment that the request left.
     target: FileTarget,
-    /// The buffer version at the moment that the request left.
-    version: BufferVersion,
+    /// The buffer revision at the moment that the request left.
+    revision: BufferRevision,
     /// Whether the reload may replace unsaved text.
     unsaved: UnsavedText,
-}
-
-/// Whether one search recomputation may trust the recorded buffer version.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SearchRefresh {
-    /// Recompute the matches only when the buffer version changed.
-    OnVersionChange,
-    /// Recompute them whatever the version says.
-    ///
-    /// A reload replaces the buffer, and the new buffer counts its versions
-    /// from the start, so the version gate cannot see that change.
-    Always,
 }
 
 /// The system clipboard operation that the editor waits for.
@@ -532,7 +522,7 @@ pub struct AnalysisResult {
 #[derive(Debug, Default)]
 pub(super) struct BufferAnalysis {
     syntax: BufferSyntax,
-    reuse: Option<(BufferVersion, SyntaxTree)>,
+    reuse: Option<(BufferRevision, SyntaxTree)>,
 }
 
 impl BufferAnalysis {
@@ -749,7 +739,8 @@ impl PromptLine {
     fn opened(kind: PromptKind, seed: PromptSeed) -> Self {
         Self {
             kind,
-            line: EditedLine::opened_at(seed.text, seed.cursor, prompt_chars_max(kind)),
+            line: EditedLine::opened_at(seed.text, seed.cursor, prompt_chars_max(kind))
+                .expect("the seed meets the limit"),
             completion: None,
         }
     }
@@ -921,15 +912,81 @@ pub(super) enum ConfirmationRequest {
 pub(super) struct ActiveSearch {
     pub(super) query: SearchQuery,
     pub(super) matches: Vec<CharPosition>,
-    version: BufferVersion,
+    buffer: BufferId,
+    revision: BufferRevision,
 }
 
 /// Everything that one frame reads.
 ///
+/// Semantic formatter availability and format-on-save state.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorFormatterStatus {
+    /// No formatter serves the active buffer.
+    Unavailable,
+    /// A formatter serves the buffer, but format-on-save is disabled.
+    AvailableDisabled,
+    /// A formatter serves the buffer and format-on-save is enabled.
+    AvailableEnabled,
+}
+
+/// Bounded counts of diagnostics for the active buffer.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct EditorDiagnosticSummary {
+    pub errors: u16,
+    pub warnings: u16,
+    pub information: u16,
+    pub hints: u16,
+}
+
+/// Semantic editor facts shared by facade publication and statusline rendering.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorStatus<'a> {
+    pub instance: EditorInstanceId,
+    pub mode: Mode,
+    pub path: Option<&'a WorktreeRelativePath>,
+    pub modified: bool,
+    pub cursor: Cursor,
+    pub access: EditorAccess,
+    pub diagnostics: EditorDiagnosticSummary,
+    pub formatter: EditorFormatterStatus,
+}
+
+impl EditorStatus<'_> {
+    pub(super) const fn format_on_save(self) -> Option<FormatOnSave> {
+        match self.formatter {
+            EditorFormatterStatus::Unavailable => None,
+            EditorFormatterStatus::AvailableDisabled => Some(FormatOnSave::Disabled),
+            EditorFormatterStatus::AvailableEnabled => Some(FormatOnSave::Enabled),
+        }
+    }
+}
+
+fn diagnostic_summary(diagnostics: &[Diagnostic]) -> EditorDiagnosticSummary {
+    let mut summary = EditorDiagnosticSummary::default();
+    for diagnostic in diagnostics {
+        let count = match diagnostic.severity {
+            DiagnosticSeverity::Error => &mut summary.errors,
+            DiagnosticSeverity::Warning => &mut summary.warnings,
+            DiagnosticSeverity::Information => &mut summary.information,
+            DiagnosticSeverity::Hint => &mut summary.hints,
+        };
+        *count = count.saturating_add(1);
+    }
+    summary
+}
+
+/// The visible state of one frame.
+///
 /// The borrow set keeps rendering a pure function of visible state: a renderer
 /// cannot change the session through this value.
 pub(super) struct Visible<'a> {
+    pub(super) instance: EditorInstanceId,
+    pub(super) access: EditorAccess,
     pub(super) area: Rect,
+    pub(super) presentation: EditorPresentation,
     pub(super) theme: Theme,
     pub(super) settings: &'a EditorSettings,
     pub(super) windows: &'a Windows,
@@ -987,16 +1044,74 @@ impl Visible<'_> {
     /// formatter can format reports no state, because the state would promise
     /// an action that no save can perform.
     pub(super) fn focused_format_on_save(&self) -> Option<FormatOnSave> {
-        let Some(buffer) = self.windows.buffer(self.windows.focused_window()) else {
-            debug_assert!(false, "the focused window is always a leaf of the tree");
-            return None;
-        };
-        let path = self.buffers.get(buffer).and_then(FileBuffer::path);
-        if !has_formatter(self.languages, path) {
-            return None;
+        self.status().format_on_save()
+    }
+
+    /// Returns the semantic facts that status publication and rendering share.
+    pub(super) fn status(&self) -> EditorStatus<'_> {
+        editor_status(EditorStatusContext {
+            active: self.active,
+            buffers: self.buffers,
+            windows: self.windows,
+            mode: self.editing.mode(),
+            settings: self.settings,
+            languages: self.languages,
+            language: self.language,
+            instance: self.instance,
+            access: self.access,
+        })
+    }
+}
+
+struct EditorStatusContext<'a> {
+    active: BufferId,
+    buffers: &'a Buffers,
+    windows: &'a Windows,
+    mode: Mode,
+    settings: &'a EditorSettings,
+    languages: LanguageRegistry,
+    language: &'a LanguageState,
+    instance: EditorInstanceId,
+    access: EditorAccess,
+}
+
+fn editor_status(context: EditorStatusContext<'_>) -> EditorStatus<'_> {
+    let EditorStatusContext {
+        active,
+        buffers,
+        windows,
+        mode,
+        settings,
+        languages,
+        language,
+        instance,
+        access,
+    } = context;
+    let Some(buffer) = buffers.get(active) else {
+        unreachable!("the session always keeps the active buffer loaded");
+    };
+    let cursor = windows
+        .state(windows.focused_window())
+        .map_or(Cursor::ORIGIN, WindowState::cursor);
+    let diagnostics = diagnostic_summary(language.diagnostics(active));
+    let formatter = if !has_formatter(languages, buffer.path()) {
+        EditorFormatterStatus::Unavailable
+    } else {
+        let default = FormatOnSave::from_setting(settings.files.format_on_save);
+        match language.format_on_save(active, default) {
+            FormatOnSave::Disabled => EditorFormatterStatus::AvailableDisabled,
+            FormatOnSave::Enabled => EditorFormatterStatus::AvailableEnabled,
         }
-        let default = FormatOnSave::from_setting(self.settings.files.format_on_save);
-        Some(self.language.format_on_save(buffer, default))
+    };
+    EditorStatus {
+        instance,
+        mode,
+        path: buffer.target().map(FileTarget::relative_path),
+        modified: buffer.text().is_modified(),
+        cursor,
+        access,
+        diagnostics,
+        formatter,
     }
 }
 
@@ -1009,6 +1124,20 @@ impl Visible<'_> {
 enum CompletionWalk {
     /// The line asked for no walk, because it holds no path argument.
     Unasked,
+    /// A host-owned line owns the walk and its facade request identity.
+    HostQueued {
+        session: u64,
+        request: u64,
+        line: String,
+        work: PickerRequest,
+    },
+    /// A host-owned walk runs or has finished.
+    HostTaken {
+        session: u64,
+        request: u64,
+        line: String,
+        files: Option<Vec<Candidate>>,
+    },
     /// The line asked for the walk, and the request waits for the event loop.
     Queued(PickerRequest),
     /// The event loop took the request of the line.
@@ -1023,8 +1152,9 @@ impl CompletionWalk {
     /// Returns the workspace files that the finished walk collected.
     fn files(&self) -> &[Candidate] {
         match self {
-            Self::Unasked | Self::Queued(_) => &[],
+            Self::Unasked | Self::Queued(_) | Self::HostQueued { .. } => &[],
             Self::Taken(files) => files,
+            Self::HostTaken { files, .. } => files.as_deref().unwrap_or(&[]),
         }
     }
 
@@ -1035,9 +1165,23 @@ impl CompletionWalk {
     fn take_request(&mut self) -> Option<PickerRequest> {
         match mem::replace(self, Self::Taken(Vec::new())) {
             Self::Queued(request) => Some(request),
+            Self::HostQueued {
+                session,
+                request,
+                line,
+                work,
+            } => {
+                *self = Self::HostTaken {
+                    session,
+                    request,
+                    line,
+                    files: None,
+                };
+                Some(work)
+            }
             // The line asked for no walk, or the event loop already took the
             // request, so the state stays as it was.
-            unchanged @ (Self::Unasked | Self::Taken(_)) => {
+            unchanged @ (Self::Unasked | Self::Taken(_) | Self::HostTaken { .. }) => {
                 *self = unchanged;
                 None
             }
@@ -1111,7 +1255,7 @@ pub(super) static PLATFORM_WATCHER: tokio::sync::Mutex<()> = tokio::sync::Mutex:
 ///
 /// use kvim_settings::EditorSettings;
 /// use kvim_terminal::{Key, KeyCode, TerminalEvent};
-/// use kvim_tui::{Redraw, Session};
+/// use kvim_tui::__private::{Redraw, Session};
 ///
 /// let root = std::sync::Arc::new(
 ///     kvim_path::WorktreeRoot::open(
@@ -1154,6 +1298,7 @@ pub struct Session {
     /// The outbox slot that the running workspace mutation owns.
     mutation_slot: Option<EventReservation>,
     area: Rect,
+    presentation: EditorPresentation,
     settings: EditorSettings,
     theme: Theme,
     root: Arc<WorktreeRoot>,
@@ -1236,7 +1381,7 @@ pub struct Session {
     ///
     /// One job runs at a time, so a newer buffer version replaces the job that
     /// it supersedes instead of adding a second one.
-    analysis_pending: Option<(BufferId, BufferVersion)>,
+    analysis_pending: Option<(BufferId, BufferRevision)>,
     /// The language-server requests, diagnostics, and per-buffer settings.
     ///
     /// The session never speaks the protocol. It builds bounded requests, and
@@ -1258,6 +1403,10 @@ pub struct Session {
     /// the bounded worker service. The completion then filters the collected
     /// files while the user types. See `docs/files.md`.
     completion_walk: CompletionWalk,
+    /// Monotonic identity of the newest host-owned command line.
+    host_command_session: u64,
+    /// Whether the newest host-owned command line remains open.
+    host_command_session_open: bool,
     /// The host probe that `:diagnostics` asked for.
     ///
     /// The session reads no executable search path, so the event loop hands the
@@ -1274,6 +1423,8 @@ pub struct Session {
     /// The open floating overlay of the language services.
     float: Option<Float>,
     which_key: Option<Vec<WhichKeyRow>>,
+    /// Whether this session derives and paints its private which-key overlay.
+    embedded_which_key: bool,
     /// The progress of every language server and every mirrored message.
     notifications: NotificationBoard,
     /// The elapsed time that the event loop reported last.
@@ -1298,6 +1449,43 @@ impl Session {
     /// is a cold-path bootstrap check, so an invalid table must fail at start.
     #[must_use]
     pub fn new(area: Rect, settings: EditorSettings, root: Arc<WorktreeRoot>) -> Self {
+        Self::new_with_registry_and_presentation(
+            area,
+            settings,
+            root,
+            Registry::first_release(),
+            EditorPresentation::default(),
+        )
+    }
+
+    /// Creates a session with one caller-selected validated registry.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_registry(
+        area: Rect,
+        settings: EditorSettings,
+        root: Arc<WorktreeRoot>,
+        registry: Registry,
+    ) -> Self {
+        Self::new_with_registry_and_presentation(
+            area,
+            settings,
+            root,
+            registry,
+            EditorPresentation::default(),
+        )
+    }
+
+    /// Creates a session with one realized fixed presentation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn new_with_registry_and_presentation(
+        area: Rect,
+        settings: EditorSettings,
+        root: Arc<WorktreeRoot>,
+        registry: Registry,
+        presentation: EditorPresentation,
+    ) -> Self {
         let (buffers, active) = Buffers::new(FileBuffer::scratch(&settings.files));
         let instance = EditorInstanceId::allocate();
         let mut session = Self {
@@ -1308,6 +1496,7 @@ impl Session {
             write_slot: None,
             mutation_slot: None,
             area,
+            presentation,
             settings,
             theme: Theme::new(),
             root: Arc::clone(&root),
@@ -1317,7 +1506,11 @@ impl Session {
             file_outbox: None,
             file_pending: None,
             reload_due: false,
-            windows: Windows::new(active, shell_areas(area).body, settings.windows),
+            windows: Windows::new(
+                active,
+                shell_areas(area, presentation).body,
+                settings.windows,
+            ),
             tree: TreeSidebar::new(Arc::clone(&root)),
             tree_region: None,
             picker: None,
@@ -1334,7 +1527,7 @@ impl Session {
             clipboard_access: ClipboardAccess::None,
             clipboard_activity: ClipboardActivity::Idle,
             clipboard_revision: 0,
-            resolver: Resolver::new(Registry::first_release(), settings.input),
+            resolver: Resolver::new(registry, settings.input),
             languages: LanguageRegistry::first_release(),
             analysis: BTreeMap::new(),
             analysis_pending: None,
@@ -1343,11 +1536,14 @@ impl Session {
             prompt: None,
             confirmation: None,
             completion_walk: CompletionWalk::Unasked,
+            host_command_session: 0,
+            host_command_session_open: false,
             host_probe: HostProbe::Unasked,
             message: None,
             log: EditorLog::default(),
             float: None,
             which_key: None,
+            embedded_which_key: presentation.which_key_embedded(),
             notifications: NotificationBoard::default(),
             clock: Duration::ZERO,
             run: RunState::Running,
@@ -1370,7 +1566,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{ClipboardAccess, Session};
+    /// use kvim_tui::__private::{ClipboardAccess, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1394,6 +1590,20 @@ impl Session {
     #[must_use]
     pub const fn clipboard_access(&self) -> ClipboardAccess {
         self.clipboard_access
+    }
+
+    /// Sets whether construction keeps the initial Git status request.
+    ///
+    /// This is an internal adapter seam for a facade that makes Git an
+    /// explicit optional capability. The compatibility constructor keeps its
+    /// existing enabled behavior.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_git_status(mut self, enabled: bool) -> Self {
+        if !enabled {
+            self.tree.disable_git_status();
+        }
+        self
     }
 
     /// Injects one explicit clipboard boundary.
@@ -1420,7 +1630,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{EditorAccess, Session};
+    /// use kvim_tui::__private::{EditorAccess, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1435,6 +1645,17 @@ impl Session {
     #[must_use]
     pub fn with_access(mut self, access: EditorAccess) -> Self {
         self.access = access;
+        self
+    }
+
+    /// Selects whether this session derives and paints its private which-key overlay.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn with_embedded_which_key(mut self, embedded: bool) -> Self {
+        self.embedded_which_key = embedded;
+        if !embedded {
+            self.which_key = None;
+        }
         self
     }
 
@@ -1472,7 +1693,7 @@ impl Session {
     ///
     /// use kvim_input::Command;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{EditorEvent, Session};
+    /// use kvim_tui::__private::{EditorEvent, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1516,7 +1737,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1562,7 +1783,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1622,7 +1843,7 @@ impl Session {
     ///
     /// use kvim_path::WorktreeRelativePath;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1674,7 +1895,7 @@ impl Session {
     ///
     /// use kvim_input::Command;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{EditorAccess, Refusal, Session};
+    /// use kvim_tui::__private::{EditorAccess, Refusal, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1700,6 +1921,20 @@ impl Session {
         self.finish_input(redraw, now)
     }
 
+    /// Applies one host-owned resolver decision through kvim's grammar.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn apply_semantic_dispatch(
+        &mut self,
+        dispatch: kvim_input::Dispatch<Command>,
+        now: Duration,
+    ) -> Reduction {
+        self.begin_input(now);
+        let resolution = self.resolver.dispatch(dispatch);
+        let redraw = self.apply_resolution(resolution);
+        self.finish_input(redraw, now)
+    }
+
     /// Inserts one run of literal text.
     ///
     /// The host owns the text fallback of its focused scope, so it hands the
@@ -1716,7 +1951,7 @@ impl Session {
     ///
     /// use kvim_input::Command;
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1750,7 +1985,7 @@ impl Session {
     ///
     /// use kvim_input::{Command, PasteText};
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1780,6 +2015,14 @@ impl Session {
     #[must_use]
     pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
         self.resolver.snapshot()
+    }
+
+    /// Returns the focused context and optional resolver overlay scope.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding_context(&self) -> (InputContextSnapshot<BindingScope>, Option<BindingScope>) {
+        let context = self.resolver.dispatch_context();
+        (context.focus, context.overlay)
     }
 
     /// Cancels every pending semantic phase of this editor.
@@ -1864,6 +2107,23 @@ impl Session {
         }
     }
 
+    /// Publishes the mandatory reconciliation request of one uncertain save.
+    fn publish_save_reconciliation(
+        &mut self,
+        slot: Option<EventReservation>,
+        path: WorktreeRelativePath,
+    ) {
+        match slot {
+            Some(slot) => self
+                .events
+                .commit(slot, EditorEvent::SaveReconciliationRequired { path }),
+            None => debug_assert!(
+                false,
+                "every save reserves its slot before the write starts"
+            ),
+        }
+    }
+
     /// Returns the slot of one operation that produced no durable change.
     fn release_slot(&mut self, slot: Option<EventReservation>) {
         if let Some(slot) = slot {
@@ -1905,6 +2165,23 @@ impl Session {
     #[must_use]
     pub const fn active(&self) -> BufferId {
         self.active
+    }
+
+    /// Returns semantic editor facts without formatting or I/O.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn status(&self) -> EditorStatus<'_> {
+        editor_status(EditorStatusContext {
+            active: self.active,
+            buffers: &self.buffers,
+            windows: &self.windows,
+            mode: self.editing.mode(),
+            settings: &self.settings,
+            languages: self.languages,
+            language: &self.language,
+            instance: self.instance,
+            access: self.access,
+        })
     }
 
     /// Returns the active editor mode.
@@ -1974,8 +2251,9 @@ impl Session {
     #[must_use]
     pub fn next_deadline(&self) -> Option<Duration> {
         let overlay = self
-            .resolver
-            .overlay_deadline()
+            .embedded_which_key
+            .then(|| self.resolver.overlay_deadline())
+            .flatten()
             .filter(|_| self.which_key.is_none());
         let notifications = self
             .notifications
@@ -1996,6 +2274,11 @@ impl Session {
         self.clock = self.clock.max(now);
     }
 
+    #[cfg(test)]
+    pub(super) const fn clock(&self) -> Duration {
+        self.clock
+    }
+
     /// Applies one normalized terminal event.
     ///
     /// # Examples
@@ -2007,7 +2290,7 @@ impl Session {
     ///
     /// use kvim_settings::EditorSettings;
     /// use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
-    /// use kvim_tui::Session;
+    /// use kvim_tui::__private::Session;
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -2036,8 +2319,6 @@ impl Session {
                 self.insert_owned_text(text.as_str()).or(closed)
             }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
-            // A focus change moves no cursor and shows no new text.
-            TerminalEvent::Focus(_) => Redraw::Skipped,
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
             TerminalEvent::Unsupported => {
@@ -2072,7 +2353,10 @@ impl Session {
     /// Returns the borrowed state that one frame reads.
     pub(super) fn visible(&self) -> Visible<'_> {
         Visible {
+            instance: self.instance,
+            access: self.access,
             area: self.area,
+            presentation: self.presentation,
             theme: self.theme,
             settings: &self.settings,
             windows: &self.windows,
@@ -2100,13 +2384,16 @@ impl Session {
     /// The overlay rows, the search matches, and the viewports all follow the
     /// state that the transition produced, so the next frame is consistent.
     fn settle(&mut self, now: Duration) -> Redraw {
-        self.refresh_search(SearchRefresh::OnVersionChange);
+        self.refresh_search();
         self.reconcile_viewports();
         self.reconcile_tree();
         self.reconcile_picker();
         let mirrored = self.reconcile_clipboard();
         let advanced = self.notifications.advance(now, self.settings.notifications);
-        let rows = self.resolver.which_key(now);
+        let rows = self
+            .embedded_which_key
+            .then(|| self.resolver.which_key(now))
+            .flatten();
         if rows.as_deref() == self.which_key.as_deref() {
             return mirrored.or(advanced);
         }
@@ -2120,9 +2407,10 @@ impl Session {
             return Redraw::Skipped;
         }
         self.area = area;
-        self.windows.set_terminal(shell_areas(area).body);
+        self.windows
+            .set_terminal(shell_areas(area, self.presentation).body);
         if let Some(review) = self.review.as_mut() {
-            review.set_height_rows(review_body_rows(area));
+            review.set_height_rows(review_body_rows(area, self.presentation));
         }
         Redraw::Needed
     }
@@ -2209,7 +2497,21 @@ impl Session {
             Command::OpenFilePicker => return self.open_picker(PickerKind::Files).or(cleared),
             Command::OpenRipgrepPicker => return self.open_picker(PickerKind::Search).or(cleared),
             Command::OpenBufferPicker => return self.open_picker(PickerKind::Buffers).or(cleared),
-            Command::OpenCommandLine => return self.open_prompt(PromptKind::CommandLine),
+            Command::OpenCommandLine => {
+                if self.presentation.command_line_embedded() {
+                    return self.open_prompt(PromptKind::CommandLine);
+                }
+                self.host_command_session = self
+                    .host_command_session
+                    .checked_add(1)
+                    .expect("one editor cannot exhaust host command session identities");
+                self.host_command_session_open = true;
+                self.completion_walk = CompletionWalk::Unasked;
+                self.note_request(InputRequest::OpenCommandLine {
+                    session: self.host_command_session,
+                });
+                return Redraw::Skipped;
+            }
             Command::OpenSearchPrompt => return self.open_prompt(PromptKind::Search),
             // The file and buffer commands reach the same paths as `:w`, `:q`,
             // and the buffer list, so both entry points behave alike.
@@ -2463,10 +2765,10 @@ impl Session {
 
     /// Returns the syntax indent for a new line at one byte offset.
     fn indent_level(&self, byte: usize) -> AutoIndent {
-        let version = self.buffer().version();
+        let revision = self.buffer().revision();
         self.analysis
             .get(&self.active)
-            .and_then(|entry| entry.syntax.indent_level(version, byte))
+            .and_then(|entry| entry.syntax.indent_level(revision, byte))
             .map_or(AutoIndent::PreviousLine, |level| {
                 AutoIndent::Levels(level.get())
             })
@@ -2516,7 +2818,11 @@ impl Session {
     /// caller can lose a scroll position.
     fn edit<F>(&mut self, change: F) -> CommandOutcome
     where
-        F: FnOnce(&mut EditingState, &mut EditContext<'_>, &mut WindowState) -> CommandOutcome,
+        F: FnOnce(
+            &mut EditingState,
+            &mut EditContext<'_>,
+            &mut WindowState,
+        ) -> kvim_editor::CommandResult,
     {
         let language_indent_width = self.language_indent_width();
         let window = self.windows.focused_window();
@@ -2538,23 +2844,23 @@ impl Session {
             search: self.search.as_ref().map(|search| &search.query),
             language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
-        let outcome = change(&mut self.editing, &mut context, &mut state);
-        let applied = std::mem::take(&mut context.applied);
+        let result = change(&mut self.editing, &mut context, &mut state);
+        let outcome = result.outcome();
+        let applied = result.transaction();
         // Every text change passes one access gate before it reaches this
         // point, so a view-only editor produces no transaction at all. See
         // `docs/embedding.md`.
         debug_assert!(
-            self.access == EditorAccess::ReadWrite || applied.is_empty(),
+            self.access == EditorAccess::ReadWrite || applied.is_none(),
             "view-only access refuses every text change before the buffer sees it"
         );
-        let after = context.buffer.version();
+        let after = context.buffer.revision();
         if let Some(slot) = self.windows.state_mut(window) {
             *slot = state;
         }
-        self.advance_syntax(&before, after, &applied);
-        self.synchronize_language(&before, after, &applied);
+        self.advance_syntax(&before, after, applied);
+        self.synchronize_language(&before, after, applied);
         outcome
     }
 
@@ -2567,10 +2873,10 @@ impl Session {
     fn synchronize_language(
         &mut self,
         before: &TextBuffer,
-        after: BufferVersion,
-        applied: &[EditTransaction],
+        after: BufferRevision,
+        applied: Option<&EditTransaction>,
     ) {
-        if after == before.version() {
+        if after == before.revision() {
             return;
         }
         let buffer = self.active;
@@ -2585,7 +2891,7 @@ impl Session {
             // The queued open already carries the newest text.
             return;
         }
-        let [transaction] = applied else {
+        let Some(transaction) = applied else {
             self.language.mark_resync(buffer);
             return;
         };
@@ -2596,7 +2902,7 @@ impl Session {
         self.queue_language(LanguageRequest::Change {
             buffer,
             path,
-            version: after,
+            revision: after,
             changes,
         });
     }
@@ -2610,8 +2916,8 @@ impl Session {
     fn advance_syntax(
         &mut self,
         before: &TextBuffer,
-        after: BufferVersion,
-        applied: &[EditTransaction],
+        after: BufferRevision,
+        applied: Option<&EditTransaction>,
     ) {
         let Some(entry) = self.analysis.get_mut(&self.active) else {
             return;
@@ -2619,13 +2925,13 @@ impl Session {
         let Some((version, tree)) = entry.reuse.take() else {
             return;
         };
-        if version != before.version() {
+        if version != before.revision() {
             return;
         }
         // One command commits at most one transaction. A longer list would need
         // the buffer between the transactions, which no caller holds.
-        let [transaction] = applied else {
-            if applied.is_empty() {
+        let Some(transaction) = applied else {
+            if after == before.revision() {
                 entry.reuse = Some((version, tree));
             }
             return;
@@ -2786,7 +3092,8 @@ impl Session {
         }
         self.confirmation = Some(Confirmation {
             question: clip_message_line(question),
-            answer: EditedLine::opened(String::new(), CONFIRM_ANSWER_CHARS_MAX),
+            answer: EditedLine::opened(String::new(), CONFIRM_ANSWER_CHARS_MAX)
+                .expect("the seed meets the limit"),
             action,
         });
         self.sync_context();
@@ -3052,6 +3359,64 @@ impl Session {
         self.completion_walk.take_request()
     }
 
+    /// Queues one host-owned path completion without owning its line editing.
+    pub fn request_host_command_completion(
+        &mut self,
+        session: u64,
+        request: u64,
+        line: &str,
+    ) -> bool {
+        if !self.host_command_session_open
+            || session != self.host_command_session
+            || request == 0
+            || CommandLineCommand::path_argument(line).is_none()
+            || line.chars().count() > COMMAND_LINE_CHARS_MAX
+        {
+            return false;
+        }
+        self.completion_walk = CompletionWalk::HostQueued {
+            session,
+            request,
+            line: line.to_owned(),
+            work: PickerRequest::Files {
+                root: Arc::clone(&self.root),
+            },
+        };
+        true
+    }
+
+    /// Takes one completed host-owned command completion.
+    pub fn take_host_command_completion(&mut self) -> Option<(u64, u64, Vec<String>)> {
+        let CompletionWalk::HostTaken { files: Some(_), .. } = &self.completion_walk else {
+            return None;
+        };
+        let CompletionWalk::HostTaken {
+            session,
+            request,
+            line,
+            files: Some(files),
+        } = mem::replace(&mut self.completion_walk, CompletionWalk::Unasked)
+        else {
+            unreachable!("the preceding match validates a finished host completion");
+        };
+        Some((session, request, command_line_candidates(&line, &files)))
+    }
+
+    /// Reports whether one host-owned session is current.
+    pub fn host_command_session_is_current(&self, session: u64) -> bool {
+        self.host_command_session_open && session == self.host_command_session
+    }
+
+    /// Closes the addressed host-owned command line.
+    pub fn close_host_command_session(&mut self, session: u64) -> bool {
+        if !self.host_command_session_open || session != self.host_command_session {
+            return false;
+        }
+        self.host_command_session_open = false;
+        self.completion_walk = CompletionWalk::Unasked;
+        true
+    }
+
     /// Applies the finished workspace walk of the command-line completion.
     ///
     /// The list opens on the next completion key, so the result changes no
@@ -3069,6 +3434,10 @@ impl Session {
             );
             return Redraw::Skipped;
         };
+        if let CompletionWalk::HostTaken { files, .. } = &mut self.completion_walk {
+            *files = Some(candidates);
+            return Redraw::Skipped;
+        }
         debug_assert!(
             self.prompt.is_some() || matches!(self.completion_walk, CompletionWalk::Unasked),
             "the closed prompt drops the walk of the line that asked for it"
@@ -3119,12 +3488,17 @@ impl Session {
             );
             return Redraw::Skipped;
         };
-        // Backspace on the empty line cancels the prompt, like Vim. The line
-        // alone decides that, and not the cursor, so a backspace at the start
-        // of a written line removes nothing and keeps the prompt open. A host
-        // can bind `Ctrl-W` as its own prefix, so that chord never closes a
-        // prompt of this editor and leaves the empty line open instead.
-        if edit == PromptEdit::DeleteBackward && prompt.line.text().is_empty() {
+        // Backspace on an empty line cancels ordinary prompts, like Vim. A
+        // rename prompt stays open because users commonly hold Backspace to
+        // clear the old name before typing its replacement. Escape and Ctrl-C
+        // remain the explicit cancellation keys for rename. A backspace at the
+        // start of a written line removes nothing and keeps every prompt open.
+        // A host can bind `Ctrl-W` as its own prefix, so that chord never closes
+        // an empty prompt either.
+        let empty_backspace_cancels = edit == PromptEdit::DeleteBackward
+            && prompt.line.text().is_empty()
+            && prompt.kind != PromptKind::Tree(TreePrompt::Rename);
+        if empty_backspace_cancels {
             self.close_prompt();
             return Redraw::Needed;
         }
@@ -3231,6 +3605,12 @@ impl Session {
         }
     }
 
+    /// Runs one parsed command-line command.
+    #[doc(hidden)]
+    pub fn run_command_line_command(&mut self, command: CommandLineCommand) -> Redraw {
+        self.run_parsed_command_line(command)
+    }
+
     /// Runs one parsed command line.
     fn run_command_line(&mut self, line: &str) -> Redraw {
         let command = match CommandLineCommand::parse(line) {
@@ -3240,6 +3620,10 @@ impl Session {
                 return Redraw::Needed;
             }
         };
+        self.run_parsed_command_line(command)
+    }
+
+    fn run_parsed_command_line(&mut self, command: CommandLineCommand) -> Redraw {
         match command {
             CommandLineCommand::Write => return self.save_active(AfterSave::Stay),
             CommandLineCommand::WriteQuit => return self.save_active(AfterSave::CloseWindow),
@@ -3284,7 +3668,11 @@ impl Session {
     /// caller owns the text, so this step performs no filesystem work. See
     /// `docs/windows.md`.
     fn open_generated(&mut self, name: &str, snapshot: &str) -> Redraw {
-        let text = match TextBuffer::from_text(snapshot, &self.settings.files) {
+        let text = match TextBuffer::from_text(
+            snapshot,
+            kvim_core::BufferBytesMax::new(self.settings.files.max_file_bytes)
+                .expect("settings are realized"),
+        ) {
             Ok(text) => text,
             Err(error) => {
                 self.set_message(error.to_string(), MessageLevel::Error);
@@ -3379,7 +3767,7 @@ impl Session {
     /// use ratatui::layout::Rect;
     ///
     /// use kvim_settings::EditorSettings;
-    /// use kvim_tui::{Redraw, Session};
+    /// use kvim_tui::__private::{Redraw, Session};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -3442,25 +3830,25 @@ impl Session {
         let buffer = self.active;
         let file = self.buffers.get(buffer)?;
         let adapter = self.languages.adapter(file.path()?).ok()?;
-        let version = file.text().version();
-        if self.analysis_pending == Some((buffer, version)) {
+        let revision = file.text().revision();
+        if self.analysis_pending == Some((buffer, revision)) {
             return None;
         }
         let entry = self.analysis.entry(buffer).or_default();
         if entry
             .syntax
             .analysis()
-            .is_some_and(|analysis| analysis.version() == version)
+            .is_some_and(|analysis| analysis.revision() == revision)
         {
             return None;
         }
-        let mut input = AnalysisInput::new(version, Arc::from(file.text().to_string()));
+        let mut input = AnalysisInput::new(revision, Arc::from(file.text().to_string()));
         if let Some((reuse_version, tree)) = &entry.reuse
-            && *reuse_version == version
+            && *reuse_version == revision
         {
             input = input.reusing(tree.clone());
         }
-        self.analysis_pending = Some((buffer, version));
+        self.analysis_pending = Some((buffer, revision));
         Some(AnalysisRequest {
             buffer,
             adapter,
@@ -3484,7 +3872,7 @@ impl Session {
             // The buffer left the list while the job ran.
             return Redraw::Skipped;
         };
-        let current = file.text().version();
+        let current = file.text().revision();
         let analysis = match result.outcome {
             Ok(analysis) => analysis,
             Err(error) => {
@@ -3607,7 +3995,7 @@ impl Session {
 
     /// Applies one typed result of the language services.
     ///
-    /// Every result passes the buffer-version gate before it changes visible
+    /// Every result passes the buffer-revision gate before it changes visible
     /// state, so an obsolete answer never reaches the screen.
     #[must_use]
     pub fn apply_language_event(&mut self, event: LanguageEvent) -> Redraw {
@@ -3620,16 +4008,16 @@ impl Session {
             }
             LanguageOutcome::Definition {
                 request,
-                version,
+                revision,
                 locations,
-            } => self.answer_query(request, Some(version), Answer::Definition(locations)),
+            } => self.answer_query(request, Some(revision), Answer::Definition(locations)),
             LanguageOutcome::Hover {
                 request,
-                version,
+                revision,
                 markup,
             } => self.answer_query(
                 request,
-                Some(version),
+                Some(revision),
                 markup.map_or(Answer::Empty, Answer::Hover),
             ),
             LanguageOutcome::Formatting { request, edits } => {
@@ -3725,7 +4113,7 @@ impl Session {
         Some(LanguageRequest::Open {
             buffer,
             path,
-            version: text.version(),
+            revision: text.revision(),
             text: Arc::from(text.to_string()),
         })
     }
@@ -3816,7 +4204,7 @@ impl Session {
     fn answer_query(
         &mut self,
         request: LanguageRequestId,
-        version: Option<BufferVersion>,
+        revision: Option<BufferRevision>,
         answer: Answer,
     ) -> Redraw {
         let Some(mut pending) = self.language.pending.take() else {
@@ -3828,7 +4216,7 @@ impl Session {
             self.language.pending = Some(pending);
             return Redraw::Skipped;
         }
-        if version.is_some_and(|version| !self.answers_current_buffer(&pending, version)) {
+        if revision.is_some_and(|revision| !self.answers_current_buffer(&pending, revision)) {
             return self.release_query(&pending);
         }
         let state = pending.resolve(request, answer);
@@ -3898,7 +4286,7 @@ impl Session {
             return self.report_language_notice(LanguageNotice::NoServer);
         };
         let text = file.text();
-        let version = text.version();
+        let revision = text.revision();
         let position = document_position(text, self.cursor().position(text));
         let query = match purpose {
             QueryPurpose::Definition => LanguageQuery::Definition(position),
@@ -3908,11 +4296,11 @@ impl Session {
                 return Redraw::Skipped;
             }
         };
-        self.language.pending = Some(PendingQuery::new(buffer, version, purpose));
+        self.language.pending = Some(PendingQuery::new(buffer, revision, purpose));
         self.queue_language(LanguageRequest::Query {
             buffer,
             path,
-            version,
+            revision,
             query,
         });
         Redraw::Skipped
@@ -3933,7 +4321,7 @@ impl Session {
             debug_assert!(false, "the path lookup returns a loaded buffer");
             return Redraw::Skipped;
         };
-        if !set.is_current(file.text().version()) {
+        if !set.is_current(file.text().revision()) {
             return Redraw::Skipped;
         }
         self.language.publish(buffer, server, set);
@@ -4065,13 +4453,13 @@ impl Session {
     }
 
     /// Reports whether one answer still describes the current buffer version.
-    fn answers_current_buffer(&self, pending: &PendingQuery, version: BufferVersion) -> bool {
-        if pending.version != version {
+    fn answers_current_buffer(&self, pending: &PendingQuery, revision: BufferRevision) -> bool {
+        if pending.revision != revision {
             return false;
         }
         self.buffers
             .get(pending.buffer)
-            .is_some_and(|file| file.text().version() == version)
+            .is_some_and(|file| file.text().revision() == revision)
     }
 
     /// Moves the cursor to the recorded jump target of the active buffer.
@@ -4306,6 +4694,9 @@ impl Session {
     /// showing it never builds a second region. Returns `None` when the window
     /// tree cannot issue a region identity.
     fn show_sidebar(&mut self) -> Option<WindowId> {
+        if !self.presentation.file_sidebar_embedded() {
+            return None;
+        }
         match self.tree_region {
             Some(id) => {
                 self.windows.set_sidebar_visible(SidebarSide::Right, true);
@@ -4639,7 +5030,7 @@ impl Session {
     fn open_review(&mut self) -> Redraw {
         self.review_open = true;
         if let Some(review) = self.review.as_mut() {
-            review.set_height_rows(review_body_rows(self.area));
+            review.set_height_rows(review_body_rows(self.area, self.presentation));
         }
         self.request_diff_captures();
         self.sync_context();
@@ -4766,7 +5157,7 @@ impl Session {
                             unstaged,
                             self.settings.diff,
                             self.settings.windows.resize_step_cells,
-                            review_body_rows(self.area),
+                            review_body_rows(self.area, self.presentation),
                         ));
                     }
                 }
@@ -4782,6 +5173,24 @@ impl Session {
             return Redraw::Needed;
         }
         Redraw::Skipped
+    }
+
+    /// Reports whether Git status is enabled for this session.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_status_enabled(&self) -> bool {
+        self.tree.git_status_enabled()
+    }
+
+    /// Reports whether a Git status request waits for dispatch.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_request_queued(&self) -> bool {
+        self.tree.git_request_queued()
     }
 
     /// Takes the Git status read that the bounded process service must run.
@@ -4945,6 +5354,9 @@ impl Session {
             WorkspaceResult::Mutated { outcome } => self.publish_mutation(outcome),
         };
         self.reconcile_tree();
+        if self.reload_due {
+            self.start_watch_reload();
+        }
         redraw
     }
 
@@ -4965,21 +5377,43 @@ impl Session {
     ///
     /// The buffer paths, the affected directories, and the new selection change
     /// together, so no window shows a path that the workspace no longer holds.
-    fn publish_mutation(&mut self, outcome: Result<MutationOutcome, MutationError>) -> Redraw {
+    fn publish_mutation(
+        &mut self,
+        outcome: DurableOutcome<MutationOutcome, MutationError>,
+    ) -> Redraw {
         let slot = self.mutation_slot.take();
         // The pending operation names what the workspace performed, so the
         // fact reads it before the tree releases its request.
         let operation = self.tree.pending_mutation();
         let outcome = match outcome {
-            Ok(outcome) => outcome,
-            Err(MutationError::Collision { entries }) => {
+            DurableOutcome::Committed(outcome) => outcome,
+            DurableOutcome::Unchanged(MutationError::Collision { entries }) => {
                 self.release_slot(slot);
                 return self.report_collision(entries);
             }
-            Err(error) => {
+            DurableOutcome::Unchanged(error) => {
                 self.release_slot(slot);
                 self.tree.abandon_request();
                 self.set_message(error.to_string(), MessageLevel::Error);
+                return Redraw::Needed;
+            }
+            DurableOutcome::Indeterminate(report) => {
+                match (slot, operation) {
+                    (Some(slot), Some(operation)) => {
+                        self.events.commit(
+                            slot,
+                            EditorEvent::WorkspaceReconciliationRequired { operation },
+                        );
+                    }
+                    (slot, _) => self.release_slot(slot),
+                }
+                self.tree.abandon_request();
+                self.tree.refresh_all();
+                self.reload_due = true;
+                self.set_message(
+                    format!("workspace change is uncertain: {report}"),
+                    MessageLevel::Error,
+                );
                 return Redraw::Needed;
             }
         };
@@ -5310,7 +5744,7 @@ impl Session {
         // A clipboard answer arrives outside `handle_event`, so no `settle`
         // transition follows it. Refresh positions before the next frame reads
         // them against text that a Visual paste can shorten.
-        self.refresh_search(SearchRefresh::OnVersionChange);
+        self.refresh_search();
         let reported = self.report_clipboard(notice);
         self.reconcile_viewports();
         applied.or(reported)
@@ -5411,12 +5845,13 @@ impl Session {
             self.set_message(NO_FILE_NAME_NOTE, MessageLevel::Error);
             return Redraw::Needed;
         };
-        let version = file.text().version();
+        let revision = file.text().revision();
         self.start_file_request(
             FileRequest::Reload(ReloadRequest {
                 targets: vec![ReloadTarget {
                     buffer,
                     target: target.clone(),
+                    bytes_max: file.text().bytes_max(),
                     trigger: ReloadTrigger::Read,
                 }],
                 files: self.settings.files,
@@ -5425,7 +5860,7 @@ impl Session {
                 targets: vec![PendingReload {
                     buffer,
                     target,
-                    version,
+                    revision,
                     unsaved,
                 }],
                 origin: ReloadOrigin::Command,
@@ -5468,6 +5903,7 @@ impl Session {
             targets.push(ReloadTarget {
                 buffer: id,
                 target: target.clone(),
+                bytes_max: file.text().bytes_max(),
                 trigger: if file.is_modified() {
                     ReloadTrigger::Compare(identity)
                 } else {
@@ -5477,7 +5913,7 @@ impl Session {
             pending.push(PendingReload {
                 buffer: id,
                 target,
-                version: file.text().version(),
+                revision: file.text().revision(),
                 unsaved: UnsavedText::Keep,
             });
         }
@@ -5573,26 +6009,26 @@ impl Session {
             );
             return self.start_save(then, FormatBeforeSave::Silent);
         };
-        let version = file.text().version();
+        let revision = file.text().revision();
         if let Some(LanguageFormatter::External(declaration)) =
             formatter(self.languages, Some(&path))
         {
             // The run carries the exact text of this version, because the
             // answer replaces that text.
             let content = file.text().to_string();
-            let request = FormatterRequest::new(declaration, path, version, content);
+            let request = FormatterRequest::new(declaration, path, file.text().revision(), content);
             self.language.start_format(buffer, then, request);
             return Redraw::Needed;
         }
         self.language.pending = Some(PendingQuery::new(
             buffer,
-            version,
+            revision,
             QueryPurpose::FormatBeforeSave(then),
         ));
         self.queue_language(LanguageRequest::Query {
             buffer,
             path,
-            version,
+            revision,
             query: LanguageQuery::Format,
         });
         Redraw::Needed
@@ -5614,7 +6050,7 @@ impl Session {
             Some(SaveRequest {
                 buffer,
                 content: render_content(active.text()),
-                version: active.text().version(),
+                revision: active.text().revision(),
                 expected: active.identity(),
                 snapshot: active.text().clone(),
                 files: self.settings.files,
@@ -5724,7 +6160,7 @@ impl Session {
             return false;
         }
         self.buffers.get(target.buffer).is_some_and(|file| {
-            file.target() == Some(&target.target) && file.text().version() == target.version
+            file.target() == Some(&target.target) && file.text().revision() == target.revision
         })
     }
 
@@ -5772,7 +6208,7 @@ impl Session {
             self.analysis_pending = None;
         }
         if buffer == self.active {
-            self.refresh_search(SearchRefresh::Always);
+            self.refresh_search();
         }
         self.reconcile_viewports();
         if origin == ReloadOrigin::Command {
@@ -5889,20 +6325,32 @@ impl Session {
         &mut self,
         buffer: BufferId,
         requested: &Path,
-        outcome: Result<SavedBuffer, SaveError>,
+        outcome: DurableOutcome<SavedBuffer, SaveError>,
         then: AfterSave,
         format: FormatBeforeSave,
     ) -> Redraw {
         let slot = self.write_slot.take();
         let saved = match outcome {
-            Ok(saved) => saved,
-            // A failed save keeps the buffer dirty and usable, so the user can
-            // repeat it. The write produced no durable change, so its reserved
-            // slot returns to the outbox.
-            Err(error) => {
+            DurableOutcome::Committed(saved) => saved,
+            DurableOutcome::Unchanged(error) => {
                 self.release_slot(slot);
                 self.set_message(
                     format!("cannot save {}: {error}", requested.display()),
+                    MessageLevel::Error,
+                );
+                return Redraw::Needed;
+            }
+            DurableOutcome::Indeterminate(report) => {
+                let relative = requested
+                    .strip_prefix(self.root.as_path())
+                    .ok()
+                    .and_then(|path| WorktreeRelativePath::new(path).ok())
+                    .expect("a pending save path belongs to the session root");
+                self.publish_save_reconciliation(slot, relative);
+                self.tree.refresh_all();
+                self.reload_due = true;
+                self.set_message(
+                    format!("cannot prove save of {}: {report}", requested.display()),
                     MessageLevel::Error,
                 );
                 return Redraw::Needed;
@@ -5918,7 +6366,7 @@ impl Session {
         let lines = saved.lines;
         let name = saved.target.as_path().display().to_string();
         let bytes = saved.bytes;
-        let applied = target.apply_save(saved.target, saved.identity, saved.version);
+        let applied = target.apply_save(saved.target, saved.identity, saved.revision);
         // The saved file changed the working tree, so the recorded state of the
         // workspace changed with it.
         self.tree.request_git_status();
@@ -6081,7 +6529,7 @@ impl Session {
             return Redraw::Skipped;
         };
         let matches = query.matches(active.text(), &self.settings.search);
-        let version = active.text().version();
+        let revision = active.text().revision();
         let window = self.windows.focused_window();
         let Some(mut state) = self.windows.state(window) else {
             debug_assert!(false, "the layout always keeps the focused window visible");
@@ -6099,7 +6547,8 @@ impl Session {
         self.search = Some(ActiveSearch {
             query,
             matches,
-            version,
+            buffer: self.active,
+            revision,
         });
         if outcome == CommandOutcome::SearchMissed {
             self.set_message("no match", MessageLevel::Warning);
@@ -6221,20 +6670,21 @@ impl Session {
     ///
     /// The scan is bounded by the search limits of the `editor` module, so it
     /// stays inside the event-loop budget.
-    fn refresh_search(&mut self, refresh: SearchRefresh) {
+    fn refresh_search(&mut self) {
         let Some(active) = self.buffers.get(self.active) else {
             debug_assert!(false, "the session always keeps the active buffer loaded");
             return;
         };
-        let version = active.text().version();
+        let revision = active.text().revision();
         let Some(search) = self.search.as_mut() else {
             return;
         };
-        if search.version == version && refresh == SearchRefresh::OnVersionChange {
+        if search.buffer == self.active && search.revision == revision {
             return;
         }
         search.matches = search.query.matches(active.text(), &self.settings.search);
-        search.version = version;
+        search.buffer = self.active;
+        search.revision = revision;
     }
 
     /// Resizes every visible viewport to its text area and follows its cursor.
@@ -6331,10 +6781,10 @@ const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 /// The message that a missing `git` command shows once for each session.
 /// Returns the number of rows that one region of the review shows.
 ///
-/// The statusline and the message line take their own rows, so the review
-/// draws inside the body band alone.
-fn review_body_rows(area: Rect) -> u16 {
-    shell_areas(area).body.height
+/// The fixed presentation decides which chrome rows remain embedded, so the
+/// review uses the same body height as its painter and the window tree.
+fn review_body_rows(area: Rect, presentation: EditorPresentation) -> u16 {
+    shell_areas(area, presentation).body.height
 }
 
 /// Reports whether the sidebar owns one command.

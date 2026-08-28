@@ -2924,6 +2924,39 @@ fn a_save_asks_for_the_repository_state_again() {
 }
 
 #[test]
+fn disabled_git_status_stays_disabled_after_a_save() {
+    let dir = TempDir::new("tree-git-disabled-save");
+    let path = dir.write("main.rs", "one\n");
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        settings,
+        test_root(dir.path.clone()),
+    )
+    .with_git_status(false);
+    drain(&mut session);
+    assert!(session.take_git_request().is_none());
+
+    session.open_path(path);
+    refuse_language_requests(&mut session);
+    drain_file(&mut session);
+    press(&mut session, 'i');
+    type_keys(&mut session, "two ");
+    press_code(&mut session, KeyCode::Esc);
+    press(&mut session, ':');
+    type_keys(&mut session, "w");
+    press_code(&mut session, KeyCode::Enter);
+    refuse_language_requests(&mut session);
+    drain_file(&mut session);
+
+    assert!(
+        session.take_git_request().is_none(),
+        "a disabled Git policy queues no request after a save"
+    );
+}
+
+#[test]
 fn a_workspace_mutation_asks_for_the_repository_state_again() {
     let (dir, mut session) = git_workspace();
     publish_git(&mut session, &dir.path, &git_output());

@@ -15,7 +15,6 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use kvim_core::{CharRange, EditTransaction, FinalLineEnding, LineEnding, TextBuffer, TextChange};
-use kvim_settings::FileSettings;
 
 use super::file::{FileTarget, render_content};
 
@@ -193,17 +192,19 @@ impl UndoRecord {
     /// exactly. That check protects the buffer against a stale or damaged
     /// record that passed the header check.
     #[must_use]
-    pub fn restore(&self, content: &str, files: &FileSettings) -> Option<TextBuffer> {
+    pub fn restore(&self, content: &str, content_buffer: &TextBuffer) -> Option<TextBuffer> {
         // The buffer detects its line ending from the base text, so a base text
         // with another line ending would save the file with the wrong
         // terminator.
         if LineEnding::detect(&self.base) != LineEnding::detect(content) {
             return None;
         }
-        let mut buffer = TextBuffer::from_text(&self.base, files).ok()?;
+        let mut buffer = TextBuffer::from_text(&self.base, content_buffer.bytes_max()).ok()?;
         // The base text is a buffer text, which always ends with a line ending.
         // The file decides what a later save writes at the end.
-        buffer.set_final_line_ending(FinalLineEnding::of_text(content));
+        buffer
+            .set_final_line_ending(FinalLineEnding::of_text(content))
+            .ok()?;
         for step in &self.steps {
             let cursor = buffer.char_position(step.cursor_before).ok()?;
             let start = buffer.char_position(step.start).ok()?;

@@ -1,0 +1,164 @@
+[package]
+name = "kvim-embed"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+version.workspace = true
+
+[[example]]
+name = "host_owned_chrome"
+required-features = ["worktree"]
+
+[[example]]
+name = "host_sidebar"
+required-features = ["worktree"]
+
+[[example]]
+name = "merged_leader"
+required-features = ["worktree"]
+
+[[example]]
+name = "supplied_review"
+required-features = ["review"]
+
+[[example]]
+name = "unified_command_line"
+required-features = ["worktree"]
+
+[[example]]
+name = "worktree_editor"
+required-features = ["worktree"]
+
+[[example]]
+name = "worktree_review"
+required-features = ["worktree"]
+
+[features]
+# The default facade is the in-memory editor. `worktree` adds optional service
+# orchestration but no language adapter. Each grammar feature implies worktree
+# and forwards exactly its named adapter; an empty registry remains supported.
+default = []
+review = [
+  "dep:kvim-path",
+  "dep:kvim-tui",
+  "dep:kvim-workspace",
+  "kvim-tui/review",
+  "kvim-workspace/review",
+]
+worktree = [
+  "review",
+  "dep:kvim-keymap",
+  "dep:kvim-language",
+  "dep:kvim-lsp",
+  "dep:kvim-path",
+  "dep:kvim-runtime",
+  "dep:kvim-tui",
+  "dep:kvim-ui",
+  "dep:kvim-workspace",
+  "kvim-tui/editor",
+  "kvim-workspace/services",
+  "dep:tokio",
+]
+grammar-asm = ["worktree", "kvim-language/grammar-asm", "kvim-tui/grammar-asm"]
+grammar-bash = ["worktree", "kvim-language/grammar-bash", "kvim-tui/grammar-bash"]
+grammar-c = ["worktree", "kvim-language/grammar-c", "kvim-tui/grammar-c"]
+grammar-cpp = ["worktree", "kvim-language/grammar-cpp", "kvim-tui/grammar-cpp"]
+grammar-css = ["worktree", "kvim-language/grammar-css", "kvim-tui/grammar-css"]
+grammar-fish = ["worktree", "kvim-language/grammar-fish", "kvim-tui/grammar-fish"]
+grammar-glsl = ["worktree", "kvim-language/grammar-glsl", "kvim-tui/grammar-glsl"]
+grammar-go = ["worktree", "kvim-language/grammar-go", "kvim-tui/grammar-go"]
+grammar-html = ["worktree", "kvim-language/grammar-html", "kvim-tui/grammar-html"]
+grammar-javascript = [
+  "worktree",
+  "kvim-language/grammar-javascript",
+  "kvim-tui/grammar-javascript",
+]
+grammar-json = ["worktree", "kvim-language/grammar-json", "kvim-tui/grammar-json"]
+grammar-lua = ["worktree", "kvim-language/grammar-lua", "kvim-tui/grammar-lua"]
+grammar-markdown = [
+  "worktree",
+  "kvim-language/grammar-markdown",
+  "kvim-tui/grammar-markdown",
+]
+grammar-nix = ["worktree", "kvim-language/grammar-nix", "kvim-tui/grammar-nix"]
+grammar-python = [
+  "worktree",
+  "kvim-language/grammar-python",
+  "kvim-tui/grammar-python",
+]
+grammar-rust = ["worktree", "kvim-language/grammar-rust", "kvim-tui/grammar-rust"]
+grammar-scss = ["worktree", "kvim-language/grammar-scss", "kvim-tui/grammar-scss"]
+grammar-sql = ["worktree", "kvim-language/grammar-sql", "kvim-tui/grammar-sql"]
+grammar-terraform = [
+  "worktree",
+  "kvim-language/grammar-terraform",
+  "kvim-tui/grammar-terraform",
+]
+grammar-toml = ["worktree", "kvim-language/grammar-toml", "kvim-tui/grammar-toml"]
+grammar-tsx = ["worktree", "kvim-language/grammar-tsx", "kvim-tui/grammar-tsx"]
+grammar-typescript = [
+  "worktree",
+  "kvim-language/grammar-typescript",
+  "kvim-tui/grammar-typescript",
+]
+grammar-xml = ["worktree", "kvim-language/grammar-xml", "kvim-tui/grammar-xml"]
+grammar-yaml = ["worktree", "kvim-language/grammar-yaml", "kvim-tui/grammar-yaml"]
+grammar-zig = ["worktree", "kvim-language/grammar-zig", "kvim-tui/grammar-zig"]
+all-grammars = [
+  "grammar-asm",
+  "grammar-bash",
+  "grammar-c",
+  "grammar-cpp",
+  "grammar-css",
+  "grammar-fish",
+  "grammar-glsl",
+  "grammar-go",
+  "grammar-html",
+  "grammar-javascript",
+  "grammar-json",
+  "grammar-lua",
+  "grammar-markdown",
+  "grammar-nix",
+  "grammar-python",
+  "grammar-rust",
+  "grammar-scss",
+  "grammar-sql",
+  "grammar-terraform",
+  "grammar-toml",
+  "grammar-tsx",
+  "grammar-typescript",
+  "grammar-xml",
+  "grammar-yaml",
+  "grammar-zig",
+]
+
+[dependencies]
+# kvim crates
+kvim-core.workspace = true
+kvim-editor.workspace = true
+kvim-input.workspace = true
+kvim-settings.workspace = true
+kvim-keymap = { workspace = true, optional = true }
+kvim-language = { workspace = true, optional = true }
+kvim-lsp = { workspace = true, optional = true }
+kvim-path = { workspace = true, optional = true }
+kvim-runtime = { workspace = true, optional = true }
+kvim-tui = { workspace = true, optional = true, default-features = false }
+kvim-ui = { workspace = true, optional = true }
+kvim-workspace = { workspace = true, optional = true, default-features = false }
+
+# Basics
+blake3.workspace = true
+thiserror.workspace = true
+
+# Runtime
+# Tokio stays private behind the facade-owned worktree lifecycle.
+tokio = { workspace = true, optional = true }
+
+# Terminal-neutral presentation
+ratatui = { workspace = true, default-features = false }
+unicode-width.workspace = true
+
+[dev-dependencies]
+# Worktree example executor; this dependency is not part of a public signature.
+tokio.workspace = true

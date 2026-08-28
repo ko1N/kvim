@@ -32,7 +32,6 @@ structure, not a flat list of primitives.
 |---|---|
 | Line numbers | Enabled |
 | Relative line numbers | Enabled |
-| Line wrapping | Disabled |
 | Vertical scroll margin | 2 rows |
 | Horizontal scroll margin | 4 columns |
 | Sign column | Always visible |
@@ -119,6 +118,11 @@ tree still aligns. [`files.md`](files.md) owns the icon table.
 | Atomic save | Enabled |
 | Maximum file size | 4 MiB |
 
+The maximum file size remains raw in `FileSettings` so settings overrides can
+replace it before realization. `EditorSettings::realize` validates it. A
+composition boundary then constructs the core-owned `BufferBytesMax` value. Every created or reloaded
+buffer stores that value, so later edits cannot exceed the realized setting.
+
 [`files.md`](files.md) owns saving, conflicts, and persistent undo files. Format
 on save is the default for each new buffer. The per-buffer toggle does not
 change this default. The setting names no formatter: the language adapter
@@ -204,8 +208,16 @@ bare primitive:
 - The sign column, the case sensitivity, the split placements, the file tree
   icons, and the check depth are modes, not boolean flags or strings.
 
-A constructor validates each value and establishes its invariant. An invalid
-value cannot exist.
+A constructor validates each value and establishes its invariant. Public fields
+do not bypass this boundary. Realization rejects zero resolver and window bounds,
+file limits outside their supported range, malformed linewise values, oversized
+registers and edited-line seeds, and runtime capacities above their published
+maximum. These checks run in release builds and return typed errors for invalid
+consumer input. Debug assertions protect only invariants that a validated
+boundary already established.
+
+Rendering uses horizontal scrolling. The first release has no line-wrapping
+setting because no wrapping architecture exists.
 
 ## Configuration Loading
 

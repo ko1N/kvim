@@ -48,8 +48,9 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
-| `kvim-tui` | The embedded editor and review presentation models and standalone presentation adapters. It owns visible state for one supplied editor instance. It owns no terminal and no event loop. |
+| `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
 | `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
+| `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
@@ -122,7 +123,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 0 | `kvim-path` | none |
 | 0 | `kvim-settings` | none |
 | 0 | `kvim-syntax` | none |
-| 1 | `kvim-core` | `kvim-settings` |
+| 1 | `kvim-core` | None |
 | 1 | `kvim-runtime` | `kvim-path` |
 | 1 | `kvim-terminal` | `kvim-keymap` |
 | 2 | `kvim-clipboard` | `kvim-runtime` |
@@ -131,13 +132,24 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-ui` | `kvim-keymap`, `kvim-fuzzy` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
 | 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
-| 3 | `kvim-workspace` | `kvim-core`, `kvim-fuzzy`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` |
-| 4 | `kvim-tui` | every library above, including `kvim-terminal` for the normalized event value alone |
-| 5 | `kvim` | `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-tui` |
+| 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` (the `review` partition uses only `kvim-path`) |
+| 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-fuzzy`, `kvim-input`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` (the `review` partition uses only neutral input, path, settings, UI, and workspace review partitions) |
+| 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
+| 6 | `kvim` | `kvim-embed`, `kvim-path`, `kvim-settings`, `kvim-terminal` |
 
-External dependencies do not change the layer number. `kvim-ui` owns ratatui
-geometry and rendering. No syntax-only consumer compiles LSP, ratatui, or the
-editor.
+External dependencies do not change the layer number. The default
+`kvim-embed` path uses ratatui directly for its small plain-text memory view.
+The workspace disables ratatui default features because the default enables a
+crossterm backend. Rendering into a caller-owned `Buffer` needs no backend.
+`kvim-ui` and `kvim-tui` compile against this backend-neutral API. The
+standalone binary enables ratatui's `crossterm` feature at its composition
+root. This keeps terminal lifecycle and crossterm ownership outside the memory
+facade. The facade reuses `kvim-editor` viewport and modal state. Its
+`worktree` feature privately adapts `kvim-tui` and owns its Tokio executor.
+Grammar features imply `worktree` and forward to the matching `kvim-tui`
+language feature. The default dependency closure remains unchanged. `kvim-ui`
+ratatui geometry and rendering. No syntax-only consumer compiles LSP, ratatui,
+or the editor.
 
 `kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
 `TerminalEvent` value alone, because `Session`, the standalone presentation
@@ -150,10 +162,10 @@ them.
 
 The alternative was to move `TerminalEvent` down into `kvim-keymap` and leave
 the crossterm conversion in `kvim-terminal`. That move is refused, because the
-value carries `Resize` and `Focus`, which are terminal facts and not key facts.
-A keymap crate that named them would own two charters. The accepted cost is that
-an external host of the embedded facade also compiles `kvim-terminal` and
-crossterm, although `EmbeddedEditor` names no terminal type.
+value carries `Resize`, which is a terminal fact and not a key fact. A keymap
+crate that named it would own two charters. The accepted cost is that an
+external host of the embedded facade also compiles `kvim-terminal` and
+crossterm, although `WorktreeEditor` names no terminal type.
 
 `kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
 `Resolver` and reads one published `InputContextSnapshot` for each surface. The
@@ -168,14 +180,10 @@ compiles ranking code that it does not use.
 `kvim-workspace` depends on `kvim-ui` because `Picker` holds one
 `Selector<usize>` for its query, its ranking, its match list, and its
 selection. `kvim-ui` is layer 2 and `kvim-workspace` is layer 3, so the edge
-adds no cycle. `kvim-workspace` keeps its direct dependency on `kvim-fuzzy`
-too, because it re-exports `score_candidate`, `FUZZY_NAME_WEIGHT`, and
-`FUZZY_TEXT_CHARS_MAX` for a consumer that scores a candidate of its own
-without the file, buffer, and picker vocabulary of `kvim-workspace`, and
-because its own public `rank_candidates` function clips its query and then
-calls `kvim_fuzzy::rank` over borrowed candidates. `kvim_fuzzy::rank` is the
-one ranking rule that `Picker`, the command-line completion, and `Selector<R>`
-all share.
+adds no cycle. The workspace crate does not re-export or wrap `kvim-fuzzy`.
+Consumers that score or rank their own candidates use the supported
+`kvim-fuzzy` package directly. Command-line completion in `kvim-tui` also calls
+`kvim_fuzzy::rank` directly over borrowed workspace candidates.
 
 `kvim-runtime` depends on `kvim-path` only for the portable filesystem watcher.
 The watcher uses one caller-supplied worktree capability for registration reads
@@ -199,7 +207,18 @@ owns its meaning. A reverse dependency is a Cargo cycle, so it fails the build.
 
 The supported external packages are `kvim-path`, `kvim-fuzzy`, `kvim-core`,
 `kvim-settings`, `kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`,
-`kvim-lsp`, `kvim-ui`, and the embedded facade in `kvim-tui`.
+`kvim-lsp`, `kvim-ui`, and `kvim-embed`. `kvim-embed` is the only supported
+high-level editor facade. `kvim-tui` is an internal presentation
+implementation. Its hidden adapter module is not a compatibility contract and
+exists only for `kvim-embed`.
+
+`kvim-embed` defaults to an empty feature set and compiles only the in-memory
+editor. Its default dependency closure contains no `kvim-tui`, `kvim-runtime`,
+`kvim-language`, `kvim-lsp`, `kvim-workspace`, `kvim-path`, `kvim-terminal`,
+Tokio, crossterm, notify, or cap-std. The in-memory editor reuses the lower
+modal state and viewport. Its small plain-text painter remains local because
+the full worktree renderer is structurally tied to worktree and language state.
+This avoids a reverse dependency and avoids duplicating that full renderer.
 
 `kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
 so its action list is public. A consumer that resolves keys itself reads the
@@ -325,6 +344,16 @@ precedence. The statusline and the winbar of kvim draw through the same band,
 so no second shedding rule exists. [`windows.md`](windows.md) owns the rule.
 
 `kvim-keymap` publishes three which-key lists and one registry helper.
+`kvim-embed::WorktreeBindingModel` composes bounded host and kvim contributions
+into that generic registry. It projects editor host-leader contributions only
+into Normal, Visual, and sidebar scopes. Literal and internal pending contexts
+retain kvim ownership. Explicit bounded overrides select one addressed host or
+editor winner for duplicate and strict-prefix conflicts. The model rejects
+stale, ambiguous, contradictory, or uncovered overrides without using
+registration order. It validates the facade context by requiring its reserved
+escape key to complete one host-global command. It then projects the picker
+overlay intact. It publishes bounded owner and semantic group labels while
+leaving resolution and hint generation in `kvim-keymap`.
 `Resolver::which_key` returns one `WhichKeyView`, and `WhichKeyView::hints`
 reports the hints of every scope that extends the pending prefix. Each hint
 names its own scope. `WhichKeyView::interruptions` reports the complete one-key
@@ -360,36 +389,21 @@ holding a special case outside the registry.
 [`input-actions.md`](input-actions.md) owns the rule, and
 [`embedding.md`](embedding.md) owns the host contract.
 
-The embedded facade in `kvim-tui` publishes one file sidebar over the worktree
-root of one editor. `EmbeddedEditor::file_rows`, `file_root_label`, and
-`file_sidebar` name `FileRow`, `FileRowKind`, `FileRowGit`, `FileSidebarInput`,
-and `FileSidebarOutcome` alone. `FileRow` also carries an `IconRole`, the same
-role that colors kvim's own file tree and which-key overlay. The surface names
-no type of `kvim-workspace`, which stays outside the supported set, so the
-facade publishes its own vocabulary instead of a re-export. `ThemeRole::TreeGit`
-names `FileRowGit` for the same reason, so a host colors a Git mark from the
-published palette alone.
+The internal presentation implementation renders one built-in file sidebar.
+The supported `WorktreeEditor` facade renders that sidebar when presentation
+ownership is `Embedded`. When ownership is `HostOwned`, it publishes bounded
+semantic rows and accepts semantic sidebar commands. It never accepts host rows
+and never merges the host tree with the editor tree. Generic sidebar state and
+rendering remain public component APIs of `kvim-ui`.
 
-`draw_file_row` publishes the look of that sidebar beside its facts. kvim's own
-file tree draws through the same call, so one appearance exists and no second
-one can drift. Clipped row text fades across its final three visible cells
-toward the effective row background, before the fixed right-edge Git mark. The
-call also names `RegionFocus`, because the selection mark belongs to the
-focused sidebar alone and the focus is a property of the sidebar and not of one
-row. `RegionFocus` names one region, and a region is one editor window or one
-sidebar, so both surfaces of kvim report the focus with one published value.
-[`embedding.md`](embedding.md) owns the painter.
-[`embedding.md`](embedding.md) owns the surface.
+The built-in sidebar keeps its selection mark only while the sidebar has focus.
+When a long label reaches the fixed right-edge Git mark, its final three visible
+text cells fade toward the row background. This behavior remains internal to the
+complete rendered surface. [`embedding.md`](embedding.md) owns the behavior,
+and [`windows.md`](windows.md) owns the mark rule.
 
-`FILE_SIDEBAR_MARK_CELLS` and `FILE_SIDEBAR_SELECTION_MARK` publish the left
-column of that row, as `FILE_SIDEBAR_ICON_CELLS` publishes the icon gutter. The
-first names the width that every row reserves, and the second names the glyph
-that kvim draws there on the selected row of a focused sidebar. A host that
-draws its own tree beside kvim's reserves the same width, so the left columns of
-the two trees line up, and it chooses its own glyph or draws kvim's. The width
-of the Git mark at the right edge stays private, because a host that draws no
-Git mark of its own reserves no cell for one. [`windows.md`](windows.md) owns
-the mark rule.
+The lower-level candidate-menu model and painter remain component APIs of
+`kvim-tui`. They are not payloads of the supported high-level facade.
 
 The embedded facade also publishes the candidate menu of one prompt line.
 `LineCompletion` is the model, `CompletionCycle` names the direction of the key
@@ -404,8 +418,8 @@ through the same call, so no second appearance exists. The menu is no
 menu wraps at both ends and restores the typed text on a cancel, so the facade
 publishes two types. [`windows.md`](windows.md) owns the placement rule.
 
-`EmbeddedEditor::mode` answers the editing mode of one editor. A host that names
-the mode in a band of its own reads this value. `EmbeddedEditor::input_context`
+`WorktreeEditor::mode` answers the editing mode of one editor. A host that names
+the mode in a band of its own reads this value. `WorktreeEditor::input_context`
 answers the scope that owns the keys instead, so it names a prompt, a sidebar,
 or a picker while one of those reads them. The two answer different questions,
 and a host that read the scope alone would lose its mode label whenever a prompt
@@ -448,7 +462,7 @@ from the kind. An enum whose variant demands a decision from a host stays
 exhaustive, so a new variant stops the build until the host answers it. An enum
 that holds a growing vocabulary carries `#[non_exhaustive]`, because a host
 binds the members it wants and ignoring a new member is the correct answer.
-`EditorEvent` and `Dispatch` are of the first kind. `kvim_input::Command` is of
+`WorktreeEvent` and `Dispatch` are of the first kind. `kvim_input::Command` is of
 the second: it names every editor command, a host binds the ones it publishes,
 and a new command breaks nothing. `kvim_syntax::SyntaxRole` and
 `kvim_syntax::LimitKind` are of the second kind for the same reason, so the
@@ -476,52 +490,29 @@ a wildcard arm. A wildcard arm ships the wrong behavior with no compile error
 to catch it.
 
 A published enum that names an input also derives `Ord` and `PartialOrd`. A
-host names such a value inside a command type of its own, and
-`kvim_keymap::CommandMetadata` requires `Copy`, `Eq`, and `Ord`. An input enum
-without those derives therefore forces a host to write a second vocabulary for
-one that kvim already publishes, and to map each member of its own onto ours.
-`PromptEdit`, `ConfirmEdit`, `ListMotion`, `CompletionCycle`, `AdaptiveSplit`,
-and `FileSidebarInput` all name an input and carry the derives. An enum that
-names an outcome or a fact needs no order of its own.
+host can use that value inside its own command vocabulary without building a
+parallel type. This rule applies to supported component APIs such as
+`PromptEdit`, `ConfirmEdit`, `ListMotion`, `CompletionCycle`, and
+`AdaptiveSplit`. An enum that names an outcome or a fact needs no order.
 
 The rule covers the payload of a variant as well as the variant list. A changed
-payload type stops the build of a host that names the variant, exactly as a new
-variant does, and the compile error serves the same purpose: the host must read
-the new type and decide again. So a payload change is a breaking facade change,
-and it takes the same obligations as a new variant. `ThemeRole::TreeGit` proves
-this half. Its payload moved from `kvim_workspace::GitStatus` to `FileRowGit`.
-The role named a type of a package that the supported set
-excludes, so a host could answer the role only by depending on an unsupported
-crate. The change closes that hole. It also shows why the rule cannot rest on
-the variant list alone: a facade stays sound only while every payload type is
-itself a supported one, and correcting a payload is therefore normal facade
-work rather than an accident. `#[non_exhaustive]` on the enum would not soften
-this break either, because the wildcard arm covers an unnamed variant and not a
-named variant with a new payload.
+payload type is a breaking facade change because every host must decide how to
+handle the new value. Supported facade payloads must come from supported crates;
+private presentation and workspace types must not leak through `kvim-embed`.
 
-Every surface that this section names is such a facade. This includes the
-selector with its window and its candidate count, the list viewport with
-`ListItem`, `ListPlacement`, and `ListWindow`, the `window_for_height` answer of
-both lists, the `ListMotion` vocabulary of both lists, the parent climb with
-`parent_row` and `ParentScanRow`, the tree and section mechanics of the
-sidebar, the indent guide rule, the three which-key lists, the paged
-which-key overlay with `WhichKeyPlacement`,
-`WhichKeyOverlayRow`, and `placement_for`, `Registry::all_bindings`, the
-interrupted dispatch outcome, the cancelling scope with `UnboundInput` and the
-cancelled dispatch outcome, the adaptive split rule with `AdaptiveSplit`, the
-one-row band with `ChromeBand`, `BandSegment`, `BandSide`, `BandRank`,
-`BandPlacement`, `BandError`, and `BAND_SEGMENTS_MAX`, the prompt line with
-`EditedLine` and `LineChange`, the candidate menu with `LineCompletion`,
-`CompletionCycle`, `CompletionOutcome`, and `draw_completion_menu`, the editing
-mode of the embedded editor, and the embedded file sidebar with `draw_file_row`,
-`RegionFocus`, `FILE_SIDEBAR_MARK_CELLS`, and `FILE_SIDEBAR_SELECTION_MARK`.
-Each surface carries rustdoc, one owning document, and the dedicated example of
-its feature.
+Every supported surface in this section carries rustdoc, one owning document,
+and the dedicated example of its feature. The supported set includes generic
+`kvim-ui` composition and sidebar components, prompt editing, candidate menus,
+the editing mode and semantic command, status, and sidebar publications of
+`WorktreeEditor`, the rendered worktree facade, and `ReviewSurface`. It does not
+include private `kvim-tui` adapter payloads or a multi-surface composer adapter
+for `WorktreeEditor`.
 `crates/kvim/tests/repository_policy.rs` proves that last link, so the same
 rule governs all of them.
 
-Continuous integration checks minimal features, each required feature, default
-features, and all valid feature combinations. This matrix is exact:
+Continuous integration checks minimal features, one representative grammar,
+default features, and all valid grammar combinations. Independent external
+consumers prove each supported package in isolation. The exact matrix is:
 
 | Crate | Default | Required CI combinations |
 |---|---|---|
@@ -529,13 +520,17 @@ features, and all valid feature combinations. This matrix is exact:
 | `kvim-keymap` | no optional production features | default |
 | `kvim-lsp` | no optional production features | default |
 | `kvim-ui` | no optional production features | default |
-| `kvim-syntax` | no grammar | no grammar, each grammar alone, `all-grammars` |
-| `kvim-tui` | no grammar | no grammar, each forwarded grammar alone, `all-grammars` |
+| `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
+| `kvim-embed` | in-memory only | default, no-default, `review`, `worktree`, `grammar-rust`, `all-grammars` |
+| `kvim-tui` | internal only | no grammar, `grammar-rust`, `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
-The `kvim` binary enables `all-grammars`. Private `test-support` features are
-not external combinations. Record an architectural reason before excluding any
-future combination.
+Its no-grammar registry is valid and empty. Path lookup is typed unsupported,
+language-name lookup returns none, fenced markup stays plain, and service
+construction starts no language process. No lower or facade layer may assume
+that Rust or another adapter exists. The `kvim` binary enables `all-grammars`.
+Private `test-support` features are not external combinations. Record an
+architectural reason before excluding any future combination.
 
 ## Enforced Policy
 
@@ -544,15 +539,64 @@ gate on macOS and on Linux.
 
 | Gate | Command | It proves |
 |---|---|---|
-| Feature examples | `cargo run -p <package> --example <name>` for every required example of [`embedding.md`](embedding.md) | Every dedicated example still runs and still asserts its own facts. |
+| Feature examples | `scripts/run-required-examples.sh` | The script reads the authoritative list in [`embedding.md`](embedding.md), then runs every dedicated example. |
 | Example policy | `cargo test -p kvim --test repository_policy` | Every public feature module names an example file that exists, no extra example replaces a feature example, and every documented example link resolves. |
 | Rustdoc links | `cargo doc --workspace --no-deps --all-features` under `RUSTDOCFLAGS=-D warnings` | Every intra-doc link of the published documentation resolves. |
 | Dependency edges | `scripts/check-dependency-edges.sh` | Every direct and transitive kvim edge appears in the layer table above, each isolation charter reaches none of the external crates that it refuses, and every dependency of a supported package is reachable from the same revision or from crates.io. |
 | Syntax isolation | `cargo check -p kvim-syntax --no-default-features [--features …]` | The syntax package builds with no grammar, with one grammar, and with every grammar. |
-| External consumer | `scripts/check-external-consumer.sh` | `fixtures/consumer` compiles every combination of the matrix above as a revision-pinned Git dependency, without a shared parent workspace, with the development toolchain and with the minimum supported Rust version. |
+| External consumers | `scripts/check-external-consumer.sh` | Independent workspaces compile each supported package through revision-pinned Git dependencies. Facade fixtures cover memory and worktree lifecycles, host-resolved composition, mixed ownership, unified host chrome, host sidebar, supplied review, worktree review, and the grammar matrix. Development and minimum supported Rust version toolchains run the same matrix. |
+
+The external-consumer script uses the checked-out repository's `origin` and the
+selected Git revision by default. It does not print the repository URL. Pass
+`--repository-url` to select a different repository explicitly. Continuous
+integration uses `--checked-out-repository`, a `file://` clone of the full-depth
+checkout. This preserves outside-workspace, revision-pinned Git behavior and
+makes pull-request merge commits available on macOS and Linux without remote
+authentication. Run it with `--local-source` to include uncommitted worktree
+files without remote authentication. Local mode copies the worktree into a
+temporary Git repository because Cargo Git dependencies cannot read uncommitted
+files.
+
+Each directory under `fixtures/consumer/` is an independent workspace. Most
+fixtures import one supported package. The eight `kvim-embed` fixtures may also
+import supported companion packages and ratatui. No facade fixture imports
+`kvim-tui`, `kvim-runtime`, `kvim-language`, or `kvim-workspace`. The
+supplied-review fixture enables only `review`. Its dependency-isolation gate
+rejects service, terminal, language, and grammar packages.
 
 The dependency gate reads the layer table of this document, so the policy and
-the architecture cannot disagree. A new charter row changes both at once.
+architecture cannot disagree. A new charter row changes both at once.
+
+## Host And Review Surface
+
+The supplied-review boundary uses explicit pure-review feature partitions in
+`kvim-workspace` and `kvim-tui`. The workspace partition owns diff values,
+alignment, anchors, relocation, and review state. The presentation partition
+owns the single review model and painter. The normal editor build enables both
+partitions and its integrated review adapts the same model and painter.
+`kvim-embed --no-default-features --features review` disables both crates'
+service partitions. Its normal dependency closure therefore contains no
+`kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-terminal`, Tokio, notify, or
+Tree-sitter package. These partitions are private implementation boundaries;
+`kvim-embed` remains the only supported high-level facade.
+
+The `review` feature adds `ReviewSurface::from_candidates`. This constructor
+accepts bounded immutable facade values and performs no input or output. It
+reuses `blake3`, already present in the workspace, to derive deterministic
+private candidate authority from the bounded host identity. It reuses the
+private review model, anchor relocation, and painter used by integrated review.
+It does not construct an editor or call filesystem, Git, process, watcher,
+clipboard, language, or runtime APIs.
+
+The supplied-review dependency boundary is enforced with `cargo tree` over the
+exact review-only feature selection. Constructor-level source inspection is not
+dependency isolation.
+
+`ReviewSurface::for_worktree` performs bounded Git capture behind the
+`worktree` feature. It privately owns its executor, request publication gates,
+and paired staged and unstaged results. It publishes neither half until both
+resolve. Hosts own focus, comment persistence, and host-domain meaning for both
+review modes.
 
 ## State Ownership
 
@@ -594,16 +638,17 @@ imperative boundary.
   - Cost: compile time and platform-specific transitive code.
 - `ratatui`
   - Replaces: a local widget set, cell buffer, and layout implementation.
-  - May run: in `kvim-ui`, `kvim-tui`, and the standalone composition root,
-    which owns the terminal backend, the cell buffer of the process terminal,
-    and the draw call.
+  - May run: in `kvim-ui`, `kvim-tui`, `kvim-embed`, and the standalone
+    composition root. `kvim-embed` renders into a caller-owned cell buffer. The
+    standalone root owns the terminal backend and draw call.
   - Cost: compile time. Rendering cost stays bounded by the terminal buffer and
     the visible window content.
 - `unicode-width`
   - Replaces: local terminal-cell width tables.
-  - May run: in `kvim-ui` and `kvim-tui`, which lay out cells. `kvim-core`
-    defines the terminal-column coordinate type, but it does not measure cell
-    width, and `kvim-terminal` normalizes events rather than laying out cells.
+  - May run: in `kvim-ui`, `kvim-tui`, and `kvim-embed`, which lay out cells.
+    `kvim-core` defines the terminal-column coordinate type, but it does not
+    measure cell width, and `kvim-terminal` normalizes events rather than laying
+    out cells.
   - Cost: small. Work stays bounded to visible or otherwise bounded text.
 - `futures-util`
   - Replaces: a local polling loop over terminal events, and a local join over
@@ -615,9 +660,9 @@ imperative boundary.
   - Replaces: local thread pools, channels, deadlines, and child-process
     handling.
   - May run: in `kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-terminal`,
-    `kvim-tui`, and the standalone composition root. Public drivers return
-    futures and create no runtime. Every task starts through a caller-supplied
-    bounded spawner.
+    `kvim-tui`, `kvim-embed`, and the standalone composition root. Lower public
+    drivers return futures and create no runtime. `WorktreeEditor` privately
+    owns one runtime and bounded spawners.
   - Cost: compile time, supply-chain size, and a worker thread pool.
 - `tokio-util`
   - Replaces: local cancellation flags and shared shutdown state.
@@ -659,7 +704,9 @@ imperative boundary.
 ### The Text Model
 
 This dependency runs inside `kvim-core`, because the text storage is the text
-model. `kvim-core` runs no other dependency except `thiserror`.
+model. `kvim-core` also uses `thiserror`. Buffer construction uses the core-owned
+`BufferBytesMax`. Composition resolves user and language indent settings into a
+core-owned `IndentPolicy`, so `kvim-core` does not depend on `kvim-settings`.
 
 - `ropey` 1.6
   - Replaces: a local rope or piece table, a local line index, and local
@@ -891,10 +938,12 @@ counts the declared, the found, and the missing programs of that section, so a
 reader finds an incomplete host in one line. The report carries no escape
 sequence, so a redirected output and an editor buffer both stay readable.
 
-`crates/kvim-tui/src/diagnostics.rs` owns the builder. `kvim-tui` is the lowest
-crate that sees the language registry, the clipboard selection, the workspace
-limits, and the buffer that the command opens. The binary calls the same
-builder and prints what it returns.
+`crates/kvim-tui/src/diagnostics.rs` owns the internal report builder because it
+also serves the `:diagnostics` buffer. `kvim-embed` wraps that builder with
+`WorktreeHostReportRequest` and `WorktreeHostWorkspace`.
+`WorktreeHostReportRequest::built_in` selects the built-in language registry
+without exposing its implementation type. The standalone binary uses those
+facade-owned types and has no direct `kvim-tui` or `kvim-language` dependency.
 
 The probe reads the executable search path once for each distinct program. One
 adapter declares at most `LANGUAGE_SERVERS_MAX` servers and at most one
@@ -942,6 +991,6 @@ learn that it failed. See [`responsiveness.md`](responsiveness.md).
   default value.
 - [`reviewgraph-integration.md`](reviewgraph-integration.md) owns the deferred
   ReviewGraph relationship and source attribution.
-- [`embedding.md`](embedding.md) owns host, driver, embedded editor, the
-  embedded file sidebar, the recipe that gives a host kvim's key preset, event
-  lifecycle, composition, external use, and public examples.
+- [`embedding.md`](embedding.md) owns host, facade lifecycle, facade outcomes,
+  and public examples. `kvim-embed` owns the supported high-level contract.
+  `kvim-tui` owns only its hidden non-contract implementation seam.

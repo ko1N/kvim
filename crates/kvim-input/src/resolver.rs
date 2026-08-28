@@ -15,8 +15,8 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use kvim_keymap::{
-    Chord, Dispatch, Input, InputContextSnapshot, Key, KeyCode, Resolver as SharedResolver,
-    TypedText,
+    Chord, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
+    Resolver as SharedResolver, TypedText,
 };
 use kvim_settings::InputSettings;
 
@@ -330,6 +330,13 @@ impl Resolver {
         self.reducer.snapshot()
     }
 
+    /// Returns the complete context used by the next resolver request.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn dispatch_context(&self) -> DispatchContext<BindingScope> {
+        self.reducer.dispatch_context()
+    }
+
     /// Returns the keys of the pending sequence.
     #[must_use]
     pub fn pending_keys(&self) -> &[Key] {
@@ -461,14 +468,23 @@ impl Resolver {
             return self.cancel();
         }
         let context = self.reducer.dispatch_context();
-        let scope = context.focus.scope;
         let dispatch = self.shared.dispatch(&context, Input::Key(key), Some(now));
-        let reduced = self.reducer.reduce(dispatch);
+        let resolution = self.dispatch(dispatch);
         if self.reducer.holds_grammar_prefix() {
             // The reducer opened its own prefix, such as a count, so the
             // which-key delay counts from this input.
             self.shared.arm_overlay(now);
         }
+        resolution
+    }
+
+    /// Applies one decision from a host-owned key resolver.
+    ///
+    /// This path owns only kvim's semantic grammar. It does not resolve the
+    /// physical key again.
+    pub fn dispatch(&mut self, dispatch: Dispatch<Command>) -> Resolution {
+        let scope = self.reducer.active_scope();
+        let reduced = self.reducer.reduce(dispatch);
         resolution(reduced, scope)
     }
 

@@ -30,7 +30,7 @@ use super::viewport::Viewport;
 /// use kvim_settings::{EditorSettings, FileSettings};
 ///
 /// let text = "line\n".repeat(100);
-/// let mut buffer = TextBuffer::from_text(&text, &FileSettings::default())
+/// let mut buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let settings = EditorSettings::default();
 /// let mut registers = Registers::default();
@@ -40,7 +40,6 @@ use super::viewport::Viewport;
 ///     search: None,
 ///     language_indent_width: None,
 ///     registers: &mut registers,
-///     applied: Vec::new(),
 /// };
 ///
 /// let rows = NonZeroU16::new(10).expect("the literal 10 is not zero");
@@ -104,6 +103,22 @@ impl WindowState {
     #[must_use]
     pub const fn left_column(self) -> usize {
         self.viewport.left_column()
+    }
+
+    /// Returns the viewport with a new first visible source column.
+    ///
+    /// A terminal renderer uses this after it maps source columns to terminal
+    /// cells. The column must not follow the cursor column.
+    #[must_use]
+    pub fn with_left_column(self, left_column: usize) -> Self {
+        debug_assert!(
+            left_column <= self.cursor.column().get(),
+            "a reconciled viewport starts at or before its cursor"
+        );
+        Self {
+            viewport: self.viewport.with_left_column(left_column),
+            ..self
+        }
     }
 
     /// Returns the state of a window that starts to show another buffer.

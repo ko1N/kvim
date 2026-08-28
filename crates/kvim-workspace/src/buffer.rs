@@ -7,7 +7,7 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use kvim_core::{BufferVersion, TextBuffer};
+use kvim_core::{BufferRevision, TextBuffer};
 use kvim_path::WorktreeRoot;
 use kvim_settings::FileSettings;
 
@@ -106,8 +106,12 @@ impl FileBuffer {
     /// Creates an empty buffer that holds no file.
     #[must_use]
     pub fn scratch(files: &FileSettings) -> Self {
-        let text = TextBuffer::from_text("", files)
-            .expect("an empty text never passes the file size limit");
+        let text = TextBuffer::from_text(
+            "",
+            kvim_core::BufferBytesMax::new(files.max_file_bytes)
+                .expect("settings are realized before buffers are created"),
+        )
+        .expect("an empty text never passes the file size limit");
         Self::generated(SCRATCH_BUFFER_NAME, text)
     }
 
@@ -121,12 +125,14 @@ impl FileBuffer {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::TextBuffer;
+    /// use kvim_core::{BufferBytesMax, TextBuffer};
     /// use kvim_settings::FileSettings;
     /// use kvim_workspace::FileBuffer;
     ///
     /// let files = FileSettings::default();
-    /// let text = TextBuffer::from_text("one\n", &files).expect("the text is short");
+    /// let limit = BufferBytesMax::new(files.max_file_bytes)
+    ///     .expect("the settings limit is validated");
+    /// let text = TextBuffer::from_text("one\n", limit).expect("the text is short");
     /// let buffer = FileBuffer::generated("[Logs]", text);
     /// assert_eq!(buffer.name(), "[Logs]");
     /// assert_eq!(buffer.path(), None);
@@ -238,19 +244,19 @@ impl FileBuffer {
     /// Applies the file state from one successful save.
     ///
     /// The target and file identity always advance to the written file. The
-    /// dirty state clears only while the live text still has `saved_version`.
+    /// dirty state clears only while the live text still has `saved_revision`.
     pub fn apply_save(
         &mut self,
         target: FileTarget,
         identity: FileIdentity,
-        saved_version: BufferVersion,
+        saved_revision: BufferRevision,
     ) -> SaveApplyOutcome {
         self.name = display_name(target.as_path());
         self.path = Some(target.as_path().to_path_buf());
         self.target = Some(target);
         self.identity = Some(identity);
         self.external = None;
-        if self.text.version() != saved_version {
+        if self.text.revision() != saved_revision {
             self.history_baseline = HistoryBaseline::Invalidated;
             return SaveApplyOutcome::Stale;
         }
@@ -267,7 +273,7 @@ impl FileBuffer {
     /// caller reloads a buffer with unsaved changes only after the user asked
     /// to discard them. See `docs/files.md`.
     pub fn reload(&mut self, text: TextBuffer, identity: Option<FileIdentity>) {
-        self.text = text;
+        self.text.advance_replacement(text);
         self.identity = identity;
         self.history_baseline = HistoryBaseline::Current;
         self.external = None;

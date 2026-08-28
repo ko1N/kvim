@@ -5,6 +5,7 @@
 //! an elapsed time, and it renders into a cell buffer that the test owns. See
 //! `docs/embedding.md`.
 
+use std::io;
 use std::path::Path;
 use std::time::Duration;
 
@@ -20,11 +21,14 @@ use kvim_runtime::{RuntimeLimits, WORKER_CONCURRENCY_LIMIT_MAX};
 use kvim_settings::EditorSettings;
 use kvim_ui::{BandRank, BandSegment, ChromeBand};
 use kvim_workspace::temp::TempDir;
-use kvim_workspace::{EntryKind, FileOperation, TransferMode, WorkspaceRequest};
+use kvim_workspace::{
+    DurableOutcome, EntryKind, FileOperation, Indeterminate, MutationError, RecoveryAction,
+    RecoveryFailure, TransferMode, WorkspaceRequest, WorkspaceResult,
+};
 
 use crate::embed::{
-    CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorShutdown,
-    EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
+    CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorOpenError,
+    EditorShutdown, EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
 };
 use crate::session::{Redraw, RunState, Session, test_root};
 
@@ -456,6 +460,84 @@ fn a_failed_write_releases_its_reserved_slot() {
 }
 
 #[test]
+fn an_indeterminate_mutation_publishes_uncertainty_and_queues_both_reconciliations() {
+    let directory = TempDir::new("embed-mutation-indeterminate");
+    directory.file("main.rs", "one\n");
+    let path = directory.join("main.rs");
+    let mut session = editor(&directory.path);
+    session.open_path(path.clone());
+    settle(&mut session);
+    reveal_tree(&mut session);
+    let _ = drain_events(&mut session);
+
+    select_named(&mut session, "main.rs");
+    let _ = session.apply_command(Command::TreeRename, None, None, NOW);
+    let _ = session.apply_command(Command::PromptCursorLineEnd, None, None, NOW);
+    for _ in 0.."main.rs".chars().count() {
+        let _ = session.apply_command(Command::PromptDeleteBackward, None, None, NOW);
+    }
+    for value in "moved.rs".chars() {
+        let _ = session.insert_literal(&value.to_string(), NOW);
+    }
+    let _ = session.apply_command(Command::PromptAccept, None, None, NOW);
+    let request = session
+        .take_workspace_request()
+        .expect("the rename reserved and queued one mutation");
+    let WorkspaceRequest::Mutate(request) = request else {
+        panic!("the request is a mutation");
+    };
+    let operation = request.operation.clone();
+    let report = Indeterminate::new(
+        MutationError::Filesystem {
+            path: path.clone(),
+            source: io::Error::other("commit state is uncertain"),
+        },
+        vec![RecoveryFailure::new(
+            path.clone(),
+            RecoveryAction::RestoreOriginal,
+            io::Error::other("restore failed"),
+        )],
+        vec![path.clone()],
+    )
+    .expect("the report stays inside its collection bounds");
+
+    let _ = session.apply_workspace_result(WorkspaceResult::Mutated {
+        outcome: DurableOutcome::Indeterminate(report),
+    });
+
+    assert_eq!(
+        session.active_buffer().path(),
+        Some(path.as_path()),
+        "an uncertain rename does not apply its staged buffer path"
+    );
+    assert_eq!(
+        drain_events(&mut session)
+            .into_iter()
+            .filter_map(|published| match published.event {
+                EditorEvent::WorkspaceReconciliationRequired { operation } => Some(operation),
+                EditorEvent::WorkspaceChanged { .. } => {
+                    panic!("an uncertain mutation is not a proven workspace change")
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![operation],
+        "the mandatory reservation is consumed by the uncertainty event"
+    );
+    assert!(
+        matches!(
+            session.take_workspace_request(),
+            Some(WorkspaceRequest::ReadDirectory { .. })
+        ),
+        "bounded tree reconciliation is queued"
+    );
+    assert!(
+        session.take_file_request().is_some(),
+        "loaded-buffer reconciliation is queued while file work is idle"
+    );
+}
+
+#[test]
 fn every_workspace_mutation_publishes_its_fact() {
     let directory = TempDir::new("embed-workspace-facts");
     directory.file("README.md", "kvim\n");
@@ -634,7 +716,7 @@ fn a_focus_move_at_the_edge_reports_the_boundary() {
         Some(InputRequest::FocusBoundary(crate::Direction::Left))
     );
     assert_eq!(
-        reduction.request().map(InputRequest::event),
+        reduction.request().and_then(InputRequest::event),
         Some(EditorEvent::FocusBoundary(crate::Direction::Left))
     );
 
@@ -746,6 +828,14 @@ fn the_editor_events_hold_no_review_fact() {
                 paths: vec![relative("main.rs")],
             },
         },
+        EditorEvent::SaveReconciliationRequired {
+            path: relative("main.rs"),
+        },
+        EditorEvent::WorkspaceReconciliationRequired {
+            operation: FileOperation::Delete {
+                paths: vec![relative("main.rs")],
+            },
+        },
         EditorEvent::FileActivated {
             path: relative("main.rs"),
         },
@@ -758,6 +848,8 @@ fn the_editor_events_hold_no_review_fact() {
         EditorEvent::ActiveFileChanged { .. } => "active-file-changed",
         EditorEvent::FileWritten { .. } => "file-written",
         EditorEvent::WorkspaceChanged { .. } => "workspace-changed",
+        EditorEvent::SaveReconciliationRequired { .. } => "save-reconciliation-required",
+        EditorEvent::WorkspaceReconciliationRequired { .. } => "workspace-reconciliation-required",
         EditorEvent::FileActivated { .. } => "file-activated",
         EditorEvent::RedrawRequested => "redraw-requested",
         EditorEvent::FocusBoundary(_) => "focus-boundary",
@@ -770,6 +862,8 @@ fn the_editor_events_hold_no_review_fact() {
             "active-file-changed",
             "file-written",
             "workspace-changed",
+            "save-reconciliation-required",
+            "workspace-reconciliation-required",
             "file-activated",
             "redraw-requested",
             "focus-boundary",
@@ -973,7 +1067,11 @@ fn an_editor_rectangle_without_cells_returns_a_typed_error() {
     let refused = EmbeddedEditor::builder(test_root(directory.path.clone()), area)
         .open()
         .expect_err("a rectangle without cells builds no editor");
-    assert_eq!(refused, GeometryError::Empty { area });
+    assert!(matches!(
+        refused,
+        EditorOpenError::Geometry(GeometryError::Empty { area: refused_area })
+            if refused_area == area
+    ));
 }
 
 #[tokio::test]

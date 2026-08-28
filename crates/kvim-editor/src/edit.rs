@@ -297,7 +297,7 @@ pub(super) fn selection_lines(buffer: &TextBuffer, selection: Selection) -> (Lin
 /// use kvim_editor::{MoveDirection, Selection, selection_move_indent_line};
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("struct Foo {\n}\nfield: u8,\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("struct Foo {\n}\nfield: u8,\n", kvim_core::BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let line = |index| buffer.line_index(index).expect("the line exists");
 /// let one_line = |index| Selection::Linewise {

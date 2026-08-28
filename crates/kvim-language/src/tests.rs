@@ -9,7 +9,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_core::{EditTransaction, TextBuffer, TextChange};
 use kvim_runtime::{ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeLimits};
-use kvim_settings::FileSettings;
+use kvim_settings::LanguageSettings;
 
 use super::formatter::declaration_is_valid;
 use kvim_syntax::NeverCancelled;
@@ -22,8 +22,8 @@ use super::{
     FormattedDocument, FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest,
     Grammar, HighlightLimits, IndentRule, IndentScope, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX,
     LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageCatalogEntry, LanguageFormatter,
-    LanguageRegistry, MarkdownAdapter, NixAdapter, Publication, RustAdapter, ServerFormatting,
-    SyntaxHighlighter, SyntaxRole, SyntaxTree,
+    LanguageRegistry, LanguageServerDeclaration, MarkdownAdapter, NixAdapter, Publication,
+    RegistryError, RustAdapter, ServerFormatting, SyntaxHighlighter, SyntaxRole, SyntaxTree,
 };
 
 /// The node kind that a test adapter indents.
@@ -90,6 +90,115 @@ static TWO_LANGUAGES: [&dyn LanguageAdapter; 2] = [&FIRST_RUST, &SECOND];
 /// One registry whose two adapters claim the same paths.
 static AMBIGUOUS: [&dyn LanguageAdapter; 2] = [&FIRST_RUST, &SECOND_RUST];
 
+#[derive(Clone, Copy)]
+struct InvalidAdapter {
+    catalog: &'static LanguageCatalogEntry,
+    servers: &'static [LanguageServerDeclaration],
+    formatter: Option<&'static FormatterDeclaration>,
+}
+
+impl LanguageAdapter for InvalidAdapter {
+    fn catalog(&self) -> &'static LanguageCatalogEntry {
+        self.catalog
+    }
+
+    fn version(&self) -> &'static str {
+        "1"
+    }
+
+    fn comment(&self) -> CommentStyle {
+        CommentStyle::new(None, None)
+    }
+
+    fn indent_rule(&self) -> IndentRule {
+        IndentRule {
+            scopes: &[],
+            width: TEST_INDENT_WIDTH,
+            closing_delimiters: &[],
+        }
+    }
+
+    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
+        self.servers
+    }
+
+    fn external_formatter(&self) -> Option<&'static FormatterDeclaration> {
+        self.formatter
+    }
+}
+
+fn no_options(_: LanguageSettings) -> serde_json::Value {
+    serde_json::Value::Null
+}
+
+static INVALID_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("invalid", &["invalid", "INVALID"], &[], &[], second_grammar);
+static VALID_INVALID_CATALOG: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("invalid", &["invalid"], &[], &[], second_grammar);
+static SERVER: LanguageServerDeclaration = LanguageServerDeclaration {
+    id: "server",
+    program: "server",
+    args: &[],
+    language_id: "invalid",
+    formatting: ServerFormatting::Disabled,
+    root_markers: &[],
+    initialization_options: no_options,
+    workspace_settings: None,
+};
+static DUPLICATE_SERVERS: [LanguageServerDeclaration; 2] = [SERVER, SERVER];
+static FORMAT_SERVERS: [LanguageServerDeclaration; 2] = [
+    LanguageServerDeclaration {
+        formatting: ServerFormatting::Enabled,
+        ..SERVER
+    },
+    LanguageServerDeclaration {
+        id: "other",
+        formatting: ServerFormatting::Enabled,
+        ..SERVER
+    },
+];
+static TOO_MANY_SERVERS: [LanguageServerDeclaration; LANGUAGE_SERVERS_MAX + 1] =
+    [SERVER; LANGUAGE_SERVERS_MAX + 1];
+static BAD_MARKER_SERVER: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
+    root_markers: &["../escape"],
+    ..SERVER
+}];
+static BAD_FORMATTER: FormatterDeclaration = FormatterDeclaration {
+    program: "",
+    args: &[],
+};
+
+static DUPLICATE_ALIAS_ADAPTER: InvalidAdapter = InvalidAdapter {
+    catalog: &INVALID_CATALOG,
+    servers: &[],
+    formatter: None,
+};
+static DUPLICATE_SERVER_ADAPTER: InvalidAdapter = InvalidAdapter {
+    catalog: &VALID_INVALID_CATALOG,
+    servers: &DUPLICATE_SERVERS,
+    formatter: None,
+};
+static FORMAT_SERVER_ADAPTER: InvalidAdapter = InvalidAdapter {
+    catalog: &VALID_INVALID_CATALOG,
+    servers: &FORMAT_SERVERS,
+    formatter: None,
+};
+static TOO_MANY_SERVER_ADAPTER: InvalidAdapter = InvalidAdapter {
+    catalog: &VALID_INVALID_CATALOG,
+    servers: &TOO_MANY_SERVERS,
+    formatter: None,
+};
+static BAD_MARKER_ADAPTER: InvalidAdapter = InvalidAdapter {
+    catalog: &VALID_INVALID_CATALOG,
+    servers: &BAD_MARKER_SERVER,
+    formatter: None,
+};
+static BAD_FORMATTER_ADAPTER: InvalidAdapter = InvalidAdapter {
+    catalog: &VALID_INVALID_CATALOG,
+    servers: &[],
+    formatter: Some(&BAD_FORMATTER),
+};
+
 /// Returns the adapter that the registry selects for a Rust path.
 fn rust() -> &'static dyn LanguageAdapter {
     LanguageRegistry::first_release()
@@ -98,7 +207,8 @@ fn rust() -> &'static dyn LanguageAdapter {
 }
 
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small")
 }
 
 /// Analyzes one buffer without a previous tree.
@@ -492,7 +602,7 @@ async fn the_worker_service_runs_one_analysis_off_the_event_loop() {
 
 #[test]
 fn a_second_adapter_adds_a_language_without_a_change_above_the_trait() {
-    let registry = LanguageRegistry::new(&TWO_LANGUAGES);
+    let registry = LanguageRegistry::new(&TWO_LANGUAGES).expect("the test registry is valid");
 
     let second = registry
         .adapter(Path::new("notes.kv"))
@@ -523,12 +633,49 @@ fn a_second_adapter_adds_a_language_without_a_change_above_the_trait() {
 
 #[test]
 fn two_adapters_that_claim_one_path_are_an_ambiguous_failure() {
-    let registry = LanguageRegistry::new(&AMBIGUOUS);
+    assert!(matches!(
+        LanguageRegistry::new(&AMBIGUOUS),
+        Err(RegistryError::DuplicateLanguageName { .. })
+    ));
+}
 
-    assert_eq!(
-        registry.adapter(Path::new("main.rs")).err(),
-        Some(AnalysisError::AmbiguousPath)
-    );
+#[test]
+fn registry_rejects_duplicate_aliases_inside_one_adapter() {
+    static ADAPTERS: [&dyn LanguageAdapter; 1] = [&DUPLICATE_ALIAS_ADAPTER];
+    assert!(matches!(
+        LanguageRegistry::new(&ADAPTERS),
+        Err(RegistryError::DuplicateLanguageName { .. })
+    ));
+}
+
+#[test]
+fn registry_rejects_invalid_server_declarations() {
+    for adapter in [
+        &DUPLICATE_SERVER_ADAPTER,
+        &FORMAT_SERVER_ADAPTER,
+        &TOO_MANY_SERVER_ADAPTER,
+    ] {
+        let adapters: &'static [&'static dyn LanguageAdapter] =
+            Box::leak(Box::new([adapter as &dyn LanguageAdapter]));
+        assert!(matches!(
+            LanguageRegistry::new(adapters),
+            Err(RegistryError::InvalidServers { .. })
+        ));
+    }
+}
+
+#[test]
+fn registry_rejects_invalid_root_markers_and_external_formatters() {
+    static MARKERS: [&dyn LanguageAdapter; 1] = [&BAD_MARKER_ADAPTER];
+    static FORMATTERS: [&dyn LanguageAdapter; 1] = [&BAD_FORMATTER_ADAPTER];
+    assert!(matches!(
+        LanguageRegistry::new(&MARKERS),
+        Err(RegistryError::InvalidServers { .. } | RegistryError::InvalidRootMarker { .. })
+    ));
+    assert!(matches!(
+        LanguageRegistry::new(&FORMATTERS),
+        Err(RegistryError::InvalidFormatter { .. })
+    ));
 }
 
 #[test]
@@ -2245,13 +2392,33 @@ fn a_formatted_document_of_an_obsolete_buffer_version_is_rejected() {
     );
 }
 
+#[test]
+fn a_formatted_document_of_an_obsolete_buffer_generation_is_rejected() {
+    let (mut text, request) = nix_run("{  }\n");
+    let document = request
+        .publish(&process_output(Some(0), b"{ }\n"))
+        .expect("the program reported success")
+        .expect("the program changed the document");
+    let replacement = TextBuffer::from_text("{  }\n", text.bytes_max())
+        .expect("the replacement fits the persistent limit");
+    text.advance_replacement(replacement);
+    let cursor = text.char_position(0).expect("the position exists");
+
+    assert_eq!(text.version().get(), 0);
+    assert_eq!(
+        document.transaction(&text, cursor),
+        Err(FormatterFailure::Obsolete),
+        "equal edit versions in different generations are not interchangeable"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_bounded_process_service_formats_one_buffer_off_the_event_loop() {
     let text = buffer("let value = 1;\n");
     let request = FormatterRequest::new(
         &UPPERCASE_FORMATTER,
         PathBuf::from("/workspace/main.kv"),
-        text.version(),
+        text.revision(),
         text.to_string(),
     );
 
@@ -2261,7 +2428,7 @@ async fn the_bounded_process_service_formats_one_buffer_off_the_event_loop() {
         .expect("the program changed the document");
 
     assert_eq!(document.text(), "LET VALUE = 1;\n");
-    assert_eq!(document.version(), text.version());
+    assert_eq!(document.revision(), text.revision());
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

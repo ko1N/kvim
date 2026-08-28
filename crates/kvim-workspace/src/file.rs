@@ -25,6 +25,10 @@ use kvim_path::{
 };
 use kvim_settings::FileSettings;
 
+use crate::durable::{
+    DurableOutcome, FailurePoint, Indeterminate, RecoveryAction, RecoveryFailure, fail_at,
+};
+
 /// The counter that keeps two temporary file names of one process apart.
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
 
@@ -356,8 +360,37 @@ pub fn save(
     content: &str,
     expected: Option<FileIdentity>,
     files: &FileSettings,
-) -> Result<SavedFile, SaveError> {
-    let resolved = validate_stored_target(target)?;
+) -> DurableOutcome<SavedFile, SaveError> {
+    match save_inner(target, content, expected, files) {
+        Ok(saved) => DurableOutcome::Committed(saved),
+        Err(SaveFailure::Unchanged(error)) => DurableOutcome::Unchanged(error),
+        Err(SaveFailure::Indeterminate { primary, recovery }) => DurableOutcome::Indeterminate(
+            Indeterminate::from_operation(primary, recovery, vec![target.as_path().to_path_buf()]),
+        ),
+    }
+}
+
+enum SaveFailure {
+    Unchanged(SaveError),
+    Indeterminate {
+        primary: SaveError,
+        recovery: Vec<RecoveryFailure>,
+    },
+}
+
+impl From<SaveError> for SaveFailure {
+    fn from(error: SaveError) -> Self {
+        Self::Unchanged(error)
+    }
+}
+
+fn save_inner(
+    target: &FileTarget,
+    content: &str,
+    expected: Option<FileIdentity>,
+    files: &FileSettings,
+) -> Result<SavedFile, SaveFailure> {
+    let resolved = validate_stored_target(target).map_err(SaveError::from)?;
     let parent_path = resolved
         .path()
         .as_path()
@@ -377,7 +410,7 @@ pub fn save(
     let existing = match parent.metadata(name) {
         Ok(metadata) => Some(metadata),
         Err(error) if error.kind() == io::ErrorKind::NotFound => None,
-        Err(error) => return Err(SaveError::Write(error)),
+        Err(error) => return Err(SaveError::Write(error).into()),
     };
     require_expected_identity(expected, existing.as_ref().map(FileIdentity::from_metadata))?;
 
@@ -394,14 +427,52 @@ pub fn save(
     } else {
         target
             .root()
-            .revalidate(target.relative_path(), &resolved)?;
+            .revalidate(target.relative_path(), &resolved)
+            .map_err(SaveError::from)?;
         require_expected_identity(
             expected,
             current_identity(&parent, name).map_err(SaveError::Write)?,
         )?;
-        parent.write(name, content).map_err(SaveError::Write)?;
+        let mut options = cap_std::fs::OpenOptions::new();
+        options.write(true).create(true).truncate(true);
+        let mut file = parent.open_with(name, &options).map_err(SaveError::Write)?;
+        let bytes = content.as_bytes();
+        let split = bytes.len().min(1);
+        file.write_all(&bytes[..split])
+            .map_err(|source| SaveFailure::Indeterminate {
+                primary: SaveError::Write(source),
+                recovery: Vec::new(),
+            })?;
+        if let Err(source) = fail_at(FailurePoint::SaveDirectPartial) {
+            return Err(SaveFailure::Indeterminate {
+                primary: SaveError::Write(source),
+                recovery: Vec::new(),
+            });
+        }
+        file.write_all(&bytes[split..])
+            .map_err(|source| SaveFailure::Indeterminate {
+                primary: SaveError::Write(source),
+                recovery: Vec::new(),
+            })?;
+        fail_at(FailurePoint::SaveDirectSync)
+            .and_then(|()| file.sync_all())
+            .map_err(|source| SaveFailure::Indeterminate {
+                primary: SaveError::Write(source),
+                recovery: Vec::new(),
+            })?;
     }
-    let metadata = parent.metadata(name).map_err(SaveError::Write)?;
+    if let Err(source) = fail_at(FailurePoint::SaveAfterRename) {
+        return Err(SaveFailure::Indeterminate {
+            primary: SaveError::Write(source),
+            recovery: Vec::new(),
+        });
+    }
+    let metadata = parent
+        .metadata(name)
+        .map_err(|source| SaveFailure::Indeterminate {
+            primary: SaveError::Write(source),
+            recovery: Vec::new(),
+        })?;
     Ok(SavedFile {
         target: target.clone(),
         identity: FileIdentity::from_metadata(&metadata),
@@ -417,33 +488,69 @@ fn write_staged(
     content: &str,
     existing: Option<&cap_std::fs::Metadata>,
     expected: Option<FileIdentity>,
-) -> Result<(), SaveError> {
+) -> Result<(), SaveFailure> {
     let temporary = temporary_name(Path::new(name));
     let temporary_path = Path::new(&temporary);
-    let mut file = create_temporary(directory, temporary_path)?;
+    let mut file = create_temporary(directory, temporary_path).map_err(SaveFailure::from)?;
     let prepared = write_temporary(&mut file, content).and_then(|()| apply_mode(&file, existing));
     drop(file);
     if let Err(error) = prepared {
-        // Cleanup is safe because this save created the entry with create_new.
-        let _ = directory.remove_file(&temporary);
-        return Err(error);
+        let recovery = remove_temporary(directory, temporary_path, target);
+        return if recovery.is_empty() {
+            Err(SaveFailure::Unchanged(error))
+        } else {
+            Err(SaveFailure::Indeterminate {
+                primary: error,
+                recovery,
+            })
+        };
     }
     if let Err(error) = target.root().revalidate(target.relative_path(), resolved) {
-        let _ = directory.remove_file(&temporary);
-        return Err(SaveError::Confinement(error));
+        let primary = SaveError::Confinement(error);
+        let recovery = remove_temporary(directory, temporary_path, target);
+        return if recovery.is_empty() {
+            Err(SaveFailure::Unchanged(primary))
+        } else {
+            Err(SaveFailure::Indeterminate { primary, recovery })
+        };
     }
     if let Err(error) = current_identity(directory, name)
         .map_err(SaveError::Write)
         .and_then(|current| require_expected_identity(expected, current))
     {
-        let _ = directory.remove_file(&temporary);
-        return Err(error);
+        let primary = error;
+        let recovery = remove_temporary(directory, temporary_path, target);
+        return if recovery.is_empty() {
+            Err(SaveFailure::Unchanged(primary))
+        } else {
+            Err(SaveFailure::Indeterminate { primary, recovery })
+        };
     }
     if let Err(error) = directory.rename(&temporary, directory, name) {
-        let _ = directory.remove_file(&temporary);
-        return Err(SaveError::Replace(error));
+        let primary = SaveError::Replace(error);
+        let recovery = remove_temporary(directory, temporary_path, target);
+        return if recovery.is_empty() {
+            Err(SaveFailure::Unchanged(primary))
+        } else {
+            Err(SaveFailure::Indeterminate { primary, recovery })
+        };
     }
     Ok(())
+}
+
+fn remove_temporary(
+    directory: &cap_std::fs::Dir,
+    temporary: &Path,
+    target: &FileTarget,
+) -> Vec<RecoveryFailure> {
+    match directory.remove_file(temporary) {
+        Ok(()) => Vec::new(),
+        Err(source) => vec![RecoveryFailure::new(
+            target.as_path().to_path_buf(),
+            RecoveryAction::RemoveTemporary,
+            source,
+        )],
+    }
 }
 
 /// Creates one owned temporary file without following or replacing an entry.

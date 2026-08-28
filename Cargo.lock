@@ -455,12 +455,10 @@ dependencies = [
 name = "kvim"
 version = "0.1.0"
 dependencies = [
- "kvim-language",
+ "kvim-embed",
  "kvim-path",
- "kvim-runtime",
  "kvim-settings",
  "kvim-terminal",
- "kvim-tui",
  "ratatui",
  "thiserror",
  "tokio",
@@ -478,7 +476,6 @@ dependencies = [
 name = "kvim-core"
 version = "0.1.0"
 dependencies = [
- "kvim-settings",
  "ropey",
  "thiserror",
 ]
@@ -492,6 +489,29 @@ dependencies = [
  "kvim-settings",
  "thiserror",
  "unicode-segmentation",
+]
+
+[[package]]
+name = "kvim-embed"
+version = "0.1.0"
+dependencies = [
+ "blake3",
+ "kvim-core",
+ "kvim-editor",
+ "kvim-input",
+ "kvim-keymap",
+ "kvim-language",
+ "kvim-lsp",
+ "kvim-path",
+ "kvim-runtime",
+ "kvim-settings",
+ "kvim-tui",
+ "kvim-ui",
+ "kvim-workspace",
+ "ratatui",
+ "thiserror",
+ "tokio",
+ "unicode-width 0.2.0",
 ]
 
 [[package]]
@@ -619,8 +639,8 @@ dependencies = [
  "kvim-clipboard",
  "kvim-core",
  "kvim-editor",
+ "kvim-fuzzy",
  "kvim-input",
- "kvim-keymap",
  "kvim-language",
  "kvim-path",
  "kvim-runtime",
@@ -654,7 +674,6 @@ dependencies = [
  "blake3",
  "cap-std",
  "kvim-core",
- "kvim-fuzzy",
  "kvim-path",
  "kvim-runtime",
  "kvim-settings",

@@ -11,6 +11,8 @@ use std::sync::Arc;
 
 use kvim_path::{WorktreeDirectoryPath, WorktreeRoot};
 
+use crate::durable::DurableOutcome;
+
 use super::mutation::{
     FileOperation, MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite,
 };
@@ -59,7 +61,7 @@ pub enum WorkspaceResult {
     /// One mutation finished.
     Mutated {
         /// The affected buffers and directories, or the rejection.
-        outcome: Result<MutationOutcome, MutationError>,
+        outcome: DurableOutcome<MutationOutcome, MutationError>,
     },
 }
 
@@ -88,13 +90,15 @@ impl WorkspaceRequest {
                 path: path.display_path(&root),
             },
             Self::Mutate(request) => WorkspaceResult::Mutated {
-                outcome: MutationPlan::stage_with(
+                outcome: match MutationPlan::stage_with(
                     &request.operation,
                     &request.root,
                     &request.buffers,
                     &request.overwrite,
-                )
-                .and_then(MutationPlan::apply),
+                ) {
+                    Ok(plan) => plan.apply(),
+                    Err(error) => DurableOutcome::Unchanged(error),
+                },
             },
         }
     }

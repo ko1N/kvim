@@ -9,8 +9,12 @@ Git command. This document owns what a reader sees.
 
 ## Ownership
 
-`kvim-workspace` owns the pure values: the aligned rows of one hunk and the read
-state of one review. `kvim-tui` owns the drawing and the keys.
+`kvim-workspace` owns the pure diff values and anchor relocation.
+`kvim-tui` owns one private review model and one painter. The model owns both
+captured sections, cursor and selection state, read marks, panel state, focus,
+viewport state, and the selected diff view. The integrated editor adapts this
+model without adding review state. The same painter accepts the private model
+for integrated and standalone review.
 
 Kvim owns the view and the neutral values alone. It learns nothing about a
 ticket, a session, an agent, or a review thread. A host composes those above the
@@ -133,8 +137,24 @@ the first hunk of that file.
 
 ## Entering, Leaving, And Moving
 
-`<leader>gg` opens the review, which is the sequence that the reference Git
-interface uses, so the key that a reader already knows opens this one.
+The current integrated review opens with `<leader>gg` in standalone kvim. The
+review owns its keys and preserves the current window, viewport, and buffer
+while it draws over the window tree. The review surface survives a close, so
+read marks and the cursor remain available when the review opens again.
+
+A standalone `ReviewSurface` is independent from editor bindings. Its
+`ReviewBindingProfile::Standalone` profile retains all keys below.
+`ReviewBindingProfile::HostResolved` leaves `Tab` and `Shift-Tab` to the host
+and publishes `]s` and `[s` for section navigation. Both profiles publish the
+same semantic review commands through a bounded manifest. Disabling the
+editor's `OpenReview` binding cannot alter navigation in an open review.
+
+The surface supports
+`from_candidates` without I/O and `for_worktree` with bounded Git capture.
+Integrated and standalone review share private state, relocation, and painting.
+Snapshots preserve bounded review position and read state. Comment persistence
+and host meaning remain outside kvim.
+
 
 The review draws over the window tree. It changes no window, no viewport, and no
 buffer, so leaving it restores the layout by drawing that tree again. Nothing is
@@ -148,9 +168,11 @@ into the surface instead of replacing it.
 
 The review shows one section at a time, and a strip of tabs at the top names
 them: the unstaged half first, because that is the half a reader works on, and
-the staged half beside it. `Tab` walks to the next section and `Shift-Tab` to
-the previous one, and the walk cycles, so a reader needs no mapping for each
-section. A section that publishes no change opens no tab.
+the staged half beside it. The standalone review profile uses `Tab` for the
+next section and `Shift-Tab` for the previous section. The host-resolved profile
+uses `]s` and `[s` and leaves both tab keys unclaimed. The walk cycles, so a
+reader needs no mapping for each section. A section that publishes no change
+opens no tab.
 
 One tab carries the mark of its repository state, its name, and the number of
 files that it holds. The mark takes the color that the rows below it take for

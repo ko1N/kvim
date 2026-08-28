@@ -202,7 +202,6 @@ fn a_created_entry_asks_for_the_read_of_its_directory() {
     let mut batch = WatchBatch::default();
     batch.push(&event("/work/src/main.rs", WatchKind::Created));
     assert_eq!(batch.directories(), [event_directory("src")]);
-    assert!(!batch.changed_content());
 }
 
 #[test]
@@ -228,7 +227,6 @@ fn a_modified_entry_asks_for_no_directory_read() {
     let mut batch = WatchBatch::default();
     batch.push(&event("/work/src/main.rs", WatchKind::Modified));
     assert!(batch.directories().is_empty());
-    assert!(batch.changed_content());
 }
 
 #[test]

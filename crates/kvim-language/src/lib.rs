@@ -5,8 +5,8 @@
 //! adapter supplies data: one [`LanguageCatalogEntry`], the comment tokens, the
 //! indent rule, the language servers, and the external formatter. Nothing above
 //! the trait names a language, so a release adds a language by registering one
-//! more adapter. This build registers 25 adapters, which
-//! `docs/language-services.md` names.
+//! more adapter. A build without a grammar feature registers no adapters; the
+//! registry and language services remain valid in that state.
 //!
 //! The catalog entry owns what selects and parses one language: the language
 //! names, the file extensions, the complete file names, and the Tree-sitter
@@ -58,24 +58,32 @@
 //!
 //! ```
 //! use std::path::Path;
-//! use std::sync::{Arc, OnceLock};
 //!
-//! use kvim_core::TextBuffer;
-//! use kvim_language::{AnalysisInput, LanguageRegistry, SyntaxHighlighter};
-//! use kvim_settings::FileSettings;
-//! use tokio_util::sync::CancellationToken;
+//! use kvim_language::{AnalysisError, LanguageRegistry};
 //!
 //! let registry = LanguageRegistry::first_release();
-//! let adapter = registry.adapter(Path::new("src/main.rs")).expect("the Rust adapter owns the path");
-//! assert_eq!(adapter.comment().line_token(), Some("//"));
+//! assert_eq!(
+//!     registry.adapter(Path::new("notes.txt")).err(),
+//!     Some(AnalysisError::UnsupportedPath),
+//! );
+//! assert!(registry.adapter_of_language("plain-text").is_none());
 //!
-//! let buffer = TextBuffer::from_text("fn main() {}\n", &FileSettings::default())
+//! # #[cfg(feature = "grammar-rust")] {
+//! use std::sync::Arc;
+//! use kvim_core::TextBuffer;
+//! use kvim_language::{AnalysisInput, SyntaxHighlighter};
+//! use tokio_util::sync::CancellationToken;
+//!
+//! let adapter = registry.adapter(Path::new("src/main.rs")).expect("the feature bundles Rust");
+//! assert_eq!(adapter.comment().line_token(), Some("//"));
+//! let buffer = TextBuffer::from_text("fn main() {}\n", kvim_core::BufferBytesMax::default())
 //!     .expect("the text is small");
-//! let input = AnalysisInput::new(buffer.version(), Arc::from(buffer.to_string()));
+//! let input = AnalysisInput::new(buffer.revision(), Arc::from(buffer.to_string()));
 //! let analysis = adapter
 //!     .analyze(&input, &mut SyntaxHighlighter::new(), &CancellationToken::new())
 //!     .expect("the source is valid Rust");
 //! assert!(!analysis.highlights().is_empty());
+//! # }
 //! ```
 
 use std::ffi::OsStr;
@@ -89,7 +97,9 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use tree_sitter::{InputEdit, Point, Tree};
 
-use kvim_core::{BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange};
+use kvim_core::{
+    BufferRevision, BufferVersion, CharPosition, EditTransaction, TextBuffer, TextChange,
+};
 
 mod analysis;
 #[cfg(feature = "grammar-asm")]
@@ -137,6 +147,7 @@ mod rust;
 #[cfg(feature = "grammar-scss")]
 mod scss;
 mod server;
+use server::{declarations_are_valid, marker_is_valid};
 mod services;
 mod session;
 #[cfg(feature = "grammar-sql")]
@@ -325,6 +336,43 @@ pub enum AnalysisError {
     /// The parser returned a range that the source does not hold.
     #[error("the language adapter returned malformed spans")]
     MalformedOutput,
+}
+
+pub const LANGUAGE_ADAPTERS_MAX: usize = 64;
+
+/// A public language registry declaration did not establish its invariants.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum RegistryError {
+    /// The registry declares too many adapters.
+    #[error("the language registry declares {actual} adapters, above its limit")]
+    TooManyAdapters {
+        /// The supplied adapter count.
+        actual: usize,
+    },
+    /// Two adapters claim one language name.
+    #[error("more than one language adapter owns the name {name}")]
+    DuplicateLanguageName {
+        /// The duplicated lower-case language name.
+        name: &'static str,
+    },
+    /// One adapter declares an invalid server table.
+    #[error("the language adapter {adapter} declares invalid language servers")]
+    InvalidServers {
+        /// The stable adapter identifier.
+        adapter: &'static str,
+    },
+    /// One adapter declares an invalid external formatter.
+    #[error("the language adapter {adapter} declares an invalid formatter")]
+    InvalidFormatter {
+        /// The stable adapter identifier.
+        adapter: &'static str,
+    },
+    /// One adapter declares an invalid root marker.
+    #[error("the language adapter {adapter} declares an invalid root marker")]
+    InvalidRootMarker {
+        /// The stable adapter identifier.
+        adapter: &'static str,
+    },
 }
 
 impl From<kvim_syntax::HighlightFailure> for AnalysisError {
@@ -608,10 +656,10 @@ impl SyntaxTree {
     }
 }
 
-/// The exact text of one buffer version, ready for analysis.
+/// The exact text of one buffer revision, ready for analysis.
 #[derive(Clone, Debug)]
 pub struct AnalysisInput {
-    version: BufferVersion,
+    revision: BufferRevision,
     source: Arc<str>,
     previous: Option<SyntaxTree>,
 }
@@ -619,9 +667,9 @@ pub struct AnalysisInput {
 impl AnalysisInput {
     /// Creates an input that parses the complete source.
     #[must_use]
-    pub const fn new(version: BufferVersion, source: Arc<str>) -> Self {
+    pub fn new(revision: impl Into<BufferRevision>, source: Arc<str>) -> Self {
         Self {
-            version,
+            revision: revision.into(),
             source,
             previous: None,
         }
@@ -637,10 +685,14 @@ impl AnalysisInput {
         self
     }
 
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced the source.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the exact source text.
@@ -650,10 +702,10 @@ impl AnalysisInput {
     }
 }
 
-/// The complete analysis of one buffer version.
+/// The complete analysis of one buffer revision.
 #[derive(Clone)]
 pub struct Analysis {
-    version: BufferVersion,
+    revision: BufferRevision,
     source: Arc<str>,
     tree: SyntaxTree,
     highlights: Vec<HighlightSpan>,
@@ -665,10 +717,14 @@ pub struct Analysis {
 }
 
 impl Analysis {
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced this result.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the syntax tree of that buffer version.
@@ -707,7 +763,7 @@ impl fmt::Debug for Analysis {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("Analysis")
-            .field("version", &self.version)
+            .field("revision", &self.revision)
             .field("source_bytes", &self.source.len())
             .field("highlights", &self.highlights.len())
             .finish_non_exhaustive()
@@ -897,24 +953,25 @@ pub trait LanguageAdapter: Send + Sync {
 /// use kvim_language::{AnalysisError, LanguageRegistry};
 ///
 /// let registry = LanguageRegistry::first_release();
-/// assert_eq!(registry.adapter(Path::new("lib.rs")).unwrap().id(), "rust");
-/// // A file name selects an adapter as an extension does.
-/// assert_eq!(registry.adapter(Path::new("flake.lock")).unwrap().id(), "json");
-/// // A registered language is the only match, and the match is
-/// // case-sensitive.
 /// assert_eq!(
 ///     registry.adapter(Path::new("notes.txt")).err(),
 ///     Some(AnalysisError::UnsupportedPath),
 /// );
+/// assert!(registry.adapter_of_language("console").is_none());
+///
+/// # #[cfg(feature = "grammar-rust")] {
+/// assert_eq!(registry.adapter(Path::new("lib.rs")).unwrap().id(), "rust");
+/// // Path matching is case-sensitive, but language-name matching folds ASCII case.
+/// assert_eq!(registry.adapter_of_language("Rust").unwrap().id(), "rust");
 /// assert_eq!(
 ///     registry.adapter(Path::new("LIB.RS")).err(),
 ///     Some(AnalysisError::UnsupportedPath),
 /// );
-/// // A language name selects an adapter without a path, and that match folds
-/// // ASCII case.
-/// assert_eq!(registry.adapter_of_language("Rust").unwrap().id(), "rust");
-/// // A name that no adapter declares selects nothing, which is no failure.
-/// assert!(registry.adapter_of_language("console").is_none());
+/// # }
+/// # #[cfg(feature = "grammar-json")] {
+/// // A complete file name can select an adapter as an extension does.
+/// assert_eq!(registry.adapter(Path::new("flake.lock")).unwrap().id(), "json");
+/// # }
 /// ```
 #[derive(Clone, Copy)]
 pub struct LanguageRegistry {
@@ -1094,23 +1151,80 @@ fn registered_adapters() -> &'static [&'static dyn LanguageAdapter] {
 impl LanguageRegistry {
     /// Returns the registry of this build.
     ///
-    /// The table holds one adapter for assembly, Bash, C, C++, CSS, fish,
-    /// GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust,
-    /// SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig. A
-    /// later release adds a language by registering one more adapter in the
-    /// table that this constructor names, or by building a registry with
-    /// [`LanguageRegistry::new`].
+    /// Each enabled `grammar-<language>` feature adds its adapter. A build
+    /// without grammar features returns a valid empty registry. In that build,
+    /// path lookup returns [`AnalysisError::UnsupportedPath`], language-name
+    /// lookup returns `None`, and this constructor does not panic.
+    ///
+    /// The complete `all-grammars` table holds assembly, Bash, C, C++, CSS,
+    /// fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python,
+    /// Rust, SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig.
+    /// A later release adds a language by registering one more adapter in this
+    /// table, or by building a registry with [`LanguageRegistry::new`].
     #[must_use]
     pub fn first_release() -> Self {
         Self::new(registered_adapters())
+            .expect("the built-in language registry is validated by its owning tests")
     }
 
     /// Creates a registry over an explicit adapter table.
     ///
-    /// The table is the one place that names the supported languages.
-    #[must_use]
-    pub const fn new(adapters: &'static [&'static dyn LanguageAdapter]) -> Self {
-        Self { adapters }
+    /// # Errors
+    ///
+    /// Returns [`RegistryError`] for duplicate aliases, duplicate server IDs,
+    /// conflicting server formatters, invalid formatter declarations, invalid
+    /// root markers, or server and marker bounds above their maxima.
+    pub fn new(adapters: &'static [&'static dyn LanguageAdapter]) -> Result<Self, RegistryError> {
+        if adapters.len() > LANGUAGE_ADAPTERS_MAX {
+            return Err(RegistryError::TooManyAdapters {
+                actual: adapters.len(),
+            });
+        }
+        for (index, adapter) in adapters.iter().enumerate() {
+            for (name_index, name) in adapter.language_names().iter().enumerate() {
+                if adapter.language_names()[..name_index]
+                    .iter()
+                    .any(|earlier| earlier.eq_ignore_ascii_case(name))
+                    || adapters[..index]
+                        .iter()
+                        .any(|earlier| earlier.supports_language(name))
+                {
+                    return Err(RegistryError::DuplicateLanguageName { name });
+                }
+            }
+            if adapters[..index]
+                .iter()
+                .any(|earlier| earlier.id() == adapter.id())
+            {
+                return Err(RegistryError::InvalidServers {
+                    adapter: adapter.id(),
+                });
+            }
+            if !declarations_are_valid(adapter.language_servers()) {
+                return Err(RegistryError::InvalidServers {
+                    adapter: adapter.id(),
+                });
+            }
+            if adapter
+                .language_servers()
+                .iter()
+                .flat_map(|declaration| declaration.root_markers)
+                .any(|marker| !marker_is_valid(marker))
+            {
+                return Err(RegistryError::InvalidRootMarker {
+                    adapter: adapter.id(),
+                });
+            }
+            if adapter
+                .external_formatter()
+                .is_some_and(|declaration| !formatter::declaration_is_valid(declaration))
+            {
+                return Err(RegistryError::InvalidFormatter {
+                    adapter: adapter.id(),
+                });
+            }
+        }
+        Ok(Self { adapters })
     }
 
     /// Returns the adapter table of this registry.
@@ -1207,8 +1321,12 @@ impl BufferSyntax {
     ///
     /// A result for an obsolete buffer version changes nothing and enters no
     /// cache, which `docs/responsiveness.md` requires.
-    pub fn accept(&mut self, current: BufferVersion, analysis: Analysis) -> Publication {
-        if analysis.version() != current {
+    pub fn accept(
+        &mut self,
+        current: impl Into<BufferRevision>,
+        analysis: Analysis,
+    ) -> Publication {
+        if analysis.revision() != current.into() {
             return Publication::Rejected;
         }
         self.accepted = Some(analysis);
@@ -1236,9 +1354,13 @@ impl BufferSyntax {
     /// receives `None` uses the previous-line fallback instead of waiting for a
     /// parse result, which keeps the terminal event loop free.
     #[must_use]
-    pub fn indent_level(&self, current: BufferVersion, byte: usize) -> Option<IndentLevel> {
+    pub fn indent_level(
+        &self,
+        current: impl Into<BufferRevision>,
+        byte: usize,
+    ) -> Option<IndentLevel> {
         let analysis = self.accepted.as_ref()?;
-        if analysis.version() != current {
+        if analysis.revision() != current.into() {
             return None;
         }
         analysis.indent_level(byte).ok()
@@ -1253,7 +1375,7 @@ fn analysis(
     indent: IndentRule,
 ) -> Analysis {
     Analysis {
-        version: input.version,
+        revision: input.revision,
         source: Arc::clone(&input.source),
         tree: SyntaxTree(tree),
         highlights,

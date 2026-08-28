@@ -8,7 +8,6 @@ use kvim_language::{
     AnalysisInput, HighlightSpan, LanguageRegistry, MarkupDocument, MarkupRole, SyntaxHighlighter,
     SyntaxRole,
 };
-use kvim_settings::FileSettings;
 
 use super::{FloatLine, FloatStyle, markup_lines};
 
@@ -46,7 +45,7 @@ fn pieces(row: &FloatLine) -> Vec<(String, FloatStyle)> {
 /// The path selects the adapter, so the helper takes the selection that an
 /// open file takes and never the one that a fence takes.
 fn buffer_spans(source: &str) -> Vec<HighlightSpan> {
-    let version = TextBuffer::from_text("", &FileSettings::default())
+    let version = TextBuffer::from_text("", kvim_core::BufferBytesMax::default())
         .expect("the empty text is small")
         .version();
     LanguageRegistry::first_release()

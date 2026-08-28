@@ -4,6 +4,7 @@
 //! not read a configuration file. A later release adds a loader that overrides
 //! these fields. The crate depends on no other crate.
 
+use std::fmt;
 use std::num::NonZeroU8;
 use std::time::Duration;
 
@@ -48,6 +49,55 @@ pub const NOTIFICATION_SPINNER_PERIOD_DEFAULT: Duration = Duration::from_secs(1)
 ///
 /// The reference `fidget.nvim` configuration names the same value.
 pub const NOTIFICATION_DONE_TTL_DEFAULT: Duration = Duration::from_secs(2);
+
+/// A field of [`EditorSettings`] did not establish its published resource bound.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SettingsError {
+    /// One numeric setting is zero.
+    ZeroBound {
+        /// The stable field name.
+        field: &'static str,
+    },
+    /// One numeric setting exceeds its published maximum.
+    InvalidBound {
+        /// The stable field name.
+        field: &'static str,
+        /// The inclusive maximum.
+        max: u64,
+        /// The supplied value.
+        actual: u64,
+    },
+    /// One duration is zero.
+    ZeroDuration {
+        /// The stable field name.
+        field: &'static str,
+    },
+}
+
+impl fmt::Display for SettingsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroBound { field } => {
+                write!(
+                    formatter,
+                    "the editor setting {field} must be greater than zero"
+                )
+            }
+            Self::InvalidBound { field, max, actual } => write!(
+                formatter,
+                "the editor setting {field} must not exceed {max}, got {actual}"
+            ),
+            Self::ZeroDuration { field } => {
+                write!(
+                    formatter,
+                    "the editor setting {field} must be greater than zero"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SettingsError {}
 
 /// The rule that reserves the sign column beside the line numbers.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -219,8 +269,6 @@ pub struct DisplaySettings {
     pub number: bool,
     /// Show the distance of every other line from the cursor line.
     pub relative_number: bool,
-    /// Wrap a long line onto the next terminal row.
-    pub wrap: bool,
     /// The vertical scroll margin, in rows.
     pub scrolloff_rows: u16,
     /// The horizontal scroll margin, in cells.
@@ -234,7 +282,6 @@ impl Default for DisplaySettings {
         Self {
             number: true,
             relative_number: true,
-            wrap: false,
             scrolloff_rows: 2,
             sidescrolloff_cells: 4,
             signcolumn: SignColumn::Always,
@@ -524,9 +571,6 @@ impl Default for LanguageSettings {
 /// let mut settings = EditorSettings::default();
 /// assert_eq!(settings.display.signcolumn, SignColumn::Always);
 /// assert_eq!(settings.indent.shift_width, ShiftWidth::FollowTabWidth);
-///
-/// settings.display.wrap = true;
-/// assert!(settings.display.wrap);
 /// ```
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct EditorSettings {
@@ -548,6 +592,89 @@ pub struct EditorSettings {
     pub search: SearchSettings,
     /// The split, focus, and resize behavior of the window tree.
     pub windows: WindowSettings,
+}
+
+impl EditorSettings {
+    /// Realizes raw public settings as one validated editor configuration.
+    ///
+    /// The public fields remain available for source-compatible overrides. A
+    /// host calls this boundary once before it creates editor state.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SettingsError`] when a resolver, window, file, notification,
+    /// or related numeric bound is zero or exceeds its published maximum.
+    pub fn realize(self) -> Result<Self, SettingsError> {
+        validate_bound(
+            "files.max_file_bytes",
+            self.files.max_file_bytes,
+            FILE_BYTES_MAX,
+        )?;
+        validate_bound(
+            "input.count_max",
+            u64::from(self.input.count_max),
+            u64::from(COUNT_MAX),
+        )?;
+        validate_bound(
+            "input.pending_keys_max",
+            u64::from(self.input.pending_keys_max),
+            u64::from(PENDING_KEYS_MAX),
+        )?;
+        validate_bound(
+            "notifications.rows_max",
+            self.notifications.rows_max as u64,
+            NOTIFICATION_ROWS_MAX as u64,
+        )?;
+        for (field, value) in [
+            (
+                "diff.side_column_cells_min",
+                self.diff.side_column_cells_min,
+            ),
+            ("windows.resize_step_cells", self.windows.resize_step_cells),
+            (
+                "windows.min_window_width_cells",
+                self.windows.min_window_width_cells,
+            ),
+            (
+                "windows.min_window_height_rows",
+                self.windows.min_window_height_rows,
+            ),
+            (
+                "windows.file_tree_width_cells",
+                self.windows.file_tree_width_cells,
+            ),
+        ] {
+            validate_nonzero(field, u64::from(value))?;
+        }
+        for (field, value) in [
+            ("input.which_key_delay", self.input.which_key_delay),
+            (
+                "notifications.spinner_period",
+                self.notifications.spinner_period,
+            ),
+            ("notifications.done_ttl", self.notifications.done_ttl),
+        ] {
+            if value.is_zero() {
+                return Err(SettingsError::ZeroDuration { field });
+            }
+        }
+        Ok(self)
+    }
+}
+
+fn validate_bound(field: &'static str, actual: u64, max: u64) -> Result<(), SettingsError> {
+    validate_nonzero(field, actual)?;
+    if actual > max {
+        return Err(SettingsError::InvalidBound { field, max, actual });
+    }
+    Ok(())
+}
+
+fn validate_nonzero(field: &'static str, actual: u64) -> Result<(), SettingsError> {
+    if actual == 0 {
+        return Err(SettingsError::ZeroBound { field });
+    }
+    Ok(())
 }
 
 #[cfg(test)]

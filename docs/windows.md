@@ -18,6 +18,26 @@ placement of every visible surface and of the open overlay.
 [`embedding.md`](embedding.md) owns the transition protocol that moves focus and
 overlay ownership.
 
+### Host-Owned Presentation
+
+`WorktreePresentation` independently selects command-line, statusline,
+which-key, and file-sidebar ownership for one worktree editor. Embedded
+ownership remains the default and keeps the existing geometry and behavior.
+`standalone()` embeds all surfaces. `integrated_host()` assigns all surfaces to
+the host. Mixed ownership is valid.
+
+The effective resolver owns which-key presentation. Host-owned which-key uses
+the host resolver and disables internal deadlines, rows, and painting.
+Facade-owned resolution keeps embedded which-key.
+
+Presentation is realized before visible session state exists. A host-owned
+command or status row has zero height, so its cell row becomes part of the
+editor body. A host-owned file sidebar cannot create a window-tree sidebar
+region, so its columns remain available to editor windows. Kvim paints no blank
+placeholder region for any host-owned surface. Host-owned command-line
+presentation requires a facade command-surface capability at construction.
+Host-owned statusline presentation requires no callback.
+
 `WindowTree<SurfaceId>` contains opaque surface identities, split structure,
 validated ratios, focus, limits, and minimum dimensions. Host surface values,
 buffer text, and terminal colors stay outside the tree.
@@ -1095,6 +1115,14 @@ quiet, because they separate text instead of holding it.
 
 ## Buffer Presentation
 
+The default `kvim-embed::MemoryEditor` paints a focused plain-text buffer
+without worktree chrome, syntax, diagnostics, or service-owned decoration. It
+uses the same `kvim-editor` cursor and viewport rules. It paints configured
+absolute and relative line numbers, horizontally clips text by terminal-cell
+width, and reports one cursor cell. The host still owns the terminal cursor and
+terminal lifecycle. The private `kvim-tui` worktree presentation below keeps
+its existing behavior unchanged.
+
 Every window paints the buffer of its own leaf. Two windows therefore show two
 different files after `:e` in a split.
 
@@ -1166,8 +1194,8 @@ overrides the margin for that command.
 The horizontal scroll margin is four columns and follows the same rule. Both
 margins belong to `EditorSettings`. See [`settings.md`](settings.md).
 
-Line wrapping is disabled by default. A long line scrolls horizontally inside
-its window. Rendering clips at the window edge deterministically.
+Line wrapping is not supported. A long line scrolls horizontally inside its
+window. Rendering clips at the window edge deterministically.
 
 Rendering uses terminal-cell widths, not byte counts or character counts. See
 [`text-model.md`](text-model.md) for the coordinate rule.

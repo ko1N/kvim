@@ -3,12 +3,12 @@
 use std::num::{NonZeroU8, NonZeroU16, NonZeroU32};
 
 use crate::{
-    AutoIndent, CommandOutcome, EditContext, EditingState, Operator, RegisterShape, RegisterValue,
-    Registers, Selection, Viewport, WindowState,
+    AutoIndent, CommandOutcome, CommandResult, EditContext, EditingState, Operator, RegisterShape,
+    RegisterValue, Registers, Selection, Viewport, WindowState,
 };
-use kvim_core::{LineEnding, TextBuffer};
+use kvim_core::{EditTransaction, LineEnding, TextBuffer, TextChange};
 use kvim_input::{Command, Mode};
-use kvim_settings::{EditorSettings, FileSettings};
+use kvim_settings::EditorSettings;
 
 /// One buffer, one register file, one editing state, and one viewport.
 struct Session {
@@ -26,8 +26,8 @@ struct Session {
 
 impl Session {
     fn new(text: &str) -> Self {
-        let buffer =
-            TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+        let buffer = TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+            .expect("the test text is small");
         Self {
             buffer,
             settings: EditorSettings::default(),
@@ -42,13 +42,16 @@ impl Session {
     }
 
     fn apply(&mut self, command: Command, count: Option<NonZeroU32>) -> CommandOutcome {
+        self.apply_result(command, count).outcome()
+    }
+
+    fn apply_result(&mut self, command: Command, count: Option<NonZeroU32>) -> CommandResult {
         let mut context = EditContext {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state
             .apply(&mut context, &mut self.view, command, count)
@@ -66,10 +69,10 @@ impl Session {
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state
             .apply_with_register(&mut context, &mut self.view, command, count, register)
+            .outcome()
     }
 
     fn run(&mut self, commands: &[Command]) -> CommandOutcome {
@@ -81,37 +84,46 @@ impl Session {
     }
 
     fn insert_text(&mut self, text: &str) -> CommandOutcome {
+        self.insert_text_result(text).outcome()
+    }
+
+    fn insert_text_result(&mut self, text: &str) -> CommandResult {
         let mut context = EditContext {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state.insert_text(&mut context, &mut self.view, text)
     }
 
     fn insert_line_break(&mut self) -> CommandOutcome {
+        self.insert_line_break_result().outcome()
+    }
+
+    fn insert_line_break_result(&mut self) -> CommandResult {
         let mut context = EditContext {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state.insert_line_break(&mut context, &mut self.view)
     }
 
     fn delete_backward(&mut self) -> CommandOutcome {
+        self.delete_backward_result().outcome()
+    }
+
+    fn delete_backward_result(&mut self) -> CommandResult {
         let mut context = EditContext {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state.delete_backward(&mut context, &mut self.view)
     }
@@ -123,10 +135,10 @@ impl Session {
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state
             .delete_word_backward(&mut context, &mut self.view)
+            .outcome()
     }
 
     /// Enters Insert mode, which `Enter` and `Backspace` both need.
@@ -143,10 +155,10 @@ impl Session {
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state
             .apply_indented(&mut context, &mut self.view, command, None, auto)
+            .outcome()
     }
 
     /// Inserts one line break with the automatic indent of a language adapter.
@@ -157,21 +169,24 @@ impl Session {
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state
             .insert_line_break_indented(&mut context, &mut self.view, auto)
+            .outcome()
     }
 
     /// Toggles the line comment with the token of a language adapter.
     fn toggle_comment_with(&mut self, comment: Option<&str>) -> CommandOutcome {
+        self.toggle_comment_result(comment).outcome()
+    }
+
+    fn toggle_comment_result(&mut self, comment: Option<&str>) -> CommandResult {
         let mut context = EditContext {
             buffer: &mut self.buffer,
             settings: &self.settings,
             search: None,
             language_indent_width: self.language_indent_width,
             registers: &mut self.registers,
-            applied: Vec::new(),
         };
         self.state
             .toggle_comment(&mut context, &mut self.view, comment)
@@ -225,6 +240,89 @@ const OPERATOR_KEYS: &[(Command, Operator)] = &[
     (Command::ChangeOverMotion, Operator::Change),
     (Command::YankOverMotion, Operator::Yank),
 ];
+
+#[test]
+fn command_results_expose_only_the_current_incremental_effect() {
+    let mut session = Session::new("alpha\n");
+    session.enter_insert();
+
+    let inserted = session.insert_text_result("x");
+    assert_eq!(inserted.outcome(), CommandOutcome::Changed);
+    assert!(inserted.transaction().is_some());
+
+    // Ignoring the first result cannot leak its transaction into a later call.
+    let applied = session.insert_text_result("");
+    assert_eq!(applied.outcome(), CommandOutcome::Applied);
+    assert!(applied.transaction().is_none());
+
+    let rejected = session.insert_text_result(&"x".repeat(crate::INSERT_TEXT_BYTES_MAX + 1));
+    assert_eq!(rejected.outcome(), CommandOutcome::Rejected);
+    assert!(rejected.transaction().is_none());
+}
+
+#[test]
+fn specialized_edits_return_their_effect_atomically() {
+    let mut line_break = Session::new("alpha\n");
+    line_break.enter_insert();
+    assert!(
+        line_break
+            .insert_line_break_result()
+            .transaction()
+            .is_some()
+    );
+
+    let mut deletion = Session::new("alpha\n");
+    deletion.enter_insert();
+    place(&mut deletion, 0, 2);
+    assert!(deletion.delete_backward_result().transaction().is_some());
+
+    let mut comment = Session::new("alpha\n");
+    assert!(
+        comment
+            .toggle_comment_result(Some("//"))
+            .transaction()
+            .is_some()
+    );
+
+    let mut external = Session::new("alpha\n");
+    let at = external
+        .buffer
+        .char_position(0)
+        .expect("the buffer start exists");
+    let transaction = EditTransaction::single(at, TextChange::insert(at, "x"));
+    let mut context = EditContext {
+        buffer: &mut external.buffer,
+        settings: &external.settings,
+        search: None,
+        language_indent_width: external.language_indent_width,
+        registers: &mut external.registers,
+    };
+    let result = external
+        .state
+        .apply_transaction(&mut context, &mut external.view, transaction);
+    assert_eq!(result.outcome(), CommandOutcome::Changed);
+    assert!(result.transaction().is_some());
+}
+
+#[test]
+fn normal_commands_and_history_name_incremental_effects() {
+    let mut session = Session::new("alpha\n");
+    let changed = session.apply_result(Command::DeleteLine, None);
+    assert_eq!(changed.outcome(), CommandOutcome::Changed);
+    assert!(changed.transaction().is_some());
+
+    let undone = session.apply_result(Command::Undo, None);
+    assert_eq!(undone.outcome(), CommandOutcome::Changed);
+    assert!(undone.transaction().is_none());
+
+    let redone = session.apply_result(Command::Redo, None);
+    assert_eq!(redone.outcome(), CommandOutcome::Changed);
+    assert!(redone.transaction().is_none());
+
+    let unhandled = session.apply_result(Command::InsertLineBreak, None);
+    assert_eq!(unhandled.outcome(), CommandOutcome::Unhandled);
+    assert!(unhandled.transaction().is_none());
+}
 
 #[test]
 fn an_operator_waits_for_a_motion_and_cannot_apply_alone() {
@@ -995,7 +1093,10 @@ fn set_register(session: &mut Session, value: RegisterValue) {
 #[test]
 fn paste_before_and_after_follows_the_characterwise_shape() {
     let mut after = Session::new("abc\n");
-    set_register(&mut after, RegisterValue::characterwise("XY"));
+    set_register(
+        &mut after,
+        RegisterValue::characterwise("XY").expect("the value is bounded"),
+    );
     place(&mut after, 0, 1);
     assert_eq!(
         after.apply(Command::PasteAfter, None),
@@ -1009,7 +1110,10 @@ fn paste_before_and_after_follows_the_characterwise_shape() {
     );
 
     let mut before = Session::new("abc\n");
-    set_register(&mut before, RegisterValue::characterwise("XY"));
+    set_register(
+        &mut before,
+        RegisterValue::characterwise("XY").expect("the value is bounded"),
+    );
     place(&mut before, 0, 1);
     before.apply(Command::PasteBefore, None);
     assert_eq!(before.text(), "aXYbc\n");
@@ -1018,13 +1122,19 @@ fn paste_before_and_after_follows_the_characterwise_shape() {
 #[test]
 fn paste_before_and_after_follows_the_linewise_shape() {
     let mut after = Session::new("one\ntwo\n");
-    set_register(&mut after, RegisterValue::linewise("new", LineEnding::Lf));
+    set_register(
+        &mut after,
+        RegisterValue::linewise("new", LineEnding::Lf).expect("the value is bounded"),
+    );
     after.apply(Command::PasteAfter, None);
     assert_eq!(after.text(), "one\nnew\ntwo\n");
     assert_eq!(after.position(), (1, 0));
 
     let mut before = Session::new("one\ntwo\n");
-    set_register(&mut before, RegisterValue::linewise("new", LineEnding::Lf));
+    set_register(
+        &mut before,
+        RegisterValue::linewise("new", LineEnding::Lf).expect("the value is bounded"),
+    );
     before.apply(Command::PasteBefore, None);
     assert_eq!(before.text(), "new\none\ntwo\n");
     assert_eq!(before.position(), (0, 0));
@@ -1034,7 +1144,10 @@ fn paste_before_and_after_follows_the_linewise_shape() {
 fn a_linewise_paste_after_the_last_line_opens_a_new_line() {
     for text in ["one", "one\n"] {
         let mut session = Session::new(text);
-        set_register(&mut session, RegisterValue::linewise("new", LineEnding::Lf));
+        set_register(
+            &mut session,
+            RegisterValue::linewise("new", LineEnding::Lf).expect("the value is bounded"),
+        );
         session.apply(Command::PasteAfter, None);
         assert_eq!(session.text(), "one\nnew\n", "{text:?}");
         assert_eq!(session.position(), (1, 0), "{text:?}");
@@ -1043,7 +1156,10 @@ fn a_linewise_paste_after_the_last_line_opens_a_new_line() {
 
 #[test]
 fn paste_before_and_after_follows_the_blockwise_shape() {
-    let block = || RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf);
+    let block = || {
+        RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf)
+            .expect("the value is bounded")
+    };
 
     let mut before = Session::new("ab\ncd\n");
     set_register(&mut before, block());
@@ -1061,7 +1177,8 @@ fn a_blockwise_paste_past_the_last_line_opens_the_missing_lines() {
     let mut session = Session::new("ab");
     set_register(
         &mut session,
-        RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf),
+        RegisterValue::blockwise(&["XX".to_owned(), "YY".to_owned()], LineEnding::Lf)
+            .expect("the value is bounded"),
     );
     session.apply(Command::PasteBefore, None);
     // The buffer terminates its last line, and the save writes the file end
@@ -1072,7 +1189,10 @@ fn a_blockwise_paste_past_the_last_line_opens_the_missing_lines() {
 #[test]
 fn a_count_before_a_paste_repeats_the_value() {
     let mut session = Session::new("abc\n");
-    set_register(&mut session, RegisterValue::characterwise("X"));
+    set_register(
+        &mut session,
+        RegisterValue::characterwise("X").expect("the value is bounded"),
+    );
     session.apply(Command::PasteAfter, count(3));
     assert_eq!(session.text(), "aXXXbc\n");
 }
@@ -1090,7 +1210,10 @@ fn a_paste_without_a_register_value_changes_nothing() {
 #[test]
 fn a_visual_paste_replaces_the_selection_and_preserves_the_source_register() {
     let mut characters = Session::new("abcd\n");
-    set_register(&mut characters, RegisterValue::characterwise("XY"));
+    set_register(
+        &mut characters,
+        RegisterValue::characterwise("XY").expect("the value is bounded"),
+    );
     characters.apply(Command::EnterVisual, None);
     characters.apply(Command::MoveRight, None);
     assert_eq!(
@@ -1118,7 +1241,10 @@ fn a_visual_paste_replaces_the_selection_and_preserves_the_source_register() {
 #[test]
 fn a_visual_block_paste_replaces_the_rectangle_and_keeps_the_register() {
     let mut session = Session::new("abcdef\na\nabcdef\n");
-    set_register(&mut session, RegisterValue::characterwise("Z"));
+    set_register(
+        &mut session,
+        RegisterValue::characterwise("Z").expect("the value is bounded"),
+    );
     select_block(&mut session);
     assert_eq!(
         session.apply(Command::PasteBefore, None),
@@ -1210,7 +1336,10 @@ fn dot_repeat_replays_the_description_of_the_last_change() {
     assert_eq!(lines.text(), "three\n");
 
     let mut paste = Session::new("abc\n");
-    set_register(&mut paste, RegisterValue::characterwise("X"));
+    set_register(
+        &mut paste,
+        RegisterValue::characterwise("X").expect("the value is bounded"),
+    );
     paste.apply(Command::PasteAfter, None);
     paste.apply(Command::RepeatChange, None);
     assert_eq!(paste.text(), "aXXbc\n");

@@ -17,8 +17,8 @@
 //! the diagnostic pulls, and the hover markup. It also translates every neutral
 //! [`ProjectEvent`] of the supervisor into one editor [`LanguageOutcome`].
 //!
-//! Every request and every published result carries the buffer version that
-//! produced its input. A result for an obsolete version is rejected before
+//! Every request and published result carries the complete buffer revision that
+//! produced its input. A result for an obsolete revision is rejected before
 //! publication and never applied. See `docs/language-services.md`.
 
 use std::collections::HashMap;
@@ -35,7 +35,7 @@ use tokio::sync::mpsc;
 use tokio::time::{self, Instant};
 use tokio_util::sync::CancellationToken;
 
-use kvim_core::BufferVersion;
+use kvim_core::BufferRevision;
 use kvim_lsp::{
     ArrayBudget, Attempt, AttemptEnd, ContentChange, DiagnosticsModel, DocumentMapping,
     DocumentPosition, Envelopes, Handshake, LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX,
@@ -141,8 +141,8 @@ pub enum LanguageOutcome {
     Definition {
         /// The request that this answer completes.
         request: LanguageRequestId,
-        /// The buffer version that produced the answer.
-        version: BufferVersion,
+        /// The buffer revision that produced the answer.
+        revision: BufferRevision,
         /// The targets inside the workspace root, in answer order.
         locations: Vec<SourceLocation>,
     },
@@ -150,8 +150,8 @@ pub enum LanguageOutcome {
     Hover {
         /// The request that this answer completes.
         request: LanguageRequestId,
-        /// The buffer version that produced the answer.
-        version: BufferVersion,
+        /// The buffer revision that produced the answer.
+        revision: BufferRevision,
         /// The text and its markup, or `None` when the server has nothing to
         /// say.
         markup: Option<MarkupText>,
@@ -248,13 +248,13 @@ enum SessionRequest {
     /// Open one document with its exact content.
     Open {
         path: PathBuf,
-        version: BufferVersion,
+        revision: BufferRevision,
         text: Arc<str>,
     },
     /// Synchronize one applied edit transaction.
     Change {
         path: PathBuf,
-        version: BufferVersion,
+        revision: BufferRevision,
         changes: Vec<ContentChange>,
     },
     /// Close one document.
@@ -263,7 +263,7 @@ enum SessionRequest {
     Query {
         id: LanguageRequestId,
         path: PathBuf,
-        version: BufferVersion,
+        revision: BufferRevision,
         query: Query,
     },
 }
@@ -308,12 +308,13 @@ impl LanguageServerHandle {
     pub fn open(
         &self,
         path: &Path,
-        version: BufferVersion,
+        revision: impl Into<BufferRevision>,
         text: Arc<str>,
     ) -> Result<(), LspError> {
+        let revision = revision.into();
         self.send(SessionRequest::Open {
             path: path.to_path_buf(),
-            version,
+            revision,
             text,
         })
     }
@@ -332,12 +333,13 @@ impl LanguageServerHandle {
     pub fn change(
         &self,
         path: &Path,
-        version: BufferVersion,
+        revision: impl Into<BufferRevision>,
         changes: Vec<ContentChange>,
     ) -> Result<(), LspError> {
+        let revision = revision.into();
         self.send(SessionRequest::Change {
             path: path.to_path_buf(),
-            version,
+            revision,
             changes,
         })
     }
@@ -361,10 +363,10 @@ impl LanguageServerHandle {
     pub fn definition(
         &self,
         path: &Path,
-        version: BufferVersion,
+        revision: impl Into<BufferRevision>,
         position: DocumentPosition,
     ) -> Result<LanguageRequestId, LspError> {
-        self.query(path, version, Query::Definition(position))
+        self.query(path, revision.into(), Query::Definition(position))
     }
 
     /// Asks for the hover text at one position of one buffer version.
@@ -375,10 +377,10 @@ impl LanguageServerHandle {
     pub fn hover(
         &self,
         path: &Path,
-        version: BufferVersion,
+        revision: impl Into<BufferRevision>,
         position: DocumentPosition,
     ) -> Result<LanguageRequestId, LspError> {
-        self.query(path, version, Query::Hover(position))
+        self.query(path, revision.into(), Query::Hover(position))
     }
 
     /// Asks for the formatting edits of one buffer version.
@@ -389,9 +391,9 @@ impl LanguageServerHandle {
     pub fn format(
         &self,
         path: &Path,
-        version: BufferVersion,
+        revision: impl Into<BufferRevision>,
     ) -> Result<LanguageRequestId, LspError> {
-        self.query(path, version, Query::Format)
+        self.query(path, revision.into(), Query::Format)
     }
 
     /// Cancels the session and every request that it holds.
@@ -402,14 +404,14 @@ impl LanguageServerHandle {
     fn query(
         &self,
         path: &Path,
-        version: BufferVersion,
+        revision: BufferRevision,
         query: Query,
     ) -> Result<LanguageRequestId, LspError> {
         let id = LanguageRequestId(self.next_id.fetch_add(1, Ordering::Relaxed) + 1);
         self.send(SessionRequest::Query {
             id,
             path: path.to_path_buf(),
-            version,
+            revision,
             query,
         })?;
         Ok(id)
@@ -497,8 +499,8 @@ pub(super) struct SessionConfig {
 struct OpenDocument {
     /// The `file` URI of the document.
     uri: String,
-    /// The buffer version of the content that the server holds.
-    version: BufferVersion,
+    /// The buffer revision of the content that the server holds.
+    buffer_revision: BufferRevision,
     /// The protocol document version of that content.
     revision: i64,
     /// The position conversion of this document.
@@ -543,8 +545,8 @@ struct PendingRequest {
     id: Option<LanguageRequestId>,
     /// The document of the request.
     path: PathBuf,
-    /// The buffer version that the request asked about.
-    version: BufferVersion,
+    /// The buffer revision that the request asked about.
+    buffer_revision: BufferRevision,
     /// The question that the request asked.
     query: Query,
     /// The moment after which the request is a timeout.
@@ -880,7 +882,7 @@ impl Session<'_> {
                 diagnostic.into_diagnostic(self.config.id.server(), &document.mapping)
             })
             .collect::<Result<Vec<_>, LspError>>()?;
-        let set = DiagnosticSet::new(path, document.version, diagnostics);
+        let set = DiagnosticSet::new(path, document.buffer_revision, diagnostics);
         Ok(Some(LanguageOutcome::Diagnostics(set)))
     }
 
@@ -889,18 +891,18 @@ impl Session<'_> {
         match request {
             SessionRequest::Open {
                 path,
-                version,
+                revision,
                 text,
             } => {
-                let result = self.open(path, version, &text).await;
+                let result = self.open(path, revision, &text).await;
                 self.report(None, result.map(|()| None)).await
             }
             SessionRequest::Change {
                 path,
-                version,
+                revision,
                 changes,
             } => {
-                let result = self.change(&path, version, &changes).await;
+                let result = self.change(&path, revision, &changes).await;
                 self.report(None, result.map(|()| None)).await
             }
             SessionRequest::Close { path } => {
@@ -910,10 +912,10 @@ impl Session<'_> {
             SessionRequest::Query {
                 id,
                 path,
-                version,
+                revision,
                 query,
             } => {
-                let result = self.query(id, path, version, query).await;
+                let result = self.query(id, path, revision, query).await;
                 self.report(Some(id), result.map(|()| None)).await
             }
         }
@@ -922,7 +924,7 @@ impl Session<'_> {
     async fn open(
         &mut self,
         path: PathBuf,
-        version: BufferVersion,
+        revision: BufferRevision,
         text: &str,
     ) -> Result<(), LspError> {
         let uri = self.config.root.uri(&path)?;
@@ -956,7 +958,7 @@ impl Session<'_> {
             path,
             OpenDocument {
                 uri,
-                version,
+                buffer_revision: revision,
                 revision: 1,
                 mapping: DocumentMapping::new(
                     self.encoding,
@@ -974,7 +976,7 @@ impl Session<'_> {
     async fn change(
         &mut self,
         path: &Path,
-        version: BufferVersion,
+        buffer_revision: BufferRevision,
         changes: &[ContentChange],
     ) -> Result<(), LspError> {
         enforce(
@@ -1028,7 +1030,7 @@ impl Session<'_> {
             .get_mut(path)
             .ok_or(LspError::DocumentNotOpen)?;
         document.revision = revision;
-        document.version = version;
+        document.buffer_revision = buffer_revision;
         // The next pull waits until the change settles, so one burst of edits
         // starts one request.
         document.pull_due = pulls.then(|| Instant::now() + LSP_DIAGNOSTIC_PULL_DELAY);
@@ -1066,12 +1068,12 @@ impl Session<'_> {
         &mut self,
         id: LanguageRequestId,
         path: PathBuf,
-        version: BufferVersion,
+        revision: BufferRevision,
         query: Query,
     ) -> Result<(), LspError> {
         let document = self.documents.get(&path).ok_or(LspError::DocumentNotOpen)?;
         // The request must describe the content that the server holds.
-        if document.version.get() != version.get() {
+        if document.buffer_revision != revision {
             return Err(LspError::StaleVersion);
         }
         enforce(
@@ -1086,7 +1088,7 @@ impl Session<'_> {
             PendingRequest {
                 id: Some(id),
                 path,
-                version,
+                buffer_revision: revision,
                 query,
                 deadline: Instant::now() + query.deadline(),
             },
@@ -1131,18 +1133,18 @@ impl Session<'_> {
             .ok_or(LspError::DocumentNotOpen)?;
         // The buffer changed after the request, so the answer describes text
         // that no longer exists.
-        if document.version.get() != pending.version.get() {
+        if document.buffer_revision != pending.buffer_revision {
             return Err(LspError::StaleVersion);
         }
         match pending.query {
             Query::Definition(_) => Ok(LanguageOutcome::Definition {
                 request,
-                version: pending.version,
+                revision: pending.buffer_revision,
                 locations: self.definition_locations(result)?,
             }),
             Query::Hover(_) => Ok(LanguageOutcome::Hover {
                 request,
-                version: pending.version,
+                revision: pending.buffer_revision,
                 markup: hover_markup(result, self.config.registry, &mut self.highlighter)?,
             }),
             Query::Diagnostics => {
@@ -1166,7 +1168,7 @@ impl Session<'_> {
                     .collect::<Result<_, LspError>>()?;
                 Ok(LanguageOutcome::Formatting {
                     request,
-                    edits: FormatEdits::new(pending.path.clone(), pending.version, edits),
+                    edits: FormatEdits::new(pending.path.clone(), pending.buffer_revision, edits),
                 })
             }
         }
@@ -1250,7 +1252,7 @@ impl Session<'_> {
                 .ok_or(LspError::DocumentNotOpen)?;
             // The buffer changed after the request, so the report describes text
             // that no longer exists.
-            if document.version.get() != pending.version.get() {
+            if document.buffer_revision != pending.buffer_revision {
                 return Err(LspError::StaleVersion);
             }
             if report.kind == UNCHANGED_REPORT {
@@ -1274,7 +1276,7 @@ impl Session<'_> {
                     .collect::<Result<Vec<_>, LspError>>()?;
                 Some(LanguageOutcome::Diagnostics(DiagnosticSet::new(
                     pending.path.clone(),
-                    document.version,
+                    document.buffer_revision,
                     diagnostics,
                 )))
             }
@@ -1373,7 +1375,7 @@ impl Session<'_> {
         let Some(document) = self.documents.get(path) else {
             return Ok(());
         };
-        let version = document.version;
+        let buffer_revision = document.buffer_revision;
         let mut params = json!({ "textDocument": { "uri": document.uri } });
         if let Some(identifier) = identifier {
             params["identifier"] = Value::String(identifier.to_owned());
@@ -1390,7 +1392,7 @@ impl Session<'_> {
             PendingRequest {
                 id: None,
                 path: path.to_path_buf(),
-                version,
+                buffer_revision,
                 query: Query::Diagnostics,
                 deadline: Instant::now() + Query::Diagnostics.deadline(),
             },

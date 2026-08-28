@@ -6,37 +6,60 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
+# The default partition is the complete editor presentation. Pure supplied
+# review consumers disable defaults and select `review` alone.
+default = ["editor"]
+review = [
+  "dep:kvim-core",
+  "dep:kvim-input",
+  "dep:kvim-path",
+  "dep:kvim-settings",
+  "dep:kvim-ui",
+  "dep:kvim-workspace",
+]
+editor = [
+  "review",
+  "dep:kvim-clipboard",
+  "dep:kvim-core",
+  "dep:kvim-editor",
+  "dep:kvim-fuzzy",
+  "dep:kvim-language",
+  "dep:kvim-runtime",
+  "dep:kvim-terminal",
+  "dep:tokio",
+  "dep:tokio-util",
+  "kvim-workspace/services",
+]
 # No grammar is bundled by default. Each feature forwards to the grammar of
 # `kvim-language`, and an adapter exists only while its grammar does, so a
 # consumer compiles the languages that it names and nothing else. See
 # `docs/architecture.md`.
-default = []
 
-grammar-asm = ["kvim-language/grammar-asm"]
-grammar-bash = ["kvim-language/grammar-bash"]
-grammar-c = ["kvim-language/grammar-c"]
-grammar-cpp = ["kvim-language/grammar-cpp"]
-grammar-css = ["kvim-language/grammar-css"]
-grammar-fish = ["kvim-language/grammar-fish"]
-grammar-glsl = ["kvim-language/grammar-glsl"]
-grammar-go = ["kvim-language/grammar-go"]
-grammar-html = ["kvim-language/grammar-html"]
-grammar-javascript = ["kvim-language/grammar-javascript"]
-grammar-json = ["kvim-language/grammar-json"]
-grammar-lua = ["kvim-language/grammar-lua"]
-grammar-markdown = ["kvim-language/grammar-markdown"]
-grammar-nix = ["kvim-language/grammar-nix"]
-grammar-python = ["kvim-language/grammar-python"]
-grammar-rust = ["kvim-language/grammar-rust"]
-grammar-scss = ["kvim-language/grammar-scss"]
-grammar-sql = ["kvim-language/grammar-sql"]
-grammar-terraform = ["kvim-language/grammar-terraform"]
-grammar-toml = ["kvim-language/grammar-toml"]
-grammar-tsx = ["kvim-language/grammar-tsx"]
-grammar-typescript = ["kvim-language/grammar-typescript"]
-grammar-xml = ["kvim-language/grammar-xml"]
-grammar-yaml = ["kvim-language/grammar-yaml"]
-grammar-zig = ["kvim-language/grammar-zig"]
+grammar-asm = ["editor", "kvim-language/grammar-asm"]
+grammar-bash = ["editor", "kvim-language/grammar-bash"]
+grammar-c = ["editor", "kvim-language/grammar-c"]
+grammar-cpp = ["editor", "kvim-language/grammar-cpp"]
+grammar-css = ["editor", "kvim-language/grammar-css"]
+grammar-fish = ["editor", "kvim-language/grammar-fish"]
+grammar-glsl = ["editor", "kvim-language/grammar-glsl"]
+grammar-go = ["editor", "kvim-language/grammar-go"]
+grammar-html = ["editor", "kvim-language/grammar-html"]
+grammar-javascript = ["editor", "kvim-language/grammar-javascript"]
+grammar-json = ["editor", "kvim-language/grammar-json"]
+grammar-lua = ["editor", "kvim-language/grammar-lua"]
+grammar-markdown = ["editor", "kvim-language/grammar-markdown"]
+grammar-nix = ["editor", "kvim-language/grammar-nix"]
+grammar-python = ["editor", "kvim-language/grammar-python"]
+grammar-rust = ["editor", "kvim-language/grammar-rust"]
+grammar-scss = ["editor", "kvim-language/grammar-scss"]
+grammar-sql = ["editor", "kvim-language/grammar-sql"]
+grammar-terraform = ["editor", "kvim-language/grammar-terraform"]
+grammar-toml = ["editor", "kvim-language/grammar-toml"]
+grammar-tsx = ["editor", "kvim-language/grammar-tsx"]
+grammar-typescript = ["editor", "kvim-language/grammar-typescript"]
+grammar-xml = ["editor", "kvim-language/grammar-xml"]
+grammar-yaml = ["editor", "kvim-language/grammar-yaml"]
+grammar-zig = ["editor", "kvim-language/grammar-zig"]
 
 all-grammars = [
   "grammar-asm",
@@ -68,18 +91,18 @@ all-grammars = [
 
 [dependencies]
 # kvim crates
-kvim-clipboard.workspace = true
-kvim-core.workspace = true
-kvim-editor.workspace = true
-kvim-input.workspace = true
-kvim-keymap.workspace = true
-kvim-language.workspace = true
-kvim-path.workspace = true
-kvim-runtime.workspace = true
-kvim-settings.workspace = true
-kvim-terminal.workspace = true
-kvim-ui.workspace = true
-kvim-workspace.workspace = true
+kvim-clipboard = { workspace = true, optional = true }
+kvim-core = { workspace = true, optional = true }
+kvim-editor = { workspace = true, optional = true }
+kvim-fuzzy = { workspace = true, optional = true }
+kvim-input = { workspace = true, optional = true }
+kvim-language = { workspace = true, optional = true }
+kvim-path = { workspace = true, optional = true }
+kvim-runtime = { workspace = true, optional = true }
+kvim-settings = { workspace = true, optional = true }
+kvim-terminal = { workspace = true, optional = true }
+kvim-ui = { workspace = true, optional = true }
+kvim-workspace = { workspace = true, optional = true, default-features = false }
 
 # Basics
 thiserror.workspace = true
@@ -89,8 +112,8 @@ ratatui.workspace = true
 unicode-width.workspace = true
 
 # Runtime
-tokio.workspace = true
-tokio-util.workspace = true
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 # kvim crates

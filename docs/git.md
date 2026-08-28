@@ -145,6 +145,14 @@ comment.
 
 ## Capture Consistency
 
+### Standalone Review Surface Capture
+
+`ReviewSurface::for_worktree` uses this bounded capture boundary and publishes
+no partial staged or unstaged pair. `ReviewSurface::from_candidates` bypasses
+Git and accepts immutable candidates only. Both remain neutral: comments
+contain bounded anchors and bodies, and the host owns persistence. No Git
+operation gains host session, task, agent, or thread meaning.
+
 Capture reads one authority fingerprint before and after collection. The
 fingerprint covers the base commit, current `HEAD`, the index, status records,
 and each selected worktree file identity and content digest.

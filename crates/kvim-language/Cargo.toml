@@ -6,9 +6,11 @@ rust-version.workspace = true
 version.workspace = true
 
 [features]
-# No grammar is bundled by default. Each feature forwards to the grammar of
-# `kvim-syntax`, and an adapter exists only while its grammar does, so a
-# consumer compiles the languages that it names and nothing else.
+# No grammar is bundled by default. In that supported configuration,
+# `LanguageRegistry::first_release()` is empty, lookups return typed
+# unsupported/none outcomes, and markup and service construction stay usable.
+# Each feature forwards to the grammar of `kvim-syntax`. An adapter exists only
+# while its grammar does, so a consumer compiles only the languages it names.
 default = []
 
 # Publishes the deterministic mock language server of the `mock` module.

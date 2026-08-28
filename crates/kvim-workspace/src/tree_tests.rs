@@ -13,6 +13,7 @@ use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath, WorktreeRoot};
 
 use crate::BufferId;
 use crate::clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
+use crate::durable::{DurableOutcome, FailurePoint, RecoveryAction, inject_failure};
 use crate::mutation::{
     FileOperation, MUTATION_PATHS_MAX, MutationError, MutationPlan, OpenBuffer, Overwrite,
     TakenDestination, TransferMode,
@@ -1200,6 +1201,91 @@ fn an_overwrite_of_a_destination_that_became_free_takes_the_free_path() {
 
     let content = fs::read_to_string(&destination).expect("the destination exists");
     assert_eq!(content, "source");
+}
+
+#[test]
+fn a_commit_failure_after_one_rename_is_indeterminate() {
+    let directory = TempDir::new("mutate-commit-indeterminate");
+    directory.file("one.rs", "one");
+    directory.dir("dest");
+    let root = root_of(&directory);
+    let plan = MutationPlan::stage(
+        &FileOperation::Transfer {
+            mode: TransferMode::Move,
+            sources: vec![relative("one.rs")],
+            destination: directory_of("dest"),
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect("the destination is free");
+
+    inject_failure(FailurePoint::MutationAfterRename);
+    let outcome = plan.apply();
+
+    assert!(matches!(outcome, DurableOutcome::Indeterminate(_)));
+}
+
+#[test]
+fn a_failed_restoration_is_preserved_in_the_report() {
+    let directory = TempDir::new("mutate-rollback-failure");
+    directory.file("one.rs", "one");
+    directory.dir("dest");
+    let root = root_of(&directory);
+    let plan = MutationPlan::stage(
+        &FileOperation::Transfer {
+            mode: TransferMode::Move,
+            sources: vec![relative("one.rs")],
+            destination: directory_of("dest"),
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect("the destination is free");
+
+    inject_failure(FailurePoint::MutationAfterRenameAndRestore);
+    let outcome = plan.apply();
+    let DurableOutcome::Indeterminate(report) = outcome else {
+        panic!("the committed rename is uncertain");
+    };
+    assert_eq!(report.recovery_failures().len(), 1);
+    assert!(report.affected_paths().len() <= MUTATION_PATHS_MAX);
+}
+
+#[test]
+fn a_post_commit_cleanup_failure_is_indeterminate_with_recovery_details() {
+    let directory = TempDir::new("mutate-cleanup-failure");
+    directory.file("source.rs", "new");
+    directory.file("destination.rs", "old");
+    let root = root_of(&directory);
+    let destination = root.join("destination.rs");
+    let plan = MutationPlan::stage_with(
+        &FileOperation::Rename {
+            from: relative("source.rs"),
+            to: relative("destination.rs"),
+        },
+        &worktree(&root),
+        &[],
+        &approved_file("destination.rs"),
+    )
+    .expect("the overwrite is approved");
+
+    inject_failure(FailurePoint::MutationCleanup);
+    let outcome = plan.apply();
+    let DurableOutcome::Indeterminate(report) = outcome else {
+        panic!("cleanup after commit cannot report a definite result");
+    };
+
+    assert_eq!(report.recovery_failures().len(), 1);
+    assert_eq!(
+        report.recovery_failures()[0].action(),
+        RecoveryAction::RemoveParked
+    );
+    assert!(report.affected_paths().contains(&root));
+    assert_eq!(
+        fs::read_to_string(destination).expect("the committed destination exists"),
+        "new"
+    );
 }
 
 #[test]

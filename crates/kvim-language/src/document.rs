@@ -1,18 +1,19 @@
 //! The document values that the language service exchanges with the editor.
 //!
 //! `kvim-lsp` owns the neutral protocol values. This file adds the values that
-//! need a buffer version or a markup document, and the conversions between a
+//! need a buffer revision or a markup document, and the conversions between a
 //! [`TextBuffer`] and the protocol coordinates. Every conversion is pure, so
 //! the terminal event loop can run it between two frames.
 //!
-//! Every published value carries the [`BufferVersion`] that produced it. A
-//! value for an obsolete version is rejected before publication and never
+//! Every published value carries the [`BufferRevision`] that produced it. A
+//! value for an obsolete revision is rejected before publication and never
 //! applied. See `docs/language-services.md`.
 
 use std::path::{Path, PathBuf};
 
 use kvim_core::{
-    BufferVersion, CharPosition, CharRange, EditTransaction, LineIndex, TextBuffer, TextChange,
+    BufferRevision, BufferVersion, CharPosition, CharRange, EditTransaction, LineIndex, TextBuffer,
+    TextChange,
 };
 use kvim_lsp::{
     ContentChange, Diagnostic, DocumentPosition, LspBound, LspError, SourceSpan, TextEdit, enforce,
@@ -20,14 +21,14 @@ use kvim_lsp::{
 
 use super::markup::MarkupDocument;
 
-/// The complete diagnostics of one document version.
+/// The complete diagnostics of one document revision.
 ///
 /// The set is decoration. It never changes source text, a line mapping, or the
 /// cursor position.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DiagnosticSet {
     path: PathBuf,
-    version: BufferVersion,
+    revision: BufferRevision,
     diagnostics: Vec<Diagnostic>,
 }
 
@@ -36,7 +37,7 @@ impl DiagnosticSet {
     #[must_use]
     pub(super) fn new(
         path: PathBuf,
-        version: BufferVersion,
+        revision: BufferRevision,
         mut diagnostics: Vec<Diagnostic>,
     ) -> Self {
         diagnostics.sort_by(|left, right| {
@@ -46,7 +47,7 @@ impl DiagnosticSet {
         });
         Self {
             path,
-            version,
+            revision,
             diagnostics,
         }
     }
@@ -57,10 +58,14 @@ impl DiagnosticSet {
         &self.path
     }
 
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced the diagnostics.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the diagnostics in ascending position order.
@@ -74,8 +79,8 @@ impl DiagnosticSet {
     /// The event loop asks before it publishes, so an obsolete set never
     /// reaches visible state.
     #[must_use]
-    pub const fn is_current(&self, current: BufferVersion) -> bool {
-        self.version.get() == current.get()
+    pub fn is_current(&self, current: impl Into<BufferRevision>) -> bool {
+        self.revision == current.into()
     }
 }
 
@@ -144,18 +149,22 @@ pub struct MarkupText {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FormatEdits {
     path: PathBuf,
-    version: BufferVersion,
+    revision: BufferRevision,
     edits: Vec<TextEdit>,
 }
 
 impl FormatEdits {
     /// Creates the answer and orders the edits by position.
     #[must_use]
-    pub(super) fn new(path: PathBuf, version: BufferVersion, mut edits: Vec<TextEdit>) -> Self {
+    pub(super) fn new(
+        path: PathBuf,
+        revision: impl Into<BufferRevision>,
+        mut edits: Vec<TextEdit>,
+    ) -> Self {
         edits.sort_by_key(|edit| (edit.span.start, edit.span.end));
         Self {
             path,
-            version,
+            revision: revision.into(),
             edits,
         }
     }
@@ -166,10 +175,14 @@ impl FormatEdits {
         &self.path
     }
 
+    pub const fn revision(&self) -> BufferRevision {
+        self.revision
+    }
+
     /// Returns the buffer version that produced the edits.
     #[must_use]
     pub const fn version(&self) -> BufferVersion {
-        self.version
+        self.revision.version()
     }
 
     /// Returns the edits in ascending position order.
@@ -194,7 +207,7 @@ impl FormatEdits {
         buffer: &TextBuffer,
         cursor: CharPosition,
     ) -> Result<Option<EditTransaction>, LspError> {
-        if buffer.version().get() != self.version.get() {
+        if buffer.revision() != self.revision {
             return Err(LspError::StaleVersion);
         }
         if self.edits.is_empty() {
@@ -223,7 +236,7 @@ impl FormatEdits {
 /// use kvim_language::document_position;
 /// use kvim_settings::FileSettings;
 ///
-/// let buffer = TextBuffer::from_text("let value = 1;\n", &FileSettings::default())?;
+/// let buffer = TextBuffer::from_text("let value = 1;\n", kvim_core::BufferBytesMax::default())?;
 /// let cursor = buffer.char_position(4).expect("the position exists");
 /// assert_eq!(document_position(&buffer, cursor).byte_column, 4);
 /// # Ok::<(), Box<dyn std::error::Error>>(())

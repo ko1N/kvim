@@ -8,66 +8,371 @@ composition, external use, and public example rules.
 Kvim supplies bounded library capabilities. A host composes them. Kvim knows no
 host session, agent, tool, task, plan, or other host-domain concept.
 
+## Facade Contract
+
+`kvim-embed` is the only supported high-level editor facade. Its default
+feature set publishes `MemoryEditor`. `WorktreeEditor` is an existing separate
+rendered editor behind the `worktree` Cargo feature. Host-resolved input,
+bounded binding publication, addressed cancellation, merged host registries,
+independent presentation ownership, semantic command/status/sidebar state, and
+standalone review are available through production facade APIs.
+`MemoryEditor` remains the default path.
+`ReviewSurface` is a separate rendered review surface behind the `review`
+feature. Supplied candidates require no editor or service runtime. The
+`worktree` feature adds bounded Git capture without constructing an editor.
+`MemoryEditor` owns one bounded `TextBuffer`, one modal `EditingState`,
+registers, one window, validated `EditorSettings`, and its accepted rectangle.
+It applies caller-resolved
+`Command` values, literal Insert-mode text, and host-owned elapsed time. Elapsed
+time produces no transition because this editor has no timer-driven state. It
+renders plain text, line numbers, and the cursor into a caller-supplied ratatui
+buffer.
+
+`MemoryEditor::open` validates the settings, applies its realized
+`files.max_file_bytes` value as the text byte limit, and validates nonempty
+geometry before it creates state. `MemoryEditor::resize` validates new geometry.
+`MemoryEditor::render` validates that the complete accepted rectangle fits the
+cell buffer before it changes a cell. Drop ends the pure in-memory lifecycle;
+there is no explicit close operation because cleanup cannot fail.
+
+The editor creates no worktree and has no service request type. Its default
+Cargo dependency closure contains no `kvim-tui`, `kvim-runtime`,
+`kvim-language`, `kvim-lsp`, `kvim-workspace`, `kvim-path`, `kvim-terminal`,
+Tokio, crossterm, notify, or cap-std. Terminal lifecycle remains host-owned.
+`crates/kvim-embed/examples/in_memory_editor.rs` opens supplied text, edits it,
+renders it, and drops the editor.
+
+The facade has two rendered editor types. `MemoryEditor` edits supplied bounded
+text and renders to a caller-supplied ratatui buffer. It requires no worktree,
+filesystem, Git, watcher, process, or language service. `WorktreeEditor` is a
+separate type behind the `worktree` Cargo feature. It adds explicit worktree
+capabilities.
+Do not add a common editor trait until shared behavior requires one.
+
+The default `kvim-embed` feature set is in-memory only. It must not compile
+`kvim-tui`, `kvim-runtime`, `kvim-language`, `kvim-lsp`, `kvim-workspace`,
+`kvim-path`, `kvim-terminal`, Tokio, crossterm, notify, or cap-std. The
+`worktree` feature enables the worktree path and forwards grammar features to
+both `kvim-language` and `kvim-tui` only through that path.
+
+The `worktree` constructor owns a private Tokio executor and isolated bounded
+worker, result, and process capacity. `WorktreeCapacity` validates those three
+dimensions. Hosts call `dispatch`, await `ready`, pass the opaque
+`WorktreeCompletion` to `apply`, and consume `shutdown`. A timed-out shutdown
+returns `WorktreeDrain`, which owns the executor until mandatory events arrive.
+No public signature names Tokio, channels, runtime work payloads,
+`EditorDriver`, `Session`, or runtime, language, and workspace package types.
+Public asynchronous methods still require host polling. Their internal work
+runs on the private executor.
+
+Explicit consuming `shutdown` is required to observe mandatory durable-work
+events. Drop cancels internal owners before it shuts down the executor. Drop is
+a best-effort fallback and does not promise durable event delivery.
+
+The facade assigns each `WorktreeEditor` an opaque `WorktreeInstanceId`.
+`WorktreeCompletion` carries that identity privately. `WorktreeEditor::apply`
+returns `Result<WorktreeUpdate, WorktreeApplyError>`. A wrong editor returns
+`WorktreeApplyErrorKind::WrongInstance` before it advances elapsed time,
+releases or consumes a reservation, changes visible state, applies a service
+result, or publishes an event. The error retains the completion, and
+`WorktreeApplyError::into_completion` returns it for routing to its owner.
+Facade signatures expose no `kvim-tui` identity, completion, result, or error
+type.
+
+The legacy `EditorDriver` validates its `Session` at `dispatch`, `apply`,
+`shutdown`, and drain completion. These host-routable methods return
+`DriverError::WrongInstance` in every build profile. `WorktreeEditor` owns its
+session and driver together, so its internal dispatch and shutdown pairings are
+infallible after construction. Its public `apply` returns `EditorApplyError`
+for a completion from another instance.
+
+`WorktreeCapabilities` defaults Git, watcher, language, and clipboard policies
+to `Disabled`. The facade starts none of those services by default.
+`ServicePolicy::BuiltIn` selects the supported production implementation and
+makes startup mandatory. A requested language service or watcher that cannot
+construct fails `open` with a facade-owned `WorktreeOpenErrorKind` and keeps its
+private source chain. `ServicePolicy::BestEffortBuiltIn` selects the same
+implementation but degrades a language construction failure to unavailable
+language behavior. A watcher startup failure reports that no watcher runs, then
+the editor remains usable and the refresh command reads the workspace by hand.
+File open, edit, render, and save remain available in both cases. The
+standalone uses best-effort built-in language and watcher services. It uses
+required built-in Git and clipboard policies. Git has no opening operation, and
+clipboard command availability is a runtime process outcome, so both policies
+remain active after the editor opens. The facade
+reports runtime service outcomes through its ordinary editor events.
+Filesystem file open, edit, render, and save remain core worktree behavior.
+
+The host owns terminal lifecycle, terminal input, signals, raw mode, alternate
+screen, panic restoration, cursor application, and final redraw scheduling.
+The facade owns no such terminal operation.
+
+`kvim-tui` is the internal presentation implementation behind the optional
+worktree facade. Its `#[doc(hidden)]` adapter modules are non-contract seams for
+`kvim-embed` only. New hosts use `kvim-embed`.
+
+## Audit Invariant Ownership
+
+Each audit item has one primary document owner. The listed owner records the
+required invariant before implementation changes it.
+
+| Finding | Owner | Required invariant |
+|---|---|---|
+| KV-A01 | `responsiveness.md` | A committing operation reports its actual durable outcome after commit begins. |
+| KV-A02 | `text-model.md` | Text-derived requests carry stable buffer identity, generation, and version. |
+| KV-A03 | `text-model.md` | A validated byte limit survives every buffer transition. |
+| KV-A04 | `files.md` | Filesystem operations report `Unchanged`, `Committed`, or `Indeterminate` and reconcile uncertainty. |
+| KV-A05 | `embedding.md` | Instance identity is validated in release builds before result application. |
+| KV-A06 | `embedding.md` | High-level editors own bounded execution behind facade-owned values. |
+| KV-A07 | `embedding.md` | Memory and worktree editors remain separate capability contracts. |
+| KV-A08 | `language-services.md` | Public language construction validates every declared bound, identity, and service root. |
+| KV-A09 | `settings.md` | Public settings and bounded value construction establish their invariants in release builds. |
+| KV-A10 | `architecture.md` | Consumer and feature gates prove supported package contracts. |
+| KV-A11 | `language-services.md` | No-grammar and grammar feature behavior remains documented and valid. |
+| KV-A12 | `text-model.md` | Lower crates publish values that own their meaning and preserve text invariants. |
+| KV-A13 | `architecture.md` | A supported setting has production behavior; the stale wrapping setting was removed before release. |
+| KV-A14 | `architecture.md` | A supported public path has production behavior; stale paths are removed before release. |
+
+## Host Composition Contract
+
+`WorktreeBindingMode::FacadeResolved` keeps physical resolution inside kvim and
+uses `BindingProfile::Standalone`. `WorktreeBindingMode::HostResolved` selects
+`BindingProfile::Embedded`, publishes its bounded `BindingManifest`, and makes
+the host the only owner of physical key and paste arbitration. In that mode,
+`WorktreeEditor::input` rejects key, paste, and unsupported raw input before
+mutation. Resolver-independent resize input remains accepted.
+
+The direct `command`, `literal`, and `paste` methods are semantic APIs. They do
+not run or claim a physical binding. Hosts can use them for menus, command
+palettes, and already-arbitrated text. A physical resolver result instead uses
+`semantic_dispatch`, which validates the addressed instance, context
+generation, active focus scope, and active picker overlay before mutation.
+
+The host reads `binding_context` after each transition. It contains the current
+semantic phases, active scope, optional picker overlay, generation, and the
+host-supplied reserved escape key. Static `Pending` belongs only to the host
+resolver. `TextObjectPending` updates kvim's semantic text-object phase.
+Complete, text fallback, unbound, and interrupted decisions retain their typed
+meanings at the facade boundary.
+
+An interrupted decision changes no editor state. It returns an instance- and
+generation-bound `CancelPendingProposal`. `cancel_pending` rejects a wrong
+instance, stale generation, or idle context before mutation. A successful call
+closes prompts and confirmations, clears counts, operators, registers, and text
+objects, applies operator cancellation effects, advances the generation, and
+only then returns an idle `CancelPendingResume`. The host changes focus only
+after that resume succeeds.
+
+The host-global scope and merged host registry are facade features in
+host-resolved mode. `WorktreeBindingModel` merges bounded host-global,
+host-leader, focused-context, and kvim manifest bindings into one generic
+`kvim-keymap::Registry`. It projects each binding into a deterministic effective
+scope before registry validation. Duplicate sequences and unreachable prefixes
+therefore fail with typed errors, independent of registration order.
+
+The host-global scope receives first refusal through the existing
+`DispatchContext` order. Chat focus includes host and chat groups but no editor
+group. Editor focus includes host leader and focused contributions only in
+Normal, Visual, and sidebar contexts. Insert, picker, prompt, confirmation,
+register-selection, and operator-pending contexts retain kvim input ownership.
+Review focus includes host and review groups. The model publishes bounded owner
+and semantic group labels for each command. Hosts use the existing `Resolver`
+or `WorkspaceComposer` for dispatch, pending continuations, interruption hints,
+and one which-key model; no facade resolver runs in parallel.
+
+Composition rejects duplicate and strict-prefix conflicts by default. An
+explicit bounded override identifies the effective scope, physical sequence,
+and addressed host or editor command that wins. Composition rejects stale,
+nonexistent, ambiguous, uncovered, or contradictory overrides. It never uses
+registration order. Host and editor identities remain distinct when their
+string identifiers are equal.
+
+`WorktreeBindingModel::editor_context` validates the current
+`WorktreeBindingContext`, then projects it with its picker overlay. The
+host-supplied reserved escape key must resolve to one complete host-global
+command. Missing, pending, editor-owned, or ambiguous escape bindings fail with
+a typed error. The picker scope therefore precedes the focused prompt scope.
+Ordinary editor contexts publish no overlay.
+
+A host may ultimately compose input routing for editor, review, chat, and other
+surfaces. Kvim also supports the existing facade-resolved path in which kvim
+owns resolution and which-key presentation.
+
+`BindingProfile::Standalone` preserves the current preset.
+`BindingProfile::Embedded` disables review-entry bindings and host-navigation
+conflicts by semantic command identity, while keeping semantic commands
+available. Binding overrides reject duplicate sequences and unreachable
+prefixes. `ReviewBindingProfile` configures standalone review independently from
+editor bindings.
+
+`WorktreePresentation` independently selects command-line, statusline,
+which-key, and file-sidebar ownership. `standalone()` and the default keep all
+four surfaces embedded. `integrated_host()` assigns all four to the host.
+Builder methods support every mixed combination, and construction fixes the
+choices for the editor lifetime.
+
+The effective resolver still owns which-key presentation. Facade-resolved
+input requires embedded which-key. Host-resolved input requires host-owned
+which-key. `WorktreeEditorBuilder::open` returns
+`WorktreeOpenErrorKind::Presentation` before worktree or live editor state
+exists for either inconsistent combination.
+
+A host-owned command line additionally requires `WorktreeCommandSurface`.
+Opening without that marker returns `WorktreeOpenErrorKind::CommandSurface`
+before root validation or live state construction. A host-owned statusline
+requires no callback or capability.
+
+Kvim realizes presentation before it constructs the private session.
+Host-owned command and status rows have zero height and become body rows.
+Host-owned file-sidebar presentation prevents creation of the private sidebar
+region. Kvim therefore writes no blank placeholder cells for host-owned
+surfaces. Embedded ownership keeps the existing chrome, sidebar, cursor,
+viewport, and which-key behavior.
+
+`WorktreeEditor::file_sidebar_snapshot` returns `None` for embedded ownership.
+When the host owns the sidebar, it publishes at most
+`FILE_SIDEBAR_ROWS_MAX` facade-owned rows. Each row carries a stable semantic
+identity derived from its validated contained path or its parent and notice
+kind. Labels, root labels, depth, paths, and the snapshot row list have
+published bounds. Rows also carry kind and expansion/loading state, selection,
+Git state, symbolic-link state, and semantic icon role. Notice rows carry no
+path. Snapshot reads copy loaded state only and perform no filesystem or Git
+work.
+
+`WorktreeEditor::file_sidebar_command` accepts bounded movement, expansion,
+collapse, refresh, activation, and focus-boundary commands. Directory and Git
+work continues through `dispatch`, `ready`, and `apply`, including existing
+request identity and obsolete-result rejection. Activation queues the selected
+contained file in the editor. Embedded sidebar ownership refuses this host
+command path and keeps existing rendering and input behavior.
+
+The host owns sidebar placement, width, visibility, and focus order. It can draw
+its own tree and kvim's snapshot as separate regions. Kvim accepts no host rows
+and performs no merge. `crates/kvim-embed/examples/host_sidebar.rs` demonstrates
+this two-tree composition.
+
+The status snapshot is now a supported publication, not a planned addition.
+`WorktreeEditor::status` returns a cheap borrowed `EditorStatusSnapshot` for one
+`WorktreeInstanceId`. It includes the editing mode, active contained path,
+modified state, one-based logical cursor position, access, bounded diagnostic
+counts, and formatter availability with format-on-save state. It contains no
+preformatted labels or private implementation values. The host polls it after
+an applied transition, typically after `WorktreeUpdate::Redraw`; no separate
+status event exists.
+
+Embedded statusline rendering and facade publication derive mode, cursor, and
+formatter state from the same semantic session facts. A host-owned statusline
+still reserves zero rows.
+
+The addressed command catalog is now a supported publication.
+`WorktreeEditor::command_catalog` returns one bounded `EditorCommandCatalog`
+for the current instance and input generation. Descriptors contain stable typed
+identities, canonical and qualified names, aliases, descriptions, argument
+schemas, current availability, and completion capability. Host and editor
+commands remain separately addressed when their unqualified names collide.
+Kvim parses and validates the selected editor command line.
+`execute_addressed_command` rejects wrong-instance, stale-generation,
+unavailable, and identity-mismatch requests before mutation. Worktree path
+completion remains asynchronous work for the command-line lifecycle.
+
+Host-owned command-line opening and completion sessions are supported.
+`Command::OpenCommandLine` returns `WorktreeInputRequest::OpenCommandLine` with
+one facade-owned `EditorCommandSessionId`; kvim opens no internal prompt.
+`EditorCommandCatalog::complete_names` performs bounded pure name and alias
+completion. `request_command_completion` sends contained-path work through the
+normal `dispatch`, `ready`, and `apply` lifecycle. Each answer carries editor,
+session, and host request identity. A newer request cancels the previous slot,
+and the publication gate rejects obsolete work. `close_command_session`
+cancels the active slot. The host owns line text, cursor, candidate selection,
+and history. It must close the session before a prompt focus change, using the
+same cancel-before-focus ordering as other pending input.
+
+### Editor Sidebar Publication
+
+Host-owned sidebar rows publish bounded identity, path, depth, kind, loading,
+selection, Git, symlink, and icon-role facts. Kvim publishes its tree separately
+and never accepts or merges host tree rows.
+
+### Standalone Review
+
+`ReviewSurface` is an additional standalone surface behind the `review`
+feature. It does not replace integrated review in `WorktreeEditor`.
+`ReviewSurface::from_candidates` accepts bounded immutable candidates and
+performs no input or output. It uses facade-owned commands, events, errors, and
+snapshots. Snapshot restoration relocates durable anchors without guessing.
+The host owns focus policy, file opening, comment persistence, and comment
+meaning. `ReviewConfig` selects `ReviewBindingProfile::Standalone` or
+`ReviewBindingProfile::HostResolved` independently from editor bindings. It can
+also supply bounded semantic review overrides. `ReviewSurface::bindings`
+publishes the realized review-only manifest for host arbitration. The facade
+accepts `ReviewInput` after arbitration. It does not resolve raw keys for
+`ReviewSurface`. The standalone profile keeps the traditional review table. The host-resolved profile leaves `Tab` and
+`Shift-Tab` unclaimed and publishes `]s` and `[s` for section navigation.
+
+`ReviewSurface::for_worktree` adds bounded Git capture behind the `worktree`
+feature. The surface privately owns capture dispatch, readiness, application,
+cancellation, and consuming shutdown. One `dispatch` call submits every queued
+half or follow-up step. The host then alternates `ready`, `apply`, and `dispatch`
+until it receives `CaptureFinished` or `CaptureFailed`. Shutdown accepts a wait
+timeout. Dropping the surface cancels capture and stops its private executor as
+a best-effort safety net. The surface publishes staged and unstaged candidates
+as one pair. Both paths share private review state, relocation, and painting
+with integrated review.
+
+## Worktree Implementation Contract
+
+The sections below define worktree behavior published by `kvim-embed`.
+`kvim-tui` implements presentation privately and does not define another
+supported high-level integration.
+
 ## Host Responsibilities
 
 The host owns:
 
 - the set of worktrees, sessions, and visible surfaces,
-- workspace state, focus policy, and commands,
+- workspace state and focus policy outside each editor,
 - terminal lifecycle and terminal events,
-- asynchronous runtime startup and task supervision,
+- polling facade readiness and applying returned completions,
 - surface composition and final event effects,
 - cursor application and redraw scheduling.
 
-The host constructs the asynchronous runtime and supervises every returned
-driver future. It names one `EditorCapacity` for each editor. `Isolated` builds
-the bounded worker and process spawner of that editor alone. `SharedProcessPool`
-builds the worker permits and the result queue of that editor and shares the one
-process pool of the program. `Supplied` accepts the spawner that the host built
-itself. Capacity is isolated for one instance unless the named choice shares a
-pool.
-
-The host can supply watcher and LSP handles, and it grants one
-`ClipboardAccess` policy. These services are optional. The standalone `kvim`
-binary constructs its implementations and grants `ClipboardAccess::System`. See
-[`clipboard.md`](clipboard.md).
+Each `WorktreeEditor` owns a private Tokio executor and its bounded worker,
+process, result, and event capacity. The host selects those bounds with
+`WorktreeCapacity`. The host can enable built-in watcher, language, Git, and
+clipboard capabilities through `WorktreeCapabilities`. These services are
+optional. The standalone `kvim` binary enables the production policies that it
+uses. See [`clipboard.md`](clipboard.md).
 
 The standalone binary is one such host. It is the only layer that owns raw
 mode, the alternate screen, standard input, standard output, the terminal event
-stream, the termination signals, the panic restoration, the cursor shape, the
-asynchronous runtime, the redraw schedule, and the shutdown order. `kvim-tui`
-owns none of these, and a structural test in each of the two crates proves it.
+stream, termination signals, panic restoration, cursor application, redraw
+scheduling, and shutdown order. `kvim-tui` owns none of these.
 
 The host keeps every event loop free from filesystem, process, Git, LSP,
-formatter, and Tree-sitter work. It submits synchronous syntax work through its
-bounded worker spawner.
+formatter, and Tree-sitter work. `WorktreeEditor::dispatch` submits queued work
+to the facade-owned bounded executor without blocking the host loop.
 
-## Driver Responsibilities
+## Facade Execution Responsibilities
 
-`EditorDriver` owns the external services of one editor instance. It owns
-request identities, result routing, publication gates, service handles, tracked
-tasks, and shutdown state.
-
-The driver creates no runtime and starts no detached task. It submits work
-through the supplied spawner. It tracks every returned task until completion or
+The facade creates one private runtime during `WorktreeEditorBuilder::open` and
+starts no detached task. It tracks every submitted task until completion or
 cancellation.
 
-Closing one driver cannot cancel or drain another driver's services. Every
-event and result carries its instance identity. Several editors can use one root
-or different roots without sharing request or cancellation namespaces.
+Closing one editor cannot cancel or drain another editor's services. Every
+completion carries its instance identity. Several editors can use one root or
+different roots without sharing request or cancellation namespaces.
 
-Shutdown consumes the driver. It rejects new work, cancels pre-commit work,
+Shutdown consumes the editor. It rejects new work, cancels pre-commit work,
 closes optional services, and waits for tracked work until the supplied
 deadline. If the deadline expires while mandatory delivery remains, shutdown
-returns a bounded, must-use `ShutdownDrain`. The drain owns the remaining tasks,
-reservations, and event delivery. The host keeps its runtime alive until the
-drain completes.
+returns a bounded, must-use `WorktreeDrain`. The drain owns the private runtime,
+remaining tasks, reservations, and event delivery until `complete` returns.
 
 ## Embedded Editor
 
-`EmbeddedEditor` owns visible editor state for one explicit `WorktreeRoot`.
-`EditorAccess::ViewOnly` rejects text and filesystem mutation.
-`EditorAccess::ReadWrite` permits normal editing and bounded workspace writes.
+`WorktreeEditor` owns visible editor state for one explicit worktree root.
+`WorktreeAccess::ViewOnly` rejects text and filesystem mutation.
+`WorktreeAccess::ReadWrite` permits normal editing and bounded workspace writes.
 
 Every command carries one `CommandAuthority`: `Read`, `Text`, or `Workspace`.
 `kvim-input` owns that classification, and its match is exhaustive, so a new
@@ -82,30 +387,39 @@ The editor accepts resolved surface commands, literal text, bounded paste, and
 time. It does not run another key-sequence resolver. Input reduction returns an
 `InputContextSnapshot` that the shared resolver uses for the next input.
 
-`EmbeddedEditor` is the public facade of one instance. `EmbeddedEditor::builder`
+The facade reserves one mandatory event slot before each save or workspace
+mutation. A `Committed` result consumes that slot and applies the staged visible
+transition. An `Unchanged` result releases it and reports the causal failure.
+
+An `Indeterminate` result consumes the slot with
+`SaveReconciliationRequired` or `WorkspaceReconciliationRequired`. It preserves
+dirty or stale visible state and starts bounded reconciliation through the
+existing reload and tree-refresh requests. The facade never applies staged
+mutation path updates from an indeterminate result.
+
+`WorktreeEditor` is the public facade of one instance. `WorktreeEditor::builder`
 takes the validated root and the first rectangle, because both bound what the
 editor can reach. Every other setting has a default. `open` returns a typed
 geometry error for a rectangle without cells, and it builds the model and the
-driver of one instance together. `EmbeddedEditor::shutdown` consumes the editor
-and returns `EditorShutdown`. `Finished` holds every remaining event.
-`Draining` holds one `EditorDrain`, which owns the mandatory events of the
-committed work, and the host keeps its runtime alive until that drain completes.
-`crates/kvim-tui/examples/embedded_editor.rs` is one complete host of one such
+driver of one instance together. `WorktreeEditor::shutdown` consumes the editor
+and returns `WorktreeShutdown`. `Finished` holds every remaining
+`WorktreeEvent`. `Draining` holds one `WorktreeDrain`, which owns mandatory
+events from committed work and keeps the private runtime alive until
+`WorktreeDrain::complete` returns them.
+`crates/kvim-embed/examples/worktree_editor.rs` is one complete host of one such
 editor.
 
-The host owns the key-sequence resolver, so `EmbeddedEditor::command` takes the
-command, its count, and the register that the operation names. `None` names the
-unnamed register, and `Resolution::Command` carries the name that the `input`
-charter resolved from a `"` prefix. A host that drops that name silently sends
-every operation to the unnamed register. See [`clipboard.md`](clipboard.md).
+The editor offers two explicit input paths. `WorktreeEditor::input` accepts
+normalized terminal-neutral input and resolves kvim's built-in key tables
+inside the facade. This path preserves prompt, confirmation, count, operator,
+register, and text-object state.
 
-The editor accepts only a resolved command. The host must therefore own the
-table that resolves one, but it does not have to invent that table.
-`kvim_input::Registry::first_release` builds kvim's own hardcoded preset.
-`kvim_keymap::Registry::all_bindings` yields every `(scope, KeySequence,
-BoundCommand)` triple of a registry, across every scope of the preset at
-once. A host walks that one list, maps each `BindingScope` to its own scope
-value, and builds its shared registry with `Registry::from_bindings`.
+A host that owns a resolver can instead call `WorktreeEditor::command` with the
+resolved command, count, and register. `None` names the unnamed register. The
+facade validates a supplied register before it changes editor state. The host
+must forward the register carried by its resolution result. A host that drops
+that name sends the operation to the unnamed register. See
+[`clipboard.md`](clipboard.md).
 
 The host scope type must distinguish every `BindingScope` that the preset
 uses. Kvim reuses one key across several tables. `j` is the clearest case: it
@@ -170,167 +484,32 @@ reads it only after every scope of the order and after the text fallback. A
 host-global binding, an extension of a pending prefix, and an interruption all
 still win. See [`input-actions.md`](input-actions.md).
 
-### The File Sidebar
+### File Sidebar Support
 
-`EmbeddedEditor` owns one lazy file tree over its worktree root. The facade
-publishes that tree so a host draws a file sidebar beside the editor. The
-surface names no type of `kvim-workspace`, because
-[`architecture.md`](architecture.md) keeps that package out of the supported
-set. It names its own vocabulary, the paths of `kvim-path`, and the geometry of
-`kvim-ui`.
+Embedded sidebar ownership renders the built-in file tree as part of the
+complete editor surface. Host-owned sidebar ownership removes that region and
+publishes `FileSidebarSnapshot` with bounded semantic rows.
+`WorktreeEditor::file_sidebar_command` accepts semantic movement, expansion,
+collapse, refresh, activation, and focus-boundary commands. Directory and Git
+work still uses facade dispatch, readiness, and application. The host owns
+placement and painting. Kvim does not accept host rows or merge host and editor
+trees. Generic bounded sidebar components remain available in `kvim-ui`.
 
-`EmbeddedEditor::file_rows` returns the drawable rows. One `FileRow` carries the
-label, the indent guides, the depth, one `FileRowKind`, the selection, the
-recorded Git state, the symbolic-link fact, and the icon role of one line. Every
-accessor answers a fact and no cell, so a host that wants a look of its own
-paints every cell itself. A host that wants the look of kvim hands the row to
-`draw_file_row` instead. `FileRowKind` names the five states of one line: `File`,
-`ClosedDirectory`, `OpenDirectory`, `LoadingDirectory`, and `Note`. A `Note` row
-reports a bounded read, a failed read, or the number of entries that the
-hidden-entry policy keeps out of the rows; it names no entry and takes no
-selection.
+The internal row painter reserves the first cell for the selection mark and the
+last cell for the Git mark. It draws the selection mark only while the sidebar
+has focus. An unfocused sidebar keeps that cell blank and retains the selected
+row band, so focus changes move no row content.
 
-`FileRow::guides` is the complete indent of the row. It already holds the one
-leading blank that the file tree of kvim draws, because the workspace-root
-header of that tree is no sibling of the first entries. A host that draws the
-guides as they are published reproduces the look of kvim.
-[`windows.md`](windows.md) owns the guide rule itself.
+When a label reaches the reserved Git cell, the final three visible text cells
+fade toward the effective row background. The Git mark retains its own style in
+the last cell. Short labels retain their normal color. These rules apply to the
+built-in complete surface and do not publish file-row payloads or a custom row
+painter through `WorktreeEditor`. [`windows.md`](windows.md) owns the selection
+mark rule.
 
-`FileRow::git` returns the recorded Git state of the row as `FileRowGit`, or
-`None` while the row carries no state. `ThemeRole::TreeGit` names the same
-state, so a host colors a row of its own from the published palette. A `Note`
-row and a row of a workspace that no read has covered yet both report `None`.
-The variant order rises in the same severity order as
-`kvim_workspace::GitStatus`, so a host ranks two
-states the way kvim ranks them. `FileRowGit::glyph` returns the mark that
-kvim's own file tree draws for a state. A host that reproduces the look of
-kvim draws that glyph; a host that draws its own marks matches on the state
-instead.
-
-`FileRow::is_symlink` reports whether the row names a symbolic link. The label
-carries no suffix for it. `FILE_SIDEBAR_LINK_SUFFIX` is the suffix that kvim's
-own file tree draws behind such a row, so a host that reproduces the look of
-kvim appends that constant itself.
-
-`FileRow::icon_role` returns the icon role of the row as `kvim_tui::IconRole`,
-or `None` for a `Note` row. The role reaches the host regardless of
-`FileTreeIcons`, the icon-visibility setting of kvim's own file tree, because a
-host may want the role even while kvim would draw no icon of its own. kvim
-publishes no icon glyph as a fact, because every glyph needs a patched font that
-a host may not hold. A host that wants kvim's own icon color reads
-`Theme::style(ThemeRole::Icon(role))`; the glyph stays the host's own choice,
-unless the host paints through `draw_file_row`, which draws kvim's own glyph.
-
-`FILE_SIDEBAR_ICON_CELLS` is the width that the icon column of one row takes.
-A host that draws a tree of its own beside the file tree of the editor reserves
-the same width, so the two icon columns line up in one window. A host needs no
-icon table from kvim to do this. It chooses the glyph of its own row, because
-its rows name its own domain, and it keeps kvim's gutter so the two trees read
-as one surface. `kvim_settings::FileTreeIcons` hides every icon of the editor,
-so one setting answers for both trees and a host adds no second switch.
-
-`FILE_SIDEBAR_MARK_CELLS` is the width that the selection mark reserves at the
-left edge of one row. A host that draws a tree of its own beside the file tree
-of the editor reserves the same width as its own left column, so the two trees
-line up in one window. `FILE_SIDEBAR_SELECTION_MARK` is the glyph that kvim's
-own file tree draws in that column on the selected row. A host that reproduces
-the look of kvim draws this glyph; a host that draws its own mark reads the
-width alone and keeps its own glyph, exactly as it keeps its own glyph for
-`FileRowGit::glyph`.
-
-kvim draws `FILE_SIDEBAR_SELECTION_MARK` only while its sidebar reports
-`RegionFocus::Focused`. An unfocused sidebar leaves the column blank, and the
-selection band over the whole row still reports the selected row. A host that
-reproduces the look of kvim shows its own mark under the same rule, or its
-mark and kvim's disagree about when a row carries one. [`windows.md`](windows.md)
-owns the mark rule.
-
-kvim publishes no width for the Git mark at the right edge of a row in this
-release. A host that draws no Git mark of its own reserves no cell for one, so
-the gap costs it nothing. A host that wants kvim's own Git mark already reads
-`FileRowGit::glyph` for the glyph; the width of that one cell stays with
-`draw_file_row` until a host asks kvim to align a Git mark of its own beside
-it.
-
-#### One Row Painter
-
-`kvim_tui::draw_file_row` paints one `FileRow` into one `kvim_ui::SidebarCanvas`
-exactly as kvim's own file tree paints it. The host asked for the look of kvim
-and not only for its facts, so kvim publishes the painter rather than a second
-description that a host would have to reproduce.
-
-The call takes five arguments and reads nothing else:
-
-- the canvas, which `SidebarState::render` hands to the row callback of the
-  host and which clips every draw at the edges of the row;
-- the row, which carries every fact that the painter draws;
-- one `Theme`, the palette that the host already holds for its own surfaces;
-- one `kvim_settings::FileTreeIcons`, which decides whether a row takes an icon
-  glyph or the expansion marker that needs no patched font;
-- one `kvim_tui::RegionFocus`, which reports whether the sidebar of the host
-  holds the input focus.
-
-`RegionFocus` names one region, and a region is one editor window or one
-sidebar. kvim uses the same value for both surfaces, so the facade publishes
-one focus vocabulary and no second one can disagree with it. The focus is a
-property of the sidebar and not of one row, so it reaches the painter as one
-argument of the call instead of one field of every `FileRow`. A host reads the
-focus of its own surfaces, so it already holds the value.
-
-The painter owns the layout of the row. The first cell holds the selection
-mark, the indent guides and the two glyph cells follow it, and the last cell
-holds the Git mark. A canvas narrower than the text clips from the right edge.
-The final three visible text cells then fade toward the effective row
-background, while the Git mark keeps its own style in the last cell. Short
-text keeps its normal color. A host that wants a different layout reads the
-facts and paints its own cells instead.
-
-The selection mark belongs to `RegionFocus::Focused` alone. A sidebar that
-reports `RegionFocus::Unfocused` leaves the mark cell blank, and the selection
-band over the whole row still reports the selected row. The mark cell keeps its
-width in both states, so no cell of the row moves when the focus moves.
-[`windows.md`](windows.md) owns the mark rule and the cursor cell that goes
-with it.
-
-kvim's own file tree draws through this one call. `crates/kvim-tui/src/tree.rs`
-holds no second row-drawing path, so the look that a host reaches and the look
-that the standalone editor shows cannot drift apart. The two indent guide
-copies that `windows.md` records are the failure that this rule prevents.
-
-`crates/kvim-tui/examples/embedded_file_sidebar.rs` paints its rows through the
-call and prints the resulting cells.
-
-`EmbeddedEditor::file_sidebar` applies one `FileSidebarInput`. `Move` takes one
-`kvim_ui::ListMotion`, which stops at the first and the last row and never
-wraps. See [List Motion](windows.md#list-motion) for the row space that
-`ListMotion::ToRow` names. `Open` opens the selected directory or activates
-the selected file.
-`Close` closes the selected directory or selects the directory that holds the
-selected row. `Activate` activates the selected file or opens and closes the
-selected directory.
-
-The reduction returns one `FileSidebarOutcome`. `Activated` carries the
-contained path of one activated file, and the sidebar opened no buffer for it. A
-host that shows the file calls `EmbeddedEditor::open_file` with that path.
-`FileSidebarOutcome::event` converts the activation into
-`EditorEvent::FileActivated` for a host that keeps one uniform event stream,
-exactly as `InputRequest::event` converts a focus boundary. Nothing is queued,
-so no activation waits behind another event. Every reduction latches
-`RedrawRequested`.
-
-The tree reads no directory on the host event loop. A row that needs a listing
-leaves the editor as one unit of work through `EmbeddedEditor::dispatch`, and
-the listing reaches the tree through `EmbeddedEditor::apply`. The host therefore
-drives these reads with the one work channel that it already drives for the
-editor, and it adds no second channel. A directory reports
-`FileRowKind::LoadingDirectory` between the expansion and the listing.
-
-`FileTree` governs collapse for this tree. It withholds the rows of a closed
-directory itself, so a closed directory contributes no published row.
-[`windows.md`](windows.md) records that decision.
-
-`crates/kvim-tui/examples/embedded_file_sidebar.rs` is one complete host of one
-such sidebar.
+`kvim-tui` still contains component-level completion models and painters. These
+are lower-level presentation APIs, not payloads of the supported worktree
+facade.
 
 The host supplies a `ratatui::Rect` and `ratatui::Buffer` for rendering. The
 editor accepts one explicit rectangle first, because the layout, the viewports,
@@ -480,28 +659,30 @@ precedence that a host keeps is the precedence that the standalone editor shows.
 `crates/kvim-tui/src/chrome.rs` and `crates/kvim-tui/src/buffer_view.rs` hold no
 shedding rule of their own.
 
-A statusline usually names the mode. `EmbeddedEditor::mode` answers the editing
+A statusline usually names the mode. `WorktreeEditor::mode` answers the editing
 mode of the editor, and `Mode` renders its own label, so a host builds the mode
 segment from that value.
 
-`EmbeddedEditor::input_context` answers a different question. It publishes one
+`WorktreeEditor::input_context` answers a different question. It publishes one
 `InputContextSnapshot`, and its `scope` names the owner of the keys. The owner
 is `BindingScope::Mode(Mode)` while the editor holds them, and it names a
 prompt, the file sidebar, or the picker while one of those reads them. A host
 that builds its mode segment from the scope alone therefore loses its mode
 label whenever a prompt opens. The standalone editor keeps the mode on its
 statusline through a prompt, and a host reaches the same fact through
-`EmbeddedEditor::mode`.
+`WorktreeEditor::mode`.
 
 `crates/kvim-ui/examples/chrome_band.rs` is one complete host of one band.
 
 ## Editor Events
 
-`EditorEvent` includes these facts and requests:
+`WorktreeEvent` includes these facts and requests:
 
 - `ActiveFileChanged`,
 - `FileWritten`,
 - `WorkspaceChanged`,
+- `SaveReconciliationRequired`,
+- `WorkspaceReconciliationRequired`,
 - `FileActivated`,
 - `RedrawRequested`,
 - `FocusBoundary(Direction)`,
@@ -541,13 +722,15 @@ Every accepted operation follows this state sequence:
 
 `Reserved -> Running -> Committed -> Published`
 
-Cancellation can stop `Reserved` or `Running` work before commit. Once commit
-starts, the task masks cancellation. It reports `Committed` and uses its
-reserved slot before the driver can finish shutdown. Failure releases the
-reservation. The driver never detaches or aborts a task that can be committed.
+Cancellation can stop `Reserved` or `Running` work before commit. For the
+current runtime API, starting a committing blocking closure is its commit point.
+Once that closure starts, the task reports its actual result and uses its
+reserved slot before the driver can finish shutdown. Failure before commit
+releases the reservation. The driver never detaches or aborts a task that can
+be committed.
 
 This sequence guarantees delivery after a side effect succeeds. Shutdown drains
-all mandatory events or returns `ShutdownDrain`. It never reports complete while
+all mandatory events or returns `WorktreeDrain`. It never reports complete while
 a mandatory event can remain unpublished.
 
 ## Workspace Composition
@@ -574,14 +757,12 @@ unbound result. The composer does not accept, store, or invoke a surface input
 or render callback.
 
 `Composition::Interrupted` names the key that cancelled a pending sequence. A
-complete binding of a scope that precedes the scope of that sequence takes the
-key, so a host-global escape leaves a focused surface at any moment. See
-[`input-actions.md`](input-actions.md). The composer clears the pending key
-prefix alone. The named surface still holds its own count, operator, register,
-and text object, and every one of them belongs to the cancelled sequence. The
-host resets that surface with `EmbeddedEditor::cancel_pending`, exactly as it
-resets it for `CompositionEffect::CancelPending`, and then it runs the command
-on the named owner.
+complete binding of a preceding scope takes the key, so a host-global escape
+can leave a focused surface. The composer clears only its resolver prefix. The
+host resets semantic pending state before it runs the interrupting command.
+A host-resolved `WorktreeEditor` supports this reset through
+`semantic_dispatch` and `cancel_pending`; its facade-owned proposal and resume
+also validate editor identity and context generation.
 
 The host supplies the elapsed time with each reduction, and that time reaches
 the which-key overlay alone. `WorkspaceComposer::reduce` therefore takes the
@@ -609,17 +790,10 @@ fires while the overlay waits for its answer.
 
 A focus or overlay transition that needs surface state returns one bounded,
 addressed `CompositionEffect::CancelPending { surface, transition }`. Focus and
-overlay ownership remain unchanged. The host applies the effect to that surface
-and returns its reset `InputContextSnapshot`. `EmbeddedEditor::cancel_pending`
-is that entry point for one embedded editor, and
-`EmbeddedEditor::input_context` publishes the snapshot that follows it.
-
-`resume_transition` validates the transition identity, surface identity, and
-snapshot generation. It requires empty count, operator, register, text-object,
-and prompt phases before it commits focus or overlay ownership. A snapshot that
-carries the generation of the proposal proves that the surface published no new
-context, so the composer refuses it. This protocol lets focus cross editor and
-review boundaries while the host keeps final focus policy.
+overlay ownership remain unchanged. A compatible host applies the effect
+through its own surface reset contract and returns the reset
+`InputContextSnapshot`. `resume_transition` then validates the transition,
+surface, and snapshot before it commits focus or overlay ownership.
 
 A split copies the surface of its source window, so the surface that owns input
 does not change and no reset is needed.
@@ -640,24 +814,27 @@ from the same resolver through one view of the shared registry. The host renders
 each owned surface. The composer performs no input or output, starts no task,
 reads no clock, and owns no terminal lifecycle.
 
-### The Standalone Editor Does Not Use The Composer
+### The Standalone Editor Uses The Worktree Facade
 
-Standalone kvim is one whole workspace inside one `Session`, so the composer is
-not on its path. The binary adapts `Session`, `EditorDriver`, and
-`kvim-terminal`, and `Session` owns its own splits through `Windows`.
+Standalone kvim hosts one `WorktreeEditor`. It explicitly selects
+`WorktreeBindingMode::FacadeResolved` and `WorktreePresentation::standalone()`.
+The binary owns raw terminal input, the crossterm backend, signals, cursor
+application, redraw scheduling, and terminal restoration. The facade owns
+visible state, standalone key resolution, embedded command-line, statusline,
+sidebar, and which-key presentation, background execution, completion routing,
+and consuming shutdown.
 
-Two facts make the composer unusable for the binary today. `EmbeddedEditor`
-publishes no key-sequence resolver, and `Resolution::Prompt` and
-`Resolution::Confirmation` reach private `Session` methods. A binary that sat
-above the embedded facade alone could therefore open neither the command line
-nor a confirmation. The composer stays the facade for a host that owns several
-surfaces, and the binary stays the adapter for one workspace.
+`WorktreeEditor::input` accepts normalized terminal-neutral input when
+`WorktreeBindingMode::FacadeResolved` is selected. This keeps raw terminal
+ownership in the binary and preserves prompt and confirmation resolution inside
+the facade. A host-resolved editor instead uses `semantic_dispatch` after its
+own physical arbitration. The binary does not access `Session`,
+`EditorDriver`, runtime handles, or completion payloads.
 
-`WorkspaceComposer::close_focused` and `WorkspaceComposer::arm_which_key`
-therefore have no in-tree production caller. `crates/kvim-tui/examples/host_workspace.rs`
-is their only in-tree driver, and that is the intended shape: the composer is a
-library facade for an external host, and its dedicated example is the in-tree
-proof that the facade composes. Both methods stay public.
+The composer remains available as a lower-level component for hosts that own
+opaque surfaces and provide compatible context-reset behavior. It is not a
+multi-surface `WorktreeEditor` facade. Its dedicated component example proves
+the lower-level contract.
 
 ## External Use
 
@@ -667,8 +844,17 @@ project, or runtime session. LSP is optional for highlighting and editor use.
 Cargo features let consumers disable unused languages and grammars.
 
 Public crates support revision-pinned Cargo Git dependencies without a shared
-parent workspace. [`architecture.md`](architecture.md) owns package stability,
-MSRV, ratatui compatibility, and the exact feature matrix.
+parent workspace. Each supported package has an independent fixture under
+`fixtures/consumer/`. Eight facade fixtures drive complete memory and worktree
+editor lifecycles. They also prove host-resolved composition, mixed ownership,
+unified command/status/which-key, host-owned sidebar, supplied review, and
+worktree-captured review. The external-consumer script derives remote mode from
+the checked-out repository's `origin` and never
+prints that URL. Pass `--repository-url` to select another repository. Run
+`scripts/check-external-consumer.sh --local-source` to verify uncommitted local
+changes without remote authentication. [`architecture.md`](architecture.md)
+owns package stability, MSRV, ratatui compatibility, and the exact feature
+matrix.
 
 A consumer of a private repository needs three more settings. It sets
 `net.git-fetch-with-cli = true` in its Cargo configuration, because Cargo's
@@ -684,8 +870,10 @@ supplies both programs there. The dependency URL must use the
 ## Public Examples
 
 Every public feature API has one dedicated, hermetic example. Module rustdoc
-links directly to its owning example. Continuous integration compiles and runs
-every example. One combined example does not replace a feature example.
+links directly to its owning example. Continuous integration runs
+`scripts/run-required-examples.sh` on macOS and Linux. The script reads the
+list below, so this document is the single source for required examples. One
+combined example does not replace a feature example.
 
 The required examples are:
 
@@ -695,16 +883,23 @@ The required examples are:
 - `crates/kvim-keymap/examples/dispatch_keys.rs`
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
-- `crates/kvim-ui/examples/chrome_band.rs`
+- `crates/kvim-lsp/examples/custom_lsp_transport.rs`
+- `crates/kvim-embed/examples/host_owned_chrome.rs`
+- `crates/kvim-embed/examples/host_sidebar.rs`
+- `crates/kvim-embed/examples/in_memory_editor.rs`
+- `crates/kvim-embed/examples/merged_leader.rs`
+- `crates/kvim-embed/examples/supplied_review.rs`
+- `crates/kvim-embed/examples/unified_command_line.rs`
+- `crates/kvim-embed/examples/worktree_editor.rs`
+- `crates/kvim-embed/examples/worktree_review.rs`
+- `crates/kvim-ui/examples/composer.rs`
 - `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
 - `crates/kvim-ui/examples/split_windows.rs`
 - `crates/kvim-ui/examples/tab_strip.rs`
+- `crates/kvim-ui/examples/chrome_band.rs`
 - `crates/kvim-ui/examples/which_key.rs`
 - `crates/kvim-tui/examples/completion_menu.rs`
-- `crates/kvim-tui/examples/embedded_editor.rs`
-- `crates/kvim-tui/examples/embedded_file_sidebar.rs`
-- `crates/kvim-tui/examples/host_workspace.rs`
 - `crates/kvim-tui/examples/worktree_diff_review.rs`
 
 Each example demonstrates one feature and its minimum setup. Supporting public
@@ -713,9 +908,9 @@ example.
 
 The LSP example starts itself as a deterministic fixture server. A UI example
 renders into a test buffer, or prints the state that it drives when the feature
-paints no cell. `host_workspace.rs` composes host-owned chat, a real
-embedded editor, a real review surface, and sidebar surfaces through one shared
-resolver. Editor, composition, and review examples use temporary worktrees.
+paints no cell. The in-memory editor example uses no temporary worktree.
+Worktree editor, composition, chrome, sidebar, and review examples use temporary
+worktrees.
 
 No example requires a user-installed server, network access, terminal ownership,
 or this repository as input.

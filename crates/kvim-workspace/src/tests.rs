@@ -4,15 +4,17 @@
 //! it finishes. No test reads or writes the editor state directory of the user.
 
 use std::fs;
+use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
-use kvim_core::{CharRange, EditTransaction, TextBuffer, TextChange};
+use kvim_core::{BufferBytesMax, CharRange, EditTransaction, TextBuffer, TextChange};
 use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
 
 use super::buffer::{Buffers, FileBuffer};
-use super::file::{self, OpenError, SaveError};
+use super::durable::{DurableOutcome, FailurePoint, inject_failure};
+use super::file::{self, FileTarget, OpenError, SaveError};
 use super::request::{FileRequest, FileResult, OpenRequest, SaveRequest};
 use super::temp::TempDir;
 use super::undo_file::{self, UNDO_FILE_STEPS_MAX, UndoRecord};
@@ -27,7 +29,7 @@ fn files() -> FileSettings {
 
 /// Returns one buffer with the given text.
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &files()).expect("the test text is small")
+    TextBuffer::from_text(text, BufferBytesMax::default()).expect("the test text is small")
 }
 
 fn root(directory: &TempDir) -> Arc<WorktreeRoot> {
@@ -243,7 +245,7 @@ fn an_external_change_becomes_a_conflict_instead_of_an_overwrite() {
             loaded.identity,
             &files()
         ),
-        Err(SaveError::Conflict)
+        DurableOutcome::Unchanged(SaveError::Conflict)
     ));
     assert_eq!(
         fs::read_to_string(&path).expect("the file exists"),
@@ -269,8 +271,92 @@ fn a_file_that_appeared_after_the_open_becomes_a_conflict() {
             loaded.identity,
             &files()
         ),
-        Err(SaveError::Conflict)
+        DurableOutcome::Unchanged(SaveError::Conflict)
     ));
+}
+
+#[test]
+fn an_atomic_save_failure_after_rename_is_indeterminate() {
+    let directory = TempDir::new("save-after-rename");
+    let path = directory.write("main.rs", "old\n");
+    let root = root(&directory);
+    let loaded = load_path(&root, &directory, &path, &files()).expect("the file loads");
+
+    inject_failure(FailurePoint::SaveAfterRename);
+    let outcome = file::save(&loaded.target, "new\n", loaded.identity, &files());
+
+    assert!(matches!(outcome, DurableOutcome::Indeterminate(_)));
+    assert_eq!(
+        fs::read_to_string(path).expect("the renamed file exists"),
+        "new\n"
+    );
+}
+
+#[test]
+fn a_partial_direct_save_is_indeterminate() {
+    let directory = TempDir::new("save-direct-partial");
+    let path = directory.write("main.rs", "old\n");
+    let root = root(&directory);
+    let loaded = load_path(&root, &directory, &path, &files()).expect("the file loads");
+    let mut settings = files();
+    settings.atomic_save = false;
+
+    inject_failure(FailurePoint::SaveDirectPartial);
+    let outcome = file::save(&loaded.target, "new\n", loaded.identity, &settings);
+
+    assert!(matches!(outcome, DurableOutcome::Indeterminate(_)));
+    assert_eq!(
+        fs::read_to_string(path).expect("the partial file exists"),
+        "n"
+    );
+}
+
+#[test]
+fn a_direct_save_sync_failure_is_indeterminate_for_empty_content() {
+    let directory = TempDir::new("save-direct-sync");
+    let path = directory.write("main.rs", "old\n");
+    let root = root(&directory);
+    let loaded = load_path(&root, &directory, &path, &files()).expect("the file loads");
+    let mut settings = files();
+    settings.atomic_save = false;
+
+    inject_failure(FailurePoint::SaveDirectSync);
+    let outcome = file::save(&loaded.target, "", loaded.identity, &settings);
+
+    assert!(matches!(outcome, DurableOutcome::Indeterminate(_)));
+    assert_eq!(
+        fs::read_to_string(path).expect("the truncating open changed the file"),
+        ""
+    );
+}
+
+#[test]
+fn a_non_atomic_save_can_create_a_new_file() {
+    let directory = TempDir::new("save-direct-create");
+    let path = directory.join("new.rs");
+    let root = root(&directory);
+    let target = FileTarget::resolved(
+        Arc::clone(&root),
+        WorktreeRelativePath::new(Path::new("new.rs")).expect("the path is relative"),
+    );
+    let mut settings = files();
+    settings.atomic_save = false;
+
+    let outcome = file::save(&target, "new\n", None, &settings);
+
+    assert!(matches!(outcome, DurableOutcome::Committed(_)));
+    assert_eq!(fs::read_to_string(path).expect("the file exists"), "new\n");
+}
+
+#[test]
+fn public_indeterminate_reports_reject_unbounded_affected_paths() {
+    let affected = (0..=crate::INDETERMINATE_PATHS_MAX)
+        .map(|index| PathBuf::from(format!("path-{index}")))
+        .collect();
+    let error = crate::Indeterminate::new(io::Error::other("uncertain"), Vec::new(), affected)
+        .expect_err("the public constructor rejects an oversized path list");
+
+    assert_eq!(error.affected_paths(), crate::INDETERMINATE_PATHS_MAX + 1);
 }
 
 #[test]
@@ -347,7 +433,7 @@ fn an_open_request_builds_one_buffer_and_a_save_request_writes_it() {
         buffer: super::BufferId::new(1),
         target: file.target.clone(),
         content: file.text.to_string(),
-        version: file.text.version(),
+        revision: file.text.revision(),
         expected: file.identity,
         snapshot: file.text.clone(),
         files: files(),
@@ -399,7 +485,7 @@ fn a_save_that_changes_nothing_writes_the_bytes_that_the_file_held() {
             buffer: super::BufferId::new(1),
             target: file.target.clone(),
             content: file::render_content(&file.text),
-            version: file.text.version(),
+            revision: file.text.revision(),
             expected: file.identity,
             snapshot: file.text.clone(),
             files: files(),
@@ -472,7 +558,7 @@ fn an_undo_record_restores_the_history_of_the_saved_file() {
     assert_eq!(decoded, record);
 
     let mut restored = decoded
-        .restore(&content, &files())
+        .restore(&content, &text)
         .expect("the replay reproduces the content");
     assert_eq!(restored.to_string(), content);
     assert!(
@@ -553,14 +639,14 @@ fn a_record_that_replays_into_other_text_is_ignored() {
     edit(&mut text, 0, 0, "zero\n");
     let record = UndoRecord::capture(&text);
     assert!(
-        record.restore(&text.to_string(), &files()).is_some(),
+        record.restore(&text.to_string(), &text).is_some(),
         "the matching content restores the history"
     );
 
     // A record whose replay reaches other text must not reach a buffer, even
     // when a caller skips the header check.
     assert!(
-        record.restore("zero\none\ntwo\n", &files()).is_none(),
+        record.restore("zero\none\ntwo\n", &text).is_none(),
         "the replay must reproduce the file content exactly"
     );
 }
@@ -639,7 +725,7 @@ mod confinement {
 
     use super::{file, files, load_path, relative, root};
     use crate::temp::TempDir;
-    use crate::{OpenError, SaveError, undo_file};
+    use crate::{DurableOutcome, OpenError, SaveError, undo_file};
 
     #[test]
     fn contained_links_and_direct_paths_have_one_identity() {
@@ -730,7 +816,7 @@ mod confinement {
 
         assert!(matches!(
             file::save(&loaded.target, "editor\n", loaded.identity, &files()),
-            Err(SaveError::Confinement(WorktreeConfinementError::Replaced))
+            DurableOutcome::Unchanged(SaveError::Confinement(WorktreeConfinementError::Replaced))
         ));
         assert_eq!(
             fs::read_to_string(replacement).expect("the replacement remains readable"),

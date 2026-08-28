@@ -21,7 +21,7 @@
 //! [`EmbeddedEditor::apply`]. The host therefore drives the reads with the one
 //! work channel that it already drives for the editor.
 //!
-//! `crates/kvim-tui/examples/embedded_file_sidebar.rs` is one complete host of
+//! `crates/kvim-embed/examples/worktree_editor.rs` is one complete host of
 //! one such sidebar.
 //!
 //! [`EmbeddedEditor`]: super::embed::EmbeddedEditor
@@ -229,6 +229,31 @@ pub(super) struct LabelMatch {
     pub(super) len: usize,
 }
 
+/// Stable semantic identity of one file-sidebar notice row.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileRowNoticeKind {
+    /// A directory listing exceeded its entry bound.
+    Truncated,
+    /// A directory listing failed.
+    Unreadable,
+    /// Hidden entries were omitted.
+    Hidden,
+}
+
+/// Stable semantic identity of one file-sidebar row.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileRowIdentity {
+    /// A contained file or directory.
+    Entry(WorktreeRelativePath),
+    /// A notice attached to the root or one contained directory.
+    Notice {
+        /// The contained parent, or `None` for the worktree root.
+        parent: Option<WorktreeRelativePath>,
+        /// The semantic notice kind.
+        kind: FileRowNoticeKind,
+    },
+}
+
 /// One drawable row of the file sidebar of one embedded editor.
 ///
 /// The row holds the text, the indent guides, the depth, the state, the
@@ -247,6 +272,8 @@ pub(super) struct LabelMatch {
 /// exactly as they are published. See `docs/windows.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileRow {
+    identity: FileRowIdentity,
+    path: Option<WorktreeRelativePath>,
     label: String,
     guides: String,
     depth: usize,
@@ -268,17 +295,14 @@ impl FileRow {
     /// [`FileRow::with_matched`] set them, because they are independent facts
     /// that a caller sets or leaves absent one at a time.
     pub(super) fn new(
+        identity: FileRowIdentity,
+        path: Option<WorktreeRelativePath>,
         label: String,
         guides: String,
         depth: usize,
         kind: FileRowKind,
         state: RowState,
-        selected: bool,
     ) -> Self {
-        debug_assert!(
-            !selected || kind.is_selectable(),
-            "the tree rests its selection on an entry row alone"
-        );
         let label = if label.chars().count() > FILE_SIDEBAR_LABEL_CHARS_MAX {
             label
                 .chars()
@@ -288,17 +312,30 @@ impl FileRow {
             label
         };
         Self {
+            identity,
+            path,
             label,
             guides,
             depth,
             kind,
             state,
-            selected,
+            selected: false,
             git: None,
             is_symlink: false,
             icon: None,
             matched: None,
         }
+    }
+
+    /// Sets whether this selectable row owns the current selection.
+    #[must_use]
+    pub(super) const fn with_selected(mut self, selected: bool) -> Self {
+        debug_assert!(
+            !selected || self.kind.is_selectable(),
+            "the tree rests its selection on an entry row alone"
+        );
+        self.selected = selected;
+        self
     }
 
     /// Sets the recorded Git state of the row.
@@ -334,6 +371,20 @@ impl FileRow {
         self
     }
 
+    /// Returns the stable identity of this row within one editor lifetime.
+    #[inline]
+    #[must_use]
+    pub const fn identity(&self) -> &FileRowIdentity {
+        &self.identity
+    }
+
+    /// Returns the contained entry path, or `None` for a notice row.
+    #[inline]
+    #[must_use]
+    pub const fn path(&self) -> Option<&WorktreeRelativePath> {
+        self.path.as_ref()
+    }
+
     /// Returns the text of the row.
     ///
     /// An entry row carries the entry name. A [`FileRowKind::Note`] row carries
@@ -358,8 +409,12 @@ impl FileRow {
     /// Returns the number of directories between the worktree root and the row.
     #[inline]
     #[must_use]
-    pub const fn depth(&self) -> usize {
-        self.depth
+    pub const fn depth(&self) -> u16 {
+        debug_assert!(
+            self.depth <= kvim_path::WORKTREE_PATH_COMPONENTS_MAX,
+            "validated worktree paths bound every published row depth"
+        );
+        self.depth as u16
     }
 
     /// Returns what the row shows.
@@ -497,7 +552,7 @@ pub(super) const fn label_offset_cells(depth: usize) -> usize {
 ///
 /// ```
 /// use kvim_settings::FileTreeIcons;
-/// use kvim_tui::{EmbeddedEditor, RegionFocus, Theme, draw_file_row};
+/// use kvim_tui::__private::{EmbeddedEditor, RegionFocus, Theme, draw_file_row};
 /// use kvim_ui::{RowKind, SidebarRow, SidebarState};
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
@@ -767,7 +822,7 @@ pub(super) fn draw_git_mark(
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{FileSidebarInput, ListMotion};
+/// use kvim_tui::__private::{FileSidebarInput, ListMotion};
 ///
 /// let down = FileSidebarInput::Move(ListMotion::Down(1));
 /// assert_eq!(down, FileSidebarInput::Move(ListMotion::Down(1)));
@@ -794,6 +849,8 @@ pub enum FileSidebarInput {
     /// Two of these inputs therefore take a file to its directory and then
     /// close that directory. `h` reaches this rule in kvim.
     Close,
+    /// Refresh all expanded directories and recorded Git state.
+    Refresh,
     /// Activate the selected file, or open and close the selected directory.
     ///
     /// `Enter` reaches this rule in kvim.
@@ -832,7 +889,7 @@ impl FileSidebarOutcome {
     ///
     /// ```
     /// use kvim_path::WorktreeRelativePath;
-    /// use kvim_tui::{EditorEvent, FileSidebarOutcome};
+    /// use kvim_tui::__private::{EditorEvent, FileSidebarOutcome};
     ///
     /// let path = WorktreeRelativePath::new("src/main.rs").expect("the path is contained");
     /// let outcome = FileSidebarOutcome::Activated { path: path.clone() };

@@ -12,6 +12,33 @@ event loop through bounded runtime services. A bounded markup parse is pure and
 can run on the visible-state owner. Tree-sitter work cannot. See
 [`responsiveness.md`](responsiveness.md).
 
+The `kvim-language` public registry and service construction boundary validates
+all public declarations before it creates live state. It rejects duplicate
+aliases, duplicate server identifiers, conflicting formatter declarations,
+invalid root markers, invalid bounds, and mismatched roots with typed errors.
+These checks run in release builds. A failed construction reserves no service,
+process, or registry state.
+
+The supported worktree facade keeps service construction private.
+`WorktreeCapabilities::language` defaults to `Disabled`.
+`ServicePolicy::BuiltIn` constructs services from the editor root and settings
+and makes construction mandatory. `ServicePolicy::BestEffortBuiltIn` uses the
+same built-in registry but continues with language behavior unavailable when
+construction fails. The standalone uses this best-effort policy, so a language
+construction failure does not prevent file editing.
+No facade signature exposes a registry, session, runtime, or service handle.
+
+No grammar feature is a supported configuration. In that configuration,
+`LanguageRegistry::first_release()` returns a valid empty registry and never
+panics. Path lookup returns `AnalysisError::UnsupportedPath`. Language-name
+lookup returns `None`. Analysis and formatter selection therefore return their
+existing typed unsupported or unavailable outcomes. Markup parsing remains
+available, and a fenced block stays plain because no adapter can highlight it.
+`LanguageServices::new` remains available and constructs an empty service set;
+a later path request returns `LspError::UnsupportedPath` without starting a
+process. A worktree facade can therefore use either built-in service policy
+without assuming that Rust or another language exists.
+
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
 grammar by default. It provides one feature for each language and one
 `all-grammars` feature. `kvim-language` forwards these features without a
@@ -87,10 +114,11 @@ The analysis, the highlight walk, the indent query, the comment toggle, and the
 renderer read only these values. A new language therefore needs one new adapter
 and one more entry in the registry table, and no change anywhere else.
 
-The registry contains one adapter for each of assembly, Bash, C, C++, CSS,
-fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix, Python, Rust, SCSS,
-SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig. Every match is
-case-sensitive. Twenty-two of the twenty-five adapters declare one language
+The complete `all-grammars` registry contains one adapter for each of assembly,
+Bash, C, C++, CSS, fish, GLSL, Go, HTML, JavaScript, JSON, Lua, Markdown, Nix,
+Python, Rust, SCSS, SQL, Terraform, TOML, TSX, TypeScript, XML, YAML, and Zig.
+Every match is case-sensitive. Twenty-two of the twenty-five adapters declare
+one language
 server: `asm-lsp` for assembly, `bash-language-server` for Bash, `clangd` for C
 and for C++, `vscode-css-language-server` for CSS and for SCSS, `fish-lsp` for
 fish, `glsl_analyzer` for GLSL, `gopls` for Go, `vscode-html-language-server`
@@ -238,10 +266,10 @@ own header, and the Terraform module document repeats them. The adapter
 includes the file at compile time, so the single binary still needs no parser
 file and no query file on the host.
 
-Each analysis request carries the buffer version that produced its input. The
-publication gate rejects a result whose buffer version is obsolete. An obsolete
-result never changes visible state and never enters a cache. See
-[`text-model.md`](text-model.md) for buffer versions.
+Each analysis request carries the buffer identity, generation, and version that
+produced its input. The publication gate rejects a result with an obsolete value.
+An obsolete result never changes visible state and never enters a cache. See
+[`text-model.md`](text-model.md) for the identity rules.
 
 The adapter returns:
 
@@ -268,8 +296,9 @@ returns a level count, not a column count. The adapter also declares the width
 of one indent level for its language, and [`settings.md`](settings.md) keeps
 the override and the fallback width.
 
-The indent query must answer from the current buffer version without blocking the
-terminal event loop. When the parse result for that version is not yet available,
+The indent query must answer from the current buffer revision without blocking
+the terminal event loop. When the parse result for that revision is not yet
+available,
 the editor uses the fallback rule in [`text-model.md`](text-model.md) instead of
 waiting. A late result never rewrites a line that the user already typed.
 
@@ -525,7 +554,7 @@ The session owns:
 - protocol limits for open documents, in-flight requests, and every received
   list,
 - explicit deadlines for the handshake, for every request, and for shutdown,
-- buffer-version checks for every request and for every published result.
+- complete buffer-revision checks for every request and published result.
 
 The session runs as one tracked background task. The host or editor driver sends
 bounded requests through one queue and reads typed results from another queue.
@@ -544,7 +573,7 @@ every recorded process fact through one sink that never waits.
 
 `kvim-lsp` also owns the bounded restart loop, because that loop names no editor
 state. `kvim-language` owns the editor half over that seam: the open documents,
-the buffer versions, the pending requests, the diagnostic pulls, and the hover
+the buffer revisions, the pending requests, the diagnostic pulls, and the hover
 markup. It implements one `ServerConversation` for that half, and it translates
 every neutral `ProjectEvent` into one editor outcome. It also holds the language
 adapters, so no editor type crosses into `kvim-lsp`.
@@ -580,10 +609,10 @@ the editor fully usable with no diagnostics. kvim reports the state once and
 starts no further server for that language. A missing server is never an error
 path that degrades editing.
 
-A reload replaces the whole text of one buffer, and the reloaded buffer counts
-its versions from the start. kvim therefore synchronizes a reload as one fresh
-document open that carries the reloaded text and the reloaded buffer version,
-and it drops every queued change of that buffer. No obsolete version reaches the
+A reload replaces the whole text of one buffer and advances its generation while
+its edit version restarts at zero. kvim therefore synchronizes a reload as one
+fresh document open that carries the reloaded text and complete buffer revision.
+It drops every queued change of that buffer. No obsolete revision reaches the
 server, and the server copy replaces the old copy in one step. See
 [`files.md`](files.md).
 
@@ -1309,6 +1338,7 @@ row below must always agree.
 | Processes of one manager | `LSP_MANAGER_PROCESSES_MAX` | 64 processes | The server processes of every open project together. The value is smaller than eight projects of sixteen sessions, because no host runs every language of every project at once, and one project must not spend the budget of every other project. |
 | Documents of one manager | `LSP_MANAGER_DOCUMENTS_MAX` | 256 documents | The open documents of every project together. The value is four times `LSP_OPEN_DOCUMENTS_MAX`, so four projects may each reserve their complete document budget and a fifth project must ask for less. |
 | Queue capacity of one manager | `LSP_MANAGER_QUEUE_CAPACITY_MAX` | 2,048 results | The result queue slots of every project together. The value is `LSP_PROJECTS_MAX` times `LSP_EVENT_QUEUE_CAPACITY`, so every project may reserve the complete result queue and no further project can. |
+| Registered language adapters | `LANGUAGE_ADAPTERS_MAX` | 64 adapters | Registry construction rejects a larger table before it performs pairwise identity and alias validation. |
 | Servers of one adapter | `LANGUAGE_SERVERS_MAX` | 4 servers | One language splits its work over a type checker, a linter, and few other tools. Four declarations cover that practice and still bound the merge of one buffer. |
 | Root markers of one server | `LANGUAGE_ROOT_MARKERS_MAX` | 16 markers | One linter names every file name that can hold its configuration. The reference `eslint` configuration names twelve of them, so sixteen covers that practice and still bounds the probe of one workspace. |
 | Sessions of one project | `LSP_SESSIONS_MAX` | 16 sessions | One project mixes few languages, and a session starts only when a caller opens a document of its language. Sixteen exceeds normal practice and still bounds one project's child processes. |
@@ -1360,6 +1390,13 @@ capacity. The merged diagnostics of one buffer
 therefore hold at most `LANGUAGE_SERVERS_MAX` times `LSP_DIAGNOSTICS_MAX`
 entries, because only the servers of one adapter describe one buffer. The merge
 removes the duplicates, so the visible list is normally far shorter.
+
+A language-server session uses `TransportFactory::Process` by default. A host
+that already owns a server uses `TransportFactory::Custom`. The custom factory
+returns fresh `Transport` streams for the initial attempt and every restart, so
+it does not need to spawn a child. These streams implement Tokio `AsyncRead` and
+`AsyncWrite`; the protocol reader must own a partial frame across cancellation.
+The existing envelope queue and protocol byte limits bound data after transport.
 
 A language-server session owns a long-lived child process through the supplied
 process spawner. `LSP_SESSIONS_MAX` bounds those children per project, and the
@@ -1423,8 +1460,8 @@ visible state change and runs no frame loop.
 ## Diagnostics
 
 Diagnostics are decoration. They never change source text, line mappings, or the
-cursor position. A diagnostic carries the buffer version that produced it. kvim
-discards a diagnostic for an obsolete buffer version.
+cursor position. A diagnostic carries the complete buffer revision that produced
+it. kvim discards a diagnostic from an obsolete generation or edit version.
 
 kvim orders diagnostics by position, so diagnostic navigation is deterministic.
 The diagnostic float shows every diagnostic of the cursor position, not the
@@ -1537,9 +1574,9 @@ two-column language therefore receives the tab size two. See
 [`settings.md`](settings.md) for the resolution order.
 
 kvim applies the accepted answer of either formatter as one edit transaction, so
-one undo reverses a complete format. It rejects an answer whose buffer version
-is obsolete, and it never applies a change that was computed against different
-content.
+one undo reverses a complete format. It rejects an answer whose buffer revision
+is obsolete, including an equal edit version from an older generation. It never
+applies a change that was computed against different content.
 
 Formatting has an explicit deadline. A timeout leaves the buffer unchanged and
 does not block terminal input.

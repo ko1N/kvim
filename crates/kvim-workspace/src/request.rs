@@ -7,9 +7,11 @@
 
 use std::sync::Arc;
 
-use kvim_core::{BufferVersion, LoadError, TextBuffer};
+use kvim_core::{BufferBytesMax, BufferRevision, LoadError, TextBuffer};
 use kvim_path::{WorktreeConfinementError, WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
+
+use crate::durable::DurableOutcome;
 
 use super::buffer::{BUFFERS_MAX, BufferId};
 use super::file::{self, FileChange, FileIdentity, FileTarget, OpenError, SaveError};
@@ -35,8 +37,8 @@ pub struct SaveRequest {
     pub target: FileTarget,
     /// The complete buffer text with the line ending of the buffer.
     pub content: String,
-    /// The buffer version that produced the saved content.
-    pub version: BufferVersion,
+    /// The buffer revision that produced the saved content.
+    pub revision: BufferRevision,
     /// The file state that kvim observed at load time or after the last save.
     pub expected: Option<FileIdentity>,
     /// The buffer copy that produces the persistent undo file.
@@ -77,6 +79,8 @@ pub struct ReloadTarget {
     pub buffer: BufferId,
     /// The validated canonical target that the buffer holds.
     pub target: FileTarget,
+    /// The persistent byte limit of the live buffer being replaced.
+    pub bytes_max: BufferBytesMax,
     /// What the worker does with the file.
     pub trigger: ReloadTrigger,
 }
@@ -159,8 +163,8 @@ pub enum FileResult {
         buffer: BufferId,
         /// The path that the user named.
         requested: FileTarget,
-        /// The new file state, or the reason that the save changed nothing.
-        outcome: Result<SavedBuffer, SaveError>,
+        /// The durable save outcome.
+        outcome: DurableOutcome<SavedBuffer, SaveError>,
     },
 }
 
@@ -175,8 +179,8 @@ pub struct SavedBuffer {
     pub bytes: u64,
     /// The number of lines in the saved snapshot.
     pub lines: usize,
-    /// The buffer version that produced the saved content.
-    pub version: BufferVersion,
+    /// The buffer revision that produced the saved content.
+    pub revision: BufferRevision,
 }
 
 impl FileRequest {
@@ -270,11 +274,14 @@ fn check(target: &ReloadTarget, files: &FileSettings) -> Result<ReloadOutcome, O
         (FileChange::Missing, _) => Ok(ReloadOutcome::Missing),
         (FileChange::Changed, ReloadTrigger::Compare(_)) => Ok(ReloadOutcome::Conflict),
         (FileChange::Changed, ReloadTrigger::Refresh(_) | ReloadTrigger::Read) => {
-            let opened = open(&OpenRequest {
-                root: target.target.root_handle(),
-                path: target.target.relative_path().clone(),
-                files: *files,
-            })?;
+            let opened = open_with_limit(
+                &OpenRequest {
+                    root: target.target.root_handle(),
+                    path: target.target.relative_path().clone(),
+                    files: *files,
+                },
+                target.bytes_max,
+            )?;
             if opened.target != target.target {
                 return Err(OpenError::Confinement(WorktreeConfinementError::Replaced));
             }
@@ -285,11 +292,19 @@ fn check(target: &ReloadTarget, files: &FileSettings) -> Result<ReloadOutcome, O
 
 /// Loads one file and restores its persistent undo history.
 fn open(request: &OpenRequest) -> Result<OpenedFile, OpenError> {
+    let bytes_max = BufferBytesMax::new(request.files.max_file_bytes)
+        .expect("settings are realized before file requests run");
+    open_with_limit(request, bytes_max)
+}
+
+fn open_with_limit(
+    request: &OpenRequest,
+    bytes_max: BufferBytesMax,
+) -> Result<OpenedFile, OpenError> {
     let loaded = file::load(&request.root, &request.path, &request.files)?;
-    let text =
-        TextBuffer::from_text(&loaded.text, &request.files).map_err(|error| match error {
-            LoadError::TooLarge { bytes, max_bytes } => OpenError::TooLarge { bytes, max_bytes },
-        })?;
+    let text = TextBuffer::from_text(&loaded.text, bytes_max).map_err(|error| match error {
+        LoadError::TooLarge { bytes, max_bytes } => OpenError::TooLarge { bytes, max_bytes },
+    })?;
     let text = restore_undo(text, &loaded.text, &loaded.target, &request.files);
     Ok(OpenedFile {
         target: loaded.target,
@@ -315,18 +330,22 @@ fn restore_undo(
         return text;
     };
     undo_file::read_record(&undo_path, content)
-        .and_then(|record| record.restore(content, files))
+        .and_then(|record| record.restore(content, &text))
         .unwrap_or(text)
 }
 
 /// Saves one buffer and writes its persistent undo file.
-fn write(request: &SaveRequest) -> Result<SavedBuffer, SaveError> {
-    let saved = file::save(
+fn write(request: &SaveRequest) -> DurableOutcome<SavedBuffer, SaveError> {
+    let saved = match file::save(
         &request.target,
         &request.content,
         request.expected,
         &request.files,
-    )?;
+    ) {
+        DurableOutcome::Unchanged(error) => return DurableOutcome::Unchanged(error),
+        DurableOutcome::Indeterminate(report) => return DurableOutcome::Indeterminate(report),
+        DurableOutcome::Committed(saved) => saved,
+    };
     if request.files.undo_file {
         // The undo file is an accelerator, not part of the save. A failure here
         // leaves the saved file correct.
@@ -338,11 +357,11 @@ fn write(request: &SaveRequest) -> Result<SavedBuffer, SaveError> {
             );
         }
     }
-    Ok(SavedBuffer {
+    DurableOutcome::Committed(SavedBuffer {
         target: saved.target,
         identity: saved.identity,
         bytes: request.content.len() as u64,
         lines: request.snapshot.line_count(),
-        version: request.version,
+        revision: request.revision,
     })
 }

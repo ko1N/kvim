@@ -40,7 +40,8 @@ const EDITS: &[PromptEdit] = &[
 fn main() {
     // The host seeds the line and places the cursor itself. `EditedLine::opened`
     // places it after the whole seed instead.
-    let mut line = EditedLine::opened_at(String::new(), 0, CHARS_MAX);
+    let mut line =
+        EditedLine::opened_at(String::new(), 0, CHARS_MAX).expect("the empty seed meets the limit");
 
     for &edit in EDITS {
         match line.apply(edit) {
@@ -62,7 +63,8 @@ fn main() {
     }
 
     // The bound refuses rather than cuts.
-    let mut full = EditedLine::opened(String::from("12345678"), 8);
+    let mut full =
+        EditedLine::opened(String::from("12345678"), 8).expect("the seed meets the limit");
     assert_eq!(full.apply(PromptEdit::Insert('9')), LineChange::Unchanged);
     println!("the bound of 8 characters keeps {:?}", full.text());
 }

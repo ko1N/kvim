@@ -1,3 +1,8 @@
+use std::sync::Arc;
+
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+use kvim_workspace::Candidate;
+
 use super::*;
 /// The character bound of a prompt that accepts every test candidate.
 const CHARS_MAX: usize = 32;
@@ -53,6 +58,33 @@ fn selected_row_of(target: &CellBuffer) -> Option<u16> {
             .cell((area.x, *y))
             .is_some_and(|cell| Some(cell.bg) == selected)
     })
+}
+
+#[test]
+fn command_line_file_completion_uses_the_shared_fuzzy_order() {
+    let root = Arc::new(
+        WorktreeRoot::open(std::env::current_dir().expect("the test has a current directory"))
+            .expect("the current directory is a worktree"),
+    );
+    let files = [
+        Candidate::file(
+            &root,
+            WorktreeRelativePath::new("src/session.rs").expect("the path is contained"),
+        ),
+        Candidate::file(
+            &root,
+            WorktreeRelativePath::new("src/main.rs").expect("the path is contained"),
+        ),
+    ];
+
+    assert_eq!(
+        command_line_candidates("edit main", &files),
+        ["edit src/main.rs"]
+    );
+    assert_eq!(
+        command_line_candidates("edit ", &files),
+        ["edit src/session.rs", "edit src/main.rs"]
+    );
 }
 
 #[test]

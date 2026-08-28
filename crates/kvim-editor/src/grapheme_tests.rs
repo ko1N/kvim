@@ -2,13 +2,12 @@
 
 use super::*;
 
-use kvim_settings::FileSettings;
-
 /// `e` and a combining acute, then `x`, then `a` and two combining marks.
 const MARKED: &str = "e\u{301}xa\u{300}\u{308}\n";
 
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small")
 }
 
 fn first_line(buffer: &TextBuffer) -> LineIndex {

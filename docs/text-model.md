@@ -3,8 +3,9 @@
 ## Ownership
 
 The `core` module owns the text model: coordinates, edit transactions, undo, and
-redo. It performs no input or output. It depends on no other module except
-`settings`.
+redo. It performs no input or output. Its `BufferBytesMax` value owns the
+persistent byte-limit invariant. Settings convert their configured primitive
+into this value at composition boundaries.
 
 The `editor` module builds transactions from motions and operators. The `tui`
 module renders text and measures terminal cells. Neither module changes text
@@ -67,13 +68,21 @@ apply as transactions.
 A transaction is deterministic. Equal buffer content and equal transaction input
 produce equal buffer content and equal cursor result.
 
-Build a transaction against the current buffer version. Validate every range in
-the transaction before any text changes. Apply the complete transaction as one
-state change. A rejected transaction leaves the buffer unchanged.
+Build a transaction against the current buffer generation and version. Validate
+every range and the resulting byte length before any text changes. Apply the
+complete transaction as one state change. A rejected transaction leaves text,
+generation, version, dirty state, and history unchanged.
 
-Each successful transaction increases the buffer version. Background analysis,
-formatting, and language-server results carry the buffer version that produced
-them. See [`responsiveness.md`](responsiveness.md) for the version check.
+Each successful transaction increases the `BufferVersion` inside the current
+`BufferRevision`. The revision combines a monotonic `BufferGeneration` with that
+edit version. A full reload or replacement retains `BufferId`, increases the
+generation, and starts a new version sequence at zero. `TextBuffer` derives the
+next generation from the live buffer and accepts only a newly loaded replacement
+with the same `BufferBytesMax`. This prevents callers from installing a revision
+from another buffer. Every text-derived background request carries `BufferId`
+and the complete revision. A publication gate rejects a result that differs in
+either value. See [`responsiveness.md`](responsiveness.md) for the publication
+check.
 
 ## Undo And Redo
 
@@ -161,9 +170,27 @@ buffer text without it would lose the last line of the file.
 
 ## Size Limits
 
+`TextBuffer` owns a validated byte limit. The limit is a persistent buffer
+invariant, not broad editor configuration. Construction, transactions, undo,
+redo, reload transfer, and snapshots preserve it. A staged change above the
+limit returns a typed error before it changes text, generation, version, dirty
+state, or history.
+
+The limit applies to logical file-content bytes. When a file has no final line
+ending, the internal rope adds one synthetic terminator for editing. That
+terminator does not count against `BufferBytesMax`. The internal rope therefore
+holds at most the logical limit plus the selected terminator width: one byte for
+line feed or two bytes for carriage return and line feed.
+
+Each transaction calculates the exact resulting logical UTF-8 byte size from
+the current logical size, removed ranges, and replacement strings. It uses
+checked arithmetic and does not allocate a duplicate buffer for this check.
+Undo and redo can only restore previously valid states and assert that those
+states remain within the persistent limit.
+
 kvim rejects an oversized file before it publishes a buffer. Rejection happens
-before parsing, highlighting, or rendering. The maximum file size belongs to
-`EditorSettings`.
+before parsing, highlighting, or rendering. `EditorSettings` supplies the
+initial configured limit at the public construction boundary.
 
 The default maximum file size is 4 MiB. ReviewGraph uses the same bound for
 analysis sources. The rope holds a 4 MiB buffer without trouble, so the bound
@@ -185,7 +212,9 @@ the selection by one indent level. The comment toggle preserves the existing
 indent of each affected line.
 
 `kvim-core` supplies the indent measurement, the indent rendering, and the shift
-step. `kvim-editor` owns the automatic indent rule and the shift commands.
+step through `IndentPolicy`. It accepts only resolved tab and shift values.
+`kvim-editor` resolves `EditorSettings` and the language width into that policy,
+and owns the automatic indent rule and the shift commands.
 
 ## Automatic Indent
 

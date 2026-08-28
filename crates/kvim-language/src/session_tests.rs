@@ -16,7 +16,7 @@ use kvim_lsp::{
     ContentChange, DocumentPosition, LSP_RESTARTS_MAX, LSP_STDERR_BYTES_MAX,
     LSP_STDERR_LINE_BYTES_MAX, LspBound, LspError, ServerReport, SourceSpan,
 };
-use kvim_settings::{EditorSettings, FileSettings};
+use kvim_settings::EditorSettings;
 
 use crate::document::{MarkupKind, content_changes};
 use crate::markup::MarkupDocument;
@@ -48,7 +48,8 @@ const TEST_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is 
 
 /// Returns a buffer with the exact test document content.
 fn buffer(text: &str) -> TextBuffer {
-    TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small")
+    TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small")
 }
 
 /// Opens the test document and returns its buffer.
@@ -709,14 +710,14 @@ async fn answers_a_definition_inside_the_workspace() {
 
     let LanguageOutcome::Definition {
         request: answered,
-        version,
+        revision,
         locations,
     } = harness.next().await
     else {
         panic!("the session answers the definition");
     };
     assert_eq!(answered, request);
-    assert_eq!(version, text.version());
+    assert_eq!(revision, text.revision());
     // The target outside the workspace root never reaches the editor.
     assert_eq!(locations.len(), 1);
     assert_eq!(locations[0].path, Path::new(DOCUMENT));
@@ -1461,7 +1462,7 @@ static SERVERLESS_REGISTRY: [&dyn LanguageAdapter; 1] = [&SERVERLESS];
 #[test]
 fn a_language_without_a_server_leaves_the_editor_usable() {
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&SERVERLESS_REGISTRY),
+        LanguageRegistry::new(&SERVERLESS_REGISTRY).expect("the test registry is valid"),
         PathBuf::from(ROOT),
         EditorSettings::default(),
     )
@@ -1550,7 +1551,7 @@ static TWO_SERVER_REGISTRY: [&dyn LanguageAdapter; 1] = [&TWO_SERVER];
 #[tokio::test]
 async fn one_failing_server_leaves_the_other_server_of_the_language_running() {
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&TWO_SERVER_REGISTRY),
+        LanguageRegistry::new(&TWO_SERVER_REGISTRY).expect("the test registry is valid"),
         PathBuf::from(ROOT),
         EditorSettings::default(),
     )
@@ -1746,7 +1747,7 @@ static UNUSED_REGISTRY: [&dyn LanguageAdapter; 1] = [&UNUSED];
 async fn a_server_starts_only_when_the_workspace_holds_one_of_its_root_markers() {
     let root = PathBuf::from(MARKER_ROOT);
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&GATED_REGISTRY),
+        LanguageRegistry::new(&GATED_REGISTRY).expect("the test registry is valid"),
         root.clone(),
         EditorSettings::default(),
     )
@@ -1780,7 +1781,7 @@ async fn a_server_starts_only_when_the_workspace_holds_one_of_its_root_markers()
 fn a_workspace_without_the_root_marker_starts_no_server_of_its_language() {
     let root = PathBuf::from(MARKER_ROOT);
     let mut services = LanguageServices::new(
-        LanguageRegistry::new(&UNUSED_REGISTRY),
+        LanguageRegistry::new(&UNUSED_REGISTRY).expect("the test registry is valid"),
         root.clone(),
         EditorSettings::default(),
     )

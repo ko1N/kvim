@@ -42,8 +42,45 @@ The editor runs one file operation at a time. A second command reports that one
 operation is already running. This rule keeps a result from reaching a buffer
 state that a newer operation already replaced.
 
-A cancelled, timed out, or refused operation changes no buffer. The editor
-reports the typed failure and keeps every unsaved change.
+A cancelled, timed out, or refused operation changes no buffer only while the
+operation has not reached its durable commit point. A filesystem boundary
+returns one typed durable outcome:
+
+| Outcome | Meaning |
+|---|---|
+| `Unchanged` | The operation proved that it changed no durable target. |
+| `Committed` | The operation proved its durable target state. |
+| `Indeterminate` | The operation cannot prove that its durable target stayed unchanged. |
+
+The durable boundary returns `DurableOutcome<T, E>`. `Unchanged(E)` proves that
+no target changed and keeps the causal error. `Committed(T)` proves the new
+target state.
+
+`Indeterminate(Indeterminate<E>)` preserves the first operation error, every
+bounded recovery failure, and the bounded affected-path set. Its public
+constructor rejects collections above `RECOVERY_FAILURES_MAX` or
+`INDETERMINATE_PATHS_MAX`.
+
+Atomic save becomes committed at rename. Metadata or readback failure after
+rename is indeterminate. Direct save becomes indeterminate when truncating open
+succeeds, including empty-content and synchronization failures. Temporary
+cleanup failure also makes the result indeterminate because kvim cannot prove
+the staging state was removed.
+
+Workspace mutation staging remains reversible. A failure before any durable
+change returns `Unchanged`. A failure after one commit rename, failed rollback,
+or cleanup after commit returns `Indeterminate`.
+
+Recovery reports keep at most `RECOVERY_FAILURES_MAX` failures. Affected paths
+keep at most `INDETERMINATE_PATHS_MAX` paths. One mutation uses the smaller
+`MUTATION_PATHS_MAX` operation bound.
+
+An `Indeterminate` outcome retains mandatory event capacity and schedules
+bounded reconciliation for every affected path. The editor keeps affected
+buffers dirty or externally changed until reconciliation proves agreement with
+disk. A failed rename, direct write, cleanup, commit, or rollback must not
+report `Unchanged` without that proof. Error reporting preserves the first
+failure and every restoration failure.
 
 ## Buffer Identity
 
@@ -88,7 +125,7 @@ The save procedure is:
 3. Flush the temporary file.
 4. Rename the temporary file over the target path.
 5. Record the new file metadata with the buffer.
-6. Clear the dirty state if the live buffer still has the saved version.
+6. Clear the dirty state if the live buffer still has the saved revision.
 
 The rename replaces the file in one step, so a reader never observes a partial
 file. kvim preserves the existing file permissions and resolves a symlink to its
@@ -98,10 +135,10 @@ A save failure at any step leaves the buffer dirty and usable. The user keeps
 every unsaved change and can retry the save. A failed save never discards buffer
 content and never leaves the temporary file in place.
 
-Each save binds its result to the buffer version that produced the written
-content. If the live version changes while the save runs, kvim records the
-written target and file identity but keeps the live buffer dirty. A stale `:wq`
-result keeps the window open.
+Each save binds its result to the complete buffer revision that produced the
+written content. If the live generation or edit version changes while the save
+runs, kvim records the written target and file identity but keeps the live
+buffer dirty. A stale `:wq` result keeps the window open.
 
 An embedded driver reserves event capacity before it accepts a save. A
 successful save publishes `FileWritten` through that reservation. If capacity
@@ -182,29 +219,45 @@ of the buffer names no file in either case. The buffer keeps its text and stays
 fully editable, because that text is then the only copy that kvim can write. A
 save writes the file again. A save and a successful reload both clear the mark.
 
-A reload takes the same path as an ordinary open: the same size limit, the same
-UTF-8 rule, and the same restore of the persistent undo file. A file that grew
-past the size limit therefore reloads no buffer. kvim reports that, marks the
-buffer as changed, and keeps its text.
+An indeterminate save publishes its reserved
+`SaveReconciliationRequired` event. It keeps the buffer dirty and queues the
+existing bounded reload comparison.
+
+An indeterminate mutation publishes its reserved
+`WorkspaceReconciliationRequired` event. It does not apply staged buffer path
+updates. It refreshes the tree through existing bounded reads and queues loaded
+buffer reconciliation.
+
+`FileWritten` and `WorkspaceChanged` remain definite commit facts. Visible
+state claims agreement only after the reconciliation reads complete.
+
+A reload takes the same path as an ordinary open: the same UTF-8 rule and the
+same restore of the persistent undo file. It also carries the live buffer's
+core-owned byte limit into every replacement and restored snapshot. A file that
+grew past that persistent limit therefore reloads no buffer. kvim reports that,
+marks the buffer as changed, and keeps its text.
 
 Every window that shows a reloaded buffer keeps its own cursor and its own first
 visible row. Both clamp to the new text, so a file that became shorter leaves no
 cursor and no viewport beyond its end.
 
-A reload replaces the whole buffer, so the reloaded buffer restarts its undo
-history and counts its versions from the start, as a fresh open does. The
-persistent undo file is not part of the reload: kvim writes it at save time, and
-its content check rejects a record that no longer describes the file. Everything
-that one buffer version guards restarts with the buffer: the accepted analysis,
-the reuse tree, the published diagnostics, and the matches of the active search.
+A reload replaces the whole buffer, so the reloaded buffer retains its stable
+`BufferId`, increases its monotonic generation, restarts its undo history, and
+starts its version sequence again. The persistent undo file is not part of the
+reload: kvim writes it at save time, and its content check rejects a record that
+no longer describes the file. Every text-derived result carries the buffer
+identity, generation, and version. The editor rejects a result from an older
+generation even when its version matches.
 
-A reload publishes only while the buffer still holds the version that the check
-compared. A buffer that the user changed while the check ran rejects the
-outcome, so no obsolete text reaches a buffer.
+A reload publishes only while the buffer still holds the complete revision that
+the check compared. The path and file target must also match. A result from a
+previous generation cannot replace newer text even when both edit versions are
+zero.
 
 The language server receives the reloaded text as one document synchronization
-that carries the reloaded buffer version, and kvim drops every queued change of
-that buffer, so no obsolete version reaches the server. See
+that carries the complete reloaded buffer revision. kvim drops every queued
+change of that buffer, so no obsolete generation or version reaches the server.
+See
 [`language-services.md`](language-services.md).
 
 A background check reports nothing when it finds nothing that the editor cannot
@@ -959,18 +1012,16 @@ scores one candidate against one query, and `rank` turns those scores into
 one ordered list of source indexes. Neither name a path, a buffer, or a
 picker, so a host that ranks a list of its own values holds the same rule
 without this charter. [`architecture.md`](architecture.md) records the crate.
-`kvim-workspace` re-exports `score_candidate`, so the picker vocabulary of
-that crate stays in one place.
+Consumers call `kvim-fuzzy` directly instead of through a workspace wrapper.
 
 `Picker` keeps the file, search, and buffer vocabulary alone: the candidate
 list, the accepted target, and the preview. Its query, its ranking, its match
 list, and its selection live inside one `kvim_ui::Selector`, the
 domain-neutral mechanism that also serves a host of its own vocabulary.
-`Picker`'s public `rank_candidates` function and `Selector<R>` both clip or
-gather their own borrowed candidates and then call `kvim_fuzzy::rank`, so the
-rule that turns a score into an ordered list exists in one place, not two.
-[`architecture.md`](architecture.md) records the layer edge from
-`kvim-workspace` to `kvim-ui`.
+`Picker` and `Selector<R>` both use `kvim_fuzzy::rank`, so the rule that turns
+a score into an ordered list exists in one place. Command-line completion also
+calls that rule directly over borrowed workspace candidates.
+[`architecture.md`](architecture.md) records the layer edges.
 
 The fuzzy match is a subsequence match without case. Each matched character
 scores by its position: a character that follows the previous match scores most,

@@ -111,7 +111,7 @@ impl Default for SessionClipboard {
 /// use ratatui::layout::Rect;
 ///
 /// use kvim_settings::EditorSettings;
-/// use kvim_tui::{ClipboardAccess, Session};
+/// use kvim_tui::__private::{ClipboardAccess, Session};
 ///
 /// let root = std::sync::Arc::new(
 ///     kvim_path::WorktreeRoot::open(
@@ -324,9 +324,14 @@ const fn clipboard_shape(shape: RegisterShape) -> ClipboardShape {
 /// it, so the conversion appends a missing one.
 pub(super) fn register_value(value: OwnedClipboardValue, ending: LineEnding) -> RegisterValue {
     match value.shape {
-        ClipboardShape::Characterwise => RegisterValue::characterwise(value.text),
-        ClipboardShape::Linewise => RegisterValue::linewise(value.text, ending),
-        ClipboardShape::Blockwise => RegisterValue::new(value.text, RegisterShape::Blockwise),
+        ClipboardShape::Characterwise => {
+            RegisterValue::characterwise(value.text).expect("the value is bounded")
+        }
+        ClipboardShape::Linewise => {
+            RegisterValue::linewise(value.text, ending).expect("the value is bounded")
+        }
+        ClipboardShape::Blockwise => RegisterValue::new(value.text, RegisterShape::Blockwise)
+            .expect("the clipboard value is bounded"),
     }
 }
 

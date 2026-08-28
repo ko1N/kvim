@@ -92,12 +92,11 @@ use kvim_path::WorktreeRelativePath;
 use thiserror::Error;
 
 use crate::diff::{
-    AnchorLocation, CommentBody, DiffContent, DiffLimit, DiffLine, DiffOldSide, DiffRevision,
-    DiffSide, DiffTarget, DiffTruncation, FileDiff, Hunk, HunkId, LineNumberError, LineRangeError,
-    NewLine, NewLineRange, OldLine, OldLineRange, Relocation, ReviewAnchor, ReviewAnchorError,
-    TextDiff, WorktreeDiff, relocate,
+    AnchorLocation, CommentBody, DIFF_FILE_HUNKS_MAX, DIFF_FILES_MAX, DIGEST_BYTES, DiffContent,
+    DiffLimit, DiffLine, DiffOldSide, DiffRevision, DiffSide, DiffTarget, DiffTruncation, FileDiff,
+    Hunk, HunkId, LineNumberError, LineRangeError, NewLine, NewLineRange, OldLine, OldLineRange,
+    Relocation, ReviewAnchor, ReviewAnchorError, TextDiff, WorktreeDiff, relocate,
 };
-use crate::diff_capture::AuthorityProjection;
 
 /// The largest number of review events that the queue holds at one time.
 ///
@@ -150,7 +149,7 @@ pub const REVIEW_EVENTS_MAX: usize = 64;
 pub struct TargetAuthority {
     old: DiffOldSide,
     target: DiffTarget,
-    projection: AuthorityProjection,
+    projection: [u8; DIGEST_BYTES],
     revision: DiffRevision,
 }
 
@@ -161,7 +160,7 @@ impl TargetAuthority {
         Self {
             old: candidate.old_side(),
             target: candidate.target().clone(),
-            projection: AuthorityProjection::of(candidate),
+            projection: candidate.authority_projection(),
             revision: candidate.revision(),
         }
     }
@@ -396,6 +395,34 @@ impl ReviewState {
     #[must_use]
     pub const fn selection(&self) -> Option<&ReviewAnchor> {
         self.selection.as_ref()
+    }
+
+    /// Returns the durable anchors of every hunk marked read.
+    ///
+    /// Callers can persist these bounded anchors and relocate them against a
+    /// later candidate. The collection never exceeds the candidate hunk bound.
+    #[must_use]
+    pub fn read_anchors(&self) -> &[ReviewAnchor] {
+        &self.read
+    }
+
+    /// Restores one read mark after safely relocating its durable anchor.
+    ///
+    /// Missing and ambiguous anchors are ignored. The method never guesses a
+    /// location and never adds more marks than the candidate publishes hunks.
+    pub fn restore_read_anchor(&mut self, anchor: &ReviewAnchor) -> Relocation {
+        let relocation = relocate(anchor, &self.candidate);
+        let relocated = match &relocation {
+            Relocation::Exact { anchor } | Relocation::Relocated { anchor } => Some(anchor),
+            Relocation::Missing | Relocation::Ambiguous(_) => None,
+        };
+        if let Some(anchor) = relocated
+            && !self.is_read(anchor.path(), anchor.hunk())
+            && self.read.len() < DIFF_FILES_MAX.saturating_mul(DIFF_FILE_HUNKS_MAX)
+        {
+            self.read.push(anchor.clone());
+        }
+        relocation
     }
 
     /// Publishes every row of the candidate in reading order.

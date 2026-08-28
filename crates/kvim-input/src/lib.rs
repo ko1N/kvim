@@ -57,6 +57,7 @@ mod command;
 mod command_line;
 mod edited_line;
 mod mode;
+mod profile;
 mod reducer;
 mod registry;
 mod resolver;
@@ -65,13 +66,19 @@ pub use command::{Command, CommandAuthority, CommandGroup};
 pub use command_line::{
     COMMAND_LINE_CHARS_MAX, CommandLineCommand, CommandLineError, CommandPathArgument,
 };
-pub use edited_line::{EditedLine, LineChange};
+pub use edited_line::{EditedLine, EditedLineError, LineChange};
 pub use kvim_keymap::{Chord, Key, KeyCode, KeyLabel, KeySequence};
 pub use kvim_keymap::{
-    ContextGeneration, Dispatch, DispatchContext, Input, InputContextSnapshot, PasteText, Phase,
-    SemanticPhases, TextFallback, TypedText,
+    CommandOwner, ContextGeneration, Dispatch, DispatchContext, Input, InputContextSnapshot,
+    PasteText, Phase, SemanticPhases, TextFallback, TypedText,
 };
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
-pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer};
+pub use profile::{
+    BINDING_MANIFEST_ENTRIES_MAX, BINDING_OVERRIDES_MAX, BINDING_REPLACEMENTS_MAX,
+    BindingInterruptionPolicy, BindingManifest, BindingManifestEntry, BindingOverride,
+    BindingProfile, BindingProfileError, BindingReplacement, BindingReplacementError,
+    ReviewBindingProfile,
+};
+pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer, is_register_name};
 pub use registry::{Binding, Registry, RegistryError, WhichKeyRow, WhichKeyTarget};
 pub use resolver::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};

@@ -9,7 +9,7 @@ use kvim_editor::{Cursor, Selection};
 use kvim_language::{
     Diagnostic, DiagnosticSeverity, DocumentPosition, HighlightSpan, SourceSpan, SyntaxRole,
 };
-use kvim_settings::{EditorSettings, FileSettings};
+use kvim_settings::EditorSettings;
 use kvim_workspace::ExternalChange;
 
 use super::super::theme::{Theme, ThemeRole};
@@ -25,8 +25,8 @@ const AREA: Rect = Rect {
 
 /// Renders one buffer with highlight spans and returns the cell buffer.
 fn draw(text: &str, highlights: &[HighlightSpan]) -> CellBuffer {
-    let buffer =
-        TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+    let buffer = TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small");
     let settings = EditorSettings::default();
     let view = WindowView {
         buffer: &buffer,
@@ -95,8 +95,8 @@ fn winbar_of(
     area: Rect,
 ) -> String {
     let text: String = (0..lines).map(|index| format!("line{index}\n")).collect();
-    let buffer =
-        TextBuffer::from_text(&text, &FileSettings::default()).expect("the test text is small");
+    let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small");
     let settings = EditorSettings::default();
     let view = WindowView {
         buffer: &buffer,
@@ -285,8 +285,8 @@ fn syntax_color(role: SyntaxRole) -> Option<Color> {
 
 /// Renders one buffer with diagnostics into a window of a chosen width.
 fn draw_marked(text: &str, diagnostics: &[Diagnostic], width: u16) -> CellBuffer {
-    let buffer =
-        TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+    let buffer = TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small");
     let settings = EditorSettings::default();
     let view = WindowView {
         buffer: &buffer,
@@ -416,7 +416,7 @@ fn a_narrow_window_keeps_the_marker_and_one_text_cell() {
         "the narrow window still marks absent text"
     );
     let gutter = super::gutter_cells(
-        &TextBuffer::from_text("one\n", &FileSettings::default()).unwrap(),
+        &TextBuffer::from_text("one\n", kvim_core::BufferBytesMax::default()).unwrap(),
         &EditorSettings::default().display,
         narrow,
     );
@@ -433,7 +433,7 @@ fn a_highlight_span_styles_the_columns_of_its_role() {
     };
     let target = draw("let value = 1;\n", &[span]);
     let gutter = super::gutter_cells(
-        &TextBuffer::from_text("let value = 1;\n", &FileSettings::default()).unwrap(),
+        &TextBuffer::from_text("let value = 1;\n", kvim_core::BufferBytesMax::default()).unwrap(),
         &EditorSettings::default().display,
         AREA.width,
     );
@@ -466,7 +466,7 @@ fn a_span_over_multibyte_and_wide_characters_keeps_its_cells() {
         role: SyntaxRole::String,
     };
     let target = draw(text, &[span]);
-    let buffer = TextBuffer::from_text(text, &FileSettings::default()).unwrap();
+    let buffer = TextBuffer::from_text(text, kvim_core::BufferBytesMax::default()).unwrap();
     let gutter = super::gutter_cells(&buffer, &EditorSettings::default().display, AREA.width);
 
     // The quote and the three wide characters occupy 1 + 6 + 1 cells.
@@ -489,8 +489,8 @@ fn a_selection_ends_at_the_last_character_of_every_line() {
     // `alpha` holds five characters, the second line holds none, and `beta`
     // holds four.
     let text = "alpha\n\nbeta\n";
-    let buffer =
-        TextBuffer::from_text(text, &FileSettings::default()).expect("the test text is small");
+    let buffer = TextBuffer::from_text(text, kvim_core::BufferBytesMax::default())
+        .expect("the test text is small");
     let settings = EditorSettings::default();
     let line = |index: usize| buffer.line_index(index).expect("the test line exists");
     let column = |index: usize| {

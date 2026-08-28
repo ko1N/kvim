@@ -67,10 +67,9 @@ impl CharRange {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::{CharRange, TextBuffer};
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, CharRange, TextBuffer};
     ///
-    /// let buffer = TextBuffer::from_text("hello", &FileSettings::default())
+    /// let buffer = TextBuffer::from_text("hello", BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let start = buffer.char_position(1).expect("the position exists");
     /// let end = buffer.char_position(4).expect("the position exists");
@@ -172,10 +171,9 @@ impl TextChange {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::{CharRange, EditTransaction, TextBuffer, TextChange};
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, CharRange, EditTransaction, TextBuffer, TextChange};
 ///
-/// let mut buffer = TextBuffer::from_text("hello world\n", &FileSettings::default())
+/// let mut buffer = TextBuffer::from_text("hello world\n", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let cursor = buffer.char_position(0).expect("the position exists");
 /// let start = buffer.char_position(0).expect("the position exists");
@@ -214,10 +212,9 @@ impl EditTransaction {
     /// # Examples
     ///
     /// ```
-    /// use kvim_core::{EditTransaction, TextBuffer, TextChange};
-    /// use kvim_settings::FileSettings;
+    /// use kvim_core::{BufferBytesMax, EditTransaction, TextBuffer, TextChange};
     ///
-    /// let mut buffer = TextBuffer::from_text("ab\ncd\n", &FileSettings::default())
+    /// let mut buffer = TextBuffer::from_text("ab\ncd\n", BufferBytesMax::default())
     ///     .expect("the text is small");
     /// let cursor = buffer.char_position(0).expect("the position exists");
     /// let first = buffer.char_position(0).expect("the position exists");

@@ -11,7 +11,9 @@
 //! [`KeyRejection`]. It never removes the modifier, so a modified key never
 //! reaches the binding of the unmodified key. [`EventSource`] reports that
 //! rejection as [`TerminalEvent::Unsupported`], so the editor resets its
-//! pending grammar instead of running a shorter sequence.
+//! pending grammar instead of running a shorter sequence. Focus reporting is not
+//! enabled by [`TerminalSession`]. If an external environment sends a focus
+//! event, [`EventSource`] skips it as unsupported input.
 //!
 //! [`TerminalSession`] owns the setup steps and restores them on every exit path,
 //! including a panic. Restoration never depends on unwinding: the session
@@ -31,9 +33,7 @@ use std::io;
 
 use thiserror::Error;
 
-pub use events::{
-    EventRejection, EventSource, FocusChange, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX,
-};
+pub use events::{EventRejection, EventSource, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX};
 pub use key::{KeyRejection, UnsupportedModifier, normalize_key_event};
 pub use kvim_keymap::{Chord, Key, KeyCode, PASTE_BYTES_MAX, PasteError, PasteText};
 pub use lifecycle::{CrosstermControl, CursorShape, RestoreStep, TerminalControl, TerminalSession};

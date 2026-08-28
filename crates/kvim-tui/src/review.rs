@@ -1,9 +1,8 @@
 //! The open review of one captured diff.
+//! Painter adapted from ReviewGraph (MIT), src/tui.rs.
 //!
-//! The surface owns the two captures that the changes panel shows, the view
-//! that draws them, and the cursor that walks their hunks. It performs no Git
-//! work and starts no process: the session captures and hands the candidates
-//! in. See `docs/diff-view.md`.
+//! The private model and painter are shared by integrated and standalone review
+//! composition. The integrated session adds only lifecycle adaptation.
 //!
 //! The module is pure. It reads no clock, no filesystem, and no process.
 
@@ -14,8 +13,7 @@ use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
 use kvim_ui::{ListMotion, SidebarInput, SidebarRow, SidebarState, TabStrip, sidebar_guides};
 use kvim_workspace::{
-    DiffContent, Expansion, GitStatus, Hunk, HunkId, HunkStep, ReviewState, WorktreeDiff,
-    align_hunk,
+    DiffContent, Hunk, HunkId, HunkStep, ReviewAnchor, ReviewState, WorktreeDiff, align_hunk,
 };
 
 use ratatui::buffer::Buffer as CellBuffer;
@@ -26,16 +24,11 @@ use crate::changes::{ChangeEntry, ChangeSection, ChangesRow, entries, refresh};
 use crate::diff_view::{
     RowBand, draw_inline_rows, draw_side_rows, inline_rows, side_rows, view_of,
 };
-use crate::icons::{directory_icon, file_icon};
-use crate::theme::{Theme, ThemeRole};
-use crate::tree::{
-    GIT_MARK_CELLS, MARK_CELLS, SELECTION_MARK, git_mark, host_git_state, mark_cells, paint_span,
-    render_git_mark,
-};
+use crate::theme::{FileRowGit as GitStatus, Theme, ThemeRole};
 
 /// The region of the review that owns the keys.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(super) enum ReviewFocus {
+pub enum ReviewFocus {
     /// The changes panel, which selects one changed file.
     Panel,
     /// The diff body, which scrolls the rows of the selected file.
@@ -83,7 +76,7 @@ impl BodyRow {
 
 /// What one review command asks the session to do.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ReviewOutcome {
+pub enum ReviewOutcome {
     /// The review changed nothing that a frame shows.
     Unchanged,
     /// The review changed what a frame shows.
@@ -101,9 +94,75 @@ pub(super) enum ReviewOutcome {
     Unhandled,
 }
 
-/// The open review of one workspace.
+/// The integrated editor adapter around the reusable review model.
+///
+/// The adapter deliberately owns no review state. It keeps the existing
+/// session path while the model and painter remain usable without an editor.
+#[cfg(feature = "editor")]
 #[derive(Clone, Debug)]
 pub(super) struct ReviewSurface {
+    model: ReviewModel,
+}
+
+#[cfg(feature = "editor")]
+impl ReviewSurface {
+    /// Opens the integrated adapter over one reusable model.
+    pub(super) fn new(
+        staged: Option<WorktreeDiff>,
+        unstaged: Option<WorktreeDiff>,
+        settings: DiffSettings,
+        resize_step: u16,
+        height_rows: u16,
+    ) -> Self {
+        Self {
+            model: ReviewModel::new(staged, unstaged, settings, resize_step, height_rows),
+        }
+    }
+
+    /// Returns the reusable model rendered by this adapter.
+    const fn model(&self) -> &ReviewModel {
+        &self.model
+    }
+
+    /// Updates the model for the visible review height.
+    #[cfg(feature = "editor")]
+    pub(super) fn set_height_rows(&mut self, height_rows: u16) {
+        self.model.set_height_rows(height_rows);
+    }
+
+    /// Applies one integrated review command to the model.
+    pub(super) fn apply(&mut self, command: Command, count: Option<NonZeroU32>) -> ReviewOutcome {
+        self.model.apply(command, count)
+    }
+
+    /// Replaces one captured section and relocates model state.
+    #[cfg(feature = "editor")]
+    pub(super) fn reload(&mut self, section: ChangeSection, candidate: WorktreeDiff) {
+        self.model.reload(section, candidate);
+    }
+
+    /// Returns the visible diff-body height for integrated layout checks.
+    #[cfg(test)]
+    pub(super) const fn height_rows(&self) -> usize {
+        self.model.height_rows()
+    }
+}
+
+/// The result of safely restoring durable read anchors.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReviewRestore {
+    /// The number of exact or safely relocated anchors.
+    pub restored: usize,
+    /// The number of missing or ambiguous anchors ignored.
+    pub stale: usize,
+}
+
+/// The complete private state of one review.
+///
+/// This model owns candidate sections, cursor and selection state, read marks,
+/// relocation, panel state, focus, viewport state, and the selected diff view.
+#[derive(Clone, Debug)]
+pub struct ReviewModel {
     /// The staged half, when the capture published one.
     staged: Option<ReviewState>,
     /// The unstaged half, when the capture published one.
@@ -144,13 +203,13 @@ pub(super) struct ReviewSurface {
     resize_step_cells: u16,
 }
 
-impl ReviewSurface {
-    /// Opens one review over the two captured halves.
+impl ReviewModel {
+    /// Opens one reusable review model over the two captured halves.
     ///
     /// The cursor starts in the unstaged half when it publishes a change,
     /// because that is the half a reader works on. A workspace with staged work
     /// alone starts there instead.
-    pub(super) fn new(
+    pub fn new(
         staged: Option<WorktreeDiff>,
         unstaged: Option<WorktreeDiff>,
         settings: DiffSettings,
@@ -188,8 +247,118 @@ impl ReviewSurface {
     }
 
     /// Returns the view that draws the hunks.
-    pub(super) const fn view(&self) -> DiffView {
+    pub const fn view(&self) -> DiffView {
         self.view
+    }
+
+    /// Reports whether the active section holds staged changes.
+    pub fn section_is_staged(&self) -> bool {
+        matches!(self.section(), ChangeSection::Staged)
+    }
+
+    /// Returns the durable read anchors in the active candidate.
+    pub fn read_anchors(&self) -> &[ReviewAnchor] {
+        self.active().map_or(&[], ReviewState::read_anchors)
+    }
+
+    /// Returns the durable read anchors in one candidate section.
+    pub fn section_read_anchors(&self, staged: bool) -> &[ReviewAnchor] {
+        let review = if staged {
+            self.staged.as_ref()
+        } else {
+            self.unstaged.as_ref()
+        };
+        review.map_or(&[], ReviewState::read_anchors)
+    }
+
+    /// Returns an anchor over the complete hunk at the cursor.
+    pub fn cursor_anchor(&self) -> Option<ReviewAnchor> {
+        let review = self.active()?;
+        let cursor = review.cursor()?;
+        let hunk = cursor.hunk;
+        let location = if hunk.new_range().count() > 0 {
+            kvim_workspace::AnchorLocation::New {
+                range: hunk.new_range(),
+            }
+        } else {
+            kvim_workspace::AnchorLocation::Old {
+                range: hunk.old_range(),
+            }
+        };
+        ReviewAnchor::select(review.candidate(), cursor.file.path(), hunk.id(), location).ok()
+    }
+
+    /// Restores the cursor from one durable anchor without guessing.
+    pub fn restore_cursor_anchor(&mut self, staged: bool, anchor: &ReviewAnchor) -> bool {
+        let section = if staged {
+            ChangeSection::Staged
+        } else {
+            ChangeSection::Unstaged
+        };
+        let Some(review) = (match section {
+            ChangeSection::Staged => self.staged.as_mut(),
+            ChangeSection::Unstaged => self.unstaged.as_mut(),
+        }) else {
+            return false;
+        };
+        let relocated = match kvim_workspace::relocate(anchor, review.candidate()) {
+            kvim_workspace::Relocation::Exact { anchor }
+            | kvim_workspace::Relocation::Relocated { anchor } => anchor,
+            kvim_workspace::Relocation::Missing | kvim_workspace::Relocation::Ambiguous(_) => {
+                return false;
+            }
+        };
+        if !review.select_hunk(relocated.path(), relocated.hunk()) {
+            return false;
+        }
+        let _ = self.sections.select(&section);
+        self.refresh_changes();
+        self.rebuild_body();
+        true
+    }
+
+    /// Restores one bounded set of read anchors into the matching sections.
+    pub fn restore_read_anchors(
+        &mut self,
+        staged: &[ReviewAnchor],
+        unstaged: &[ReviewAnchor],
+    ) -> ReviewRestore {
+        let mut restored = 0_usize;
+        let mut stale = 0_usize;
+        for (section, anchors) in [
+            (ChangeSection::Staged, staged),
+            (ChangeSection::Unstaged, unstaged),
+        ] {
+            let Some(review) = (match section {
+                ChangeSection::Staged => self.staged.as_mut(),
+                ChangeSection::Unstaged => self.unstaged.as_mut(),
+            }) else {
+                stale = stale.saturating_add(anchors.len());
+                continue;
+            };
+            for anchor in anchors {
+                match review.restore_read_anchor(anchor) {
+                    kvim_workspace::Relocation::Exact { .. }
+                    | kvim_workspace::Relocation::Relocated { .. } => {
+                        restored = restored.saturating_add(1);
+                    }
+                    kvim_workspace::Relocation::Missing
+                    | kvim_workspace::Relocation::Ambiguous(_) => {
+                        stale = stale.saturating_add(1);
+                    }
+                }
+            }
+        }
+        self.refresh_changes();
+        self.rebuild_body();
+        ReviewRestore { restored, stale }
+    }
+
+    /// Restores facade-owned presentation state after validating its bounds.
+    pub fn restore_presentation(&mut self, focus: ReviewFocus, view: DiffView, panel_cells: u16) {
+        self.focus = focus;
+        self.view = view;
+        self.panel_cells = panel_cells.clamp(CHANGES_PANEL_CELLS_MIN, CHANGES_PANEL_CELLS_MAX);
     }
 
     /// Returns the section that the cursor walks.
@@ -204,7 +373,7 @@ impl ReviewSurface {
     }
 
     /// Returns the width of the changes panel, in cells.
-    pub(super) const fn panel_cells(&self) -> u16 {
+    pub const fn panel_cells(&self) -> u16 {
         self.panel_cells
     }
 
@@ -240,7 +409,7 @@ impl ReviewSurface {
     }
 
     /// Returns the region that owns the keys.
-    pub(super) const fn focus(&self) -> ReviewFocus {
+    pub const fn focus(&self) -> ReviewFocus {
         self.focus
     }
 
@@ -280,7 +449,14 @@ impl ReviewSurface {
         self.first_row
     }
 
+    /// Returns the number of diff-body rows in the current viewport.
+    #[cfg(all(test, feature = "editor"))]
+    pub(super) const fn height_rows(&self) -> usize {
+        self.height_rows
+    }
+
     /// Tells the review how many rows each region shows.
+    #[cfg_attr(not(feature = "editor"), allow(dead_code))]
     pub(super) fn set_height_rows(&mut self, height_rows: u16) {
         // The strip of sections takes the first row of the review, so both
         // regions draw below it and hold one row less than the band. A viewport
@@ -298,7 +474,7 @@ impl ReviewSurface {
     ///
     /// Every motion reaches the region that owns the keys, so the panel and the
     /// body never move together. See `docs/diff-view.md`.
-    pub(super) fn apply(&mut self, command: Command, count: Option<NonZeroU32>) -> ReviewOutcome {
+    pub fn apply(&mut self, command: Command, count: Option<NonZeroU32>) -> ReviewOutcome {
         let repeat = count.map_or(1, |value| value.get() as usize);
         match command {
             Command::CloseReview => ReviewOutcome::Close,
@@ -475,6 +651,7 @@ impl ReviewSurface {
     ///
     /// Every read mark and the selection follow the content, so a reader keeps
     /// the marks of every hunk that the later capture still holds.
+    #[cfg_attr(not(feature = "editor"), allow(dead_code))]
     pub(super) fn reload(&mut self, section: ChangeSection, candidate: WorktreeDiff) {
         let slot = match section {
             ChangeSection::Staged => &mut self.staged,
@@ -770,6 +947,7 @@ impl ReviewSurface {
 /// The panel takes the left band and the diff takes the rest. The review draws
 /// over the window tree and changes nothing of it, so leaving the review
 /// restores the layout by drawing it again. See `docs/diff-view.md`.
+#[cfg(feature = "editor")]
 pub(super) fn draw_review(
     target: &mut CellBuffer,
     area: Rect,
@@ -777,6 +955,41 @@ pub(super) fn draw_review(
     settings: DiffSettings,
     root: &str,
     review: &ReviewSurface,
+) {
+    ReviewPainter::new(theme, settings, root).draw(target, area, review.model());
+}
+
+/// The one painter for every private review composition path.
+pub struct ReviewPainter<'a> {
+    theme: Theme,
+    settings: DiffSettings,
+    root: &'a str,
+}
+
+impl<'a> ReviewPainter<'a> {
+    /// Creates a painter from presentation values owned by the caller.
+    pub const fn new(theme: Theme, settings: DiffSettings, root: &'a str) -> Self {
+        Self {
+            theme,
+            settings,
+            root,
+        }
+    }
+
+    /// Paints one reusable model into the accepted rectangle.
+    pub fn draw(&self, target: &mut CellBuffer, area: Rect, review: &ReviewModel) {
+        draw_review_model(target, area, self.theme, self.settings, self.root, review);
+    }
+}
+
+/// Paints one review model into one rectangle.
+fn draw_review_model(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    settings: DiffSettings,
+    root: &str,
+    review: &ReviewModel,
 ) {
     if area.width == 0 || area.height == 0 {
         return;
@@ -836,7 +1049,7 @@ pub(super) fn draw_review(
 /// The panel names the file alone, so this line carries the counts. An added
 /// line reads green and a removed line reads red, which is the vocabulary that
 /// every diff uses.
-fn draw_body_header(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+fn draw_body_header(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewModel) {
     let band = Rect::new(area.x, area.y, area.width, BODY_HEADER_ROWS);
     target.set_style(band, theme.style(ThemeRole::Winbar));
     let Some(path) = review.body_path() else {
@@ -918,7 +1131,7 @@ fn below(area: Rect) -> Option<Rect> {
 /// of its repository state, its name, and the number of files that it holds.
 /// The active tab sits on a light band and every other tab dims on the bar, so
 /// one glance names the section that the keys act on. See `docs/diff-view.md`.
-fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+fn draw_sections(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewModel) {
     // The bar sits above every tab, so it takes the surface band and the
     // active tab drops out of it onto the body color.
     target.set_style(area, theme.style(ThemeRole::TabInactive));
@@ -960,7 +1173,7 @@ fn draw_body(
     area: Rect,
     theme: Theme,
     settings: DiffSettings,
-    review: &ReviewSurface,
+    review: &ReviewModel,
 ) {
     // The body names its own file, so the lookup of one hunk never reaches
     // another file, whose hunks carry the same identities.
@@ -1056,7 +1269,7 @@ const fn settings_with(settings: DiffSettings, view: DiffView) -> DiffSettings {
 /// The sidebar owns the viewport, so the panel draws the rows that it places
 /// and a list longer than the region scrolls with its selection. Every row text
 /// is built already, so one frame walks no hunk.
-fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewSurface) {
+fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &ReviewModel) {
     let focused = review.focus() == ReviewFocus::Panel;
     let selected = review.changes().selected().cloned();
     let built = review.panel_rows();
@@ -1100,7 +1313,7 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
                 0,
                 0,
                 SELECTION_MARK,
-                mark_cells(),
+                MARK_CELLS as u16,
                 style.patch(theme.style(ThemeRole::TreeSelectionMark)),
             );
         }
@@ -1158,9 +1371,8 @@ fn build_panel_rows(
                         .file_name()
                         .unwrap_or_else(|| path.as_os_str())
                         .to_string_lossy();
-                    let icon = directory_icon(Expansion::Expanded);
                     PanelRow {
-                        text: format!("{mark}{guides}{} {name}", icon.glyph),
+                        text: format!("{mark}{guides}{DIRECTORY_ICON} {name}"),
                         directory: true,
                         complete: false,
                         git: None,
@@ -1174,14 +1386,13 @@ fn build_panel_rows(
                         .file_name()
                         .unwrap_or_else(|| path.as_path().as_os_str())
                         .to_string_lossy();
-                    let icon = file_icon(&name);
                     let label =
                         entry.map_or_else(|| name.clone().into_owned(), |entry| entry.label());
                     // The mark and the color are the ones that the file tree
                     // draws for the same repository state.
                     let status = section.git_status();
                     PanelRow {
-                        text: format!("{mark}{guides}{} {label}", icon.glyph),
+                        text: format!("{mark}{guides}{FILE_ICON} {label}"),
                         directory: false,
                         complete: entry.is_some_and(ChangeEntry::is_complete),
                         git: Some(status),
@@ -1195,6 +1406,11 @@ fn build_panel_rows(
 
 /// The placeholder that reserves the mark cell of one tab label.
 const MARK_SPACE: &str = " ";
+const MARK_CELLS: usize = 1;
+const GIT_MARK_CELLS: u16 = 1;
+const SELECTION_MARK: &str = "▌";
+const DIRECTORY_ICON: &str = "\u{f07c}";
+const FILE_ICON: &str = "\u{f15b}";
 
 /// The cell of one tab that carries the mark of its repository state.
 ///
@@ -1221,6 +1437,48 @@ const CHANGES_PANEL_CELLS_MIN: u16 = 16;
 
 /// The widest changes panel, in cells.
 const CHANGES_PANEL_CELLS_MAX: u16 = 80;
+
+fn paint_span(
+    canvas: &mut kvim_ui::SidebarCanvas<'_>,
+    start: usize,
+    cells: usize,
+    style: ratatui::style::Style,
+) {
+    let start = u16::try_from(start).unwrap_or(u16::MAX);
+    let cells = u16::try_from(cells).unwrap_or(u16::MAX);
+    canvas.style_span(0, start, cells, style);
+}
+
+fn host_git_state(status: GitStatus) -> GitStatus {
+    status
+}
+
+fn git_mark(status: GitStatus) -> &'static str {
+    match status {
+        GitStatus::Ignored => "☑",
+        GitStatus::Untracked => "□",
+        GitStatus::Staged => "■",
+        GitStatus::Modified => "●",
+        GitStatus::StagedAndModified => "◆",
+        GitStatus::Conflicted => "▲",
+    }
+}
+
+fn render_git_mark(
+    canvas: &mut kvim_ui::SidebarCanvas<'_>,
+    status: GitStatus,
+    theme: Theme,
+    style: ratatui::style::Style,
+) {
+    let column = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
+    canvas.draw_clipped(
+        0,
+        column,
+        git_mark(status),
+        GIT_MARK_CELLS,
+        style.patch(theme.style(ThemeRole::TreeGit(host_git_state(status)))),
+    );
+}
 
 /// Reports whether one row names one changed file of one section.
 fn names_file(row: &ChangesRow, section: ChangeSection, path: &WorktreeRelativePath) -> bool {

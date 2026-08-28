@@ -62,10 +62,9 @@ pub enum CoordinateError {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::TextBuffer;
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, TextBuffer};
 ///
-/// let buffer = TextBuffer::from_text("hé", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("hé", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// assert_eq!(buffer.byte_offset(3).expect("3 ends the text").get(), 3);
 /// assert!(buffer.byte_offset(2).is_err());
@@ -94,10 +93,9 @@ impl ByteOffset {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::TextBuffer;
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, TextBuffer};
 ///
-/// let buffer = TextBuffer::from_text("hé", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("hé", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let position = buffer.char_position(2).expect("2 ends the text");
 /// assert_eq!(position.get(), 2);
@@ -126,10 +124,9 @@ impl CharPosition {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::TextBuffer;
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, TextBuffer};
 ///
-/// let buffer = TextBuffer::from_text("one\ntwo\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("one\ntwo\n", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// assert_eq!(buffer.line_count(), 2);
 /// assert_eq!(buffer.line_index(1).expect("the last line exists").get(), 1);
@@ -166,10 +163,9 @@ impl LineIndex {
 /// # Examples
 ///
 /// ```
-/// use kvim_core::TextBuffer;
-/// use kvim_settings::FileSettings;
+/// use kvim_core::{BufferBytesMax, TextBuffer};
 ///
-/// let buffer = TextBuffer::from_text("héllo\nworld\n", &FileSettings::default())
+/// let buffer = TextBuffer::from_text("héllo\nworld\n", BufferBytesMax::default())
 ///     .expect("the text is small");
 /// let line = buffer.line_index(0).expect("the first line exists");
 /// assert_eq!(buffer.source_column(line, 5).expect("the line holds 5 characters").get(), 5);

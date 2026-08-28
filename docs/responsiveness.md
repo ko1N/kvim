@@ -3,10 +3,10 @@
 ## Ownership
 
 `kvim-runtime` owns reusable bounded scheduling, cancellation, deadlines, and
-result delivery. An `EditorDriver` owns request identity, routing, publication
-gates, tracked work, and shutdown for one embedded editor. The host event loop
-owns that instance's visible editor state. The standalone `kvim` binary owns the
-terminal event loop.
+result delivery. `kvim-embed` owns facade-facing readiness, completion,
+application, private executor capacity, and shutdown values for one high-level
+editor. The host event loop owns terminal state and applies facade outcomes.
+The standalone `kvim` binary owns the terminal event loop.
 
 ## Event Loop
 
@@ -80,15 +80,9 @@ until an unrelated event paints the next frame.
 ## Bounded Work
 
 Run external commands through a bounded and cancellable process spawner. Run
-processor-bound work through a bounded worker spawner. The host supplies these
-spawners to an embedded driver and chooses isolated capacity or an explicitly
-shared pool. Bound queues, process concurrency, worker concurrency, input sizes,
-output sizes, caches, retries, and deadlines.
-
-The library creates no asynchronous runtime and starts no detached task. The
-host runs every returned driver future and supervises every submitted task.
-Synchronous syntax highlighting is bounded processor work. Submit it through the
-worker spawner. Never call it directly from an event loop.
+processor-bound work through a bounded worker spawner. `WorktreeEditor` owns
+these spawners on its private executor. `WorktreeCapacity` bounds result,
+process, worker, and event capacity for each editor.
 
 Submission never waits for capacity. When no permit or result slot is available,
 submission returns a typed saturated result immediately. The event loop then
@@ -99,12 +93,15 @@ Each service owns its permits until the work and the result delivery finish.
 Creating another client of a service does not create more capacity.
 
 The worker spawner accepts two kinds of job. An optional job changes no durable
-state, so a cancellation drops it and the caller keeps its previous visible
-state. A committing job can change durable state, so it masks cancellation once
-it starts and always reports its outcome. Only its deadline still bounds it. A
-caller that reserved the mandatory event of a side effect submits a committing
-job, because a cancelled answer would release that reservation after the
-filesystem already holds the change.
+state, so a cancellation or deadline drops it and the caller keeps its previous
+visible state. A committing job can change durable state. For the current
+blocking-worker API, starting its closure is the explicit commit point. Before
+that point, cancellation or a deadline aborts a queued closure. If the closure
+already started, Tokio cannot stop it, so the runtime waits for its actual
+result. The job keeps its result reservation and tracked task until publication.
+Shutdown remains bounded through the must-use drain, which a host can wait on
+again after its own shutdown deadline. See [Mandatory Event
+Delivery](#mandatory-event-delivery).
 
 ### Runtime Bounds
 
@@ -113,7 +110,8 @@ below must always agree.
 
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
-| Result queue capacity | `EVENT_QUEUE_CAPACITY` | 256 results | One editor keystroke starts few requests, so 256 results absorb a burst without hiding a stalled event loop. |
+| Result queue default | `EVENT_QUEUE_CAPACITY` | 256 results | One editor keystroke starts few requests, so 256 results absorb a burst without hiding a stalled event loop. |
+| Result queue maximum | `EVENT_QUEUE_CAPACITY_MAX` | 4,096 results | A supplied runtime can absorb a larger host burst without retaining an unbounded result queue. |
 | Process concurrency | `PROCESS_CONCURRENCY_LIMIT` | 8 processes | The editor runs few external commands together: one search, one formatter, and one clipboard command. Eight leaves headroom and still bounds the child count. |
 | Worker concurrency | `WORKER_CONCURRENCY_LIMIT_MAX` | 1 to 8 jobs | The runtime clamps the detected parallelism into this range, so a large host does not start dozens of parser threads for one editor. |
 | Process input | `PROCESS_INPUT_BYTES_MAX` | 8 MiB | A formatter receives one buffer. [`text-model.md`](text-model.md) bounds one file at 4 MiB, so 8 MiB keeps headroom for expansion. |
@@ -179,17 +177,36 @@ skips a directory that already carries a watch, so one burst costs bounded time.
 
 ## Request Identity And Publication
 
-Every background request has an explicit identity. LSP requests also carry
-project and server identity. A newer request for the same slot makes an older
-request obsolete. Every request has one cancellation owner and an explicit
-deadline.
+### Standalone Review Publication
 
-A request that reads or transforms buffer text also carries the buffer version
-that produced its input. See [`text-model.md`](text-model.md).
+The standalone review surface follows the same boundary. Its worktree
+constructor performs bounded capture off the host event loop. Its supplied-
+candidate constructor performs no I/O. Both use addressed request identity,
+cancellation, deadlines, publication gates, bounded events, and consuming
+shutdown. Review snapshots and comments remain facade-owned neutral values; the
+host owns comment persistence and surface focus.
+
+Each request carries editor instance identity and `BufferId` where applicable.
+Text-derived work also carries one `BufferRevision`, which combines the
+replacement generation and edit version. Analysis and syntax reuse, external
+and server formatting, diagnostics, hover, definition, language synchronization,
+reload checks, saves, and active-search caches use this complete identity. LSP
+requests also carry project and server identity. A newer request for the same
+slot makes an older request obsolete. Instance identity is validated before
+result application in every build profile. A wrong-instance result returns a
+typed rejection and cannot mutate state, advance a clock, or release another
+editor reservation.
 
 A publication gate stores only the newest request identity for each slot. The
-event loop checks the gate before it applies a result. The gate does not mutate
-visible state. The gate rejects an obsolete picker result, preview result,
+owner check runs before elapsed-time advancement and before the publication
+gate or result payload is touched. A rejected facade completion remains owned
+by `WorktreeApplyError`. The host recovers it with `into_completion` and routes
+it to the `WorktreeInstanceId` that produced it. Legacy direct driver
+operations reject a mismatched `Session` with `DriverError::WrongInstance`
+before dispatch, application, shutdown, or drain processing starts.
+
+The event loop checks the gate before it applies a result. The gate does not
+mutate visible state. It rejects an obsolete picker result, preview result,
 completion result, analysis result, formatting result, or language-server
 result.
 
@@ -211,10 +228,31 @@ workspace mutation, or review-comment submission. Saturation refuses the
 operation before it starts. Accepted work follows `Reserved -> Running ->
 Committed -> Published`.
 
-Cancellation can stop work before commit. Once commit starts, the tracked task
-masks cancellation and uses its reserved slot. Failure releases the reservation.
-A successful write, workspace mutation, or review-comment submission always
-publishes its typed event.
+Cancellation can stop work before commit. A deadline can stop work only before
+commit begins. Starting the current blocking committing closure is its commit
+point. The runtime can abort the closure while Tokio still has it queued. Once
+the closure starts, the operation owns its reservation until it publishes its
+actual `Committed`, `Unchanged`, or `Indeterminate` outcome. It must not report
+timeout, cancellation, or shutdown completion while durable state can still
+change. Failure before commit releases the reservation.
+
+A successful write or workspace mutation publishes its typed event. An
+`Indeterminate` filesystem result publishes a typed reconciliation-required
+event through the same mandatory reservation. This event states that disk
+changed or might have changed without claiming a proven commit.
+
+`Unchanged` releases the reservation only when the operation proves no durable
+target changed. The result report preserves the primary source and every
+bounded restoration or cleanup source.
+
+The visible-state owner handles indeterminate results before it applies staged
+state. It keeps a save dirty. It withholds mutation path updates. It then queues
+bounded reload checks and tree reads through the normal file and workspace
+outboxes.
+
+These reconciliation requests use optional result capacity because the
+mandatory outcome is already recorded. A later read alone can establish
+agreement.
 
 `RedrawRequested` uses one coalesced latch. A full component event queue returns
 a typed `Saturated` outcome. It never silently drops the oldest or newest event.
@@ -232,12 +270,12 @@ The editor records these outcomes:
 
 | Job | Outcome | Severity |
 |---|---|---|
-| `analysis` | A newer buffer version displaced the result. | `Info` |
+| `analysis` | A newer buffer revision displaced the result. | `Info` |
 | `analysis` | The worker service accepted no job. | `Warning` |
 | `analysis` | The job was cancelled, passed its deadline, or failed. | `Info` or `Warning` |
 | `analysis` | The adapter passed a bound, or returned no usable result. | `Warning` |
 | `walk` | The walk was cancelled, passed its deadline, or failed. | `Info` or `Warning` |
-| `formatter` | A newer buffer version displaced the answer. | `Info` |
+| `formatter` | A newer buffer revision displaced the answer. | `Info` |
 
 A cancelled job carries the `Info` severity, because a newer request in the
 same slot cancels the older one and that is a normal state. Every other outcome
@@ -295,12 +333,12 @@ Dropping a process future kills its child process. Dropping the runtime remains
 a best-effort safety net. Normal editor shutdown must use the explicit consuming
 shutdown operation.
 
-Embedded shutdown consumes one `EditorDriver`. It rejects new work, cancels
+Embedded shutdown consumes one `WorktreeEditor`. It rejects new work, cancels
 pre-commit work, closes its optional services, and waits only until the supplied
 deadline. It does not abort a task that can have committed a side effect. If the
-deadline expires first, shutdown returns a bounded, must-use `ShutdownDrain`.
-The drain owns remaining tasks, event reservations, and mandatory delivery. The
-host keeps its runtime alive until the drain completes.
+deadline expires first, shutdown returns a bounded, must-use `WorktreeDrain`.
+The drain owns the private executor, remaining tasks, event reservations, and
+mandatory delivery until `WorktreeDrain::complete` returns.
 
 Terminal restoration runs after runtime shutdown and also runs while the process
 unwinds from a panic. See [`architecture.md`](architecture.md) for the release

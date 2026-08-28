@@ -25,8 +25,8 @@ use ratatui::style::Style;
 
 use kvim_editor::{SearchDirection, Viewport};
 use kvim_path::{
-    WORKTREE_PATH_COMPONENTS_MAX, WorktreeDirectoryPath, WorktreeRelativePath,
-    WorktreeRelativePathError, WorktreeRoot,
+    WORKTREE_PATH_BYTES_MAX, WORKTREE_PATH_COMPONENTS_MAX, WorktreeDirectoryPath,
+    WorktreeRelativePath, WorktreeRelativePathError, WorktreeRoot,
 };
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
@@ -43,8 +43,9 @@ use kvim_workspace::{
 
 use super::buffer_view::RegionFocus;
 use super::file_sidebar::{
-    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome,
-    LabelMatch, draw_file_row, draw_git_mark, label_offset_cells,
+    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowIdentity, FileRowKind, FileRowNoticeKind,
+    FileSidebarInput, FileSidebarOutcome, LabelMatch, draw_file_row, draw_git_mark,
+    label_offset_cells,
 };
 use super::icons::{directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
@@ -61,6 +62,15 @@ pub(super) const TREE_TITLE_ROWS: u16 = 1;
 /// within 255 UTF-8 bytes therefore stays within the macOS limit too. The
 /// unit is bytes, because that unit matches what both filesystems enforce.
 pub(super) const TREE_NAME_BYTES_MAX: usize = 255;
+
+/// The largest number of bytes allocated for the published root label.
+///
+/// Lossy conversion can encode each validated path byte as one three-byte
+/// replacement character. The optional home abbreviation adds two bytes.
+pub const FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX: usize = WORKTREE_PATH_BYTES_MAX * 3 + 2;
+
+/// The largest published row depth.
+pub const FILE_SIDEBAR_DEPTH_MAX: u16 = WORKTREE_PATH_COMPONENTS_MAX as u16;
 
 /// The marker of one expanded directory row, while the tree hides its icons.
 pub(super) const EXPANDED_MARKER: &str = "▾ ";
@@ -117,6 +127,8 @@ pub(super) const GIT_MARK_CELLS: u16 = 1;
 /// checked box for an entry that the ignore rules name. [`FileRowGit::glyph`]
 /// of `file_sidebar.rs` holds the one table, so the standalone tree and a host
 /// that draws kvim's own marks can never disagree about one state.
+#[allow(dead_code)]
+#[cfg(test)]
 pub(super) const fn git_mark(status: GitStatus) -> &'static str {
     host_git_state(status).glyph()
 }
@@ -302,6 +314,17 @@ impl TreeRefusal {
     }
 }
 
+/// Whether this sidebar may request Git status.
+///
+/// The policy stays with the tree because each Git trigger reaches the tree.
+/// A disabled policy applies to construction, saves, refreshes, mutations, and
+/// watcher bursts for the complete session lifetime.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum GitStatusPolicy {
+    Enabled,
+    Disabled,
+}
+
 /// The file-tree sidebar of one editor.
 #[derive(Debug)]
 pub(super) struct TreeSidebar {
@@ -324,6 +347,8 @@ pub(super) struct TreeSidebar {
     /// the sidebar never asks for two reads of one workspace. See
     /// `docs/git.md`.
     git_outbox: Option<GitStatusRequest>,
+    /// The policy that controls every Git status request for this session.
+    git_status: GitStatusPolicy,
     /// The published Git state of the workspace, while one read produced it.
     git: Option<GitStatusSnapshot>,
     /// The home directory of the user, while the environment names one.
@@ -346,6 +371,7 @@ impl TreeSidebar {
             outbox: None,
             pending: None,
             git_outbox: None,
+            git_status: GitStatusPolicy::Enabled,
             git: None,
             home: env::var_os("HOME")
                 .map(PathBuf::from)
@@ -386,6 +412,22 @@ impl TreeSidebar {
         self.outbox.take()
     }
 
+    /// Removes a queued Git status read before dispatch.
+    pub(super) fn disable_git_status(&mut self) {
+        self.git_status = GitStatusPolicy::Disabled;
+        self.git_outbox = None;
+        self.git = None;
+    }
+
+    pub(super) fn git_status_enabled(&self) -> bool {
+        self.git_status == GitStatusPolicy::Enabled
+    }
+
+    /// Reports whether Git status has a queued request.
+    pub(super) fn git_request_queued(&self) -> bool {
+        self.git_outbox.is_some()
+    }
+
     /// Returns the Git status read that the event loop must submit.
     pub(super) fn take_git_request(&mut self) -> Option<GitStatusRequest> {
         self.git_outbox.take()
@@ -398,6 +440,9 @@ impl TreeSidebar {
     /// point, and no timer does, because the renderer runs no unconditional
     /// frame loop. See `docs/git.md`.
     pub(super) fn request_git_status(&mut self) {
+        if self.git_status == GitStatusPolicy::Disabled {
+            return;
+        }
         self.git_outbox = Some(GitStatusRequest::new(Arc::clone(&self.root)));
     }
 
@@ -406,6 +451,9 @@ impl TreeSidebar {
     /// A newer refresh replaces the queued request, exactly as a new trigger
     /// does, so the sidebar still runs one read at a time. See `docs/git.md`.
     pub(super) fn resume_git_status(&mut self, request: GitStatusRequest) {
+        if self.git_status == GitStatusPolicy::Disabled {
+            return;
+        }
         self.git_outbox = Some(request);
     }
 
@@ -415,6 +463,9 @@ impl TreeSidebar {
     /// newer one replaced. This second check rejects a snapshot of another
     /// workspace root from the visible state itself.
     pub(super) fn apply_git_status(&mut self, snapshot: GitStatusSnapshot) -> GitPublication {
+        if self.git_status == GitStatusPolicy::Disabled {
+            return GitPublication::Obsolete;
+        }
         if snapshot.root() != &*self.root {
             return GitPublication::Obsolete;
         }
@@ -959,15 +1010,43 @@ impl TreeSidebar {
             len: matched.len,
         });
         let state = RowState::of(row, self.held_mode(&row.path), git);
+        let contained_path = row
+            .is_selectable()
+            .then(|| self.contained(&row.path))
+            .flatten();
+        let identity = match &row.content {
+            RowContent::File { .. } | RowContent::Directory { .. } => {
+                let Some(path) = contained_path.clone() else {
+                    debug_assert!(false, "selectable tree rows are confined to the worktree");
+                    return None;
+                };
+                FileRowIdentity::Entry(path)
+            }
+            RowContent::Notice(notice) => FileRowIdentity::Notice {
+                parent: row
+                    .path
+                    .strip_prefix(self.root.as_path())
+                    .ok()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .and_then(|path| WorktreeRelativePath::new(path).ok()),
+                kind: match notice {
+                    Notice::Truncated { .. } => FileRowNoticeKind::Truncated,
+                    Notice::Unreadable => FileRowNoticeKind::Unreadable,
+                    Notice::Hidden { .. } => FileRowNoticeKind::Hidden,
+                },
+            },
+        };
         Some(
             FileRow::new(
+                identity,
+                contained_path,
                 label,
                 guides,
                 row.depth,
                 host_row_kind(row),
                 state,
-                selected,
             )
+            .with_selected(selected)
             .with_git(git.map(host_git_state))
             .with_symlink(is_symlink)
             .with_icon(icon)
@@ -999,6 +1078,10 @@ impl TreeSidebar {
             FileSidebarInput::Open => self.expand_selected(),
             FileSidebarInput::Close => {
                 self.collapse_selected();
+                None
+            }
+            FileSidebarInput::Refresh => {
+                self.refresh_all();
                 None
             }
             FileSidebarInput::Activate => self.open_selected(),
@@ -1234,14 +1317,19 @@ fn entry_name(path: &Path) -> String {
 /// the reference editor configuration do. A root outside the home directory,
 /// and a session without one, keep the complete path.
 pub(super) fn root_label(root: &Path, home: Option<&Path>) -> String {
-    let Some(home) = home else {
-        return root.display().to_string();
+    let label = match home {
+        None => root.to_string_lossy().into_owned(),
+        Some(home) => match root.strip_prefix(home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Ok(rest) => format!("~/{}", rest.to_string_lossy()),
+            Err(_) => root.to_string_lossy().into_owned(),
+        },
     };
-    match root.strip_prefix(home) {
-        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => root.display().to_string(),
-    }
+    debug_assert!(
+        label.len() <= FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX,
+        "the validated worktree path bounds its lossy root label allocation"
+    );
+    label
 }
 
 /// Returns what one tree row shows to an embedded host.
@@ -1338,7 +1426,7 @@ pub(super) fn render_tree(
             return;
         };
         if row.is_selected() {
-            cursor = Some(selected_cell(canvas.area(), row.depth()));
+            cursor = Some(selected_cell(canvas.area(), usize::from(row.depth())));
         }
         draw_file_row(canvas, &row, theme, icons, focus);
     });
@@ -1391,6 +1479,7 @@ pub(super) fn paint_span(canvas: &mut SidebarCanvas<'_>, start: usize, cells: us
 /// The changes panel of the review records a [`GitStatus`], so this call
 /// converts once and hands the drawing to the one published painter of a Git
 /// mark. See `docs/git.md`.
+#[allow(dead_code)]
 pub(super) fn render_git_mark(
     canvas: &mut SidebarCanvas<'_>,
     status: GitStatus,

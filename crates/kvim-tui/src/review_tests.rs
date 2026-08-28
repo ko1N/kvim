@@ -110,8 +110,8 @@ fn two_hunk_file(name: &str) -> FileDiff {
     .expect("the fixture file is usable")
 }
 
-fn surface(unstaged: Vec<FileDiff>) -> ReviewSurface {
-    ReviewSurface::new(
+fn model(unstaged: Vec<FileDiff>) -> ReviewModel {
+    ReviewModel::new(
         None,
         Some(candidate(unstaged, [1; 32])),
         DiffSettings::default(),
@@ -122,7 +122,7 @@ fn surface(unstaged: Vec<FileDiff>) -> ReviewSurface {
 
 #[test]
 fn the_view_key_switches_the_two_views_and_returns() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(review.view(), DiffView::SideBySide);
 
     assert_eq!(
@@ -141,7 +141,7 @@ fn the_view_key_switches_the_two_views_and_returns() {
 #[test]
 fn the_cursor_starts_in_the_half_that_a_reader_works_on() {
     // The unstaged half publishes a change, so the cursor starts there.
-    let both = ReviewSurface::new(
+    let both = ReviewModel::new(
         Some(candidate(vec![added("staged.txt", 1, &["one"])], [2; 32])),
         Some(candidate(vec![added("unstaged.txt", 1, &["two"])], [3; 32])),
         DiffSettings::default(),
@@ -151,7 +151,7 @@ fn the_cursor_starts_in_the_half_that_a_reader_works_on() {
     assert_eq!(both.section(), ChangeSection::Unstaged);
 
     // A workspace with staged work alone starts there instead.
-    let staged_only = ReviewSurface::new(
+    let staged_only = ReviewModel::new(
         Some(candidate(vec![added("staged.txt", 1, &["one"])], [4; 32])),
         Some(candidate(Vec::new(), [5; 32])),
         DiffSettings::default(),
@@ -165,7 +165,7 @@ fn the_cursor_starts_in_the_half_that_a_reader_works_on() {
 fn the_hunk_walk_stops_at_the_border_and_changes_nothing_there() {
     // The walk moves inside the body of one file, so one file with one hunk
     // holds one header and the walk reaches no second one.
-    let mut review = surface(vec![added("a.txt", 1, &["one", "two"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one", "two"])]);
 
     assert_eq!(
         review.apply(Command::NextHunk, None),
@@ -179,7 +179,7 @@ fn the_hunk_walk_stops_at_the_border_and_changes_nothing_there() {
 
 #[test]
 fn the_file_walk_passes_every_hunk_of_the_file_that_it_leaves() {
-    let mut review = surface(vec![
+    let mut review = model(vec![
         added("a.txt", 1, &["one"]),
         added("b.txt", 1, &["two"]),
     ]);
@@ -203,7 +203,7 @@ fn the_file_walk_passes_every_hunk_of_the_file_that_it_leaves() {
 
 #[test]
 fn the_jump_names_the_file_and_the_first_line_of_the_hunk() {
-    let mut review = surface(vec![added("src/main.rs", 42, &["one", "two"])]);
+    let mut review = model(vec![added("src/main.rs", 42, &["one", "two"])]);
 
     assert_eq!(
         review.apply(Command::OpenHunkFile, None),
@@ -216,7 +216,7 @@ fn the_jump_names_the_file_and_the_first_line_of_the_hunk() {
 
 #[test]
 fn a_read_mark_reaches_the_review_and_the_panel() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(
         review
             .active()
@@ -245,7 +245,7 @@ fn a_read_mark_reaches_the_review_and_the_panel() {
 
 #[test]
 fn a_reload_keeps_the_marks_that_the_later_capture_still_holds() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(
         review.apply(Command::MarkHunkRead, None),
         ReviewOutcome::Changed
@@ -268,7 +268,7 @@ fn a_reload_keeps_the_marks_that_the_later_capture_still_holds() {
 
 #[test]
 fn the_close_key_asks_the_session_to_restore_its_layout() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(
         review.apply(Command::CloseReview, None),
         ReviewOutcome::Close
@@ -277,7 +277,7 @@ fn the_close_key_asks_the_session_to_restore_its_layout() {
 
 #[test]
 fn a_command_of_another_surface_reaches_no_behavior_here() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(
         review.apply(Command::InsertBeforeCursor, None),
         ReviewOutcome::Unhandled
@@ -286,7 +286,7 @@ fn a_command_of_another_surface_reaches_no_behavior_here() {
 
 #[test]
 fn the_panel_follows_the_cursor_and_names_both_halves() {
-    let mut review = ReviewSurface::new(
+    let mut review = ReviewModel::new(
         Some(candidate(vec![added("staged.txt", 1, &["one"])], [20; 32])),
         Some(candidate(
             vec![added("a.txt", 1, &["one"]), added("b.txt", 1, &["two"])],
@@ -324,7 +324,7 @@ fn the_panel_follows_the_cursor_and_names_both_halves() {
 
 #[test]
 fn the_focus_moves_between_the_two_regions() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(review.focus(), ReviewFocus::Diff);
 
     assert_eq!(
@@ -348,7 +348,7 @@ fn the_focus_moves_between_the_two_regions() {
 #[test]
 fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
     let lines: Vec<&str> = vec!["one", "two", "three", "four", "five", "six"];
-    let mut review = surface(vec![added("a.txt", 1, &lines)]);
+    let mut review = model(vec![added("a.txt", 1, &lines)]);
     // The strip and the header of the body each take one row, so a band of
     // four rows leaves the body two.
     review.set_height_rows(4);
@@ -401,7 +401,7 @@ fn the_body_holds_every_row_of_its_file_and_scrolls_them() {
 #[test]
 fn a_half_page_moves_by_the_height_of_the_region() {
     let lines: Vec<&str> = (0..20).map(|_| "line").collect();
-    let mut review = surface(vec![added("a.txt", 1, &lines)]);
+    let mut review = model(vec![added("a.txt", 1, &lines)]);
     // The strip and the header each take one row, so the body holds nine.
     review.set_height_rows(11);
 
@@ -420,7 +420,7 @@ fn a_half_page_moves_by_the_height_of_the_region() {
 
 #[test]
 fn a_motion_moves_the_region_that_owns_the_keys_alone() {
-    let mut review = surface(vec![
+    let mut review = model(vec![
         added("a.txt", 1, &["one", "two"]),
         added("b.txt", 1, &["three"]),
     ]);
@@ -456,7 +456,7 @@ fn a_motion_moves_the_region_that_owns_the_keys_alone() {
 
 #[test]
 fn selecting_a_file_in_the_panel_shows_that_file() {
-    let mut review = surface(vec![
+    let mut review = model(vec![
         added("a.txt", 1, &["one"]),
         added("b.txt", 1, &["two", "three"]),
     ]);
@@ -477,7 +477,7 @@ fn selecting_a_file_in_the_panel_shows_that_file() {
 
 #[test]
 fn the_hunk_walk_reaches_the_header_of_every_hunk() {
-    let mut review = surface(vec![two_hunk_file("a.txt")]);
+    let mut review = model(vec![two_hunk_file("a.txt")]);
     review.set_height_rows(10);
 
     let headers: Vec<usize> = review
@@ -506,7 +506,7 @@ fn the_hunk_walk_reaches_the_header_of_every_hunk() {
 fn the_panel_returns_to_a_file_that_it_already_showed() {
     // Walking down the list and back up must show every file again. The cursor
     // reaches a file in either direction, so no diff is shown only once.
-    let mut review = surface(vec![
+    let mut review = model(vec![
         added("a.txt", 1, &["one"]),
         added("b.txt", 1, &["two"]),
         added("c.txt", 1, &["three"]),
@@ -514,7 +514,7 @@ fn the_panel_returns_to_a_file_that_it_already_showed() {
     review.set_height_rows(10);
     review.apply(Command::FocusWindowRight, None);
 
-    let shown = |review: &ReviewSurface| {
+    let shown = |review: &ReviewModel| {
         review
             .active()
             .and_then(ReviewState::cursor)
@@ -544,7 +544,7 @@ fn a_page_jump_keeps_the_body_on_its_own_file() {
     // A hunk identity restarts in every file, so a jump that crosses hunks must
     // never place the review cursor in another file. The body would then draw
     // rows that it looked up in the wrong one.
-    let mut review = surface(vec![two_hunk_file("a.txt"), two_hunk_file("b.txt")]);
+    let mut review = model(vec![two_hunk_file("a.txt"), two_hunk_file("b.txt")]);
     review.set_height_rows(4);
     let rows = review.body().len();
 
@@ -576,7 +576,7 @@ fn a_page_jump_keeps_the_body_on_its_own_file() {
 
 #[test]
 fn one_key_walks_the_sections_of_the_review() {
-    let mut review = ReviewSurface::new(
+    let mut review = ReviewModel::new(
         Some(candidate(vec![added("staged.txt", 1, &["one"])], [40; 32])),
         Some(candidate(
             vec![added("unstaged.txt", 1, &["two"])],
@@ -611,7 +611,7 @@ fn one_key_walks_the_sections_of_the_review() {
 
 #[test]
 fn a_review_with_one_section_walks_to_nothing_new() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
 
     assert_eq!(review.sections().len(), 1, "the staged half publishes none");
     assert_eq!(
@@ -623,7 +623,7 @@ fn a_review_with_one_section_walks_to_nothing_new() {
 
 #[test]
 fn the_panel_resizes_on_the_one_axis_that_the_review_holds() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     let opened = review.panel_cells();
     let step = WindowSettings::default().resize_step_cells;
 
@@ -669,7 +669,7 @@ fn staging_every_change_moves_the_reader_to_the_staged_half() {
     // A reader stages the work that they were reading. The unstaged half then
     // publishes nothing, so its tab closes, the staged tab opens, and the
     // reader sees the same files instead of an empty view.
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
     assert_eq!(review.section(), ChangeSection::Unstaged);
     assert_eq!(review.sections().len(), 1);
 
@@ -693,7 +693,7 @@ fn staging_every_change_moves_the_reader_to_the_staged_half() {
 
 #[test]
 fn a_half_that_fills_again_opens_its_tab_in_its_own_place() {
-    let mut review = surface(vec![added("a.txt", 1, &["one"])]);
+    let mut review = model(vec![added("a.txt", 1, &["one"])]);
 
     // Both halves hold work, so the strip names both in a fixed order.
     review.reload(
@@ -724,5 +724,93 @@ fn a_half_that_fills_again_opens_its_tab_in_its_own_place() {
         labels,
         vec!["  Unstaged 1", "  Staged 1"],
         "the tab returns to its own place"
+    );
+}
+
+#[cfg(feature = "editor")]
+#[test]
+fn integrated_adapter_forwards_commands_and_uses_the_model_painter() {
+    let staged = candidate(vec![added("staged.txt", 7, &["staged"])], [60; 32]);
+    let unstaged = candidate(
+        vec![
+            added("notes.txt", 3, &["note"]),
+            two_hunk_file("src/main.rs"),
+        ],
+        [61; 32],
+    );
+    let settings = DiffSettings::default();
+    let resize_step = WindowSettings::default().resize_step_cells;
+    let mut integrated = ReviewSurface::new(
+        Some(staged.clone()),
+        Some(unstaged.clone()),
+        settings,
+        resize_step,
+        14,
+    );
+    let mut expected = ReviewModel::new(Some(staged), Some(unstaged), settings, resize_step, 14);
+
+    for command in [
+        Command::MoveDown,
+        Command::NextHunk,
+        Command::MarkHunkRead,
+        Command::FocusWindowRight,
+        Command::MoveDown,
+        Command::ResizeWindowLeft,
+        Command::FocusWindowLeft,
+        Command::ToggleReviewView,
+        Command::NextReviewSection,
+    ] {
+        assert_eq!(
+            integrated.apply(command, None),
+            expected.apply(command, None)
+        );
+    }
+
+    let area = Rect::new(0, 0, 96, 14);
+    let mut integrated_cells = CellBuffer::empty(area);
+    draw_review(
+        &mut integrated_cells,
+        area,
+        Theme::default(),
+        settings,
+        "worktree",
+        &integrated,
+    );
+    let mut model_cells = CellBuffer::empty(area);
+    ReviewPainter::new(Theme::default(), settings, "worktree").draw(
+        &mut model_cells,
+        area,
+        &expected,
+    );
+    assert_eq!(integrated_cells, model_cells);
+    assert_eq!(expected.view(), DiffView::Inline);
+    assert_eq!(expected.section(), ChangeSection::Staged);
+}
+
+#[test]
+fn model_relocation_preserves_read_state_and_open_file_outcomes() {
+    let first = candidate(vec![added("src/lib.rs", 42, &["one", "two"])], [70; 32]);
+    let settings = DiffSettings::default();
+    let resize_step = WindowSettings::default().resize_step_cells;
+    let mut review = ReviewModel::new(None, Some(first), settings, resize_step, 12);
+
+    assert_eq!(
+        review.apply(Command::MarkHunkRead, None),
+        ReviewOutcome::Changed
+    );
+    let relocated = candidate(vec![added("src/lib.rs", 42, &["one", "two"])], [71; 32]);
+    review.reload(ChangeSection::Unstaged, relocated);
+
+    assert_eq!(
+        review.active().map(ReviewState::unread_total),
+        Some(0),
+        "unchanged hunk content keeps its read anchor after reload"
+    );
+    assert_eq!(
+        review.apply(Command::OpenHunkFile, None),
+        ReviewOutcome::OpenFile {
+            path: path("src/lib.rs"),
+            line: 42
+        }
     );
 }

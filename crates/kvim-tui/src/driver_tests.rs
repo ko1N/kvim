@@ -312,6 +312,57 @@ fn published_a_write(editor: &mut Session) -> bool {
 }
 
 #[tokio::test]
+async fn wrong_instance_completion_is_rejected_before_clock_or_result_mutation() {
+    let first_root = TempDir::new("driver-owner-first");
+    let second_root = TempDir::new("driver-owner-second");
+    let mut first_editor = editor_at(&first_root.path);
+    let mut second_editor = editor_at(&second_root.path);
+    let (first_spawner, first_results) = Runtime::<EditorWork>::new();
+    let (second_spawner, second_results) = Runtime::<EditorWork>::new();
+    let mut first_driver = EditorDriver::new(first_editor.instance(), first_spawner, first_results);
+    let mut second_driver =
+        EditorDriver::new(second_editor.instance(), second_spawner, second_results);
+
+    let _ = first_driver.dispatch(&mut first_editor).unwrap();
+    let _ = second_driver.dispatch(&mut second_editor).unwrap();
+    let completion = timeout(STEP_WAIT, first_driver.recv())
+        .await
+        .expect("the first matching local request completes");
+    let second_completion = timeout(STEP_WAIT, second_driver.recv())
+        .await
+        .expect("the second matching local request completes");
+    while second_editor.take_event().is_some() {}
+    assert_eq!(second_editor.clock(), Duration::ZERO);
+
+    let error = second_driver
+        .apply(&mut second_editor, completion, Duration::from_secs(60))
+        .expect_err("release builds reject another driver's completion");
+    assert_eq!(second_editor.clock(), Duration::ZERO);
+    assert!(second_editor.take_event().is_none());
+    second_driver
+        .apply(&mut second_editor, second_completion, Duration::ZERO)
+        .expect("rejection leaves the receiver's request state available");
+    first_driver
+        .apply(&mut first_editor, error.into_completed(), Duration::ZERO)
+        .expect("the owner accepts its recovered completion");
+
+    assert!(
+        first_driver
+            .shutdown(&mut first_editor, SHUTDOWN_WAIT)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        second_driver
+            .shutdown(&mut second_editor, SHUTDOWN_WAIT)
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[tokio::test]
 async fn the_driver_submits_every_syntax_request_through_the_caller_spawner() {
     let directory = TempDir::new("driver-analysis");
     let path = directory.write("main.rs", "fn main() {}\n");
@@ -347,7 +398,10 @@ async fn the_driver_submits_every_syntax_request_through_the_caller_spawner() {
         analyses, 1,
         "the parse and the highlight query ran on the worker service"
     );
-    let drain = driver.shutdown(&mut editor, SHUTDOWN_WAIT).await;
+    let drain = driver
+        .shutdown(&mut editor, SHUTDOWN_WAIT)
+        .await
+        .expect("the driver owns this editor");
     assert!(drain.is_none(), "every task of this editor finished");
 }
 
@@ -371,7 +425,10 @@ async fn a_shutdown_waits_for_the_committed_write_and_publishes_its_fact() {
 
     // The shutdown cancels every pre-commit request, and the write masks
     // that cancellation, so its reserved slot still publishes its fact.
-    let drain = driver.shutdown(&mut editor, SHUTDOWN_WAIT).await;
+    let drain = driver
+        .shutdown(&mut editor, SHUTDOWN_WAIT)
+        .await
+        .expect("the driver owns this editor");
 
     assert!(drain.is_none(), "the write finished inside the deadline");
     assert!(
@@ -410,6 +467,7 @@ async fn an_expired_deadline_returns_the_drain_that_publishes_the_write() {
     let drain = driver
         .shutdown(&mut editor, Duration::ZERO)
         .await
+        .expect("the driver owns this editor")
         .expect("the parked job holds the tracked work past the deadline");
 
     assert!(
@@ -419,7 +477,10 @@ async fn an_expired_deadline_returns_the_drain_that_publishes_the_write() {
     release
         .send(())
         .expect("the parked job still waits for its release");
-    let _redraw = drain.complete(&mut editor).await;
+    let _redraw = drain
+        .complete(&mut editor)
+        .await
+        .expect("the drain owns this editor");
 
     assert!(
         published_a_write(&mut editor),

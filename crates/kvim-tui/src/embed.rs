@@ -18,7 +18,7 @@
 //! [`EmbeddedEditor`] is the facade of this contract. It builds the model and
 //! the driver of one instance together, so a host names one root, one
 //! rectangle, and one named [`EditorCapacity`] and gets one independent
-//! editor. `crates/kvim-tui/examples/embedded_editor.rs` is the complete host
+//! editor. `crates/kvim-embed/examples/worktree_editor.rs` is the complete host
 //! of one such editor: it owns the input, the cell buffer, the spawner, the
 //! task supervision, and the cancellation.
 //!
@@ -28,6 +28,7 @@ use std::collections::VecDeque;
 use std::fmt;
 use std::num::NonZeroU32;
 use std::num::NonZeroU64;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
@@ -36,16 +37,19 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 
-use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText};
+use kvim_input::{
+    BindingScope, Command, CommandLineCommand, InputContextSnapshot, Mode, PasteText, Registry,
+};
 use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
-use kvim_settings::EditorSettings;
+use kvim_settings::{EditorSettings, SettingsError};
+use kvim_terminal::TerminalEvent;
 use kvim_ui::Direction;
 use kvim_workspace::FileOperation;
 
 use super::clipboard::ClipboardAccess;
-use super::driver::{Completed, EditorDriver, EditorWork, ShutdownDrain};
+use super::driver::{Completed, DriverApplyError, EditorDriver, EditorWork, ShutdownDrain};
 use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
 use super::session::{Redraw, RunState, Session};
 
@@ -67,7 +71,7 @@ static NEXT_INSTANCE: AtomicU64 = AtomicU64::new(1);
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::EditorInstanceId;
+/// use kvim_tui::__private::EditorInstanceId;
 ///
 /// let first = EditorInstanceId::allocate();
 /// let second = EditorInstanceId::allocate();
@@ -97,7 +101,7 @@ impl EditorInstanceId {
     /// Returns the instance number.
     ///
     /// ```
-    /// use kvim_tui::EditorInstanceId;
+    /// use kvim_tui::__private::EditorInstanceId;
     ///
     /// assert!(EditorInstanceId::allocate().get() >= 1);
     /// ```
@@ -116,7 +120,7 @@ impl EditorInstanceId {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::EditorAccess;
+/// use kvim_tui::__private::EditorAccess;
 ///
 /// assert_eq!(EditorAccess::default(), EditorAccess::ReadWrite);
 /// ```
@@ -135,7 +139,7 @@ pub enum EditorAccess {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::Refusal;
+/// use kvim_tui::__private::Refusal;
 ///
 /// assert_eq!(Refusal::ViewOnly.note(), "the host granted read-only access");
 /// ```
@@ -174,13 +178,21 @@ pub struct Saturated;
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{Direction, EditorEvent, InputRequest};
+/// use kvim_tui::__private::{Direction, EditorEvent, InputRequest};
 ///
 /// let request = InputRequest::FocusBoundary(Direction::Left);
-/// assert_eq!(request.event(), EditorEvent::FocusBoundary(Direction::Left));
+/// assert_eq!(
+///     request.event(),
+///     Some(EditorEvent::FocusBoundary(Direction::Left))
+/// );
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputRequest {
+    /// A host-owned command line must become visible.
+    OpenCommandLine {
+        /// The bounded session identity created for this prompt.
+        session: u64,
+    },
     /// A focus move reached the outer edge of this editor.
     FocusBoundary(Direction),
     /// The editor closed its last window and asks the host to close it.
@@ -188,16 +200,26 @@ pub enum InputRequest {
 }
 
 impl InputRequest {
-    /// Returns the request as one editor event.
+    /// Returns the request as one legacy editor event, when it has one.
     ///
-    /// A host that keeps one uniform event stream converts the synchronous
-    /// request with this method.
+    /// The synchronous command-line request carries its session identity and
+    /// therefore has no equivalent asynchronous event.
     #[inline]
     #[must_use]
-    pub const fn event(self) -> EditorEvent {
+    pub const fn event(self) -> Option<EditorEvent> {
         match self {
-            Self::FocusBoundary(direction) => EditorEvent::FocusBoundary(direction),
-            Self::CloseRequested => EditorEvent::CloseRequested,
+            Self::OpenCommandLine { .. } => None,
+            Self::FocusBoundary(direction) => Some(EditorEvent::FocusBoundary(direction)),
+            Self::CloseRequested => Some(EditorEvent::CloseRequested),
+        }
+    }
+
+    /// Returns the host command session identity, when this opens one.
+    #[must_use]
+    pub const fn command_session(self) -> Option<u64> {
+        match self {
+            Self::OpenCommandLine { session } => Some(session),
+            Self::FocusBoundary(_) | Self::CloseRequested => None,
         }
     }
 }
@@ -262,7 +284,7 @@ impl Reduction {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::{Direction, EditorEvent};
+/// use kvim_tui::__private::{Direction, EditorEvent};
 ///
 /// let event = EditorEvent::FocusBoundary(Direction::Right);
 /// assert_eq!(event, EditorEvent::FocusBoundary(Direction::Right));
@@ -283,6 +305,16 @@ pub enum EditorEvent {
     /// One workspace mutation completed.
     WorkspaceChanged {
         /// The operation that the workspace performed.
+        operation: FileOperation,
+    },
+    /// One save reached a point where its durable state needs reconciliation.
+    SaveReconciliationRequired {
+        /// The contained path that a reload must check.
+        path: WorktreeRelativePath,
+    },
+    /// One workspace mutation reached an uncertain durable state.
+    WorkspaceReconciliationRequired {
+        /// The operation whose affected paths need reconciliation.
         operation: FileOperation,
     },
     /// The reader activated one file of the file sidebar.
@@ -399,7 +431,7 @@ impl EditorOutbox {
     /// The call cannot fail, because the operation reserved its slot before it
     /// started.
     pub(super) fn commit(&mut self, reservation: EventReservation, event: EditorEvent) {
-        debug_assert_eq!(
+        assert_eq!(
             reservation.instance, self.instance,
             "a reservation belongs to the outbox that created it"
         );
@@ -417,7 +449,7 @@ impl EditorOutbox {
 
     /// Releases the slot of one operation that produced no durable change.
     pub(super) fn release(&mut self, reservation: EventReservation) {
-        debug_assert_eq!(
+        assert_eq!(
             reservation.instance, self.instance,
             "a reservation belongs to the outbox that created it"
         );
@@ -472,7 +504,7 @@ impl EditorOutbox {
 /// # Examples
 ///
 /// ```
-/// use kvim_tui::CursorShape;
+/// use kvim_tui::__private::CursorShape;
 ///
 /// assert_ne!(CursorShape::Bar, CursorShape::Block);
 /// ```
@@ -494,6 +526,56 @@ pub struct CursorRequest {
     pub position: Option<Position>,
     /// The shape that the mode asks for.
     pub shape: CursorShape,
+}
+
+/// One embedded editor could not be constructed.
+#[derive(Debug, Error)]
+pub enum EditorOpenError {
+    /// The supplied settings are invalid.
+    #[error("invalid editor settings")]
+    Settings(#[from] SettingsError),
+    /// The editor rectangle is invalid.
+    #[error(transparent)]
+    Geometry(#[from] GeometryError),
+    /// The language service root differs from the editor root.
+    #[error("the language service root {language:?} differs from the editor root {editor:?}")]
+    LanguageRootMismatch {
+        /// The editor worktree root.
+        editor: PathBuf,
+        /// The language service root.
+        language: PathBuf,
+    },
+}
+
+/// A completed value belongs to another editor instance.
+#[derive(Debug)]
+pub struct EditorApplyError {
+    source: DriverApplyError,
+}
+
+impl EditorApplyError {
+    /// Recovers the unapplied completion for routing to its owner.
+    pub fn into_completed(self) -> Completed {
+        self.source.into_completed()
+    }
+}
+
+impl fmt::Display for EditorApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("the completion belongs to another editor instance")
+    }
+}
+
+impl std::error::Error for EditorApplyError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+impl From<DriverApplyError> for EditorApplyError {
+    fn from(source: DriverApplyError) -> Self {
+        Self { source }
+    }
 }
 
 /// A rectangle that no editor can use.
@@ -574,7 +656,7 @@ fn drain_published(editor: &mut Session) -> Vec<PublishedEvent> {
 ///
 /// ```
 /// use kvim_runtime::RuntimeLimits;
-/// use kvim_tui::EditorCapacity;
+/// use kvim_tui::__private::EditorCapacity;
 ///
 /// let limits = RuntimeLimits::new(32, 2, 2).expect("every capacity is nonzero");
 /// assert!(matches!(
@@ -602,7 +684,7 @@ pub enum EditorCapacity {
     ///
     /// Give the limits more than two worker permits. One directory read and
     /// one buffer analysis hold two permits together, and a save that finds no
-    /// free permit returns [`Saturated`] instead of writing the file.
+    /// free permit returns a saturation refusal instead of writing the file.
     Isolated(RuntimeLimits),
     /// The host built the spawner, so the host chose the capacity.
     Supplied {
@@ -637,6 +719,55 @@ impl EditorCapacity {
     }
 }
 
+/// Fixed presentation ownership realized before session construction.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorPresentation {
+    command_line_embedded: bool,
+    statusline_embedded: bool,
+    which_key_embedded: bool,
+    file_sidebar_embedded: bool,
+}
+
+impl EditorPresentation {
+    /// Creates one realized presentation from facade-validated ownership.
+    #[must_use]
+    pub const fn new(
+        command_line_embedded: bool,
+        statusline_embedded: bool,
+        which_key_embedded: bool,
+        file_sidebar_embedded: bool,
+    ) -> Self {
+        Self {
+            command_line_embedded,
+            statusline_embedded,
+            which_key_embedded,
+            file_sidebar_embedded,
+        }
+    }
+
+    pub(super) const fn command_line_embedded(self) -> bool {
+        self.command_line_embedded
+    }
+
+    pub(super) const fn statusline_embedded(self) -> bool {
+        self.statusline_embedded
+    }
+
+    pub(super) const fn which_key_embedded(self) -> bool {
+        self.which_key_embedded
+    }
+
+    pub(super) const fn file_sidebar_embedded(self) -> bool {
+        self.file_sidebar_embedded
+    }
+}
+
+impl Default for EditorPresentation {
+    fn default() -> Self {
+        Self::new(true, true, true, true)
+    }
+}
+
 /// The construction of one embedded editor.
 ///
 /// The root and the rectangle are required, because the root bounds every file
@@ -648,7 +779,7 @@ impl EditorCapacity {
 /// ```
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_tui::{EditorAccess, EmbeddedEditor};
+/// use kvim_tui::__private::{EditorAccess, EmbeddedEditor};
 ///
 /// let root = std::sync::Arc::new(
 ///     kvim_path::WorktreeRoot::open(
@@ -671,6 +802,10 @@ pub struct EmbeddedEditorBuilder {
     capacity: EditorCapacity,
     language: Option<LanguageServices>,
     watcher: Option<FileWatcher>,
+    watcher_unavailable: bool,
+    git_status: bool,
+    registry: Registry,
+    presentation: EditorPresentation,
 }
 
 impl EmbeddedEditorBuilder {
@@ -727,14 +862,48 @@ impl EmbeddedEditorBuilder {
         self
     }
 
+    /// Reports that a requested watcher could not start.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn watcher_unavailable(mut self) -> Self {
+        self.watcher_unavailable = true;
+        self
+    }
+
+    /// Sets whether this editor requests Git status.
+    ///
+    /// The caller enables this only after its host grants the optional Git
+    /// capability.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_status(mut self, enabled: bool) -> Self {
+        self.git_status = enabled;
+        self
+    }
+
+    /// Selects the validated key registry used by the internal resolver.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn registry(mut self, registry: Registry) -> Self {
+        self.registry = registry;
+        self
+    }
+
+    /// Selects facade-validated presentation ownership.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn presentation(mut self, presentation: EditorPresentation) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
     /// Builds the model and the driver of one independent editor.
     ///
     /// # Errors
     ///
-    /// Returns [`GeometryError::Empty`] for a rectangle without a cell. The
-    /// layout, the viewports, and the cursor all follow that rectangle, so an
-    /// editor without cells could report no cursor cell.
-    pub fn open(self) -> Result<EmbeddedEditor, GeometryError> {
+    /// Returns [`EditorOpenError`] when geometry, settings, or optional
+    /// language services do not match the editor boundary.
+    pub fn open(self) -> Result<EmbeddedEditor, EditorOpenError> {
         let Self {
             root,
             area,
@@ -744,13 +913,36 @@ impl EmbeddedEditorBuilder {
             capacity,
             language,
             watcher,
+            watcher_unavailable,
+            git_status,
+            registry,
+            presentation,
         } = self;
         if area.width == 0 || area.height == 0 {
-            return Err(GeometryError::Empty { area });
+            return Err(GeometryError::Empty { area }.into());
         }
-        let editor = Session::new(area, settings, root)
-            .with_access(access)
-            .with_clipboard(clipboard);
+        let settings = settings.realize()?;
+        if let Some(services) = language.as_ref()
+            && services.root() != root.as_path()
+        {
+            return Err(EditorOpenError::LanguageRootMismatch {
+                editor: root.as_path().to_path_buf(),
+                language: services.root().to_path_buf(),
+            });
+        }
+        let mut editor = Session::new_with_registry_and_presentation(
+            area,
+            settings,
+            root,
+            registry,
+            presentation,
+        )
+        .with_access(access)
+        .with_clipboard(clipboard)
+        .with_git_status(git_status);
+        if watcher_unavailable {
+            let _ = editor.report_watch_unavailable();
+        }
         let (spawner, results) = capacity.realize();
         let mut driver = EditorDriver::new(editor.instance(), spawner, results);
         if let Some(language) = language {
@@ -776,7 +968,7 @@ impl EmbeddedEditorBuilder {
 /// already produced, and [`EmbeddedEditor::insert_literal`] accepts the text
 /// fallback of the focused scope.
 ///
-/// `crates/kvim-tui/examples/embedded_editor.rs` is one complete host of one
+/// `crates/kvim-embed/examples/worktree_editor.rs` is one complete host of one
 /// such editor.
 ///
 /// # Examples
@@ -788,7 +980,7 @@ impl EmbeddedEditorBuilder {
 /// use ratatui::layout::Rect;
 ///
 /// use kvim_input::Command;
-/// use kvim_tui::{EditorShutdown, EmbeddedEditor};
+/// use kvim_tui::__private::{EditorShutdown, EmbeddedEditor};
 ///
 /// # let host_runtime = tokio::runtime::Builder::new_current_thread()
 /// #     .enable_all()
@@ -850,7 +1042,23 @@ impl EmbeddedEditor {
             capacity: EditorCapacity::default(),
             language: None,
             watcher: None,
+            watcher_unavailable: false,
+            git_status: true,
+            registry: Registry::first_release(),
+            presentation: EditorPresentation::default(),
         }
+    }
+
+    #[doc(hidden)]
+    pub fn region_areas(&self) -> Vec<(kvim_ui::RegionKind, Rect)> {
+        self.editor
+            .visible()
+            .windows
+            .layout()
+            .regions()
+            .iter()
+            .map(|region| (region.kind, region.area))
+            .collect()
     }
 
     /// Returns the identity that every event and every result of this editor
@@ -902,7 +1110,7 @@ impl EmbeddedEditor {
     /// rows. The host keeps one copy between frames and reads it again after
     /// one [`EditorEvent::RedrawRequested`].
     ///
-    /// `crates/kvim-tui/examples/embedded_file_sidebar.rs` draws these rows.
+    /// `crates/kvim-embed/examples/worktree_editor.rs` draws these rows.
     ///
     /// # Examples
     ///
@@ -911,7 +1119,7 @@ impl EmbeddedEditor {
     ///
     /// use ratatui::layout::Rect;
     ///
-    /// use kvim_tui::EmbeddedEditor;
+    /// use kvim_tui::__private::EmbeddedEditor;
     ///
     /// # let host_runtime = tokio::runtime::Builder::new_current_thread()
     /// #     .enable_all()
@@ -977,7 +1185,7 @@ impl EmbeddedEditor {
     /// ```
     /// use ratatui::layout::Rect;
     ///
-    /// use kvim_tui::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, ListMotion};
+    /// use kvim_tui::__private::{EmbeddedEditor, FileSidebarInput, FileSidebarOutcome, ListMotion};
     ///
     /// let root = std::sync::Arc::new(
     ///     kvim_path::WorktreeRoot::open(
@@ -1001,6 +1209,15 @@ impl EmbeddedEditor {
         self.editor.reduce_file_sidebar(input)
     }
 
+    /// Applies one normalized terminal event through the internal standalone resolver.
+    ///
+    /// This method is an implementation seam for `kvim-embed`. It is not a
+    /// supported `kvim-tui` host contract.
+    #[doc(hidden)]
+    pub fn input(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
+        self.editor.handle_event(event, now)
+    }
+
     /// Applies one resolved editor command.
     ///
     /// The host owns the key-sequence resolver, so it supplies the command, its
@@ -1018,6 +1235,17 @@ impl EmbeddedEditor {
         self.editor.apply_command(command, count, register, now)
     }
 
+    /// Applies one host-owned resolver decision to kvim's semantic grammar.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn semantic_dispatch(
+        &mut self,
+        dispatch: kvim_input::Dispatch<Command>,
+        now: Duration,
+    ) -> Reduction {
+        self.editor.apply_semantic_dispatch(dispatch, now)
+    }
+
     /// Inserts one run of literal text.
     #[must_use]
     pub fn insert_literal(&mut self, text: &str, now: Duration) -> Reduction {
@@ -1028,6 +1256,54 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> Reduction {
         self.editor.paste(text, now)
+    }
+
+    /// Returns semantic status facts for facade adaptation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn status(&self) -> super::session::EditorStatus<'_> {
+        self.editor.status()
+    }
+
+    /// Executes one already parsed editor command line.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn run_command_line_command(&mut self, command: CommandLineCommand) -> Redraw {
+        self.editor.run_command_line_command(command)
+    }
+
+    /// Queues one host-owned contained-path completion.
+    #[doc(hidden)]
+    pub fn request_host_command_completion(
+        &mut self,
+        session: u64,
+        request: u64,
+        line: &str,
+    ) -> bool {
+        self.editor
+            .request_host_command_completion(session, request, line)
+    }
+
+    /// Takes one finished host-owned command completion.
+    #[doc(hidden)]
+    pub fn take_host_command_completion(&mut self) -> Option<(u64, u64, Vec<String>)> {
+        self.editor.take_host_command_completion()
+    }
+
+    /// Reports whether one host command session is current.
+    #[doc(hidden)]
+    pub fn host_command_session_is_current(&self, session: u64) -> bool {
+        self.editor.host_command_session_is_current(session)
+    }
+
+    /// Closes one host-owned command session.
+    #[doc(hidden)]
+    pub fn close_host_command_session(&mut self, session: u64) -> bool {
+        let closed = self.editor.close_host_command_session(session);
+        if closed {
+            self.driver.cancel_completion();
+        }
+        closed
     }
 
     /// Returns the editing mode of this editor.
@@ -1051,6 +1327,16 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
         self.editor.input_context()
+    }
+
+    /// Returns the input context and optional overlay scope used for binding resolution.
+    ///
+    /// A picker prompt evaluates the picker scope before the prompt scope.
+    /// Other contexts have no overlay scope.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn binding_context(&self) -> (InputContextSnapshot<BindingScope>, Option<BindingScope>) {
+        self.editor.binding_context()
     }
 
     /// Cancels every pending semantic phase of this editor.
@@ -1112,12 +1398,32 @@ impl EmbeddedEditor {
         self.editor.take_event()
     }
 
+    /// Reports whether this editor may request Git status.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_status_enabled(&self) -> bool {
+        self.editor.git_status_enabled()
+    }
+
+    /// Reports whether a Git status request waits for dispatch.
+    ///
+    /// This is an internal adapter seam for facades with explicit Git policy.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn git_request_queued(&self) -> bool {
+        self.editor.git_request_queued()
+    }
+
     /// Hands every queued request of this editor to its spawner.
     ///
     /// The call returns at once and starts no detached task. The host calls it
     /// after every input, every tick, and every applied result.
     pub fn dispatch(&mut self) -> Redraw {
-        self.driver.dispatch(&mut self.editor)
+        self.driver
+            .dispatch(&mut self.editor)
+            .expect("the facade constructs one driver with its owned session")
     }
 
     /// Waits for the next finished unit of background work of this editor.
@@ -1131,19 +1437,17 @@ impl EmbeddedEditor {
 
     /// Applies one finished unit of work as one editor transition.
     ///
-    /// # Panics
-    ///
-    /// Panics in a debug build when `completed` came from another editor. The
-    /// identity of every result names its editor, so a host that routes a
-    /// result to the wrong editor fails at once instead of showing the answer
-    /// of one worktree in another.
-    pub fn apply(&mut self, completed: Completed, now: Duration) -> Redraw {
-        debug_assert_eq!(
-            completed.instance(),
-            self.editor.instance(),
-            "one editor applies only the work that it submitted"
-        );
-        self.driver.apply(&mut self.editor, completed, now)
+    /// Returns [`EditorApplyError`] before any state change when `completed`
+    /// belongs to another editor.
+    #[allow(clippy::result_large_err)]
+    pub fn apply(
+        &mut self,
+        completed: Completed,
+        now: Duration,
+    ) -> Result<Redraw, EditorApplyError> {
+        self.driver
+            .apply(&mut self.editor, completed, now)
+            .map_err(Into::into)
     }
 
     /// Ends every background service of this editor.
@@ -1153,7 +1457,11 @@ impl EmbeddedEditor {
     /// that can still commit, and returns the remaining events.
     pub async fn shutdown(self, deadline: Duration) -> EditorShutdown {
         let Self { mut editor, driver } = self;
-        match driver.shutdown(&mut editor, deadline).await {
+        match driver
+            .shutdown(&mut editor, deadline)
+            .await
+            .expect("the facade constructs one driver with its owned session")
+        {
             None => EditorShutdown::Finished {
                 events: drain_published(&mut editor),
             },
@@ -1217,7 +1525,10 @@ impl EditorDrain {
     #[must_use]
     pub async fn complete(self) -> Vec<PublishedEvent> {
         let Self { mut editor, drain } = self;
-        let _redraw = drain.complete(&mut editor).await;
+        let _redraw = drain
+            .complete(&mut editor)
+            .await
+            .expect("the drain retains its facade-owned session");
         drain_published(&mut editor)
     }
 }

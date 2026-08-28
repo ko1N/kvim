@@ -7,9 +7,9 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 use super::{
-    EVENT_QUEUE_CAPACITY, PROCESS_INPUT_BYTES_MAX, PROCESS_OUTPUT_BYTES_MAX, ProcessRequest,
-    PublicationGate, RequestSlot, Runtime, RuntimeError, RuntimeLimits, SaturatedResource,
-    SubmitError, WORKER_CONCURRENCY_LIMIT_MAX, WorkKind,
+    EVENT_QUEUE_CAPACITY, EVENT_QUEUE_CAPACITY_MAX, PROCESS_INPUT_BYTES_MAX,
+    PROCESS_OUTPUT_BYTES_MAX, ProcessRequest, PublicationGate, RequestSlot, Runtime, RuntimeError,
+    RuntimeLimits, SaturatedResource, SubmitError, WORKER_CONCURRENCY_LIMIT_MAX, WorkKind,
 };
 
 /// Blocks the worker thread until the request is cancelled.
@@ -32,6 +32,26 @@ fn default_limits_clamp_the_detected_parallelism() {
     assert_eq!(limits.event_queue(), EVENT_QUEUE_CAPACITY);
     assert!(limits.workers() >= 1);
     assert!(limits.workers() <= WORKER_CONCURRENCY_LIMIT_MAX);
+}
+
+#[test]
+fn runtime_limits_reject_capacities_outside_published_bounds() {
+    assert!(matches!(
+        RuntimeLimits::new(0, 1, 1),
+        Err(SubmitError::InvalidLimits)
+    ));
+    assert!(matches!(
+        RuntimeLimits::new(EVENT_QUEUE_CAPACITY_MAX + 1, 1, 1),
+        Err(SubmitError::InvalidLimits)
+    ));
+    assert!(matches!(
+        RuntimeLimits::new(1, WORKER_CONCURRENCY_LIMIT_MAX + 1, 1),
+        Err(SubmitError::InvalidLimits)
+    ));
+    assert!(matches!(
+        RuntimeLimits::new(1, 1, 9),
+        Err(SubmitError::InvalidLimits)
+    ));
 }
 
 #[test]
@@ -59,6 +79,21 @@ fn the_gate_keeps_only_the_newest_request_of_each_slot() {
     gate.cancel_all();
     assert!(newest.cancellation().is_cancelled());
     assert!(other.cancellation().is_cancelled());
+}
+
+#[test]
+fn cancelling_one_gate_slot_revokes_publication_without_touching_other_slots() {
+    let root = CancellationToken::new();
+    let gate = PublicationGate::default();
+    let cancelled = gate.begin(RequestSlot::new(1), &root);
+    let other = gate.begin(RequestSlot::new(2), &root);
+
+    gate.cancel_slot(RequestSlot::new(1));
+
+    assert!(cancelled.cancellation().is_cancelled());
+    assert!(!gate.accepts(&cancelled));
+    assert!(!other.cancellation().is_cancelled());
+    assert!(gate.accepts(&other));
 }
 
 #[test]
@@ -422,6 +457,29 @@ async fn a_committing_job_reports_the_value_that_it_committed() {
     // The cancellation reaches a job that already changed durable state, so the
     // caller must still learn its outcome.
     request.cancel();
+    seam.release.send(()).unwrap();
+
+    let event = events.recv().await.expect("the request keeps its slot");
+    assert_eq!(event.result.unwrap(), COMMITTED_VALUE);
+    runtime.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_committing_job_reports_its_result_after_the_deadline() {
+    let (runtime, mut events) = Runtime::<u32>::with_limits(RuntimeLimits::new(8, 2, 2).unwrap());
+    let gate = PublicationGate::default();
+    let request = gate.begin(RequestSlot::new(1), &runtime.cancellation_root());
+    let (seam, job) = paused_job();
+
+    runtime
+        .submit_committing_worker(request, Duration::from_millis(1), job)
+        .unwrap();
+    seam.entered.recv().expect("the job entered its commit");
+    tokio::time::sleep(Duration::from_millis(10)).await;
+    assert!(
+        events.receiver.is_empty(),
+        "the reserved slot publishes no timeout while durable work can finish"
+    );
     seam.release.send(()).unwrap();
 
     let event = events.recv().await.expect("the request keeps its slot");

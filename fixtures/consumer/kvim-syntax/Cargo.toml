@@ -1,0 +1,16 @@
+[workspace]
+
+[package]
+name = "consume-kvim-syntax"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.94.1"
+publish = false
+
+[dependencies]
+kvim-syntax = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }
+
+[features]
+default = []
+grammar-rust = ["kvim-syntax/grammar-rust"]
+all-grammars = ["kvim-syntax/all-grammars"]

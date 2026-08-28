@@ -24,7 +24,7 @@
 //! use kvim_input::Command;
 //! use kvim_settings::{EditorSettings, FileSettings};
 //!
-//! let mut buffer = TextBuffer::from_text("fn main() {\n    let value = 1;\n}\n", &FileSettings::default())
+//! let mut buffer = TextBuffer::from_text("fn main() {\n    let value = 1;\n}\n", kvim_core::BufferBytesMax::default())
 //!     .expect("the text is small");
 //! let settings = EditorSettings::default();
 //! let mut registers = Registers::default();
@@ -34,7 +34,6 @@
 //!     search: None,
 //!     language_indent_width: None,
 //!     registers: &mut registers,
-//!     applied: Vec::new(),
 //! };
 //!
 //! let rows = NonZeroU16::new(24).expect("the literal 24 is not zero");
@@ -51,6 +50,7 @@
 //! );
 //!
 //! let outcome = state.apply(&mut context, &mut window, Command::PasteAfter, None);
+//! let outcome = outcome.outcome();
 //! assert_eq!(outcome, CommandOutcome::Changed);
 //! assert_eq!(context.buffer.to_string(), "fn main() {\nfn main() {\n    let value = 1;\n}\n");
 //! ```
@@ -76,7 +76,8 @@ pub use edit::{AutoIndent, MoveDirection, selection_move_indent_line};
 pub use motion::{CharClass, matching_bracket};
 pub use operator::{MotionKind, Operator, motion_kind};
 pub use register::{
-    NAMED_REGISTERS_MAX, REGISTER_BYTES_MAX, RegisterShape, RegisterValue, Registers,
+    NAMED_REGISTERS_MAX, REGISTER_BYTES_MAX, RegisterShape, RegisterValue, RegisterValueError,
+    Registers,
 };
 pub use search::{
     SEARCH_MATCHES_MAX, SEARCH_QUERY_CHARS_MAX, SEARCH_SCAN_BYTES_MAX, SearchDirection,
@@ -84,8 +85,8 @@ pub use search::{
 };
 pub use selection::{AnchorPoint, ModeState, Selection};
 pub use state::{
-    CommandContext, CommandOutcome, EditContext, EditingState, INSERT_TEXT_BYTES_MAX,
-    MOTION_COUNT_MAX,
+    CommandContext, CommandOutcome, CommandResult, EditContext, EditingState,
+    INSERT_TEXT_BYTES_MAX, MOTION_COUNT_MAX,
 };
 pub use text_object::{
     Delimiter, DelimiterShape, TEXT_OBJECT_SCAN_CHARS_MAX, TextObject, TextObjectKind,

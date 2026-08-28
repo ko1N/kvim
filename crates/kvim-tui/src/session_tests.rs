@@ -11,22 +11,23 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
-use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode};
-use kvim_language::LspError;
+use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode, PromptKind, TreePrompt};
+use kvim_language::{Diagnostic, DiagnosticSeverity, DocumentPosition, LspError, SourceSpan};
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
-use kvim_terminal::{FocusChange, Key, KeyCode, PasteText, TerminalEvent};
+use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
-    BUFFERS_MAX, BufferPathUpdate, Candidate, ExternalChange, FileResult, MutationOutcome,
-    PickerRequest, PickerResult, WorkspaceResult, rank_candidates,
+    BUFFERS_MAX, BufferPathUpdate, Candidate, DurableOutcome, ExternalChange, FileRequest,
+    FileResult, MutationOutcome, PickerRequest, PickerResult, SaveError, WorkspaceResult,
 };
 
 use crate::clipboard::SessionClipboard;
 use crate::completion::{CompletionOutcome, LineCompletion};
 use crate::language::{LanguageRequest, LanguageRequestKind};
 use crate::log::LOG_ENTRIES_MAX;
+use crate::review::ReviewSurface;
 use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
     PromptSeed, Redraw, RunState, Session, test_root,
@@ -52,6 +53,17 @@ fn session(width: u16, height: u16) -> Session {
         Rect::new(0, 0, width, height),
         EditorSettings::default(),
         test_root(workspace_root()),
+    )
+}
+
+/// Creates a session with host-owned command and status rows.
+fn integrated_session(width: u16, height: u16) -> Session {
+    Session::new_with_registry_and_presentation(
+        Rect::new(0, 0, width, height),
+        EditorSettings::default(),
+        test_root(workspace_root()),
+        kvim_input::Registry::first_release(),
+        crate::embed::EditorPresentation::new(false, false, false, false),
     )
 }
 
@@ -130,7 +142,8 @@ fn place_prompt_cursor(session: &mut Session, cursor: usize) {
         prompt.line.text().to_owned(),
         cursor,
         prompt.line.chars_max(),
-    );
+    )
+    .expect("the existing prompt text meets its existing limit");
 }
 
 /// Reports whether the open prompt holds a completion.
@@ -319,11 +332,6 @@ fn the_focused_file_tree_answers_the_resize_keys() {
 #[test]
 fn only_a_visible_change_requests_a_new_frame() {
     let mut session = session(40, 10);
-    // A focus change moves no cursor and shows no new text.
-    assert_eq!(
-        session.handle_event(TerminalEvent::Focus(FocusChange::Lost), NOW),
-        Redraw::Skipped
-    );
     // A resize to the same size changes no rectangle.
     assert_eq!(
         session.handle_event(
@@ -375,6 +383,18 @@ fn the_which_key_deadline_is_the_only_time_driven_change() {
         RunState::Finished,
         "the late key still completes `Space q`"
     );
+}
+
+#[test]
+fn host_owned_which_key_has_no_internal_deadline_or_rows() {
+    let mut session = session(60, 20).with_embedded_which_key(false);
+
+    press(&mut session, ' ');
+    assert_eq!(session.next_deadline(), None);
+    assert_eq!(session.tick(WHICH_KEY_DELAY), Redraw::Skipped);
+    assert!(session.visible().which_key.is_none());
+    press(&mut session, 'q');
+    assert_eq!(session.run_state(), RunState::Finished);
 }
 
 /// Feeds one bounded bracketed-paste block.
@@ -1037,9 +1057,9 @@ fn the_command_line_completes_a_path_with_the_ranking_of_the_picker() {
     // complete path as the picker does. The two names hold the same score and
     // the same width, so the source order decides between them.
     assert_eq!(
-        rank_candidates("src/m", &walked_files()),
-        [1, 3],
-        "the ranking of the completion is the ranking of the picker"
+        crate::completion::command_line_candidates("e src/m", &walked_files()),
+        ["e src/main.rs", "e src/mode.rs"],
+        "the completion applies the shared fuzzy ranking"
     );
 
     press_code(&mut session, KeyCode::Tab);
@@ -1396,6 +1416,30 @@ fn a_backspace_on_the_empty_prompt_closes_it() {
     // The prompt is closed, so the next key reaches the registry again.
     press(&mut session, 'i');
     assert_eq!(session.mode(), Mode::Insert);
+}
+
+#[test]
+fn backspace_keeps_an_empty_rename_prompt_open_for_a_replacement_name() {
+    let mut session = session(40, 10);
+    session.open_prompt(PromptKind::Tree(TreePrompt::Rename));
+
+    assert_eq!(prompt_text(&session), "");
+    assert_eq!(
+        press_code(&mut session, KeyCode::Backspace),
+        Redraw::Skipped
+    );
+    assert!(
+        session.visible().prompt.is_some(),
+        "rename remains open after backspace reaches the empty line"
+    );
+
+    type_keys(&mut session, "replacement.txt");
+    assert_eq!(prompt_text(&session), "replacement.txt");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(
+        session.visible().prompt.is_none(),
+        "Escape still cancels rename"
+    );
 }
 
 #[test]
@@ -2389,6 +2433,56 @@ fn write_quit_keeps_a_newer_edit_when_the_save_result_is_stale() {
 }
 
 #[test]
+fn an_indeterminate_save_keeps_dirty_state_and_queues_reconciliation() {
+    let (directory, path, mut session) =
+        opened_file("session-save-indeterminate", "main.rs", "one\n");
+    press(&mut session, 'i');
+    type_keys(&mut session, "x");
+    press_code(&mut session, KeyCode::Esc);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    refuse_language_requests(&mut session);
+    let request = session.take_file_request().expect("the save was queued");
+    let FileRequest::Save(request) = request else {
+        panic!("the request is a save");
+    };
+    let report = kvim_workspace::Indeterminate::new(
+        SaveError::Write(std::io::Error::other("metadata failed")),
+        Vec::new(),
+        vec![path.clone()],
+    )
+    .expect("the report stays inside its collection bounds");
+    let _ = session.apply_file_result(FileResult::Saved {
+        buffer: request.buffer,
+        requested: request.target,
+        outcome: DurableOutcome::Indeterminate(report),
+    });
+
+    assert!(session.buffer().is_modified());
+    assert!(
+        matches!(
+            session.take_workspace_request(),
+            Some(kvim_workspace::WorkspaceRequest::ReadDirectory { .. })
+        ),
+        "tree reconciliation queued"
+    );
+    assert!(
+        session.take_file_request().is_some(),
+        "reload reconciliation queued"
+    );
+    let events = std::iter::from_fn(|| session.take_event()).collect::<Vec<_>>();
+    assert!(events.iter().any(|published| matches!(
+        published.event,
+        crate::__private::EditorEvent::SaveReconciliationRequired { .. }
+    )));
+    assert!(!events.iter().any(|published| matches!(
+        published.event,
+        crate::__private::EditorEvent::FileWritten { .. }
+    )));
+    assert!(message(&session).contains("cannot prove save"));
+    drop(directory);
+}
+
+#[test]
 fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
     let directory = TempDir::new("session-undone-stale-write-quit");
     let path = directory.write("main.rs", "one\n");
@@ -2408,10 +2502,11 @@ fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
         .take_file_request()
         .expect("write-quit queued one save request");
     let result = request.run();
-    let saved_version = match &result {
+    let saved_revision = match &result {
         FileResult::Saved {
-            outcome: Ok(saved), ..
-        } => saved.version,
+            outcome: DurableOutcome::Committed(saved),
+            ..
+        } => saved.revision,
         other => panic!("the save succeeds, got {other:?}"),
     };
 
@@ -2425,7 +2520,7 @@ fn write_quit_keeps_an_undone_stale_save_dirty_and_open() {
         !session.buffer().is_modified(),
         "the text history returned to its old saved position"
     );
-    assert_ne!(session.buffer().version(), saved_version);
+    assert_ne!(session.buffer().revision(), saved_revision);
 
     let _ = session.apply_file_result(result);
 
@@ -2515,6 +2610,33 @@ fn opened_file(label: &str, name: &str, text: &str) -> (TempDir, PathBuf, Sessio
 }
 
 #[test]
+fn status_summarizes_diagnostics_by_semantic_severity() {
+    let diagnostic = |severity| Diagnostic {
+        span: SourceSpan::new(DocumentPosition::new(0, 0), DocumentPosition::new(0, 1)),
+        severity,
+        message: "status test".to_owned(),
+        source: "test".to_owned(),
+    };
+    let diagnostics = [
+        diagnostic(DiagnosticSeverity::Error),
+        diagnostic(DiagnosticSeverity::Warning),
+        diagnostic(DiagnosticSeverity::Information),
+        diagnostic(DiagnosticSeverity::Hint),
+        diagnostic(DiagnosticSeverity::Error),
+    ];
+
+    assert_eq!(
+        super::diagnostic_summary(&diagnostics),
+        super::EditorDiagnosticSummary {
+            errors: 2,
+            warnings: 1,
+            information: 1,
+            hints: 1,
+        }
+    );
+}
+
+#[test]
 fn a_dirty_buffer_never_reloads_and_reports_the_external_change_once() {
     let (directory, path, mut session) = opened_file("session-reload-dirty", "main.rs", "one\n");
 
@@ -2560,6 +2682,14 @@ fn a_clean_buffer_reloads_after_an_external_change() {
 
     assert_eq!(session.buffer().to_string(), "one\ntwo\n");
     assert!(!session.buffer().is_modified());
+    assert_eq!(
+        session
+            .status()
+            .path
+            .and_then(|path| path.as_path().file_name()),
+        Some(std::ffi::OsStr::new("main.rs")),
+    );
+    assert!(!session.status().modified);
     assert_eq!(external(&session), None);
     assert_eq!(message(&session), "", "a background reload reports nothing");
 
@@ -2690,16 +2820,49 @@ fn a_reload_reaches_the_language_server_with_the_reloaded_text() {
         .take_language_request()
         .expect("the reload synchronizes the document");
     match synchronization {
-        LanguageRequest::Open { version, text, .. } => {
+        LanguageRequest::Open { revision, text, .. } => {
             assert_eq!(&*text, "fn main() { println!(); }\n");
             assert_eq!(
-                version,
-                session.buffer().version(),
-                "the server copy carries the version of the reloaded text"
+                revision,
+                session.buffer().revision(),
+                "the server copy carries the revision of the reloaded text"
             );
         }
         other => panic!("a reload opens the document again, not {other:?}"),
     }
+}
+
+#[test]
+fn a_generation_zero_analysis_is_rejected_after_reload_to_generation_one() {
+    let (directory, path, mut session) = opened_file(
+        "session-reload-analysis-generation",
+        "main.rs",
+        "fn old() {}\n",
+    );
+    let buffer = session.active();
+    let bytes_max = session.buffer().bytes_max();
+    let old = session
+        .take_analysis_request()
+        .expect("the generation-zero text needs analysis");
+
+    std::fs::write(&path, "fn new() {}\n").expect("the file is writable");
+    run_watch_reload(&mut session, &directory.path);
+
+    assert_eq!(
+        session.active(),
+        buffer,
+        "reload keeps the stable buffer identity"
+    );
+    assert_eq!(session.buffer().revision().generation().get(), 1);
+    assert_eq!(session.buffer().version().get(), 0);
+    assert_eq!(session.buffer().bytes_max(), bytes_max);
+
+    let cancellation = CancellationToken::new();
+    assert_eq!(
+        session.apply_analysis_result(old.run(&cancellation)),
+        Redraw::Skipped,
+        "a generation-zero result cannot publish into generation one"
+    );
 }
 
 #[test]
@@ -2739,7 +2902,7 @@ fn a_reload_result_for_a_moved_target_is_obsolete() {
     let moved = directory.join("moved.rs");
     std::fs::rename(path, &moved).expect("the file can move inside the worktree");
     let _ = session.apply_workspace_result(WorkspaceResult::Mutated {
-        outcome: Ok(MutationOutcome {
+        outcome: DurableOutcome::Committed(MutationOutcome {
             updates: vec![BufferPathUpdate {
                 buffer,
                 path: moved.clone(),
@@ -3454,6 +3617,11 @@ fn the_format_on_save_toggle_changes_the_active_buffer_alone() {
     run_file_request(&mut session);
     session.open_path(second);
     run_file_request(&mut session);
+
+    assert_eq!(
+        session.status().formatter,
+        super::EditorFormatterStatus::AvailableEnabled
+    );
 
     // Every new buffer follows the settings default, so its save formats first.
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
@@ -4297,6 +4465,37 @@ fn the_review_owns_the_keys_and_gives_the_layout_back_unchanged() {
     // The buffer answers keys again.
     type_keys(&mut session, "dd");
     assert_ne!(session.buffer().to_string(), before);
+}
+
+#[test]
+fn integrated_review_uses_the_expanded_host_owned_body_height() {
+    let mut session = integrated_session(80, 10);
+    session.review = Some(ReviewSurface::new(
+        None,
+        None,
+        session.settings.diff,
+        session.settings.windows.resize_step_cells,
+        0,
+    ));
+    let _ = session.open_review();
+
+    let review = session
+        .visible()
+        .review
+        .expect("the integrated review is open");
+    assert_eq!(review.height_rows(), 8);
+
+    session
+        .set_area(Rect::new(0, 0, 80, 12))
+        .expect("the larger rectangle is valid");
+    assert_eq!(
+        session
+            .visible()
+            .review
+            .expect("resize keeps the integrated review open")
+            .height_rows(),
+        10,
+    );
 }
 
 #[test]
