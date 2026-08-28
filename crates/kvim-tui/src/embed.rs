@@ -181,10 +181,18 @@ pub struct Saturated;
 /// use kvim_tui::__private::{Direction, EditorEvent, InputRequest};
 ///
 /// let request = InputRequest::FocusBoundary(Direction::Left);
-/// assert_eq!(request.event(), EditorEvent::FocusBoundary(Direction::Left));
+/// assert_eq!(
+///     request.event(),
+///     Some(EditorEvent::FocusBoundary(Direction::Left))
+/// );
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum InputRequest {
+    /// A host-owned command line must become visible.
+    OpenCommandLine {
+        /// The bounded session identity created for this prompt.
+        session: u64,
+    },
     /// A focus move reached the outer edge of this editor.
     FocusBoundary(Direction),
     /// The editor closed its last window and asks the host to close it.
@@ -192,16 +200,26 @@ pub enum InputRequest {
 }
 
 impl InputRequest {
-    /// Returns the request as one editor event.
+    /// Returns the request as one legacy editor event, when it has one.
     ///
-    /// A host that keeps one uniform event stream converts the synchronous
-    /// request with this method.
+    /// The synchronous command-line request carries its session identity and
+    /// therefore has no equivalent asynchronous event.
     #[inline]
     #[must_use]
-    pub const fn event(self) -> EditorEvent {
+    pub const fn event(self) -> Option<EditorEvent> {
         match self {
-            Self::FocusBoundary(direction) => EditorEvent::FocusBoundary(direction),
-            Self::CloseRequested => EditorEvent::CloseRequested,
+            Self::OpenCommandLine { .. } => None,
+            Self::FocusBoundary(direction) => Some(EditorEvent::FocusBoundary(direction)),
+            Self::CloseRequested => Some(EditorEvent::CloseRequested),
+        }
+    }
+
+    /// Returns the host command session identity, when this opens one.
+    #[must_use]
+    pub const fn command_session(self) -> Option<u64> {
+        match self {
+            Self::OpenCommandLine { session } => Some(session),
+            Self::FocusBoundary(_) | Self::CloseRequested => None,
         }
     }
 }
@@ -1252,6 +1270,40 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn run_command_line_command(&mut self, command: CommandLineCommand) -> Redraw {
         self.editor.run_command_line_command(command)
+    }
+
+    /// Queues one host-owned contained-path completion.
+    #[doc(hidden)]
+    pub fn request_host_command_completion(
+        &mut self,
+        session: u64,
+        request: u64,
+        line: &str,
+    ) -> bool {
+        self.editor
+            .request_host_command_completion(session, request, line)
+    }
+
+    /// Takes one finished host-owned command completion.
+    #[doc(hidden)]
+    pub fn take_host_command_completion(&mut self) -> Option<(u64, u64, Vec<String>)> {
+        self.editor.take_host_command_completion()
+    }
+
+    /// Reports whether one host command session is current.
+    #[doc(hidden)]
+    pub fn host_command_session_is_current(&self, session: u64) -> bool {
+        self.editor.host_command_session_is_current(session)
+    }
+
+    /// Closes one host-owned command session.
+    #[doc(hidden)]
+    pub fn close_host_command_session(&mut self, session: u64) -> bool {
+        let closed = self.editor.close_host_command_session(session);
+        if closed {
+            self.driver.cancel_completion();
+        }
+        closed
     }
 
     /// Returns the editing mode of this editor.

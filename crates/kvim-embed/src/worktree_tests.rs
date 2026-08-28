@@ -635,6 +635,155 @@ fn interrupt_and_cancel(editor: &mut WorktreeEditor) {
 }
 
 #[test]
+fn host_owned_command_line_opens_without_internal_prompt_and_completes_names() {
+    let root = TestRoot::new("host-command-open");
+    let presentation = WorktreePresentation::standalone().command_line(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .presentation(presentation)
+        .command_surface(WorktreeCommandSurface::new())
+        .open()
+        .unwrap();
+    let before = editor.input_context();
+    let outcome = editor
+        .command(Command::OpenCommandLine, None, None, Duration::ZERO)
+        .unwrap();
+    let WorktreeInputOutcome::Request(WorktreeInputRequest::OpenCommandLine(session)) = outcome
+    else {
+        panic!("host-owned command line must publish its session");
+    };
+    assert_eq!(editor.input_context(), before, "no hidden prompt opens");
+    assert_ne!(session.get(), 0);
+
+    let completion = editor.command_catalog().complete_names("wr");
+    assert_eq!(completion.candidates(), &["write"]);
+}
+
+#[test]
+fn host_command_execution_failure_keeps_session_open_and_close_returns_context() {
+    let root = TestRoot::new("host-command-failure-atomicity");
+    let presentation = WorktreePresentation::standalone().command_line(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .presentation(presentation)
+        .command_surface(WorktreeCommandSurface::new())
+        .open()
+        .unwrap();
+    let WorktreeInputOutcome::Request(WorktreeInputRequest::OpenCommandLine(session)) = editor
+        .command(Command::OpenCommandLine, None, None, Duration::ZERO)
+        .unwrap()
+    else {
+        panic!("host-owned command line must open");
+    };
+    let addressed = editor.command_catalog().address(EditorCommandId::Write);
+
+    assert!(
+        editor
+            .execute_session_command(session, addressed, "write!")
+            .is_err()
+    );
+    editor
+        .request_command_completion(
+            session,
+            EditorCommandRequestId::new(1).unwrap(),
+            "edit src/m",
+        )
+        .expect("failed execution keeps the command session open");
+
+    let context = editor.close_command_session(session).unwrap();
+    assert!(context.phases.is_idle());
+    assert_eq!(
+        editor.close_command_session(session),
+        Err(EditorCommandSessionError::StaleSession)
+    );
+}
+
+#[test]
+fn host_completion_errors_distinguish_session_identity_from_invalid_lines() {
+    let root = TestRoot::new("host-command-errors");
+    let presentation = WorktreePresentation::standalone().command_line(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .presentation(presentation)
+        .command_surface(WorktreeCommandSurface::new())
+        .open()
+        .unwrap();
+    let WorktreeInputOutcome::Request(WorktreeInputRequest::OpenCommandLine(session)) = editor
+        .command(Command::OpenCommandLine, None, None, Duration::ZERO)
+        .unwrap()
+    else {
+        panic!("host-owned command line must open");
+    };
+    let request = EditorCommandRequestId::new(1).unwrap();
+
+    assert_eq!(
+        editor.request_command_completion(session, request, "write"),
+        Err(EditorCommandSessionError::InvalidCompletion)
+    );
+    let oversized = format!("edit {}", "x".repeat(kvim_input::COMMAND_LINE_CHARS_MAX));
+    assert_eq!(
+        editor.request_command_completion(session, request, &oversized),
+        Err(EditorCommandSessionError::InvalidCompletion)
+    );
+    editor.close_command_session(session).unwrap();
+    assert_eq!(
+        editor.request_command_completion(session, request, "write"),
+        Err(EditorCommandSessionError::StaleSession)
+    );
+}
+
+#[tokio::test]
+async fn host_path_completion_routes_and_rejects_obsolete_or_closed_sessions() {
+    let root = TestRoot::new("host-command-path-completion");
+    fs::create_dir_all(root.0.join("src")).unwrap();
+    fs::write(root.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let presentation = WorktreePresentation::standalone().command_line(SurfaceOwnership::HostOwned);
+    let capacity = WorktreeCapacity::new(8, WORKER_CAPACITY_MAX, 1).unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .capacity(capacity)
+        .presentation(presentation)
+        .command_surface(WorktreeCommandSurface::new())
+        .open()
+        .unwrap();
+    let WorktreeInputOutcome::Request(WorktreeInputRequest::OpenCommandLine(session)) = editor
+        .command(Command::OpenCommandLine, None, None, Duration::ZERO)
+        .unwrap()
+    else {
+        panic!("host-owned command line must open");
+    };
+    let first = EditorCommandRequestId::new(1).unwrap();
+    let newest = EditorCommandRequestId::new(2).unwrap();
+    editor
+        .request_command_completion(session, first, "edit src/m")
+        .unwrap();
+    editor.dispatch();
+    editor
+        .request_command_completion(session, newest, "edit src/m")
+        .unwrap();
+    editor.dispatch();
+    let mut completion = None;
+    for _ in 0..TEST_STEPS_MAX {
+        let Ok(ready) = tokio::time::timeout(Duration::from_millis(250), editor.ready()).await
+        else {
+            break;
+        };
+        editor.apply(ready, Duration::ZERO).unwrap();
+        completion = editor.take_command_completion();
+        if completion.is_some() {
+            break;
+        }
+    }
+    let completion = completion.expect("the newest path completion must publish");
+    assert_eq!(completion.session(), session);
+    assert_eq!(completion.request(), newest);
+    assert_eq!(completion.candidates(), &["edit src/main.rs"]);
+    assert!(editor.take_command_completion().is_none());
+
+    editor.close_command_session(session).unwrap();
+    assert_eq!(
+        editor.request_command_completion(session, first, "edit src/m"),
+        Err(EditorCommandSessionError::StaleSession)
+    );
+}
+
+#[test]
 fn addressed_command_catalog_tracks_state_and_rejects_wrong_or_stale_routes() {
     let root = TestRoot::new("addressed-command-catalog");
     let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))

@@ -186,6 +186,95 @@ pub enum EditorFormatterState {
     AvailableEnabled,
 }
 
+/// Maximum candidates in one facade command completion.
+pub const EDITOR_COMMAND_COMPLETION_CANDIDATES_MAX: usize = 64;
+
+/// Facade identity of one visible host-owned command line.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EditorCommandSessionId(u64);
+
+impl EditorCommandSessionId {
+    /// Returns the process-local session number.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Facade identity of one completion request within a command session.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct EditorCommandRequestId(u64);
+
+impl EditorCommandRequestId {
+    /// Creates a nonzero host-chosen request identity.
+    pub const fn new(value: u64) -> Option<Self> {
+        if value == 0 { None } else { Some(Self(value)) }
+    }
+
+    /// Returns the host-chosen request number.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// One bounded pure command-name completion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EditorCommandNameCompletion {
+    candidates: Vec<&'static str>,
+}
+
+impl EditorCommandNameCompletion {
+    /// Returns matching canonical names and aliases in catalog order.
+    #[must_use]
+    pub fn candidates(&self) -> &[&'static str] {
+        &self.candidates
+    }
+}
+
+/// One finished asynchronous contained-path completion.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EditorCommandPathCompletion {
+    instance: WorktreeInstanceId,
+    session: EditorCommandSessionId,
+    request: EditorCommandRequestId,
+    candidates: Vec<String>,
+}
+
+impl EditorCommandPathCompletion {
+    /// Returns the addressed editor.
+    #[must_use]
+    pub const fn instance(&self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the command session that requested these candidates.
+    #[must_use]
+    pub const fn session(&self) -> EditorCommandSessionId {
+        self.session
+    }
+    /// Returns the host request identity.
+    #[must_use]
+    pub const fn request(&self) -> EditorCommandRequestId {
+        self.request
+    }
+    /// Returns bounded complete command lines containing confined paths.
+    #[must_use]
+    pub fn candidates(&self) -> &[String] {
+        &self.candidates
+    }
+}
+
+/// Why a host-owned command session request was rejected.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum EditorCommandSessionError {
+    /// The command line belongs to an earlier or another session.
+    #[error("the host command session is stale")]
+    StaleSession,
+    /// The line is not a bounded contained-path completion request.
+    #[error("the command line does not request contained-path completion")]
+    InvalidCompletion,
+}
+
 /// Maximum descriptors in one editor command catalog.
 pub const EDITOR_COMMAND_DESCRIPTORS_MAX: usize = 16;
 
@@ -335,6 +424,27 @@ impl EditorCommandCatalog {
     pub fn descriptors(&self) -> &[EditorCommandDescriptor] {
         &self.descriptors
     }
+    /// Completes editor command names without I/O or editor mutation.
+    #[must_use]
+    pub fn complete_names(&self, typed: &str) -> EditorCommandNameCompletion {
+        let mut candidates = Vec::new();
+        for descriptor in &self.descriptors {
+            if descriptor.name.starts_with(typed) {
+                candidates.push(descriptor.name);
+            }
+            for alias in descriptor.aliases {
+                if alias.starts_with(typed) {
+                    candidates.push(alias);
+                }
+            }
+        }
+        debug_assert!(
+            candidates.len() <= EDITOR_COMMAND_COMPLETION_CANDIDATES_MAX,
+            "bounded catalog aliases keep name completion bounded"
+        );
+        EditorCommandNameCompletion { candidates }
+    }
+
     /// Addresses one selected editor command.
     #[must_use]
     pub const fn address(&self, id: EditorCommandId) -> AddressedEditorCommand {
@@ -990,6 +1100,8 @@ pub enum WorktreeRefusal {
 /// A synchronous host request produced by input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorktreeInputRequest {
+    /// The host must show its command line for this facade session.
+    OpenCommandLine(EditorCommandSessionId),
     /// Focus reached an outer edge.
     FocusBoundary(Direction),
     /// The last window closed.
@@ -1834,6 +1946,84 @@ impl WorktreeEditor {
         }
     }
 
+    /// Queues asynchronous contained-path completion for a host-owned line.
+    ///
+    /// Call [`Self::dispatch`], await [`Self::ready`], and call [`Self::apply`].
+    /// Then poll [`Self::take_command_completion`]. A newer request cancels and
+    /// makes the prior request obsolete. The host retains line editing and history.
+    pub fn request_command_completion(
+        &mut self,
+        session: EditorCommandSessionId,
+        request: EditorCommandRequestId,
+        line: &str,
+    ) -> Result<(), EditorCommandSessionError> {
+        if !self.inner().host_command_session_is_current(session.get()) {
+            return Err(EditorCommandSessionError::StaleSession);
+        }
+        if CommandLineCommand::path_argument(line).is_none()
+            || line.chars().count() > kvim_input::COMMAND_LINE_CHARS_MAX
+        {
+            return Err(EditorCommandSessionError::InvalidCompletion);
+        }
+        let queued =
+            self.inner_mut()
+                .request_host_command_completion(session.get(), request.get(), line);
+        debug_assert!(
+            queued,
+            "the facade validates the session, request, and command line before queuing"
+        );
+        Ok(())
+    }
+
+    /// Takes the newest finished path completion, if one was applied.
+    #[must_use]
+    pub fn take_command_completion(&mut self) -> Option<EditorCommandPathCompletion> {
+        let (session, request, candidates) = self.inner_mut().take_host_command_completion()?;
+        debug_assert!(
+            candidates.len() <= EDITOR_COMMAND_COMPLETION_CANDIDATES_MAX,
+            "the internal completion producer applies the facade candidate bound"
+        );
+        Some(EditorCommandPathCompletion {
+            instance: self.instance,
+            session: EditorCommandSessionId(session),
+            request: EditorCommandRequestId(request),
+            candidates,
+        })
+    }
+
+    /// Closes one host-owned command line and cancels its pending path request.
+    ///
+    /// The returned context lets the host validate that kvim has no semantic
+    /// input to cancel before it changes focus.
+    pub fn close_command_session(
+        &mut self,
+        session: EditorCommandSessionId,
+    ) -> Result<InputContextSnapshot<BindingScope>, EditorCommandSessionError> {
+        if !self.inner_mut().close_host_command_session(session.get()) {
+            return Err(EditorCommandSessionError::StaleSession);
+        }
+        Ok(self.input_context())
+    }
+
+    /// Parses and executes one addressed command from a host-owned session.
+    pub fn execute_session_command(
+        &mut self,
+        session: EditorCommandSessionId,
+        addressed: AddressedEditorCommand,
+        line: &str,
+    ) -> Result<WorktreeUpdate, EditorCommandExecutionError> {
+        if !self.inner().host_command_session_is_current(session.get()) {
+            return Err(EditorCommandExecutionError::StaleGeneration);
+        }
+        let update = self.execute_addressed_command(addressed, line)?;
+        let _closed = self.inner_mut().close_host_command_session(session.get());
+        debug_assert!(
+            _closed,
+            "the session was validated before command execution"
+        );
+        Ok(update)
+    }
+
     /// Parses and executes one addressed editor command line.
     pub fn execute_addressed_command(
         &mut self,
@@ -2247,6 +2437,9 @@ fn convert_reduction(reduction: TuiReduction) -> WorktreeInputOutcome {
     match reduction.outcome {
         TuiReductionOutcome::Applied => WorktreeInputOutcome::Applied,
         TuiReductionOutcome::Request(request) => WorktreeInputOutcome::Request(match request {
+            TuiInputRequest::OpenCommandLine { session } => {
+                WorktreeInputRequest::OpenCommandLine(EditorCommandSessionId(session))
+            }
             TuiInputRequest::FocusBoundary(direction) => {
                 WorktreeInputRequest::FocusBoundary(direction)
             }

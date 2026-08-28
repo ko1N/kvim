@@ -31,9 +31,11 @@ pub use composition::{
 #[cfg(feature = "worktree")]
 pub use worktree::{
     AddressedEditorCommand, COMPLETION_CAPACITY_MAX, CancelPendingProposal, CancelPendingResume,
-    CapacityError, EDITOR_COMMAND_DESCRIPTORS_MAX, EVENT_CAPACITY_MAX, EditorCommandArguments,
-    EditorCommandAvailability, EditorCommandCatalog, EditorCommandCompletion,
-    EditorCommandDescriptor, EditorCommandExecutionError, EditorCommandId, EditorCursorPosition,
+    CapacityError, EDITOR_COMMAND_COMPLETION_CANDIDATES_MAX, EDITOR_COMMAND_DESCRIPTORS_MAX,
+    EVENT_CAPACITY_MAX, EditorCommandArguments, EditorCommandAvailability, EditorCommandCatalog,
+    EditorCommandCompletion, EditorCommandDescriptor, EditorCommandExecutionError, EditorCommandId,
+    EditorCommandNameCompletion, EditorCommandPathCompletion, EditorCommandRequestId,
+    EditorCommandSessionError, EditorCommandSessionId, EditorCursorPosition,
     EditorDiagnosticSummary, EditorFormatterState, EditorStatusSnapshot, PROCESS_CAPACITY_MAX,
     ServicePolicy, SurfaceOwnership, WORKER_CAPACITY_MAX, WORKSPACE_OPERATION_PATHS_MAX,
     WorkspaceEntryKind, WorkspaceOperation, WorkspaceOperationKind, WorkspaceTransfer,

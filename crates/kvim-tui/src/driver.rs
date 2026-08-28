@@ -297,6 +297,11 @@ impl EditorDriver {
         self.instance
     }
 
+    /// Cancels the active command-completion publication slot.
+    pub fn cancel_completion(&self) {
+        self.gate.cancel_slot(COMPLETION_SLOT);
+    }
+
     /// Hands every queued request of one host transition to its service.
     ///
     /// The call returns at once. A refused submission reaches the editor as a

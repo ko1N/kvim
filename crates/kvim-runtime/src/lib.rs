@@ -266,9 +266,15 @@ pub struct PublicationGate {
 impl PublicationGate {
     /// Starts one request and cancels the prior request in the same slot.
     pub fn begin(&self, slot: RequestSlot, parent: &CancellationToken) -> RequestHandle {
-        let id = RequestId(self.next_id.fetch_add(1, Ordering::Relaxed) + 1);
+        let id = self
+            .next_id
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+                value.checked_add(1)
+            })
+            .expect("the request counter cannot exhaust in one process")
+            + 1;
         let handle = RequestHandle {
-            id,
+            id: RequestId(id),
             slot,
             cancellation: parent.child_token(),
         };
@@ -285,6 +291,13 @@ impl PublicationGate {
         self.lock_active()
             .get(&handle.slot)
             .is_some_and(|active| active.id == handle.id)
+    }
+
+    /// Cancels the newest request in one publication slot.
+    pub fn cancel_slot(&self, slot: RequestSlot) {
+        if let Some(handle) = self.lock_active().remove(&slot) {
+            handle.cancel();
+        }
     }
 
     /// Cancels every tracked request.

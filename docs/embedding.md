@@ -251,10 +251,21 @@ Kvim parses and validates the selected editor command line.
 unavailable, and identity-mismatch requests before mutation. Worktree path
 completion remains asynchronous work for the command-line lifecycle.
 
+Host-owned command-line opening and completion sessions are supported.
+`Command::OpenCommandLine` returns `WorktreeInputRequest::OpenCommandLine` with
+one facade-owned `EditorCommandSessionId`; kvim opens no internal prompt.
+`EditorCommandCatalog::complete_names` performs bounded pure name and alias
+completion. `request_command_completion` sends contained-path work through the
+normal `dispatch`, `ready`, and `apply` lifecycle. Each answer carries editor,
+session, and host request identity. A newer request cancels the previous slot,
+and the publication gate rejects obsolete work. `close_command_session`
+cancels the active slot. The host owns line text, cursor, candidate selection,
+and history. It must close the session before a prompt focus change, using the
+same cancel-before-focus ordering as other pending input.
+
 ### Planned Editor Publication
 
-Host-owned command-line opening and completion sessions remain planned. Planned
-sidebar rows publish bounded identity, path, depth, kind, loading, selection,
+Planned sidebar rows publish bounded identity, path, depth, kind, loading, selection,
 Git, symlink, and icon-role facts.
 
 ### Planned Standalone Review
@@ -826,6 +837,7 @@ The required examples are:
 - `crates/kvim-lsp/examples/custom_lsp_transport.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-embed/examples/merged_leader.rs`
+- `crates/kvim-embed/examples/unified_command_line.rs`
 - `crates/kvim-embed/examples/worktree_editor.rs`
 - `crates/kvim-ui/examples/composer.rs`
 - `crates/kvim-ui/examples/selector.rs`

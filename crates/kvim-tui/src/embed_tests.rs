@@ -716,7 +716,7 @@ fn a_focus_move_at_the_edge_reports_the_boundary() {
         Some(InputRequest::FocusBoundary(crate::Direction::Left))
     );
     assert_eq!(
-        reduction.request().map(InputRequest::event),
+        reduction.request().and_then(InputRequest::event),
         Some(EditorEvent::FocusBoundary(crate::Direction::Left))
     );
 

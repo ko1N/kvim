@@ -1111,6 +1111,20 @@ fn editor_status<'a>(
 enum CompletionWalk {
     /// The line asked for no walk, because it holds no path argument.
     Unasked,
+    /// A host-owned line owns the walk and its facade request identity.
+    HostQueued {
+        session: u64,
+        request: u64,
+        line: String,
+        work: PickerRequest,
+    },
+    /// A host-owned walk runs or has finished.
+    HostTaken {
+        session: u64,
+        request: u64,
+        line: String,
+        files: Option<Vec<Candidate>>,
+    },
     /// The line asked for the walk, and the request waits for the event loop.
     Queued(PickerRequest),
     /// The event loop took the request of the line.
@@ -1125,8 +1139,9 @@ impl CompletionWalk {
     /// Returns the workspace files that the finished walk collected.
     fn files(&self) -> &[Candidate] {
         match self {
-            Self::Unasked | Self::Queued(_) => &[],
+            Self::Unasked | Self::Queued(_) | Self::HostQueued { .. } => &[],
             Self::Taken(files) => files,
+            Self::HostTaken { files, .. } => files.as_deref().unwrap_or(&[]),
         }
     }
 
@@ -1137,9 +1152,23 @@ impl CompletionWalk {
     fn take_request(&mut self) -> Option<PickerRequest> {
         match mem::replace(self, Self::Taken(Vec::new())) {
             Self::Queued(request) => Some(request),
+            Self::HostQueued {
+                session,
+                request,
+                line,
+                work,
+            } => {
+                *self = Self::HostTaken {
+                    session,
+                    request,
+                    line,
+                    files: None,
+                };
+                Some(work)
+            }
             // The line asked for no walk, or the event loop already took the
             // request, so the state stays as it was.
-            unchanged @ (Self::Unasked | Self::Taken(_)) => {
+            unchanged @ (Self::Unasked | Self::Taken(_) | Self::HostTaken { .. }) => {
                 *self = unchanged;
                 None
             }
@@ -1361,6 +1390,10 @@ pub struct Session {
     /// the bounded worker service. The completion then filters the collected
     /// files while the user types. See `docs/files.md`.
     completion_walk: CompletionWalk,
+    /// Monotonic identity of the newest host-owned command line.
+    host_command_session: u64,
+    /// Whether the newest host-owned command line remains open.
+    host_command_session_open: bool,
     /// The host probe that `:diagnostics` asked for.
     ///
     /// The session reads no executable search path, so the event loop hands the
@@ -1490,6 +1523,8 @@ impl Session {
             prompt: None,
             confirmation: None,
             completion_walk: CompletionWalk::Unasked,
+            host_command_session: 0,
+            host_command_session_open: false,
             host_probe: HostProbe::Unasked,
             message: None,
             log: EditorLog::default(),
@@ -2449,7 +2484,21 @@ impl Session {
             Command::OpenFilePicker => return self.open_picker(PickerKind::Files).or(cleared),
             Command::OpenRipgrepPicker => return self.open_picker(PickerKind::Search).or(cleared),
             Command::OpenBufferPicker => return self.open_picker(PickerKind::Buffers).or(cleared),
-            Command::OpenCommandLine => return self.open_prompt(PromptKind::CommandLine),
+            Command::OpenCommandLine => {
+                if self.presentation.command_line_embedded() {
+                    return self.open_prompt(PromptKind::CommandLine);
+                }
+                self.host_command_session = self
+                    .host_command_session
+                    .checked_add(1)
+                    .expect("one editor cannot exhaust host command session identities");
+                self.host_command_session_open = true;
+                self.completion_walk = CompletionWalk::Unasked;
+                self.note_request(InputRequest::OpenCommandLine {
+                    session: self.host_command_session,
+                });
+                return Redraw::Skipped;
+            }
             Command::OpenSearchPrompt => return self.open_prompt(PromptKind::Search),
             // The file and buffer commands reach the same paths as `:w`, `:q`,
             // and the buffer list, so both entry points behave alike.
@@ -3297,6 +3346,64 @@ impl Session {
         self.completion_walk.take_request()
     }
 
+    /// Queues one host-owned path completion without owning its line editing.
+    pub fn request_host_command_completion(
+        &mut self,
+        session: u64,
+        request: u64,
+        line: &str,
+    ) -> bool {
+        if !self.host_command_session_open
+            || session != self.host_command_session
+            || request == 0
+            || CommandLineCommand::path_argument(line).is_none()
+            || line.chars().count() > COMMAND_LINE_CHARS_MAX
+        {
+            return false;
+        }
+        self.completion_walk = CompletionWalk::HostQueued {
+            session,
+            request,
+            line: line.to_owned(),
+            work: PickerRequest::Files {
+                root: Arc::clone(&self.root),
+            },
+        };
+        true
+    }
+
+    /// Takes one completed host-owned command completion.
+    pub fn take_host_command_completion(&mut self) -> Option<(u64, u64, Vec<String>)> {
+        let CompletionWalk::HostTaken { files: Some(_), .. } = &self.completion_walk else {
+            return None;
+        };
+        let CompletionWalk::HostTaken {
+            session,
+            request,
+            line,
+            files: Some(files),
+        } = mem::replace(&mut self.completion_walk, CompletionWalk::Unasked)
+        else {
+            unreachable!("the preceding match validates a finished host completion");
+        };
+        Some((session, request, command_line_candidates(&line, &files)))
+    }
+
+    /// Reports whether one host-owned session is current.
+    pub fn host_command_session_is_current(&self, session: u64) -> bool {
+        self.host_command_session_open && session == self.host_command_session
+    }
+
+    /// Closes the addressed host-owned command line.
+    pub fn close_host_command_session(&mut self, session: u64) -> bool {
+        if !self.host_command_session_open || session != self.host_command_session {
+            return false;
+        }
+        self.host_command_session_open = false;
+        self.completion_walk = CompletionWalk::Unasked;
+        true
+    }
+
     /// Applies the finished workspace walk of the command-line completion.
     ///
     /// The list opens on the next completion key, so the result changes no
@@ -3314,6 +3421,10 @@ impl Session {
             );
             return Redraw::Skipped;
         };
+        if let CompletionWalk::HostTaken { files, .. } = &mut self.completion_walk {
+            *files = Some(candidates);
+            return Redraw::Skipped;
+        }
         debug_assert!(
             self.prompt.is_some() || matches!(self.completion_walk, CompletionWalk::Unasked),
             "the closed prompt drops the walk of the line that asked for it"

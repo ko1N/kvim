@@ -10,6 +10,10 @@ name = "merged_leader"
 required-features = ["worktree"]
 
 [[example]]
+name = "unified_command_line"
+required-features = ["worktree"]
+
+[[example]]
 name = "worktree_editor"
 required-features = ["worktree"]
 

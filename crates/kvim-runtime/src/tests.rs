@@ -82,6 +82,21 @@ fn the_gate_keeps_only_the_newest_request_of_each_slot() {
 }
 
 #[test]
+fn cancelling_one_gate_slot_revokes_publication_without_touching_other_slots() {
+    let root = CancellationToken::new();
+    let gate = PublicationGate::default();
+    let cancelled = gate.begin(RequestSlot::new(1), &root);
+    let other = gate.begin(RequestSlot::new(2), &root);
+
+    gate.cancel_slot(RequestSlot::new(1));
+
+    assert!(cancelled.cancellation().is_cancelled());
+    assert!(!gate.accepts(&cancelled));
+    assert!(!other.cancellation().is_cancelled());
+    assert!(gate.accepts(&other));
+}
+
+#[test]
 fn process_bounds_are_checked_before_the_runtime_spawns() {
     let (runtime, _events) = Runtime::<()>::with_limits(RuntimeLimits::new(4, 1, 1).unwrap());
     let gate = PublicationGate::default();
