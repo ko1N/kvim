@@ -177,10 +177,10 @@ skips a directory that already carries a watch, so one burst costs bounded time.
 
 ## Request Identity And Publication
 
-### Planned Standalone Review Publication
+### Standalone Review Publication
 
-A planned standalone review surface follows the same boundary. Its worktree
-constructor performs bounded capture off the host event loop, and its supplied-
+The standalone review surface follows the same boundary. Its worktree
+constructor performs bounded capture off the host event loop. Its supplied-
 candidate constructor performs no I/O. Both use addressed request identity,
 cancellation, deadlines, publication gates, bounded events, and consuming
 shutdown. Review snapshots and comments remain facade-owned neutral values; the

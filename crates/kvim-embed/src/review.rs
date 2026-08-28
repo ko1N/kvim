@@ -1,10 +1,33 @@
 //! Pure standalone review over immutable host-supplied candidates.
 
+#[cfg(feature = "worktree")]
+use std::collections::HashMap;
 use std::collections::VecDeque;
+#[cfg(feature = "worktree")]
+use std::error::Error as StdError;
+#[cfg(feature = "worktree")]
+use std::fmt;
 use std::num::NonZeroU32;
+#[cfg(feature = "worktree")]
+use std::num::NonZeroU64;
+#[cfg(feature = "worktree")]
+use std::path::{Path, PathBuf};
+#[cfg(feature = "worktree")]
+use std::sync::Arc;
+#[cfg(feature = "worktree")]
+use std::sync::atomic::{AtomicU64, Ordering};
+#[cfg(feature = "worktree")]
+use std::time::Duration;
 
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
+#[cfg(feature = "worktree")]
+use kvim_path::WorktreeRoot;
+#[cfg(feature = "worktree")]
+use kvim_runtime::{
+    EventReceiver, PublicationGate, RequestId, RequestSlot, Runtime, RuntimeDrain, RuntimeEvent,
+    RuntimeLimits,
+};
 use kvim_settings::{DiffSettings, DiffView};
 use kvim_tui::__review::{
     ReviewFocus as PrivateFocus, ReviewModel, ReviewOutcome, ReviewPainter, Theme,
@@ -16,11 +39,15 @@ use kvim_workspace::{
     HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine, NewLineRange,
     OldLine, OldLineRange, ReviewAnchor as PrivateAnchor, TextDiff, WorktreeDiff,
 };
+#[cfg(feature = "worktree")]
+use kvim_workspace::{DiffComparison, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest};
 use ratatui::{
     buffer::Buffer,
     layout::{Position, Rect},
 };
 use thiserror::Error;
+#[cfg(feature = "worktree")]
+use tokio::runtime::Runtime as TokioRuntime;
 
 /// Maximum bytes in a supplied candidate identity.
 pub const REVIEW_CANDIDATE_ID_BYTES_MAX: usize = 128;
@@ -427,6 +454,26 @@ pub enum ReviewEvent {
     StaleSnapshotAnchor,
     /// Reports that changed candidate identities reset prior review state.
     ReplacedCandidate,
+    /// Reports the result of one worktree capture request.
+    #[cfg(feature = "worktree")]
+    CaptureFinished {
+        /// The facade-owned capture request.
+        request: ReviewRequestId,
+    },
+    /// Reports one typed worktree capture failure.
+    #[cfg(feature = "worktree")]
+    CaptureFailed {
+        /// The facade-owned capture request.
+        request: ReviewRequestId,
+        /// The typed failure category.
+        failure: ReviewCaptureFailure,
+    },
+    /// Reports explicit cancellation of one worktree capture request.
+    #[cfg(feature = "worktree")]
+    CaptureCancelled {
+        /// The facade-owned capture request.
+        request: ReviewRequestId,
+    },
     /// Requests that the host close the surface.
     Close,
 }
@@ -606,6 +653,93 @@ pub enum ReviewError {
     /// A snapshot names different candidate identities.
     #[error("the snapshot candidate identity does not match this review")]
     SnapshotCandidate,
+    /// Worktree capture is unavailable for a supplied-candidate surface.
+    #[cfg(feature = "worktree")]
+    #[error("this review surface has no worktree capture lifecycle")]
+    NotWorktree,
+    /// Bounded execution refused a capture submission.
+    #[cfg(feature = "worktree")]
+    #[error("bounded review execution refused capture work")]
+    Dispatch,
+    /// The surface-local capture request identity space is exhausted.
+    #[cfg(feature = "worktree")]
+    #[error("review capture request identity space is exhausted")]
+    IdentityExhausted,
+}
+
+/// Stable classification of a worktree review open failure.
+#[cfg(feature = "worktree")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewOpenErrorKind {
+    /// Review configuration is invalid.
+    Config,
+    /// The supplied root is not a usable confined worktree.
+    WorktreeRoot,
+    /// The private asynchronous executor could not start.
+    Executor,
+    /// The process-local review identity space is exhausted.
+    IdentityExhausted,
+}
+
+/// Failure while opening a worktree review surface.
+#[cfg(feature = "worktree")]
+#[derive(Debug)]
+pub struct ReviewOpenError {
+    kind: ReviewOpenErrorKind,
+    path: Option<PathBuf>,
+    source: Box<dyn StdError + Send + Sync>,
+}
+
+#[cfg(feature = "worktree")]
+impl ReviewOpenError {
+    fn new(
+        kind: ReviewOpenErrorKind,
+        path: Option<PathBuf>,
+        source: impl StdError + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            kind,
+            path,
+            source: Box::new(source),
+        }
+    }
+
+    /// Returns the stable failure classification.
+    #[must_use]
+    pub const fn kind(&self) -> ReviewOpenErrorKind {
+        self.kind
+    }
+
+    /// Returns the supplied path for a root failure.
+    #[must_use]
+    pub fn path(&self) -> Option<&Path> {
+        self.path.as_deref()
+    }
+}
+
+#[cfg(feature = "worktree")]
+impl fmt::Display for ReviewOpenError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.kind {
+            ReviewOpenErrorKind::Config => formatter.write_str("invalid review configuration"),
+            ReviewOpenErrorKind::WorktreeRoot => {
+                formatter.write_str("cannot open the review worktree root")
+            }
+            ReviewOpenErrorKind::Executor => {
+                formatter.write_str("cannot start the review executor")
+            }
+            ReviewOpenErrorKind::IdentityExhausted => {
+                formatter.write_str("review instance identity space is exhausted")
+            }
+        }
+    }
+}
+
+#[cfg(feature = "worktree")]
+impl StdError for ReviewOpenError {
+    fn source(&self) -> Option<&(dyn StdError + 'static)> {
+        Some(self.source.as_ref())
+    }
 }
 
 /// A pure rendered review over host-supplied immutable candidates.
@@ -615,6 +749,8 @@ pub struct ReviewSurface {
     staged_id: Option<ReviewCandidateId>,
     unstaged_id: Option<ReviewCandidateId>,
     events: VecDeque<ReviewEvent>,
+    #[cfg(feature = "worktree")]
+    worktree: Option<WorktreeReview>,
 }
 impl ReviewSurface {
     /// Creates a standalone review without filesystem, Git, process, editor, watcher, clipboard, language, or runtime work.
@@ -676,6 +812,8 @@ impl ReviewSurface {
             staged_id,
             unstaged_id,
             events: VecDeque::with_capacity(REVIEW_EVENTS_MAX),
+            #[cfg(feature = "worktree")]
+            worktree: None,
         })
     }
 
@@ -846,11 +984,726 @@ impl ReviewSurface {
         Ok(ReviewUpdate::Changed)
     }
 
+    /// Opens a standalone review over one contained worktree root.
+    ///
+    /// Construction starts no editor, file tree, language service, watcher,
+    /// clipboard, or key resolver. Call [`Self::dispatch`] to start the paired
+    /// staged and unstaged capture.
+    /// ```no_run
+    /// use kvim_embed::{ReviewConfig, ReviewSurface};
+    /// use ratatui::layout::Rect;
+    ///
+    /// let mut review = ReviewSurface::for_worktree(
+    ///     ".",
+    ///     ReviewConfig::new(Rect::new(0, 0, 80, 24)),
+    /// )?;
+    /// review.dispatch()?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[cfg(feature = "worktree")]
+    pub fn for_worktree(
+        root: impl AsRef<Path>,
+        config: ReviewConfig,
+    ) -> Result<Self, ReviewOpenError> {
+        validate_review_config(&config)
+            .map_err(|source| ReviewOpenError::new(ReviewOpenErrorKind::Config, None, source))?;
+        let root_path = root.as_ref().to_path_buf();
+        let root = Arc::new(WorktreeRoot::open(&root_path).map_err(|source| {
+            ReviewOpenError::new(
+                ReviewOpenErrorKind::WorktreeRoot,
+                Some(root_path.clone()),
+                source,
+            )
+        })?);
+        let executor = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(1)
+            .enable_all()
+            .build()
+            .map_err(|source| ReviewOpenError::new(ReviewOpenErrorKind::Executor, None, source))?;
+        let limits = RuntimeLimits::new(4, 1, 2).expect("fixed review runtime limits are valid");
+        let _guard = executor.enter();
+        let (runtime, receiver) = Runtime::with_limits(limits);
+        drop(_guard);
+        let instance = allocate_review_instance().ok_or_else(|| {
+            ReviewOpenError::new(
+                ReviewOpenErrorKind::IdentityExhausted,
+                None,
+                std::io::Error::other("the monotonic review instance counter reached u64::MAX"),
+            )
+        })?;
+        let mut worktree = WorktreeReview {
+            instance,
+            root,
+            runtime: Some(runtime),
+            executor: Some(executor),
+            receiver,
+            gate: PublicationGate::default(),
+            active: ReviewRequestId(0),
+            next_request: 0,
+            queued: VecDeque::with_capacity(2),
+            staged: None,
+            unstaged: None,
+            failed: false,
+            requests: HashMap::with_capacity(4),
+        };
+        worktree
+            .queue_pair()
+            .expect("a newly created worktree review has request identity capacity");
+        let mut surface = Self::from_validated_worktree_pair(None, None, config);
+        surface.worktree = Some(worktree);
+        Ok(surface)
+    }
+
+    /// Returns this worktree review instance identity.
+    #[cfg(feature = "worktree")]
+    #[must_use]
+    pub fn instance(&self) -> Option<ReviewInstanceId> {
+        self.worktree.as_ref().map(|worktree| worktree.instance)
+    }
+
+    /// Returns the active paired capture identity.
+    #[cfg(feature = "worktree")]
+    #[must_use]
+    pub fn active_request(&self) -> Option<ReviewRequestId> {
+        self.worktree.as_ref().map(|worktree| worktree.active)
+    }
+
+    /// Queues a replacement pair and cancels both halves of the prior pair.
+    #[cfg(feature = "worktree")]
+    pub fn request_reload(&mut self) -> Result<ReviewRequestId, ReviewError> {
+        let worktree = self.worktree.as_mut().ok_or(ReviewError::NotWorktree)?;
+        worktree.queue_pair().ok_or(ReviewError::IdentityExhausted)
+    }
+
+    /// Cancels the active capture pair without changing visible review state.
+    #[cfg(feature = "worktree")]
+    pub fn cancel_capture(&mut self) -> Result<ReviewRequestId, ReviewError> {
+        self.reserve_events(1)?;
+        let request = {
+            let worktree = self.worktree.as_mut().ok_or(ReviewError::NotWorktree)?;
+            worktree.gate.cancel_all();
+            worktree.queued.clear();
+            worktree.failed = true;
+            worktree.active
+        };
+        self.events
+            .push_back(ReviewEvent::CaptureCancelled { request });
+        Ok(request)
+    }
+
+    /// Submits every currently queued capture command to private bounded execution.
+    ///
+    /// One call submits both halves of a new pair. Later calls submit all
+    /// follow-up commands queued by applied completions.
+    #[cfg(feature = "worktree")]
+    pub fn dispatch(&mut self) -> Result<ReviewUpdate, ReviewError> {
+        let worktree = self.worktree.as_mut().ok_or(ReviewError::NotWorktree)?;
+        while let Some((section, capture)) = worktree.queued.pop_front() {
+            let slot = match section {
+                CaptureSection::Staged => REVIEW_STAGED_SLOT,
+                CaptureSection::Unstaged => REVIEW_UNSTAGED_SLOT,
+            };
+            let runtime = worktree
+                .runtime
+                .as_ref()
+                .expect("shutdown consumes the runtime");
+            let handle = worktree.gate.begin(slot, &runtime.cancellation_root());
+            let runtime_request = handle.id();
+            let request = worktree.active;
+            let command = capture.command();
+            let submitted_capture = capture.clone();
+            if runtime
+                .submit_process(handle, command, move |output| CaptureResult {
+                    section,
+                    read: submitted_capture.publish(&output),
+                })
+                .is_err()
+            {
+                worktree.queued.push_front((section, capture));
+                return Err(ReviewError::Dispatch);
+            }
+            worktree.requests.insert(runtime_request, request);
+        }
+        Ok(ReviewUpdate::Unchanged)
+    }
+
+    /// Waits for one opaque capture completion.
+    #[cfg(feature = "worktree")]
+    pub async fn ready(&mut self) -> Result<ReviewCompletion, ReviewError> {
+        let worktree = self.worktree.as_mut().ok_or(ReviewError::NotWorktree)?;
+        let executor = worktree
+            .executor
+            .as_ref()
+            .expect("shutdown consumes the executor");
+        let _guard = executor.enter();
+        let event = worktree
+            .receiver
+            .recv()
+            .await
+            .ok_or(ReviewError::Dispatch)?;
+        Ok(ReviewCompletion {
+            instance: worktree.instance,
+            event,
+        })
+    }
+
+    /// Applies one opaque capture completion atomically.
+    #[cfg(feature = "worktree")]
+    #[allow(clippy::result_large_err)]
+    pub fn apply(
+        &mut self,
+        completion: ReviewCompletion,
+    ) -> Result<ReviewUpdate, ReviewApplyError> {
+        let Some(worktree) = self.worktree.as_ref() else {
+            return Err(ReviewApplyError {
+                kind: ReviewApplyErrorKind::NotWorktree,
+                completion,
+            });
+        };
+        if completion.instance != worktree.instance {
+            return Err(ReviewApplyError {
+                kind: ReviewApplyErrorKind::WrongInstance {
+                    surface: worktree.instance,
+                    completion: completion.instance,
+                },
+                completion,
+            });
+        }
+        let runtime_request = completion.event.request.id();
+        let Some(pair) = worktree.requests.get(&runtime_request).copied() else {
+            return Err(ReviewApplyError {
+                kind: ReviewApplyErrorKind::UnknownCompletion,
+                completion,
+            });
+        };
+        if pair != worktree.active || !worktree.gate.accepts(&completion.event.request) {
+            let kind = ReviewApplyErrorKind::StaleRequest {
+                active: worktree.active,
+                completion: pair,
+            };
+            self.worktree
+                .as_mut()
+                .expect("worktree presence was checked before stale routing")
+                .requests
+                .remove(&runtime_request);
+            return Err(ReviewApplyError { kind, completion });
+        }
+
+        let section = completion
+            .event
+            .result
+            .as_ref()
+            .ok()
+            .map(|result| result.section);
+        let completes_pair = match completion.event.result.as_ref() {
+            Ok(CaptureResult {
+                section: CaptureSection::Staged,
+                read: Ok(WorktreeDiffRead::Published(_)),
+            })
+            | Ok(CaptureResult {
+                section: CaptureSection::Staged,
+                read: Err(WorktreeDiffFailure::BaseUnavailable),
+            }) => worktree.unstaged.is_some(),
+            Ok(CaptureResult {
+                section: CaptureSection::Unstaged,
+                read: Ok(WorktreeDiffRead::Published(_)),
+            }) => worktree.staged.is_some(),
+            _ => false,
+        };
+        let event_reservation = if completes_pair {
+            4
+        } else if matches!(
+            completion.event.result.as_ref(),
+            Err(_) | Ok(CaptureResult { read: Err(_), .. })
+        ) {
+            1
+        } else {
+            0
+        };
+        if self.reserve_events(event_reservation).is_err() {
+            return Err(ReviewApplyError {
+                kind: ReviewApplyErrorKind::EventCapacity,
+                completion,
+            });
+        }
+
+        let worktree = self
+            .worktree
+            .as_mut()
+            .expect("worktree presence was checked before completion validation");
+        let removed = worktree.requests.remove(&runtime_request);
+        debug_assert_eq!(
+            removed,
+            Some(pair),
+            "the validated completion mapping is removed once"
+        );
+        let result = match completion.event.result {
+            Ok(result) => result.read,
+            Err(error) => Err(WorktreeDiffFailure::from_runtime(&error)),
+        };
+        let active = worktree.active;
+        match result {
+            Ok(WorktreeDiffRead::Pending(next)) => {
+                let section = section.expect("a successful capture result carries its section");
+                worktree.queued.push_back((section, *next));
+                Ok(ReviewUpdate::Unchanged)
+            }
+            Ok(WorktreeDiffRead::Published(candidate)) => {
+                let section = section.expect("a successful capture result carries its section");
+                match section {
+                    CaptureSection::Staged => worktree.staged = Some(Some(*candidate)),
+                    CaptureSection::Unstaged => worktree.unstaged = Some(Some(*candidate)),
+                }
+                self.publish_pair_if_ready(active)
+            }
+            Err(WorktreeDiffFailure::BaseUnavailable)
+                if section == Some(CaptureSection::Staged) =>
+            {
+                worktree.staged = Some(None);
+                self.publish_pair_if_ready(active)
+            }
+            Err(failure) => {
+                worktree.failed = true;
+                worktree.gate.cancel_all();
+                worktree.queued.clear();
+                self.events.push_back(ReviewEvent::CaptureFailed {
+                    request: active,
+                    failure: capture_failure(failure),
+                });
+                Ok(ReviewUpdate::Event)
+            }
+        }
+    }
+
+    #[cfg(feature = "worktree")]
+    fn publish_pair_if_ready(
+        &mut self,
+        request: ReviewRequestId,
+    ) -> Result<ReviewUpdate, ReviewApplyError> {
+        let (staged, unstaged) = {
+            let worktree = self
+                .worktree
+                .as_ref()
+                .expect("pair publication follows worktree validation");
+            if worktree.failed || worktree.staged.is_none() || worktree.unstaged.is_none() {
+                return Ok(ReviewUpdate::Unchanged);
+            }
+            (
+                worktree
+                    .staged
+                    .as_ref()
+                    .expect("pair readiness checked")
+                    .clone(),
+                worktree
+                    .unstaged
+                    .as_ref()
+                    .expect("pair readiness checked")
+                    .clone(),
+            )
+        };
+        let snapshot = self.snapshot();
+        let mut replacement =
+            Self::from_validated_worktree_pair(staged, unstaged, self.config.clone());
+        replacement.worktree = self.worktree.take();
+        replacement.restore_relocated(&snapshot);
+        replacement
+            .events
+            .push_back(ReviewEvent::CaptureFinished { request });
+        replacement.events.push_back(ReviewEvent::Redraw);
+        let mut pending_events = std::mem::take(&mut self.events);
+        pending_events.append(&mut replacement.events);
+        replacement.events = pending_events;
+        *self = replacement;
+        Ok(ReviewUpdate::Changed)
+    }
+
+    #[cfg(feature = "worktree")]
+    fn restore_relocated(&mut self, snapshot: &ReviewSnapshot) {
+        if snapshot.anchor_count() == 0 {
+            return;
+        }
+        let staged: Vec<_> = snapshot
+            .staged_read
+            .iter()
+            .map(|anchor| anchor.0.clone())
+            .collect();
+        let unstaged: Vec<_> = snapshot
+            .unstaged_read
+            .iter()
+            .map(|anchor| anchor.0.clone())
+            .collect();
+        let mut model = self.model.clone();
+        let result = model.restore_read_anchors(&staged, &unstaged);
+        let mut cursor_stale = false;
+        if let Some((section, anchor)) = &snapshot.cursor {
+            cursor_stale =
+                !model.restore_cursor_anchor(matches!(section, ReviewSection::Staged), &anchor.0);
+        }
+        model.restore_presentation(
+            match snapshot.focus {
+                ReviewFocus::Diff => PrivateFocus::Diff,
+                ReviewFocus::Panel => PrivateFocus::Panel,
+            },
+            snapshot.view,
+            snapshot.panel_cells,
+        );
+        self.model = model;
+        if cursor_stale {
+            self.events.push_back(ReviewEvent::StaleSnapshotAnchor);
+        }
+        if result.stale > 0 {
+            self.events.push_back(ReviewEvent::StaleSnapshotAnchor);
+        }
+    }
+
+    /// Consumes this surface and performs bounded capture shutdown.
+    #[cfg(feature = "worktree")]
+    pub async fn shutdown(mut self, timeout: Duration) -> Result<ReviewShutdown, ReviewError> {
+        let Some(mut worktree) = self.worktree.take() else {
+            return Ok(ReviewShutdown::Finished {
+                events: self.events.drain(..).collect(),
+            });
+        };
+        worktree.gate.cancel_all();
+        let runtime = worktree
+            .runtime
+            .take()
+            .expect("live worktree surface owns runtime");
+        let drain = runtime.begin_shutdown();
+        let executor = worktree
+            .executor
+            .take()
+            .expect("live worktree surface owns executor");
+        let _guard = executor.enter();
+        let pending_events: Vec<_> = self.events.drain(..).collect();
+        if tokio::time::timeout(timeout, drain.wait()).await.is_ok() {
+            drop(_guard);
+            executor.shutdown_background();
+            return Ok(ReviewShutdown::Finished {
+                events: pending_events,
+            });
+        }
+        drop(_guard);
+        Ok(ReviewShutdown::Draining(ReviewDrain {
+            runtime: executor,
+            drain,
+            events: pending_events,
+        }))
+    }
+
     fn reserve_events(&self, additional: usize) -> Result<(), ReviewError> {
         if additional > REVIEW_EVENTS_MAX.saturating_sub(self.events.len()) {
             return Err(ReviewError::EventCapacity);
         }
         Ok(())
+    }
+
+    #[cfg(feature = "worktree")]
+    fn from_validated_worktree_pair(
+        staged: Option<WorktreeDiff>,
+        unstaged: Option<WorktreeDiff>,
+        config: ReviewConfig,
+    ) -> Self {
+        debug_assert!(
+            validate_review_config(&config).is_ok(),
+            "worktree review configuration was validated before side effects"
+        );
+        let staged_id = staged
+            .as_ref()
+            .map(|candidate| ReviewCandidateId(candidate.revision().to_hex().into_boxed_str()));
+        let unstaged_id = unstaged
+            .as_ref()
+            .map(|candidate| ReviewCandidateId(candidate.revision().to_hex().into_boxed_str()));
+        let model = ReviewModel::new(
+            staged,
+            unstaged,
+            config.diff.clone(),
+            config.resize_step_cells,
+            config.area.height,
+        );
+        Self {
+            model,
+            config,
+            staged_id,
+            unstaged_id,
+            events: VecDeque::with_capacity(REVIEW_EVENTS_MAX),
+            worktree: None,
+        }
+    }
+}
+
+impl Drop for ReviewSurface {
+    fn drop(&mut self) {
+        #[cfg(feature = "worktree")]
+        if let Some(mut worktree) = self.worktree.take() {
+            worktree.gate.cancel_all();
+            drop(worktree.runtime.take());
+            if let Some(executor) = worktree.executor.take() {
+                executor.shutdown_background();
+            }
+        }
+    }
+}
+
+#[cfg(feature = "worktree")]
+const REVIEW_STAGED_SLOT: RequestSlot = RequestSlot::new(1);
+#[cfg(feature = "worktree")]
+const REVIEW_UNSTAGED_SLOT: RequestSlot = RequestSlot::new(2);
+#[cfg(feature = "worktree")]
+static NEXT_REVIEW_INSTANCE: AtomicU64 = AtomicU64::new(1);
+
+#[cfg(feature = "worktree")]
+fn allocate_review_instance() -> Option<ReviewInstanceId> {
+    NEXT_REVIEW_INSTANCE
+        .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+            current.checked_add(1)
+        })
+        .ok()
+        .and_then(NonZeroU64::new)
+        .map(ReviewInstanceId)
+}
+
+/// Facade-owned identity of one worktree review surface.
+#[cfg(feature = "worktree")]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ReviewInstanceId(NonZeroU64);
+#[cfg(feature = "worktree")]
+impl ReviewInstanceId {
+    /// Returns the process-local identity.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
+/// Facade-owned identity of one paired capture request.
+#[cfg(feature = "worktree")]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct ReviewRequestId(u64);
+#[cfg(feature = "worktree")]
+impl ReviewRequestId {
+    /// Returns the surface-local request identity.
+    #[must_use]
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+
+/// Typed failure of one worktree capture.
+#[cfg(feature = "worktree")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewCaptureFailure {
+    /// The `git` executable is unavailable.
+    CommandMissing,
+    /// Git or its answer is unavailable.
+    Unavailable,
+    /// The repository has no commit for its staged half.
+    BaseUnavailable,
+    /// The request was cancelled or replaced.
+    Cancelled,
+    /// One command exceeded its explicit deadline.
+    DeadlineExpired,
+    /// One command exceeded its output capacity.
+    OutputLimit,
+    /// The repository changed throughout bounded capture retries.
+    ChangedDuringCapture,
+}
+
+#[cfg(feature = "worktree")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaptureSection {
+    Staged,
+    Unstaged,
+}
+
+#[cfg(feature = "worktree")]
+struct CaptureResult {
+    section: CaptureSection,
+    read: Result<WorktreeDiffRead, WorktreeDiffFailure>,
+}
+
+/// One opaque completion returned by [`ReviewSurface::ready`].
+#[cfg(feature = "worktree")]
+#[must_use = "apply the completion to the review surface that produced it"]
+pub struct ReviewCompletion {
+    instance: ReviewInstanceId,
+    event: RuntimeEvent<CaptureResult>,
+}
+#[cfg(feature = "worktree")]
+impl fmt::Debug for ReviewCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("ReviewCompletion(..)")
+    }
+}
+
+/// Why a review completion was rejected before mutation.
+#[cfg(feature = "worktree")]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewApplyErrorKind {
+    /// The receiving surface has no worktree lifecycle.
+    NotWorktree,
+    /// The completion has no registered request mapping.
+    UnknownCompletion,
+    /// The facade event queue cannot hold the atomic transition.
+    EventCapacity,
+    /// The completion belongs to another surface.
+    WrongInstance {
+        /// The receiving surface.
+        surface: ReviewInstanceId,
+        /// The producing surface.
+        completion: ReviewInstanceId,
+    },
+    /// A newer paired capture replaced this completion.
+    StaleRequest {
+        /// The active paired capture.
+        active: ReviewRequestId,
+        /// The obsolete paired capture.
+        completion: ReviewRequestId,
+    },
+}
+
+/// An unapplied worktree review completion.
+#[cfg(feature = "worktree")]
+pub struct ReviewApplyError {
+    kind: ReviewApplyErrorKind,
+    completion: ReviewCompletion,
+}
+#[cfg(feature = "worktree")]
+impl ReviewApplyError {
+    /// Returns the typed rejection.
+    #[must_use]
+    pub const fn kind(&self) -> ReviewApplyErrorKind {
+        self.kind
+    }
+    /// Recovers the opaque completion for correct routing.
+    pub fn into_completion(self) -> ReviewCompletion {
+        self.completion
+    }
+}
+#[cfg(feature = "worktree")]
+impl fmt::Debug for ReviewApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ReviewApplyError")
+            .field("kind", &self.kind)
+            .finish()
+    }
+}
+#[cfg(feature = "worktree")]
+impl fmt::Display for ReviewApplyError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "review completion rejected: {:?}", self.kind)
+    }
+}
+#[cfg(feature = "worktree")]
+impl std::error::Error for ReviewApplyError {}
+
+/// Result of consuming worktree review shutdown.
+#[cfg(feature = "worktree")]
+#[must_use = "a drain must be completed after a bounded shutdown timeout"]
+pub enum ReviewShutdown {
+    /// Every capture stopped within the deadline.
+    Finished {
+        /// Remaining facade-owned host events.
+        events: Vec<ReviewEvent>,
+    },
+    /// Capture cleanup still runs.
+    Draining(ReviewDrain),
+}
+
+/// Remaining private capture work after shutdown reached its deadline.
+#[cfg(feature = "worktree")]
+pub struct ReviewDrain {
+    runtime: TokioRuntime,
+    drain: RuntimeDrain,
+    events: Vec<ReviewEvent>,
+}
+#[cfg(feature = "worktree")]
+impl ReviewDrain {
+    /// Waits for all private read-only capture work to stop.
+    pub async fn complete(self) -> Vec<ReviewEvent> {
+        let Self {
+            runtime,
+            drain,
+            events,
+        } = self;
+        let _guard = runtime.enter();
+        drain.wait().await;
+        drop(_guard);
+        runtime.shutdown_background();
+        events
+    }
+}
+
+#[cfg(feature = "worktree")]
+struct WorktreeReview {
+    instance: ReviewInstanceId,
+    root: Arc<WorktreeRoot>,
+    runtime: Option<Runtime<CaptureResult>>,
+    executor: Option<TokioRuntime>,
+    receiver: EventReceiver<CaptureResult>,
+    gate: PublicationGate,
+    active: ReviewRequestId,
+    next_request: u64,
+    queued: VecDeque<(CaptureSection, WorktreeDiffRequest)>,
+    staged: Option<Option<WorktreeDiff>>,
+    unstaged: Option<Option<WorktreeDiff>>,
+    failed: bool,
+    requests: HashMap<RequestId, ReviewRequestId>,
+}
+
+#[cfg(feature = "worktree")]
+impl WorktreeReview {
+    fn queue_pair(&mut self) -> Option<ReviewRequestId> {
+        let next_request = self.next_request.checked_add(1)?;
+        self.gate.cancel_all();
+        self.next_request = next_request;
+        self.active = ReviewRequestId(next_request);
+        self.queued.clear();
+        self.staged = None;
+        self.unstaged = None;
+        self.failed = false;
+        self.queued.push_back((
+            CaptureSection::Staged,
+            WorktreeDiffRequest::new(
+                Arc::clone(&self.root),
+                DiffComparison::HeadToIndex,
+                DiffTarget::Worktree,
+            ),
+        ));
+        self.queued.push_back((
+            CaptureSection::Unstaged,
+            WorktreeDiffRequest::new(
+                Arc::clone(&self.root),
+                DiffComparison::IndexToWorktree,
+                DiffTarget::Worktree,
+            ),
+        ));
+        Some(self.active)
+    }
+}
+
+#[cfg(feature = "worktree")]
+fn validate_review_config(config: &ReviewConfig) -> Result<(), ReviewError> {
+    if config.area.width == 0 || config.area.height == 0 {
+        return Err(ReviewError::EmptyGeometry);
+    }
+    if config.root_label.len() > REVIEW_ROOT_LABEL_BYTES_MAX {
+        return Err(ReviewError::RootLabelCapacity);
+    }
+    Ok(())
+}
+
+#[cfg(feature = "worktree")]
+fn capture_failure(failure: WorktreeDiffFailure) -> ReviewCaptureFailure {
+    match failure {
+        WorktreeDiffFailure::CommandMissing => ReviewCaptureFailure::CommandMissing,
+        WorktreeDiffFailure::Unavailable => ReviewCaptureFailure::Unavailable,
+        WorktreeDiffFailure::BaseUnavailable => ReviewCaptureFailure::BaseUnavailable,
+        WorktreeDiffFailure::Cancelled => ReviewCaptureFailure::Cancelled,
+        WorktreeDiffFailure::DeadlineExpired => ReviewCaptureFailure::DeadlineExpired,
+        WorktreeDiffFailure::ProcessOutputLimit => ReviewCaptureFailure::OutputLimit,
+        WorktreeDiffFailure::ChangedDuringCapture => ReviewCaptureFailure::ChangedDuringCapture,
     }
 }
 

@@ -588,9 +588,11 @@ The supplied-review dependency boundary is enforced with `cargo tree` over the
 exact review-only feature selection. Constructor-level source inspection is not
 dependency isolation.
 
-`ReviewSurface::for_worktree` remains planned. It will perform bounded Git
-capture behind the `worktree` feature. Hosts own focus, comment persistence,
-and host-domain meaning for both modes.
+`ReviewSurface::for_worktree` performs bounded Git capture behind the
+`worktree` feature. It privately owns its executor, request publication gates,
+and paired staged and unstaged results. It publishes neither half until both
+resolve. Hosts own focus, comment persistence, and host-domain meaning for both
+review modes.
 
 ## State Ownership
 

@@ -300,9 +300,15 @@ snapshots. Snapshot restoration relocates durable anchors without guessing.
 The host owns focus policy, file opening, comment persistence, and comment
 meaning.
 
-`ReviewSurface::for_worktree` remains planned. It will add bounded Git capture
-behind the `worktree` feature. Both paths share private review state,
-relocation, and painting with integrated review.
+`ReviewSurface::for_worktree` adds bounded Git capture behind the `worktree`
+feature. The surface privately owns capture dispatch, readiness, application,
+cancellation, and consuming shutdown. One `dispatch` call submits every queued
+half or follow-up step. The host then alternates `ready`, `apply`, and `dispatch`
+until it receives `CaptureFinished` or `CaptureFailed`. Shutdown accepts a wait
+timeout. Dropping the surface cancels capture and stops its private executor as
+a best-effort safety net. The surface publishes staged and unstaged candidates
+as one pair. Both paths share private review state, relocation, and painting
+with integrated review.
 
 ## Worktree Implementation Contract
 

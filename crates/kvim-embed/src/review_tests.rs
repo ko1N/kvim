@@ -191,3 +191,214 @@ fn construction_rejects_surface_collection_bounds() {
         Err(ReviewError::CandidateCapacity)
     ));
 }
+
+#[cfg(feature = "worktree")]
+fn git(root: &Path, arguments: &[&str]) {
+    let status = std::process::Command::new("git")
+        .args(arguments)
+        .current_dir(root)
+        .status()
+        .expect("test git command starts");
+    assert!(status.success(), "test git command succeeds");
+}
+
+#[cfg(feature = "worktree")]
+fn worktree_surface(name: &str) -> (std::path::PathBuf, ReviewSurface) {
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("test clock follows epoch")
+        .as_nanos();
+    let root = std::env::temp_dir().join(format!("kvim-review-{name}-{unique}"));
+    std::fs::create_dir(&root).expect("test root is created");
+    git(&root, &["init", "-q"]);
+    git(&root, &["config", "user.email", "review@example.invalid"]);
+    git(&root, &["config", "user.name", "Review Test"]);
+    std::fs::write(root.join("notes.txt"), "one\n").expect("test file is written");
+    git(&root, &["add", "notes.txt"]);
+    git(&root, &["commit", "-qm", "initial"]);
+    let surface = ReviewSurface::for_worktree(&root, ReviewConfig::new(Rect::new(0, 0, 80, 16)))
+        .expect("worktree review opens");
+    (root, surface)
+}
+
+#[cfg(feature = "worktree")]
+async fn capture_pair(review: &mut ReviewSurface) {
+    loop {
+        let _ = review.dispatch().expect("capture dispatch has capacity");
+        let completion = review.ready().await.expect("capture completion arrives");
+        let _ = review.apply(completion).expect("completion is current");
+        let mut finished = false;
+        while let Some(event) = review.event() {
+            match event {
+                ReviewEvent::CaptureFinished { .. } => finished = true,
+                ReviewEvent::Redraw if finished => return,
+                _ => {}
+            }
+        }
+    }
+}
+
+#[cfg(feature = "worktree")]
+async fn shutdown(review: ReviewSurface) {
+    match review
+        .shutdown(std::time::Duration::from_secs(2))
+        .await
+        .expect("shutdown is supported")
+    {
+        ReviewShutdown::Finished { .. } => {}
+        ReviewShutdown::Draining(drain) => {
+            let _ = drain.complete().await;
+        }
+    }
+}
+
+#[cfg(feature = "worktree")]
+#[test]
+fn worktree_review_rejects_wrong_instance_and_stale_completion_atomically() {
+    let (first_root, mut first) = worktree_surface("routing-first");
+    let (second_root, mut second) = worktree_surface("routing-second");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime starts");
+    runtime.block_on(async {
+        first.dispatch().expect("pair dispatches");
+        let completion = first.ready().await.expect("completion arrives");
+        let first_snapshot = first.snapshot();
+        let second_snapshot = second.snapshot();
+        let error = second.apply(completion).expect_err("instance is checked");
+        assert!(matches!(
+            error.kind(),
+            ReviewApplyErrorKind::WrongInstance { .. }
+        ));
+        assert_eq!(first.snapshot(), first_snapshot);
+        assert_eq!(second.snapshot(), second_snapshot);
+
+        let completion = error.into_completion();
+        first.request_reload().expect("reload advances identity");
+        let error = first.apply(completion).expect_err("old pair is stale");
+        assert!(matches!(
+            error.kind(),
+            ReviewApplyErrorKind::StaleRequest { .. }
+        ));
+        assert_eq!(first.snapshot(), first_snapshot);
+        assert_eq!(first.event(), None);
+
+        shutdown(first).await;
+        shutdown(second).await;
+    });
+    std::fs::remove_dir_all(first_root).expect("first test root is removed");
+    std::fs::remove_dir_all(second_root).expect("second test root is removed");
+}
+
+#[cfg(feature = "worktree")]
+#[test]
+fn supplied_review_rejects_worktree_completion_without_panicking() {
+    let (root, mut worktree) = worktree_surface("not-worktree");
+    let mut supplied = surface("supplied", "line");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime starts");
+    runtime.block_on(async {
+        worktree.dispatch().expect("pair dispatches");
+        let completion = worktree.ready().await.expect("completion arrives");
+        let before = supplied.snapshot();
+        let error = supplied
+            .apply(completion)
+            .expect_err("supplied surface rejects capture completion");
+        assert_eq!(error.kind(), ReviewApplyErrorKind::NotWorktree);
+        assert_eq!(supplied.snapshot(), before);
+        assert_eq!(supplied.event(), None);
+        shutdown(worktree).await;
+    });
+    std::fs::remove_dir_all(root).expect("test root is removed");
+}
+
+#[cfg(feature = "worktree")]
+#[test]
+fn worktree_review_supports_empty_staged_only_and_unstaged_only_pairs() {
+    let (root, mut review) = worktree_surface("pair-shapes");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime starts");
+    runtime.block_on(async {
+        capture_pair(&mut review).await;
+        assert!(review.snapshot().staged_id().is_some());
+        assert!(review.snapshot().unstaged_id().is_some());
+
+        std::fs::write(root.join("staged.txt"), "staged\n").expect("staged file is written");
+        git(&root, &["add", "staged.txt"]);
+        review.request_reload().expect("staged reload starts");
+        capture_pair(&mut review).await;
+        assert!(review.snapshot().staged_id().is_some());
+        assert!(review.snapshot().unstaged_id().is_some());
+
+        git(&root, &["reset", "-q", "HEAD", "staged.txt"]);
+        review.request_reload().expect("unstaged reload starts");
+        capture_pair(&mut review).await;
+        assert!(review.snapshot().staged_id().is_some());
+        assert!(review.snapshot().unstaged_id().is_some());
+
+        shutdown(review).await;
+    });
+    std::fs::remove_dir_all(root).expect("test root is removed");
+}
+
+#[cfg(feature = "worktree")]
+#[test]
+fn worktree_review_captures_pair_reloads_and_shuts_down() {
+    let (root, mut review) = worktree_surface("lifecycle");
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime starts");
+    runtime.block_on(async {
+        std::fs::write(root.join("notes.txt"), "one\ntwo\n").expect("test worktree changes");
+        capture_pair(&mut review).await;
+        assert!(review.snapshot().staged_id().is_some());
+        assert!(review.snapshot().unstaged_id().is_some());
+
+        review
+            .input(ReviewInput::command(ReviewCommand::MarkRead))
+            .expect("mark read has event capacity");
+        while review.event().is_some() {}
+        let read = review.snapshot().unstaged_read().len();
+        assert_eq!(read, 1);
+
+        std::fs::write(root.join("notes.txt"), "one\ntwo\nthree\n").expect("test worktree changes");
+        review.request_reload().expect("reload starts");
+        capture_pair(&mut review).await;
+        assert!(review.snapshot().unstaged_read().len() <= read);
+
+        let shutdown = review
+            .shutdown(std::time::Duration::from_secs(2))
+            .await
+            .expect("shutdown is supported");
+        assert!(matches!(shutdown, ReviewShutdown::Finished { .. }));
+    });
+    std::fs::remove_dir_all(root).expect("test root is removed");
+}
+
+#[cfg(feature = "worktree")]
+#[test]
+fn worktree_review_cancels_without_publishing_partial_pair() {
+    let (root, mut review) = worktree_surface("cancel");
+    let request = review.cancel_capture().expect("capture can be cancelled");
+    assert_eq!(
+        review.event(),
+        Some(ReviewEvent::CaptureCancelled { request })
+    );
+    assert!(review.snapshot().staged_id().is_none());
+    assert!(review.snapshot().unstaged_id().is_none());
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("test runtime starts");
+    runtime.block_on(async {
+        let shutdown = review.shutdown(std::time::Duration::from_secs(2)).await;
+        assert!(matches!(shutdown, Ok(ReviewShutdown::Finished { .. })));
+    });
+    std::fs::remove_dir_all(root).expect("test root is removed");
+}

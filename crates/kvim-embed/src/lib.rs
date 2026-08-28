@@ -29,6 +29,11 @@ pub use review::{
     ReviewFocus, ReviewHunk, ReviewInput, ReviewLine, ReviewLineOrigin, ReviewRenderOutcome,
     ReviewSection, ReviewSnapshot, ReviewSurface, ReviewUpdate,
 };
+#[cfg(feature = "worktree")]
+pub use review::{
+    ReviewApplyError, ReviewApplyErrorKind, ReviewCaptureFailure, ReviewCompletion, ReviewDrain,
+    ReviewInstanceId, ReviewOpenError, ReviewOpenErrorKind, ReviewRequestId, ReviewShutdown,
+};
 
 #[cfg(feature = "worktree")]
 pub use composition::{
