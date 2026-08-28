@@ -1,4 +1,5 @@
 use super::*;
+use crate::{KeyCode, Mode};
 
 fn ch(value: char) -> Key {
     Key::plain(KeyCode::Char(value))

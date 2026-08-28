@@ -302,12 +302,7 @@ impl FileRow {
         depth: usize,
         kind: FileRowKind,
         state: RowState,
-        selected: bool,
     ) -> Self {
-        debug_assert!(
-            !selected || kind.is_selectable(),
-            "the tree rests its selection on an entry row alone"
-        );
         let label = if label.chars().count() > FILE_SIDEBAR_LABEL_CHARS_MAX {
             label
                 .chars()
@@ -324,12 +319,23 @@ impl FileRow {
             depth,
             kind,
             state,
-            selected,
+            selected: false,
             git: None,
             is_symlink: false,
             icon: None,
             matched: None,
         }
+    }
+
+    /// Sets whether this selectable row owns the current selection.
+    #[must_use]
+    pub(super) const fn with_selected(mut self, selected: bool) -> Self {
+        debug_assert!(
+            !selected || self.kind.is_selectable(),
+            "the tree rests its selection on an entry row alone"
+        );
+        self.selected = selected;
+        self
     }
 
     /// Sets the recorded Git state of the row.

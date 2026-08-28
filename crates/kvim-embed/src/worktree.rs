@@ -1121,9 +1121,10 @@ impl WorktreeCommandSurface {
 }
 
 /// How one worktree editor resolves physical bindings.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum WorktreeBindingMode {
     /// Kvim resolves the standalone binding profile inside the facade.
+    #[default]
     FacadeResolved,
     /// The host resolves the embedded profile and reserves one escape key.
     HostResolved {
@@ -1133,12 +1134,6 @@ pub enum WorktreeBindingMode {
         /// represent an empty or multi-key sequence.
         reserved_escape: Key,
     },
-}
-
-impl Default for WorktreeBindingMode {
-    fn default() -> Self {
-        Self::FacadeResolved
-    }
 }
 
 impl WorktreeBindingMode {

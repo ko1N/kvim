@@ -6,15 +6,16 @@
 
 use std::collections::BTreeMap;
 
-use kvim_keymap::{
-    BINDINGS_MAX, Key, KeyCode, KeySequence, SequenceError, TextFallback, UnboundInput,
-};
+use kvim_keymap::{BINDINGS_MAX, Key, KeySequence, SequenceError, TextFallback, UnboundInput};
 use kvim_settings::PENDING_KEYS_MAX;
 use thiserror::Error;
 
 use super::command::{Command, CommandGroup};
-use super::mode::{BindingScope, Mode};
-use super::registry::{Binding, Registry, RegistryError};
+use super::mode::BindingScope;
+use super::registry::{
+    Binding, Registry, RegistryError, add_embedded_secondary_bindings, is_embedded_host_navigation,
+    is_review_tab_navigation,
+};
 
 /// The maximum number of binding entries in one published manifest.
 ///
@@ -469,10 +470,7 @@ fn review_profile_bindings(
 ) -> Vec<Binding> {
     let mut bindings = first_release.to_vec();
     if matches!(profile, ReviewBindingProfile::HostResolved) {
-        bindings.retain(|binding| {
-            binding.keys != [Key::plain(KeyCode::Tab)]
-                && binding.keys != [Key::plain(KeyCode::BackTab)]
-        });
+        bindings.retain(|binding| !is_review_tab_navigation(&binding.keys));
         add_embedded_secondary_bindings(&mut bindings);
         bindings.retain(|binding| binding.scope == BindingScope::Review);
     }
@@ -489,50 +487,6 @@ fn profile_bindings(profile: BindingProfile, first_release: &[Binding]) -> Vec<B
         add_embedded_secondary_bindings(&mut bindings);
     }
     bindings
-}
-
-fn is_embedded_host_navigation(scope: BindingScope, sequence: &[Key]) -> bool {
-    matches!(
-        scope,
-        BindingScope::Mode(Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
-            | BindingScope::Sidebar
-    ) && (sequence == [Key::plain(KeyCode::Tab)] || sequence == [Key::plain(KeyCode::BackTab)])
-}
-
-fn add_embedded_secondary_bindings(bindings: &mut Vec<Binding>) {
-    let normal = BindingScope::Mode(Mode::Normal);
-    bindings.push(Binding::surface(
-        normal,
-        &[
-            Key::plain(KeyCode::Char(']')),
-            Key::plain(KeyCode::Char('j')),
-        ],
-        Command::JumpForward,
-    ));
-    bindings.push(Binding::surface(
-        normal,
-        &[
-            Key::plain(KeyCode::Char('[')),
-            Key::plain(KeyCode::Char('j')),
-        ],
-        Command::JumpBack,
-    ));
-    bindings.push(Binding::surface(
-        BindingScope::Review,
-        &[
-            Key::plain(KeyCode::Char(']')),
-            Key::plain(KeyCode::Char('s')),
-        ],
-        Command::NextReviewSection,
-    ));
-    bindings.push(Binding::surface(
-        BindingScope::Review,
-        &[
-            Key::plain(KeyCode::Char('[')),
-            Key::plain(KeyCode::Char('s')),
-        ],
-        Command::PreviousReviewSection,
-    ));
 }
 
 #[cfg(test)]

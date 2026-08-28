@@ -184,7 +184,7 @@ impl ReviewHunk {
         if lines.is_empty() || lines.len() > REVIEW_HUNK_LINES_MAX {
             return Err(ReviewError::Candidate("invalid hunk line count".into()));
         }
-        validate_hunk_lines(old_first, old_count, new_first, new_count, &lines)?;
+        validate_hunk_lines(old_first, old_count, new_first, new_count, lines)?;
         Ok(Self {
             old_first,
             old_count,
@@ -561,6 +561,7 @@ pub struct ReviewSnapshot {
 }
 impl ReviewSnapshot {
     /// Validates one facade-owned durable snapshot.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         staged_id: Option<ReviewCandidateId>,
         unstaged_id: Option<ReviewCandidateId>,
@@ -823,7 +824,7 @@ impl ReviewSurface {
         if config.root_label.len() > REVIEW_ROOT_LABEL_BYTES_MAX {
             return Err(ReviewError::RootLabelCapacity);
         }
-        validate_candidates(&candidates)?;
+        validate_candidates(candidates)?;
         let bindings = config
             .binding_profile
             .manifest_with_overrides(&config.binding_overrides)?;
@@ -848,7 +849,7 @@ impl ReviewSurface {
         let model = ReviewModel::new(
             staged,
             unstaged,
-            config.diff.clone(),
+            config.diff,
             config.resize_step_cells,
             config.area.height,
         );
@@ -926,12 +927,11 @@ impl ReviewSurface {
         {
             return Err(ReviewError::GeometryOutsideBuffer);
         }
-        ReviewPainter::new(
-            Theme::default(),
-            self.config.diff.clone(),
-            &self.config.root_label,
-        )
-        .draw(target, self.config.area, &self.model);
+        ReviewPainter::new(Theme::default(), self.config.diff, &self.config.root_label).draw(
+            target,
+            self.config.area,
+            &self.model,
+        );
         Ok(ReviewRenderOutcome { cursor: None })
     }
 
@@ -1020,12 +1020,11 @@ impl ReviewSurface {
             snapshot.view,
             snapshot.panel_cells,
         );
-        if let Some((section, anchor)) = &snapshot.cursor {
-            if !staged_model
+        if let Some((section, anchor)) = &snapshot.cursor
+            && !staged_model
                 .restore_cursor_anchor(matches!(section, ReviewSection::Staged), &anchor.0)
-            {
-                stale_events += 1;
-            }
+        {
+            stale_events += 1;
         }
         let result = staged_model.restore_read_anchors(&staged, &unstaged);
         if result.stale > 0 {
@@ -1477,7 +1476,7 @@ impl ReviewSurface {
         let model = ReviewModel::new(
             staged,
             unstaged,
-            config.diff.clone(),
+            config.diff,
             config.resize_step_cells,
             config.area.height,
         );

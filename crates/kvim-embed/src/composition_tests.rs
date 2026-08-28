@@ -494,8 +494,12 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
     )
     .unwrap();
     assert_eq!(
-        WorktreeBindingModel::compose_with_overrides(&manifest, &[binding.clone()], &[stale])
-            .unwrap_err(),
+        WorktreeBindingModel::compose_with_overrides(
+            &manifest,
+            std::slice::from_ref(&binding),
+            &[stale],
+        )
+        .unwrap_err(),
         WorktreeBindingCompositionError::OverrideTargetNotFound
     );
 
@@ -508,7 +512,7 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
     assert_eq!(
         WorktreeBindingModel::compose_with_overrides(
             &manifest,
-            &[binding.clone()],
+            std::slice::from_ref(&binding),
             &[no_conflict],
         )
         .unwrap_err(),

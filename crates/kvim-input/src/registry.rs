@@ -375,6 +375,42 @@ fn add_tree_keys(bindings: &mut Vec<Binding>, keys: &[Key], command: Command) {
     bindings.push(Binding::surface(BindingScope::Sidebar, keys, command));
 }
 
+pub(super) fn add_embedded_secondary_bindings(bindings: &mut Vec<Binding>) {
+    let normal = BindingScope::Mode(Mode::Normal);
+    bindings.push(Binding::surface(
+        normal,
+        &[ch(']'), ch('j')],
+        Command::JumpForward,
+    ));
+    bindings.push(Binding::surface(
+        normal,
+        &[ch('['), ch('j')],
+        Command::JumpBack,
+    ));
+    bindings.push(Binding::surface(
+        BindingScope::Review,
+        &[ch(']'), ch('s')],
+        Command::NextReviewSection,
+    ));
+    bindings.push(Binding::surface(
+        BindingScope::Review,
+        &[ch('['), ch('s')],
+        Command::PreviousReviewSection,
+    ));
+}
+
+pub(super) fn is_review_tab_navigation(sequence: &[Key]) -> bool {
+    sequence == [Key::plain(KeyCode::Tab)] || sequence == [Key::plain(KeyCode::BackTab)]
+}
+
+pub(super) fn is_embedded_host_navigation(scope: BindingScope, sequence: &[Key]) -> bool {
+    matches!(
+        scope,
+        BindingScope::Mode(Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
+            | BindingScope::Sidebar
+    ) && is_review_tab_navigation(sequence)
+}
+
 /// Builds the complete first-release binding table.
 ///
 /// The table mirrors `docs/input-actions.md`. It holds no operator grammar: `d`,

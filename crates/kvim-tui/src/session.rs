@@ -1049,31 +1049,44 @@ impl Visible<'_> {
 
     /// Returns the semantic facts that status publication and rendering share.
     pub(super) fn status(&self) -> EditorStatus<'_> {
-        editor_status(
-            self.active,
-            self.buffers,
-            self.windows,
-            self.editing.mode(),
-            self.settings,
-            self.languages,
-            self.language,
-            self.instance,
-            self.access,
-        )
+        editor_status(EditorStatusContext {
+            active: self.active,
+            buffers: self.buffers,
+            windows: self.windows,
+            mode: self.editing.mode(),
+            settings: self.settings,
+            languages: self.languages,
+            language: self.language,
+            instance: self.instance,
+            access: self.access,
+        })
     }
 }
 
-fn editor_status<'a>(
+struct EditorStatusContext<'a> {
     active: BufferId,
     buffers: &'a Buffers,
-    windows: &Windows,
+    windows: &'a Windows,
     mode: Mode,
-    settings: &EditorSettings,
+    settings: &'a EditorSettings,
     languages: LanguageRegistry,
-    language: &LanguageState,
+    language: &'a LanguageState,
     instance: EditorInstanceId,
     access: EditorAccess,
-) -> EditorStatus<'a> {
+}
+
+fn editor_status(context: EditorStatusContext<'_>) -> EditorStatus<'_> {
+    let EditorStatusContext {
+        active,
+        buffers,
+        windows,
+        mode,
+        settings,
+        languages,
+        language,
+        instance,
+        access,
+    } = context;
     let Some(buffer) = buffers.get(active) else {
         unreachable!("the session always keeps the active buffer loaded");
     };
@@ -2158,17 +2171,17 @@ impl Session {
     #[doc(hidden)]
     #[must_use]
     pub fn status(&self) -> EditorStatus<'_> {
-        editor_status(
-            self.active,
-            &self.buffers,
-            &self.windows,
-            self.editing.mode(),
-            &self.settings,
-            self.languages,
-            &self.language,
-            self.instance,
-            self.access,
-        )
+        editor_status(EditorStatusContext {
+            active: self.active,
+            buffers: &self.buffers,
+            windows: &self.windows,
+            mode: self.editing.mode(),
+            settings: &self.settings,
+            languages: self.languages,
+            language: &self.language,
+            instance: self.instance,
+            access: self.access,
+        })
     }
 
     /// Returns the active editor mode.

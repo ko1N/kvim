@@ -1045,8 +1045,8 @@ impl TreeSidebar {
                 row.depth,
                 host_row_kind(row),
                 state,
-                selected,
             )
+            .with_selected(selected)
             .with_git(git.map(host_git_state))
             .with_symlink(is_symlink)
             .with_icon(icon)

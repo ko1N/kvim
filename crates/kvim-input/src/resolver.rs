@@ -469,12 +469,13 @@ impl Resolver {
         }
         let context = self.reducer.dispatch_context();
         let dispatch = self.shared.dispatch(&context, Input::Key(key), Some(now));
+        let resolution = self.dispatch(dispatch);
         if self.reducer.holds_grammar_prefix() {
             // The reducer opened its own prefix, such as a count, so the
             // which-key delay counts from this input.
             self.shared.arm_overlay(now);
         }
-        self.dispatch(dispatch)
+        resolution
     }
 
     /// Applies one decision from a host-owned key resolver.
