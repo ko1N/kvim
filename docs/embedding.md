@@ -70,6 +70,18 @@ events. Drop cancels internal owners before it shuts down the executor. Drop is
 a best-effort fallback and does not promise durable event delivery.
 
 The facade assigns each `WorktreeEditor` an opaque `WorktreeInstanceId`.
+Recovery uses a separate facade-owned bounded recovery identity for each
+file-backed buffer. A recovery event carries that identity, the addressed
+`WorktreeInstanceId`, target metadata, baseline state, and bounded recovery
+state. The host resolves it with an addressed `Restore`, `Discard`, or `Defer`
+decision. `WorktreeEditor` rejects a wrong instance, recovery identity, buffer,
+target, baseline, or revision before it changes visible state or deletes a
+record. Restore is one undoable dirty replacement. Discard deletes only the
+addressed record and keeps disk text. Defer keeps both values for a later open.
+A stale baseline warns and remains available for explicit later disposal. These
+filesystem capabilities exist only with the `worktree` feature. `MemoryEditor`
+remains filesystem-free and publishes no recovery identity or event.
+
 `WorktreeCompletion` carries that identity privately. `WorktreeEditor::apply`
 returns `Result<WorktreeUpdate, WorktreeApplyError>`. A wrong editor returns
 `WorktreeApplyErrorKind::WrongInstance` before it advances elapsed time,
@@ -388,7 +400,11 @@ time. It does not run another key-sequence resolver. Input reduction returns an
 `InputContextSnapshot` that the shared resolver uses for the next input.
 
 The facade reserves one mandatory event slot before each save or workspace
-mutation. A `Committed` result consumes that slot and applies the staged visible
+mutation. It also reserves capacity before it accepts a recovery decision that
+deletes a record. A recovery checkpoint itself uses the dedicated bounded
+committing worker lane and does not delay ordinary open or save work. The
+facade publishes its recovery event only after off-loop validation identifies a
+candidate record. A `Committed` result consumes that slot and applies the staged visible
 transition. An `Unchanged` result releases it and reports the causal failure.
 
 An `Indeterminate` result consumes the slot with

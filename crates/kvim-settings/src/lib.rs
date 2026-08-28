@@ -14,6 +14,12 @@ use std::time::Duration;
 /// the same bound for analysis sources.
 pub const FILE_BYTES_MAX: u64 = 4 * 1024 * 1024;
 
+/// The largest recovery record text that kvim stores, in bytes.
+///
+/// Recovery stores one complete dirty file-backed buffer. The realized recovery
+/// limit cannot exceed the realized file limit.
+pub const RECOVERY_BYTES_MAX: u64 = FILE_BYTES_MAX;
+
 /// The largest count that the input resolver accepts before one command.
 pub const COUNT_MAX: u32 = 9_999;
 
@@ -468,6 +474,12 @@ pub struct FileSettings {
     pub format_on_save: bool,
     /// Replace a file through a staged atomic write where the platform supports it.
     pub atomic_save: bool,
+    /// Write checkpoints for dirty file-backed buffers that can recover after a crash.
+    pub recovery_enabled: bool,
+    /// The largest recovery record text that kvim writes, in bytes.
+    ///
+    /// The realized value cannot exceed [`FileSettings::max_file_bytes`].
+    pub recovery_max_bytes: u64,
     /// The largest file that kvim loads into a buffer, in bytes.
     pub max_file_bytes: u64,
 }
@@ -478,6 +490,8 @@ impl Default for FileSettings {
             undo_file: true,
             format_on_save: true,
             atomic_save: true,
+            recovery_enabled: true,
+            recovery_max_bytes: RECOVERY_BYTES_MAX,
             max_file_bytes: FILE_BYTES_MAX,
         }
     }
@@ -610,6 +624,18 @@ impl EditorSettings {
             self.files.max_file_bytes,
             FILE_BYTES_MAX,
         )?;
+        validate_bound(
+            "files.recovery_max_bytes",
+            self.files.recovery_max_bytes,
+            RECOVERY_BYTES_MAX,
+        )?;
+        if self.files.recovery_max_bytes > self.files.max_file_bytes {
+            return Err(SettingsError::InvalidBound {
+                field: "files.recovery_max_bytes",
+                max: self.files.max_file_bytes,
+                actual: self.files.recovery_max_bytes,
+            });
+        }
         validate_bound(
             "input.count_max",
             u64::from(self.input.count_max),

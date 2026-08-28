@@ -94,7 +94,8 @@ Creating another client of a service does not create more capacity.
 
 The worker spawner accepts two kinds of job. An optional job changes no durable
 state, so a cancellation or deadline drops it and the caller keeps its previous
-visible state. A committing job can change durable state. For the current
+visible state. A committing job can change durable state. File save, workspace
+mutation, and recovery checkpoint work use committing jobs. For the current
 blocking-worker API, starting its closure is the explicit commit point. Before
 that point, cancellation or a deadline aborts a queued closure. If the closure
 already started, Tokio cannot stop it, so the runtime waits for its actual
@@ -245,6 +246,16 @@ changed or might have changed without claiming a proven commit.
 target changed. The result report preserves the primary source and every
 bounded restoration or cleanup source.
 
+Recovery checkpoints run on a dedicated committing worker lane. They do not
+reserve facade event capacity because they do not publish a durable host event
+for every edit. Each file-backed buffer has one active checkpoint and one newest
+pending checkpoint. Every accepted revision-changing edit queues immediately,
+and a newer revision replaces only the pending checkpoint. The lane validates
+editor instance, buffer identity, target, baseline, and revision before it
+publishes any result. A failed, saturated, timed-out, or obsolete checkpoint
+keeps the newest recoverable state and reports one bounded failure. Ordinary
+open and save work uses separate lanes and does not wait behind recovery.
+
 The visible-state owner handles indeterminate results before it applies staged
 state. It keeps a save dirty. It withholds mutation path updates. It then queues
 bounded reload checks and tree reads through the normal file and workspace
@@ -315,7 +326,13 @@ paths run the same order:
 1. Stop the workspace watcher, so it queues no further directory read.
 2. Reject new work.
 3. Cancel all owned work.
-4. Wait for accepted tasks to finish cleanup.
+4. Wait for accepted tasks to finish cleanup and committed recovery checkpoints.
+
+The recovery checkpoint drain retains at most one active and one newest pending
+revision for each file-backed buffer. It completes accepted writes before
+shutdown reports completion. A deadline returns the existing bounded drain,
+which keeps the committing worker and its current records alive until it
+finishes.
 
 The watcher, the language services, and the runtime each end through one
 consuming operation, so no caller can submit after it. The coalescing task of

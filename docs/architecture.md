@@ -49,7 +49,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
 | `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
-| `kvim-workspace` | Files, buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
+| `kvim-workspace` | Files, buffers, recovery records for dirty file-backed buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
 | `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
@@ -429,6 +429,19 @@ opened. [`embedding.md`](embedding.md) owns the host contract.
 `TextBuffer`, `EditTransaction`, the coordinate types, `FileSettings`, and
 `EditorSettings` all appear in a public parameter or return value, so a consumer
 cannot use the editor or the embedded facade without naming both packages.
+
+Unsaved-edit recovery belongs to file-backed `WorktreeEditor` buffers. The
+workspace layer owns versioned atomic records, their baseline and UTF-8
+validation, and record cleanup. The worktree session owns immediate checkpoint
+coalescing and applies recovery decisions as editor transitions. `kvim-embed`
+owns the facade recovery identity, typed event, and addressed decision boundary.
+A record is bounded by the realized file and recovery text limits. Each buffer
+holds one active write and one newest pending revision. The private runtime
+keeps checkpoint work off the host loop and drains accepted writes during
+shutdown. `MemoryEditor` stays in-memory and has no recovery dependency,
+record, event, or filesystem operation. [`files.md`](files.md),
+[`responsiveness.md`](responsiveness.md), [`settings.md`](settings.md), and
+[`embedding.md`](embedding.md) own the detailed contract.
 
 Each public crate supports a revision-pinned Cargo Git dependency from another
 repository. It requires no shared parent workspace. Every normal dependency of

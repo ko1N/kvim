@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use super::{
     COUNT_MAX, EditorSettings, FILE_BYTES_MAX, IndentSettings, IndentWidth, NOTIFICATION_ROWS_MAX,
-    PENDING_KEYS_MAX, SettingsError, ShiftWidth, SplitRatio,
+    PENDING_KEYS_MAX, RECOVERY_BYTES_MAX, SettingsError, ShiftWidth, SplitRatio,
 };
 
 fn cells(value: u8) -> NonZeroU8 {
@@ -104,6 +104,33 @@ fn settings_realization_rejects_invalid_public_numeric_bounds() {
         assert!(matches!(
             settings.realize(),
             Err(SettingsError::InvalidBound { .. } | SettingsError::ZeroBound { .. })
+        ));
+    }
+}
+
+#[test]
+fn settings_realization_rejects_invalid_recovery_limits() {
+    for files in [
+        super::FileSettings {
+            recovery_max_bytes: RECOVERY_BYTES_MAX + 1,
+            ..super::FileSettings::default()
+        },
+        super::FileSettings {
+            max_file_bytes: FILE_BYTES_MAX - 1,
+            recovery_max_bytes: FILE_BYTES_MAX,
+            ..super::FileSettings::default()
+        },
+    ] {
+        let settings = EditorSettings {
+            files,
+            ..EditorSettings::default()
+        };
+        assert!(matches!(
+            settings.realize(),
+            Err(SettingsError::InvalidBound {
+                field: "files.recovery_max_bytes",
+                ..
+            })
         ));
     }
 }

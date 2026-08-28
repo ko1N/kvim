@@ -350,6 +350,83 @@ write is not an error either, because the saved file is already correct.
 The `undo file` setting enables this behavior. See
 [`settings.md`](settings.md).
 
+## Unsaved-Edit Recovery
+
+Recovery preserves the newest unsaved text of a dirty file-backed buffer after
+kvim, the terminal, or the operating system stops unexpectedly. It is separate
+from atomic-save temporary files and persistent undo files. Recovery does not
+restore unnamed scratch buffers because they have no stable persistent identity.
+
+### Location, Record, And Durability
+
+Recovery records live in:
+
+```
+${XDG_STATE_HOME:-$HOME/.local/state}/kvim/recovery/
+```
+
+kvim writes no recovery record when the platform reports neither
+`XDG_STATE_HOME` nor `HOME`. One record name is a stable hash of the absolute
+target path. The record also stores the complete target path. A collision
+therefore cannot select a record for another target.
+
+A versioned record stores its header, complete target path, disk baseline,
+buffer revision, recovered text length and hash, and complete UTF-8 text. The
+baseline is either `Missing` or the saved file length and content hash. The
+reader rejects a record with an unsupported version, malformed header, target
+mismatch, invalid baseline, non-UTF-8 text, incorrect length or hash, or a
+value above the realized recovery and file-size limits.
+
+The writer writes a complete replacement record to a temporary file in the
+recovery directory. It synchronizes that file and atomically renames it over
+the current record. It also synchronizes the containing directory where the
+platform supports directory synchronization. A failure leaves the old current
+record usable when the durable outcome proves that the replacement did not
+commit. An interrupted or invalid record never replaces live buffer text.
+
+### Checkpoint Scheduling And Bounds
+
+Each accepted revision-changing edit of a file-backed dirty buffer queues a
+checkpoint immediately. The terminal event loop only records the request. A
+dedicated committing worker lane writes the record off the loop. Scheduling has
+no timer owner.
+
+Each buffer keeps at most one active checkpoint and one newest pending
+checkpoint. A newer accepted revision replaces the pending revision. Different
+buffers use independent bounded slots. Every completion carries editor instance,
+buffer identity, target, baseline, and buffer revision. The owner rejects a
+wrong, obsolete, or mismatched completion before it changes state. Saturation,
+timeout, or failure retains the newest recoverable state and reports one
+failure without delaying ordinary open or save work.
+
+The realized `recovery_enabled` setting controls scheduling. The realized
+`recovery_max_bytes` setting bounds recovered text and cannot exceed the
+realized file-size limit. The first release uses a 4 MiB maximum for each.
+
+### Open And Lifecycle
+
+An off-loop file open reads and validates a candidate recovery record with the
+disk file. For a valid record, kvim opens disk text first and asks to restore,
+discard, or defer. It never replaces disk text automatically.
+
+Restore applies recovered text as one undoable replacement transaction and
+keeps the buffer modified. Discard keeps disk text and deletes the record.
+Defer keeps disk text and the record, so a later open asks again. A missing or
+changed disk baseline is stale. Kvim warns, retains that record, never merges
+it, and requires explicit later disposal.
+
+A successful current save deletes its current recovery record. A confirmed
+reload discard, confirmed final-window discard, and explicit recovery discard
+also delete it. Failed or obsolete saves, cancelled prompts, and failed cleanup
+preserve the record. A cleanup failure warns but never changes a successful save
+into a failed save. Shutdown rejects new checkpoint work and drains accepted
+committing checkpoint work through the existing bounded shutdown path.
+
+[`embedding.md`](embedding.md) owns the `WorktreeEditor` recovery identity,
+typed event, and addressed restore, discard, and defer decisions. `MemoryEditor`
+remains filesystem-free and has no recovery behavior. See
+[`responsiveness.md`](responsiveness.md).
+
 ## File Tree
 
 The file tree is a fixed-width sidebar on the right side of the terminal. See
