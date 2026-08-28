@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_editor::Selection;
-use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode};
+use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode, PromptKind, TreePrompt};
 use kvim_language::{Diagnostic, DiagnosticSeverity, DocumentPosition, LspError, SourceSpan};
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
@@ -1416,6 +1416,30 @@ fn a_backspace_on_the_empty_prompt_closes_it() {
     // The prompt is closed, so the next key reaches the registry again.
     press(&mut session, 'i');
     assert_eq!(session.mode(), Mode::Insert);
+}
+
+#[test]
+fn backspace_keeps_an_empty_rename_prompt_open_for_a_replacement_name() {
+    let mut session = session(40, 10);
+    session.open_prompt(PromptKind::Tree(TreePrompt::Rename));
+
+    assert_eq!(prompt_text(&session), "");
+    assert_eq!(
+        press_code(&mut session, KeyCode::Backspace),
+        Redraw::Skipped
+    );
+    assert!(
+        session.visible().prompt.is_some(),
+        "rename remains open after backspace reaches the empty line"
+    );
+
+    type_keys(&mut session, "replacement.txt");
+    assert_eq!(prompt_text(&session), "replacement.txt");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(
+        session.visible().prompt.is_none(),
+        "Escape still cancels rename"
+    );
 }
 
 #[test]

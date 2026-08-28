@@ -3488,12 +3488,17 @@ impl Session {
             );
             return Redraw::Skipped;
         };
-        // Backspace on the empty line cancels the prompt, like Vim. The line
-        // alone decides that, and not the cursor, so a backspace at the start
-        // of a written line removes nothing and keeps the prompt open. A host
-        // can bind `Ctrl-W` as its own prefix, so that chord never closes a
-        // prompt of this editor and leaves the empty line open instead.
-        if edit == PromptEdit::DeleteBackward && prompt.line.text().is_empty() {
+        // Backspace on an empty line cancels ordinary prompts, like Vim. A
+        // rename prompt stays open because users commonly hold Backspace to
+        // clear the old name before typing its replacement. Escape and Ctrl-C
+        // remain the explicit cancellation keys for rename. A backspace at the
+        // start of a written line removes nothing and keeps every prompt open.
+        // A host can bind `Ctrl-W` as its own prefix, so that chord never closes
+        // an empty prompt either.
+        let empty_backspace_cancels = edit == PromptEdit::DeleteBackward
+            && prompt.line.text().is_empty()
+            && prompt.kind != PromptKind::Tree(TreePrompt::Rename);
+        if empty_backspace_cancels {
             self.close_prompt();
             return Redraw::Needed;
         }
