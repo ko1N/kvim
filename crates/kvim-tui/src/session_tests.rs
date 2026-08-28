@@ -21,8 +21,8 @@ use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
     BUFFERS_MAX, BufferPathUpdate, Candidate, DurableOutcome, ExternalChange, FileRequest,
-    FileResult, MutationOutcome, PickerRequest, PickerResult, RecoveryBaseline, SaveError,
-    WorkspaceResult,
+    FileResult, MutationOutcome, PickerRequest, PickerResult, RecoveryBaseline, RecoveryRecord,
+    SaveError, WorkspaceResult, recovery_record_path, write_recovery_record,
 };
 
 use crate::clipboard::SessionClipboard;
@@ -33,7 +33,8 @@ use crate::log::LOG_ENTRIES_MAX;
 use crate::review::ReviewSurface;
 use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
-    PromptSeed, RecoveryOperation, RecoverySubmissionFailure, Redraw, RunState, Session, test_root,
+    PromptSeed, RecoveryDecision, RecoveryDecisionError, RecoveryOperation,
+    RecoverySubmissionFailure, Redraw, RunState, Session, test_root,
 };
 use kvim_ui::{SidebarSide, WindowId};
 
@@ -2138,6 +2139,223 @@ fn run_file_request(session: &mut Session) {
         .take_file_request()
         .expect("the transition queued one file request");
     let _ = session.apply_file_result(request.run());
+}
+
+fn write_recovery_for_open_file(
+    directory: &TempDir,
+    target_path: &Path,
+    baseline: RecoveryBaseline,
+    recovered: &str,
+) -> PathBuf {
+    let mut first =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    first.open_path(target_path.to_path_buf());
+    run_file_request(&mut first);
+    let target = first
+        .active_buffer()
+        .target()
+        .expect("the file open resolved one target")
+        .clone();
+    let record = RecoveryRecord::new(
+        &target,
+        baseline,
+        BufferRevision::from_parts(1, 7),
+        recovered.to_owned(),
+        1024,
+        1024,
+    )
+    .expect("the test recovery text fits");
+    let path = recovery_record_path(&directory.join("state"), &target);
+    assert!(matches!(
+        write_recovery_record(&path, &record),
+        DurableOutcome::Committed(())
+    ));
+    path
+}
+
+fn other_recovery_target(directory: &TempDir, session: &mut Session) -> kvim_workspace::FileTarget {
+    let original = session.active;
+    let other_path = directory.write("other.rs", "other\n");
+    session.open_path(other_path);
+    run_file_request(session);
+    let target = session
+        .active_buffer()
+        .target()
+        .expect("the other file has a target")
+        .clone();
+    session.active = original;
+    target
+}
+
+#[test]
+fn current_recovery_restores_as_one_dirty_undoable_transaction() {
+    let directory = TempDir::new("session-recovery-restore");
+    let path = directory.write("main.rs", "disk\n");
+    write_recovery_for_open_file(
+        &directory,
+        &path,
+        RecoveryBaseline::saved("disk\n"),
+        "recovered\n",
+    );
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    let identity = session
+        .pending_recovery()
+        .expect("recovery asks for a choice");
+
+    assert_eq!(
+        session.decide_recovery(&identity, RecoveryDecision::Restore),
+        Ok(Redraw::Needed)
+    );
+    assert_eq!(session.buffer().to_string(), "recovered\n");
+    assert!(session.buffer().is_modified());
+    press(&mut session, 'u');
+    assert_eq!(session.buffer().to_string(), "disk\n");
+}
+
+#[test]
+fn recovery_discard_deletes_in_order_and_defer_retains_the_record() {
+    for (decision, deleted) in [
+        (RecoveryDecision::Discard, true),
+        (RecoveryDecision::Defer, false),
+    ] {
+        let directory = TempDir::new("session-recovery-resolution");
+        let path = directory.write("main.rs", "disk\n");
+        let record_path = write_recovery_for_open_file(
+            &directory,
+            &path,
+            RecoveryBaseline::saved("disk\n"),
+            "recovered\n",
+        );
+        let mut session =
+            file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+        session.open_path(path);
+        run_file_request(&mut session);
+        let identity = session.pending_recovery().unwrap();
+        assert_eq!(
+            session.decide_recovery(&identity, decision),
+            Ok(Redraw::Needed)
+        );
+        assert_eq!(session.buffer().to_string(), "disk\n");
+        if deleted {
+            let cleanup = session
+                .take_recovery_checkpoint()
+                .expect("discard queues ordered committing cleanup");
+            let _ = session.apply_recovery_checkpoint(cleanup.run());
+        }
+        assert_eq!(record_path.exists(), !deleted);
+    }
+}
+
+#[test]
+fn changed_and_missing_recovery_baselines_never_restore_and_can_defer_or_discard() {
+    for (missing, decision) in [
+        (false, RecoveryDecision::Defer),
+        (true, RecoveryDecision::Discard),
+    ] {
+        let directory = TempDir::new("session-recovery-stale");
+        let path = directory.write("main.rs", "old\n");
+        let record_path = write_recovery_for_open_file(
+            &directory,
+            &path,
+            RecoveryBaseline::saved("old\n"),
+            "recovered\n",
+        );
+        if missing {
+            std::fs::remove_file(&path).expect("the test removes the target");
+        } else {
+            std::fs::write(&path, "new\n").expect("the test changes the target");
+        }
+        let mut session =
+            file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+        session.open_path(path);
+        run_file_request(&mut session);
+        let identity = session
+            .pending_recovery()
+            .expect("stale recovery is retained");
+        assert_eq!(
+            session.decide_recovery(&identity, RecoveryDecision::Restore),
+            Err(RecoveryDecisionError::RestoreForbidden)
+        );
+        assert!(record_path.exists());
+        assert_eq!(
+            session.buffer().to_string(),
+            if missing { "\n" } else { "new\n" }
+        );
+        assert_eq!(
+            session.decide_recovery(&identity, decision),
+            Ok(Redraw::Needed)
+        );
+        if decision == RecoveryDecision::Defer {
+            assert!(record_path.exists());
+            continue;
+        }
+        let cleanup = session
+            .take_recovery_checkpoint()
+            .expect("explicit disposal queues stale-record cleanup");
+        let _ = session.apply_recovery_checkpoint(cleanup.run());
+        assert!(!record_path.exists());
+    }
+}
+
+#[test]
+fn recovery_open_refuses_configured_oversize_and_wrong_or_stale_decisions() {
+    let directory = TempDir::new("session-recovery-address");
+    let path = directory.write("main.rs", "disk\n");
+    let record_path = write_recovery_for_open_file(
+        &directory,
+        &path,
+        RecoveryBaseline::saved("disk\n"),
+        "recovered\n",
+    );
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    settings.files.recovery_max_bytes = 4;
+    let mut bounded = Session::new(
+        Rect::new(0, 0, 80, 24),
+        settings,
+        test_root(directory.path.clone()),
+    )
+    .with_recovery_state_directory(directory.join("state"));
+    bounded.open_path(path.clone());
+    run_file_request(&mut bounded);
+    assert!(bounded.pending_recovery().is_none());
+    assert_eq!(bounded.buffer().to_string(), "disk\n");
+    assert!(record_path.exists());
+
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    let identity = session.pending_recovery().unwrap();
+    let mut wrong = identity.clone();
+    wrong.instance = EditorInstanceId::allocate();
+    assert_eq!(
+        session.decide_recovery(&wrong, RecoveryDecision::Defer),
+        Err(RecoveryDecisionError::WrongInstance)
+    );
+    wrong = identity.clone();
+    wrong.recovery_revision = BufferRevision::from_parts(99, 99);
+    assert_eq!(
+        session.decide_recovery(&wrong, RecoveryDecision::Discard),
+        Err(RecoveryDecisionError::Stale)
+    );
+    wrong = identity.clone();
+    wrong.target = other_recovery_target(&directory, &mut session);
+    assert_eq!(
+        session.decide_recovery(&wrong, RecoveryDecision::Restore),
+        Err(RecoveryDecisionError::Stale)
+    );
+    press(&mut session, 'i');
+    press(&mut session, 'x');
+    assert_eq!(
+        session.decide_recovery(&identity, RecoveryDecision::Discard),
+        Err(RecoveryDecisionError::Stale)
+    );
+    assert!(session.pending_recovery().is_some());
+    assert!(record_path.exists());
 }
 
 #[test]

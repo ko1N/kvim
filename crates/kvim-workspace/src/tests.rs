@@ -15,7 +15,10 @@ use kvim_settings::FileSettings;
 use super::buffer::{Buffers, FileBuffer};
 use super::durable::{DurableOutcome, FailurePoint, inject_failure};
 use super::file::{self, FileTarget, OpenError, SaveError};
-use super::request::{FileRequest, FileResult, OpenRequest, SaveRequest};
+use super::recovery::{
+    RecoveryBaseline, RecoveryRecord, recovery_record_path, write_recovery_record,
+};
+use super::request::{FileRequest, FileResult, OpenRequest, RecoveryCandidate, SaveRequest};
 use super::temp::TempDir;
 use super::undo_file::{self, UNDO_FILE_STEPS_MAX, UndoRecord};
 
@@ -408,6 +411,105 @@ fn a_save_through_a_symlink_replaces_the_target_file() {
 }
 
 #[test]
+fn open_reads_current_and_stale_recovery_without_replacing_disk_text() {
+    for (disk_after, current) in [
+        (Some("disk\n"), true),
+        (Some("changed\n"), false),
+        (None, false),
+    ] {
+        let directory = TempDir::new("open-recovery");
+        let path = directory.write("main.rs", "disk\n");
+        let root = root(&directory);
+        let relative = relative(&directory, &path);
+        let loaded = file::load(&root, &relative, &files()).expect("the target resolves");
+        let record = RecoveryRecord::new(
+            &loaded.target,
+            RecoveryBaseline::saved("disk\n"),
+            kvim_core::BufferRevision::from_parts(1, 2),
+            "recovered\n".to_owned(),
+            1024,
+            1024,
+        )
+        .expect("the recovery text fits");
+        let state = directory.join("state");
+        let record_path = recovery_record_path(&state, &loaded.target);
+        assert!(matches!(
+            write_recovery_record(&record_path, &record),
+            DurableOutcome::Committed(())
+        ));
+        match disk_after {
+            Some(content) => fs::write(&path, content).expect("the target is writable"),
+            None => fs::remove_file(&path).expect("the target exists"),
+        }
+
+        let opened = FileRequest::Open(OpenRequest {
+            root: Arc::clone(&root),
+            path: relative,
+            files: files(),
+            recovery_state_directory: Some(state),
+        })
+        .run();
+        let FileResult::Opened { outcome, .. } = opened else {
+            panic!("an open request returns an open result");
+        };
+        let opened = outcome.expect("the disk target opens");
+        assert_eq!(opened.text.to_string(), disk_after.unwrap_or("\n"));
+        match opened.recovery {
+            Some(RecoveryCandidate::Current(_)) => assert!(current),
+            Some(RecoveryCandidate::Stale(_)) => assert!(!current),
+            None => panic!("the valid recovery record is discovered"),
+        }
+    }
+}
+
+#[test]
+fn open_ignores_malformed_and_configured_oversize_recovery() {
+    let directory = TempDir::new("open-invalid-recovery");
+    let path = directory.write("main.rs", "disk\n");
+    let root = root(&directory);
+    let relative = relative(&directory, &path);
+    let loaded = file::load(&root, &relative, &files()).expect("the target resolves");
+    let state = directory.join("state");
+    let record_path = recovery_record_path(&state, &loaded.target);
+    fs::create_dir_all(record_path.parent().expect("the record has a directory"))
+        .expect("the recovery directory is writable");
+    fs::write(&record_path, b"malformed").expect("the recovery record is writable");
+
+    for maximum in [1024, 4] {
+        if maximum == 4 {
+            let record = RecoveryRecord::new(
+                &loaded.target,
+                RecoveryBaseline::saved("disk\n"),
+                kvim_core::BufferRevision::from_parts(1, 2),
+                "recovered\n".to_owned(),
+                1024,
+                1024,
+            )
+            .expect("the recovery text fits its write-time bound");
+            assert!(matches!(
+                write_recovery_record(&record_path, &record),
+                DurableOutcome::Committed(())
+            ));
+        }
+        let mut settings = files();
+        settings.recovery_max_bytes = maximum;
+        let opened = FileRequest::Open(OpenRequest {
+            root: Arc::clone(&root),
+            path: relative.clone(),
+            files: settings,
+            recovery_state_directory: Some(state.clone()),
+        })
+        .run();
+        let FileResult::Opened { outcome, .. } = opened else {
+            panic!("an open request returns an open result");
+        };
+        let opened = outcome.expect("invalid recovery never fails disk open");
+        assert_eq!(opened.text.to_string(), "disk\n");
+        assert!(opened.recovery.is_none());
+    }
+}
+
+#[test]
 fn an_open_request_builds_one_buffer_and_a_save_request_writes_it() {
     let directory = TempDir::new("request");
     let path = directory.write("main.rs", "fn main() {}\n");
@@ -417,6 +519,7 @@ fn an_open_request_builds_one_buffer_and_a_save_request_writes_it() {
         root,
         path: relative(&directory, &path),
         files: files(),
+        recovery_state_directory: None,
     })
     .run();
     let FileResult::Opened { outcome, .. } = opened else {
@@ -473,6 +576,7 @@ fn a_save_that_changes_nothing_writes_the_bytes_that_the_file_held() {
             root: Arc::clone(&root),
             path: relative(&directory, &path),
             files: files(),
+            recovery_state_directory: None,
         })
         .run();
         let FileResult::Opened { outcome, .. } = opened else {

@@ -131,8 +131,9 @@ pub use recovery::{
 };
 #[cfg(feature = "services")]
 pub use request::{
-    FileRequest, FileResult, OpenRequest, OpenedFile, RELOAD_TARGETS_MAX, ReloadOutcome,
-    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveRequest, SavedBuffer,
+    FileRequest, FileResult, OpenRequest, OpenedFile, RELOAD_TARGETS_MAX, RecoveryCandidate,
+    ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveRequest,
+    SavedBuffer,
 };
 pub use review::{
     HunkStep, REVIEW_EVENTS_MAX, ReviewCursor, ReviewEvent, ReviewRow, ReviewSelectError,

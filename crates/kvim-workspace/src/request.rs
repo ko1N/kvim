@@ -5,6 +5,7 @@
 //! candidate, so the event loop applies it as one transition. See
 //! `docs/responsiveness.md`.
 
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use kvim_core::{BufferBytesMax, BufferRevision, LoadError, TextBuffer};
@@ -15,6 +16,7 @@ use crate::durable::DurableOutcome;
 
 use super::buffer::{BUFFERS_MAX, BufferId};
 use super::file::{self, FileChange, FileIdentity, FileTarget, OpenError, SaveError};
+use super::recovery::{RecoveryRecord, read_recovery_record, recovery_record_path};
 use super::undo_file::{self, UndoRecord};
 
 /// One file to load into a new buffer.
@@ -26,6 +28,8 @@ pub struct OpenRequest {
     pub path: WorktreeRelativePath,
     /// The load and save policy of this editor.
     pub files: FileSettings,
+    /// The injected state directory that can hold one crash-recovery record.
+    pub recovery_state_directory: Option<PathBuf>,
 }
 
 /// One buffer to write over its file.
@@ -114,6 +118,17 @@ pub struct OpenedFile {
     pub text: TextBuffer,
     /// The observed file state, or `None` while the path holds no file yet.
     pub identity: Option<FileIdentity>,
+    /// A validated crash-recovery record and its relation to disk.
+    pub recovery: Option<RecoveryCandidate>,
+}
+
+/// A validated recovery record discovered while a file was read.
+#[derive(Debug)]
+pub enum RecoveryCandidate {
+    /// The record baseline still matches the loaded disk version.
+    Current(RecoveryRecord),
+    /// The target is missing or changed, so the record must not restore.
+    Stale(RecoveryRecord),
 }
 
 /// What one reload target found on disk.
@@ -285,6 +300,7 @@ fn check(target: &ReloadTarget, files: &FileSettings) -> Result<ReloadOutcome, O
                     root: target.target.root_handle(),
                     path: target.target.relative_path().clone(),
                     files: *files,
+                    recovery_state_directory: None,
                 },
                 target.bytes_max,
             )?;
@@ -308,6 +324,26 @@ fn open_with_limit(
     bytes_max: BufferBytesMax,
 ) -> Result<OpenedFile, OpenError> {
     let loaded = file::load(&request.root, &request.path, &request.files)?;
+    let recovery = if request.files.recovery_enabled {
+        request.recovery_state_directory.as_ref().and_then(|state| {
+            let path = recovery_record_path(state, &loaded.target);
+            read_recovery_record(
+                &path,
+                &loaded.target,
+                request.files.recovery_max_bytes,
+                request.files.max_file_bytes,
+            )
+            .map(|record| {
+                if record.matches_disk(loaded.identity.map(|_| loaded.text.as_str())) {
+                    RecoveryCandidate::Current(record)
+                } else {
+                    RecoveryCandidate::Stale(record)
+                }
+            })
+        })
+    } else {
+        None
+    };
     let text = TextBuffer::from_text(&loaded.text, bytes_max).map_err(|error| match error {
         LoadError::TooLarge { bytes, max_bytes } => OpenError::TooLarge { bytes, max_bytes },
     })?;
@@ -316,6 +352,7 @@ fn open_with_limit(
         target: loaded.target,
         text,
         identity: loaded.identity,
+        recovery,
     })
 }
 

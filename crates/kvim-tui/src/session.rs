@@ -41,7 +41,10 @@ use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{ClipboardFailure, ClipboardNotice, ClipboardRead};
-use kvim_core::{BufferRevision, CharPosition, EditTransaction, LineIndex, TextBuffer};
+use kvim_core::{
+    BufferBytesMax, BufferRevision, CharPosition, CharRange, EditTransaction, LineIndex,
+    TextBuffer, TextChange,
+};
 use kvim_editor::{
     AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState,
     MOTION_COUNT_MAX, MoveDirection, RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX,
@@ -71,11 +74,11 @@ use kvim_workspace::{
     FileTarget, FileTree, GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError,
     MutationOutcome, OpenError, OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX,
     PickerKind, PickerRequest, PickerResult, PickerSlot, RELOAD_TARGETS_MAX, RecoveryBaseline,
-    RecoveryError, RecoveryRecord, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger,
-    ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX,
-    TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure,
-    WorktreeDiffRead, WorktreeDiffRequest, delete_recovery_record, recovery_record_path,
-    render_content, write_recovery_record,
+    RecoveryCandidate, RecoveryError, RecoveryRecord, ReloadOutcome, ReloadRequest, ReloadTarget,
+    ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer,
+    TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult,
+    WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest, delete_recovery_record,
+    recovery_record_path, render_content, write_recovery_record,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -244,6 +247,48 @@ enum RecoverySuccessor {
 struct RecoveryCheckpoints {
     state_directory: Option<PathBuf>,
     buffers: BTreeMap<BufferId, RecoveryState>,
+    pending: BTreeMap<BufferId, PendingRecovery>,
+}
+
+/// The complete address of one recovery choice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct RecoveryIdentity {
+    instance: EditorInstanceId,
+    buffer: BufferId,
+    target: FileTarget,
+    opened_baseline: RecoveryBaseline,
+    recovery_baseline: RecoveryBaseline,
+    opened_revision: BufferRevision,
+    recovery_revision: BufferRevision,
+}
+
+/// A user's decision for one validated recovery candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RecoveryDecision {
+    Restore,
+    Discard,
+    Defer,
+}
+
+/// Why one addressed recovery decision changed no state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RecoveryDecisionError {
+    WrongInstance,
+    Stale,
+    RestoreForbidden,
+}
+
+#[derive(Debug)]
+struct PendingRecovery {
+    identity: RecoveryIdentity,
+    record: RecoveryRecord,
+    state: RecoveryCandidateState,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RecoveryCandidateState {
+    Current,
+    Stale,
 }
 
 /// The outcome of one analysis that the bounded worker service refused.
@@ -1986,6 +2031,7 @@ impl Session {
                 root: Arc::clone(&self.root),
                 path,
                 files,
+                recovery_state_directory: self.recovery.state_directory.clone(),
             }),
             PendingFile::Open,
         );
@@ -6558,15 +6604,21 @@ impl Session {
 
     /// Publishes one loaded buffer.
     fn publish_open(&mut self, file: OpenedFile) -> Redraw {
+        let OpenedFile {
+            target,
+            text,
+            identity,
+            recovery,
+        } = file;
         // Two spellings of one path reach the same file, so the completed load
         // returns the buffer that already owns it.
-        if let Some(existing) = self.buffers.find_target(&file.target) {
+        if let Some(existing) = self.buffers.find_target(&target) {
             return self.switch_to(existing).or(Redraw::Needed);
         }
-        let name = file.target.as_path().display().to_string();
-        let lines = file.text.line_count();
-        let bytes = file.text.len_bytes();
-        let loaded = FileBuffer::loaded(file.text, file.target, file.identity);
+        let name = target.as_path().display().to_string();
+        let lines = text.line_count();
+        let bytes = text.len_bytes();
+        let loaded = FileBuffer::loaded(text, target, identity);
         let Some(id) = self.buffers.insert(loaded) else {
             self.set_message(
                 format!("the editor holds the maximum of {BUFFERS_MAX} buffers"),
@@ -6578,8 +6630,205 @@ impl Session {
         // The language services learn about the buffer through one open that
         // carries its exact text and version.
         self.language.mark_resync(id);
-        self.set_message(format!("\"{name}\" {lines}L, {bytes}B"), MessageLevel::Info);
+        let recovery_message = self.publish_recovery_candidate(id, recovery);
+        if !recovery_message {
+            self.set_message(format!("\"{name}\" {lines}L, {bytes}B"), MessageLevel::Info);
+        }
         self.follow_jump().or(redraw).or(Redraw::Needed)
+    }
+
+    fn publish_recovery_candidate(
+        &mut self,
+        buffer: BufferId,
+        candidate: Option<RecoveryCandidate>,
+    ) -> bool {
+        let Some(candidate) = candidate else {
+            return false;
+        };
+        let Some(file) = self.buffers.get(buffer) else {
+            debug_assert!(
+                false,
+                "the recovery candidate belongs to the inserted buffer"
+            );
+            return false;
+        };
+        let (record, state) = match candidate {
+            RecoveryCandidate::Current(record) => (record, RecoveryCandidateState::Current),
+            RecoveryCandidate::Stale(record) => (record, RecoveryCandidateState::Stale),
+        };
+        let identity = RecoveryIdentity {
+            instance: self.instance,
+            buffer,
+            target: file.target().expect("an opened file has a target").clone(),
+            opened_baseline: file.recovery_baseline().clone(),
+            recovery_baseline: record.baseline().clone(),
+            opened_revision: file.text().revision(),
+            recovery_revision: record.revision(),
+        };
+        self.recovery.pending.insert(
+            buffer,
+            PendingRecovery {
+                identity,
+                record,
+                state,
+            },
+        );
+        match state {
+            RecoveryCandidateState::Current => self.set_message(
+                "unsaved edits were found; restore, discard, or defer them",
+                MessageLevel::Warning,
+            ),
+            RecoveryCandidateState::Stale => self.set_message(
+                "unsaved edits were retained because the file changed or is missing",
+                MessageLevel::Warning,
+            ),
+        }
+        true
+    }
+
+    pub(super) fn pending_recovery(&self) -> Option<RecoveryIdentity> {
+        self.recovery
+            .pending
+            .get(&self.active)
+            .map(|pending| pending.identity.clone())
+    }
+
+    pub(super) fn decide_recovery(
+        &mut self,
+        identity: &RecoveryIdentity,
+        decision: RecoveryDecision,
+    ) -> Result<Redraw, RecoveryDecisionError> {
+        if identity.instance != self.instance {
+            return Err(RecoveryDecisionError::WrongInstance);
+        }
+        let Some(pending) = self.recovery.pending.get(&identity.buffer) else {
+            return Err(RecoveryDecisionError::Stale);
+        };
+        if pending.identity != *identity {
+            return Err(RecoveryDecisionError::Stale);
+        }
+        let Some(file) = self.buffers.get(identity.buffer) else {
+            return Err(RecoveryDecisionError::Stale);
+        };
+        if file.target() != Some(&identity.target)
+            || file.recovery_baseline() != &identity.opened_baseline
+            || file.text().revision() != identity.opened_revision
+            || pending.record.target() != identity.target.as_path()
+            || pending.record.baseline() != &identity.recovery_baseline
+            || pending.record.revision() != identity.recovery_revision
+        {
+            return Err(RecoveryDecisionError::Stale);
+        }
+        if decision == RecoveryDecision::Restore && pending.state == RecoveryCandidateState::Stale {
+            return Err(RecoveryDecisionError::RestoreForbidden);
+        }
+
+        let pending = self
+            .recovery
+            .pending
+            .remove(&identity.buffer)
+            .expect("the complete identity gate found the pending candidate");
+        match decision {
+            RecoveryDecision::Restore => self.restore_recovery(pending),
+            RecoveryDecision::Discard => {
+                self.queue_recovery_delete(identity.buffer, &pending);
+                self.set_message("recovered edits were discarded", MessageLevel::Info);
+                Ok(Redraw::Needed)
+            }
+            RecoveryDecision::Defer => {
+                self.set_message("recovered edits were deferred", MessageLevel::Info);
+                Ok(Redraw::Needed)
+            }
+        }
+    }
+
+    fn restore_recovery(
+        &mut self,
+        pending: PendingRecovery,
+    ) -> Result<Redraw, RecoveryDecisionError> {
+        let buffer = pending.identity.buffer;
+        let Some(file) = self.buffers.get_mut(buffer) else {
+            return Err(RecoveryDecisionError::Stale);
+        };
+        let before = file.text().snapshot();
+        let start = file
+            .text()
+            .char_position(0)
+            .expect("zero is inside every text buffer");
+        let end = file
+            .text()
+            .char_position(file.text().len_chars())
+            .expect("the text length is a valid position");
+        let range = CharRange::new(start, end).expect("the complete buffer range ascends");
+        let recovered = TextBuffer::from_text(
+            pending.record.text(),
+            BufferBytesMax::new(self.settings.files.max_file_bytes)
+                .expect("settings are realized before recovery"),
+        )
+        .expect("the worker validated recovered text against this buffer's bound");
+        let transaction =
+            EditTransaction::single(start, TextChange::replace(range, recovered.to_string()));
+        file.text_mut()
+            .apply(transaction)
+            .expect("the worker validated recovered text against this buffer's bound");
+        let after = file.text().revision();
+        self.language.mark_resync(buffer);
+        self.language.forget_diagnostics(buffer);
+        if let Some(entry) = self.analysis.get_mut(&buffer) {
+            *entry = BufferAnalysis::default();
+        }
+        if self.analysis_pending.is_some_and(|(id, _)| id == buffer) {
+            self.analysis_pending = None;
+        }
+        if buffer == self.active {
+            self.refresh_search();
+        }
+        self.clamp_windows_of(buffer);
+        self.reconcile_viewports();
+        debug_assert_ne!(before.revision(), after, "restore applies one transaction");
+        self.queue_recovery_checkpoint(buffer);
+        self.set_message("recovered edits were restored", MessageLevel::Warning);
+        Ok(Redraw::Needed)
+    }
+
+    fn queue_recovery_delete(&mut self, buffer: BufferId, pending: &PendingRecovery) {
+        let Some(state_directory) = self.recovery.state_directory.as_ref() else {
+            return;
+        };
+        let checkpoint = RecoveryCheckpoint {
+            instance: self.instance,
+            buffer,
+            target: pending.identity.target.clone(),
+            baseline: pending.identity.recovery_baseline.clone(),
+            revision: pending.identity.recovery_revision,
+            path: recovery_record_path(state_directory, &pending.identity.target),
+            operation: RecoveryOperation::Delete,
+        };
+        match self.recovery.buffers.remove(&buffer) {
+            None | Some(RecoveryState::Queued { .. }) | Some(RecoveryState::Paused(_)) => {
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Queued {
+                        checkpoint,
+                        saturation_reported: false,
+                    },
+                );
+            }
+            Some(RecoveryState::Submitted {
+                active,
+                saturation_reported,
+                ..
+            }) => {
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Submitted {
+                        active,
+                        successor: RecoverySuccessor::Delete(checkpoint),
+                        saturation_reported,
+                    },
+                );
+            }
+        }
     }
 
     /// Publishes one completed reload check.
