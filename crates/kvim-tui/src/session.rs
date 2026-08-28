@@ -3476,6 +3476,12 @@ impl Session {
         }
     }
 
+    /// Runs one parsed command-line command.
+    #[doc(hidden)]
+    pub fn run_command_line_command(&mut self, command: CommandLineCommand) -> Redraw {
+        self.run_parsed_command_line(command)
+    }
+
     /// Runs one parsed command line.
     fn run_command_line(&mut self, line: &str) -> Redraw {
         let command = match CommandLineCommand::parse(line) {
@@ -3485,6 +3491,10 @@ impl Session {
                 return Redraw::Needed;
             }
         };
+        self.run_parsed_command_line(command)
+    }
+
+    fn run_parsed_command_line(&mut self, command: CommandLineCommand) -> Redraw {
         match command {
             CommandLineCommand::Write => return self.save_active(AfterSave::Stay),
             CommandLineCommand::WriteQuit => return self.save_active(AfterSave::CloseWindow),

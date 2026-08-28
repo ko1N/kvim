@@ -635,6 +635,94 @@ fn interrupt_and_cancel(editor: &mut WorktreeEditor) {
 }
 
 #[test]
+fn addressed_command_catalog_tracks_state_and_rejects_wrong_or_stale_routes() {
+    let root = TestRoot::new("addressed-command-catalog");
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+    let generated = editor.command_catalog();
+    assert!(generated.descriptors().len() <= EDITOR_COMMAND_DESCRIPTORS_MAX);
+    let write = generated
+        .descriptors()
+        .iter()
+        .find(|entry| entry.id() == EditorCommandId::Write)
+        .copied()
+        .unwrap();
+    assert_eq!(
+        write.availability(),
+        EditorCommandAvailability::RequiresFile
+    );
+    assert_eq!(write.qualified_name(), "editor.write");
+
+    let quit = generated.address(EditorCommandId::Quit);
+    let wrong = AddressedEditorCommand {
+        instance: WorktreeInstanceId(editor.instance().0 + 1),
+        generation: quit.generation(),
+        id: quit.id(),
+    };
+    let before = editor.input_context();
+    assert_eq!(
+        editor.execute_addressed_command(wrong, "quit"),
+        Err(EditorCommandExecutionError::WrongInstance),
+    );
+    assert_eq!(editor.input_context(), before);
+
+    editor
+        .command(Command::OpenCommandLine, None, None, Duration::ZERO)
+        .unwrap();
+    assert_eq!(
+        editor.execute_addressed_command(quit, "quit"),
+        Err(EditorCommandExecutionError::StaleGeneration),
+    );
+    assert_eq!(
+        editor.execute_addressed_command(
+            editor
+                .command_catalog()
+                .address(EditorCommandId::Diagnostics),
+            "quit",
+        ),
+        Err(EditorCommandExecutionError::IdentityMismatch),
+    );
+}
+
+#[test]
+fn command_catalog_reflects_file_and_access_availability() {
+    let root = TestRoot::new("command-catalog-availability");
+    fs::write(root.0.join("note.txt"), "hello\n").unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+    editor.open_file(WorktreeRelativePath::new("note.txt").unwrap());
+    // File completion is asynchronous; availability changes after apply in the
+    // lifecycle test. The generated-buffer state above owns the negative case.
+    let edit = editor
+        .command_catalog()
+        .descriptors()
+        .iter()
+        .find(|entry| entry.id() == EditorCommandId::Edit)
+        .copied()
+        .unwrap();
+    assert_eq!(edit.completion(), EditorCommandCompletion::ContainedPath);
+    assert_eq!(edit.arguments(), EditorCommandArguments::ContainedPath);
+
+    let view_only = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .access(WorktreeAccess::ViewOnly)
+        .open()
+        .unwrap();
+    let write = view_only
+        .command_catalog()
+        .descriptors()
+        .iter()
+        .find(|entry| entry.id() == EditorCommandId::Write)
+        .copied()
+        .unwrap();
+    assert_eq!(
+        write.availability(),
+        EditorCommandAvailability::RequiresWriteAccess,
+    );
+}
+
+#[test]
 fn invalid_register_is_rejected_before_state_changes() {
     let root = TestRoot::new("invalid-register");
     let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))

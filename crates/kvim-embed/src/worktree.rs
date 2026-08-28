@@ -11,8 +11,9 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kvim_input::{
-    BindingManifest, BindingProfile, BindingScope, Command, CommandOwner, ContextGeneration,
-    Dispatch, InputContextSnapshot, Key, Mode, PasteText, TypedText, is_register_name,
+    BindingManifest, BindingProfile, BindingScope, Command, CommandLineCommand, CommandLineError,
+    CommandOwner, ContextGeneration, Dispatch, InputContextSnapshot, Key, Mode, PasteText,
+    TypedText, is_register_name,
 };
 use kvim_language::{LanguageRegistry, LanguageServices};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
@@ -183,6 +184,212 @@ pub enum EditorFormatterState {
     AvailableDisabled,
     /// A formatter is available and format-on-save is enabled.
     AvailableEnabled,
+}
+
+/// Maximum descriptors in one editor command catalog.
+pub const EDITOR_COMMAND_DESCRIPTORS_MAX: usize = 16;
+
+/// Stable editor command identity.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum EditorCommandId {
+    /// Write the active buffer.
+    Write,
+    /// Close the focused window.
+    Quit,
+    /// Close and discard unsaved changes.
+    QuitDiscard,
+    /// Write, then close the focused window.
+    WriteQuit,
+    /// Open a contained file.
+    Edit,
+    /// Reload the active file.
+    Reload,
+    /// Reload and discard unsaved changes.
+    ReloadDiscard,
+    /// Open the editor log.
+    Log,
+    /// Open host diagnostics.
+    Diagnostics,
+    /// Move to a one-based line number.
+    GoToLine,
+}
+
+/// Argument schema for one editor command.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorCommandArguments {
+    /// The command takes no argument.
+    None,
+    /// The command takes one contained path.
+    ContainedPath,
+    /// The command takes one positive line number.
+    LineNumber,
+}
+
+/// Whether the command can run in the current editor state.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorCommandAvailability {
+    /// The command is available.
+    Available,
+    /// The command requires write access.
+    RequiresWriteAccess,
+    /// The command requires a file-backed active buffer.
+    RequiresFile,
+}
+
+/// Whether the command supports asynchronous argument completion.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EditorCommandCompletion {
+    /// No argument completion exists.
+    None,
+    /// Complete contained worktree paths through facade routing.
+    ContainedPath,
+}
+
+/// One bounded semantic editor command descriptor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EditorCommandDescriptor {
+    id: EditorCommandId,
+    name: &'static str,
+    aliases: &'static [&'static str],
+    description: &'static str,
+    arguments: EditorCommandArguments,
+    availability: EditorCommandAvailability,
+    completion: EditorCommandCompletion,
+}
+
+impl EditorCommandDescriptor {
+    /// Returns the stable command identity.
+    #[must_use]
+    pub const fn id(self) -> EditorCommandId {
+        self.id
+    }
+    /// Returns the canonical unqualified name.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        self.name
+    }
+    /// Returns accepted aliases.
+    #[must_use]
+    pub const fn aliases(self) -> &'static [&'static str] {
+        self.aliases
+    }
+    /// Returns the semantic description.
+    #[must_use]
+    pub const fn description(self) -> &'static str {
+        self.description
+    }
+    /// Returns the argument schema.
+    #[must_use]
+    pub const fn arguments(self) -> EditorCommandArguments {
+        self.arguments
+    }
+    /// Returns current availability.
+    #[must_use]
+    pub const fn availability(self) -> EditorCommandAvailability {
+        self.availability
+    }
+    /// Returns argument-completion capability.
+    #[must_use]
+    pub const fn completion(self) -> EditorCommandCompletion {
+        self.completion
+    }
+    /// Returns the deterministic qualified editor name.
+    #[must_use]
+    pub const fn qualified_name(self) -> &'static str {
+        match self.id {
+            EditorCommandId::Write => "editor.write",
+            EditorCommandId::Quit => "editor.quit",
+            EditorCommandId::QuitDiscard => "editor.quit!",
+            EditorCommandId::WriteQuit => "editor.wq",
+            EditorCommandId::Edit => "editor.edit",
+            EditorCommandId::Reload => "editor.reload",
+            EditorCommandId::ReloadDiscard => "editor.reload!",
+            EditorCommandId::Log => "editor.logs",
+            EditorCommandId::Diagnostics => "editor.diagnostics",
+            EditorCommandId::GoToLine => "editor.line",
+        }
+    }
+}
+
+/// One bounded command catalog for an addressed editor state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EditorCommandCatalog {
+    instance: WorktreeInstanceId,
+    generation: ContextGeneration,
+    descriptors: Vec<EditorCommandDescriptor>,
+}
+
+impl EditorCommandCatalog {
+    /// Returns the addressed editor.
+    #[must_use]
+    pub const fn instance(&self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the state generation used for execution.
+    #[must_use]
+    pub const fn generation(&self) -> ContextGeneration {
+        self.generation
+    }
+    /// Returns bounded descriptors in stable identity order.
+    #[must_use]
+    pub fn descriptors(&self) -> &[EditorCommandDescriptor] {
+        &self.descriptors
+    }
+    /// Addresses one selected editor command.
+    #[must_use]
+    pub const fn address(&self, id: EditorCommandId) -> AddressedEditorCommand {
+        AddressedEditorCommand {
+            instance: self.instance,
+            generation: self.generation,
+            id,
+        }
+    }
+}
+
+/// One selected editor command addressed to the catalog that published it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct AddressedEditorCommand {
+    instance: WorktreeInstanceId,
+    generation: ContextGeneration,
+    id: EditorCommandId,
+}
+
+impl AddressedEditorCommand {
+    /// Returns the addressed editor instance.
+    #[must_use]
+    pub const fn instance(self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the addressed catalog generation.
+    #[must_use]
+    pub const fn generation(self) -> ContextGeneration {
+        self.generation
+    }
+    /// Returns the selected semantic identity.
+    #[must_use]
+    pub const fn id(self) -> EditorCommandId {
+        self.id
+    }
+}
+
+/// A rejected addressed command execution.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum EditorCommandExecutionError {
+    /// The command addresses another editor.
+    #[error("the command addresses another editor")]
+    WrongInstance,
+    /// The editor state changed after catalog publication.
+    #[error("the command catalog is stale")]
+    StaleGeneration,
+    /// The selected identity does not match the parsed command line.
+    #[error("the command identity does not match the parsed command line")]
+    IdentityMismatch,
+    /// The command is unavailable in current state.
+    #[error("the command is unavailable in the current editor state")]
+    Unavailable,
+    /// The command line is invalid.
+    #[error(transparent)]
+    Parse(#[from] CommandLineError),
 }
 
 /// A cheap semantic snapshot for host-owned status presentation.
@@ -1490,6 +1697,173 @@ impl WorktreeEditor {
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> WorktreeInputOutcome {
         convert_reduction(self.inner_mut().paste(text, now))
     }
+    /// Returns the bounded editor command catalog for the current context.
+    ///
+    /// The host can merge these descriptors with its own catalog. Qualified
+    /// names remain distinct when an unqualified host name collides.
+    ///
+    /// ```
+    /// use kvim_embed::{EditorCommandAvailability, WorktreeEditor};
+    /// use ratatui::layout::Rect;
+    ///
+    /// let directory = std::env::temp_dir().join("kvim-command-catalog-example");
+    /// std::fs::create_dir_all(&directory)?;
+    /// let editor = WorktreeEditor::builder(&directory, Rect::new(0, 0, 40, 6)).open()?;
+    /// let catalog = editor.command_catalog();
+    /// assert!(catalog.descriptors().iter().all(|entry| entry.qualified_name().starts_with("editor.")));
+    /// assert!(catalog.descriptors().iter().any(|entry| entry.availability() == EditorCommandAvailability::Available));
+    /// # std::fs::remove_dir_all(directory)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn command_catalog(&self) -> EditorCommandCatalog {
+        let has_file = self.status().path().is_some();
+        let writable = self.status().access() == WorktreeAccess::ReadWrite;
+        let write_availability = if writable && has_file {
+            EditorCommandAvailability::Available
+        } else if !writable {
+            EditorCommandAvailability::RequiresWriteAccess
+        } else {
+            EditorCommandAvailability::RequiresFile
+        };
+        let file_availability = if has_file {
+            EditorCommandAvailability::Available
+        } else {
+            EditorCommandAvailability::RequiresFile
+        };
+        let descriptors = vec![
+            command_descriptor(
+                EditorCommandId::Write,
+                "write",
+                &["w"],
+                "Write the active file",
+                EditorCommandArguments::None,
+                write_availability,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::Quit,
+                "quit",
+                &["q"],
+                "Close the focused window",
+                EditorCommandArguments::None,
+                EditorCommandAvailability::Available,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::QuitDiscard,
+                "quit!",
+                &["q!"],
+                "Close and discard unsaved changes",
+                EditorCommandArguments::None,
+                EditorCommandAvailability::Available,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::WriteQuit,
+                "wq",
+                &[],
+                "Write, then close the focused window",
+                EditorCommandArguments::None,
+                write_availability,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::Edit,
+                "edit",
+                &["e"],
+                "Open a contained file",
+                EditorCommandArguments::ContainedPath,
+                EditorCommandAvailability::Available,
+                EditorCommandCompletion::ContainedPath,
+            ),
+            command_descriptor(
+                EditorCommandId::Reload,
+                "reload",
+                &[],
+                "Reload the active file",
+                EditorCommandArguments::None,
+                file_availability,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::ReloadDiscard,
+                "reload!",
+                &[],
+                "Reload and discard unsaved changes",
+                EditorCommandArguments::None,
+                file_availability,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::Log,
+                "logs",
+                &["l"],
+                "Open the editor log",
+                EditorCommandArguments::None,
+                EditorCommandAvailability::Available,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::Diagnostics,
+                "diagnostics",
+                &["d"],
+                "Open host diagnostics",
+                EditorCommandArguments::None,
+                EditorCommandAvailability::Available,
+                EditorCommandCompletion::None,
+            ),
+            command_descriptor(
+                EditorCommandId::GoToLine,
+                "line",
+                &[],
+                "Move to a one-based line",
+                EditorCommandArguments::LineNumber,
+                EditorCommandAvailability::Available,
+                EditorCommandCompletion::None,
+            ),
+        ];
+        debug_assert!(
+            descriptors.len() <= EDITOR_COMMAND_DESCRIPTORS_MAX,
+            "the fixed command catalog respects its published bound"
+        );
+        EditorCommandCatalog {
+            instance: self.instance,
+            generation: self.input_context().generation,
+            descriptors,
+        }
+    }
+
+    /// Parses and executes one addressed editor command line.
+    pub fn execute_addressed_command(
+        &mut self,
+        addressed: AddressedEditorCommand,
+        line: &str,
+    ) -> Result<WorktreeUpdate, EditorCommandExecutionError> {
+        if addressed.instance != self.instance {
+            return Err(EditorCommandExecutionError::WrongInstance);
+        }
+        if addressed.generation != self.input_context().generation {
+            return Err(EditorCommandExecutionError::StaleGeneration);
+        }
+        let descriptor = self
+            .command_catalog()
+            .descriptors
+            .into_iter()
+            .find(|entry| entry.id == addressed.id)
+            .expect("the addressed command ID belongs to the fixed catalog");
+        if descriptor.availability != EditorCommandAvailability::Available {
+            return Err(EditorCommandExecutionError::Unavailable);
+        }
+        let parsed = CommandLineCommand::parse(line)?;
+        if command_line_id(&parsed) != addressed.id {
+            return Err(EditorCommandExecutionError::IdentityMismatch);
+        }
+        Ok(convert_redraw(
+            self.inner_mut().run_command_line_command(parsed),
+        ))
+    }
+
     /// Returns one cheap semantic status snapshot.
     ///
     /// Poll this after [`WorktreeUpdate::Redraw`] when the host owns statusline
@@ -1809,6 +2183,45 @@ impl Drop for WorktreeEditor {
             .take()
             .expect("a live editor owns its executor")
             .shutdown_background();
+    }
+}
+
+fn command_descriptor(
+    id: EditorCommandId,
+    name: &'static str,
+    aliases: &'static [&'static str],
+    description: &'static str,
+    arguments: EditorCommandArguments,
+    availability: EditorCommandAvailability,
+    completion: EditorCommandCompletion,
+) -> EditorCommandDescriptor {
+    debug_assert!(
+        aliases.len() <= 2,
+        "the fixed catalog bounds aliases per command"
+    );
+    EditorCommandDescriptor {
+        id,
+        name,
+        aliases,
+        description,
+        arguments,
+        availability,
+        completion,
+    }
+}
+
+fn command_line_id(command: &CommandLineCommand) -> EditorCommandId {
+    match command {
+        CommandLineCommand::Write => EditorCommandId::Write,
+        CommandLineCommand::WriteQuit => EditorCommandId::WriteQuit,
+        CommandLineCommand::Quit => EditorCommandId::Quit,
+        CommandLineCommand::QuitDiscard => EditorCommandId::QuitDiscard,
+        CommandLineCommand::Edit(_) => EditorCommandId::Edit,
+        CommandLineCommand::Reload => EditorCommandId::Reload,
+        CommandLineCommand::ReloadDiscard => EditorCommandId::ReloadDiscard,
+        CommandLineCommand::Log => EditorCommandId::Log,
+        CommandLineCommand::Diagnostics => EditorCommandId::Diagnostics,
+        CommandLineCommand::GoToLine(_) => EditorCommandId::GoToLine,
     }
 }
 

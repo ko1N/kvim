@@ -30,19 +30,22 @@ pub use composition::{
 
 #[cfg(feature = "worktree")]
 pub use worktree::{
-    COMPLETION_CAPACITY_MAX, CancelPendingProposal, CancelPendingResume, CapacityError,
-    EVENT_CAPACITY_MAX, EditorCursorPosition, EditorDiagnosticSummary, EditorFormatterState,
-    EditorStatusSnapshot, PROCESS_CAPACITY_MAX, ServicePolicy, SurfaceOwnership,
-    WORKER_CAPACITY_MAX, WORKSPACE_OPERATION_PATHS_MAX, WorkspaceEntryKind, WorkspaceOperation,
-    WorkspaceOperationKind, WorkspaceTransfer, WorktreeAccess, WorktreeApplyError,
-    WorktreeApplyErrorKind, WorktreeBindingContext, WorktreeBindingMode, WorktreeCapabilities,
-    WorktreeCapacity, WorktreeCommandError, WorktreeCommandSurface, WorktreeCompletion,
-    WorktreeCursor, WorktreeCursorShape, WorktreeDispatchDecision, WorktreeDispatchError,
-    WorktreeDispatchOutcome, WorktreeDrain, WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent,
-    WorktreeGeometryError, WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput,
-    WorktreeInputError, WorktreeInputOutcome, WorktreeInputRequest, WorktreeInstanceId,
-    WorktreeOpenError, WorktreeOpenErrorKind, WorktreePresentation, WorktreeRefusal,
-    WorktreeRunState, WorktreeSemanticDispatch, WorktreeShutdown, WorktreeUpdate,
+    AddressedEditorCommand, COMPLETION_CAPACITY_MAX, CancelPendingProposal, CancelPendingResume,
+    CapacityError, EDITOR_COMMAND_DESCRIPTORS_MAX, EVENT_CAPACITY_MAX, EditorCommandArguments,
+    EditorCommandAvailability, EditorCommandCatalog, EditorCommandCompletion,
+    EditorCommandDescriptor, EditorCommandExecutionError, EditorCommandId, EditorCursorPosition,
+    EditorDiagnosticSummary, EditorFormatterState, EditorStatusSnapshot, PROCESS_CAPACITY_MAX,
+    ServicePolicy, SurfaceOwnership, WORKER_CAPACITY_MAX, WORKSPACE_OPERATION_PATHS_MAX,
+    WorkspaceEntryKind, WorkspaceOperation, WorkspaceOperationKind, WorkspaceTransfer,
+    WorktreeAccess, WorktreeApplyError, WorktreeApplyErrorKind, WorktreeBindingContext,
+    WorktreeBindingMode, WorktreeCapabilities, WorktreeCapacity, WorktreeCommandError,
+    WorktreeCommandSurface, WorktreeCompletion, WorktreeCursor, WorktreeCursorShape,
+    WorktreeDispatchDecision, WorktreeDispatchError, WorktreeDispatchOutcome, WorktreeDrain,
+    WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent, WorktreeGeometryError,
+    WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput, WorktreeInputError,
+    WorktreeInputOutcome, WorktreeInputRequest, WorktreeInstanceId, WorktreeOpenError,
+    WorktreeOpenErrorKind, WorktreePresentation, WorktreeRefusal, WorktreeRunState,
+    WorktreeSemanticDispatch, WorktreeShutdown, WorktreeUpdate,
 };
 
 use std::num::{NonZeroU16, NonZeroU32};

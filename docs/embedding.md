@@ -240,14 +240,22 @@ Embedded statusline rendering and facade publication derive mode, cursor, and
 formatter state from the same semantic session facts. A host-owned statusline
 still reserves zero rows.
 
+The addressed command catalog is now a supported publication.
+`WorktreeEditor::command_catalog` returns one bounded `EditorCommandCatalog`
+for the current instance and input generation. Descriptors contain stable typed
+identities, canonical and qualified names, aliases, descriptions, argument
+schemas, current availability, and completion capability. Host and editor
+commands remain separately addressed when their unqualified names collide.
+Kvim parses and validates the selected editor command line.
+`execute_addressed_command` rejects wrong-instance, stale-generation,
+unavailable, and identity-mismatch requests before mutation. Worktree path
+completion remains asynchronous work for the command-line lifecycle.
+
 ### Planned Editor Publication
 
-A planned addressed command catalog publishes stable identities, aliases,
-argument schemas, availability, and completion capability for one
-`WorktreeInstanceId`. The host owns the visible unified command line and
-history. Kvim owns command parsing, validation, completion, path confinement,
-and execution. Planned sidebar rows publish bounded identity, path, depth, kind,
-loading, selection, Git, symlink, and icon-role facts.
+Host-owned command-line opening and completion sessions remain planned. Planned
+sidebar rows publish bounded identity, path, depth, kind, loading, selection,
+Git, symlink, and icon-role facts.
 
 ### Planned Standalone Review
 

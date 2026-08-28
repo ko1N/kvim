@@ -37,7 +37,9 @@ use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 
-use kvim_input::{BindingScope, Command, InputContextSnapshot, Mode, PasteText, Registry};
+use kvim_input::{
+    BindingScope, Command, CommandLineCommand, InputContextSnapshot, Mode, PasteText, Registry,
+};
 use kvim_language::LanguageServices;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
@@ -1243,6 +1245,13 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn status(&self) -> super::session::EditorStatus<'_> {
         self.editor.status()
+    }
+
+    /// Executes one already parsed editor command line.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn run_command_line_command(&mut self, command: CommandLineCommand) -> Redraw {
+        self.editor.run_command_line_command(command)
     }
 
     /// Returns the editing mode of this editor.
