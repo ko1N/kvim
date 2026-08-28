@@ -331,7 +331,9 @@ Every row of the sidebar holds the same five parts, from the left edge:
 4. The name of the entry, and the suffix of the row state behind it.
 5. One Git mark cell at the right edge. Every row reserves it, and a row without
    a recorded Git state keeps it blank, so one mark never moves a name and never
-   covers one. [`git.md`](git.md) owns the marks and their states.
+   covers one. When text reaches this cell, the final three visible text cells
+   fade toward the row background. Short text keeps its normal color.
+   [`git.md`](git.md) owns the marks and their states.
 
 An indent guide is one box-drawing character of one terminal cell. A level that
 holds a further entry below the row draws a trunk, and the last child of a level

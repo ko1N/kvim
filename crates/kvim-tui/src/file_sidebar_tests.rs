@@ -8,11 +8,16 @@
 use std::path::Path;
 use std::time::Duration;
 
+use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
+use ratatui::style::Color;
 
 use kvim_runtime::ProcessOutput;
 use kvim_settings::EditorSettings;
-use kvim_ui::{ListMotion, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK};
+use kvim_ui::{
+    ListMotion, RowKind, SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_TRUNK, SidebarRow,
+    SidebarState,
+};
 use kvim_workspace::WorkspaceRequest;
 use kvim_workspace::temp::TempDir;
 
@@ -73,6 +78,28 @@ fn row_of(session: &Session, label: &str) -> FileRow {
                 labels(session)
             )
         })
+}
+
+/// Paints one published row through the shared standalone and embedded painter.
+fn paint_row(row: &FileRow, width: u16) -> Buffer {
+    let area = Rect::new(0, 0, width, 1);
+    let mut buffer = Buffer::empty(area);
+    let mut sidebar = SidebarState::new(1);
+    sidebar
+        .set_rows(vec![SidebarRow::single(0, RowKind::Selectable)])
+        .expect("one row stays inside the sidebar bound");
+    sidebar
+        .render(&mut buffer, area, |canvas, _placement| {
+            draw_file_row(
+                canvas,
+                row,
+                Theme::new(),
+                FileTreeIcons::Hidden,
+                RegionFocus::Focused,
+            );
+        })
+        .expect("the painter stays inside one row");
+    buffer
 }
 
 /// Selects the row that carries one label.
@@ -360,6 +387,95 @@ fn a_label_longer_than_the_bound_reaches_the_host_clipped() {
         false,
     );
     assert_eq!(row.label().chars().count(), FILE_SIDEBAR_LABEL_CHARS_MAX);
+}
+
+#[test]
+fn clipped_row_text_fades_before_the_fixed_git_mark() {
+    let row = FileRow::new(
+        "a-very-long-name.rs".to_owned(),
+        SIDEBAR_GUIDE_BLANK.to_owned(),
+        0,
+        FileRowKind::File,
+        RowState::File,
+        false,
+    )
+    .with_git(Some(FileRowGit::Modified));
+    let buffer = paint_row(&row, 12);
+    let theme = Theme::new();
+    let normal = theme
+        .style(ThemeRole::Text)
+        .patch(theme.style(ThemeRole::TreeGit(FileRowGit::Modified)));
+
+    assert_eq!(buffer.cell((11, 0)).map(|cell| cell.symbol()), Some("●"));
+    assert_eq!(buffer.cell((11, 0)).map(|cell| cell.fg), normal.fg);
+    let faded: Vec<Color> = (8..11)
+        .map(|column| {
+            buffer
+                .cell((column, 0))
+                .expect("the fade cell is inside the row")
+                .fg
+        })
+        .collect();
+    assert_ne!(faded[0], normal.fg.expect("text has a foreground"));
+    assert_ne!(faded[0], faded[1]);
+    assert_ne!(faded[1], faded[2]);
+}
+
+#[test]
+fn clipped_wide_text_fades_both_cells_without_moving_the_git_mark() {
+    let row = FileRow::new(
+        "ab漢tail".to_owned(),
+        SIDEBAR_GUIDE_BLANK.to_owned(),
+        0,
+        FileRowKind::File,
+        RowState::File,
+        false,
+    )
+    .with_git(Some(FileRowGit::Staged));
+    let buffer = paint_row(&row, 11);
+
+    assert_eq!(buffer.cell((7, 0)).map(|cell| cell.symbol()), Some("漢"));
+    assert_eq!(buffer.cell((8, 0)).map(|cell| cell.symbol()), Some(" "));
+    assert_eq!(
+        buffer.cell((7, 0)).map(|cell| cell.fg),
+        buffer.cell((8, 0)).map(|cell| cell.fg)
+    );
+    assert_eq!(buffer.cell((10, 0)).map(|cell| cell.symbol()), Some("■"));
+}
+
+#[test]
+fn short_row_text_keeps_its_style_and_a_selected_fade_keeps_its_background() {
+    let plain = FileRow::new(
+        "short.rs".to_owned(),
+        SIDEBAR_GUIDE_BLANK.to_owned(),
+        0,
+        FileRowKind::File,
+        RowState::File,
+        false,
+    );
+    let plain_buffer = paint_row(&plain, 20);
+    let plain_style = Theme::new().style(ThemeRole::Text);
+    assert_eq!(
+        plain_buffer.cell((7, 0)).map(|cell| cell.fg),
+        plain_style.fg
+    );
+
+    let selected = FileRow::new(
+        "a-very-long-name.rs".to_owned(),
+        SIDEBAR_GUIDE_BLANK.to_owned(),
+        0,
+        FileRowKind::File,
+        RowState::File,
+        true,
+    );
+    let selected_buffer = paint_row(&selected, 12);
+    let selected_style = plain_style.patch(Theme::new().style(ThemeRole::PopupSelection));
+    for column in 8..11 {
+        assert_eq!(
+            selected_buffer.cell((column, 0)).map(|cell| cell.bg),
+            selected_style.bg
+        );
+    }
 }
 
 #[test]
