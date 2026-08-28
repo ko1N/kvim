@@ -193,13 +193,19 @@ impl RequestId {
 /// assert_ne!(picker, RequestSlot::new(2));
 /// ```
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct RequestSlot(u16);
+pub struct RequestSlot(u32);
 
 impl RequestSlot {
     /// Creates a slot from a stable operation number.
     #[must_use]
-    pub const fn new(value: u16) -> Self {
+    pub const fn new(value: u32) -> Self {
         Self(value)
+    }
+
+    /// Returns the stable numeric slot value.
+    #[must_use]
+    pub const fn get(self) -> u32 {
+        self.0
     }
 }
 

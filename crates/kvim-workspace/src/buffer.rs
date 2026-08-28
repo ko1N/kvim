@@ -11,8 +11,9 @@ use kvim_core::{BufferRevision, TextBuffer};
 use kvim_path::WorktreeRoot;
 use kvim_settings::FileSettings;
 
-use super::file::{FileIdentity, FileTarget};
+use super::file::{FileIdentity, FileTarget, render_content};
 use super::mutation::{BufferPathUpdate, OpenBuffer};
+use super::recovery::RecoveryBaseline;
 
 /// The largest number of buffers that one editor keeps loaded.
 ///
@@ -98,6 +99,7 @@ pub struct FileBuffer {
     name: String,
     identity: Option<FileIdentity>,
     history_baseline: HistoryBaseline,
+    recovery_baseline: RecoveryBaseline,
     /// What another program did to the file that kvim could not follow.
     external: Option<ExternalChange>,
 }
@@ -147,6 +149,7 @@ impl FileBuffer {
             name: name.into(),
             identity: None,
             history_baseline: HistoryBaseline::Current,
+            recovery_baseline: RecoveryBaseline::Missing,
             external: None,
         }
     }
@@ -159,6 +162,9 @@ impl FileBuffer {
     pub fn loaded(text: TextBuffer, target: FileTarget, identity: Option<FileIdentity>) -> Self {
         let path = target.as_path().to_path_buf();
         let name = display_name(&path);
+        let recovery_baseline = identity.map_or(RecoveryBaseline::Missing, |_| {
+            RecoveryBaseline::saved(&render_content(&text))
+        });
         Self {
             text,
             path: Some(path),
@@ -166,8 +172,15 @@ impl FileBuffer {
             name,
             identity,
             history_baseline: HistoryBaseline::Current,
+            recovery_baseline,
             external: None,
         }
+    }
+
+    /// Returns the disk state that a recovery record expects.
+    #[must_use]
+    pub const fn recovery_baseline(&self) -> &RecoveryBaseline {
+        &self.recovery_baseline
     }
 
     /// Returns the text of the buffer.
@@ -244,22 +257,30 @@ impl FileBuffer {
     /// Applies the file state from one successful save.
     ///
     /// The target and file identity always advance to the written file. The
+    /// recovery baseline always advances to the exact written content. The
     /// dirty state clears only while the live text still has `saved_revision`.
     pub fn apply_save(
         &mut self,
         target: FileTarget,
         identity: FileIdentity,
         saved_revision: BufferRevision,
+        saved_content: &str,
     ) -> SaveApplyOutcome {
         self.name = display_name(target.as_path());
         self.path = Some(target.as_path().to_path_buf());
         self.target = Some(target);
         self.identity = Some(identity);
+        self.recovery_baseline = RecoveryBaseline::saved(saved_content);
         self.external = None;
         if self.text.revision() != saved_revision {
             self.history_baseline = HistoryBaseline::Invalidated;
             return SaveApplyOutcome::Stale;
         }
+        debug_assert_eq!(
+            render_content(&self.text),
+            saved_content,
+            "a current save result carries the content of its buffer revision"
+        );
         self.history_baseline = HistoryBaseline::Current;
         self.text.mark_saved();
         SaveApplyOutcome::Current
@@ -276,6 +297,9 @@ impl FileBuffer {
         self.text.advance_replacement(text);
         self.identity = identity;
         self.history_baseline = HistoryBaseline::Current;
+        self.recovery_baseline = self.identity.map_or(RecoveryBaseline::Missing, |_| {
+            RecoveryBaseline::saved(&render_content(&self.text))
+        });
         self.external = None;
     }
 }

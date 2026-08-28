@@ -3,6 +3,7 @@ use std::path::Path;
 
 use std::sync::Arc;
 
+use kvim_core::BufferRevision;
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::FileSettings;
 
@@ -31,7 +32,7 @@ fn record(target: &FileTarget) -> RecoveryRecord {
     RecoveryRecord::new(
         target,
         RecoveryBaseline::saved("saved\n"),
-        7,
+        BufferRevision::from_parts(3, 7),
         "recovered\n".to_owned(),
         MAX_BYTES,
         MAX_BYTES,
@@ -76,7 +77,7 @@ fn oversized_recovered_text_is_rejected() {
         RecoveryRecord::new(
             &target,
             RecoveryBaseline::Missing,
-            1,
+            BufferRevision::from_parts(0, 1),
             "x".repeat((MAX_BYTES + 1) as usize),
             MAX_BYTES,
             MAX_BYTES,
@@ -105,7 +106,7 @@ fn missing_baseline_round_trips() {
     let record = RecoveryRecord::new(
         &target,
         RecoveryBaseline::Missing,
-        1,
+        BufferRevision::from_parts(0, 1),
         "new\n".to_owned(),
         MAX_BYTES,
         MAX_BYTES,
@@ -195,7 +196,7 @@ fn interrupted_write_keeps_the_previous_record() {
     let replacement = RecoveryRecord::new(
         &target,
         RecoveryBaseline::Missing,
-        8,
+        BufferRevision::from_parts(2, 8),
         "replacement\n".to_owned(),
         MAX_BYTES,
         MAX_BYTES,

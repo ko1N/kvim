@@ -39,6 +39,55 @@ const WATCH_MISSING_NOTE: &str =
     "the workspace watcher could not start; the file tree updates on a refresh";
 
 #[tokio::test]
+async fn recovery_uses_capacity_independent_from_a_saturated_normal_worker_lane() {
+    let directory = TempDir::new("driver-recovery-lane");
+    let path = directory.write("main.rs", ORIGINAL);
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    let mut editor = Session::new(
+        Rect::new(0, 0, 80, 24),
+        settings,
+        test_root(directory.path.clone()),
+    )
+    .with_recovery_state_directory(directory.join("state"));
+    let _ = editor.open_path(path);
+    let request = editor.take_file_request().unwrap();
+    let _ = editor.apply_file_result(request.run());
+    let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char('i'))), NOW);
+    let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char('a'))), NOW);
+
+    let limits = RuntimeLimits::new(2, 1, 1).unwrap();
+    let (runtime, results) = Runtime::<EditorWork>::with_limits(limits);
+    let mut driver = EditorDriver::new(editor.instance(), runtime, results);
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (release_tx, release_rx) = std::sync::mpsc::channel();
+    let parked = driver
+        .gate
+        .begin(PARKED_SLOT, &driver.spawner.cancellation_root());
+    driver
+        .spawner
+        .submit_committing_worker(parked, PARKED_DEADLINE, move |_| {
+            entered_tx.send(()).unwrap();
+            release_rx.recv().unwrap();
+            EditorWork(WorkResult::HostReport(String::new()))
+        })
+        .unwrap();
+    entered_rx.recv().unwrap();
+
+    let _ = driver.dispatch(&mut editor).unwrap();
+    let completed = timeout(REGISTRATION_WAIT, driver.recv())
+        .await
+        .expect("the independent recovery lane finishes");
+    let _ = driver.apply(&mut editor, completed, NOW).unwrap();
+
+    release_tx.send(()).unwrap();
+    let _ = driver
+        .shutdown(&mut editor, REGISTRATION_WAIT)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
 async fn one_dispatch_hands_a_refused_format_and_the_save_behind_it_to_their_services() {
     let directory = TempDir::new("driver-dispatch-save");
     let path = directory.write("main.rs", "one\n");
@@ -61,12 +110,21 @@ async fn one_dispatch_hands_a_refused_format_and_the_save_behind_it_to_their_ser
     assert!(editor.buffer().is_modified());
 
     let (runtime, _results) = Runtime::<EditorWork>::new();
+    let (recovery_runtime, _recovery_results) = Runtime::<EditorWork>::new();
     let gate = PublicationGate::default();
+    let recovery_gate = PublicationGate::default();
     // The editor runs without language services, so the formatter request of
     // the save reaches no server.
     let mut language = None;
     let _ = editor.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
-    let redraw = dispatch(&mut editor, &runtime, &gate, &mut language);
+    let redraw = dispatch(
+        &mut editor,
+        &runtime,
+        &gate,
+        &recovery_runtime,
+        &recovery_gate,
+        &mut language,
+    );
 
     assert_eq!(
         redraw,
@@ -78,6 +136,7 @@ async fn one_dispatch_hands_a_refused_format_and_the_save_behind_it_to_their_ser
         "the dispatch hands the save to the worker service inside one iteration, \
              so the write never waits for the next terminal event"
     );
+    recovery_runtime.shutdown().await;
     runtime.shutdown().await;
 }
 
@@ -106,10 +165,19 @@ async fn one_dispatch_runs_the_external_formatter_and_the_save_behind_it() {
     let _ = editor.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Esc)), NOW);
 
     let (runtime, mut results) = Runtime::<EditorWork>::new();
+    let (recovery_runtime, _recovery_results) = Runtime::<EditorWork>::new();
     let gate = PublicationGate::default();
+    let recovery_gate = PublicationGate::default();
     let mut language = None;
     let _ = editor.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
-    let _ = dispatch(&mut editor, &runtime, &gate, &mut language);
+    let _ = dispatch(
+        &mut editor,
+        &runtime,
+        &gate,
+        &recovery_runtime,
+        &recovery_gate,
+        &mut language,
+    );
 
     assert!(
         editor.take_file_request().is_none(),
@@ -140,6 +208,7 @@ async fn one_dispatch_runs_the_external_formatter_and_the_save_behind_it() {
         editor.take_file_request().is_some(),
         "the formatter answer completes the save that waited for it"
     );
+    recovery_runtime.shutdown().await;
     runtime.shutdown().await;
 }
 

@@ -124,13 +124,15 @@ async fn drive<C: TerminalControl>(
         clipboard: ServicePolicy::BuiltIn,
     };
     let (binding_mode, presentation) = standalone_binary_preset();
-    let mut editor = WorktreeEditor::builder(&root_path, area)
+    let mut builder = WorktreeEditor::builder(&root_path, area)
         .settings(settings)
         .capabilities(capabilities)
         .binding_mode(binding_mode)
-        .presentation(presentation)
-        .open()
-        .map_err(EditorError::Open)?;
+        .presentation(presentation);
+    if let Some(directory) = recovery_state_directory() {
+        builder = builder.recovery_state_directory(directory);
+    }
+    let mut editor = builder.open().map_err(EditorError::Open)?;
     if let Some(path) = path {
         let relative = initial_path(&root_path, &path).ok_or(EditorError::InitialPath)?;
         let _ = editor.open_file(relative);
@@ -203,6 +205,13 @@ async fn drive<C: TerminalControl>(
     }
     shutdown(editor).await;
     Ok(())
+}
+
+fn recovery_state_directory() -> Option<PathBuf> {
+    if let Some(directory) = std::env::var_os("XDG_STATE_HOME").filter(|value| !value.is_empty()) {
+        return Some(PathBuf::from(directory));
+    }
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
 }
 
 fn initial_path(root: &Path, path: &Path) -> Option<WorktreeRelativePath> {

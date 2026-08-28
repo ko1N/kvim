@@ -32,10 +32,11 @@ use kvim_language::{
 };
 use kvim_runtime::{
     EventReceiver, FileWatcher, ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeDrain,
-    RuntimeError, RuntimeEvent, SubmitError, WORKER_DEADLINE_DEFAULT, WatchBatch,
+    RuntimeError, RuntimeEvent, RuntimeLimits, SubmitError, WORKER_CONCURRENCY_LIMIT_MAX,
+    WORKER_DEADLINE_DEFAULT, WatchBatch,
 };
 use kvim_workspace::{
-    BUFFERS_MAX, FileResult, GitStatusFailure, GitStatusRead, PickerResult, PickerSlot,
+    BUFFERS_MAX, BufferId, FileResult, GitStatusFailure, GitStatusRead, PickerResult, PickerSlot,
     WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead,
 };
 
@@ -46,7 +47,7 @@ use super::language::{LANGUAGE_OUTBOX_MAX, Refusal, send_request};
 use super::picker::PickerFailure;
 use super::session::{
     AnalysisResult, FileRequestFailure, HostProbeFailure, JOB_ANALYSIS, JOB_OBSOLETE, JOB_REFUSED,
-    JOB_WALK, MessageLevel, Redraw, Session,
+    JOB_WALK, MessageLevel, RecoverySubmissionFailure, Redraw, Session,
 };
 
 /// One completed background operation of one editor instance.
@@ -171,6 +172,8 @@ impl std::error::Error for DriverApplyError {}
 enum Outcome {
     /// One request of the bounded spawner finished, or the spawner is gone.
     Work(Box<Option<RuntimeEvent<EditorWork>>>),
+    /// One request of the dedicated recovery lane finished.
+    Recovery(Box<Option<RuntimeEvent<EditorWork>>>),
     /// The language services published one typed event.
     Language(LanguageEvent),
     /// The workspace watcher published one coalesced burst, or the watch ended.
@@ -182,6 +185,7 @@ impl Outcome {
     const fn kind(&self) -> &'static str {
         match self {
             Self::Work(_) => "work",
+            Self::Recovery(_) => "recovery",
             Self::Language(_) => "language",
             Self::Watch(_) => "watch",
         }
@@ -243,6 +247,9 @@ pub struct EditorDriver {
     instance: EditorInstanceId,
     spawner: Runtime<EditorWork>,
     results: EventReceiver<EditorWork>,
+    recovery_spawner: Runtime<EditorWork>,
+    recovery_results: EventReceiver<EditorWork>,
+    recovery_gate: PublicationGate,
     gate: PublicationGate,
     language: Option<LanguageServices>,
     watcher: Option<FileWatcher>,
@@ -260,10 +267,20 @@ impl EditorDriver {
         spawner: Runtime<EditorWork>,
         results: EventReceiver<EditorWork>,
     ) -> Self {
+        let recovery_limits = RuntimeLimits::new(
+            RECOVERY_EVENT_QUEUE_CAPACITY,
+            RECOVERY_WORKERS_MAX,
+            RECOVERY_PROCESS_CAPACITY,
+        )
+        .expect("recovery lane bounds fit runtime limits");
+        let (recovery_spawner, recovery_results) = Runtime::with_limits(recovery_limits);
         Self {
             instance,
             spawner,
             results,
+            recovery_spawner,
+            recovery_results,
+            recovery_gate: PublicationGate::default(),
             gate: PublicationGate::default(),
             language: None,
             watcher: None,
@@ -321,6 +338,8 @@ impl EditorDriver {
             editor,
             &self.spawner,
             &self.gate,
+            &self.recovery_spawner,
+            &self.recovery_gate,
             &mut self.language,
         ))
     }
@@ -337,6 +356,7 @@ impl EditorDriver {
     pub async fn recv(&mut self) -> Completed {
         let outcome = tokio::select! {
             event = self.results.recv() => Outcome::Work(Box::new(event)),
+            event = self.recovery_results.recv() => Outcome::Recovery(Box::new(event)),
             event = next_language_event(&mut self.language) => Outcome::Language(event),
             batch = next_watch_batch(&mut self.watcher) => Outcome::Watch(Box::new(batch)),
         };
@@ -374,6 +394,7 @@ impl EditorDriver {
         editor.advance_clock(now);
         Ok(match completed.outcome {
             Outcome::Work(event) => complete(editor, &self.gate, *event),
+            Outcome::Recovery(event) => complete_recovery(editor, &self.recovery_gate, *event),
             Outcome::Language(event) => publish(editor, event),
             Outcome::Watch(batch) => publish_watch(editor, batch.as_ref().as_ref()),
         })
@@ -410,6 +431,9 @@ impl EditorDriver {
             instance,
             spawner,
             mut results,
+            recovery_spawner,
+            mut recovery_results,
+            recovery_gate,
             gate,
             language,
             watcher,
@@ -425,15 +449,25 @@ impl EditorDriver {
         // every request that has not committed yet. The drain keeps the tracked
         // tasks, so a committed side effect still reaches its reserved slot.
         let tasks = spawner.begin_shutdown();
-        if timeout_at(expiry, tasks.wait()).await.is_err() {
+        let recovery_tasks = recovery_spawner.begin_shutdown();
+        if timeout_at(expiry, async {
+            tokio::join!(tasks.wait(), recovery_tasks.wait());
+        })
+        .await
+        .is_err()
+        {
             return Ok(Some(ShutdownDrain {
                 instance,
                 tasks,
                 results,
                 gate,
+                recovery_tasks,
+                recovery_results,
+                recovery_gate,
             }));
         }
         drain_results(editor, &gate, &mut results);
+        drain_recovery_results(editor, &recovery_gate, &mut recovery_results);
         Ok(None)
     }
 }
@@ -450,6 +484,9 @@ pub struct ShutdownDrain {
     tasks: RuntimeDrain,
     results: EventReceiver<EditorWork>,
     gate: PublicationGate,
+    recovery_tasks: RuntimeDrain,
+    recovery_results: EventReceiver<EditorWork>,
+    recovery_gate: PublicationGate,
 }
 
 impl ShutdownDrain {
@@ -473,7 +510,13 @@ impl ShutdownDrain {
     pub async fn complete(mut self, editor: &mut Session) -> Result<Redraw, DriverError> {
         DriverError::require(self.instance, editor.instance())?;
         self.tasks.wait().await;
-        Ok(drain_results(editor, &self.gate, &mut self.results))
+        self.recovery_tasks.wait().await;
+        let redraw = drain_results(editor, &self.gate, &mut self.results);
+        Ok(redraw.or(drain_recovery_results(
+            editor,
+            &self.recovery_gate,
+            &mut self.recovery_results,
+        )))
     }
 }
 
@@ -496,6 +539,34 @@ fn drain_results(
     );
     redraw
 }
+
+fn drain_recovery_results(
+    editor: &mut Session,
+    gate: &PublicationGate,
+    results: &mut EventReceiver<EditorWork>,
+) -> Redraw {
+    let mut redraw = Redraw::Skipped;
+    while let Ok(event) = results.try_recv() {
+        redraw = redraw.or(complete_recovery(editor, gate, Some(event)));
+    }
+    debug_assert!(
+        results.try_recv().is_err(),
+        "every recovery task finished, so no further result can arrive"
+    );
+    redraw
+}
+
+/// The largest number of recovery results that can wait for publication.
+///
+/// One loaded buffer can own one submitted checkpoint, so this bound matches
+/// the session buffer bound and lets shutdown finish before draining results.
+const RECOVERY_EVENT_QUEUE_CAPACITY: usize = BUFFERS_MAX;
+
+/// The largest number of recovery writes that run at the same time.
+const RECOVERY_WORKERS_MAX: usize = WORKER_CONCURRENCY_LIMIT_MAX;
+
+/// The process capacity of the recovery lane, which submits no processes.
+const RECOVERY_PROCESS_CAPACITY: usize = 1;
 
 /// The publication slot of every file operation.
 ///
@@ -571,7 +642,6 @@ const DIFF_STAGED_SLOT: RequestSlot = RequestSlot::new(11);
 
 /// The publication slot of the unstaged half of the review.
 const DIFF_UNSTAGED_SLOT: RequestSlot = RequestSlot::new(12);
-
 /// The picker requests that one loop iteration submits.
 ///
 /// One transition produces at most one candidate request and one preview
@@ -613,6 +683,8 @@ const DISPATCH_PASSES_MAX: usize = 2;
 enum WorkResult {
     /// One file operation finished.
     File(FileResult),
+    /// One durable crash-recovery checkpoint finished.
+    Recovery(super::session::RecoveryCheckpointResult),
     /// One buffer analysis finished.
     Analysis(AnalysisResult),
     /// One workspace operation of the file tree finished.
@@ -637,6 +709,7 @@ impl WorkResult {
     /// Returns the service that produced this result.
     const fn kind(&self) -> &'static str {
         match self {
+            Self::Recovery(_) => "recovery checkpoint",
             Self::File(_) => "file",
             Self::Analysis(_) => "analysis",
             Self::Workspace(_) => "workspace",
@@ -770,9 +843,11 @@ fn dispatch(
     editor: &mut Session,
     spawner: &Runtime<EditorWork>,
     gate: &PublicationGate,
+    recovery_spawner: &Runtime<EditorWork>,
+    recovery_gate: &PublicationGate,
     language: &mut Option<LanguageServices>,
 ) -> Redraw {
-    let mut redraw = Redraw::Skipped;
+    let mut redraw = submit_recovery_work(editor, recovery_spawner, recovery_gate);
     for _ in 0..DISPATCH_PASSES_MAX {
         redraw = redraw.or(submit_background_work(editor, spawner, gate));
         redraw = redraw.or(submit_language_work(editor, language.as_mut()));
@@ -1095,6 +1170,35 @@ fn submit_workspace_work(
     redraw
 }
 
+/// Hands one recovery checkpoint to a committing worker without blocking other work.
+fn submit_recovery_work(
+    editor: &mut Session,
+    spawner: &Runtime<EditorWork>,
+    gate: &PublicationGate,
+) -> Redraw {
+    let Some(checkpoint) = editor.take_recovery_checkpoint() else {
+        return Redraw::Skipped;
+    };
+    let slot = RequestSlot::new(checkpoint.buffer().get());
+    let handle = gate.begin(slot, &spawner.cancellation_root());
+    let job_checkpoint = checkpoint.clone();
+    let submitted = spawner.submit_committing_worker(handle, WORKER_DEADLINE_DEFAULT, move |_| {
+        EditorWork(WorkResult::Recovery(job_checkpoint.run()))
+    });
+    if let Err(error) = submitted {
+        return editor.refuse_recovery_checkpoint(
+            checkpoint,
+            match error {
+                SubmitError::Saturated(_) => RecoverySubmissionFailure::Saturated,
+                SubmitError::InvalidLimits
+                | SubmitError::ProcessBounds
+                | SubmitError::ShuttingDown => RecoverySubmissionFailure::Cancelled,
+            },
+        );
+    }
+    Redraw::Skipped
+}
+
 /// Hands the queued file request to the bounded worker service.
 fn submit_file_work(
     editor: &mut Session,
@@ -1219,8 +1323,6 @@ fn complete(
     };
     let failure = |error: &RuntimeError| match error {
         RuntimeError::Timeout => FileRequestFailure::Timeout,
-        // A cancelled request and a failed worker both leave the buffer
-        // unchanged, so the editor stays usable and the user can try again.
         RuntimeError::Cancelled
         | RuntimeError::WorkerFailure(_)
         | RuntimeError::ProcessSpawn(_)
@@ -1229,6 +1331,13 @@ fn complete(
         | RuntimeError::OutputLimit { .. } => FileRequestFailure::Cancelled,
     };
     match (picker, event.result) {
+        (_, Ok(EditorWork(WorkResult::Recovery(_)))) => {
+            debug_assert!(
+                false,
+                "recovery work publishes only through its dedicated lane"
+            );
+            Redraw::Skipped
+        }
         (_, Ok(EditorWork(WorkResult::File(result)))) => editor.apply_file_result(result),
         (_, Ok(EditorWork(WorkResult::Analysis(result)))) => editor.apply_analysis_result(result),
         (_, Ok(EditorWork(WorkResult::Workspace(result)))) => editor.apply_workspace_result(result),
@@ -1280,6 +1389,30 @@ fn complete(
         }
         (None, Err(error)) if workspace => editor.abandon_workspace_request(failure(&error)),
         (None, Err(error)) => editor.abandon_file_request(failure(&error)),
+    }
+}
+
+fn complete_recovery(
+    editor: &mut Session,
+    gate: &PublicationGate,
+    event: Option<RuntimeEvent<EditorWork>>,
+) -> Redraw {
+    let Some(event) = event else {
+        return Redraw::Skipped;
+    };
+    if !gate.accepts(&event.request) {
+        return Redraw::Skipped;
+    }
+    match event.result {
+        Ok(EditorWork(WorkResult::Recovery(result))) => editor.apply_recovery_checkpoint(result),
+        Ok(_) => {
+            debug_assert!(false, "the recovery lane submits only recovery work");
+            Redraw::Skipped
+        }
+        Err(error) => editor.fail_recovery_checkpoint(
+            BufferId::new(event.request.slot().get()),
+            job_outcome(&error),
+        ),
     }
 }
 

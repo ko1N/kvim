@@ -246,9 +246,10 @@ changed or might have changed without claiming a proven commit.
 target changed. The result report preserves the primary source and every
 bounded restoration or cleanup source.
 
-Recovery checkpoints run on a dedicated committing worker lane. They do not
-reserve facade event capacity because they do not publish a durable host event
-for every edit. Each file-backed buffer has one active checkpoint and one newest
+Recovery checkpoints run on a dedicated committing worker lane. The lane holds
+at most `BUFFERS_MAX` results and runs at most
+`WORKER_CONCURRENCY_LIMIT_MAX` checkpoint workers. They do not reserve facade
+event capacity because they do not publish a durable host event for every edit. Each file-backed buffer has one active checkpoint and one newest
 pending checkpoint. Every accepted revision-changing edit queues immediately,
 and a newer revision replaces only the pending checkpoint. The lane validates
 editor instance, buffer identity, target, baseline, and revision before it

@@ -806,6 +806,7 @@ pub struct EmbeddedEditorBuilder {
     git_status: bool,
     registry: Registry,
     presentation: EditorPresentation,
+    recovery_state_directory: Option<PathBuf>,
 }
 
 impl EmbeddedEditorBuilder {
@@ -897,6 +898,14 @@ impl EmbeddedEditorBuilder {
         self
     }
 
+    /// Sets the validated application state directory for crash recovery.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn recovery_state_directory(mut self, directory: Option<PathBuf>) -> Self {
+        self.recovery_state_directory = directory.filter(|path| path.is_absolute());
+        self
+    }
+
     /// Builds the model and the driver of one independent editor.
     ///
     /// # Errors
@@ -917,6 +926,7 @@ impl EmbeddedEditorBuilder {
             git_status,
             registry,
             presentation,
+            recovery_state_directory,
         } = self;
         if area.width == 0 || area.height == 0 {
             return Err(GeometryError::Empty { area }.into());
@@ -940,6 +950,9 @@ impl EmbeddedEditorBuilder {
         .with_access(access)
         .with_clipboard(clipboard)
         .with_git_status(git_status);
+        if let Some(directory) = recovery_state_directory {
+            editor = editor.with_recovery_state_directory(directory);
+        }
         if watcher_unavailable {
             let _ = editor.report_watch_unavailable();
         }
@@ -1046,6 +1059,7 @@ impl EmbeddedEditor {
             git_status: true,
             registry: Registry::first_release(),
             presentation: EditorPresentation::default(),
+            recovery_state_directory: None,
         }
     }
 

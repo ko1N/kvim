@@ -1684,6 +1684,7 @@ pub struct WorktreeEditorBuilder {
     binding_mode: WorktreeBindingMode,
     presentation: WorktreePresentation,
     command_surface: Option<WorktreeCommandSurface>,
+    recovery_state_directory: Option<PathBuf>,
 }
 
 impl WorktreeEditorBuilder {
@@ -1729,6 +1730,12 @@ impl WorktreeEditorBuilder {
         self.command_surface = Some(capability);
         self
     }
+    /// Sets an absolute application state directory for crash recovery.
+    #[must_use]
+    pub fn recovery_state_directory(mut self, directory: impl Into<PathBuf>) -> Self {
+        self.recovery_state_directory = Some(directory.into());
+        self
+    }
     /// Opens the editor and its private executor.
     pub fn open(self) -> Result<WorktreeEditor, WorktreeOpenError> {
         if self.presentation.command_line_ownership() == SurfaceOwnership::HostOwned
@@ -1738,6 +1745,17 @@ impl WorktreeEditorBuilder {
                 WorktreeOpenErrorKind::CommandSurface,
                 None,
                 WorktreePresentationError::MissingCommandSurface,
+            ));
+        }
+        if self
+            .recovery_state_directory
+            .as_ref()
+            .is_some_and(|path| !path.is_absolute())
+        {
+            return Err(WorktreeOpenError::new(
+                WorktreeOpenErrorKind::Settings,
+                None,
+                WorktreeRecoveryPathError,
             ));
         }
         let valid_ownership = matches!(
@@ -1793,6 +1811,7 @@ impl WorktreeEditorBuilder {
                 self.presentation.file_sidebar_ownership() == SurfaceOwnership::Embedded,
             ))
             .settings(self.settings)
+            .recovery_state_directory(self.recovery_state_directory)
             .access(match self.access {
                 WorktreeAccess::ReadWrite => TuiEditorAccess::ReadWrite,
                 WorktreeAccess::ViewOnly => TuiEditorAccess::ViewOnly,
@@ -1865,6 +1884,10 @@ impl WorktreeEditorBuilder {
 }
 
 #[derive(Clone, Copy, Debug, Error)]
+#[error("the recovery state directory must be absolute")]
+struct WorktreeRecoveryPathError;
+
+#[derive(Clone, Copy, Debug, Error)]
 enum WorktreePresentationError {
     #[error("the effective resolver must own which-key presentation")]
     ResolverWhichKeyMismatch,
@@ -1924,6 +1947,7 @@ impl WorktreeEditor {
             binding_mode: WorktreeBindingMode::default(),
             presentation: WorktreePresentation::default(),
             command_surface: None,
+            recovery_state_directory: None,
         }
     }
     #[cfg(test)]

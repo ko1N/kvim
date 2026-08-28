@@ -175,6 +175,8 @@ pub struct SavedBuffer {
     pub target: FileTarget,
     /// The observed state of the new file.
     pub identity: FileIdentity,
+    /// The exact content written to the file.
+    pub content: String,
     /// The number of bytes that the save wrote.
     pub bytes: u64,
     /// The number of lines in the saved snapshot.
@@ -220,11 +222,15 @@ impl FileRequest {
                 outcome: open(&request),
                 requested: request.path,
             },
-            Self::Save(request) => FileResult::Saved {
-                buffer: request.buffer,
-                outcome: write(&request),
-                requested: request.target,
-            },
+            Self::Save(request) => {
+                let buffer = request.buffer;
+                let requested = request.target.clone();
+                FileResult::Saved {
+                    buffer,
+                    outcome: write(request),
+                    requested,
+                }
+            }
             Self::Reload(request) => FileResult::Reloaded {
                 buffers: reload(&request),
             },
@@ -335,7 +341,7 @@ fn restore_undo(
 }
 
 /// Saves one buffer and writes its persistent undo file.
-fn write(request: &SaveRequest) -> DurableOutcome<SavedBuffer, SaveError> {
+fn write(request: SaveRequest) -> DurableOutcome<SavedBuffer, SaveError> {
     let saved = match file::save(
         &request.target,
         &request.content,
@@ -357,10 +363,12 @@ fn write(request: &SaveRequest) -> DurableOutcome<SavedBuffer, SaveError> {
             );
         }
     }
+    let bytes = request.content.len() as u64;
     DurableOutcome::Committed(SavedBuffer {
         target: saved.target,
         identity: saved.identity,
-        bytes: request.content.len() as u64,
+        content: request.content,
+        bytes,
         lines: request.snapshot.line_count(),
         revision: request.revision,
     })

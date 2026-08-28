@@ -160,6 +160,12 @@ impl BufferRevision {
         }
     }
 
+    /// Creates one text identity from persisted numeric dimensions.
+    #[must_use]
+    pub const fn from_parts(generation: u64, version: u64) -> Self {
+        Self::new(BufferGeneration(generation), BufferVersion(version))
+    }
+
     /// Returns the complete-replacement generation.
     #[must_use]
     pub const fn generation(self) -> BufferGeneration {

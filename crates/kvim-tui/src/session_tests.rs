@@ -10,6 +10,7 @@ use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
+use kvim_core::BufferRevision;
 use kvim_editor::Selection;
 use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode, PromptKind, TreePrompt};
 use kvim_language::{Diagnostic, DiagnosticSeverity, DocumentPosition, LspError, SourceSpan};
@@ -20,17 +21,19 @@ use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
     BUFFERS_MAX, BufferPathUpdate, Candidate, DurableOutcome, ExternalChange, FileRequest,
-    FileResult, MutationOutcome, PickerRequest, PickerResult, SaveError, WorkspaceResult,
+    FileResult, MutationOutcome, PickerRequest, PickerResult, RecoveryBaseline, SaveError,
+    WorkspaceResult,
 };
 
 use crate::clipboard::SessionClipboard;
 use crate::completion::{CompletionOutcome, LineCompletion};
+use crate::embed::EditorInstanceId;
 use crate::language::{LanguageRequest, LanguageRequestKind};
 use crate::log::LOG_ENTRIES_MAX;
 use crate::review::ReviewSurface;
 use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
-    PromptSeed, Redraw, RunState, Session, test_root,
+    PromptSeed, RecoveryOperation, RecoverySubmissionFailure, Redraw, RunState, Session, test_root,
 };
 use kvim_ui::{SidebarSide, WindowId};
 
@@ -2138,6 +2141,328 @@ fn run_file_request(session: &mut Session) {
 }
 
 #[test]
+fn recovery_checkpoints_submit_once_and_coalesce_the_newest_pending_edit() {
+    let directory = TempDir::new("session-recovery-coalescing");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+
+    press(&mut session, 'i');
+    assert!(
+        session.take_recovery_checkpoint().is_none(),
+        "a command that changes no text queues no checkpoint"
+    );
+    press(&mut session, 'a');
+    let first = session
+        .take_recovery_checkpoint()
+        .expect("the first accepted edit queues immediately");
+    assert!(
+        session.take_recovery_checkpoint().is_none(),
+        "one active checkpoint is submitted once"
+    );
+    press(&mut session, 'b');
+    press(&mut session, 'c');
+    assert!(
+        session.take_recovery_checkpoint().is_none(),
+        "new edits coalesce while the active checkpoint runs"
+    );
+
+    let first_revision = first.revision;
+    let _ = session.apply_recovery_checkpoint(first.run());
+    let pending = session
+        .take_recovery_checkpoint()
+        .expect("completion releases the newest pending checkpoint");
+    assert!(pending.revision > first_revision);
+    assert_eq!(
+        match &pending.operation {
+            RecoveryOperation::Write(record) => record.text(),
+            RecoveryOperation::Delete => panic!("the pending operation is a write"),
+        },
+        "abcone\n"
+    );
+}
+
+#[test]
+fn save_keeps_an_active_checkpoint_as_the_barrier_for_a_newer_edit() {
+    let directory = TempDir::new("session-recovery-save-barrier");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let active = session.take_recovery_checkpoint().unwrap();
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    press(&mut session, 'b');
+    assert!(
+        session.take_recovery_checkpoint().is_none(),
+        "the pre-save checkpoint remains the ordering barrier"
+    );
+
+    let _ = session.apply_recovery_checkpoint(active.run());
+    let newest = session
+        .take_recovery_checkpoint()
+        .expect("the post-save edit follows the completed checkpoint");
+    assert_eq!(
+        match &newest.operation {
+            RecoveryOperation::Write(record) => record.text(),
+            RecoveryOperation::Delete => panic!("the newest operation is a write"),
+        },
+        "abone\n"
+    );
+    assert_eq!(
+        newest.baseline,
+        RecoveryBaseline::saved("aone\n"),
+        "the successor uses the new saved baseline"
+    );
+}
+
+#[test]
+fn clean_save_suppresses_obsolete_work_after_the_active_completion() {
+    let directory = TempDir::new("session-recovery-clean-save");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let buffer = session.active();
+    let active = session.take_recovery_checkpoint().unwrap();
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    let _ = session.apply_recovery_checkpoint(active.run());
+    let cleanup = session
+        .take_recovery_checkpoint()
+        .expect("the clean save orders cleanup after the active write");
+    let _ = session.apply_recovery_checkpoint(cleanup.run());
+
+    assert!(session.take_recovery_checkpoint().is_none());
+    assert!(
+        !session.recovery.buffers.contains_key(&buffer),
+        "completion removes suppressed bookkeeping"
+    );
+}
+
+#[test]
+fn path_retarget_keeps_the_active_checkpoint_as_the_new_target_barrier() {
+    let directory = TempDir::new("session-recovery-retarget-barrier");
+    let path = directory.write("main.rs", "one\n");
+    let moved = directory.join("moved.rs");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let buffer = session.active();
+    let active = session.take_recovery_checkpoint().unwrap();
+
+    let _ = session.apply_workspace_result(WorkspaceResult::Mutated {
+        outcome: DurableOutcome::Committed(MutationOutcome {
+            updates: vec![BufferPathUpdate {
+                buffer,
+                path: moved.clone(),
+            }],
+            changed: Vec::new(),
+            selection: None,
+        }),
+    });
+    press(&mut session, 'b');
+    assert!(session.take_recovery_checkpoint().is_none());
+
+    let _ = session.apply_recovery_checkpoint(active.run());
+    let newest = session
+        .take_recovery_checkpoint()
+        .expect("the retargeted edit follows the old-target checkpoint");
+    assert_eq!(newest.target.as_path(), moved);
+    assert_eq!(
+        match &newest.operation {
+            RecoveryOperation::Write(record) => record.text(),
+            RecoveryOperation::Delete => panic!("the newest operation is a write"),
+        },
+        "abone\n"
+    );
+}
+
+#[test]
+fn unload_with_active_recovery_work_removes_bookkeeping_on_completion() {
+    let directory = TempDir::new("session-recovery-unload-barrier");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    press_code(&mut session, KeyCode::Esc);
+    let buffer = session.active();
+    let active = session.take_recovery_checkpoint().unwrap();
+
+    press(&mut session, 'u');
+    assert!(!session.buffer().is_modified());
+    type_keys(&mut session, " x");
+    assert_ne!(session.active(), buffer);
+    assert!(session.recovery.buffers.contains_key(&buffer));
+
+    let _ = session.apply_recovery_checkpoint(active.run());
+    let cleanup = session
+        .take_recovery_checkpoint()
+        .expect("the unload orders cleanup after the active write");
+    let _ = session.apply_recovery_checkpoint(cleanup.run());
+    assert!(!session.recovery.buffers.contains_key(&buffer));
+}
+
+#[test]
+fn cancelled_recovery_submission_preserves_successor_delete_intent() {
+    let directory = TempDir::new("session-recovery-cancelled-delete");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let active = session.take_recovery_checkpoint().unwrap();
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    let _ = session.refuse_recovery_checkpoint(active, RecoverySubmissionFailure::Cancelled);
+
+    let cleanup = session
+        .take_recovery_checkpoint()
+        .expect("the cancelled active write preserves its cleanup successor");
+    assert!(matches!(cleanup.operation, RecoveryOperation::Delete));
+}
+
+#[test]
+fn failed_recovery_job_preserves_successor_delete_intent() {
+    let directory = TempDir::new("session-recovery-failed-delete");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let buffer = session.active();
+    let _active = session.take_recovery_checkpoint().unwrap();
+
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
+    run_file_request(&mut session);
+    let _ = session.fail_recovery_checkpoint(buffer, "passed its deadline");
+
+    let cleanup = session
+        .take_recovery_checkpoint()
+        .expect("the failed active write preserves its cleanup successor");
+    assert!(matches!(cleanup.operation, RecoveryOperation::Delete));
+}
+
+#[test]
+fn saturated_recovery_checkpoint_stays_queued_for_a_later_dispatch() {
+    let directory = TempDir::new("session-recovery-failure");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let checkpoint = session.take_recovery_checkpoint().unwrap();
+
+    let _ = session.refuse_recovery_checkpoint(checkpoint, RecoverySubmissionFailure::Saturated);
+    assert!(
+        session.take_recovery_checkpoint().is_some(),
+        "capacity saturation keeps the checkpoint ready for later driver progress"
+    );
+    assert!(session.take_recovery_checkpoint().is_none());
+}
+
+#[test]
+fn recovery_completion_rejects_each_mismatched_checkpoint_identity() {
+    let directory = TempDir::new("session-recovery-identity");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let checkpoint = session.take_recovery_checkpoint().unwrap();
+
+    let other_path = directory.write("other.rs", "other\n");
+    session.open_path(other_path);
+    run_file_request(&mut session);
+    let other_target = session.active_buffer().target().unwrap().clone();
+    session.active = checkpoint.buffer;
+
+    for mismatch in 0..3 {
+        let mut result = checkpoint.clone().run();
+        match mismatch {
+            0 => result.target = other_target.clone(),
+            1 => result.baseline = RecoveryBaseline::Missing,
+            2 => result.revision = BufferRevision::from_parts(99, 99),
+            _ => unreachable!(),
+        }
+        let _ = session.apply_recovery_checkpoint(result);
+        assert!(session.take_recovery_checkpoint().is_none());
+    }
+
+    let _ = session.apply_recovery_checkpoint(checkpoint.run());
+}
+
+#[test]
+fn recovery_checkpoints_are_independent_between_buffers() {
+    let directory = TempDir::new("session-recovery-buffers");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(first_path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let first = session.take_recovery_checkpoint().unwrap();
+
+    session.open_path(second_path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'b');
+    let second = session.take_recovery_checkpoint().unwrap();
+    assert_ne!(first.buffer, second.buffer);
+
+    let _ = session.apply_recovery_checkpoint(second.run());
+    let _ = session.apply_recovery_checkpoint(first.run());
+}
+
+#[test]
+fn wrong_instance_recovery_completion_cannot_advance_checkpoint_state() {
+    let directory = TempDir::new("session-recovery-instance");
+    let path = directory.write("main.rs", "one\n");
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
+    session.open_path(path);
+    run_file_request(&mut session);
+    press(&mut session, 'i');
+    press(&mut session, 'a');
+    let checkpoint = session.take_recovery_checkpoint().unwrap();
+    let mut result = checkpoint.run();
+    result.instance = EditorInstanceId::allocate();
+
+    let _ = session.apply_recovery_checkpoint(result);
+    assert!(
+        session.take_recovery_checkpoint().is_none(),
+        "a wrong-instance completion leaves the active checkpoint submitted"
+    );
+}
+
+#[test]
 fn a_path_opens_one_buffer_and_ctrl_s_writes_it() {
     let directory = TempDir::new("session-save");
     let path = directory.write("main.rs", "fn main() {}\n");
@@ -2422,6 +2747,15 @@ fn write_quit_keeps_a_newer_edit_when_the_save_result_is_stale() {
     assert!(session.buffer().is_modified());
     assert_eq!(session.run_state(), RunState::Running);
     assert!(message(&session).ends_with(" 1L, 10B written"));
+
+    let checkpoint = session
+        .take_recovery_checkpoint()
+        .expect("the newer edit remains queued after the stale save");
+    assert_eq!(
+        checkpoint.baseline,
+        RecoveryBaseline::saved("saved one\n"),
+        "recovery compares against the exact stale snapshot that reached disk"
+    );
 
     session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Char('s'))), NOW);
     run_file_request(&mut session);

@@ -126,7 +126,8 @@ pub use picker_request::{
 #[cfg(feature = "services")]
 pub use recovery::{
     RECOVERY_RECORD_BYTES_MAX, RECOVERY_RECORD_VERSION, RecoveryBaseline, RecoveryError,
-    RecoveryRecord, read_recovery_record, recovery_record_path, write_recovery_record,
+    RecoveryRecord, delete_recovery_record, read_recovery_record, recovery_record_path,
+    write_recovery_record,
 };
 #[cfg(feature = "services")]
 pub use request::{

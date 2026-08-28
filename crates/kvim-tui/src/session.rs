@@ -70,11 +70,12 @@ use kvim_workspace::{
     DurableOutcome, EntryKind, ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult,
     FileTarget, FileTree, GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError,
     MutationOutcome, OpenError, OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX,
-    PickerKind, PickerRequest, PickerResult, PickerSlot, RELOAD_TARGETS_MAX, ReloadOutcome,
-    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError,
-    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
-    WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
-    render_content,
+    PickerKind, PickerRequest, PickerResult, PickerSlot, RELOAD_TARGETS_MAX, RecoveryBaseline,
+    RecoveryError, RecoveryRecord, ReloadOutcome, ReloadRequest, ReloadTarget, ReloadTrigger,
+    ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX,
+    TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure,
+    WorktreeDiffRead, WorktreeDiffRequest, delete_recovery_record, recovery_record_path,
+    render_content, write_recovery_record,
 };
 
 use super::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -141,6 +142,109 @@ const JOB_FORMATTER: &str = "formatter";
 /// Every job that a buffer version gates names this same outcome, so a reader
 /// searches one text for every obsolete result.
 pub(super) const JOB_OBSOLETE: &str = "rejected: the buffer changed";
+
+/// The name of one failed crash-recovery checkpoint.
+pub(super) const JOB_RECOVERY: &str = "recovery checkpoint";
+
+/// One recovery write that the committing worker must persist.
+#[derive(Clone, Debug)]
+pub struct RecoveryCheckpoint {
+    instance: EditorInstanceId,
+    buffer: BufferId,
+    target: FileTarget,
+    baseline: RecoveryBaseline,
+    revision: BufferRevision,
+    path: PathBuf,
+    operation: RecoveryOperation,
+}
+
+/// The durable operation of one recovery checkpoint.
+#[derive(Clone, Debug)]
+enum RecoveryOperation {
+    Write(RecoveryRecord),
+    Delete,
+}
+
+impl RecoveryCheckpoint {
+    /// Returns the buffer that owns this checkpoint.
+    #[must_use]
+    pub const fn buffer(&self) -> BufferId {
+        self.buffer
+    }
+
+    /// Runs the durable recovery operation off the event loop.
+    #[must_use]
+    pub fn run(self) -> RecoveryCheckpointResult {
+        let outcome = match self.operation {
+            RecoveryOperation::Write(record) => write_recovery_record(&self.path, &record),
+            RecoveryOperation::Delete => delete_recovery_record(&self.path),
+        };
+        RecoveryCheckpointResult {
+            instance: self.instance,
+            buffer: self.buffer,
+            target: self.target,
+            baseline: self.baseline,
+            revision: self.revision,
+            outcome,
+        }
+    }
+}
+
+/// The outcome of one recovery checkpoint write.
+#[derive(Debug)]
+pub struct RecoveryCheckpointResult {
+    instance: EditorInstanceId,
+    buffer: BufferId,
+    target: FileTarget,
+    baseline: RecoveryBaseline,
+    revision: BufferRevision,
+    outcome: DurableOutcome<(), RecoveryError>,
+}
+
+/// One buffer's legal checkpoint lifecycle.
+#[derive(Debug)]
+enum RecoveryState {
+    /// The newest checkpoint is ready for one submission attempt.
+    Queued {
+        checkpoint: RecoveryCheckpoint,
+        saturation_reported: bool,
+    },
+    /// One checkpoint was submitted, with the desired state that must follow it.
+    Submitted {
+        active: RecoveryCheckpoint,
+        successor: RecoverySuccessor,
+        saturation_reported: bool,
+    },
+    /// A failed attempt is retained until a newer edit permits one retry.
+    Paused(RecoveryCheckpoint),
+}
+
+/// Why the runtime refused one recovery submission.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum RecoverySubmissionFailure {
+    /// The dedicated bounded lane currently has no capacity.
+    Saturated,
+    /// The runtime cannot accept this checkpoint later.
+    Cancelled,
+}
+
+/// The state that must follow one submitted checkpoint.
+#[derive(Debug)]
+enum RecoverySuccessor {
+    /// The submitted checkpoint still describes the newest desired state.
+    None,
+    /// A newer dirty revision must run after the submitted checkpoint.
+    Checkpoint(RecoveryCheckpoint),
+    /// A durable cleanup must run after the submitted checkpoint.
+    Delete(RecoveryCheckpoint),
+}
+
+/// The bounded checkpoint states of loaded buffers.
+#[derive(Debug, Default)]
+struct RecoveryCheckpoints {
+    state_directory: Option<PathBuf>,
+    buffers: BTreeMap<BufferId, RecoveryState>,
+}
 
 /// The outcome of one analysis that the bounded worker service refused.
 pub(super) const JOB_REFUSED: &str = "refused: the worker service accepted no job";
@@ -1382,6 +1486,7 @@ pub struct Session {
     /// One job runs at a time, so a newer buffer version replaces the job that
     /// it supersedes instead of adding a second one.
     analysis_pending: Option<(BufferId, BufferRevision)>,
+    recovery: RecoveryCheckpoints,
     /// The language-server requests, diagnostics, and per-buffer settings.
     ///
     /// The session never speaks the protocol. It builds bounded requests, and
@@ -1531,6 +1636,7 @@ impl Session {
             languages: LanguageRegistry::first_release(),
             analysis: BTreeMap::new(),
             analysis_pending: None,
+            recovery: RecoveryCheckpoints::default(),
             language: LanguageState::default(),
             search: None,
             prompt: None,
@@ -1550,6 +1656,12 @@ impl Session {
         };
         session.reconcile_viewports();
         session
+    }
+
+    #[must_use]
+    pub(super) fn with_recovery_state_directory(mut self, directory: PathBuf) -> Self {
+        self.recovery.state_directory = Some(directory);
+        self
     }
 
     /// Grants what this editor may reach of the system clipboard.
@@ -2861,7 +2973,145 @@ impl Session {
         }
         self.advance_syntax(&before, after, applied);
         self.synchronize_language(&before, after, applied);
+        if after != before.revision() {
+            self.queue_recovery_checkpoint(self.active);
+        }
         outcome
+    }
+
+    /// Queues the newest dirty revision of the active file-backed buffer.
+    fn queue_recovery_checkpoint(&mut self, buffer: BufferId) {
+        if !self.settings.files.recovery_enabled {
+            return;
+        }
+        let Some(file) = self.buffers.get(buffer) else {
+            return;
+        };
+        if !file.is_modified() {
+            return;
+        }
+        let (Some(state_directory), Some(target)) = (
+            self.recovery.state_directory.as_ref(),
+            file.target().cloned(),
+        ) else {
+            return;
+        };
+        let revision = file.text().revision();
+        let baseline = file.recovery_baseline().clone();
+        let text = render_content(file.text());
+        let record = match RecoveryRecord::new(
+            &target,
+            baseline.clone(),
+            revision,
+            text,
+            self.settings.files.recovery_max_bytes,
+            self.settings.files.max_file_bytes,
+        ) {
+            Ok(record) => record,
+            Err(error) => {
+                self.record_job(
+                    JOB_RECOVERY,
+                    MessageLevel::Warning,
+                    &format!("failed: {error}"),
+                );
+                return;
+            }
+        };
+        let checkpoint = RecoveryCheckpoint {
+            instance: self.instance,
+            buffer,
+            path: recovery_record_path(state_directory, &target),
+            target,
+            baseline,
+            revision,
+            operation: RecoveryOperation::Write(record),
+        };
+        match self.recovery.buffers.remove(&buffer) {
+            None | Some(RecoveryState::Queued { .. }) => {
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Queued {
+                        checkpoint,
+                        saturation_reported: false,
+                    },
+                );
+            }
+            Some(RecoveryState::Paused(retained)) => {
+                debug_assert!(
+                    retained.revision < checkpoint.revision,
+                    "only a newer accepted edit retries one paused checkpoint"
+                );
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Queued {
+                        checkpoint,
+                        saturation_reported: false,
+                    },
+                );
+            }
+            Some(RecoveryState::Submitted {
+                active,
+                saturation_reported,
+                ..
+            }) => {
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Submitted {
+                        active,
+                        successor: RecoverySuccessor::Checkpoint(checkpoint),
+                        saturation_reported,
+                    },
+                );
+            }
+        }
+    }
+
+    /// Suppresses queued work while preserving a submitted durable write.
+    ///
+    /// A later dirty edit replaces the suppression with its newest checkpoint.
+    /// The submitted write remains the per-buffer ordering barrier until its
+    /// completion arrives.
+    fn suppress_recovery_checkpoint(&mut self, buffer: BufferId) {
+        let Some(state) = self.recovery.buffers.remove(&buffer) else {
+            return;
+        };
+        match state {
+            RecoveryState::Submitted {
+                active,
+                saturation_reported,
+                ..
+            } => {
+                let cleanup = RecoveryCheckpoint {
+                    instance: self.instance,
+                    buffer,
+                    target: active.target.clone(),
+                    baseline: active.baseline.clone(),
+                    revision: active.revision,
+                    path: active.path.clone(),
+                    operation: RecoveryOperation::Delete,
+                };
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Submitted {
+                        active,
+                        successor: RecoverySuccessor::Delete(cleanup),
+                        saturation_reported,
+                    },
+                );
+            }
+            RecoveryState::Queued { checkpoint, .. } | RecoveryState::Paused(checkpoint) => {
+                self.recovery.buffers.insert(
+                    buffer,
+                    RecoveryState::Queued {
+                        checkpoint: RecoveryCheckpoint {
+                            operation: RecoveryOperation::Delete,
+                            ..checkpoint
+                        },
+                        saturation_reported: false,
+                    },
+                );
+            }
+        }
     }
 
     /// Sends the applied transaction of the active buffer to its server.
@@ -3817,6 +4067,222 @@ impl Session {
     /// from filesystem work.
     pub fn take_file_request(&mut self) -> Option<FileRequest> {
         self.file_outbox.take()
+    }
+
+    /// Takes one queued recovery checkpoint exactly once.
+    pub fn take_recovery_checkpoint(&mut self) -> Option<RecoveryCheckpoint> {
+        let buffer = self.recovery.buffers.iter().find_map(|(buffer, state)| {
+            matches!(state, RecoveryState::Queued { .. }).then_some(*buffer)
+        })?;
+        let state = self
+            .recovery
+            .buffers
+            .remove(&buffer)
+            .expect("the selected recovery state remains loaded");
+        let RecoveryState::Queued {
+            checkpoint,
+            saturation_reported,
+        } = state
+        else {
+            unreachable!("the selected recovery state is queued");
+        };
+        self.recovery.buffers.insert(
+            buffer,
+            RecoveryState::Submitted {
+                active: checkpoint.clone(),
+                successor: RecoverySuccessor::None,
+                saturation_reported,
+            },
+        );
+        Some(checkpoint)
+    }
+
+    /// Applies one checkpoint completion only when every live identity matches.
+    #[must_use]
+    pub fn apply_recovery_checkpoint(&mut self, result: RecoveryCheckpointResult) -> Redraw {
+        if result.instance != self.instance {
+            return Redraw::Skipped;
+        }
+        let Some(state) = self.recovery.buffers.remove(&result.buffer) else {
+            return Redraw::Skipped;
+        };
+        let RecoveryState::Submitted {
+            active,
+            successor,
+            saturation_reported,
+        } = state
+        else {
+            self.recovery.buffers.insert(result.buffer, state);
+            return Redraw::Skipped;
+        };
+        if active.instance != result.instance
+            || active.target != result.target
+            || active.baseline != result.baseline
+            || active.revision != result.revision
+        {
+            self.recovery.buffers.insert(
+                result.buffer,
+                RecoveryState::Submitted {
+                    active,
+                    successor,
+                    saturation_reported,
+                },
+            );
+            return Redraw::Skipped;
+        }
+        match result.outcome {
+            DurableOutcome::Committed(()) => match successor {
+                RecoverySuccessor::Checkpoint(checkpoint)
+                | RecoverySuccessor::Delete(checkpoint) => {
+                    self.queue_recovery_after_completion(result.buffer, checkpoint);
+                }
+                RecoverySuccessor::None => {}
+            },
+            DurableOutcome::Unchanged(error) => {
+                self.retain_failed_recovery(result.buffer, active, successor);
+                self.record_recovery_error(&error);
+            }
+            DurableOutcome::Indeterminate(report) => {
+                self.retain_failed_recovery(result.buffer, active, successor);
+                self.record_recovery_error(report.primary());
+                for failure in report.recovery_failures() {
+                    self.record_recovery_error(failure);
+                }
+            }
+        }
+        Redraw::Skipped
+    }
+
+    fn queue_recovery_after_completion(
+        &mut self,
+        buffer: BufferId,
+        checkpoint: RecoveryCheckpoint,
+    ) {
+        self.recovery.buffers.insert(
+            buffer,
+            RecoveryState::Queued {
+                checkpoint,
+                saturation_reported: false,
+            },
+        );
+    }
+
+    fn retain_failed_recovery(
+        &mut self,
+        buffer: BufferId,
+        active: RecoveryCheckpoint,
+        successor: RecoverySuccessor,
+    ) {
+        let state = match successor {
+            RecoverySuccessor::None => RecoveryState::Paused(active),
+            RecoverySuccessor::Checkpoint(checkpoint) => RecoveryState::Paused(checkpoint),
+            RecoverySuccessor::Delete(checkpoint) => RecoveryState::Queued {
+                checkpoint,
+                saturation_reported: false,
+            },
+        };
+        self.recovery.buffers.insert(buffer, state);
+    }
+
+    /// Retains the newest checkpoint after a refused submission.
+    #[must_use]
+    pub(super) fn refuse_recovery_checkpoint(
+        &mut self,
+        checkpoint: RecoveryCheckpoint,
+        failure: RecoverySubmissionFailure,
+    ) -> Redraw {
+        let Some(state) = self.recovery.buffers.remove(&checkpoint.buffer) else {
+            return Redraw::Skipped;
+        };
+        let RecoveryState::Submitted {
+            active,
+            successor,
+            saturation_reported,
+        } = state
+        else {
+            self.recovery.buffers.insert(checkpoint.buffer, state);
+            return Redraw::Skipped;
+        };
+        if active.revision != checkpoint.revision {
+            self.recovery.buffers.insert(
+                checkpoint.buffer,
+                RecoveryState::Submitted {
+                    active,
+                    successor,
+                    saturation_reported,
+                },
+            );
+            return Redraw::Skipped;
+        }
+        let (state, report) = match failure {
+            RecoverySubmissionFailure::Saturated => {
+                let newest = match successor {
+                    RecoverySuccessor::None => active,
+                    RecoverySuccessor::Checkpoint(checkpoint)
+                    | RecoverySuccessor::Delete(checkpoint) => checkpoint,
+                };
+                (
+                    RecoveryState::Queued {
+                        checkpoint: newest,
+                        saturation_reported: true,
+                    },
+                    !saturation_reported,
+                )
+            }
+            RecoverySubmissionFailure::Cancelled => {
+                let state = match successor {
+                    RecoverySuccessor::None => RecoveryState::Paused(active),
+                    RecoverySuccessor::Checkpoint(checkpoint) => RecoveryState::Paused(checkpoint),
+                    RecoverySuccessor::Delete(checkpoint) => RecoveryState::Queued {
+                        checkpoint,
+                        saturation_reported: false,
+                    },
+                };
+                (state, true)
+            }
+        };
+        self.recovery.buffers.insert(checkpoint.buffer, state);
+        if report {
+            let reason = match failure {
+                RecoverySubmissionFailure::Saturated => "the worker service accepted no job",
+                RecoverySubmissionFailure::Cancelled => "the recovery checkpoint was cancelled",
+            };
+            self.record_job(JOB_RECOVERY, MessageLevel::Warning, reason);
+        }
+        Redraw::Skipped
+    }
+
+    /// Retains the newest checkpoint after an accepted runtime job fails.
+    #[must_use]
+    pub(super) fn fail_recovery_checkpoint(
+        &mut self,
+        buffer: BufferId,
+        reason: &'static str,
+    ) -> Redraw {
+        let Some(state) = self.recovery.buffers.remove(&buffer) else {
+            return Redraw::Skipped;
+        };
+        let RecoveryState::Submitted {
+            active, successor, ..
+        } = state
+        else {
+            self.recovery.buffers.insert(buffer, state);
+            return Redraw::Skipped;
+        };
+        self.retain_failed_recovery(buffer, active, successor);
+        self.record_job(JOB_RECOVERY, MessageLevel::Warning, reason);
+        Redraw::Skipped
+    }
+
+    fn record_recovery_error(&mut self, error: &dyn std::error::Error) {
+        let mut report = format!("failed: {error}");
+        let mut source = error.source();
+        while let Some(error) = source {
+            report.push_str(": ");
+            report.push_str(&error.to_string());
+            source = error.source();
+        }
+        self.record_job(JOB_RECOVERY, MessageLevel::Warning, &report);
     }
 
     /// Returns the analysis job that the active buffer needs, if any.
@@ -5445,6 +5911,9 @@ impl Session {
             })
             .collect();
         self.buffers.apply_path_updates(&outcome.updates);
+        for update in &outcome.updates {
+            self.suppress_recovery_checkpoint(update.buffer);
+        }
         for path in closed {
             self.queue_language(LanguageRequest::Close { path });
         }
@@ -6366,7 +6835,12 @@ impl Session {
         let lines = saved.lines;
         let name = saved.target.as_path().display().to_string();
         let bytes = saved.bytes;
-        let applied = target.apply_save(saved.target, saved.identity, saved.revision);
+        let applied =
+            target.apply_save(saved.target, saved.identity, saved.revision, &saved.content);
+        self.suppress_recovery_checkpoint(buffer);
+        if applied == SaveApplyOutcome::Stale {
+            self.queue_recovery_checkpoint(buffer);
+        }
         // The saved file changed the working tree, so the recorded state of the
         // workspace changed with it.
         self.tree.request_git_status();
@@ -6454,6 +6928,7 @@ impl Session {
                 path: path.to_path_buf(),
             });
         self.buffers.remove(id);
+        self.suppress_recovery_checkpoint(id);
         self.language.forget(id);
         self.analysis.remove(&id);
         if let Some(request) = closed {

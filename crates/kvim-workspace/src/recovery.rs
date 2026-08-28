@@ -7,6 +7,7 @@ use std::fs;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
+use kvim_core::BufferRevision;
 use thiserror::Error;
 
 use super::durable::{
@@ -16,7 +17,7 @@ use super::file::{FileTarget, create_temporary, temporary_name};
 use super::hash::content_hash;
 
 /// The format version in every recovery record header.
-pub const RECOVERY_RECORD_VERSION: u32 = 1;
+pub const RECOVERY_RECORD_VERSION: u32 = 2;
 
 /// The largest complete recovery record that the reader accepts.
 pub const RECOVERY_RECORD_BYTES_MAX: u64 = 4 * 1024 * 1024 + 128 * 1024;
@@ -24,7 +25,7 @@ pub const RECOVERY_RECORD_BYTES_MAX: u64 = 4 * 1024 * 1024 + 128 * 1024;
 const RECOVERY_RECORD_MAGIC: [u8; 8] = *b"KVIMRECV";
 const RECOVERY_DIRECTORY: &str = "kvim/recovery";
 const RECOVERY_RECORD_EXTENSION: &str = "kvr";
-const RECOVERY_HEADER_BYTES: u64 = 8 + 4 + 8 + 8 + 8 + 8 + 8 + 8;
+const RECOVERY_HEADER_BYTES: u64 = 8 + 4 + 8 + 8 + 8 + 8 + 8 + 8 + 8;
 
 /// The disk state that a recovery record expects before restoration.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -100,7 +101,7 @@ impl RecoveryBaseline {
 pub struct RecoveryRecord {
     target: PathBuf,
     baseline: RecoveryBaseline,
-    revision: u64,
+    revision: BufferRevision,
     text: String,
 }
 
@@ -114,7 +115,7 @@ impl RecoveryRecord {
     pub fn new(
         target: &FileTarget,
         baseline: RecoveryBaseline,
-        revision: u64,
+        revision: BufferRevision,
         text: String,
         recovery_max_bytes: u64,
         file_max_bytes: u64,
@@ -152,7 +153,7 @@ impl RecoveryRecord {
 
     /// Returns the buffer revision that produced this checkpoint.
     #[must_use]
-    pub const fn revision(&self) -> u64 {
+    pub const fn revision(&self) -> BufferRevision {
         self.revision
     }
 
@@ -183,7 +184,8 @@ impl RecoveryRecord {
         bytes.extend_from_slice(&RECOVERY_RECORD_VERSION.to_le_bytes());
         write_bytes(&mut bytes, target);
         self.baseline.encode(&mut bytes);
-        bytes.extend_from_slice(&self.revision.to_le_bytes());
+        bytes.extend_from_slice(&self.revision.generation().get().to_le_bytes());
+        bytes.extend_from_slice(&self.revision.version().get().to_le_bytes());
         write_bytes(&mut bytes, self.text.as_bytes());
         bytes.extend_from_slice(&content_hash(self.text.as_bytes()).to_le_bytes());
         bytes
@@ -211,7 +213,7 @@ impl RecoveryRecord {
             return None;
         }
         let baseline = RecoveryBaseline::decode(&mut reader)?;
-        let revision = reader.u64()?;
+        let revision = BufferRevision::from_parts(reader.u64()?, reader.u64()?);
         let text_bytes = reader.bytes()?;
         let max_bytes = recovery_max_bytes.min(file_max_bytes);
         if text_bytes.len() as u64 > max_bytes {
@@ -254,6 +256,9 @@ pub enum RecoveryError {
     /// The temporary recovery file could not replace the current record.
     #[error("the recovery record could not replace its prior record")]
     Replace(#[source] io::Error),
+    /// The current recovery record could not be removed.
+    #[error("the recovery record could not be deleted")]
+    Delete(#[source] io::Error),
     /// The recovery directory could not be synchronized.
     #[error("the recovery directory could not be synchronized")]
     SyncDirectory(#[source] io::Error),
@@ -285,6 +290,25 @@ pub fn read_recovery_record(
     }
     let bytes = fs::read(path).ok()?;
     RecoveryRecord::decode(&bytes, target, recovery_max_bytes, file_max_bytes)
+}
+
+/// Durably deletes one recovery record through an injected record path.
+pub fn delete_recovery_record(path: &Path) -> DurableOutcome<(), RecoveryError> {
+    let Some(directory) = path.parent() else {
+        return DurableOutcome::Unchanged(RecoveryError::NoDirectory);
+    };
+    match fs::remove_file(path) {
+        Ok(()) => match sync_directory(directory) {
+            Ok(()) => DurableOutcome::Committed(()),
+            Err(source) => DurableOutcome::Indeterminate(Indeterminate::from_operation(
+                RecoveryError::SyncDirectory(source),
+                Vec::new(),
+                vec![path.to_path_buf(), directory.to_path_buf()],
+            )),
+        },
+        Err(source) if source.kind() == io::ErrorKind::NotFound => DurableOutcome::Committed(()),
+        Err(source) => DurableOutcome::Unchanged(RecoveryError::Delete(source)),
+    }
 }
 
 /// Durably replaces one recovery record through an injected record path.
