@@ -23,9 +23,13 @@ use kvim_tui::__private::{
     ClipboardAccess as TuiClipboardAccess, Completed, CursorShape as TuiCursorShape,
     EditorAccess as TuiEditorAccess, EditorCapacity as TuiEditorCapacity,
     EditorEvent as TuiEditorEvent, EditorFormatterStatus as TuiFormatterStatus,
-    EditorShutdown as TuiEditorShutdown, EmbeddedEditor, GeometryError as TuiGeometryError,
-    HostReportRequest as TuiHostReportRequest, HostWorkspace as TuiHostWorkspace,
-    InputRequest as TuiInputRequest, PublishedEvent as TuiPublishedEvent, Redraw as TuiRedraw,
+    EditorShutdown as TuiEditorShutdown, EmbeddedEditor, FileRow as TuiFileRow,
+    FileRowGit as TuiFileRowGit, FileRowIdentity as TuiFileRowIdentity,
+    FileRowKind as TuiFileRowKind, FileRowNoticeKind as TuiFileRowNoticeKind,
+    FileSidebarInput as TuiFileSidebarInput, FileSidebarOutcome as TuiFileSidebarOutcome,
+    GeometryError as TuiGeometryError, HostReportRequest as TuiHostReportRequest,
+    HostWorkspace as TuiHostWorkspace, IconRole as TuiIconRole, InputRequest as TuiInputRequest,
+    ListMotion as TuiListMotion, PublishedEvent as TuiPublishedEvent, Redraw as TuiRedraw,
     Reduction as TuiReduction, ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal,
     RunState as TuiRunState, TerminalEvent as TuiTerminalEvent,
 };
@@ -184,6 +188,240 @@ pub enum EditorFormatterState {
     AvailableDisabled,
     /// A formatter is available and format-on-save is enabled.
     AvailableEnabled,
+}
+
+/// Maximum rows in one published host-owned file sidebar snapshot.
+pub const FILE_SIDEBAR_ROWS_MAX: usize = kvim_tui::__private::FILE_SIDEBAR_ROWS_MAX;
+
+/// Maximum characters in one published file-sidebar row label.
+pub const FILE_SIDEBAR_LABEL_CHARS_MAX: usize = kvim_tui::__private::FILE_SIDEBAR_LABEL_CHARS_MAX;
+/// Maximum bytes in the published worktree-root label.
+pub const FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX: usize =
+    kvim_tui::__private::FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX;
+/// Maximum depth of one published file-sidebar row.
+pub const FILE_SIDEBAR_DEPTH_MAX: u16 = kvim_tui::__private::FILE_SIDEBAR_DEPTH_MAX;
+
+/// Stable semantic kind of one file-sidebar notice.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileSidebarNoticeKind {
+    /// A directory listing exceeded its entry bound.
+    Truncated,
+    /// A directory listing failed.
+    Unreadable,
+    /// Hidden entries were omitted.
+    Hidden,
+}
+
+/// Stable identity of one file-sidebar row for this editor lifetime.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FileSidebarRowId(FileSidebarRowIdentity);
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+enum FileSidebarRowIdentity {
+    Entry(WorktreeRelativePath),
+    Notice {
+        parent: Option<WorktreeRelativePath>,
+        kind: FileSidebarNoticeKind,
+    },
+}
+
+/// Semantic kind and expansion state of one file-sidebar row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarRowKind {
+    /// A file.
+    File,
+    /// A collapsed directory.
+    DirectoryCollapsed,
+    /// An expanded directory with a loaded listing.
+    DirectoryExpanded,
+    /// An expanded directory whose listing is pending.
+    DirectoryLoading,
+    /// A non-selectable bounded notice.
+    Notice,
+}
+
+/// Recorded Git state of one file-sidebar row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarGitState {
+    /// Ignored by Git.
+    Ignored,
+    /// Not tracked by Git.
+    Untracked,
+    /// Changed in the index.
+    Staged,
+    /// Changed in the working tree.
+    Modified,
+    /// Changed in both the index and working tree.
+    StagedAndModified,
+    /// Contains an unresolved conflict.
+    Conflicted,
+}
+
+/// Symbolic-link state of one file-sidebar row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarSymlinkState {
+    /// The row names its target directly.
+    Direct,
+    /// The row names a symbolic link.
+    Symlink,
+}
+
+/// Semantic icon role for a host-drawn file-sidebar row.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarIconRole {
+    /// A directory.
+    Directory,
+    /// Source code.
+    Code,
+    /// Configuration or structured data.
+    Configuration,
+    /// Prose documentation.
+    Document,
+    /// An executable script.
+    Script,
+    /// Version-control metadata.
+    VersionControl,
+    /// Generated output.
+    Generated,
+    /// An image or binary asset.
+    Media,
+    /// An uncategorized file.
+    Unknown,
+}
+
+/// One bounded semantic row of a host-owned file sidebar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileSidebarRow {
+    id: FileSidebarRowId,
+    label: String,
+    path: Option<WorktreeRelativePath>,
+    depth: u16,
+    kind: FileSidebarRowKind,
+    selected: bool,
+    git: Option<FileSidebarGitState>,
+    symlink: FileSidebarSymlinkState,
+    icon: Option<FileSidebarIconRole>,
+}
+
+impl FileSidebarRow {
+    /// Returns the stable row identity.
+    #[must_use]
+    pub const fn id(&self) -> &FileSidebarRowId {
+        &self.id
+    }
+    /// Returns the bounded display label.
+    #[must_use]
+    pub fn label(&self) -> &str {
+        &self.label
+    }
+    /// Returns the contained entry path. Notice rows return `None`.
+    #[must_use]
+    pub const fn path(&self) -> Option<&WorktreeRelativePath> {
+        self.path.as_ref()
+    }
+    /// Returns the depth below the worktree root.
+    #[must_use]
+    pub const fn depth(&self) -> u16 {
+        self.depth
+    }
+    /// Returns the row kind and directory state.
+    #[must_use]
+    pub const fn kind(&self) -> FileSidebarRowKind {
+        self.kind
+    }
+    /// Reports whether this row owns the selection.
+    #[must_use]
+    pub const fn is_selected(&self) -> bool {
+        self.selected
+    }
+    /// Returns the last recorded Git state.
+    #[must_use]
+    pub const fn git(&self) -> Option<FileSidebarGitState> {
+        self.git
+    }
+    /// Returns the symbolic-link state.
+    #[must_use]
+    pub const fn symlink(&self) -> FileSidebarSymlinkState {
+        self.symlink
+    }
+    /// Returns the semantic icon role.
+    #[must_use]
+    pub const fn icon(&self) -> Option<FileSidebarIconRole> {
+        self.icon
+    }
+}
+
+/// One cheap bounded snapshot of the host-owned file sidebar.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FileSidebarSnapshot {
+    instance: WorktreeInstanceId,
+    root_label: String,
+    rows: Vec<FileSidebarRow>,
+}
+
+impl FileSidebarSnapshot {
+    /// Returns the addressed editor.
+    #[must_use]
+    pub const fn instance(&self) -> WorktreeInstanceId {
+        self.instance
+    }
+    /// Returns the bounded worktree-root display label.
+    #[must_use]
+    pub fn root_label(&self) -> &str {
+        &self.root_label
+    }
+    /// Returns the visible rows without host rows merged into them.
+    #[must_use]
+    pub fn rows(&self) -> &[FileSidebarRow] {
+        &self.rows
+    }
+}
+
+/// One semantic input for a host-owned file sidebar.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarCommand {
+    /// Move to the previous selectable row.
+    MoveUp,
+    /// Move to the next selectable row.
+    MoveDown,
+    /// Move to the first selectable row.
+    MoveFirst,
+    /// Move to the last selectable row.
+    MoveLast,
+    /// Move to the selected row's parent.
+    MoveParent,
+    /// Expand the selected directory, or activate a selected file.
+    Expand,
+    /// Collapse the selected directory, or move to its parent.
+    Collapse,
+    /// Toggle a directory, or activate a file.
+    Activate,
+    /// Re-read expanded directories and Git state through bounded work routing.
+    Refresh,
+    /// Reports that host focus traversal reached this sidebar boundary.
+    ///
+    /// Kvim does not track host focus. The host owns focus and applies the
+    /// returned direction after it has satisfied any editor cancellation
+    /// protocol required by its focused surface.
+    FocusBoundary(Direction),
+}
+
+/// Result of one host-owned file-sidebar command.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileSidebarOutcome {
+    /// Sidebar state was applied.
+    Applied(WorktreeUpdate),
+    /// A file activation was queued in the editor.
+    Activated {
+        /// Activated contained path.
+        path: WorktreeRelativePath,
+        /// Whether visible state changed immediately.
+        update: WorktreeUpdate,
+    },
+    /// Host focus traversal reached the sidebar boundary.
+    HostFocusBoundary(Direction),
+    /// The sidebar is embedded and does not accept host-sidebar commands.
+    Embedded,
 }
 
 /// Maximum candidates in one facade command completion.
@@ -1631,6 +1869,7 @@ impl WorktreeEditorBuilder {
             runtime: Some(runtime),
             binding_mode: self.binding_mode,
             manifest: Arc::new(manifest),
+            presentation: self.presentation,
             #[cfg(test)]
             capabilities: self.capabilities,
         })
@@ -1672,6 +1911,7 @@ pub struct WorktreeEditor {
     runtime: Option<TokioRuntime>,
     binding_mode: WorktreeBindingMode,
     manifest: Arc<BindingManifest>,
+    presentation: WorktreePresentation,
     #[cfg(test)]
     capabilities: WorktreeCapabilities,
 }
@@ -1746,6 +1986,85 @@ impl WorktreeEditor {
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
         convert_redraw(self.inner_mut().open_file(path))
     }
+    /// Returns a bounded semantic snapshot for a host-owned file sidebar.
+    ///
+    /// This copies loaded tree state only. Directory and Git reads continue
+    /// through [`Self::dispatch`], [`Self::ready`], and [`Self::apply`].
+    ///
+    /// ```
+    /// use kvim_embed::{SurfaceOwnership, WorktreeEditor, WorktreePresentation};
+    /// use ratatui::layout::Rect;
+    ///
+    /// let root = std::env::temp_dir().join("kvim-sidebar-snapshot-example");
+    /// std::fs::create_dir_all(&root)?;
+    /// let presentation = WorktreePresentation::standalone()
+    ///     .file_sidebar(SurfaceOwnership::HostOwned);
+    /// let editor = WorktreeEditor::builder(&root, Rect::new(0, 0, 40, 6))
+    ///     .presentation(presentation)
+    ///     .open()?;
+    /// let snapshot = editor.file_sidebar_snapshot().expect("the host owns the sidebar");
+    /// assert_eq!(snapshot.instance(), editor.instance());
+    /// # std::fs::remove_dir_all(root)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    #[must_use]
+    pub fn file_sidebar_snapshot(&self) -> Option<FileSidebarSnapshot> {
+        if self.presentation.file_sidebar_ownership() == SurfaceOwnership::Embedded {
+            return None;
+        }
+        let rows = self.inner().file_rows();
+        debug_assert!(
+            rows.len() <= FILE_SIDEBAR_ROWS_MAX,
+            "the private tree enforces the published sidebar row bound"
+        );
+        Some(FileSidebarSnapshot {
+            instance: self.instance,
+            root_label: self.inner().file_root_label(),
+            rows: rows.into_iter().map(convert_file_sidebar_row).collect(),
+        })
+    }
+
+    /// Applies one semantic command to a host-owned file sidebar.
+    ///
+    /// Expansion and refresh only queue work. Activation queues the selected
+    /// file open, so kvim retains file-activation ownership.
+    #[must_use]
+    pub fn file_sidebar_command(&mut self, command: FileSidebarCommand) -> FileSidebarOutcome {
+        if self.presentation.file_sidebar_ownership() == SurfaceOwnership::Embedded {
+            return FileSidebarOutcome::Embedded;
+        }
+        if let FileSidebarCommand::FocusBoundary(direction) = command {
+            return FileSidebarOutcome::HostFocusBoundary(direction);
+        }
+        let input = match command {
+            FileSidebarCommand::MoveUp => TuiFileSidebarInput::Move(TuiListMotion::Up(1)),
+            FileSidebarCommand::MoveDown => TuiFileSidebarInput::Move(TuiListMotion::Down(1)),
+            FileSidebarCommand::MoveFirst => TuiFileSidebarInput::Move(TuiListMotion::ToRow(0)),
+            FileSidebarCommand::MoveLast => TuiFileSidebarInput::Move(TuiListMotion::LastRow),
+            FileSidebarCommand::MoveParent => TuiFileSidebarInput::Move(TuiListMotion::Parent),
+            FileSidebarCommand::Expand => TuiFileSidebarInput::Open,
+            FileSidebarCommand::Collapse => TuiFileSidebarInput::Close,
+            FileSidebarCommand::Activate => TuiFileSidebarInput::Activate,
+            FileSidebarCommand::Refresh => TuiFileSidebarInput::Refresh,
+            FileSidebarCommand::FocusBoundary(_) => unreachable!("focus commands return above"),
+        };
+        let before = self.inner().file_rows();
+        match self.inner_mut().file_sidebar(input) {
+            TuiFileSidebarOutcome::Applied => {
+                let update = if self.inner().file_rows() == before {
+                    WorktreeUpdate::Unchanged
+                } else {
+                    WorktreeUpdate::Redraw
+                };
+                FileSidebarOutcome::Applied(update)
+            }
+            TuiFileSidebarOutcome::Activated { path } => {
+                let update = convert_redraw(self.inner_mut().open_file(path.clone()));
+                FileSidebarOutcome::Activated { path, update }
+            }
+        }
+    }
+
     /// Applies one normalized host input.
     ///
     /// Host-resolved editors reject keys, paste, and unsupported raw input
@@ -2373,6 +2692,70 @@ impl Drop for WorktreeEditor {
             .take()
             .expect("a live editor owns its executor")
             .shutdown_background();
+    }
+}
+
+fn convert_file_sidebar_row(row: TuiFileRow) -> FileSidebarRow {
+    let id = FileSidebarRowId(match row.identity() {
+        TuiFileRowIdentity::Entry(path) => FileSidebarRowIdentity::Entry(path.clone()),
+        TuiFileRowIdentity::Notice { parent, kind } => FileSidebarRowIdentity::Notice {
+            parent: parent.clone(),
+            kind: match kind {
+                TuiFileRowNoticeKind::Truncated => FileSidebarNoticeKind::Truncated,
+                TuiFileRowNoticeKind::Unreadable => FileSidebarNoticeKind::Unreadable,
+                TuiFileRowNoticeKind::Hidden => FileSidebarNoticeKind::Hidden,
+            },
+        },
+    });
+    let kind = match row.kind() {
+        TuiFileRowKind::File => FileSidebarRowKind::File,
+        TuiFileRowKind::ClosedDirectory => FileSidebarRowKind::DirectoryCollapsed,
+        TuiFileRowKind::OpenDirectory => FileSidebarRowKind::DirectoryExpanded,
+        TuiFileRowKind::LoadingDirectory => FileSidebarRowKind::DirectoryLoading,
+        TuiFileRowKind::Note => FileSidebarRowKind::Notice,
+    };
+    let git = row.git().map(|git| match git {
+        TuiFileRowGit::Ignored => FileSidebarGitState::Ignored,
+        TuiFileRowGit::Untracked => FileSidebarGitState::Untracked,
+        TuiFileRowGit::Staged => FileSidebarGitState::Staged,
+        TuiFileRowGit::Modified => FileSidebarGitState::Modified,
+        TuiFileRowGit::StagedAndModified => FileSidebarGitState::StagedAndModified,
+        TuiFileRowGit::Conflicted => FileSidebarGitState::Conflicted,
+    });
+    let icon = row.icon_role().map(|icon| match icon {
+        TuiIconRole::Directory => FileSidebarIconRole::Directory,
+        TuiIconRole::Code => FileSidebarIconRole::Code,
+        TuiIconRole::Configuration => FileSidebarIconRole::Configuration,
+        TuiIconRole::Document => FileSidebarIconRole::Document,
+        TuiIconRole::Script => FileSidebarIconRole::Script,
+        TuiIconRole::VersionControl => FileSidebarIconRole::VersionControl,
+        TuiIconRole::Generated => FileSidebarIconRole::Generated,
+        TuiIconRole::Media => FileSidebarIconRole::Media,
+        TuiIconRole::Unknown => FileSidebarIconRole::Unknown,
+        TuiIconRole::CommandSearch
+        | TuiIconRole::CommandCode
+        | TuiIconRole::CommandWindow
+        | TuiIconRole::CommandBuffer
+        | TuiIconRole::CommandTree
+        | TuiIconRole::CommandReview
+        | TuiIconRole::CommandOther => {
+            unreachable!("file-tree rows cannot carry command icon roles")
+        }
+    });
+    FileSidebarRow {
+        id,
+        label: row.label().to_owned(),
+        path: row.path().cloned(),
+        depth: row.depth(),
+        kind,
+        selected: row.is_selected(),
+        git,
+        symlink: if row.is_symlink() {
+            FileSidebarSymlinkState::Symlink
+        } else {
+            FileSidebarSymlinkState::Direct
+        },
+        icon,
     }
 }
 

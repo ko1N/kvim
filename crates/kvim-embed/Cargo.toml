@@ -6,6 +6,10 @@ rust-version.workspace = true
 version.workspace = true
 
 [[example]]
+name = "host_sidebar"
+required-features = ["worktree"]
+
+[[example]]
 name = "merged_leader"
 required-features = ["worktree"]
 

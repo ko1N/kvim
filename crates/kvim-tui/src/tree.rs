@@ -25,8 +25,8 @@ use ratatui::style::Style;
 
 use kvim_editor::{SearchDirection, Viewport};
 use kvim_path::{
-    WORKTREE_PATH_COMPONENTS_MAX, WorktreeDirectoryPath, WorktreeRelativePath,
-    WorktreeRelativePathError, WorktreeRoot,
+    WORKTREE_PATH_BYTES_MAX, WORKTREE_PATH_COMPONENTS_MAX, WorktreeDirectoryPath,
+    WorktreeRelativePath, WorktreeRelativePathError, WorktreeRoot,
 };
 use kvim_runtime::{WatchBatch, WatchFidelity};
 use kvim_settings::FileTreeIcons;
@@ -43,8 +43,9 @@ use kvim_workspace::{
 
 use super::buffer_view::RegionFocus;
 use super::file_sidebar::{
-    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowKind, FileSidebarInput, FileSidebarOutcome,
-    LabelMatch, draw_file_row, draw_git_mark, label_offset_cells,
+    FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowIdentity, FileRowKind, FileRowNoticeKind,
+    FileSidebarInput, FileSidebarOutcome, LabelMatch, draw_file_row, draw_git_mark,
+    label_offset_cells,
 };
 use super::icons::{directory_icon, row_icon};
 use super::theme::{Theme, ThemeRole};
@@ -61,6 +62,15 @@ pub(super) const TREE_TITLE_ROWS: u16 = 1;
 /// within 255 UTF-8 bytes therefore stays within the macOS limit too. The
 /// unit is bytes, because that unit matches what both filesystems enforce.
 pub(super) const TREE_NAME_BYTES_MAX: usize = 255;
+
+/// The largest number of bytes allocated for the published root label.
+///
+/// Lossy conversion can encode each validated path byte as one three-byte
+/// replacement character. The optional home abbreviation adds two bytes.
+pub const FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX: usize = WORKTREE_PATH_BYTES_MAX * 3 + 2;
+
+/// The largest published row depth.
+pub const FILE_SIDEBAR_DEPTH_MAX: u16 = WORKTREE_PATH_COMPONENTS_MAX as u16;
 
 /// The marker of one expanded directory row, while the tree hides its icons.
 pub(super) const EXPANDED_MARKER: &str = "▾ ";
@@ -998,8 +1008,36 @@ impl TreeSidebar {
             len: matched.len,
         });
         let state = RowState::of(row, self.held_mode(&row.path), git);
+        let contained_path = row
+            .is_selectable()
+            .then(|| self.contained(&row.path))
+            .flatten();
+        let identity = match &row.content {
+            RowContent::File { .. } | RowContent::Directory { .. } => {
+                let Some(path) = contained_path.clone() else {
+                    debug_assert!(false, "selectable tree rows are confined to the worktree");
+                    return None;
+                };
+                FileRowIdentity::Entry(path)
+            }
+            RowContent::Notice(notice) => FileRowIdentity::Notice {
+                parent: row
+                    .path
+                    .strip_prefix(self.root.as_path())
+                    .ok()
+                    .filter(|path| !path.as_os_str().is_empty())
+                    .and_then(|path| WorktreeRelativePath::new(path).ok()),
+                kind: match notice {
+                    Notice::Truncated { .. } => FileRowNoticeKind::Truncated,
+                    Notice::Unreadable => FileRowNoticeKind::Unreadable,
+                    Notice::Hidden { .. } => FileRowNoticeKind::Hidden,
+                },
+            },
+        };
         Some(
             FileRow::new(
+                identity,
+                contained_path,
                 label,
                 guides,
                 row.depth,
@@ -1038,6 +1076,10 @@ impl TreeSidebar {
             FileSidebarInput::Open => self.expand_selected(),
             FileSidebarInput::Close => {
                 self.collapse_selected();
+                None
+            }
+            FileSidebarInput::Refresh => {
+                self.refresh_all();
                 None
             }
             FileSidebarInput::Activate => self.open_selected(),
@@ -1273,14 +1315,19 @@ fn entry_name(path: &Path) -> String {
 /// the reference editor configuration do. A root outside the home directory,
 /// and a session without one, keep the complete path.
 pub(super) fn root_label(root: &Path, home: Option<&Path>) -> String {
-    let Some(home) = home else {
-        return root.display().to_string();
+    let label = match home {
+        None => root.to_string_lossy().into_owned(),
+        Some(home) => match root.strip_prefix(home) {
+            Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
+            Ok(rest) => format!("~/{}", rest.to_string_lossy()),
+            Err(_) => root.to_string_lossy().into_owned(),
+        },
     };
-    match root.strip_prefix(home) {
-        Ok(rest) if rest.as_os_str().is_empty() => "~".to_owned(),
-        Ok(rest) => format!("~/{}", rest.display()),
-        Err(_) => root.display().to_string(),
-    }
+    debug_assert!(
+        label.len() <= FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX,
+        "the validated worktree path bounds its lossy root label allocation"
+    );
+    label
 }
 
 /// Returns what one tree row shows to an embedded host.
@@ -1377,7 +1424,7 @@ pub(super) fn render_tree(
             return;
         };
         if row.is_selected() {
-            cursor = Some(selected_cell(canvas.area(), row.depth()));
+            cursor = Some(selected_cell(canvas.area(), usize::from(row.depth())));
         }
         draw_file_row(canvas, &row, theme, icons, focus);
     });

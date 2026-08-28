@@ -229,6 +229,31 @@ pub(super) struct LabelMatch {
     pub(super) len: usize,
 }
 
+/// Stable semantic identity of one file-sidebar notice row.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileRowNoticeKind {
+    /// A directory listing exceeded its entry bound.
+    Truncated,
+    /// A directory listing failed.
+    Unreadable,
+    /// Hidden entries were omitted.
+    Hidden,
+}
+
+/// Stable semantic identity of one file-sidebar row.
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum FileRowIdentity {
+    /// A contained file or directory.
+    Entry(WorktreeRelativePath),
+    /// A notice attached to the root or one contained directory.
+    Notice {
+        /// The contained parent, or `None` for the worktree root.
+        parent: Option<WorktreeRelativePath>,
+        /// The semantic notice kind.
+        kind: FileRowNoticeKind,
+    },
+}
+
 /// One drawable row of the file sidebar of one embedded editor.
 ///
 /// The row holds the text, the indent guides, the depth, the state, the
@@ -247,6 +272,8 @@ pub(super) struct LabelMatch {
 /// exactly as they are published. See `docs/windows.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileRow {
+    identity: FileRowIdentity,
+    path: Option<WorktreeRelativePath>,
     label: String,
     guides: String,
     depth: usize,
@@ -268,6 +295,8 @@ impl FileRow {
     /// [`FileRow::with_matched`] set them, because they are independent facts
     /// that a caller sets or leaves absent one at a time.
     pub(super) fn new(
+        identity: FileRowIdentity,
+        path: Option<WorktreeRelativePath>,
         label: String,
         guides: String,
         depth: usize,
@@ -288,6 +317,8 @@ impl FileRow {
             label
         };
         Self {
+            identity,
+            path,
             label,
             guides,
             depth,
@@ -334,6 +365,20 @@ impl FileRow {
         self
     }
 
+    /// Returns the stable identity of this row within one editor lifetime.
+    #[inline]
+    #[must_use]
+    pub const fn identity(&self) -> &FileRowIdentity {
+        &self.identity
+    }
+
+    /// Returns the contained entry path, or `None` for a notice row.
+    #[inline]
+    #[must_use]
+    pub const fn path(&self) -> Option<&WorktreeRelativePath> {
+        self.path.as_ref()
+    }
+
     /// Returns the text of the row.
     ///
     /// An entry row carries the entry name. A [`FileRowKind::Note`] row carries
@@ -358,8 +403,12 @@ impl FileRow {
     /// Returns the number of directories between the worktree root and the row.
     #[inline]
     #[must_use]
-    pub const fn depth(&self) -> usize {
-        self.depth
+    pub const fn depth(&self) -> u16 {
+        debug_assert!(
+            self.depth <= kvim_path::WORKTREE_PATH_COMPONENTS_MAX,
+            "validated worktree paths bound every published row depth"
+        );
+        self.depth as u16
     }
 
     /// Returns what the row shows.
@@ -794,6 +843,8 @@ pub enum FileSidebarInput {
     /// Two of these inputs therefore take a file to its directory and then
     /// close that directory. `h` reaches this rule in kvim.
     Close,
+    /// Refresh all expanded directories and recorded Git state.
+    Refresh,
     /// Activate the selected file, or open and close the selected directory.
     ///
     /// `Enter` reaches this rule in kvim.

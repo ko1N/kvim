@@ -227,6 +227,28 @@ region. Kvim therefore writes no blank placeholder cells for host-owned
 surfaces. Embedded ownership keeps the existing chrome, sidebar, cursor,
 viewport, and which-key behavior.
 
+`WorktreeEditor::file_sidebar_snapshot` returns `None` for embedded ownership.
+When the host owns the sidebar, it publishes at most
+`FILE_SIDEBAR_ROWS_MAX` facade-owned rows. Each row carries a stable semantic
+identity derived from its validated contained path or its parent and notice
+kind. Labels, root labels, depth, paths, and the snapshot row list have
+published bounds. Rows also carry kind and expansion/loading state, selection,
+Git state, symbolic-link state, and semantic icon role. Notice rows carry no
+path. Snapshot reads copy loaded state only and perform no filesystem or Git
+work.
+
+`WorktreeEditor::file_sidebar_command` accepts bounded movement, expansion,
+collapse, refresh, activation, and focus-boundary commands. Directory and Git
+work continues through `dispatch`, `ready`, and `apply`, including existing
+request identity and obsolete-result rejection. Activation queues the selected
+contained file in the editor. Embedded sidebar ownership refuses this host
+command path and keeps existing rendering and input behavior.
+
+The host owns sidebar placement, width, visibility, and focus order. It can draw
+its own tree and kvim's snapshot as separate regions. Kvim accepts no host rows
+and performs no merge. `crates/kvim-embed/examples/host_sidebar.rs` demonstrates
+this two-tree composition.
+
 The status snapshot is now a supported publication, not a planned addition.
 `WorktreeEditor::status` returns a cheap borrowed `EditorStatusSnapshot` for one
 `WorktreeInstanceId`. It includes the editing mode, active contained path,
@@ -835,6 +857,7 @@ The required examples are:
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
 - `crates/kvim-lsp/examples/custom_lsp_transport.rs`
+- `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-embed/examples/merged_leader.rs`
 - `crates/kvim-embed/examples/unified_command_line.rs`

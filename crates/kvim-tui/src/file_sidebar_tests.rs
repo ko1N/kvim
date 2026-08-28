@@ -8,6 +8,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 use ratatui::style::Color;
@@ -379,6 +380,8 @@ fn one_sidebar_input_latches_the_redraw_request_of_the_host() {
 fn a_label_longer_than_the_bound_reaches_the_host_clipped() {
     let name = "n".repeat(FILE_SIDEBAR_LABEL_CHARS_MAX + 8);
     let row = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new("long").unwrap()),
+        WorktreeRelativePath::new("long").ok(),
         name,
         SIDEBAR_GUIDE_BLANK.to_owned(),
         0,
@@ -392,6 +395,8 @@ fn a_label_longer_than_the_bound_reaches_the_host_clipped() {
 #[test]
 fn clipped_row_text_fades_before_the_fixed_git_mark() {
     let row = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new("a-very-long-name.rs").unwrap()),
+        WorktreeRelativePath::new("a-very-long-name.rs").ok(),
         "a-very-long-name.rs".to_owned(),
         SIDEBAR_GUIDE_BLANK.to_owned(),
         0,
@@ -424,6 +429,8 @@ fn clipped_row_text_fades_before_the_fixed_git_mark() {
 #[test]
 fn clipped_wide_text_fades_both_cells_without_moving_the_git_mark() {
     let row = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new("ab漢tail").unwrap()),
+        WorktreeRelativePath::new("ab漢tail").ok(),
         "ab漢tail".to_owned(),
         SIDEBAR_GUIDE_BLANK.to_owned(),
         0,
@@ -446,6 +453,8 @@ fn clipped_wide_text_fades_both_cells_without_moving_the_git_mark() {
 #[test]
 fn short_row_text_keeps_its_style_and_a_selected_fade_keeps_its_background() {
     let plain = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new("short.rs").unwrap()),
+        WorktreeRelativePath::new("short.rs").ok(),
         "short.rs".to_owned(),
         SIDEBAR_GUIDE_BLANK.to_owned(),
         0,
@@ -461,6 +470,8 @@ fn short_row_text_keeps_its_style_and_a_selected_fade_keeps_its_background() {
     );
 
     let selected = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new("a-very-long-name.rs").unwrap()),
+        WorktreeRelativePath::new("a-very-long-name.rs").ok(),
         "a-very-long-name.rs".to_owned(),
         SIDEBAR_GUIDE_BLANK.to_owned(),
         0,
@@ -499,10 +510,52 @@ fn a_note_row_reports_its_directory_and_takes_no_selection() {
     assert_eq!(note.git(), None);
     assert!(!note.is_symlink());
     assert_eq!(note.icon_role(), None);
+    assert_eq!(
+        note.identity(),
+        &FileRowIdentity::Notice {
+            parent: None,
+            kind: FileRowNoticeKind::Hidden,
+        }
+    );
 
     // The last row is the note, so the move stops on the entry above it.
     let _outcome = session.reduce_file_sidebar(FileSidebarInput::Move(ListMotion::LastRow));
     assert!(row_of(&session, "kept.rs").is_selected());
+}
+
+#[test]
+fn refresh_queues_each_expanded_directory_and_one_git_read() {
+    let directory = workspace("file-sidebar-refresh");
+    let mut session = editor(&directory.path);
+    read_directories(&mut session);
+    let _opening_git = session.take_git_request();
+
+    select(&mut session, "src");
+    let _ = session.reduce_file_sidebar(FileSidebarInput::Open);
+    read_directories(&mut session);
+    assert!(session.take_workspace_request().is_none());
+
+    let _ = session.reduce_file_sidebar(FileSidebarInput::Refresh);
+    let mut refreshed = Vec::new();
+    for _ in 0..READS_MAX {
+        let Some(request) = session.take_workspace_request() else {
+            break;
+        };
+        let WorkspaceRequest::ReadDirectory { path, .. } = &request else {
+            panic!("refresh queues directory reads alone");
+        };
+        refreshed.push(path.clone());
+        let _ = session.apply_workspace_result(request.run());
+    }
+    assert_eq!(
+        refreshed,
+        vec![
+            WorktreeDirectoryPath::Root,
+            WorktreeDirectoryPath::Relative(WorktreeRelativePath::new("src").unwrap()),
+        ]
+    );
+    assert!(session.take_git_request().is_some());
+    assert!(session.take_git_request().is_none());
 }
 
 #[test]

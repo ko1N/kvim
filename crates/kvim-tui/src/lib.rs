@@ -98,12 +98,17 @@ pub mod __private {
         EditorInstanceId, EditorOpenError, EditorPresentation, EditorShutdown, EmbeddedEditor,
         GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal,
     };
-    pub use crate::file_sidebar::{FileSidebarInput, FileSidebarOutcome};
+    pub use crate::file_sidebar::{
+        FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowIdentity,
+        FileRowKind, FileRowNoticeKind, FileSidebarInput, FileSidebarOutcome,
+    };
     pub use crate::session::{
         EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, Redraw, RunState, Session,
     };
-    pub use crate::theme::Theme;
-    pub use crate::tree::GENERATED_NAMES;
+    pub use crate::theme::IconRole;
+    pub use crate::tree::{
+        FILE_SIDEBAR_DEPTH_MAX, FILE_SIDEBAR_ROOT_LABEL_BYTES_MAX, GENERATED_NAMES,
+    };
     pub use crate::{Direction, ListMotion, RegionFocus, draw_file_row};
     pub use kvim_terminal::TerminalEvent;
 }

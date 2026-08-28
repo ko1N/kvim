@@ -167,6 +167,132 @@ fn every_presentation_combination_opens_and_writes_only_the_accepted_rectangle()
 }
 
 #[test]
+fn host_owned_sidebar_publishes_stable_bounded_rows_and_semantic_commands() {
+    let root = TestRoot::new("host-sidebar-state");
+    fs::create_dir_all(root.0.join("src")).unwrap();
+    fs::write(root.0.join("src/main.rs"), "fn main() {}\n").unwrap();
+    fs::write(root.0.join("README.md"), "read me\n").unwrap();
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 80, 8))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            if editor
+                .file_sidebar_snapshot()
+                .is_some_and(|snapshot| !snapshot.rows().is_empty())
+            {
+                break;
+            }
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+        }
+    });
+
+    let first = editor.file_sidebar_snapshot().unwrap();
+    assert_eq!(first.instance(), editor.instance());
+    assert!(first.rows().len() <= FILE_SIDEBAR_ROWS_MAX);
+    let readme = first
+        .rows()
+        .iter()
+        .find(|row| row.label() == "README.md")
+        .unwrap();
+    assert_eq!(readme.path().unwrap().as_path(), Path::new("README.md"));
+    assert_eq!(readme.kind(), FileSidebarRowKind::File);
+    assert_eq!(readme.icon(), Some(FileSidebarIconRole::Document));
+    let readme_id = readme.id().clone();
+    let ids = first
+        .rows()
+        .iter()
+        .map(|row| row.id())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(ids.len(), first.rows().len());
+    fs::write(
+        root.0.join("0-new-sibling.rs"),
+        "pub const NEW: bool = true;\n",
+    )
+    .unwrap();
+
+    assert_eq!(
+        editor.file_sidebar_command(FileSidebarCommand::Refresh),
+        FileSidebarOutcome::Applied(WorktreeUpdate::Unchanged)
+    );
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+            if editor
+                .file_sidebar_snapshot()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|row| row.id() == &readme_id)
+            {
+                break;
+            }
+        }
+    });
+    let refreshed = editor.file_sidebar_snapshot().unwrap();
+    assert!(refreshed.rows().iter().any(|row| row.id() == &readme_id));
+
+    assert_eq!(
+        editor.file_sidebar_command(FileSidebarCommand::FocusBoundary(Direction::Left)),
+        FileSidebarOutcome::HostFocusBoundary(Direction::Left)
+    );
+    let embedded_root = TestRoot::new("embedded-sidebar-input");
+    let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
+        .open()
+        .unwrap();
+    assert!(embedded.file_sidebar_snapshot().is_none());
+    assert_eq!(
+        embedded.file_sidebar_command(FileSidebarCommand::MoveDown),
+        FileSidebarOutcome::Embedded
+    );
+}
+
+#[test]
+fn host_owned_sidebar_activation_opens_the_selected_file() {
+    let root = TestRoot::new("host-sidebar-activation");
+    fs::write(root.0.join("only.rs"), "pub fn only() {}\n").unwrap();
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            if editor
+                .file_sidebar_snapshot()
+                .is_some_and(|snapshot| !snapshot.rows().is_empty())
+            {
+                break;
+            }
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+        }
+    });
+    assert_eq!(
+        editor.file_sidebar_command(FileSidebarCommand::Activate),
+        FileSidebarOutcome::Activated {
+            path: WorktreeRelativePath::new("only.rs").unwrap(),
+            update: WorktreeUpdate::Redraw,
+        }
+    );
+}
+
+#[test]
 fn host_owned_sidebar_allocates_no_columns_and_embedded_sidebar_keeps_its_geometry() {
     let root = TestRoot::new("presentation-sidebar");
     let area = Rect::new(0, 0, 80, 8);
