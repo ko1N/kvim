@@ -252,7 +252,7 @@ struct RecoveryCheckpoints {
 
 /// The complete address of one recovery choice.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct RecoveryIdentity {
+pub struct RecoveryIdentity {
     instance: EditorInstanceId,
     buffer: BufferId,
     target: FileTarget,
@@ -264,17 +264,23 @@ pub(super) struct RecoveryIdentity {
 
 /// A user's decision for one validated recovery candidate.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RecoveryDecision {
+pub enum RecoveryDecision {
+    /// Apply the recovered text.
     Restore,
+    /// Keep disk text and delete the record.
     Discard,
+    /// Keep disk text and the record.
     Defer,
 }
 
 /// Why one addressed recovery decision changed no state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RecoveryDecisionError {
+pub enum RecoveryDecisionError {
+    /// The decision belongs to another editor.
     WrongInstance,
+    /// The complete candidate address no longer matches.
     Stale,
+    /// Changed disk content prevents restoration.
     RestoreForbidden,
 }
 
@@ -283,12 +289,34 @@ struct PendingRecovery {
     identity: RecoveryIdentity,
     record: RecoveryRecord,
     state: RecoveryCandidateState,
+    event_pending: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum RecoveryCandidateState {
     Current,
     Stale,
+}
+
+/// Whether the recovery baseline matches the opened file.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecoveryStatus {
+    /// The baseline matches.
+    Current,
+    /// The file changed or disappeared.
+    Stale,
+}
+
+impl RecoveryIdentity {
+    /// Returns the editor that owns the candidate.
+    pub const fn instance(&self) -> EditorInstanceId {
+        self.instance
+    }
+
+    /// Returns the bounded contained target path.
+    pub const fn path(&self) -> &WorktreeRelativePath {
+        self.target.relative_path()
+    }
 }
 
 /// The outcome of one analysis that the bounded worker service refused.
@@ -1868,7 +1896,10 @@ impl Session {
     /// ```
     #[must_use]
     pub fn take_event(&mut self) -> Option<PublishedEvent> {
-        self.events.take()
+        self.publish_pending_recovery_events();
+        let event = self.events.take();
+        self.publish_pending_recovery_events();
+        event
     }
 
     /// Returns the terminal rectangle that the session renders into.
@@ -6702,12 +6733,18 @@ impl Session {
             opened_revision: file.text().revision(),
             recovery_revision: record.revision(),
         };
+        let status = match state {
+            RecoveryCandidateState::Current => RecoveryStatus::Current,
+            RecoveryCandidateState::Stale => RecoveryStatus::Stale,
+        };
+        let event_pending = self.events.note_recovery(identity.clone(), status).is_err();
         self.recovery.pending.insert(
             buffer,
             PendingRecovery {
                 identity,
                 record,
                 state,
+                event_pending,
             },
         );
         match state {
@@ -6723,6 +6760,29 @@ impl Session {
         true
     }
 
+    fn publish_pending_recovery_events(&mut self) {
+        for pending in self
+            .recovery
+            .pending
+            .values_mut()
+            .filter(|pending| pending.event_pending)
+        {
+            let status = match pending.state {
+                RecoveryCandidateState::Current => RecoveryStatus::Current,
+                RecoveryCandidateState::Stale => RecoveryStatus::Stale,
+            };
+            if self
+                .events
+                .note_recovery(pending.identity.clone(), status)
+                .is_err()
+            {
+                return;
+            }
+            pending.event_pending = false;
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn pending_recovery(&self) -> Option<RecoveryIdentity> {
         self.recovery
             .pending
@@ -6765,7 +6825,7 @@ impl Session {
             .pending
             .remove(&identity.buffer)
             .expect("the complete identity gate found the pending candidate");
-        match decision {
+        let outcome = match decision {
             RecoveryDecision::Restore => self.restore_recovery(pending),
             RecoveryDecision::Discard => {
                 self.queue_recovery_delete(identity.buffer, &pending);
@@ -6776,7 +6836,11 @@ impl Session {
                 self.set_message("recovered edits were deferred", MessageLevel::Info);
                 Ok(Redraw::Needed)
             }
+        };
+        if outcome == Ok(Redraw::Needed) {
+            self.events.request_redraw();
         }
+        outcome
     }
 
     fn restore_recovery(

@@ -46,12 +46,15 @@ use kvim_runtime::{EventReceiver, FileWatcher, Runtime, RuntimeLimits};
 use kvim_settings::{EditorSettings, SettingsError};
 use kvim_terminal::TerminalEvent;
 use kvim_ui::Direction;
-use kvim_workspace::FileOperation;
+use kvim_workspace::{BUFFERS_MAX, FileOperation};
 
 use super::clipboard::ClipboardAccess;
 use super::driver::{Completed, DriverApplyError, EditorDriver, EditorWork, ShutdownDrain};
 use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
-use super::session::{Redraw, RunState, Session};
+use super::session::{
+    RecoveryDecision, RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState,
+    Session,
+};
 
 /// The largest number of editor facts that one instance queues at a time.
 ///
@@ -317,6 +320,13 @@ pub enum EditorEvent {
         /// The operation whose affected paths need reconciliation.
         operation: FileOperation,
     },
+    /// A validated crash-recovery candidate needs a host decision.
+    RecoveryCandidate {
+        /// Complete private address of the candidate.
+        identity: RecoveryIdentity,
+        /// Whether the saved-file baseline still matches.
+        status: RecoveryStatus,
+    },
     /// The reader activated one file of the file sidebar.
     ///
     /// The editor opened no buffer. The fact reaches the host through the
@@ -375,6 +385,11 @@ pub(super) struct EditorOutbox {
     queued: VecDeque<EditorEvent>,
     /// The number of slots that running durable operations hold.
     reserved: usize,
+    /// Recovery candidates that the host has not read yet.
+    ///
+    /// One loaded buffer can publish at most one candidate. The buffer bound
+    /// therefore also bounds this queue without competing with durable events.
+    recovery: VecDeque<(RecoveryIdentity, RecoveryStatus)>,
     /// Reports whether the host still owes one frame.
     redraw: bool,
     /// The active file that the host has not read yet.
@@ -391,6 +406,7 @@ impl EditorOutbox {
             instance,
             queued: VecDeque::new(),
             reserved: 0,
+            recovery: VecDeque::new(),
             redraw: false,
             active_file: None,
         }
@@ -473,6 +489,22 @@ impl EditorOutbox {
         self.active_file = Some(path);
     }
 
+    /// Queues one validated recovery candidate when bounded capacity remains.
+    ///
+    /// A full queue returns the candidate unchanged. The session retains it
+    /// until a host read makes capacity available.
+    pub(super) fn note_recovery(
+        &mut self,
+        identity: RecoveryIdentity,
+        status: RecoveryStatus,
+    ) -> Result<(), (RecoveryIdentity, RecoveryStatus)> {
+        if self.recovery.len() >= BUFFERS_MAX {
+            return Err((identity, status));
+        }
+        self.recovery.push_back((identity, status));
+        Ok(())
+    }
+
     /// Takes the next event of this instance.
     ///
     /// The mandatory facts leave first, in the order that they committed. The
@@ -481,13 +513,16 @@ impl EditorOutbox {
     pub(super) fn take(&mut self) -> Option<PublishedEvent> {
         let event = match self.queued.pop_front() {
             Some(event) => event,
-            None => match self.active_file.take() {
-                Some(path) => EditorEvent::ActiveFileChanged { path },
-                None if self.redraw => {
-                    self.redraw = false;
-                    EditorEvent::RedrawRequested
-                }
-                None => return None,
+            None => match self.recovery.pop_front() {
+                Some((identity, status)) => EditorEvent::RecoveryCandidate { identity, status },
+                None => match self.active_file.take() {
+                    Some(path) => EditorEvent::ActiveFileChanged { path },
+                    None if self.redraw => {
+                        self.redraw = false;
+                        EditorEvent::RedrawRequested
+                    }
+                    None => return None,
+                },
             },
         };
         Some(PublishedEvent {
@@ -623,10 +658,9 @@ pub(super) fn fits(area: Rect, buffer: Rect) -> bool {
 
 /// The largest number of events that one complete drain returns.
 ///
-/// The bounded queue holds every mandatory fact, and the two coalesced latches
-/// sit beside it, so this bound covers every event that one editor can still
-/// hold.
-const DRAINED_EVENTS_MAX: usize = EDITOR_EVENTS_MAX + 2;
+/// The bounded mandatory queue and bounded recovery queue hold full events.
+/// The two coalesced latches sit beside them.
+const DRAINED_EVENTS_MAX: usize = EDITOR_EVENTS_MAX + BUFFERS_MAX + 2;
 
 /// Takes every event that one editor still holds.
 ///
@@ -641,7 +675,7 @@ fn drain_published(editor: &mut Session) -> Vec<PublishedEvent> {
     }
     debug_assert!(
         false,
-        "the bounded outbox and its two latches hold at most DRAINED_EVENTS_MAX events"
+        "the bounded queues and two latches hold at most DRAINED_EVENTS_MAX events"
     );
     events
 }
@@ -1107,6 +1141,17 @@ impl EmbeddedEditor {
     /// [`EmbeddedEditor::dispatch`] hands to the spawner.
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> Redraw {
         self.editor.open(path)
+    }
+
+    /// Resolves one addressed recovery candidate.
+    #[must_use]
+    pub fn decide_recovery(
+        &mut self,
+        identity: &RecoveryIdentity,
+        decision: RecoveryDecision,
+    ) -> Result<Redraw, RecoveryDecisionError> {
+        let redraw = self.editor.decide_recovery(identity, decision)?;
+        Ok(redraw.or(self.dispatch()))
     }
 
     /// Returns the file-sidebar rows that the host draws beside this editor.

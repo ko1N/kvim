@@ -1134,12 +1134,15 @@ fn status_reports_view_only_access_without_reserving_a_host_status_row() {
     assert_eq!(editor.region_areas()[0].1.height, 3);
 }
 
-async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent) -> bool) {
+async fn take_until(
+    editor: &mut WorktreeEditor,
+    wanted: impl Fn(&WorktreeEvent) -> bool,
+) -> WorktreeEvent {
     for _ in 0..TEST_STEPS_MAX {
         let _ = editor.dispatch();
         while let Some(event) = editor.take_event() {
             if wanted(&event) {
-                return;
+                return event;
             }
         }
         let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
@@ -1150,6 +1153,77 @@ async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent
             .expect("ready returns this editor's completion");
     }
     panic!("bounded lifecycle did not produce the expected event");
+}
+
+async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent) -> bool) {
+    drop(take_until(editor, wanted).await);
+}
+
+#[tokio::test]
+async fn recovery_event_is_bounded_addressed_and_rejects_wrong_or_stale_decisions() {
+    let root = TestRoot::new("recovery-facade");
+    let state = root.0.join("state");
+    fs::write(root.0.join("note.txt"), "disk\n").unwrap();
+    let path = WorktreeRelativePath::new("note.txt").unwrap();
+    let area = Rect::new(0, 0, 30, 6);
+
+    let mut writer = WorktreeEditor::builder(&root.0, area)
+        .recovery_state_directory(&state)
+        .open()
+        .unwrap();
+    writer.open_file(path.clone());
+    drive_until(&mut writer, |event| {
+        matches!(event, WorktreeEvent::ActiveFileChanged { path: Some(_) })
+    })
+    .await;
+    writer
+        .command(Command::InsertBeforeCursor, None, None, Duration::ZERO)
+        .unwrap();
+    writer.literal("recovered ", Duration::ZERO);
+    match writer.shutdown(Duration::from_secs(5)).await {
+        WorktreeShutdown::Finished { .. } => {}
+        WorktreeShutdown::Draining(drain) => drop(drain.complete().await),
+    }
+
+    let mut owner = WorktreeEditor::builder(&root.0, area)
+        .recovery_state_directory(&state)
+        .open()
+        .unwrap();
+    owner.open_file(path.clone());
+    let event = take_until(&mut owner, |event| {
+        matches!(event, WorktreeEvent::RecoveryCandidate { .. })
+    })
+    .await;
+    assert!(
+        size_of_val(&event) <= 256,
+        "the event carries no recovered text"
+    );
+    let WorktreeEvent::RecoveryCandidate {
+        id,
+        path: event_path,
+        status,
+    } = event
+    else {
+        unreachable!("the predicate selected a recovery event")
+    };
+    assert_eq!(event_path, path);
+    assert_eq!(status, WorktreeRecoveryStatus::Current);
+    assert_eq!(id.instance(), owner.instance());
+
+    let other_root = TestRoot::new("recovery-facade-other");
+    let mut other = WorktreeEditor::builder(&other_root.0, area).open().unwrap();
+    assert_eq!(
+        other.decide_recovery(&id, WorktreeRecoveryDecision::Discard),
+        Err(WorktreeRecoveryError::WrongInstance)
+    );
+    assert_eq!(
+        owner.decide_recovery(&id, WorktreeRecoveryDecision::Defer),
+        Ok(WorktreeRecoveryOutcome::Deferred)
+    );
+    assert_eq!(
+        owner.decide_recovery(&id, WorktreeRecoveryDecision::Restore),
+        Err(WorktreeRecoveryError::Stale)
+    );
 }
 
 #[tokio::test]

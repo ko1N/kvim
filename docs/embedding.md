@@ -699,6 +699,7 @@ statusline through a prompt, and a host reaches the same fact through
 - `WorkspaceChanged`,
 - `SaveReconciliationRequired`,
 - `WorkspaceReconciliationRequired`,
+- `RecoveryCandidate { id, path, status }`,
 - `FileActivated`,
 - `RedrawRequested`,
 - `FocusBoundary(Direction)`,
@@ -710,8 +711,21 @@ comment.
 
 `RedrawRequested` and `ActiveFileChanged` are coalesced latches. Each one
 reports current state instead of a history, so a burst consumes no queue slot
-and can never saturate the queue. The bounded queue therefore holds the
-mandatory facts of the durable operations alone.
+and can never saturate the queue. Recovery candidates use a separate queue
+bounded by the editor buffer limit. A candidate that finds that queue full
+stays pending and publishes after the host reads an event. Each candidate
+publishes once. The event exposes only its bounded contained path, neutral
+current-or-stale status, and opaque facade identity. It never exposes recovered
+text or an absolute filesystem path. The bounded mandatory queue therefore
+holds the facts of durable operations alone.
+
+A host resolves a recovery candidate through
+`WorktreeEditor::decide_recovery`. `Restore` is valid only for a current
+candidate. `Discard` and `Defer` remain valid for current and stale candidates.
+The facade returns typed wrong-instance, stale-identity, and restore-forbidden
+errors without consuming a valid candidate. An accepted decision requests a
+redraw. Restore queues its next checkpoint, and discard queues record cleanup,
+for the next bounded dispatch.
 
 Focus-boundary and close outcomes return from the synchronous input reduction
 that produced them. One reduction reports one outcome: applied, one host

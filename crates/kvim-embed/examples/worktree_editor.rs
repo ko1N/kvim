@@ -10,7 +10,10 @@ use std::error::Error;
 use std::fs;
 use std::time::Duration;
 
-use kvim_embed::{WorktreeEditor, WorktreeEvent, WorktreeShutdown};
+use kvim_embed::{
+    WorktreeEditor, WorktreeEvent, WorktreeRecoveryDecision, WorktreeRecoveryStatus,
+    WorktreeShutdown,
+};
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
 use ratatui::{buffer::Buffer, layout::Rect};
@@ -47,6 +50,22 @@ fn main() -> Result<(), Box<dyn Error>> {
             matches!(event, WorktreeEvent::FileWritten { .. })
         })
         .await?;
+
+        // A host can present crash recovery without receiving recovered text.
+        while let Some(event) = editor.take_event() {
+            if let WorktreeEvent::RecoveryCandidate {
+                id, path, status, ..
+            } = event
+            {
+                println!("recovery for {path:?}: {status:?}");
+                let decision = match status {
+                    WorktreeRecoveryStatus::Current | WorktreeRecoveryStatus::Stale => {
+                        WorktreeRecoveryDecision::Defer
+                    }
+                };
+                let _ = editor.decide_recovery(&id, decision)?;
+            }
+        }
         match editor.shutdown(Duration::from_secs(5)).await {
             WorktreeShutdown::Finished { events } => println!("shutdown events: {}", events.len()),
             WorktreeShutdown::Draining(drain) => {

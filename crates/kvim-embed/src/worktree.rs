@@ -29,9 +29,11 @@ use kvim_tui::__private::{
     FileSidebarInput as TuiFileSidebarInput, FileSidebarOutcome as TuiFileSidebarOutcome,
     GeometryError as TuiGeometryError, HostReportRequest as TuiHostReportRequest,
     HostWorkspace as TuiHostWorkspace, IconRole as TuiIconRole, InputRequest as TuiInputRequest,
-    ListMotion as TuiListMotion, PublishedEvent as TuiPublishedEvent, Redraw as TuiRedraw,
-    Reduction as TuiReduction, ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal,
-    RunState as TuiRunState, TerminalEvent as TuiTerminalEvent,
+    ListMotion as TuiListMotion, PublishedEvent as TuiPublishedEvent,
+    RecoveryDecision as TuiRecoveryDecision, RecoveryDecisionError as TuiRecoveryDecisionError,
+    RecoveryIdentity as TuiRecoveryIdentity, RecoveryStatus as TuiRecoveryStatus,
+    Redraw as TuiRedraw, Reduction as TuiReduction, ReductionOutcome as TuiReductionOutcome,
+    Refusal as TuiRefusal, RunState as TuiRunState, TerminalEvent as TuiTerminalEvent,
 };
 use kvim_ui::Direction;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode};
@@ -1381,6 +1383,78 @@ pub enum WorktreeCursorShape {
     Bar,
 }
 
+/// Facade-owned identity of one recovery candidate.
+///
+/// The identity is opaque and bounded. Route it back to the editor named by
+/// [`Self::instance`] when resolving the candidate.
+#[derive(Clone, Eq, PartialEq)]
+pub struct WorktreeRecoveryId {
+    instance: WorktreeInstanceId,
+    inner: TuiRecoveryIdentity,
+}
+
+impl WorktreeRecoveryId {
+    /// Returns the editor that published this candidate.
+    #[must_use]
+    pub const fn instance(&self) -> WorktreeInstanceId {
+        self.instance
+    }
+}
+
+impl fmt::Debug for WorktreeRecoveryId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("WorktreeRecoveryId")
+            .field("instance", &self.instance)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Whether a recovery candidate matches the file opened from disk.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeRecoveryStatus {
+    /// The baseline matches, so restore, discard, and defer are available.
+    Current,
+    /// The file changed or disappeared, so restore is not available.
+    Stale,
+}
+
+/// A host choice for one addressed recovery candidate.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeRecoveryDecision {
+    /// Apply recovered text as one undoable dirty edit.
+    Restore,
+    /// Keep disk text and delete the recovery record.
+    Discard,
+    /// Keep disk text and the recovery record.
+    Defer,
+}
+
+/// The result of an accepted recovery decision.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WorktreeRecoveryOutcome {
+    /// Recovered text replaced the opened disk text.
+    Restored,
+    /// Disk text remained and record deletion was queued.
+    Discarded,
+    /// Disk text and the record remained.
+    Deferred,
+}
+
+/// Why an addressed recovery decision changed no state.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorktreeRecoveryError {
+    /// The identity belongs to another editor.
+    #[error("the recovery candidate belongs to another editor")]
+    WrongInstance,
+    /// The candidate is no longer pending or its address is obsolete.
+    #[error("the recovery candidate is stale")]
+    Stale,
+    /// Changed disk content prevents restoration.
+    #[error("a stale recovery candidate cannot be restored")]
+    RestoreForbidden,
+}
+
 /// One facade-owned editor fact or host request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WorktreeEvent {
@@ -1408,6 +1482,15 @@ pub enum WorktreeEvent {
     WorkspaceReconciliationRequired {
         /// Operation requiring reconciliation.
         operation: WorkspaceOperation,
+    },
+    /// Crash recovery needs a host choice.
+    RecoveryCandidate {
+        /// Opaque address required to resolve this candidate.
+        id: WorktreeRecoveryId,
+        /// Bounded contained target path.
+        path: WorktreeRelativePath,
+        /// Neutral baseline status for host presentation.
+        status: WorktreeRecoveryStatus,
     },
     /// The sidebar activated a file.
     FileActivated {
@@ -2612,6 +2695,39 @@ impl WorktreeEditor {
     pub fn take_event(&mut self) -> Option<WorktreeEvent> {
         self.inner_mut().take_event().map(convert_published)
     }
+    /// Resolves one recovery event by its facade-owned address.
+    ///
+    /// A wrong editor or stale identity returns before visible state changes or
+    /// another candidate is consumed.
+    pub fn decide_recovery(
+        &mut self,
+        id: &WorktreeRecoveryId,
+        decision: WorktreeRecoveryDecision,
+    ) -> Result<WorktreeRecoveryOutcome, WorktreeRecoveryError> {
+        if id.instance != self.instance {
+            return Err(WorktreeRecoveryError::WrongInstance);
+        }
+        let decision = match decision {
+            WorktreeRecoveryDecision::Restore => TuiRecoveryDecision::Restore,
+            WorktreeRecoveryDecision::Discard => TuiRecoveryDecision::Discard,
+            WorktreeRecoveryDecision::Defer => TuiRecoveryDecision::Defer,
+        };
+        self.inner_mut()
+            .decide_recovery(&id.inner, decision)
+            .map_err(|error| match error {
+                TuiRecoveryDecisionError::WrongInstance => WorktreeRecoveryError::WrongInstance,
+                TuiRecoveryDecisionError::Stale => WorktreeRecoveryError::Stale,
+                TuiRecoveryDecisionError::RestoreForbidden => {
+                    WorktreeRecoveryError::RestoreForbidden
+                }
+            })?;
+        Ok(match decision {
+            TuiRecoveryDecision::Restore => WorktreeRecoveryOutcome::Restored,
+            TuiRecoveryDecision::Discard => WorktreeRecoveryOutcome::Discarded,
+            TuiRecoveryDecision::Defer => WorktreeRecoveryOutcome::Deferred,
+        })
+    }
+
     /// Submits all queued work to owned bounded execution capacity.
     pub fn dispatch(&mut self) -> WorktreeUpdate {
         let runtime = self
@@ -2847,6 +2963,7 @@ fn convert_reduction(reduction: TuiReduction) -> WorktreeInputOutcome {
     }
 }
 fn convert_published(published: TuiPublishedEvent) -> WorktreeEvent {
+    let instance = published.instance;
     match published.event {
         TuiEditorEvent::ActiveFileChanged { path } => WorktreeEvent::ActiveFileChanged { path },
         TuiEditorEvent::FileWritten { path } => WorktreeEvent::FileWritten { path },
@@ -2859,6 +2976,25 @@ fn convert_published(published: TuiPublishedEvent) -> WorktreeEvent {
         TuiEditorEvent::WorkspaceReconciliationRequired { operation } => {
             WorktreeEvent::WorkspaceReconciliationRequired {
                 operation: convert_workspace_operation(operation),
+            }
+        }
+        TuiEditorEvent::RecoveryCandidate { identity, status } => {
+            debug_assert_eq!(
+                identity.instance().get(),
+                instance.get(),
+                "the session publishes only recovery identities that it owns"
+            );
+            let path = identity.path().clone();
+            WorktreeEvent::RecoveryCandidate {
+                id: WorktreeRecoveryId {
+                    instance: WorktreeInstanceId(instance.get()),
+                    inner: identity,
+                },
+                path,
+                status: match status {
+                    TuiRecoveryStatus::Current => WorktreeRecoveryStatus::Current,
+                    TuiRecoveryStatus::Stale => WorktreeRecoveryStatus::Stale,
+                },
             }
         }
         TuiEditorEvent::FileActivated { path } => WorktreeEvent::FileActivated { path },

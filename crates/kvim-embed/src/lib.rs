@@ -68,8 +68,9 @@ pub use worktree::{
     WorktreeDispatchOutcome, WorktreeDrain, WorktreeEditor, WorktreeEditorBuilder, WorktreeEvent,
     WorktreeGeometryError, WorktreeHostReportRequest, WorktreeHostWorkspace, WorktreeInput,
     WorktreeInputError, WorktreeInputOutcome, WorktreeInputRequest, WorktreeInstanceId,
-    WorktreeOpenError, WorktreeOpenErrorKind, WorktreePresentation, WorktreeRefusal,
-    WorktreeRunState, WorktreeSemanticDispatch, WorktreeShutdown, WorktreeUpdate,
+    WorktreeOpenError, WorktreeOpenErrorKind, WorktreePresentation, WorktreeRecoveryDecision,
+    WorktreeRecoveryError, WorktreeRecoveryId, WorktreeRecoveryOutcome, WorktreeRecoveryStatus,
+    WorktreeRefusal, WorktreeRunState, WorktreeSemanticDispatch, WorktreeShutdown, WorktreeUpdate,
 };
 
 use std::num::{NonZeroU16, NonZeroU32};

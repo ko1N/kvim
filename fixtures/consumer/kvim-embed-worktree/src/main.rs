@@ -1,6 +1,9 @@
 use std::{error::Error, fs, time::Duration};
 
-use kvim_embed::{WorktreeEditor, WorktreeEvent, WorktreeShutdown};
+use kvim_embed::{
+    WorktreeEditor, WorktreeEvent, WorktreeRecoveryDecision, WorktreeRecoveryStatus,
+    WorktreeShutdown,
+};
 use kvim_input::Command;
 use kvim_path::WorktreeRelativePath;
 use ratatui::{buffer::Buffer, layout::Rect};
@@ -45,6 +48,17 @@ async fn run(root: &std::path::Path) -> Result<(), Box<dyn Error>> {
         matches!(event, WorktreeEvent::FileWritten { .. })
     })
     .await?;
+
+    while let Some(event) = editor.take_event() {
+        if let WorktreeEvent::RecoveryCandidate { id, status, .. } = event {
+            let decision = match status {
+                WorktreeRecoveryStatus::Current | WorktreeRecoveryStatus::Stale => {
+                    WorktreeRecoveryDecision::Defer
+                }
+            };
+            let _ = editor.decide_recovery(&id, decision)?;
+        }
+    }
 
     match editor.shutdown(Duration::from_secs(5)).await {
         WorktreeShutdown::Finished { events } => drop(events),

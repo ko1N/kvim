@@ -104,7 +104,8 @@ pub mod __private {
         ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter, ReviewRestore,
     };
     pub use crate::session::{
-        EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, Redraw, RunState, Session,
+        EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, RecoveryDecision,
+        RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState, Session,
     };
     pub use crate::theme::{IconRole, Theme};
     pub use crate::tree::{
