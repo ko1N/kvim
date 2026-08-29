@@ -850,6 +850,7 @@ fn the_editor_events_hold_no_review_fact() {
         EditorEvent::WorkspaceChanged { .. } => "workspace-changed",
         EditorEvent::SaveReconciliationRequired { .. } => "save-reconciliation-required",
         EditorEvent::WorkspaceReconciliationRequired { .. } => "workspace-reconciliation-required",
+        EditorEvent::RecoveryCandidate { .. } => "recovery-candidate",
         EditorEvent::FileActivated { .. } => "file-activated",
         EditorEvent::RedrawRequested => "redraw-requested",
         EditorEvent::FocusBoundary(_) => "focus-boundary",

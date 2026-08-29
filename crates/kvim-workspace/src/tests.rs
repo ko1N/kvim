@@ -454,7 +454,7 @@ fn open_reads_current_and_stale_recovery_without_replacing_disk_text() {
         };
         let opened = outcome.expect("the disk target opens");
         assert_eq!(opened.text.to_string(), disk_after.unwrap_or("\n"));
-        match opened.recovery {
+        match opened.recovery.as_deref() {
             Some(RecoveryCandidate::Current(_)) => assert!(current),
             Some(RecoveryCandidate::Stale(_)) => assert!(!current),
             None => panic!("the valid recovery record is discovered"),

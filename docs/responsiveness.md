@@ -246,11 +246,13 @@ changed or might have changed without claiming a proven commit.
 target changed. The result report preserves the primary source and every
 bounded restoration or cleanup source.
 
-Recovery checkpoints run on a dedicated committing worker lane. The lane holds
-at most `BUFFERS_MAX` results and runs at most
-`WORKER_CONCURRENCY_LIMIT_MAX` checkpoint workers. They do not reserve facade
-event capacity because they do not publish a durable host event for every edit. Each file-backed buffer has one active checkpoint and one newest
-pending checkpoint. Every accepted revision-changing edit queues immediately,
+Recovery checkpoints run on a dedicated committing worker lane. Its result
+queue holds at most `BUFFERS_MAX` entries. It runs at most
+`WORKER_CONCURRENCY_LIMIT_MAX` checkpoint workers and has process capacity one,
+although checkpoint work starts no process. Checkpoints do not reserve facade
+event capacity because they do not publish a durable host event for every edit.
+Each file-backed buffer has one active checkpoint and one newest pending
+checkpoint. Every accepted revision-changing edit queues immediately,
 and a newer revision replaces only the pending checkpoint. The lane validates
 editor instance, buffer identity, target, baseline, and revision before it
 publishes any result. A failed, saturated, timed-out, or obsolete checkpoint
@@ -327,7 +329,7 @@ paths run the same order:
 1. Stop the workspace watcher, so it queues no further directory read.
 2. Reject new work.
 3. Cancel all owned work.
-4. Wait for accepted tasks to finish cleanup and committed recovery checkpoints.
+4. Wait for accepted tasks to finish ordered cleanup and committed recovery checkpoint writes.
 
 The recovery checkpoint drain retains at most one active and one newest pending
 revision for each file-backed buffer. It completes accepted writes before

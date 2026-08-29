@@ -59,7 +59,7 @@ async fn recovery_uses_capacity_independent_from_a_saturated_normal_worker_lane(
     let limits = RuntimeLimits::new(2, 1, 1).unwrap();
     let (runtime, results) = Runtime::<EditorWork>::with_limits(limits);
     let mut driver = EditorDriver::new(editor.instance(), runtime, results);
-    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
     let (release_tx, release_rx) = std::sync::mpsc::channel();
     let parked = driver
         .gate
@@ -72,7 +72,7 @@ async fn recovery_uses_capacity_independent_from_a_saturated_normal_worker_lane(
             EditorWork(WorkResult::HostReport(String::new()))
         })
         .unwrap();
-    entered_rx.recv().unwrap();
+    entered_rx.await.unwrap();
 
     let _ = driver.dispatch(&mut editor).unwrap();
     let completed = timeout(REGISTRATION_WAIT, driver.recv())

@@ -205,6 +205,10 @@ pub struct RecoveryCheckpointResult {
 }
 
 /// One buffer's legal checkpoint lifecycle.
+///
+/// The larger submitted variant keeps active and successor checkpoints together
+/// so cancellation and cleanup preserve their ordering without another heap owner.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug)]
 enum RecoveryState {
     /// The newest checkpoint is ready for one submission attempt.
@@ -6708,7 +6712,7 @@ impl Session {
     fn publish_recovery_candidate(
         &mut self,
         buffer: BufferId,
-        candidate: Option<RecoveryCandidate>,
+        candidate: Option<Box<RecoveryCandidate>>,
     ) -> bool {
         let Some(candidate) = candidate else {
             return false;
@@ -6720,7 +6724,7 @@ impl Session {
             );
             return false;
         };
-        let (record, state) = match candidate {
+        let (record, state) = match *candidate {
             RecoveryCandidate::Current(record) => (record, RecoveryCandidateState::Current),
             RecoveryCandidate::Stale(record) => (record, RecoveryCandidateState::Stale),
         };

@@ -44,6 +44,7 @@ fn text_and_insert_bounds_refuse_without_mutation() {
     let limit = BufferBytesMax::new(5).expect("the limit is valid");
     let mut settings = EditorSettings::default();
     settings.files.max_file_bytes = limit.get();
+    settings.files.recovery_max_bytes = limit.get();
     assert!(matches!(
         MemoryEditor::open("longer", settings, Rect::new(0, 0, 8, 2)),
         Err(MemoryEditorError::Text(LoadError::TooLarge { .. }))

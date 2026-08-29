@@ -270,6 +270,7 @@ async fn shutdown(editor: WorktreeEditor) {
             | WorktreeEvent::WorkspaceChanged { .. }
             | WorktreeEvent::SaveReconciliationRequired { .. }
             | WorktreeEvent::WorkspaceReconciliationRequired { .. }
+            | WorktreeEvent::RecoveryCandidate { .. }
             | WorktreeEvent::FileActivated { .. }
             | WorktreeEvent::RedrawRequested
             | WorktreeEvent::FocusBoundary(_)

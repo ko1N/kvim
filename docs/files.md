@@ -370,8 +370,9 @@ kvim writes no recovery record when the platform reports neither
 target path. The record also stores the complete target path. A collision
 therefore cannot select a record for another target.
 
-A versioned record stores its header, complete target path, disk baseline,
-buffer revision, recovered text length and hash, and complete UTF-8 text. The
+A version 2 record stores the `KVIMRECV` magic, complete target path, disk
+baseline, buffer revision, recovered text length and hash, and complete UTF-8
+text. The
 baseline is either `Missing` or the saved file length and content hash. The
 reader rejects a record with an unsupported version, malformed header, target
 mismatch, invalid baseline, non-UTF-8 text, incorrect length or hash, or a
@@ -419,8 +420,9 @@ A successful current save deletes its current recovery record. A confirmed
 reload discard, confirmed final-window discard, and explicit recovery discard
 also delete it. Failed or obsolete saves, cancelled prompts, and failed cleanup
 preserve the record. A cleanup failure warns but never changes a successful save
-into a failed save. Shutdown rejects new checkpoint work and drains accepted
-committing checkpoint work through the existing bounded shutdown path.
+into a failed save. Shutdown rejects new checkpoint work and drains accepted committing checkpoint
+writes and their ordered cleanup successors through the existing bounded
+shutdown path.
 
 [`embedding.md`](embedding.md) owns the `WorktreeEditor` recovery identity,
 typed event, and addressed restore, discard, and defer decisions. `MemoryEditor`

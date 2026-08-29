@@ -497,9 +497,9 @@ impl EditorOutbox {
         &mut self,
         identity: RecoveryIdentity,
         status: RecoveryStatus,
-    ) -> Result<(), (RecoveryIdentity, RecoveryStatus)> {
+    ) -> Result<(), Box<(RecoveryIdentity, RecoveryStatus)>> {
         if self.recovery.len() >= BUFFERS_MAX {
-            return Err((identity, status));
+            return Err(Box::new((identity, status)));
         }
         self.recovery.push_back((identity, status));
         Ok(())
@@ -1144,7 +1144,6 @@ impl EmbeddedEditor {
     }
 
     /// Resolves one addressed recovery candidate.
-    #[must_use]
     pub fn decide_recovery(
         &mut self,
         identity: &RecoveryIdentity,

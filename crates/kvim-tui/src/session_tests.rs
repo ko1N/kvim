@@ -2807,12 +2807,14 @@ fn recovery_checkpoints_are_independent_between_buffers() {
     run_file_request(&mut session);
     press(&mut session, 'i');
     press(&mut session, 'a');
+    press_code(&mut session, KeyCode::Esc);
     let first = session.take_recovery_checkpoint().unwrap();
 
     session.open_path(second_path);
     run_file_request(&mut session);
     press(&mut session, 'i');
     press(&mut session, 'b');
+    press_code(&mut session, KeyCode::Esc);
     let second = session.take_recovery_checkpoint().unwrap();
     assert_ne!(first.buffer, second.buffer);
 
@@ -3096,13 +3098,15 @@ fn write_quit_saves_the_buffer_and_then_ends_the_editor() {
 fn write_quit_keeps_a_newer_edit_when_the_save_result_is_stale() {
     let directory = TempDir::new("session-stale-write-quit");
     let path = directory.write("main.rs", "one\n");
-    let mut session = file_session(&directory.path);
+    let mut session =
+        file_session(&directory.path).with_recovery_state_directory(directory.join("state"));
 
     session.open_path(path.clone());
     run_file_request(&mut session);
     press(&mut session, 'i');
     type_keys(&mut session, "saved ");
     press_code(&mut session, KeyCode::Esc);
+    run_recovery_work(&mut session);
 
     press(&mut session, ':');
     type_keys(&mut session, "wq");

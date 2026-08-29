@@ -70,13 +70,15 @@ events. Drop cancels internal owners before it shuts down the executor. Drop is
 a best-effort fallback and does not promise durable event delivery.
 
 The facade assigns each `WorktreeEditor` an opaque `WorktreeInstanceId`.
-Recovery uses a separate facade-owned bounded recovery identity for each
-file-backed buffer. A recovery event carries that identity, the addressed
-`WorktreeInstanceId`, target metadata, baseline state, and bounded recovery
-state. The host resolves it with an addressed `Restore`, `Discard`, or `Defer`
-decision. `WorktreeEditor` rejects a wrong instance, recovery identity, buffer,
-target, baseline, or revision before it changes visible state or deletes a
-record. Restore is one undoable dirty replacement. Discard deletes only the
+Recovery uses a facade-owned `WorktreeRecoveryId` for each candidate from a
+file-backed buffer. `WorktreeEvent::RecoveryCandidate { id, path, status }`
+carries that identity, the addressed editor through `id.instance()`, a bounded
+contained path, and `WorktreeRecoveryStatus`. The host resolves it through
+`WorktreeEditor::decide_recovery` with `WorktreeRecoveryDecision::Restore`,
+`Discard`, or `Defer`. The method returns a `WorktreeRecoveryOutcome` or a
+`WorktreeRecoveryError`. `WorktreeEditor` rejects a wrong instance, stale
+identity, buffer, target, baseline, or revision before it changes visible state
+or deletes a record. Restore is one undoable dirty replacement. Discard deletes only the
 addressed record and keeps disk text. Defer keeps both values for a later open.
 A stale baseline warns and remains available for explicit later disposal. These
 filesystem capabilities exist only with the `worktree` feature. `MemoryEditor`

@@ -34,7 +34,7 @@ use kvim_ui::{
     ListMotion, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX,
     SidebarCanvas,
 };
-use ratatui::style::{Color, Style};
+use ratatui::style::Style;
 use unicode_width::UnicodeWidthChar;
 
 use crate::cells::{clip_cells, text_cells};
@@ -699,13 +699,12 @@ fn fade_clipped_text(
         if cells > 0 && end > fade_start {
             let mut foreground_style = row_style;
             let label_start = label_offset_cells(row.depth);
-            if row.state == RowState::File
-                && row.git.is_some()
-                && column >= label_start
-                && column < label_start.saturating_add(text_cells(&row.label))
-            {
-                foreground_style =
-                    row_style.patch(theme.style(ThemeRole::TreeGit(row.git.expect("checked"))));
+            if let Some(git) = row.git.filter(|_| {
+                row.state == RowState::File
+                    && column >= label_start
+                    && column < label_start.saturating_add(text_cells(&row.label))
+            }) {
+                foreground_style = row_style.patch(theme.style(ThemeRole::TreeGit(git)));
             }
             if let Some(matched) = row.matched {
                 let match_start = label_start.saturating_add(matched.start);
@@ -719,7 +718,7 @@ fn fade_clipped_text(
                 }
             }
             let step = u16::try_from(end - fade_start).unwrap_or(FADE_STEPS);
-            let faded = fade_foreground(
+            let faded = theme.fade_foreground(
                 foreground_style,
                 foreground_style.bg.or(row_style.bg),
                 step.min(FADE_STEPS - 1),
@@ -729,27 +728,6 @@ fn fade_clipped_text(
         }
         column = end;
     }
-}
-
-/// Moves one RGB foreground toward its effective RGB background.
-fn fade_foreground(style: Style, background: Option<Color>, step: u16, steps: u16) -> Style {
-    debug_assert!(step < steps, "the fade keeps one visible foreground share");
-    debug_assert!(steps > 0, "the fixed fade has at least one step");
-    let (Some(Color::Rgb(red, green, blue)), Some(Color::Rgb(bg_red, bg_green, bg_blue))) =
-        (style.fg, background)
-    else {
-        return Style::new();
-    };
-    let foreground_share = steps - step;
-    let blend = |foreground: u8, background: u8| {
-        let value = u16::from(foreground) * foreground_share + u16::from(background) * step;
-        u8::try_from(value / steps).expect("the average of two bytes is one byte")
-    };
-    Style::new().fg(Color::Rgb(
-        blend(red, bg_red),
-        blend(green, bg_green),
-        blend(blue, bg_blue),
-    ))
 }
 
 /// Paints the icon cell of one row with the color of its role.

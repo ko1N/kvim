@@ -119,7 +119,7 @@ pub struct OpenedFile {
     /// The observed file state, or `None` while the path holds no file yet.
     pub identity: Option<FileIdentity>,
     /// A validated crash-recovery record and its relation to disk.
-    pub recovery: Option<RecoveryCandidate>,
+    pub recovery: Option<Box<RecoveryCandidate>>,
 }
 
 /// A validated recovery record discovered while a file was read.
@@ -334,11 +334,13 @@ fn open_with_limit(
                 request.files.max_file_bytes,
             )
             .map(|record| {
-                if record.matches_disk(loaded.identity.map(|_| loaded.text.as_str())) {
-                    RecoveryCandidate::Current(record)
-                } else {
-                    RecoveryCandidate::Stale(record)
-                }
+                Box::new(
+                    if record.matches_disk(loaded.identity.map(|_| loaded.text.as_str())) {
+                        RecoveryCandidate::Current(record)
+                    } else {
+                        RecoveryCandidate::Stale(record)
+                    },
+                )
             })
         })
     } else {

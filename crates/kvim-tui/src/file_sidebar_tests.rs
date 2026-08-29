@@ -401,7 +401,6 @@ fn clipped_row_text_fades_before_the_fixed_git_mark() {
         0,
         FileRowKind::File,
         RowState::File,
-        false,
     )
     .with_git(Some(FileRowGit::Modified));
     let buffer = paint_row(&row, 12);
@@ -435,7 +434,6 @@ fn clipped_wide_text_fades_both_cells_without_moving_the_git_mark() {
         0,
         FileRowKind::File,
         RowState::File,
-        false,
     )
     .with_git(Some(FileRowGit::Staged));
     let buffer = paint_row(&row, 11);
@@ -459,7 +457,6 @@ fn short_row_text_keeps_its_style_and_a_selected_fade_keeps_its_background() {
         0,
         FileRowKind::File,
         RowState::File,
-        false,
     );
     let plain_buffer = paint_row(&plain, 20);
     let plain_style = Theme::new().style(ThemeRole::Text);
@@ -476,8 +473,8 @@ fn short_row_text_keeps_its_style_and_a_selected_fade_keeps_its_background() {
         0,
         FileRowKind::File,
         RowState::File,
-        true,
-    );
+    )
+    .with_selected(true);
     let selected_buffer = paint_row(&selected, 12);
     let selected_style = plain_style.patch(Theme::new().style(ThemeRole::PopupSelection));
     for column in 8..11 {
