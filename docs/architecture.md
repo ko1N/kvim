@@ -47,7 +47,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
-| `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral `kvim-keymap` values. |
+| `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral keys and pointer values. |
 | `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
 | `kvim-workspace` | Files, buffers, recovery records for dirty file-backed buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
 | `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
@@ -152,9 +152,9 @@ ratatui geometry and rendering. No syntax-only consumer compiles LSP, ratatui,
 or the editor.
 
 `kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
-`TerminalEvent` value alone, because `Session`, the standalone presentation
-adapter, applies one normalized event as one pure transition. `kvim-tui` owns no
-terminal lifecycle code: no raw mode, no alternate screen, no event stream, no
+`TerminalEvent` value alone, including terminal-neutral pointer values. `Session`,
+the standalone presentation adapter, applies one normalized event as one pure
+transition. `kvim-tui` owns no terminal lifecycle code: no raw mode, no alternate screen, no event stream, no
 signal handler, no panic hook, and no write to standard output. A structural
 test in `kvim-tui` proves that no module of that crate names such an owner, and
 a structural test in `kvim` proves that its terminal loop holds every one of

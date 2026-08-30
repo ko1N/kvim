@@ -33,7 +33,11 @@ use std::io;
 
 use thiserror::Error;
 
-pub use events::{EventRejection, EventSource, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX};
+pub use events::{
+    CellPosition, EventRejection, EventSource, POINTER_EVENTS_COALESCE_MAX, PointerAction,
+    PointerButton, PointerEvent, PointerModifiers, PointerWheel, PointerWheelDirection,
+    PointerWheelError, TerminalEvent, UNMAPPED_EVENT_SKIP_MAX,
+};
 pub use key::{KeyRejection, UnsupportedModifier, normalize_key_event};
 pub use kvim_keymap::{Chord, Key, KeyCode, PASTE_BYTES_MAX, PasteError, PasteText};
 pub use lifecycle::{CrosstermControl, CursorShape, RestoreStep, TerminalControl, TerminalSession};

@@ -857,11 +857,13 @@ sidebar, and which-key presentation, background execution, completion routing,
 and consuming shutdown.
 
 `WorktreeEditor::input` accepts normalized terminal-neutral input when
-`WorktreeBindingMode::FacadeResolved` is selected. This keeps raw terminal
-ownership in the binary and preserves prompt and confirmation resolution inside
-the facade. A host-resolved editor instead uses `semantic_dispatch` after its
-own physical arbitration. The binary does not access `Session`,
-`EditorDriver`, runtime handles, or completion payloads.
+`WorktreeBindingMode::FacadeResolved` is selected. This includes the shared
+pointer vocabulary: terminal-cell position, non-Shift modifiers, buttons,
+press, release, drag, motion, and wheel. `MemoryEditor` accepts the same
+one-surface pointer vocabulary without terminal dependencies. A host-resolved
+editor instead uses `semantic_dispatch` after its own physical arbitration. The
+binary does not access `Session`, `EditorDriver`, runtime handles, or completion
+payloads.
 
 The composer remains available as a lower-level component for hosts that own
 opaque surfaces and provide compatible context-reset behavior. It is not a

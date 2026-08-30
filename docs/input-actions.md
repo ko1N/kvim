@@ -9,8 +9,49 @@ and the standalone binding preset. `kvim-terminal` converts crossterm events int
 terminal-neutral keys. The editor, workspace, and TUI consume resolved commands.
 
 State and view code must never compare crossterm events. Such an event exists
-only inside `kvim-terminal`. Every other input boundary uses a
-`kvim-keymap` value.
+only inside `kvim-terminal`. Every other input boundary uses a `kvim-keymap`
+value or the terminal-neutral pointer values of `kvim-terminal`.
+
+## Pointer Input
+
+`kvim-terminal` converts crossterm mouse events into `PointerEvent`. The value
+holds a terminal cell position, non-Shift modifiers, and a typed press, release,
+drag, motion, or wheel action. Terminal cells remain distinct from source-text
+coordinates. Crossterm values never cross this boundary.
+
+A Shift-modified pointer event is ignored before it reaches editor state. The
+terminal emulator then owns its native Shift-click and Shift-drag selection.
+
+The standalone terminal session enables mouse capture. The capture lifecycle
+restores terminal state on normal exit, setup failure, panic, termination,
+suspend, and resume.
+
+Hit testing uses published layout and overlay placements. It resolves an
+interactive overlay first, then a sidebar or editor window, then shell chrome.
+Decorative overlays pass through. Chrome with no action ignores the pointer.
+
+A wheel acts on the region under the pointer and never changes focus. A buffer
+wheel moves the viewport and clamps the cursor only when visibility requires it.
+A list wheel moves its viewport without selecting or activating a row. One wheel
+tick maps to three configured rows.
+
+A left click focuses its target. It positions a buffer cursor or selects a list
+row. A sidebar double click activates the selected entry. A buffer drag begins a
+characterwise Visual selection at the press position and updates its head. A
+drag outside visible text clamps to the nearest visible text cell. Each edge
+drag event scrolls by no more than one configured wheel distance. No drag timer
+or unbounded loop exists.
+
+Drag capture owns one target. Release, resize, non-pointer input, lost target,
+or overlay ownership change cancels it. Pointer motion and wheel events coalesce
+only when they are consecutive and immediately ready. A returned event includes
+at most 32 raw events. The source retains one first nonmatching event, so it
+never changes event order.
+
+`MemoryEditor` and `WorktreeEditor` expose the same terminal-neutral text
+click, wheel, and drag input. Facade pointer dispatch is independent of host
+key-binding arbitration.
+
 
 ## Editor Modes
 
