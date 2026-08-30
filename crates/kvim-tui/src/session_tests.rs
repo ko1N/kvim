@@ -60,6 +60,22 @@ fn pointer_button(column: u16, row: u16, button: PointerButton) -> TerminalEvent
     ))
 }
 
+fn drag(column: u16, row: u16) -> TerminalEvent {
+    TerminalEvent::Pointer(PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        PointerAction::Drag(PointerButton::Left),
+    ))
+}
+
+fn release(column: u16, row: u16) -> TerminalEvent {
+    TerminalEvent::Pointer(PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        PointerAction::Release(PointerButton::Left),
+    ))
+}
+
 /// Creates one bounded vertical wheel event at a terminal cell.
 fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEvent {
     TerminalEvent::Pointer(PointerEvent::new(
@@ -69,6 +85,217 @@ fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEve
             PointerWheel::new(direction, 1).expect("one tick is within the event bound"),
         ),
     ))
+}
+
+#[test]
+fn buffer_drag_selects_forward_and_reverse_and_release_keeps_visual_mode() {
+    let mut session = with_text(&["alpha beta"]);
+    let area = session
+        .windows
+        .layout()
+        .area(session.windows.focused_window())
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+
+    let _ = session.handle_event(click(x.saturating_add(1), y), NOW);
+    assert_eq!(
+        session.handle_event(drag(x.saturating_add(4), y), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(session.mode(), Mode::Visual);
+    assert_eq!(character_selection(&session), (1, 5));
+    assert_eq!(
+        session.handle_event(release(x.saturating_add(4), y), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.mode(), Mode::Visual);
+    assert_eq!(character_selection(&session), (1, 5));
+
+    press_code(&mut session, KeyCode::Esc);
+    let _ = session.handle_event(click(x.saturating_add(4), y), NOW);
+    let _ = session.handle_event(drag(x.saturating_add(1), y), NOW);
+    assert_eq!(character_selection(&session), (1, 5));
+}
+
+#[test]
+fn buffer_drag_maps_both_wide_glyph_cells_and_clamps_outside_text() {
+    let mut session = with_text(&["a界z"]);
+    let area = session
+        .windows
+        .layout()
+        .area(session.windows.focused_window())
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+
+    let _ = session.handle_event(click(x, y), NOW);
+    let _ = session.handle_event(drag(x.saturating_add(1), y), NOW);
+    assert_eq!(session.cursor().column().get(), 1);
+    let _ = session.handle_event(drag(x.saturating_add(2), y), NOW);
+    assert_eq!(session.cursor().column().get(), 1);
+    let _ = session.handle_event(drag(u16::MAX, y), NOW);
+    assert_eq!(session.cursor().column().get(), 2);
+}
+
+#[test]
+fn edge_drag_scrolls_once_by_the_configured_bound() {
+    let mut session = with_text(&(0..40).map(|_| "line").collect::<Vec<_>>());
+    let window = session.windows.focused_window();
+    let area = session
+        .windows
+        .layout()
+        .area(window)
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, y), NOW);
+
+    let before = first_line(&session, window);
+    assert_eq!(
+        session.handle_event(drag(x, area.bottom()), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(
+        first_line(&session, window).saturating_sub(before),
+        usize::from(session.settings.mouse.scroll_rows)
+    );
+}
+
+#[test]
+fn buffer_drag_updates_only_its_captured_split() {
+    let (mut session, left, right) = split_session(20);
+    let right_before = session
+        .windows
+        .state(right)
+        .expect("the right split has state");
+    let area = session
+        .windows
+        .layout()
+        .area(left)
+        .expect("the left split is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, y), NOW);
+    let _ = session.handle_event(drag(x, y.saturating_add(3)), NOW);
+
+    assert_eq!(session.windows.state(right), Some(right_before));
+    assert_eq!(cursor_line(&session, left), 3);
+}
+
+#[test]
+fn drag_capture_cancels_on_non_pointer_input_wheel_resize_and_overlay_change() {
+    let cancellation_events = [
+        TerminalEvent::Key(Key::plain(KeyCode::Char('j'))),
+        TerminalEvent::Paste(PasteText::new("x").expect("the paste is bounded")),
+        TerminalEvent::Unsupported,
+        wheel(0, 0, PointerWheelDirection::Down),
+        TerminalEvent::Resize {
+            columns: 61,
+            rows: 20,
+        },
+    ];
+    for event in cancellation_events {
+        let mut session = with_text(&["alpha", "beta"]);
+        let area = session
+            .windows
+            .layout()
+            .area(session.windows.focused_window())
+            .expect("the window is visible");
+        let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+        let x = area.x.saturating_add(gutter);
+        let y = area.y.saturating_add(WINBAR_ROWS);
+        let _ = session.handle_event(click(x, y), NOW);
+        let _ = session.handle_event(event, NOW);
+        let before = session.cursor();
+        let _ = session.handle_event(drag(x, y.saturating_add(1)), NOW);
+        assert_eq!(session.cursor(), before);
+    }
+
+    let mut session = with_text(&["alpha", "beta"]);
+    let area = session
+        .windows
+        .layout()
+        .area(session.windows.focused_window())
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, y), NOW);
+    session.picker = Some(PickerState::open(
+        PickerKind::Buffers,
+        test_root(workspace_root()),
+        Vec::new(),
+    ));
+    let before = session.cursor();
+    let _ = session.handle_event(drag(x, y.saturating_add(1)), NOW);
+    assert_eq!(session.cursor(), before);
+
+    let mut session = with_text(&["alpha", "beta"]);
+    let area = session
+        .windows
+        .layout()
+        .area(session.windows.focused_window())
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, y), NOW);
+    let _ = session.open_prompt(PromptKind::CommandLine);
+    let completion = LineCompletion::open(
+        "",
+        vec!["first".to_owned(), "second".to_owned()],
+        64,
+        crate::completion::CompletionCycle::Next,
+    )
+    .expect("the fixture opens a completion");
+    session.prompt.as_mut().unwrap().completion = Some(completion);
+    session.reconcile_completion();
+    let before = session.cursor();
+    assert_eq!(
+        session.handle_event(drag(x, y.saturating_add(1)), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.cursor(), before);
+}
+
+#[test]
+fn drag_capture_cancels_when_its_window_is_lost() {
+    let (mut session, left, _) = split_session(20);
+    let area = session
+        .windows
+        .layout()
+        .area(left)
+        .expect("the left split is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, y), NOW);
+    assert!(matches!(
+        session.windows.close_focused(),
+        kvim_ui::CloseOutcome::Closed(_)
+    ));
+    let before = session.cursor();
+
+    assert_eq!(
+        session.handle_event(drag(x, y.saturating_add(1)), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.cursor(), before);
+}
+
+#[test]
+fn drag_without_press_and_release_without_press_are_inert() {
+    let mut session = with_text(&["alpha", "beta"]);
+    let before = session.cursor();
+    assert_eq!(session.handle_event(drag(10, 3), NOW), Redraw::Skipped);
+    assert_eq!(session.handle_event(release(10, 3), NOW), Redraw::Skipped);
+    assert_eq!(session.cursor(), before);
+    assert_eq!(session.mode(), Mode::Normal);
 }
 
 #[test]
@@ -836,6 +1063,13 @@ fn with_text(lines: &[&str]) -> Session {
 /// Returns the selection of the active Visual mode.
 fn selection(session: &Session) -> Option<Selection> {
     session.selection()
+}
+
+fn character_selection(session: &Session) -> (usize, usize) {
+    let Some(Selection::Characterwise(range)) = selection(session) else {
+        panic!("the drag must create a characterwise selection");
+    };
+    (range.start().get(), range.end().get())
 }
 
 #[test]

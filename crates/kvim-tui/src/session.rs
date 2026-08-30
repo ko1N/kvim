@@ -67,8 +67,8 @@ use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{
-    Key, PointerAction, PointerButton, PointerEvent, PointerWheel, PointerWheelDirection,
-    TerminalEvent,
+    CellPosition, Key, PointerAction, PointerButton, PointerEvent, PointerWheel,
+    PointerWheelDirection, TerminalEvent,
 };
 use kvim_ui::{
     Cell, Direction, HitTarget, ListItem, ListViewport, OverlayInput, PointerOverlay, RegionKind,
@@ -1622,6 +1622,8 @@ pub struct Session {
     notifications: NotificationBoard,
     /// The one viewport that a wheel event moved before `settle` runs.
     pointer_scrolled: Option<PointerScrollTarget>,
+    /// The active buffer drag, or the legal idle state.
+    pointer_drag: PointerDragState,
     /// The last selected sidebar row and click time, for bounded activation.
     last_sidebar_click: Option<SidebarClick>,
     /// The elapsed time that the event loop reported last.
@@ -1744,6 +1746,7 @@ impl Session {
             embedded_which_key: presentation.which_key_embedded(),
             notifications: NotificationBoard::default(),
             pointer_scrolled: None,
+            pointer_drag: PointerDragState::Idle,
             last_sidebar_click: None,
             clock: Duration::ZERO,
             run: RunState::Running,
@@ -2519,6 +2522,18 @@ impl Session {
     /// ```
     pub fn handle_event(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
         self.begin_input(now);
+        let cancels_drag = match &event {
+            TerminalEvent::Key(_)
+            | TerminalEvent::Paste(_)
+            | TerminalEvent::Resize { .. }
+            | TerminalEvent::Unsupported => true,
+            TerminalEvent::Pointer(pointer) => {
+                matches!(pointer.action(), PointerAction::Wheel(_))
+            }
+        };
+        if cancels_drag {
+            self.pointer_drag = PointerDragState::Idle;
+        }
         if !matches!(
             &event,
             TerminalEvent::Pointer(pointer)
@@ -2648,10 +2663,18 @@ impl Session {
         match pointer.action() {
             PointerAction::Wheel(wheel) => self.handle_pointer_wheel(pointer, wheel),
             PointerAction::Press(PointerButton::Left) => self.handle_pointer_click(pointer, now),
+            PointerAction::Drag(PointerButton::Left) => self.handle_pointer_drag(pointer),
+            PointerAction::Release(PointerButton::Left) => {
+                self.pointer_drag = PointerDragState::Idle;
+                Redraw::Skipped
+            }
             PointerAction::Press(PointerButton::Right | PointerButton::Middle)
-            | PointerAction::Release(_)
-            | PointerAction::Drag(_)
-            | PointerAction::Motion => Redraw::Skipped,
+            | PointerAction::Release(PointerButton::Right | PointerButton::Middle)
+            | PointerAction::Drag(PointerButton::Right | PointerButton::Middle)
+            | PointerAction::Motion => {
+                self.pointer_drag = PointerDragState::Idle;
+                Redraw::Skipped
+            }
         }
     }
 
@@ -2743,6 +2766,7 @@ impl Session {
     }
 
     fn handle_pointer_click(&mut self, pointer: PointerEvent, now: Duration) -> Redraw {
+        self.pointer_drag = PointerDragState::Idle;
         let previous_sidebar_click = self.last_sidebar_click.take();
         let cell = Cell::new(pointer.position().column(), pointer.position().row());
         if let Some(picker) = self.picker.as_mut() {
@@ -2849,6 +2873,13 @@ impl Session {
                 let Some(buffer) = self.windows.buffer(window) else {
                     return Redraw::Skipped;
                 };
+                let text_press = {
+                    let Some(file) = self.buffers.get(buffer) else {
+                        return Redraw::Skipped;
+                    };
+                    let gutter = gutter_cells(file.text(), &self.settings.display, area.width);
+                    pointer.position().column() >= area.x.saturating_add(gutter)
+                };
                 let (line, column) = {
                     let Some(file) = self.buffers.get(buffer) else {
                         return Redraw::Skipped;
@@ -2882,6 +2913,14 @@ impl Session {
                     return Redraw::Skipped;
                 };
                 self.editing.move_to(file.text(), state, line, column);
+                if text_press {
+                    let anchor = state.cursor().position(file.text());
+                    self.pointer_drag = PointerDragState::Dragging {
+                        window,
+                        buffer,
+                        anchor,
+                    };
+                }
                 if focus_changed {
                     self.resolver.reset();
                     self.sync_context();
@@ -2890,6 +2929,110 @@ impl Session {
                 Redraw::Needed
             }
         }
+    }
+
+    fn handle_pointer_drag(&mut self, pointer: PointerEvent) -> Redraw {
+        let PointerDragState::Dragging {
+            window,
+            buffer,
+            anchor,
+        } = self.pointer_drag
+        else {
+            return Redraw::Skipped;
+        };
+        if self.picker.is_some() || self.completion_layout().is_some() {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        }
+        let Some(area) = self.windows.layout().area(window) else {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        };
+        if self.windows.buffer(window) != Some(buffer)
+            || !self
+                .windows
+                .layout()
+                .regions()
+                .iter()
+                .any(|region| region.id == window && region.kind == RegionKind::Surface)
+        {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        }
+        let text_top = area.y.saturating_add(WINBAR_ROWS);
+        let text_bottom = area.bottom();
+        if area.width == 0 || text_top >= text_bottom {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        }
+        let scroll_down = pointer.position().row() >= text_bottom;
+        let scroll_up = pointer.position().row() < text_top;
+        if scroll_up || scroll_down {
+            let Some(file) = self.buffers.get(buffer) else {
+                self.pointer_drag = PointerDragState::Idle;
+                return Redraw::Skipped;
+            };
+            let Some(state) = self.windows.state_mut(window) else {
+                self.pointer_drag = PointerDragState::Idle;
+                return Redraw::Skipped;
+            };
+            let rows = usize::from(self.settings.mouse.scroll_rows);
+            *state = if scroll_down {
+                state.scrolled_down(file.text(), rows, ColumnLimit::LastCharacter)
+            } else {
+                state.scrolled_up(file.text(), rows, ColumnLimit::LastCharacter)
+            };
+            self.pointer_scrolled = Some(PointerScrollTarget::Window(window));
+        }
+        let Some(file) = self.buffers.get(buffer) else {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        };
+        let gutter = gutter_cells(file.text(), &self.settings.display, area.width);
+        let text_left = area
+            .x
+            .saturating_add(gutter)
+            .min(area.right().saturating_sub(1));
+        let column = pointer
+            .position()
+            .column()
+            .clamp(text_left, area.right().saturating_sub(1));
+        let row = pointer
+            .position()
+            .row()
+            .clamp(text_top, text_bottom.saturating_sub(1));
+        let cell = CellPosition::new(column, row);
+        let Some(state) = self.windows.state(window) else {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        };
+        let Some(head) = source_at_cell(
+            file.text(),
+            area,
+            &self.settings.display,
+            usize::from(self.settings.indent.tab_width.get()),
+            state.first_line(),
+            state.left_column(),
+            cell,
+        ) else {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        };
+        let anchor_line = file.text().char_to_line(anchor).get();
+        let anchor_column = file.text().char_to_column(anchor).get();
+        let head_line = file.text().char_to_line(head).get();
+        let head_column = file.text().char_to_column(head).get();
+        let Some(state) = self.windows.state_mut(window) else {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        };
+        self.editing
+            .move_to(file.text(), state, anchor_line, anchor_column);
+        self.editing.enter_mode(file.text(), state, Mode::Normal);
+        self.editing.enter_mode(file.text(), state, Mode::Visual);
+        self.editing
+            .move_to(file.text(), state, head_line, head_column);
+        Redraw::Needed
     }
 
     fn completion_layout(&self) -> Option<super::completion::CompletionMenuLayout> {
@@ -7905,6 +8048,16 @@ impl Session {
             *slot = slot.resized(height, width).reconciled(text, &display);
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PointerDragState {
+    Idle,
+    Dragging {
+        window: WindowId,
+        buffer: BufferId,
+        anchor: CharPosition,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
