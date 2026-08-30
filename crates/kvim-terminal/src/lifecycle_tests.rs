@@ -260,6 +260,22 @@ async fn a_termination_signal_leaves_the_loop_and_restores_the_terminal() {
 }
 
 #[test]
+fn restore_steps_disable_mouse_capture_before_alternate_screen_teardown() {
+    assert_eq!(
+        RestoreStep::ALL,
+        [
+            RestoreStep::CursorShape,
+            RestoreStep::KeyboardEnhancement,
+            RestoreStep::BracketedPaste,
+            RestoreStep::MouseCapture,
+            RestoreStep::AlternateScreen,
+            RestoreStep::RawMode,
+        ],
+        "every restore path uses this ordered step model"
+    );
+}
+
+#[test]
 fn the_panic_hook_writes_the_steps_of_a_complete_restore() {
     let control = CrosstermControl {
         completed: [true; RestoreStep::COUNT],

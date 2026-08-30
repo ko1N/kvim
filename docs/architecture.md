@@ -854,10 +854,11 @@ not depend on unwinding.
 A panic hook is the primary restoration path on every platform. The terminal
 session installs the hook when it enters the terminal and removes it after a
 successful restore, so the hook exists exactly while the terminal holds the
-setup steps. The hook leaves the alternate screen, disables raw mode, shows the
-cursor, restores the cursor shape, and pops the keyboard enhancement flags. It
-then calls the hook that it replaced, so the normal panic message still reaches
-the user. The hook writes the terminal steps only. It allocates nothing and
+setup steps. The hook restores the cursor shape and keyboard reporting first.
+It then disables bracketed paste and mouse capture. It shows the cursor before
+it leaves the alternate screen, and it disables raw mode last. It then calls
+the hook that it replaced, so the normal panic message still reaches the user.
+The hook writes the terminal steps only. It allocates nothing and
 locks no editor state, because a panic can leave both unusable, and it ignores
 every write failure, because no report path remains.
 

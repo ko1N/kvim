@@ -13,7 +13,9 @@ use std::sync::Arc;
 use std::thread;
 
 use crossterm::cursor::{SetCursorStyle, Show};
-use crossterm::event::{DisableBracketedPaste, EnableBracketedPaste};
+use crossterm::event::{
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+};
 use crossterm::event::{
     KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
@@ -70,6 +72,8 @@ pub enum RestoreStep {
     KeyboardEnhancement,
     /// Stop bracketed paste reporting.
     BracketedPaste,
+    /// Stop mouse capture before the terminal leaves the alternate screen.
+    MouseCapture,
     /// Show the cursor and leave the alternate screen.
     AlternateScreen,
     /// Leave raw mode.
@@ -78,10 +82,11 @@ pub enum RestoreStep {
 
 impl RestoreStep {
     /// Every step, in restoration order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::CursorShape,
         Self::KeyboardEnhancement,
         Self::BracketedPaste,
+        Self::MouseCapture,
         Self::AlternateScreen,
         Self::RawMode,
     ];
@@ -103,6 +108,7 @@ impl RestoreStep {
             Self::CursorShape => execute!(stdout(), SetCursorStyle::DefaultUserShape),
             Self::KeyboardEnhancement => execute!(stdout(), PopKeyboardEnhancementFlags),
             Self::BracketedPaste => execute!(stdout(), DisableBracketedPaste),
+            Self::MouseCapture => execute!(stdout(), DisableMouseCapture),
             Self::AlternateScreen => execute!(stdout(), Show, LeaveAlternateScreen),
             Self::RawMode => disable_raw_mode(),
         }
@@ -325,6 +331,13 @@ impl TerminalControl for CrosstermControl {
         // the editor still accepts. See `docs/input-actions.md`.
         self.record(RestoreStep::BracketedPaste, true);
         if let Err(error) = execute!(stdout(), EnableBracketedPaste) {
+            let _ = self.cleanup();
+            return Err(error);
+        }
+        // Mouse capture is session state. Record it before the write because a
+        // terminal can apply the sequence and then fail to flush it.
+        self.record(RestoreStep::MouseCapture, true);
+        if let Err(error) = execute!(stdout(), EnableMouseCapture) {
             let _ = self.cleanup();
             return Err(error);
         }

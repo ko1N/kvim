@@ -2512,6 +2512,9 @@ impl Session {
                 self.insert_owned_text(text.as_str()).or(closed)
             }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
+            // Pointer behavior enters in a later slice. Keep the current
+            // presentation unchanged while terminal lifecycle enables capture.
+            TerminalEvent::Pointer(_) => Redraw::Skipped,
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
             TerminalEvent::Unsupported => {
