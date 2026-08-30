@@ -176,10 +176,12 @@ declarations. The public `kvim-syntax` and `kvim-lsp` APIs do not accept
 | Field | Default |
 |---|---|
 | Wheel scroll distance | 3 rows |
+| Sidebar double-click interval | 500 ms |
 
-`MouseSettings::scroll_rows` is raw until `EditorSettings::realize` runs. The
-realized value must be from 1 through 100 rows. This bound limits work from one
-wheel tick. [`input-actions.md`](input-actions.md) owns pointer dispatch.
+`MouseSettings::scroll_rows` and `MouseSettings::double_click_interval` are raw
+until `EditorSettings::realize` runs. The scroll distance must be from 1 through
+100 rows. The double-click interval must be greater than zero and at most two
+seconds. These bounds limit pointer work and keep activation deterministic.
 
 ## Notifications
 

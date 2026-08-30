@@ -13,7 +13,7 @@
 use std::path::{Path, PathBuf};
 
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
-use kvim_ui::{Selector, SelectorCandidate};
+use kvim_ui::{ListMotion, Selector, SelectorCandidate};
 
 use super::buffer::BufferId;
 
@@ -481,6 +481,11 @@ impl Picker {
     #[must_use]
     pub fn selected_row(&self) -> Option<usize> {
         self.selector.selected_row()
+    }
+
+    /// Selects one ranked row directly.
+    pub fn select_row(&mut self, row: usize) {
+        self.selector.apply_motion(ListMotion::ToRow(row));
     }
 
     /// Moves the selection one row toward the end of the list.

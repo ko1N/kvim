@@ -66,7 +66,10 @@ use kvim_language::{
 use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
-use kvim_terminal::{Key, PointerAction, PointerEvent, PointerWheelDirection, TerminalEvent};
+use kvim_terminal::{
+    Key, PointerAction, PointerButton, PointerEvent, PointerWheel, PointerWheelDirection,
+    TerminalEvent,
+};
 use kvim_ui::{
     Cell, Direction, HitTarget, ListItem, ListViewport, OverlayInput, PointerOverlay, RegionKind,
     SidebarSide, WindowId, contains_cell, hit_test,
@@ -110,6 +113,7 @@ use super::language::{
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
+use super::pointer::source_at_cell;
 use super::review::{ReviewOutcome, ReviewSurface};
 use super::theme::Theme;
 use super::tree::{
@@ -1618,6 +1622,8 @@ pub struct Session {
     notifications: NotificationBoard,
     /// The one viewport that a wheel event moved before `settle` runs.
     pointer_scrolled: Option<PointerScrollTarget>,
+    /// The last selected sidebar row and click time, for bounded activation.
+    last_sidebar_click: Option<SidebarClick>,
     /// The elapsed time that the event loop reported last.
     ///
     /// The session reads no clock. The loop passes the elapsed time into every
@@ -1738,6 +1744,7 @@ impl Session {
             embedded_which_key: presentation.which_key_embedded(),
             notifications: NotificationBoard::default(),
             pointer_scrolled: None,
+            last_sidebar_click: None,
             clock: Duration::ZERO,
             run: RunState::Running,
         };
@@ -2512,6 +2519,13 @@ impl Session {
     /// ```
     pub fn handle_event(&mut self, event: TerminalEvent, now: Duration) -> Redraw {
         self.begin_input(now);
+        if !matches!(
+            &event,
+            TerminalEvent::Pointer(pointer)
+                if matches!(pointer.action(), PointerAction::Press(PointerButton::Left))
+        ) {
+            self.last_sidebar_click = None;
+        }
         let redraw = match event {
             TerminalEvent::Key(key) => self.handle_key(key, now),
             // One paste block is one input, so it becomes one edit transaction
@@ -2522,7 +2536,7 @@ impl Session {
                 self.insert_owned_text(text.as_str()).or(closed)
             }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
-            TerminalEvent::Pointer(pointer) => self.handle_pointer(pointer),
+            TerminalEvent::Pointer(pointer) => self.handle_pointer(pointer, self.clock),
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
             TerminalEvent::Unsupported => {
@@ -2630,10 +2644,18 @@ impl Session {
         Redraw::Needed
     }
 
-    fn handle_pointer(&mut self, pointer: PointerEvent) -> Redraw {
-        let PointerAction::Wheel(wheel) = pointer.action() else {
-            return Redraw::Skipped;
-        };
+    fn handle_pointer(&mut self, pointer: PointerEvent, now: Duration) -> Redraw {
+        match pointer.action() {
+            PointerAction::Wheel(wheel) => self.handle_pointer_wheel(pointer, wheel),
+            PointerAction::Press(PointerButton::Left) => self.handle_pointer_click(pointer, now),
+            PointerAction::Press(PointerButton::Right | PointerButton::Middle)
+            | PointerAction::Release(_)
+            | PointerAction::Drag(_)
+            | PointerAction::Motion => Redraw::Skipped,
+        }
+    }
+
+    fn handle_pointer_wheel(&mut self, pointer: PointerEvent, wheel: PointerWheel) -> Redraw {
         let rows =
             u32::from(self.settings.mouse.scroll_rows).saturating_mul(u32::from(wheel.ticks()));
         let down = match wheel.direction() {
@@ -2715,6 +2737,156 @@ impl Session {
                     state.scrolled_up(file.text(), rows as usize, ColumnLimit::LastCharacter)
                 };
                 self.pointer_scrolled = Some(PointerScrollTarget::Window(window));
+                Redraw::Needed
+            }
+        }
+    }
+
+    fn handle_pointer_click(&mut self, pointer: PointerEvent, now: Duration) -> Redraw {
+        let previous_sidebar_click = self.last_sidebar_click.take();
+        let cell = Cell::new(pointer.position().column(), pointer.position().row());
+        if let Some(picker) = self.picker.as_mut() {
+            let area = picker_areas(self.area).results;
+            if contains_cell(area, cell) {
+                let row = picker
+                    .first_row()
+                    .saturating_add(usize::from(cell.row().saturating_sub(area.y)));
+                if !picker.select_row(row) {
+                    return Redraw::Skipped;
+                }
+                return Redraw::Needed;
+            }
+            return Redraw::Skipped;
+        }
+        if let Some(layout) = self.completion_layout()
+            && contains_cell(layout.area, cell)
+        {
+            let offset = usize::from(cell.row().saturating_sub(layout.area.y));
+            if offset < layout.shown {
+                let Some(prompt) = self.prompt.as_mut() else {
+                    debug_assert!(false, "the completion layout belongs to an open prompt");
+                    return Redraw::Skipped;
+                };
+                let Some(completion) = prompt.completion.as_mut() else {
+                    debug_assert!(false, "the completion layout belongs to an open completion");
+                    return Redraw::Skipped;
+                };
+                let row = layout.first.saturating_add(offset);
+                if !completion.select_row(row) {
+                    return Redraw::Skipped;
+                }
+                let selected = completion.selected().to_owned();
+                let _ = prompt.line.write(selected);
+                return Redraw::Needed;
+            }
+            return Redraw::Skipped;
+        }
+
+        let overlays = self.pointer_overlays();
+        let surfaces: Vec<_> = self
+            .windows
+            .layout()
+            .regions()
+            .iter()
+            .map(|region| kvim_ui::SurfacePlacement {
+                region: region.id,
+                kind: region.kind,
+                area: region.area,
+                surface: (),
+            })
+            .collect();
+        match hit_test(&surfaces, &overlays, cell) {
+            HitTarget::Overlay(()) | HitTarget::Chrome => Redraw::Skipped,
+            HitTarget::Sidebar(sidebar) => {
+                if Some(sidebar) != self.tree_region {
+                    return Redraw::Skipped;
+                }
+                let Some(area) = self.windows.layout().area(sidebar) else {
+                    return Redraw::Skipped;
+                };
+                let body_row = cell
+                    .row()
+                    .saturating_sub(area.y.saturating_add(TREE_TITLE_ROWS));
+                if cell.row() < area.y.saturating_add(TREE_TITLE_ROWS) {
+                    return Redraw::Skipped;
+                }
+                let row = usize::try_from(self.tree.view().first_line())
+                    .unwrap_or(usize::MAX)
+                    .saturating_add(usize::from(body_row));
+                if !self.tree.select_row(row) {
+                    return Redraw::Skipped;
+                }
+                let Some(path) = self.tree.selected_entry_path() else {
+                    debug_assert!(false, "a selected tree row names one selectable path");
+                    return Redraw::Skipped;
+                };
+                let focus_changed = self.windows.focused_region() != sidebar;
+                self.windows.focus_region(sidebar);
+                if focus_changed {
+                    self.resolver.reset();
+                    self.sync_context();
+                }
+                let double = previous_sidebar_click.is_some_and(|click| {
+                    click.path == path
+                        && now >= click.at
+                        && now - click.at <= self.settings.mouse.double_click_interval
+                });
+                self.last_sidebar_click = if double {
+                    None
+                } else {
+                    Some(SidebarClick { path, at: now })
+                };
+                if double {
+                    self.open_selected_entry()
+                } else {
+                    Redraw::Needed
+                }
+            }
+            HitTarget::Surface(window) => {
+                let Some(area) = self.windows.layout().area(window) else {
+                    return Redraw::Skipped;
+                };
+                let Some(buffer) = self.windows.buffer(window) else {
+                    return Redraw::Skipped;
+                };
+                let (line, column) = {
+                    let Some(file) = self.buffers.get(buffer) else {
+                        return Redraw::Skipped;
+                    };
+                    let Some(state) = self.windows.state(window) else {
+                        return Redraw::Skipped;
+                    };
+                    let Some(position) = source_at_cell(
+                        file.text(),
+                        area,
+                        &self.settings.display,
+                        usize::from(self.settings.indent.tab_width.get()),
+                        state.first_line(),
+                        state.left_column(),
+                        pointer.position(),
+                    ) else {
+                        return Redraw::Skipped;
+                    };
+                    (
+                        file.text().char_to_line(position).get(),
+                        file.text().char_to_column(position).get(),
+                    )
+                };
+                let focus_changed = self.windows.focused_region() != window;
+                self.windows.focus_region(window);
+                self.follow_focused_window();
+                let Some(file) = self.buffers.get(buffer) else {
+                    return Redraw::Skipped;
+                };
+                let Some(state) = self.windows.state_mut(window) else {
+                    return Redraw::Skipped;
+                };
+                self.editing.move_to(file.text(), state, line, column);
+                if focus_changed {
+                    self.resolver.reset();
+                    self.sync_context();
+                }
+                self.last_sidebar_click = None;
                 Redraw::Needed
             }
         }
@@ -7733,6 +7905,12 @@ impl Session {
             *slot = slot.resized(height, width).reconciled(text, &display);
         }
     }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct SidebarClick {
+    path: PathBuf,
+    at: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

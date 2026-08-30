@@ -2,9 +2,9 @@ use std::num::NonZeroU8;
 use std::time::Duration;
 
 use super::{
-    COUNT_MAX, EditorSettings, FILE_BYTES_MAX, IndentSettings, IndentWidth, MOUSE_SCROLL_ROWS_MAX,
-    NOTIFICATION_ROWS_MAX, PENDING_KEYS_MAX, RECOVERY_BYTES_MAX, SettingsError, ShiftWidth,
-    SplitRatio,
+    COUNT_MAX, EditorSettings, FILE_BYTES_MAX, IndentSettings, IndentWidth,
+    MOUSE_DOUBLE_CLICK_INTERVAL_MAX, MOUSE_SCROLL_ROWS_MAX, NOTIFICATION_ROWS_MAX,
+    PENDING_KEYS_MAX, RECOVERY_BYTES_MAX, SettingsError, ShiftWidth, SplitRatio,
 };
 
 fn cells(value: u8) -> NonZeroU8 {
@@ -90,6 +90,7 @@ fn settings_realization_rejects_invalid_public_numeric_bounds() {
         EditorSettings {
             mouse: super::MouseSettings {
                 scroll_rows: MOUSE_SCROLL_ROWS_MAX + 1,
+                ..super::MouseSettings::default()
             },
             ..EditorSettings::default()
         },
@@ -163,7 +164,10 @@ fn settings_realization_rejects_zero_timing_bounds() {
 fn settings_realization_rejects_invalid_mouse_scroll_bounds() {
     for scroll_rows in [0, MOUSE_SCROLL_ROWS_MAX + 1] {
         let settings = EditorSettings {
-            mouse: super::MouseSettings { scroll_rows },
+            mouse: super::MouseSettings {
+                scroll_rows,
+                ..super::MouseSettings::default()
+            },
             ..EditorSettings::default()
         };
         assert!(matches!(
@@ -173,6 +177,31 @@ fn settings_realization_rejects_invalid_mouse_scroll_bounds() {
                 ..
             } | SettingsError::ZeroBound {
                 field: "mouse.scroll_rows"
+            })
+        ));
+    }
+}
+
+#[test]
+fn settings_realization_rejects_invalid_double_click_intervals() {
+    for double_click_interval in [
+        Duration::ZERO,
+        MOUSE_DOUBLE_CLICK_INTERVAL_MAX + Duration::from_millis(1),
+    ] {
+        let settings = EditorSettings {
+            mouse: super::MouseSettings {
+                double_click_interval,
+                ..super::MouseSettings::default()
+            },
+            ..EditorSettings::default()
+        };
+        assert!(matches!(
+            settings.realize(),
+            Err(SettingsError::ZeroDuration {
+                field: "mouse.double_click_interval"
+            } | SettingsError::InvalidDuration {
+                field: "mouse.double_click_interval",
+                ..
             })
         ));
     }

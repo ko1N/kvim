@@ -23,6 +23,12 @@ pub const RECOVERY_BYTES_MAX: u64 = FILE_BYTES_MAX;
 /// The largest count that the input resolver accepts before one command.
 pub const COUNT_MAX: u32 = 9_999;
 
+/// The default maximum time between two sidebar clicks that activate one row.
+pub const MOUSE_DOUBLE_CLICK_INTERVAL_DEFAULT: Duration = Duration::from_millis(500);
+
+/// The largest supported sidebar double-click interval.
+pub const MOUSE_DOUBLE_CLICK_INTERVAL_MAX: Duration = Duration::from_secs(2);
+
 /// The default number of buffer rows that one pointer wheel tick scrolls.
 pub const MOUSE_SCROLL_ROWS_DEFAULT: u16 = 3;
 
@@ -79,6 +85,15 @@ pub enum SettingsError {
         /// The supplied value.
         actual: u64,
     },
+    /// One duration exceeds its published maximum.
+    InvalidDuration {
+        /// The stable field name.
+        field: &'static str,
+        /// The inclusive maximum.
+        max: Duration,
+        /// The supplied value.
+        actual: Duration,
+    },
     /// One duration is zero.
     ZeroDuration {
         /// The stable field name.
@@ -98,6 +113,10 @@ impl fmt::Display for SettingsError {
             Self::InvalidBound { field, max, actual } => write!(
                 formatter,
                 "the editor setting {field} must not exceed {max}, got {actual}"
+            ),
+            Self::InvalidDuration { field, max, actual } => write!(
+                formatter,
+                "the editor setting {field} must not exceed {max:?}, got {actual:?}"
             ),
             Self::ZeroDuration { field } => {
                 write!(
@@ -582,12 +601,15 @@ impl Default for LanguageSettings {
 pub struct MouseSettings {
     /// The number of buffer rows that one wheel tick scrolls.
     pub scroll_rows: u16,
+    /// The maximum elapsed time between two clicks that activate one sidebar row.
+    pub double_click_interval: Duration,
 }
 
 impl Default for MouseSettings {
     fn default() -> Self {
         Self {
             scroll_rows: MOUSE_SCROLL_ROWS_DEFAULT,
+            double_click_interval: MOUSE_DOUBLE_CLICK_INTERVAL_DEFAULT,
         }
     }
 }
@@ -674,6 +696,18 @@ impl EditorSettings {
             u64::from(self.mouse.scroll_rows),
             u64::from(MOUSE_SCROLL_ROWS_MAX),
         )?;
+        if self.mouse.double_click_interval.is_zero() {
+            return Err(SettingsError::ZeroDuration {
+                field: "mouse.double_click_interval",
+            });
+        }
+        if self.mouse.double_click_interval > MOUSE_DOUBLE_CLICK_INTERVAL_MAX {
+            return Err(SettingsError::InvalidDuration {
+                field: "mouse.double_click_interval",
+                max: MOUSE_DOUBLE_CLICK_INTERVAL_MAX,
+                actual: self.mouse.double_click_interval,
+            });
+        }
         validate_bound(
             "notifications.rows_max",
             self.notifications.rows_max as u64,

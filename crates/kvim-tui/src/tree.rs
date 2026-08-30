@@ -556,6 +556,17 @@ impl TreeSidebar {
         self.tree.select(&path);
     }
 
+    /// Selects one rendered tree row.
+    pub(super) fn select_row(&mut self, row: usize) -> bool {
+        self.move_selection(TreeMotion::ToRow(row));
+        self.selected_index() == Some(row)
+    }
+
+    /// Returns the stable path of the current selectable entry.
+    pub(super) fn selected_entry_path(&self) -> Option<PathBuf> {
+        self.selected_entry().ok()
+    }
+
     /// Moves the selection to the directory that holds the selected entry.
     pub(super) fn select_parent(&mut self) {
         self.tree.select_parent();

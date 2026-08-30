@@ -18,8 +18,8 @@ use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
 use kvim_terminal::{
-    CellPosition, Key, KeyCode, PasteText, PointerAction, PointerEvent, PointerModifiers,
-    PointerWheel, PointerWheelDirection, TerminalEvent,
+    CellPosition, Key, KeyCode, PasteText, PointerAction, PointerButton, PointerEvent,
+    PointerModifiers, PointerWheel, PointerWheelDirection, TerminalEvent,
 };
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
@@ -29,6 +29,7 @@ use kvim_workspace::{
     WorkspaceResult, recovery_record_path, write_recovery_record,
 };
 
+use crate::buffer_view::{WINBAR_ROWS, gutter_cells};
 use crate::clipboard::SessionClipboard;
 use crate::completion::{CompletionOutcome, LineCompletion};
 use crate::embed::EditorInstanceId;
@@ -42,9 +43,22 @@ use crate::session::{
     PromptSeed, RecoveryDecision, RecoveryDecisionError, RecoveryOperation,
     RecoverySubmissionFailure, Redraw, RunState, Session, test_root,
 };
+use crate::tree::TREE_TITLE_ROWS;
 use kvim_ui::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
+
+fn click(column: u16, row: u16) -> TerminalEvent {
+    pointer_button(column, row, PointerButton::Left)
+}
+
+fn pointer_button(column: u16, row: u16, button: PointerButton) -> TerminalEvent {
+    TerminalEvent::Pointer(PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        PointerAction::Press(button),
+    ))
+}
 
 /// Creates one bounded vertical wheel event at a terminal cell.
 fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEvent {
@@ -55,6 +69,381 @@ fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEve
             PointerWheel::new(direction, 1).expect("one tick is within the event bound"),
         ),
     ))
+}
+
+#[test]
+fn left_click_focuses_only_the_target_split_and_places_its_cursor() {
+    let (mut session, left, right) = split_session(20);
+    let area = session
+        .windows
+        .layout()
+        .area(left)
+        .expect("the split is visible");
+    let row = area.y.saturating_add(WINBAR_ROWS).saturating_add(3);
+    assert_eq!(
+        session.handle_event(click(area.x, row), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(session.windows.focused_window(), left);
+    assert_eq!(cursor_line(&session, left), 3);
+    assert_eq!(cursor_line(&session, right), 0);
+}
+
+#[test]
+fn buffer_click_maps_gutter_tabs_wide_glyphs_horizontal_offset_and_line_end() {
+    let mut session = with_text(&[
+        "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+        "\t界x",
+    ]);
+    let window = session.windows.focused_window();
+    type_keys(&mut session, "55l");
+    let area = session
+        .windows
+        .layout()
+        .area(window)
+        .expect("the window is visible");
+    assert!(
+        session.windows.state(window).unwrap().left_column() > 0,
+        "the long first line establishes a horizontal viewport offset"
+    );
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let text_x = area.x.saturating_add(gutter);
+    let first_row = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(text_x, first_row), NOW);
+    assert!(session.cursor().column().get() > 0);
+
+    let row = first_row.saturating_add(1);
+    let _ = session.handle_event(click(area.x, row), NOW);
+
+    for (column, expected) in [
+        (area.x, 0),
+        (text_x.saturating_add(2), 0),
+        (text_x.saturating_add(4), 1),
+        (text_x.saturating_add(5), 1),
+        (text_x.saturating_add(20), 2),
+    ] {
+        let _ = session.handle_event(click(column, row), NOW);
+        assert_eq!(session.cursor().column().get(), expected, "cell {column}");
+    }
+}
+
+#[test]
+fn sidebar_click_selects_once_and_activates_the_same_row_twice() {
+    let mut session = session(80, 10);
+    let root = workspace_root();
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: root.clone(),
+        outcome: Ok(DirectoryListing {
+            path: root,
+            identity: DirectoryIdentity::Root,
+            entries: vec![TreeEntry {
+                name: "clicked.rs".to_owned(),
+                kind: kvim_workspace::EntryKind::File,
+                link: LinkKind::Direct,
+            }],
+            truncation: Truncation::Complete,
+        }),
+    });
+    press_ctrl(&mut session, 'e');
+    press_ctrl(&mut session, 'h');
+    let sidebar = session.tree_region.expect("the sidebar is visible");
+    let area = session
+        .windows
+        .layout()
+        .area(sidebar)
+        .expect("the sidebar is visible");
+    let event = click(area.x, area.y.saturating_add(TREE_TITLE_ROWS));
+
+    assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    assert_eq!(session.windows.focused_region(), sidebar);
+    assert_eq!(
+        session.tree.selected_entry_name().as_deref(),
+        Some("clicked.rs")
+    );
+    assert!(
+        session.take_file_request().is_none(),
+        "one click does not activate"
+    );
+
+    assert_eq!(
+        session.handle_event(event, Duration::from_millis(100)),
+        Redraw::Needed
+    );
+    assert_ne!(session.windows.focused_region(), sidebar);
+    assert!(
+        session.take_file_request().is_some(),
+        "the second click opens the file"
+    );
+}
+
+#[test]
+fn sidebar_double_click_requires_consecutive_left_clicks() {
+    for intervening in [
+        TerminalEvent::Key(Key::plain(KeyCode::Char('j'))),
+        wheel(0, 0, PointerWheelDirection::Down),
+    ] {
+        let mut session = sidebar_session(&["clicked.rs"]);
+        let event = sidebar_first_entry_click(&session);
+
+        assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+        let _ = session.handle_event(intervening, Duration::from_millis(50));
+        assert_eq!(
+            session.handle_event(event, Duration::from_millis(100)),
+            Redraw::Needed
+        );
+        assert!(
+            session.take_file_request().is_none(),
+            "an intervening input cancels the pending sidebar click"
+        );
+    }
+}
+
+#[test]
+fn sidebar_double_click_requires_the_same_stable_entry() {
+    let mut session = sidebar_session(&["alpha.rs", "beta.rs"]);
+    let event = sidebar_first_entry_click(&session);
+    assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+
+    let root = workspace_root();
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: root.clone(),
+        outcome: Ok(DirectoryListing {
+            path: root,
+            identity: DirectoryIdentity::Root,
+            entries: vec![TreeEntry {
+                name: "beta.rs".to_owned(),
+                kind: kvim_workspace::EntryKind::File,
+                link: LinkKind::Direct,
+            }],
+            truncation: Truncation::Complete,
+        }),
+    });
+
+    assert_eq!(
+        session.handle_event(event, Duration::from_millis(100)),
+        Redraw::Needed
+    );
+    assert_eq!(
+        session.tree.selected_entry_name().as_deref(),
+        Some("beta.rs")
+    );
+    assert!(
+        session.take_file_request().is_none(),
+        "a changed entry at the rendered row cannot activate the first entry"
+    );
+}
+
+#[test]
+fn sidebar_click_after_the_interval_selects_without_activation() {
+    let mut session = sidebar_session(&["clicked.rs"]);
+    let event = sidebar_first_entry_click(&session);
+    assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    let after_interval = session.settings.mouse.double_click_interval + Duration::from_millis(1);
+
+    assert_eq!(session.handle_event(event, after_interval), Redraw::Needed);
+    assert!(session.take_file_request().is_none());
+    assert_eq!(
+        session.tree.selected_entry_name().as_deref(),
+        Some("clicked.rs")
+    );
+}
+
+#[test]
+fn buffer_click_maps_the_visible_row_through_the_scrolled_viewport() {
+    let text = (0..40)
+        .map(|index| format!("line-{index}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let mut session = session(80, 10);
+    press(&mut session, 'i');
+    let _ = session.handle_event(
+        TerminalEvent::Paste(PasteText::new(&text).expect("the fixture text is bounded")),
+        NOW,
+    );
+    press_code(&mut session, KeyCode::Esc);
+    let window = session.windows.focused_window();
+    let area = session
+        .windows
+        .layout()
+        .area(window)
+        .expect("the window is visible");
+    let text_row = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(wheel(area.x, text_row, PointerWheelDirection::Down), NOW);
+    let first = first_line(&session, window);
+    assert!(
+        first > 0,
+        "the wheel establishes a vertically scrolled viewport"
+    );
+
+    assert_eq!(
+        session.handle_event(click(area.x, text_row), Duration::from_millis(1)),
+        Redraw::Needed
+    );
+    assert_eq!(session.cursor().line().get(), first);
+}
+
+#[test]
+fn completion_click_selects_its_row_and_does_not_reach_the_buffer() {
+    let mut session = with_text(&["alpha", "beta", "gamma"]);
+    press(&mut session, ':');
+    let completion = LineCompletion::open(
+        "",
+        vec!["first".to_owned(), "second".to_owned()],
+        64,
+        crate::completion::CompletionCycle::Next,
+    )
+    .expect("the fixture opens a completion");
+    session.prompt.as_mut().unwrap().completion = Some(completion);
+    session.reconcile_completion();
+    let before = session.cursor();
+    let layout = session
+        .completion_layout()
+        .expect("the completion is visible");
+
+    assert_eq!(
+        session.handle_event(click(layout.area.x, layout.area.y.saturating_add(1)), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(prompt_text(&session), "second");
+    assert_eq!(session.cursor(), before);
+}
+
+#[test]
+fn completion_click_on_the_overflow_note_is_ignored() {
+    let mut session = session(80, 10);
+    press(&mut session, ':');
+    let completion = LineCompletion::open(
+        "",
+        (0..12)
+            .map(|index| format!("candidate-{index:02}"))
+            .collect(),
+        64,
+        crate::completion::CompletionCycle::Next,
+    )
+    .expect("the fixture opens a completion");
+    session.prompt.as_mut().unwrap().completion = Some(completion);
+    session.reconcile_completion();
+    let layout = session
+        .completion_layout()
+        .expect("the completion is visible");
+    assert!(layout.hidden, "the final row is the overflow note");
+    let selected = session
+        .prompt
+        .as_ref()
+        .unwrap()
+        .completion
+        .as_ref()
+        .unwrap()
+        .selected_row();
+    let text = prompt_text(&session);
+
+    assert_eq!(
+        session.handle_event(click(layout.area.x, layout.area.bottom() - 1), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(
+        session
+            .prompt
+            .as_ref()
+            .unwrap()
+            .completion
+            .as_ref()
+            .unwrap()
+            .selected_row(),
+        selected
+    );
+    assert_eq!(prompt_text(&session), text);
+}
+
+#[test]
+fn picker_click_on_an_empty_result_row_is_ignored() {
+    let mut session = with_text(&["alpha", "beta"]);
+    let root = test_root(workspace_root());
+    let candidates = (0..2)
+        .map(|index| {
+            Candidate::file(
+                &root,
+                WorktreeRelativePath::new(format!("file-{index}.rs")).unwrap(),
+            )
+        })
+        .collect();
+    session.picker = Some(PickerState::open(PickerKind::Buffers, root, candidates));
+    let _ = session.open_prompt(PromptKind::Picker);
+    session.reconcile_picker();
+    let area = picker_areas(session.area).results;
+    let selected = session.picker.as_ref().unwrap().picker().selected_row();
+
+    assert_eq!(
+        session.handle_event(click(area.x, area.y.saturating_add(3)), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(
+        session.picker.as_ref().unwrap().picker().selected_row(),
+        selected
+    );
+}
+
+#[test]
+fn picker_click_selects_the_clicked_result_without_reaching_the_buffer() {
+    let mut session = with_text(&["alpha", "beta"]);
+    let root = test_root(workspace_root());
+    let candidates = (0..4)
+        .map(|index| {
+            Candidate::file(
+                &root,
+                WorktreeRelativePath::new(format!("file-{index}.rs"))
+                    .expect("the fixture path is valid"),
+            )
+        })
+        .collect();
+    session.picker = Some(PickerState::open(PickerKind::Buffers, root, candidates));
+    let _ = session.open_prompt(PromptKind::Picker);
+    session.reconcile_picker();
+    let before = session.cursor();
+    let area = picker_areas(session.area).results;
+
+    assert_eq!(
+        session.handle_event(click(area.x, area.y.saturating_add(2)), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(
+        session
+            .picker
+            .as_ref()
+            .and_then(|picker| picker.picker().selected_row()),
+        Some(2)
+    );
+    assert_eq!(session.cursor(), before);
+}
+
+#[test]
+fn decorative_float_passes_click_through_to_the_buffer() {
+    let mut session = with_text(&["alpha", "beta", "gamma"]);
+    session.float = Some(Float::text("note", "decoration"));
+    assert_eq!(session.handle_event(click(10, 4), NOW), Redraw::Needed);
+    assert_eq!(
+        session.cursor().line().get(),
+        3.min(session.buffer().line_count() - 1)
+    );
+    assert!(
+        session.float.is_some(),
+        "pointer input keeps decoration open"
+    );
+}
+
+#[test]
+fn chrome_and_unsupported_pointer_buttons_do_nothing() {
+    let mut session = with_text(&["alpha"]);
+    let before = session.cursor();
+    assert_eq!(
+        session.handle_event(click(1, session.area.bottom().saturating_sub(1)), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(
+        session.handle_event(pointer_button(10, 3, PointerButton::Right), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.cursor(), before);
 }
 
 #[test]
@@ -266,6 +655,42 @@ fn workspace_root() -> PathBuf {
 
 /// The which-key delay of the settings that every test session holds.
 const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
+
+/// Creates one sidebar session with a completed root listing.
+fn sidebar_session(entries: &[&str]) -> Session {
+    let mut session = session(80, 10);
+    let root = workspace_root();
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: root.clone(),
+        outcome: Ok(DirectoryListing {
+            path: root,
+            identity: DirectoryIdentity::Root,
+            entries: entries
+                .iter()
+                .map(|name| TreeEntry {
+                    name: (*name).to_owned(),
+                    kind: kvim_workspace::EntryKind::File,
+                    link: LinkKind::Direct,
+                })
+                .collect(),
+            truncation: Truncation::Complete,
+        }),
+    });
+    press_ctrl(&mut session, 'e');
+    press_ctrl(&mut session, 'h');
+    session
+}
+
+/// Returns a left click at the first visible file-sidebar entry.
+fn sidebar_first_entry_click(session: &Session) -> TerminalEvent {
+    let sidebar = session.tree_region.expect("the sidebar is visible");
+    let area = session
+        .windows
+        .layout()
+        .area(sidebar)
+        .expect("the sidebar is visible");
+    click(area.x, area.y.saturating_add(TREE_TITLE_ROWS))
+}
 
 /// Creates a session over one terminal size.
 fn session(width: u16, height: u16) -> Session {

@@ -252,6 +252,15 @@ impl LineCompletion {
         self.selected
     }
 
+    /// Selects one candidate row directly.
+    pub(super) fn select_row(&mut self, row: usize) -> bool {
+        if row >= self.candidates.len() {
+            return false;
+        }
+        self.selected = row;
+        true
+    }
+
     /// Returns what the open menu left on the screen.
     ///
     /// The value is never [`CompletionOutcome::Missed`], because the

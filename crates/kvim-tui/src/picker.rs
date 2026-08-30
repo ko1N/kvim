@@ -246,6 +246,16 @@ impl PickerState {
         self.refresh_preview();
     }
 
+    /// Selects one visible result row.
+    pub(super) fn select_row(&mut self, row: usize) -> bool {
+        if row >= self.picker.matches().len() {
+            return false;
+        }
+        self.picker.select_row(row);
+        self.refresh_preview();
+        true
+    }
+
     /// Returns what the editor does with the selected row.
     pub(super) fn accept(&self) -> Option<Acceptance> {
         self.picker.accept()
