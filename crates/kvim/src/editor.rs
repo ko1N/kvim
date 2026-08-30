@@ -70,7 +70,6 @@ pub enum PanicProbe {
 
 enum Step {
     Handled(WorktreeUpdate),
-    Ignored,
     Input(TerminalEvent, Duration),
     Completed(kvim_embed::WorktreeCompletion),
     Stop,
@@ -191,7 +190,6 @@ async fn drive<C: TerminalControl>(
                 }
                 let _ = shape;
             }
-            Step::Ignored => {}
             Step::Stop => break,
             Step::Failed(error) => {
                 errors += 1;
@@ -283,7 +281,6 @@ async fn shutdown(editor: WorktreeEditor) {
 
 fn apply_event(event: Option<Result<TerminalEvent, TerminalError>>, now: Duration) -> Step {
     match event {
-        Some(Ok(TerminalEvent::Pointer(_))) => Step::Ignored,
         Some(Ok(event)) => Step::Input(event, now),
         Some(Err(error)) => Step::Failed(error),
         None => Step::Stop,
@@ -294,10 +291,8 @@ fn facade_input(event: TerminalEvent) -> WorktreeInput {
     match event {
         TerminalEvent::Key(key) => WorktreeInput::Key(key),
         TerminalEvent::Paste(text) => WorktreeInput::Paste(text),
+        TerminalEvent::Pointer(pointer) => WorktreeInput::Pointer(pointer),
         TerminalEvent::Resize { columns, rows } => WorktreeInput::Resize { columns, rows },
         TerminalEvent::Unsupported => WorktreeInput::Unsupported,
-        TerminalEvent::Pointer(_) => {
-            unreachable!("apply_event filters pointer input before facade dispatch")
-        }
     }
 }

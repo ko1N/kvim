@@ -36,7 +36,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 |---|---|
 | `kvim-core` | Deterministic text model: rope buffer, validated coordinates, edit transactions, undo and redo. Performs no input or output. |
 | `kvim-editor` | Modal editing state: cursors, selections, text objects, motions, operators, registers, search, dot-repeat, and the viewport of each window. |
-| `kvim-keymap` | Terminal-neutral keys, generic bindings, the shared resolver with its one pending sequence, published input contexts, dispatch ownership, and which-key hints. |
+| `kvim-keymap` | Terminal-neutral keys and pointer values, generic bindings, the shared resolver with its one pending sequence, published input contexts, dispatch ownership, and which-key hints. |
 | `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
@@ -47,7 +47,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
-| `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral keys and pointer values. |
+| `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral keys and pointer values owned by `kvim-keymap`. |
 | `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
 | `kvim-workspace` | Files, buffers, recovery records for dirty file-backed buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
 | `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
@@ -163,9 +163,9 @@ them.
 The alternative was to move `TerminalEvent` down into `kvim-keymap` and leave
 the crossterm conversion in `kvim-terminal`. That move is refused, because the
 value carries `Resize`, which is a terminal fact and not a key fact. A keymap
-crate that named it would own two charters. The accepted cost is that an
-external host of the embedded facade also compiles `kvim-terminal` and
-crossterm, although `WorktreeEditor` names no terminal type.
+crate that named it would own two charters. The accepted cost is that a worktree facade compiles the terminal adapter
+privately through `kvim-tui`. Public facade signatures and default facade
+builds still name no terminal type and compile no crossterm dependency.
 
 `kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
 `Resolver` and reads one published `InputContextSnapshot` for each surface. The

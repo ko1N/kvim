@@ -35,8 +35,9 @@ geometry before it creates state. `MemoryEditor::resize` validates new geometry.
 cell buffer before it changes a cell. Drop ends the pure in-memory lifecycle;
 there is no explicit close operation because cleanup cannot fail.
 
-The editor creates no worktree and has no service request type. Its default
-Cargo dependency closure contains no `kvim-tui`, `kvim-runtime`,
+The editor creates no worktree and has no service request type. Pointer values
+live in `kvim-keymap`, below terminal conversion and both facade
+implementations. Its default Cargo dependency closure contains no `kvim-tui`, `kvim-runtime`,
 `kvim-language`, `kvim-lsp`, `kvim-workspace`, `kvim-path`, `kvim-terminal`,
 Tokio, crossterm, notify, or cap-std. Terminal lifecycle remains host-owned.
 `crates/kvim-embed/examples/in_memory_editor.rs` opens supplied text, edits it,
@@ -859,9 +860,11 @@ and consuming shutdown.
 `WorktreeEditor::input` accepts normalized terminal-neutral input when
 `WorktreeBindingMode::FacadeResolved` is selected. This includes the shared
 pointer vocabulary: terminal-cell position, non-Shift modifiers, buttons,
-press, release, drag, motion, and wheel. `MemoryEditor` accepts the same
-one-surface pointer vocabulary without terminal dependencies. A host-resolved
-editor instead uses `semantic_dispatch` after its own physical arbitration. The
+press, release, drag, motion, and wheel. `WorktreeEditor::pointer` accepts the
+same input in both binding modes because pointer dispatch does not use key
+arbitration. `MemoryEditor::pointer` accepts the same one-surface pointer
+vocabulary without terminal dependencies. A host-resolved editor instead uses
+`semantic_dispatch` for keys after its own physical arbitration. The
 binary does not access `Session`, `EditorDriver`, runtime handles, or completion
 payloads.
 

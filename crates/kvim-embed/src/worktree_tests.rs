@@ -2,6 +2,7 @@ use std::fs;
 use std::time::Duration;
 
 use kvim_input::KeyCode;
+use kvim_keymap::{CellPosition, PointerAction, PointerButton, PointerModifiers};
 
 use super::*;
 
@@ -528,6 +529,21 @@ fn host_resolved_raw_input_and_idle_interruption_are_atomic_refusals() {
         Err(WorktreeInputError::HostResolved)
     );
     assert_eq!(editor.input_context(), before);
+
+    let pointer = PointerEvent::new(
+        CellPosition::new(10, 2),
+        PointerModifiers::default(),
+        PointerAction::Press(PointerButton::Left),
+    );
+    assert!(
+        editor
+            .input(WorktreeInput::Pointer(pointer), Duration::ZERO)
+            .is_ok()
+    );
+    assert_eq!(
+        editor.pointer(pointer, Duration::ZERO),
+        WorktreeUpdate::Redraw
+    );
 
     assert_eq!(
         editor.semantic_dispatch(

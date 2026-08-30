@@ -19,292 +19,79 @@ use crate::key::{KeyRejection, normalize_key_event};
 /// that one read attempt skips. The bound keeps a read attempt finite when a
 /// terminal sends unsupported events continuously.
 pub const UNMAPPED_EVENT_SKIP_MAX: usize = 64;
-/// The maximum number of immediately-ready pointer motion or wheel events that
-/// one returned event may coalesce.
-pub const POINTER_EVENTS_COALESCE_MAX: u8 = 32;
+pub use kvim_keymap::{
+    CellPosition, POINTER_EVENTS_COALESCE_MAX, PointerAction, PointerButton, PointerEvent,
+    PointerModifiers, PointerWheel, PointerWheelDirection, PointerWheelError,
+};
 
-/// A terminal cell position.
-///
-/// This position is distinct from a source-text character or byte position.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct CellPosition {
-    column: u16,
-    row: u16,
-}
-
-impl CellPosition {
-    /// Creates a position from zero-based terminal cell coordinates.
-    #[must_use]
-    pub const fn new(column: u16, row: u16) -> Self {
-        Self { column, row }
+fn normalize_mouse(event: MouseEvent) -> Result<PointerEvent, EventRejection> {
+    if event.modifiers.contains(KeyModifiers::SHIFT) {
+        return Err(EventRejection::MouseShift);
     }
-
-    /// Returns the zero-based terminal cell column.
-    #[must_use]
-    pub const fn column(self) -> u16 {
-        self.column
-    }
-
-    /// Returns the zero-based terminal cell row.
-    #[must_use]
-    pub const fn row(self) -> u16 {
-        self.row
-    }
-}
-
-/// Non-Shift modifiers reported with a pointer event.
-///
-/// Shift-modified pointer input is omitted before it reaches this type so the
-/// terminal emulator can own its native selection behavior.
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PointerModifiers {
-    control: bool,
-    alt: bool,
-    super_key: bool,
-}
-
-impl PointerModifiers {
-    /// Creates modifiers from terminal-neutral modifier states.
-    #[must_use]
-    pub const fn new(control: bool, alt: bool, super_key: bool) -> Self {
-        Self {
-            control,
-            alt,
-            super_key,
+    let action = match event.kind {
+        MouseEventKind::Down(button) => PointerAction::Press(pointer_button(button)),
+        MouseEventKind::Up(button) => PointerAction::Release(pointer_button(button)),
+        MouseEventKind::Drag(button) => PointerAction::Drag(pointer_button(button)),
+        MouseEventKind::Moved => PointerAction::Motion,
+        MouseEventKind::ScrollUp => PointerAction::Wheel(pointer_wheel(PointerWheelDirection::Up)),
+        MouseEventKind::ScrollDown => {
+            PointerAction::Wheel(pointer_wheel(PointerWheelDirection::Down))
         }
-    }
-
-    const fn from_crossterm(modifiers: KeyModifiers) -> Self {
-        Self::new(
-            modifiers.contains(KeyModifiers::CONTROL),
-            modifiers.contains(KeyModifiers::ALT),
-            modifiers.contains(KeyModifiers::SUPER),
-        )
-    }
-
-    /// Returns whether Control was held.
-    #[must_use]
-    pub const fn control(self) -> bool {
-        self.control
-    }
-
-    /// Returns whether Alt was held.
-    #[must_use]
-    pub const fn alt(self) -> bool {
-        self.alt
-    }
-
-    /// Returns whether Super was held.
-    #[must_use]
-    pub const fn super_key(self) -> bool {
-        self.super_key
-    }
-}
-
-/// A pointer button with a supported terminal-neutral identity.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PointerButton {
-    /// The primary button.
-    Left,
-    /// The secondary button.
-    Right,
-    /// The middle button.
-    Middle,
-}
-
-/// A wheel direction in terminal-cell coordinates.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PointerWheelDirection {
-    /// Scroll toward smaller row values.
-    Up,
-    /// Scroll toward larger row values.
-    Down,
-    /// Scroll toward smaller column values.
-    Left,
-    /// Scroll toward larger column values.
-    Right,
-}
-
-/// The reason a wheel tick count is invalid.
-#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
-pub enum PointerWheelError {
-    /// The wheel action carries no raw tick.
-    #[error("the pointer wheel action must contain at least one tick")]
-    ZeroTicks,
-    /// The wheel action exceeds the published coalescing bound.
-    #[error(
-        "the pointer wheel action has {ticks} ticks, above the maximum of {POINTER_EVENTS_COALESCE_MAX}"
-    )]
-    TooManyTicks { ticks: u8 },
-}
-
-/// A bounded coalesced wheel action.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PointerWheel {
-    direction: PointerWheelDirection,
-    ticks: u8,
-}
-
-impl PointerWheel {
-    /// Creates a wheel action with a bounded nonzero tick count.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`PointerWheelError`] when `ticks` is zero or above
-    /// [`POINTER_EVENTS_COALESCE_MAX`].
-    pub const fn new(
-        direction: PointerWheelDirection,
-        ticks: u8,
-    ) -> Result<Self, PointerWheelError> {
-        if ticks == 0 {
-            return Err(PointerWheelError::ZeroTicks);
+        MouseEventKind::ScrollLeft => {
+            PointerAction::Wheel(pointer_wheel(PointerWheelDirection::Left))
         }
-        if ticks > POINTER_EVENTS_COALESCE_MAX {
-            return Err(PointerWheelError::TooManyTicks { ticks });
+        MouseEventKind::ScrollRight => {
+            PointerAction::Wheel(pointer_wheel(PointerWheelDirection::Right))
         }
-        Ok(Self { direction, ticks })
-    }
+    };
+    Ok(PointerEvent::new(
+        CellPosition::new(event.column, event.row),
+        PointerModifiers::new(
+            event.modifiers.contains(KeyModifiers::CONTROL),
+            event.modifiers.contains(KeyModifiers::ALT),
+            event.modifiers.contains(KeyModifiers::SUPER),
+        ),
+        action,
+    ))
+}
 
-    const fn one(direction: PointerWheelDirection) -> Self {
-        Self {
-            direction,
-            ticks: 1,
+fn pointer_wheel(direction: PointerWheelDirection) -> PointerWheel {
+    PointerWheel::new(direction, 1).expect("one tick is inside the published pointer bound")
+}
+
+fn can_merge_pointer(left: PointerEvent, right: PointerEvent) -> bool {
+    match (left.action(), right.action()) {
+        (PointerAction::Motion, PointerAction::Motion) => left.modifiers() == right.modifiers(),
+        (PointerAction::Wheel(left_wheel), PointerAction::Wheel(right_wheel)) => {
+            left.position() == right.position()
+                && left.modifiers() == right.modifiers()
+                && left_wheel.direction() == right_wheel.direction()
+                && right_wheel.ticks() <= POINTER_EVENTS_COALESCE_MAX - left_wheel.ticks()
         }
-    }
-
-    /// Returns the wheel direction.
-    #[must_use]
-    pub const fn direction(self) -> PointerWheelDirection {
-        self.direction
-    }
-
-    /// Returns the number of raw wheel ticks, from one through
-    /// [`POINTER_EVENTS_COALESCE_MAX`].
-    #[must_use]
-    pub const fn ticks(self) -> u8 {
-        self.ticks
-    }
-
-    fn can_merge(self, other: Self) -> bool {
-        self.direction == other.direction && other.ticks <= POINTER_EVENTS_COALESCE_MAX - self.ticks
-    }
-
-    fn merge(&mut self, other: Self) {
-        debug_assert!(
-            self.can_merge(other),
-            "the event source merges only equal wheel directions below the published coalescing limit"
-        );
-        self.ticks += other.ticks;
+        _ => false,
     }
 }
 
-/// One terminal-neutral pointer action.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub enum PointerAction {
-    /// A button press.
-    Press(PointerButton),
-    /// A button release.
-    Release(PointerButton),
-    /// A pointer movement while a button is held.
-    Drag(PointerButton),
-    /// A pointer movement without a reported button.
-    Motion,
-    /// One or more bounded wheel ticks.
-    Wheel(PointerWheel),
-}
-
-/// One terminal-neutral pointer event.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct PointerEvent {
-    position: CellPosition,
-    modifiers: PointerModifiers,
-    action: PointerAction,
-}
-
-impl PointerEvent {
-    /// Creates a terminal-neutral pointer event.
-    #[must_use]
-    pub const fn new(
-        position: CellPosition,
-        modifiers: PointerModifiers,
-        action: PointerAction,
-    ) -> Self {
-        Self {
-            position,
-            modifiers,
-            action,
+fn merge_pointer(left: &mut PointerEvent, right: PointerEvent) {
+    debug_assert!(
+        can_merge_pointer(*left, right),
+        "the event source merges only consecutive motions or equal wheel directions"
+    );
+    match (left.action(), right.action()) {
+        (PointerAction::Motion, PointerAction::Motion) => *left = right,
+        (PointerAction::Wheel(left_wheel), PointerAction::Wheel(right_wheel)) => {
+            let wheel = PointerWheel::new(
+                left_wheel.direction(),
+                left_wheel.ticks() + right_wheel.ticks(),
+            )
+            .expect("can_merge_pointer keeps the wheel inside its published bound");
+            *left = PointerEvent::new(
+                left.position(),
+                left.modifiers(),
+                PointerAction::Wheel(wheel),
+            );
         }
-    }
-
-    fn from_crossterm(event: MouseEvent) -> Result<Self, EventRejection> {
-        if event.modifiers.contains(KeyModifiers::SHIFT) {
-            return Err(EventRejection::MouseShift);
-        }
-        let action = match event.kind {
-            MouseEventKind::Down(button) => PointerAction::Press(pointer_button(button)),
-            MouseEventKind::Up(button) => PointerAction::Release(pointer_button(button)),
-            MouseEventKind::Drag(button) => PointerAction::Drag(pointer_button(button)),
-            MouseEventKind::Moved => PointerAction::Motion,
-            MouseEventKind::ScrollUp => {
-                PointerAction::Wheel(PointerWheel::one(PointerWheelDirection::Up))
-            }
-            MouseEventKind::ScrollDown => {
-                PointerAction::Wheel(PointerWheel::one(PointerWheelDirection::Down))
-            }
-            MouseEventKind::ScrollLeft => {
-                PointerAction::Wheel(PointerWheel::one(PointerWheelDirection::Left))
-            }
-            MouseEventKind::ScrollRight => {
-                PointerAction::Wheel(PointerWheel::one(PointerWheelDirection::Right))
-            }
-        };
-        Ok(Self::new(
-            CellPosition::new(event.column, event.row),
-            PointerModifiers::from_crossterm(event.modifiers),
-            action,
-        ))
-    }
-
-    /// Returns the reported terminal cell position.
-    #[must_use]
-    pub const fn position(self) -> CellPosition {
-        self.position
-    }
-
-    /// Returns the non-Shift modifiers.
-    #[must_use]
-    pub const fn modifiers(self) -> PointerModifiers {
-        self.modifiers
-    }
-
-    /// Returns the pointer action.
-    #[must_use]
-    pub const fn action(self) -> PointerAction {
-        self.action
-    }
-
-    fn can_merge(self, other: Self) -> bool {
-        match (self.action, other.action) {
-            (PointerAction::Motion, PointerAction::Motion) => self.modifiers == other.modifiers,
-            (PointerAction::Wheel(left), PointerAction::Wheel(right)) => {
-                self.position == other.position
-                    && self.modifiers == other.modifiers
-                    && left.can_merge(right)
-            }
-            _ => false,
-        }
-    }
-
-    fn merge(&mut self, other: Self) {
-        debug_assert!(
-            self.can_merge(other),
-            "the event source merges only consecutive motions or equal wheel directions"
-        );
-        match (&mut self.action, other.action) {
-            (PointerAction::Motion, PointerAction::Motion) => *self = other,
-            (PointerAction::Wheel(left), PointerAction::Wheel(right)) => left.merge(right),
-            _ => unreachable!("PointerEvent::can_merge validated the pointer action pair"),
-        }
+        _ => unreachable!("can_merge_pointer validated the pointer action pair"),
     }
 }
 
@@ -392,7 +179,7 @@ impl TerminalEvent {
             CrosstermEvent::Paste(text) => Ok(Self::Paste(PasteText::new(&text)?)),
             CrosstermEvent::Resize(columns, rows) => Ok(Self::Resize { columns, rows }),
             CrosstermEvent::FocusGained | CrosstermEvent::FocusLost => Err(EventRejection::Focus),
-            CrosstermEvent::Mouse(mouse) => Ok(Self::Pointer(PointerEvent::from_crossterm(mouse)?)),
+            CrosstermEvent::Mouse(mouse) => Ok(Self::Pointer(normalize_mouse(mouse)?)),
         }
     }
 }
@@ -472,8 +259,10 @@ where
                 break;
             };
             match TerminalEvent::from_crossterm(raw.clone()) {
-                Ok(TerminalEvent::Pointer(next_pointer)) if pointer.can_merge(next_pointer) => {
-                    pointer.merge(next_pointer);
+                Ok(TerminalEvent::Pointer(next_pointer))
+                    if can_merge_pointer(pointer, next_pointer) =>
+                {
+                    merge_pointer(&mut pointer, next_pointer);
                     events_coalesced += 1;
                 }
                 _ => {

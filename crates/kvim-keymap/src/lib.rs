@@ -85,6 +85,7 @@ mod binding;
 mod context;
 mod hint;
 mod key;
+mod pointer;
 mod registry;
 mod resolver;
 mod sequence;
@@ -98,6 +99,10 @@ pub use context::{
 };
 pub use hint::{ScopedWhichKeyHint, WhichKeyHint, WhichKeyTarget};
 pub use key::{Chord, KEY_LABEL_BYTES_MAX, Key, KeyCode, KeyLabel};
+pub use pointer::{
+    CellPosition, POINTER_EVENTS_COALESCE_MAX, PointerAction, PointerButton, PointerEvent,
+    PointerModifiers, PointerWheel, PointerWheelDirection, PointerWheelError,
+};
 pub use registry::{BINDINGS_MAX, Registry, RegistryError};
 pub use resolver::{
     Dispatch, DispatchContext, Input, PASTE_BYTES_MAX, PasteError, PasteText, Resolver, TypedText,

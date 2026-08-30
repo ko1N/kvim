@@ -77,14 +77,47 @@ use std::num::{NonZeroU16, NonZeroU32};
 use std::time::Duration;
 
 use kvim_core::{BufferBytesMax, LoadError, TextBuffer};
-use kvim_editor::{CommandOutcome, EditContext, EditingState, Registers, Viewport, WindowState};
+use kvim_editor::{
+    ColumnLimit, CommandOutcome, EditContext, EditingState, Registers, Viewport, WindowState,
+};
 use kvim_input::{Command, Mode, is_register_name};
+pub use kvim_keymap::{
+    CellPosition, POINTER_EVENTS_COALESCE_MAX, PointerAction, PointerButton, PointerEvent,
+    PointerModifiers, PointerWheel, PointerWheelDirection, PointerWheelError,
+};
 use kvim_settings::{EditorSettings, SettingsError};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use thiserror::Error;
 use unicode_width::UnicodeWidthChar;
+
+const ROW_SCAN_CHARS_MAX: usize = 64 * 1024;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PointerDragState {
+    Idle,
+    Dragging { anchor: SourcePosition },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SourcePosition {
+    line: usize,
+    column: usize,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum RowSymbol {
+    Char(char),
+    WideTail,
+    Blank,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct RowCell {
+    symbol: RowSymbol,
+    column: usize,
+}
 
 /// A failure while creating or resizing an in-memory editor.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
@@ -132,6 +165,15 @@ pub enum TickOutcome {
     Unchanged,
 }
 
+/// The result of one pointer transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum PointerOutcome {
+    /// Visible editor state changed.
+    Changed,
+    /// The pointer action did not apply to this surface.
+    Ignored,
+}
+
 /// The placement facts produced by one render.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RenderOutcome {
@@ -154,7 +196,10 @@ impl RenderOutcome {
 /// # Examples
 ///
 /// ```
-/// use kvim_embed::{LiteralOutcome, MemoryEditor};
+/// use kvim_embed::{
+///     CellPosition, LiteralOutcome, MemoryEditor, PointerAction, PointerButton, PointerEvent,
+///     PointerModifiers,
+/// };
 /// use kvim_input::Command;
 /// use kvim_settings::EditorSettings;
 /// use ratatui::{buffer::Buffer, layout::Rect};
@@ -162,6 +207,11 @@ impl RenderOutcome {
 /// let area = Rect::new(0, 0, 24, 4);
 /// let settings = EditorSettings::default();
 /// let mut editor = MemoryEditor::open("hello\n", settings, area)?;
+/// editor.pointer(PointerEvent::new(
+///     CellPosition::new(4, 0),
+///     PointerModifiers::default(),
+///     PointerAction::Press(PointerButton::Left),
+/// ));
 /// editor.command(Command::InsertAtLineEnd, None, None)?;
 /// assert_eq!(editor.literal(" world"), LiteralOutcome::Changed);
 /// editor.command(Command::ReturnToNormal, None, None)?;
@@ -180,6 +230,7 @@ pub struct MemoryEditor {
     registers: Registers,
     window: WindowState,
     area: Rect,
+    pointer_drag: PointerDragState,
 }
 
 impl MemoryEditor {
@@ -209,6 +260,7 @@ impl MemoryEditor {
             registers: Registers::default(),
             window: WindowState::new(viewport),
             area,
+            pointer_drag: PointerDragState::Idle,
         })
     }
 
@@ -237,6 +289,7 @@ impl MemoryEditor {
         count: Option<NonZeroU32>,
         register: Option<char>,
     ) -> Result<CommandOutcome, MemoryEditorError> {
+        self.pointer_drag = PointerDragState::Idle;
         if let Some(name) = register
             && !is_register_name(name)
         {
@@ -262,6 +315,7 @@ impl MemoryEditor {
 
     /// Applies literal text when Insert mode owns text input.
     pub fn literal(&mut self, text: &str) -> LiteralOutcome {
+        self.pointer_drag = PointerDragState::Idle;
         if self.mode() != Mode::Insert {
             return LiteralOutcome::Refused;
         }
@@ -285,6 +339,139 @@ impl MemoryEditor {
         outcome
     }
 
+    /// Accepts one terminal-neutral pointer event.
+    ///
+    /// Pointer dispatch does not use key-binding arbitration. A left press
+    /// places the cursor. A wheel scrolls this surface. A left drag creates a
+    /// characterwise Visual selection from its press position.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_embed::{
+    ///     CellPosition, MemoryEditor, PointerAction, PointerButton, PointerEvent,
+    ///     PointerModifiers, PointerWheel, PointerWheelDirection,
+    /// };
+    /// use kvim_input::Mode;
+    /// use kvim_settings::EditorSettings;
+    /// use ratatui::layout::Rect;
+    ///
+    /// let mut editor = MemoryEditor::open(
+    ///     "first\nsecond\nthird\n",
+    ///     EditorSettings::default(),
+    ///     Rect::new(0, 0, 12, 2),
+    /// )?;
+    /// let event = |column, row, action| PointerEvent::new(
+    ///     CellPosition::new(column, row),
+    ///     PointerModifiers::default(),
+    ///     action,
+    /// );
+    /// editor.pointer(event(3, 0, PointerAction::Press(PointerButton::Left)));
+    /// editor.pointer(event(5, 1, PointerAction::Drag(PointerButton::Left)));
+    /// editor.pointer(event(5, 1, PointerAction::Release(PointerButton::Left)));
+    /// assert_eq!(editor.mode(), Mode::Visual);
+    /// editor.pointer(event(
+    ///     5,
+    ///     1,
+    ///     PointerAction::Wheel(PointerWheel::new(PointerWheelDirection::Down, 1)?),
+    /// ));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn pointer(&mut self, pointer: PointerEvent) -> PointerOutcome {
+        let position = pointer.position();
+        let inside = position.column() >= self.area.x
+            && position.column() < self.area.right()
+            && position.row() >= self.area.y
+            && position.row() < self.area.bottom();
+        match pointer.action() {
+            PointerAction::Wheel(wheel) if inside => {
+                self.pointer_drag = PointerDragState::Idle;
+                let rows = usize::from(self.settings.mouse.scroll_rows)
+                    .saturating_mul(usize::from(wheel.ticks()));
+                self.window = match wheel.direction() {
+                    PointerWheelDirection::Up => {
+                        self.window
+                            .scrolled_up(&self.buffer, rows, ColumnLimit::LastCharacter)
+                    }
+                    PointerWheelDirection::Down => {
+                        self.window
+                            .scrolled_down(&self.buffer, rows, ColumnLimit::LastCharacter)
+                    }
+                    PointerWheelDirection::Left | PointerWheelDirection::Right => {
+                        return PointerOutcome::Ignored;
+                    }
+                };
+                PointerOutcome::Changed
+            }
+            PointerAction::Press(PointerButton::Left) if inside => {
+                let source = self.source_at_cell(position);
+                self.editing
+                    .move_to(&self.buffer, &mut self.window, source.line, source.column);
+                let gutter = gutter_width(self.area, &self.buffer, &self.settings);
+                let text_x = self
+                    .area
+                    .x
+                    .saturating_add(u16::try_from(gutter).unwrap_or(self.area.width));
+                self.pointer_drag = if position.column() >= text_x {
+                    PointerDragState::Dragging { anchor: source }
+                } else {
+                    PointerDragState::Idle
+                };
+                PointerOutcome::Changed
+            }
+            PointerAction::Drag(PointerButton::Left) => {
+                let PointerDragState::Dragging { anchor } = self.pointer_drag else {
+                    return PointerOutcome::Ignored;
+                };
+                let rows = usize::from(self.settings.mouse.scroll_rows);
+                if position.row() < self.area.y {
+                    self.window =
+                        self.window
+                            .scrolled_up(&self.buffer, rows, ColumnLimit::LastCharacter);
+                } else if position.row() >= self.area.bottom() {
+                    self.window =
+                        self.window
+                            .scrolled_down(&self.buffer, rows, ColumnLimit::LastCharacter);
+                }
+                let gutter = u16::try_from(gutter_width(self.area, &self.buffer, &self.settings))
+                    .unwrap_or(self.area.width);
+                let text_left = self
+                    .area
+                    .x
+                    .saturating_add(gutter)
+                    .min(self.area.right() - 1);
+                let position = CellPosition::new(
+                    position.column().clamp(text_left, self.area.right() - 1),
+                    position.row().clamp(self.area.y, self.area.bottom() - 1),
+                );
+                let head = self.source_at_cell(position);
+                self.editing
+                    .move_to(&self.buffer, &mut self.window, anchor.line, anchor.column);
+                self.editing
+                    .enter_mode(&self.buffer, &mut self.window, Mode::Normal);
+                self.editing
+                    .enter_mode(&self.buffer, &mut self.window, Mode::Visual);
+                self.editing
+                    .move_to(&self.buffer, &mut self.window, head.line, head.column);
+                self.reconcile_window();
+                PointerOutcome::Changed
+            }
+            PointerAction::Release(PointerButton::Left) => {
+                self.pointer_drag = PointerDragState::Idle;
+                PointerOutcome::Ignored
+            }
+            PointerAction::Press(PointerButton::Right | PointerButton::Middle)
+            | PointerAction::Release(PointerButton::Right | PointerButton::Middle)
+            | PointerAction::Drag(PointerButton::Right | PointerButton::Middle)
+            | PointerAction::Motion
+            | PointerAction::Wheel(_)
+            | PointerAction::Press(PointerButton::Left) => {
+                self.pointer_drag = PointerDragState::Idle;
+                PointerOutcome::Ignored
+            }
+        }
+    }
+
     /// Accepts host-owned elapsed time.
     ///
     /// The in-memory editor has no timer-driven state, so elapsed time does not
@@ -296,6 +483,7 @@ impl MemoryEditor {
     /// Changes the accepted render rectangle.
     pub fn resize(&mut self, area: Rect) -> Result<(), MemoryEditorError> {
         validate_area(area)?;
+        self.pointer_drag = PointerDragState::Idle;
         self.area = area;
         self.window = self.window.resized(
             NonZeroU16::new(area.height).expect("validated geometry has a nonzero height"),
@@ -316,6 +504,37 @@ impl MemoryEditor {
             });
         }
         render_editor(self, cells)
+    }
+
+    fn source_at_cell(&self, position: CellPosition) -> SourcePosition {
+        let line = self
+            .window
+            .first_line()
+            .saturating_add(usize::from(position.row().saturating_sub(self.area.y)))
+            .min(self.buffer.line_count().saturating_sub(1));
+        let line_index = self
+            .buffer
+            .line_index(line)
+            .expect("the line is clamped to the buffer");
+        let gutter = gutter_width(self.area, &self.buffer, &self.settings);
+        let text_x = self
+            .area
+            .x
+            .saturating_add(u16::try_from(gutter).unwrap_or(self.area.width));
+        let offset = usize::from(position.column().saturating_sub(text_x));
+        let text = self.buffer.line_text(line_index);
+        let tab_width = usize::from(self.settings.indent.tab_width.get());
+        let first_cell = terminal_column(&text, tab_width, self.window.left_column());
+        let column = layout_row(
+            &text,
+            tab_width,
+            first_cell,
+            usize::from(body_width(self.area, &self.buffer, &self.settings).get()),
+        )
+        .get(offset)
+        .map_or(self.buffer.line_len_chars(line_index), |cell| cell.column)
+        .min(self.buffer.line_len_chars(line_index));
+        SourcePosition { line, column }
     }
 
     fn reconcile_window(&mut self) {
@@ -352,20 +571,72 @@ fn body_width(area: Rect, buffer: &TextBuffer, settings: &EditorSettings) -> Non
     NonZeroU16::new(area.width - gutter).expect("the gutter always leaves one body cell")
 }
 
-fn char_cells(value: char) -> usize {
-    value.width().unwrap_or(1)
+fn measure(value: char, cell: usize, tab_width: usize) -> (usize, Option<char>) {
+    debug_assert!(tab_width > 0, "realized settings keep tab width non-zero");
+    if value == '\t' {
+        return (tab_width - cell % tab_width, None);
+    }
+    match value.width() {
+        None => (1, None),
+        Some(0) => (0, None),
+        Some(width) => (width, Some(value)),
+    }
 }
 
-fn clipped_cells(text: &str, cells: usize) -> &str {
-    let mut used = 0;
-    for (index, value) in text.char_indices() {
-        let width = char_cells(value);
-        if used + width > cells {
-            return &text[..index];
+fn terminal_column(text: &str, tab_width: usize, column: usize) -> usize {
+    let mut cell = 0usize;
+    for (index, value) in text.chars().take(ROW_SCAN_CHARS_MAX).enumerate() {
+        if index >= column {
+            break;
         }
-        used += width;
+        cell = cell.saturating_add(measure(value, cell, tab_width).0);
     }
-    text
+    cell
+}
+
+fn layout_row(text: &str, tab_width: usize, first_cell: usize, width: usize) -> Vec<RowCell> {
+    let end = first_cell.saturating_add(width);
+    let mut cells = Vec::with_capacity(width);
+    let mut cell = 0usize;
+    let mut column = 0usize;
+    for value in text.chars().take(ROW_SCAN_CHARS_MAX) {
+        if cell >= end {
+            break;
+        }
+        let (used, visible) = measure(value, cell, tab_width);
+        if used == 0 {
+            column = column.saturating_add(1);
+            continue;
+        }
+        let complete = cell >= first_cell && cell.saturating_add(used) <= end;
+        for step in 0..used {
+            let at = cell.saturating_add(step);
+            if at < first_cell || at >= end {
+                continue;
+            }
+            let symbol = match (step, visible) {
+                (0, Some(value)) if complete => RowSymbol::Char(value),
+                (_, Some(_)) if complete => RowSymbol::WideTail,
+                _ => RowSymbol::Blank,
+            };
+            cells.push(RowCell { symbol, column });
+        }
+        cell = cell.saturating_add(used);
+        column = column.saturating_add(1);
+    }
+    while cells.len() < width {
+        cells.push(RowCell {
+            symbol: RowSymbol::Blank,
+            column,
+        });
+        column = column.saturating_add(1);
+    }
+    debug_assert_eq!(cells.len(), width, "row layout fills the visible width");
+    cells
+}
+
+fn char_cells(value: char) -> usize {
+    value.width().unwrap_or(1)
 }
 
 fn reconcile_left_column(
@@ -455,26 +726,32 @@ fn render_editor(
             .line_index(line_number)
             .expect("the render loop bounds the line index");
         let text = editor.buffer.line_text(line);
-        let visible: String = text.chars().skip(viewport.left_column()).collect();
-        cells.set_stringn(
-            text_x,
-            y,
-            clipped_cells(&visible, text_width),
-            text_width,
-            Style::default(),
-        );
+        let tab_width = usize::from(editor.settings.indent.tab_width.get());
+        let first_cell = terminal_column(&text, tab_width, viewport.left_column());
+        let row = layout_row(&text, tab_width, first_cell, text_width);
+        let mut scratch = String::new();
+        for (offset, cell) in row.into_iter().enumerate() {
+            let symbol = match cell.symbol {
+                RowSymbol::Char(value) => {
+                    scratch.clear();
+                    scratch.push(value);
+                    scratch.as_str()
+                }
+                RowSymbol::WideTail => "",
+                RowSymbol::Blank => " ",
+            };
+            cells[(text_x + u16::try_from(offset).unwrap_or(u16::MAX), y)].set_symbol(symbol);
+        }
     }
 
     let cursor_y = area.y
         + u16::try_from(cursor.line().get().saturating_sub(viewport.first_line()))
             .unwrap_or(u16::MAX);
     let cursor_text = editor.buffer.line_text(cursor.line());
-    let before: String = cursor_text
-        .chars()
-        .skip(viewport.left_column())
-        .take(cursor.column().get().saturating_sub(viewport.left_column()))
-        .collect();
-    let cursor_offset = before.chars().map(char_cells).sum::<usize>();
+    let tab_width = usize::from(editor.settings.indent.tab_width.get());
+    let first_cell = terminal_column(&cursor_text, tab_width, viewport.left_column());
+    let cursor_cell = terminal_column(&cursor_text, tab_width, cursor.column().get());
+    let cursor_offset = cursor_cell.saturating_sub(first_cell);
     let text_x = area
         .x
         .saturating_add(u16::try_from(gutter_width).unwrap_or(area.width));

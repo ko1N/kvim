@@ -47,7 +47,6 @@ review = [
 ]
 worktree = [
   "review",
-  "dep:kvim-keymap",
   "dep:kvim-language",
   "dep:kvim-lsp",
   "dep:kvim-path",
@@ -138,7 +137,7 @@ kvim-core.workspace = true
 kvim-editor.workspace = true
 kvim-input.workspace = true
 kvim-settings.workspace = true
-kvim-keymap = { workspace = true, optional = true }
+kvim-keymap.workspace = true
 kvim-language = { workspace = true, optional = true }
 kvim-lsp = { workspace = true, optional = true }
 kvim-path = { workspace = true, optional = true }

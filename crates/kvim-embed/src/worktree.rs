@@ -15,6 +15,7 @@ use kvim_input::{
     CommandOwner, ContextGeneration, Dispatch, InputContextSnapshot, Key, Mode, PasteText,
     TypedText, is_register_name,
 };
+use kvim_keymap::PointerEvent;
 use kvim_language::{LanguageRegistry, LanguageServices};
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{FileWatcher, RuntimeLimits};
@@ -1297,6 +1298,8 @@ pub enum WorktreeInput {
     Key(Key),
     /// One validated bracketed-paste block.
     Paste(PasteText),
+    /// One pointer action. Pointer input bypasses key-binding arbitration.
+    Pointer(PointerEvent),
     /// A new terminal or host-surface size.
     Resize {
         /// Width in terminal cells.
@@ -2162,27 +2165,43 @@ impl WorktreeEditor {
 
     /// Applies one normalized host input.
     ///
-    /// Host-resolved editors reject keys, paste, and unsupported raw input
-    /// before mutation. Resize does not use a binding resolver and remains
-    /// accepted in both modes.
+    /// Pointer and resize input do not use key-binding arbitration. They remain
+    /// accepted in both binding modes. Host-resolved editors reject keys,
+    /// paste, and unsupported raw input before mutation.
     pub fn input(
         &mut self,
         input: WorktreeInput,
         now: Duration,
     ) -> Result<WorktreeUpdate, WorktreeInputError> {
         if matches!(self.binding_mode, WorktreeBindingMode::HostResolved { .. })
-            && !matches!(input, WorktreeInput::Resize { .. })
+            && !matches!(
+                input,
+                WorktreeInput::Resize { .. } | WorktreeInput::Pointer(_)
+            )
         {
             return Err(WorktreeInputError::HostResolved);
         }
         let input = match input {
             WorktreeInput::Key(key) => TuiTerminalEvent::Key(key),
             WorktreeInput::Paste(text) => TuiTerminalEvent::Paste(text),
+            WorktreeInput::Pointer(pointer) => TuiTerminalEvent::Pointer(pointer),
             WorktreeInput::Resize { columns, rows } => TuiTerminalEvent::Resize { columns, rows },
             WorktreeInput::Unsupported => TuiTerminalEvent::Unsupported,
         };
         Ok(convert_redraw(self.inner_mut().input(input, now)))
     }
+    /// Applies one terminal-neutral pointer event.
+    ///
+    /// This method bypasses physical key-binding arbitration and remains
+    /// available in both binding modes.
+    #[must_use]
+    pub fn pointer(&mut self, pointer: PointerEvent, now: Duration) -> WorktreeUpdate {
+        convert_redraw(
+            self.inner_mut()
+                .input(TuiTerminalEvent::Pointer(pointer), now),
+        )
+    }
+
     /// Applies one direct semantic command.
     ///
     /// This method does not claim that a physical binding resolved in the
