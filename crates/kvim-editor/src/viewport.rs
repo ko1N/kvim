@@ -263,6 +263,25 @@ impl Viewport {
         reconcile_axis(first_row, row, last_row, self.rows(), margin_rows)
     }
 
+    /// Scrolls the viewport down by at most `rows`, without passing the last line.
+    #[must_use]
+    pub fn scrolled_down(self, last_line: usize, rows: usize) -> Self {
+        let last_start = last_line.saturating_add(1).saturating_sub(self.rows());
+        Self {
+            first_line: self.first_line.saturating_add(rows).min(last_start),
+            ..self
+        }
+    }
+
+    /// Scrolls the viewport up by at most `rows`, without passing the first line.
+    #[must_use]
+    pub fn scrolled_up(self, rows: usize) -> Self {
+        Self {
+            first_line: self.first_line.saturating_sub(rows),
+            ..self
+        }
+    }
+
     /// Aligns the cursor line in the window and ignores the scroll margin.
     #[must_use]
     pub fn aligned(self, cursor: Cursor, alignment: ViewportAlignment) -> Self {

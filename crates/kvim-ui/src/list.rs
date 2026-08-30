@@ -615,6 +615,25 @@ impl ListViewport {
         &self.window
     }
 
+    /// Scrolls by terminal rows without changing the selected item.
+    ///
+    /// The bounded list owns this offset rule. Selection reconciliation happens
+    /// only after a later selection, item, or geometry change.
+    pub fn scroll<I>(&mut self, items: I, rows: u32, down: bool)
+    where
+        I: Iterator<Item = ListItem> + Clone,
+    {
+        let total = list_lines(items.clone(), None).total;
+        let last_start = total.saturating_sub(u32::from(self.height_rows));
+        let first_line = if down {
+            self.window.first_line.saturating_add(rows).min(last_start)
+        } else {
+            self.window.first_line.saturating_sub(rows)
+        };
+        self.window =
+            ListWindow::reconciled(items, None, self.height_rows, self.margin_rows, first_line);
+    }
+
     /// Moves the window until it shows the selection, then places the items.
     ///
     /// `items` supplies the measure of every item of the list, in list order,

@@ -1120,6 +1120,16 @@ impl<R: Clone + Eq> SidebarState<R> {
         self.reconcile();
     }
 
+    /// Scrolls visible rows without changing the selected row.
+    pub fn scroll(&mut self, rows: u32, down: bool) {
+        let items = self
+            .rows
+            .iter()
+            .zip(&self.visible)
+            .map(|(row, &visible)| ListItem::new(row.height_rows).with_visible(visible));
+        self.viewport.scroll(items, rows, down);
+    }
+
     /// Selects the named row and returns the event of a changed selection.
     ///
     /// An unknown identity and an inert row both leave the selection where it

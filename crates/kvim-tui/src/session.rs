@@ -46,7 +46,7 @@ use kvim_core::{
     TextBuffer, TextChange,
 };
 use kvim_editor::{
-    AutoIndent, CommandContext, CommandOutcome, Cursor, EditContext, EditingState,
+    AutoIndent, ColumnLimit, CommandContext, CommandOutcome, Cursor, EditContext, EditingState,
     MOTION_COUNT_MAX, MoveDirection, RegisterValue, Registers, SEARCH_QUERY_CHARS_MAX,
     SearchDirection, SearchQuery, Selection, Viewport, WindowState, selection_move_indent_line,
 };
@@ -66,8 +66,11 @@ use kvim_language::{
 use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
-use kvim_terminal::{Key, TerminalEvent};
-use kvim_ui::{Direction, RegionKind, SidebarSide, WindowId};
+use kvim_terminal::{Key, PointerAction, PointerEvent, PointerWheelDirection, TerminalEvent};
+use kvim_ui::{
+    Cell, Direction, HitTarget, ListItem, ListViewport, OverlayInput, PointerOverlay, RegionKind,
+    SidebarSide, WindowId, contains_cell, hit_test,
+};
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget,
     DurableOutcome, EntryKind, ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult,
@@ -88,6 +91,7 @@ use super::chrome::shell_areas;
 use super::clipboard::{ClipboardAccess, ClipboardStep, SessionClipboard, register_value};
 use super::completion::{
     CompletionCycle, CompletionOutcome, LineCompletion, command_line_candidates,
+    completion_menu_layout,
 };
 use super::diagnostics::{HOST_BUFFER_NAME, HostReportRequest, HostWorkspace};
 use super::embed::{
@@ -913,6 +917,8 @@ pub(super) struct PromptLine {
     /// The completion belongs to the prompt, so a closed prompt drops it and no
     /// caller keeps the two in step. See `docs/input-actions.md`.
     pub(super) completion: Option<LineCompletion>,
+    /// The persistent viewport of the open completion candidate list.
+    pub(super) completion_viewport: ListViewport,
 }
 
 impl PromptLine {
@@ -923,6 +929,7 @@ impl PromptLine {
             line: EditedLine::opened_at(seed.text, seed.cursor, prompt_chars_max(kind))
                 .expect("the seed meets the limit"),
             completion: None,
+            completion_viewport: ListViewport::new(0),
         }
     }
 
@@ -1609,6 +1616,8 @@ pub struct Session {
     embedded_which_key: bool,
     /// The progress of every language server and every mirrored message.
     notifications: NotificationBoard,
+    /// The one viewport that a wheel event moved before `settle` runs.
+    pointer_scrolled: Option<PointerScrollTarget>,
     /// The elapsed time that the event loop reported last.
     ///
     /// The session reads no clock. The loop passes the elapsed time into every
@@ -1728,10 +1737,11 @@ impl Session {
             which_key: None,
             embedded_which_key: presentation.which_key_embedded(),
             notifications: NotificationBoard::default(),
+            pointer_scrolled: None,
             clock: Duration::ZERO,
             run: RunState::Running,
         };
-        session.reconcile_viewports();
+        session.reconcile_viewports(None);
         session
     }
 
@@ -1948,7 +1958,7 @@ impl Session {
             return Err(GeometryError::Empty { area });
         }
         let redraw = self.resize(area);
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         self.reconcile_tree();
         self.reconcile_picker();
         self.note_redraw(redraw);
@@ -2512,9 +2522,7 @@ impl Session {
                 self.insert_owned_text(text.as_str()).or(closed)
             }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
-            // Pointer behavior enters in a later slice. Keep the current
-            // presentation unchanged while terminal lifecycle enables capture.
-            TerminalEvent::Pointer(_) => Redraw::Skipped,
+            TerminalEvent::Pointer(pointer) => self.handle_pointer(pointer),
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
             TerminalEvent::Unsupported => {
@@ -2581,9 +2589,20 @@ impl Session {
     /// state that the transition produced, so the next frame is consistent.
     fn settle(&mut self, now: Duration) -> Redraw {
         self.refresh_search();
-        self.reconcile_viewports();
-        self.reconcile_tree();
-        self.reconcile_picker();
+        let target = self.pointer_scrolled.take();
+        self.reconcile_viewports(match target {
+            Some(PointerScrollTarget::Window(window)) => Some(window),
+            _ => None,
+        });
+        if target != Some(PointerScrollTarget::Tree) {
+            self.reconcile_tree();
+        }
+        if target != Some(PointerScrollTarget::Picker) {
+            self.reconcile_picker();
+        }
+        if target != Some(PointerScrollTarget::Completion) {
+            self.reconcile_completion();
+        }
         let mirrored = self.reconcile_clipboard();
         let advanced = self.notifications.advance(now, self.settings.notifications);
         let rows = self
@@ -2609,6 +2628,117 @@ impl Session {
             review.set_height_rows(review_body_rows(area, self.presentation));
         }
         Redraw::Needed
+    }
+
+    fn handle_pointer(&mut self, pointer: PointerEvent) -> Redraw {
+        let PointerAction::Wheel(wheel) = pointer.action() else {
+            return Redraw::Skipped;
+        };
+        let rows =
+            u32::from(self.settings.mouse.scroll_rows).saturating_mul(u32::from(wheel.ticks()));
+        let down = match wheel.direction() {
+            PointerWheelDirection::Down => true,
+            PointerWheelDirection::Up => false,
+            PointerWheelDirection::Left | PointerWheelDirection::Right => return Redraw::Skipped,
+        };
+        let cell = Cell::new(pointer.position().column(), pointer.position().row());
+        if let Some(picker) = self.picker.as_mut() {
+            let areas = picker_areas(self.area);
+            if contains_cell(areas.results, cell) {
+                picker.scroll(rows, down, usize::from(areas.results.height));
+                self.pointer_scrolled = Some(PointerScrollTarget::Picker);
+                return Redraw::Needed;
+            }
+            return Redraw::Skipped;
+        }
+        if let Some(layout) = self.completion_layout()
+            && contains_cell(layout.area, cell)
+        {
+            let Some(prompt) = self.prompt.as_mut() else {
+                debug_assert!(false, "the completion layout belongs to an open prompt");
+                return Redraw::Skipped;
+            };
+            let Some(completion) = prompt.completion.as_ref() else {
+                debug_assert!(false, "the completion layout belongs to an open completion");
+                return Redraw::Skipped;
+            };
+            prompt
+                .completion_viewport
+                .set_height_rows(u16::try_from(layout.shown).unwrap_or(u16::MAX));
+            prompt.completion_viewport.scroll(
+                completion
+                    .candidates()
+                    .iter()
+                    .map(|_| ListItem::new(NonZeroU16::MIN)),
+                rows,
+                down,
+            );
+            self.pointer_scrolled = Some(PointerScrollTarget::Completion);
+            return Redraw::Needed;
+        }
+        let overlays = self.pointer_overlays();
+        let surfaces: Vec<_> = self
+            .windows
+            .layout()
+            .regions()
+            .iter()
+            .map(|region| kvim_ui::SurfacePlacement {
+                region: region.id,
+                kind: region.kind,
+                area: region.area,
+                surface: (),
+            })
+            .collect();
+        match hit_test(&surfaces, &overlays, cell) {
+            HitTarget::Overlay(()) | HitTarget::Chrome => Redraw::Skipped,
+            HitTarget::Sidebar(sidebar) => {
+                if Some(sidebar) != self.tree_region {
+                    return Redraw::Skipped;
+                }
+                self.tree.scroll(rows, down);
+                self.pointer_scrolled = Some(PointerScrollTarget::Tree);
+                Redraw::Needed
+            }
+            HitTarget::Surface(window) => {
+                let Some(buffer) = self.windows.buffer(window) else {
+                    return Redraw::Skipped;
+                };
+                let Some(file) = self.buffers.get(buffer) else {
+                    return Redraw::Skipped;
+                };
+                let Some(state) = self.windows.state_mut(window) else {
+                    return Redraw::Skipped;
+                };
+                *state = if down {
+                    state.scrolled_down(file.text(), rows as usize, ColumnLimit::LastCharacter)
+                } else {
+                    state.scrolled_up(file.text(), rows as usize, ColumnLimit::LastCharacter)
+                };
+                self.pointer_scrolled = Some(PointerScrollTarget::Window(window));
+                Redraw::Needed
+            }
+        }
+    }
+
+    fn completion_layout(&self) -> Option<super::completion::CompletionMenuLayout> {
+        let prompt = self.prompt.as_ref()?;
+        let completion = prompt.completion.as_ref()?;
+        completion_menu_layout(
+            shell_areas(self.area, self.presentation).above_command_line(),
+            completion,
+            Some(&prompt.completion_viewport),
+        )
+    }
+
+    fn pointer_overlays(&self) -> Vec<PointerOverlay<()>> {
+        self.completion_layout()
+            .map(|layout| PointerOverlay {
+                id: (),
+                area: layout.area,
+                input: OverlayInput::Interactive,
+            })
+            .into_iter()
+            .collect()
     }
 
     /// Resolves one key and applies the command, the prompt edit, or the text.
@@ -3830,6 +3960,31 @@ impl Session {
         if let Some(picker) = self.picker.as_mut() {
             picker.reconcile(rows);
         }
+    }
+
+    /// Reconciles the completion viewport after selection, data, or geometry changes.
+    fn reconcile_completion(&mut self) {
+        let Some(layout) = self.completion_layout() else {
+            return;
+        };
+        let Some(prompt) = self.prompt.as_mut() else {
+            debug_assert!(false, "the completion layout belongs to an open prompt");
+            return;
+        };
+        let Some(completion) = prompt.completion.as_ref() else {
+            debug_assert!(false, "the completion layout belongs to an open completion");
+            return;
+        };
+        prompt
+            .completion_viewport
+            .set_height_rows(u16::try_from(layout.shown).unwrap_or(u16::MAX));
+        prompt.completion_viewport.reconcile(
+            completion
+                .candidates()
+                .iter()
+                .map(|_| ListItem::new(NonZeroU16::MIN)),
+            Some(completion.selected_row()),
+        );
     }
 
     /// Applies one edit of the open prompt line.
@@ -5079,7 +5234,7 @@ impl Session {
         let line = text.char_to_line(target).get();
         let column = text.char_to_column(target).get();
         self.place_cursor(line, column);
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         Redraw::Needed
     }
 
@@ -5093,7 +5248,7 @@ impl Session {
     /// stays free of that work. See `docs/windows.md`.
     fn move_to_recorded(&mut self, line: usize, column: usize) -> Redraw {
         self.place_cursor(line, column);
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         Redraw::Needed
     }
 
@@ -6336,7 +6491,7 @@ impl Session {
         // them against text that a Visual paste can shorten.
         self.refresh_search();
         let reported = self.report_clipboard(notice);
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         applied.or(reported)
     }
 
@@ -6892,7 +7047,7 @@ impl Session {
             self.refresh_search();
         }
         self.clamp_windows_of(buffer);
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         debug_assert_ne!(before.revision(), after, "restore applies one transaction");
         self.queue_recovery_checkpoint(buffer);
         self.set_message("recovered edits were restored", MessageLevel::Warning);
@@ -7043,7 +7198,7 @@ impl Session {
         if buffer == self.active {
             self.refresh_search();
         }
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         if origin == ReloadOrigin::Command {
             self.set_message(
                 format!("\"{name}\" {lines}L, {bytes}B reloaded"),
@@ -7345,7 +7500,7 @@ impl Session {
             "a caller switches only to a loaded buffer"
         );
         self.follow_focused_window();
-        self.reconcile_viewports();
+        self.reconcile_viewports(None);
         Redraw::Needed
     }
 
@@ -7545,7 +7700,7 @@ impl Session {
     ///
     /// Every window reconciles against its own buffer and its own cursor, so a
     /// move in one window scrolls that window alone. See `docs/windows.md`.
-    fn reconcile_viewports(&mut self) {
+    fn reconcile_viewports(&mut self, scrolled: Option<WindowId>) {
         let display = self.settings.display;
         let regions: Vec<(WindowId, u16, u16)> = self
             .windows
@@ -7556,6 +7711,9 @@ impl Session {
             .map(|region| (region.id, region.area.width, region.area.height))
             .collect();
         for (id, area_width, area_height) in regions {
+            if Some(id) == scrolled {
+                continue;
+            }
             let Some(buffer) = self.windows.buffer(id) else {
                 continue;
             };
@@ -7575,6 +7733,14 @@ impl Session {
             *slot = slot.resized(height, width).reconciled(text, &display);
         }
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PointerScrollTarget {
+    Window(WindowId),
+    Tree,
+    Completion,
+    Picker,
 }
 
 /// The message that a confirmed quit shows after the focus moved.
@@ -7627,7 +7793,6 @@ const NEWEST_JUMP_NOTE: &str = "the jump list holds no newer position";
 /// bring the recorded position back.
 const UNLOADED_JUMP_NOTE: &str = "the jump target buffer is gone";
 
-/// The message that a missing `git` command shows once for each session.
 /// Returns the number of rows that one region of the review shows.
 ///
 /// The fixed presentation decides which chrome rows remain embedded, so the

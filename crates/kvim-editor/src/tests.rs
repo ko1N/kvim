@@ -58,6 +58,17 @@ fn count(value: u32) -> Option<NonZeroU32> {
     Some(NonZeroU32::new(value).expect("the test count is not zero"))
 }
 
+#[test]
+fn viewport_wheel_scrolls_within_buffer_bounds() {
+    let buffer = buffer("one\ntwo\nthree\nfour\nfive\n");
+    let viewport = viewport(2, 80);
+    assert_eq!(viewport.scrolled_down(4, 100).first_line(), 3);
+    assert_eq!(viewport.scrolled_up(100).first_line(), 0);
+    let window = window(2, 80).scrolled_down(&buffer, 100, ColumnLimit::LastCharacter);
+    assert_eq!(window.viewport().first_line(), 3);
+    assert_eq!(window.cursor().line().get(), 3);
+}
+
 fn apply(
     text: &mut TextBuffer,
     state: &mut EditingState,

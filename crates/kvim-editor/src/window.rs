@@ -10,7 +10,7 @@ use std::num::NonZeroU16;
 use kvim_core::TextBuffer;
 use kvim_settings::DisplaySettings;
 
-use super::cursor::Cursor;
+use super::cursor::{ColumnLimit, Cursor};
 use super::selection::AnchorPoint;
 use super::viewport::Viewport;
 
@@ -151,6 +151,44 @@ impl WindowState {
     pub fn reconciled(self, buffer: &TextBuffer, display: &DisplaySettings) -> Self {
         Self {
             viewport: self.viewport.reconciled(buffer, self.cursor, display),
+            ..self
+        }
+    }
+
+    /// Scrolls this window down without moving its cursor unless it leaves the view.
+    #[must_use]
+    pub fn scrolled_down(self, buffer: &TextBuffer, rows: usize, limit: ColumnLimit) -> Self {
+        self.with_scrolled_viewport(
+            buffer,
+            self.viewport
+                .scrolled_down(buffer.line_count().saturating_sub(1), rows),
+            limit,
+        )
+    }
+
+    /// Scrolls this window up without moving its cursor unless it leaves the view.
+    #[must_use]
+    pub fn scrolled_up(self, buffer: &TextBuffer, rows: usize, limit: ColumnLimit) -> Self {
+        self.with_scrolled_viewport(buffer, self.viewport.scrolled_up(rows), limit)
+    }
+
+    fn with_scrolled_viewport(
+        self,
+        buffer: &TextBuffer,
+        viewport: Viewport,
+        limit: ColumnLimit,
+    ) -> Self {
+        let first = viewport.first_line();
+        let last =
+            first.saturating_add(usize::from(viewport.height_rows().get()).saturating_sub(1));
+        let line = self
+            .cursor
+            .line()
+            .get()
+            .clamp(first, last.min(buffer.line_count().saturating_sub(1)));
+        Self {
+            cursor: Cursor::clamped(buffer, line, self.cursor.column().get(), limit),
+            viewport,
             ..self
         }
     }

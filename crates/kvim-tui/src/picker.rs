@@ -316,6 +316,19 @@ impl PickerState {
         Redraw::Needed
     }
 
+    /// Scrolls visible results without changing the selected candidate.
+    pub(super) fn scroll(&mut self, rows: u32, down: bool, rows_visible: usize) {
+        let count = self.picker.matches().len();
+        let visible = rows_visible.min(count);
+        let last_start = count.saturating_sub(visible);
+        let amount = usize::try_from(rows).unwrap_or(usize::MAX);
+        self.first_row = if down {
+            self.first_row.saturating_add(amount).min(last_start)
+        } else {
+            self.first_row.saturating_sub(amount)
+        };
+    }
+
     /// Moves the visible rows so the selected row stays inside the picker.
     pub(super) fn reconcile(&mut self, rows_visible: usize) {
         let rows = self.picker.matches().len();

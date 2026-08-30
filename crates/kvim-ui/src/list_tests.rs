@@ -3,7 +3,15 @@
 
 use super::*;
 
-/// The number of items of the long uniform list that the sweeps walk.
+#[test]
+fn viewport_scrolls_without_selecting_another_item() {
+    let mut viewport = ListViewport::new(2);
+    viewport.reconcile(uniform(5), Some(0));
+    viewport.scroll(uniform(5), 100, true);
+    assert_eq!(viewport.first_line(), 3);
+    viewport.scroll(uniform(5), 100, false);
+    assert_eq!(viewport.first_line(), 0);
+}
 const ITEMS: usize = 10;
 
 /// Returns one list of `count` visible items of one line each.

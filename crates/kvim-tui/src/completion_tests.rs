@@ -1,6 +1,8 @@
+use std::num::NonZeroU16;
 use std::sync::Arc;
 
 use kvim_path::{WorktreeRelativePath, WorktreeRoot};
+use kvim_ui::ListItem;
 use kvim_workspace::Candidate;
 
 use super::*;
@@ -85,6 +87,53 @@ fn command_line_file_completion_uses_the_shared_fuzzy_order() {
         command_line_candidates("edit ", &files),
         ["edit src/session.rs", "edit src/main.rs"]
     );
+}
+
+#[test]
+fn persistent_completion_layout_uses_candidate_rows_and_visible_width() {
+    let body = Rect::new(0, 0, 28, 8);
+    let open = completion(&[
+        "short",
+        "tiny",
+        "small",
+        "brief",
+        "little",
+        "narrow",
+        "compact",
+        "visible-candidate-is-wide-123",
+        "last",
+    ]);
+    let mut viewport = ListViewport::new(7);
+    viewport.scroll(
+        open.candidates()
+            .iter()
+            .map(|_| ListItem::new(NonZeroU16::MIN)),
+        7,
+        true,
+    );
+    let layout = completion_menu_layout(body, &open, Some(&viewport))
+        .expect("the listed completion has geometry");
+
+    assert_eq!(layout.shown, 7, "the overflow note owns the eighth row");
+    assert_eq!(layout.first, 2);
+    assert_eq!(layout.area.height, 8);
+    assert_eq!(
+        layout.area.width, 28,
+        "the painted wide candidate determines the interactive width"
+    );
+}
+
+#[test]
+fn one_row_completion_area_has_no_candidate_viewport_underflow() {
+    let body = Rect::new(0, 0, 20, 1);
+    let open = completion(&MANY);
+    let layout = completion_menu_layout(body, &open, None)
+        .expect("the overflow note can occupy the one available row");
+    assert_eq!(layout.shown, 0);
+    assert_eq!(layout.area.height, 1);
+    let mut target = CellBuffer::empty(body);
+    draw_completion_menu(&mut target, body, Theme::new(), &open);
+    assert_eq!(row_of(&target, 0), format!(" {OVERFLOW_NOTE}"));
 }
 
 #[test]

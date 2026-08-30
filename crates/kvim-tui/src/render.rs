@@ -14,7 +14,7 @@ use kvim_ui::RegionKind;
 
 use super::buffer_view::{BracketHighlight, RegionFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{StatuslineParts, render_message, render_statusline, shell_areas};
-use super::completion::draw_completion_menu;
+use super::completion::draw_completion_menu_viewport;
 use super::overlay::{render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::review::draw_review;
@@ -264,7 +264,13 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     // already drew no part there, so the list stands where the mode was. See
     // `docs/windows.md`.
     if let Some(completion) = completion {
-        draw_completion_menu(target, bands.above_command_line(), theme, completion);
+        draw_completion_menu_viewport(
+            target,
+            bands.above_command_line(),
+            theme,
+            completion,
+            view.prompt.map(|prompt| &prompt.completion_viewport),
+        );
     }
     if let Some(rows) = view.which_key {
         // The overlay reads the one icon setting of the file tree, so a

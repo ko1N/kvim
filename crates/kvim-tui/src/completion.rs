@@ -41,6 +41,7 @@ use ratatui::layout::Rect;
 
 use kvim_fuzzy::rank;
 use kvim_input::CommandLineCommand;
+use kvim_ui::ListViewport;
 use kvim_workspace::{Candidate, PICKER_QUERY_CHARS_MAX};
 
 use super::cells::{text_cells, truncate_cells_left};
@@ -274,6 +275,62 @@ impl LineCompletion {
     }
 }
 
+/// The shared geometry of one listed completion menu.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct CompletionMenuLayout {
+    /// The complete painted and interactive rectangle.
+    pub(super) area: Rect,
+    /// The first painted candidate.
+    pub(super) first: usize,
+    /// The number of rows that paint candidates.
+    pub(super) shown: usize,
+    /// Whether the final menu row reports hidden candidates.
+    pub(super) hidden: bool,
+}
+
+/// Returns the shared geometry of one listed completion menu.
+pub(super) fn completion_menu_layout(
+    body: Rect,
+    completion: &LineCompletion,
+    viewport: Option<&ListViewport>,
+) -> Option<CompletionMenuLayout> {
+    if completion.outcome() != CompletionOutcome::Listed || body.is_empty() {
+        return None;
+    }
+    let candidates = completion.candidates();
+    let rows = candidates
+        .len()
+        .min(usize::from(body.height).min(COMPLETION_ROWS_MAX));
+    if rows == 0 {
+        return None;
+    }
+    let hidden = rows < candidates.len();
+    let shown = rows.saturating_sub(usize::from(hidden));
+    let first = viewport.map_or_else(
+        || completion_first_row(candidates.len(), completion.selected_row(), shown),
+        |viewport| usize::try_from(viewport.first_line()).unwrap_or(usize::MAX),
+    );
+    let first = first.min(candidates.len().saturating_sub(shown));
+    let painted = candidates.get(first..first.saturating_add(shown))?;
+    let text_cells_max = painted
+        .iter()
+        .map(|candidate| text_cells(candidate))
+        .chain(hidden.then(|| text_cells(OVERFLOW_NOTE)))
+        .max()
+        .unwrap_or(0);
+    let width = u16::try_from(text_cells_max)
+        .unwrap_or(u16::MAX)
+        .saturating_add(COMPLETION_PADDING_TOTAL)
+        .clamp(1, body.width.min(COMPLETION_COLUMNS_MAX));
+    let height = u16::try_from(rows).ok()?;
+    Some(CompletionMenuLayout {
+        area: Rect::new(body.x, body.bottom().saturating_sub(height), width, height),
+        first,
+        shown,
+        hidden,
+    })
+}
+
 /// Paints one candidate menu into the last rows of `body`.
 ///
 /// The painter owns the complete layout of the menu. It takes the last
@@ -328,6 +385,17 @@ pub fn draw_completion_menu(
     theme: Theme,
     completion: &LineCompletion,
 ) {
+    draw_completion_menu_viewport(target, body, theme, completion, None);
+}
+
+/// Paints one candidate menu from an optional persistent list viewport.
+pub(super) fn draw_completion_menu_viewport(
+    target: &mut CellBuffer,
+    body: Rect,
+    theme: Theme,
+    completion: &LineCompletion,
+    viewport: Option<&ListViewport>,
+) {
     match completion.outcome() {
         // One candidate answers the line alone, and no candidate changes it, so
         // neither outcome needs a choice from the user.
@@ -338,39 +406,24 @@ pub fn draw_completion_menu(
         return;
     }
     let candidates = completion.candidates();
-    // The row bound applies before the measurement, so a candidate that the
-    // menu never shows cannot widen it.
-    let rows = candidates
-        .len()
-        .min(usize::from(body.height).min(COMPLETION_ROWS_MAX));
-    let hidden = rows < candidates.len();
-    // A clipped menu spends its last row on the note, so the note never hides a
-    // candidate without reporting the loss.
-    let shown = if hidden { rows - 1 } else { rows };
-    let first = completion_first_row(candidates.len(), completion.selected_row(), shown);
-    let Some(painted) = candidates.get(first..first + shown) else {
+    let Some(layout) = completion_menu_layout(body, completion, viewport) else {
+        return;
+    };
+    let CompletionMenuLayout {
+        area,
+        first,
+        shown,
+        hidden,
+    } = layout;
+    let Some(painted) = candidates.get(first..first.saturating_add(shown)) else {
         debug_assert!(
             false,
-            "the window start keeps the shown rows inside the list"
+            "the shared menu layout keeps the shown rows inside the list"
         );
         return;
     };
 
-    let text_cells_max = painted
-        .iter()
-        .map(|candidate| text_cells(candidate))
-        .chain(hidden.then(|| text_cells(OVERFLOW_NOTE)))
-        .max()
-        .unwrap_or(0);
-    let width = u16::try_from(text_cells_max)
-        .unwrap_or(u16::MAX)
-        .saturating_add(COMPLETION_PADDING_TOTAL)
-        .clamp(1, body.width.min(COMPLETION_COLUMNS_MAX));
-    let Ok(height) = u16::try_from(rows) else {
-        debug_assert!(false, "the row bound keeps the menu height small");
-        return;
-    };
-    let area = Rect::new(body.x, body.bottom() - height, width, height);
+    let width = area.width;
     // A row that is wider than the menu loses its start at this budget. The
     // file name at the end of a path names the file that the user looks for,
     // and every row of one path list starts with the same command name. The

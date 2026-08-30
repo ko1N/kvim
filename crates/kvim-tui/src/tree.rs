@@ -904,6 +904,11 @@ impl TreeSidebar {
             .set_height_rows(viewport.map_or(0, |viewport| viewport.height_rows().get()));
     }
 
+    /// Scrolls the tree viewport without changing its selected entry.
+    pub(super) fn scroll(&mut self, rows: u32, down: bool) {
+        self.view.scroll(rows, down);
+    }
+
     /// Copies the current rows and the current selection into the row state.
     ///
     /// The renderer reads the tree row of one placement directly, because every

@@ -17,19 +17,25 @@ use kvim_language::{Diagnostic, DiagnosticSeverity, DocumentPosition, LspError, 
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
 use kvim_settings::{EditorSettings, WHICH_KEY_DELAY_DEFAULT};
-use kvim_terminal::{Key, KeyCode, PasteText, TerminalEvent};
+use kvim_terminal::{
+    CellPosition, Key, KeyCode, PasteText, PointerAction, PointerEvent, PointerModifiers,
+    PointerWheel, PointerWheelDirection, TerminalEvent,
+};
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
-    BUFFERS_MAX, BufferPathUpdate, Candidate, DurableOutcome, ExternalChange, FileRequest,
-    FileResult, MutationOutcome, PickerRequest, PickerResult, RecoveryBaseline, RecoveryRecord,
-    SaveError, WorkspaceResult, recovery_record_path, write_recovery_record,
+    BUFFERS_MAX, BufferPathUpdate, Candidate, DirectoryIdentity, DirectoryListing, DurableOutcome,
+    ExternalChange, FileRequest, FileResult, LinkKind, MutationOutcome, PickerKind, PickerRequest,
+    PickerResult, RecoveryBaseline, RecoveryRecord, SaveError, TreeEntry, Truncation,
+    WorkspaceResult, recovery_record_path, write_recovery_record,
 };
 
 use crate::clipboard::SessionClipboard;
 use crate::completion::{CompletionOutcome, LineCompletion};
 use crate::embed::EditorInstanceId;
+use crate::language::Float;
 use crate::language::{LanguageRequest, LanguageRequestKind};
 use crate::log::LOG_ENTRIES_MAX;
+use crate::picker::{PickerState, picker_areas};
 use crate::review::ReviewSurface;
 use crate::session::{
     CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
@@ -40,7 +46,217 @@ use kvim_ui::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
 
-/// Returns the workspace root that the file tree of a test session shows.
+/// Creates one bounded vertical wheel event at a terminal cell.
+fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEvent {
+    TerminalEvent::Pointer(PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        PointerAction::Wheel(
+            PointerWheel::new(direction, 1).expect("one tick is within the event bound"),
+        ),
+    ))
+}
+
+#[test]
+fn wheel_scrolls_the_hovered_buffer_without_resolving_pending_keys() {
+    let mut session = session(80, 12);
+    press(&mut session, 'i');
+    let text = "line\n".repeat(100);
+    session.handle_event(
+        TerminalEvent::Paste(PasteText::new(&text).expect("the test paste is bounded")),
+        NOW,
+    );
+    press_code(&mut session, KeyCode::Esc);
+    press(&mut session, 'g');
+    press(&mut session, 'g');
+    press(&mut session, 'g');
+    let pending = session.resolver.which_key(NOW);
+    let wheel = wheel(10, 2, PointerWheelDirection::Down);
+    assert_eq!(session.handle_event(wheel, NOW), Redraw::Needed);
+    assert_eq!(session.resolver.which_key(NOW), pending);
+    let window = session.windows.focused_window();
+    assert_eq!(
+        session
+            .windows
+            .viewport(window)
+            .map(|view| view.first_line()),
+        Some(3)
+    );
+}
+
+#[test]
+fn wheel_over_file_sidebar_scrolls_without_focus_or_selection_change() {
+    let mut session = session(80, 10);
+    let root = workspace_root();
+    let entries = (0..20)
+        .map(|index| TreeEntry {
+            name: format!("file-{index:02}.rs"),
+            kind: kvim_workspace::EntryKind::File,
+            link: LinkKind::Direct,
+        })
+        .collect();
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: root.clone(),
+        outcome: Ok(DirectoryListing {
+            path: root,
+            identity: DirectoryIdentity::Root,
+            entries,
+            truncation: Truncation::Complete,
+        }),
+    });
+    press_ctrl(&mut session, 'e');
+    let focused = session.windows.focused_region();
+    let selected = session.tree.selected_entry_name();
+    let before = session.tree.view().first_line();
+    let area = session
+        .tree_region
+        .and_then(|id| session.windows.layout().area(id))
+        .expect("the file sidebar is visible");
+
+    assert_eq!(
+        session.handle_event(
+            wheel(
+                area.x,
+                area.y.saturating_add(1),
+                PointerWheelDirection::Down
+            ),
+            NOW,
+        ),
+        Redraw::Needed
+    );
+    assert_eq!(session.windows.focused_region(), focused);
+    assert_eq!(session.tree.selected_entry_name(), selected);
+    assert!(session.tree.view().first_line() > before);
+}
+
+#[test]
+fn wheel_inside_picker_results_scrolls_without_changing_selection() {
+    let mut session = session(80, 10);
+    let root = test_root(workspace_root());
+    let candidates = (0..20)
+        .map(|index| {
+            Candidate::file(
+                &root,
+                WorktreeRelativePath::new(format!("file-{index:02}.rs"))
+                    .expect("the fixture path is valid"),
+            )
+        })
+        .collect();
+    session.picker = Some(PickerState::open(PickerKind::Buffers, root, candidates));
+    let _ = session.open_prompt(PromptKind::Picker);
+    session.reconcile_picker();
+    let selected = session
+        .picker
+        .as_ref()
+        .and_then(|picker| picker.picker().selected_row());
+    let prompt = prompt_text(&session);
+    let area = picker_areas(session.area).results;
+
+    assert_eq!(
+        session.handle_event(wheel(area.x, area.y, PointerWheelDirection::Down), NOW),
+        Redraw::Needed
+    );
+    let picker = session.picker.as_ref().expect("the picker stays open");
+    assert_eq!(picker.picker().selected_row(), selected);
+    assert_eq!(prompt_text(&session), prompt);
+    assert!(picker.first_row() > 0);
+}
+
+#[test]
+fn wheel_inside_completion_scrolls_without_changing_candidate_or_prompt() {
+    let mut session = session(80, 12);
+    press(&mut session, ':');
+    let candidates = (0..12)
+        .map(|index| format!("candidate-{index:02}"))
+        .collect();
+    let completion =
+        LineCompletion::open("", candidates, 64, crate::completion::CompletionCycle::Next)
+            .expect("the fixture opens a completion");
+    let prompt = session.prompt.as_mut().expect("the command line is open");
+    let _ = prompt.line.write(completion.selected().to_owned());
+    prompt.completion = Some(completion);
+    session.reconcile_completion();
+    let selected = session
+        .prompt
+        .as_ref()
+        .unwrap()
+        .completion
+        .as_ref()
+        .unwrap()
+        .selected_row();
+    let text = prompt_text(&session);
+    let layout = session
+        .completion_layout()
+        .expect("the completion is visible");
+
+    assert_eq!(
+        session.handle_event(
+            wheel(layout.area.x, layout.area.y, PointerWheelDirection::Down),
+            NOW
+        ),
+        Redraw::Needed
+    );
+    let prompt = session.prompt.as_ref().expect("the prompt stays open");
+    assert_eq!(prompt.completion.as_ref().unwrap().selected_row(), selected);
+    assert_eq!(prompt.line.text(), text);
+    assert!(prompt.completion_viewport.first_line() > 0);
+
+    press_code(&mut session, KeyCode::Tab);
+    let prompt = session.prompt.as_ref().expect("the prompt stays open");
+    let selected = prompt.completion.as_ref().unwrap().selected_row();
+    let first = usize::try_from(prompt.completion_viewport.first_line()).unwrap();
+    assert!(
+        first <= selected
+            && selected
+                < first.saturating_add(usize::from(prompt.completion_viewport.height_rows())),
+        "keyboard cycling reconciles the selection into the candidate viewport"
+    );
+}
+
+#[test]
+fn completion_overlay_intercepts_wheel_before_the_buffer() {
+    let mut session = with_text(&(0..40).map(|_| "line").collect::<Vec<_>>());
+    type_keys(&mut session, "gg");
+    press(&mut session, ':');
+    let candidates = (0..12)
+        .map(|index| format!("candidate-{index:02}"))
+        .collect();
+    let completion =
+        LineCompletion::open("", candidates, 64, crate::completion::CompletionCycle::Next)
+            .expect("the fixture opens a completion");
+    session.prompt.as_mut().unwrap().completion = Some(completion);
+    session.reconcile_completion();
+    let window = session.windows.focused_window();
+    let before = first_line(&session, window);
+    let layout = session
+        .completion_layout()
+        .expect("the completion is visible");
+
+    let _ = session.handle_event(
+        wheel(layout.area.x, layout.area.y, PointerWheelDirection::Down),
+        NOW,
+    );
+    assert_eq!(first_line(&session, window), before);
+}
+
+#[test]
+fn decorative_float_passes_wheel_through_to_the_buffer() {
+    let mut session = with_text(&(0..40).map(|_| "line").collect::<Vec<_>>());
+    type_keys(&mut session, "gg");
+    session.float = Some(Float::text("note", "decorative overlay"));
+    let window = session.windows.focused_window();
+    let before = first_line(&session, window);
+
+    assert_eq!(
+        session.handle_event(wheel(10, 3, PointerWheelDirection::Down), NOW),
+        Redraw::Needed
+    );
+    assert!(first_line(&session, window) > before);
+    assert!(
+        session.float.is_some(),
+        "pointer input does not close decoration"
+    );
+}
 ///
 /// No test reads the directory, because the session hands every read to the
 /// bounded worker service.
