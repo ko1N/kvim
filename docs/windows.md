@@ -42,7 +42,21 @@ Host-owned statusline presentation requires no callback.
 validated ratios, focus, limits, and minimum dimensions. Host surface values,
 buffer text, and terminal colors stay outside the tree.
 
-## Window Tree
+## Pointer Geometry
+
+Pointer hit testing reads the rectangles published by `WindowLayout` or
+`CompositionLayout`. It uses half-open rectangles: the top and left edges are
+inside, and the right and bottom edges are outside. Interactive overlays take
+input before sidebars and editor surfaces. Decorative overlays pass input to the
+published region below. A cell outside every region is shell chrome and has no
+action.
+
+The terminal adapter maps a buffer text cell through the window winbar, gutter,
+and viewport offsets. It then uses the same cell row layout as rendering. Tabs,
+combining marks, wide glyphs, horizontal clipping, and cells after the line end
+therefore map deterministically. Both cells of a wide glyph map to its source
+character.
+
 
 The window tree is a binary tree with two node kinds:
 

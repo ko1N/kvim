@@ -23,6 +23,12 @@ pub const RECOVERY_BYTES_MAX: u64 = FILE_BYTES_MAX;
 /// The largest count that the input resolver accepts before one command.
 pub const COUNT_MAX: u32 = 9_999;
 
+/// The default number of buffer rows that one pointer wheel tick scrolls.
+pub const MOUSE_SCROLL_ROWS_DEFAULT: u16 = 3;
+
+/// The largest number of buffer rows that one pointer wheel tick scrolls.
+pub const MOUSE_SCROLL_ROWS_MAX: u16 = 100;
+
 /// The default width of the file-tree sidebar, in cells.
 ///
 /// The value holds a nested path of a Rust repository beside the editor
@@ -571,6 +577,21 @@ impl Default for LanguageSettings {
     }
 }
 
+/// The bounds of pointer behavior.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct MouseSettings {
+    /// The number of buffer rows that one wheel tick scrolls.
+    pub scroll_rows: u16,
+}
+
+impl Default for MouseSettings {
+    fn default() -> Self {
+        Self {
+            scroll_rows: MOUSE_SCROLL_ROWS_DEFAULT,
+        }
+    }
+}
+
 /// Every adjustable editor behavior in one structure.
 ///
 /// The defaults match the reference Neovim configuration. A caller reads a
@@ -600,6 +621,8 @@ pub struct EditorSettings {
     pub input: InputSettings,
     /// The language service policy.
     pub language: LanguageSettings,
+    /// The bounds of pointer behavior.
+    pub mouse: MouseSettings,
     /// The bounds and the timing of the notification overlay.
     pub notifications: NotificationSettings,
     /// The search behavior of the editor.
@@ -616,8 +639,8 @@ impl EditorSettings {
     ///
     /// # Errors
     ///
-    /// Returns [`SettingsError`] when a resolver, window, file, notification,
-    /// or related numeric bound is zero or exceeds its published maximum.
+    /// Returns [`SettingsError`] when a resolver, window, file, mouse,
+    /// notification, or related numeric bound is zero or exceeds its maximum.
     pub fn realize(self) -> Result<Self, SettingsError> {
         validate_bound(
             "files.max_file_bytes",
@@ -645,6 +668,11 @@ impl EditorSettings {
             "input.pending_keys_max",
             u64::from(self.input.pending_keys_max),
             u64::from(PENDING_KEYS_MAX),
+        )?;
+        validate_bound(
+            "mouse.scroll_rows",
+            u64::from(self.mouse.scroll_rows),
+            u64::from(MOUSE_SCROLL_ROWS_MAX),
         )?;
         validate_bound(
             "notifications.rows_max",

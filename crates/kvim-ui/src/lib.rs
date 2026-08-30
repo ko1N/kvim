@@ -113,6 +113,7 @@ mod composer;
 mod guides;
 mod layout;
 mod list;
+mod pointer;
 mod selector;
 mod sidebar;
 mod tabs;
@@ -134,6 +135,7 @@ pub use layout::{Region, RegionKind, WindowLayout};
 pub use list::{
     LIST_VIEWPORT_LINES_MAX, ListItem, ListMotion, ListPlacement, ListViewport, ListWindow,
 };
+pub use pointer::{Cell, HitTarget, OverlayInput, PointerOverlay, contains_cell, hit_test};
 pub use selector::{
     SELECTOR_CANDIDATES_MAX, SELECTOR_QUERY_CHARS_MAX, Selector, SelectorCandidate,
     SelectorPlacement,

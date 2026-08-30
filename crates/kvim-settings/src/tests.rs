@@ -2,8 +2,9 @@ use std::num::NonZeroU8;
 use std::time::Duration;
 
 use super::{
-    COUNT_MAX, EditorSettings, FILE_BYTES_MAX, IndentSettings, IndentWidth, NOTIFICATION_ROWS_MAX,
-    PENDING_KEYS_MAX, RECOVERY_BYTES_MAX, SettingsError, ShiftWidth, SplitRatio,
+    COUNT_MAX, EditorSettings, FILE_BYTES_MAX, IndentSettings, IndentWidth, MOUSE_SCROLL_ROWS_MAX,
+    NOTIFICATION_ROWS_MAX, PENDING_KEYS_MAX, RECOVERY_BYTES_MAX, SettingsError, ShiftWidth,
+    SplitRatio,
 };
 
 fn cells(value: u8) -> NonZeroU8 {
@@ -87,6 +88,12 @@ fn settings_realization_rejects_invalid_public_numeric_bounds() {
             ..EditorSettings::default()
         },
         EditorSettings {
+            mouse: super::MouseSettings {
+                scroll_rows: MOUSE_SCROLL_ROWS_MAX + 1,
+            },
+            ..EditorSettings::default()
+        },
+        EditorSettings {
             notifications: super::NotificationSettings {
                 rows_max: NOTIFICATION_ROWS_MAX + 1,
                 ..super::NotificationSettings::default()
@@ -150,6 +157,25 @@ fn settings_realization_rejects_zero_timing_bounds() {
             field: "input.which_key_delay"
         })
     ));
+}
+
+#[test]
+fn settings_realization_rejects_invalid_mouse_scroll_bounds() {
+    for scroll_rows in [0, MOUSE_SCROLL_ROWS_MAX + 1] {
+        let settings = EditorSettings {
+            mouse: super::MouseSettings { scroll_rows },
+            ..EditorSettings::default()
+        };
+        assert!(matches!(
+            settings.realize(),
+            Err(SettingsError::InvalidBound {
+                field: "mouse.scroll_rows",
+                ..
+            } | SettingsError::ZeroBound {
+                field: "mouse.scroll_rows"
+            })
+        ));
+    }
 }
 
 #[test]

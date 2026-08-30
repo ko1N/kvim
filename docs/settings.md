@@ -171,6 +171,16 @@ Kvim language adapters translate `EditorSettings` into neutral syntax and LSP
 declarations. The public `kvim-syntax` and `kvim-lsp` APIs do not accept
 `EditorSettings` and do not name a standalone setting.
 
+## Mouse
+
+| Field | Default |
+|---|---|
+| Wheel scroll distance | 3 rows |
+
+`MouseSettings::scroll_rows` is raw until `EditorSettings::realize` runs. The
+realized value must be from 1 through 100 rows. This bound limits work from one
+wheel tick. [`input-actions.md`](input-actions.md) owns pointer dispatch.
+
 ## Notifications
 
 | Field | Default |
@@ -214,6 +224,8 @@ bare primitive:
   widths unrepresentable.
 - The sign column, the case sensitivity, the split placements, the file tree
   icons, and the check depth are modes, not boolean flags or strings.
+- The mouse scroll distance is a row count. Realization validates its nonzero
+  bounded raw value before editor state exists.
 
 A constructor validates each value and establishes its invariant. Public fields
 do not bypass this boundary. Realization rejects zero resolver and window bounds,
