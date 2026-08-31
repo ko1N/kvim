@@ -118,7 +118,7 @@ use super::review::{ReviewOutcome, ReviewSurface};
 use super::theme::Theme;
 use super::tree::{
     GitPublication, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
-    TreeRefusal, TreeSidebar, delete_question, overwrite_question,
+    TreeRefusal, TreeSidebar, delete_question, overwrite_question, tree_body_geometry,
 };
 use super::window::{WindowOutcome, Windows};
 
@@ -2859,12 +2859,15 @@ impl Session {
                 let Some(area) = self.windows.layout().area(sidebar) else {
                     return Redraw::Skipped;
                 };
-                let body_row = cell
-                    .row()
-                    .saturating_sub(area.y.saturating_add(TREE_TITLE_ROWS));
-                if cell.row() < area.y.saturating_add(TREE_TITLE_ROWS) {
+                let Some(geometry) = tree_body_geometry(area, &self.settings.display) else {
+                    return Redraw::Skipped;
+                };
+                // The title row and the reserved scrollbar column carry no
+                // entry, so a press on either one selects nothing.
+                if !contains_cell(geometry.content, cell) {
                     return Redraw::Skipped;
                 }
+                let body_row = cell.row().saturating_sub(geometry.content.y);
                 let row = usize::try_from(self.tree.view().first_line())
                     .unwrap_or(usize::MAX)
                     .saturating_add(usize::from(body_row));

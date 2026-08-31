@@ -70,6 +70,15 @@ it is inert. A wheel over it scrolls its editor pane. Interactive overlays keep
 their higher hit priority. Disabling the setting restores the complete previous
 text width. Every split computes its own thumb from its own viewport.
 
+The file sidebar follows the same rule over its own body. Its title row keeps
+the complete sidebar width, exactly as a winbar does, and the body rows below
+reserve their rightmost cell for the track. Every surface of the frame therefore
+draws its scrollbar at its own right edge, whichever edge of the host area the
+sidebar takes. The sidebar reads its content lines and its first line from the
+published list viewport, so the thumb reports the measure that a wheel scrolls
+over. A press on the reserved column carries no entry and selects nothing. A
+wheel over it scrolls the sidebar under it.
+
 The track height is the text-area height. It always renders as `│` when the
 surface reserves a scrollbar column. A thumb renders only when `lines` exceeds
 the track height. In that case, `visible` is the track height and the thumb

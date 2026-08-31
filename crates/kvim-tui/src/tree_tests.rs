@@ -52,6 +52,13 @@ const HEIGHT: u16 = 12;
 /// The first column of the sidebar in a terminal of [`WIDTH`] cells.
 const SIDEBAR_X: u16 = WIDTH - 40;
 
+/// The first column after the entry cells of one sidebar row.
+///
+/// The body reserves its last column for the scrollbar, exactly as an editor
+/// pane does, so an entry row ends one cell before the sidebar does. The title
+/// row keeps the complete width. See `docs/windows.md`.
+const SIDEBAR_BODY_END: u16 = WIDTH - 1;
+
 /// The largest number of workspace operations that one test drains.
 ///
 /// One reveal or one refresh queues fewer reads than the queue bound of the
@@ -2531,13 +2538,99 @@ fn a_failed_read_warns_while_a_hidden_count_stays_quiet() {
     );
 }
 
+/// Returns the scrollbar glyph of every sidebar body row, in row order.
+fn scrollbar_column(session: &Session) -> Vec<String> {
+    let buffer = draw(session);
+    (TREE_TITLE_ROWS..HEIGHT - 2)
+        .map(|row| {
+            buffer
+                .cell((SIDEBAR_BODY_END, row))
+                .expect("the test reads a cell inside the sidebar")
+                .symbol()
+                .to_owned()
+        })
+        .collect()
+}
+
+/// Creates one workspace whose entries overflow the sidebar body.
+fn crowded_workspace() -> (TempDir, Session) {
+    let dir = TempDir::new("tree-scrollbar");
+    for index in 0..20 {
+        dir.file(&format!("file{index:02}.rs"), "");
+    }
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
+    drain(&mut session);
+    reveal(&mut session);
+    (dir, session)
+}
+
+#[test]
+fn the_sidebar_body_reserves_its_last_column_for_the_scrollbar_track() {
+    let (_dir, session) = appearance_workspace(FileTreeIcons::Hidden);
+
+    // Seven entries fit the body, so every row of the track stays plain.
+    assert_eq!(scrollbar_column(&session), vec![TRACK; SIDEBAR_ROWS]);
+
+    // The title row keeps the complete width, exactly as a window winbar does.
+    let title = draw(&session)
+        .cell((SIDEBAR_BODY_END, 0))
+        .expect("the test reads a cell inside the sidebar")
+        .symbol()
+        .to_owned();
+    assert_ne!(title, TRACK);
+    assert_ne!(title, THUMB);
+}
+
+#[test]
+fn the_sidebar_scrollbar_marks_an_overflowing_tree_and_follows_its_scroll() {
+    let (_dir, mut session) = crowded_workspace();
+    let top = scrollbar_column(&session);
+    assert_eq!(top.iter().filter(|glyph| *glyph == THUMB).count(), 4);
+    assert_eq!(top[0], THUMB, "the thumb starts at the top of the track");
+    assert_eq!(top[SIDEBAR_ROWS - 1], TRACK);
+
+    // `G` selects the last entry, so the viewport reaches the end of the tree
+    // and the thumb reaches the end of its track.
+    press(&mut session, 'G');
+    let bottom = scrollbar_column(&session);
+    assert_eq!(bottom.iter().filter(|glyph| *glyph == THUMB).count(), 4);
+    assert_eq!(bottom[SIDEBAR_ROWS - 1], THUMB);
+    assert_eq!(bottom[0], TRACK, "the thumb left the top of the track");
+}
+
+#[test]
+fn a_disabled_scrollbar_setting_gives_the_sidebar_body_its_last_column_back() {
+    let dir = TempDir::new("tree-no-scrollbar");
+    for index in 0..20 {
+        dir.file(&format!("file{index:02}.rs"), "");
+    }
+    let root = dir.path.clone();
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    settings.display.scrollbar = false;
+    let mut session = Session::new(Rect::new(0, 0, WIDTH, HEIGHT), settings, test_root(root));
+    drain(&mut session);
+    reveal(&mut session);
+
+    let column = scrollbar_column(&session);
+    assert!(
+        column.iter().all(|glyph| glyph != TRACK && glyph != THUMB),
+        "a disabled setting draws no scrollbar: {column:?}"
+    );
+}
+
 #[test]
 fn the_selected_row_carries_one_band_and_one_mark_at_its_left_edge() {
     let (_dir, session) = appearance_workspace(FileTreeIcons::Hidden);
     let buffer = draw(&session);
     let band = theme().style(ThemeRole::PopupSelection).bg;
 
-    for column in SIDEBAR_X..WIDTH {
+    // The band covers every entry cell of the row and stops before the
+    // reserved scrollbar column, which the sidebar paints for itself.
+    for column in SIDEBAR_X..SIDEBAR_BODY_END {
         let cell = buffer
             .cell((column, 1))
             .expect("the test reads a cell inside the sidebar");
@@ -2587,7 +2680,7 @@ fn an_unfocused_sidebar_drops_the_mark_and_keeps_every_other_cell_of_the_row() {
     // The band still covers the selected row, so the reader still finds it.
     let band = theme().style(ThemeRole::PopupSelection).bg;
     let buffer = draw(&session);
-    for column in SIDEBAR_X..WIDTH {
+    for column in SIDEBAR_X..SIDEBAR_BODY_END {
         let cell = buffer
             .cell((column, 1))
             .expect("the test reads a cell inside the sidebar");
@@ -2692,7 +2785,7 @@ fn a_narrow_sidebar_clips_every_row_at_its_own_edge() {
     let rows: Vec<String> = (0..4)
         .map(|row| {
             let mut text = String::new();
-            for column in narrow..WIDTH {
+            for column in narrow..SIDEBAR_BODY_END {
                 text.push_str(
                     buffer
                         .cell((column, row))
@@ -2705,7 +2798,7 @@ fn a_narrow_sidebar_clips_every_row_at_its_own_edge() {
         .collect();
     assert_eq!(
         rows[2..],
-        ["▌  └ ▾ in".to_owned(), "     └".to_owned()],
+        ["▌  └ ▾ i".to_owned(), "     └".to_owned()],
         "every row stops at the right edge of the sidebar"
     );
 }
@@ -2791,10 +2884,13 @@ fn publish_git(session: &mut Session, root: &Path, output: &str) {
 }
 
 /// Returns the Git mark at the right edge of one sidebar row.
+///
+/// The mark takes the last entry cell, which sits one cell left of the
+/// reserved scrollbar column.
 fn git_mark(session: &Session, row: u16) -> String {
     draw(session)
-        .cell((WIDTH - 1, row))
-        .expect("the test reads the last cell of the sidebar")
+        .cell((SIDEBAR_BODY_END - 1, row))
+        .expect("the test reads the last entry cell of the sidebar")
         .symbol()
         .to_owned()
 }

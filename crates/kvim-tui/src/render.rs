@@ -20,7 +20,7 @@ use super::picker::render_picker;
 use super::review::draw_review;
 use super::session::Visible;
 use super::theme::ThemeRole;
-use super::tree::render_tree;
+use super::tree::{TreeChrome, render_tree};
 
 /// Renders one complete frame and applies the cursor of that frame.
 ///
@@ -175,8 +175,11 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     region.area,
                     theme,
                     view.tree,
-                    focus,
-                    view.settings.windows.file_tree_icons,
+                    TreeChrome {
+                        focus,
+                        icons: view.settings.windows.file_tree_icons,
+                        display: &view.settings.display,
+                    },
                 );
                 // The keys reach the sidebar, so the terminal cursor sits on
                 // the selected row instead of in an editor window.

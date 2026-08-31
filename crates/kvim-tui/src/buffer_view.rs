@@ -424,25 +424,50 @@ fn render_scrollbar(
     let Some(x) = geometry.scrollbar_x else {
         return;
     };
-    let (thumb_start, thumb_len) = scrollbar_thumb(
-        geometry.rows.height,
-        view.buffer.line_count(),
-        view.first_line,
-    )
-    .unwrap_or((u16::MAX, 0));
-    for row in 0..geometry.rows.height {
+    paint_scrollbar(
+        target,
+        theme,
+        ScrollbarView {
+            x,
+            y: geometry.rows.y,
+            height: geometry.rows.height,
+            lines: view.buffer.line_count(),
+            first_line: view.first_line,
+        },
+    );
+}
+
+/// One vertical scrollbar column and the content that it reports.
+///
+/// The editor surface and the file sidebar both paint through this value, so
+/// the track, the overflow rule, and the thumb proportion stay one appearance.
+/// See `docs/windows.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct ScrollbarView {
+    /// The column that the scrollbar takes.
+    pub(super) x: u16,
+    /// The first row of the track.
+    pub(super) y: u16,
+    /// The number of rows of the track.
+    pub(super) height: u16,
+    /// The number of content lines behind the track.
+    pub(super) lines: usize,
+    /// The first content line that the track shows.
+    pub(super) first_line: usize,
+}
+
+/// Paints one scrollbar track and its thumb, when the content overflows.
+pub(super) fn paint_scrollbar(target: &mut CellBuffer, theme: Theme, view: ScrollbarView) {
+    let (thumb_start, thumb_len) =
+        scrollbar_thumb(view.height, view.lines, view.first_line).unwrap_or((u16::MAX, 0));
+    for row in 0..view.height {
         let thumb = row >= thumb_start && row < thumb_start.saturating_add(thumb_len);
         let (glyph, role) = if thumb {
             (SCROLLBAR_THUMB_GLYPH, ThemeRole::ScrollbarThumb)
         } else {
             (SCROLLBAR_TRACK_GLYPH, ThemeRole::ScrollbarTrack)
         };
-        target.set_string(
-            x,
-            geometry.rows.y.saturating_add(row),
-            glyph,
-            theme.style(role),
-        );
+        target.set_string(view.x, view.y.saturating_add(row), glyph, theme.style(role));
     }
 }
 

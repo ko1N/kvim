@@ -1194,6 +1194,39 @@ fn sidebar_session(entries: &[&str]) -> Session {
     session
 }
 
+#[test]
+fn the_sidebar_scrollbar_column_scrolls_on_a_wheel_and_selects_on_no_press() {
+    let names: Vec<String> = (0..32).map(|index| format!("file-{index:02}.rs")).collect();
+    let entry_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut session = sidebar_session(&entry_refs);
+    let area = session
+        .tree_region
+        .and_then(|id| session.windows.layout().area(id))
+        .expect("the file sidebar is visible");
+    // The body reserves its last column for the scrollbar.
+    let column = area.right().saturating_sub(1);
+    let row = area.y.saturating_add(TREE_TITLE_ROWS);
+    let selected = session.tree.selected_entry_name();
+
+    // A press on the track carries no entry, so it selects and focuses nothing.
+    let focused = session.windows.focused_region();
+    assert_eq!(
+        session.handle_event(click(column, row), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.tree.selected_entry_name(), selected);
+    assert_eq!(session.windows.focused_region(), focused);
+
+    // A wheel over the same column reaches the sidebar under it.
+    let before = session.tree.view().first_line();
+    assert_eq!(
+        session.handle_event(wheel(column, row, PointerWheelDirection::Down), NOW),
+        Redraw::Needed
+    );
+    assert!(session.tree.view().first_line() > before);
+    assert_eq!(session.tree.selected_entry_name(), selected);
+}
+
 /// Returns a left click at the first visible file-sidebar entry.
 fn sidebar_first_entry_click(session: &Session) -> TerminalEvent {
     let sidebar = session.tree_region.expect("the sidebar is visible");

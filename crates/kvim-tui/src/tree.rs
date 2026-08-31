@@ -29,7 +29,7 @@ use kvim_path::{
     WorktreeRelativePath, WorktreeRelativePathError, WorktreeRoot,
 };
 use kvim_runtime::{WatchBatch, WatchFidelity};
-use kvim_settings::FileTreeIcons;
+use kvim_settings::{DisplaySettings, FileTreeIcons};
 use kvim_ui::{
     ListMotion, RowKind, SIDEBAR_GUIDE_BLANK, SidebarCanvas, SidebarEvent, SidebarInput,
     SidebarRow, SidebarState, sidebar_guides,
@@ -41,7 +41,7 @@ use kvim_workspace::{
     WorkspaceRequest,
 };
 
-use super::buffer_view::RegionFocus;
+use super::buffer_view::{RegionFocus, ScrollbarView, paint_scrollbar};
 use super::file_sidebar::{
     FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowIdentity, FileRowKind, FileRowNoticeKind,
     FileSidebarInput, FileSidebarOutcome, LabelMatch, draw_file_row, draw_git_mark,
@@ -1414,43 +1414,116 @@ pub(super) fn render_tree(
     area: Rect,
     theme: Theme,
     sidebar: &TreeSidebar,
-    focus: RegionFocus,
-    icons: FileTreeIcons,
+    chrome: TreeChrome<'_>,
 ) -> Option<Position> {
     if area.is_empty() {
         return None;
     }
     target.set_style(area, theme.style(ThemeRole::Text));
-    render_header(target, area, theme, sidebar, focus, icons);
-    let body = area.height.checked_sub(TREE_TITLE_ROWS).map(|height| {
-        Rect::new(
-            area.x,
-            area.y.saturating_add(TREE_TITLE_ROWS),
-            area.width,
-            height,
-        )
-    })?;
+    render_header(target, area, theme, sidebar, chrome.focus, chrome.icons);
+    let geometry = tree_body_geometry(area, chrome.display)?;
 
     let mut cursor = None;
     // The standalone tree draws through the published painter, so the look of
     // this sidebar and the look that an embedded host reaches are one thing.
     // Two copies of one appearance are free to drift, which is the failure
     // that the two indent-guide copies already cost once.
-    let outcome = sidebar.view().render(target, body, |canvas, placement| {
-        let Some(row) = sidebar.host_row(sidebar.view().rows(), placement.index()) else {
-            debug_assert!(false, "the row state follows the rows of the tree");
-            return;
-        };
-        if row.is_selected() {
-            cursor = Some(selected_cell(canvas.area(), usize::from(row.depth())));
-        }
-        draw_file_row(canvas, &row, theme, icons, focus);
-    });
+    let outcome = sidebar
+        .view()
+        .render(target, geometry.content, |canvas, placement| {
+            let Some(row) = sidebar.host_row(sidebar.view().rows(), placement.index()) else {
+                debug_assert!(false, "the row state follows the rows of the tree");
+                return;
+            };
+            if row.is_selected() {
+                cursor = Some(selected_cell(canvas.area(), usize::from(row.depth())));
+            }
+            draw_file_row(canvas, &row, theme, chrome.icons, chrome.focus);
+        });
     debug_assert!(
         outcome.is_ok(),
         "every sidebar row stays inside the bounds of the canvas"
     );
+    render_tree_scrollbar(target, theme, sidebar.view(), geometry);
     cursor
+}
+
+/// The presentation facts that the sidebar renderer takes beside its state.
+///
+/// The display settings decide whether the body reserves a scrollbar column.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct TreeChrome<'a> {
+    /// Whether the sidebar holds the input focus.
+    pub(super) focus: RegionFocus,
+    /// The icon rule of the file tree.
+    pub(super) icons: FileTreeIcons,
+    /// The realized display settings of the session.
+    pub(super) display: &'a DisplaySettings,
+}
+
+/// The body rows of one sidebar and its reserved scrollbar column.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TreeBodyGeometry {
+    /// The rows that hold the entries, excluding a reserved scrollbar column.
+    pub(super) content: Rect,
+    /// The reserved scrollbar column, when the sidebar can spare one cell.
+    pub(super) scrollbar_x: Option<u16>,
+}
+
+/// Returns the body geometry of one sidebar rectangle.
+///
+/// The title row keeps the complete width, exactly as a window winbar does. The
+/// body reserves its last column for the scrollbar while the setting asks for
+/// one and the sidebar can spare the cell, so every surface of the frame draws
+/// its scrollbar at its own right edge. The result is `None` for a sidebar that
+/// holds no body row.
+pub(super) fn tree_body_geometry(
+    area: Rect,
+    display: &DisplaySettings,
+) -> Option<TreeBodyGeometry> {
+    let height = area.height.checked_sub(TREE_TITLE_ROWS)?;
+    let body = Rect::new(
+        area.x,
+        area.y.saturating_add(TREE_TITLE_ROWS),
+        area.width,
+        height,
+    );
+    if !display.scrollbar || body.height == 0 || body.width < 2 {
+        return Some(TreeBodyGeometry {
+            content: body,
+            scrollbar_x: None,
+        });
+    }
+    Some(TreeBodyGeometry {
+        content: Rect {
+            width: body.width.saturating_sub(1),
+            ..body
+        },
+        scrollbar_x: Some(body.right().saturating_sub(1)),
+    })
+}
+
+/// Renders the track and proportional thumb of one sidebar body.
+fn render_tree_scrollbar(
+    target: &mut CellBuffer,
+    theme: Theme,
+    view: &SidebarState<usize>,
+    geometry: TreeBodyGeometry,
+) {
+    let Some(x) = geometry.scrollbar_x else {
+        return;
+    };
+    paint_scrollbar(
+        target,
+        theme,
+        ScrollbarView {
+            x,
+            y: geometry.content.y,
+            height: geometry.content.height,
+            lines: usize::try_from(view.total_lines()).unwrap_or(usize::MAX),
+            first_line: usize::try_from(view.first_line()).unwrap_or(usize::MAX),
+        },
+    );
 }
 
 /// Returns the cell that the terminal cursor takes on one selected row.

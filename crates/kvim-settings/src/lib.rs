@@ -306,7 +306,8 @@ pub struct DisplaySettings {
     pub sidescrolloff_cells: u16,
     /// The sign column rule.
     pub signcolumn: SignColumn,
-    /// Show one vertical scrollbar at the right edge of each editor text area.
+    /// Show one vertical scrollbar at the right edge of each editor text area
+    /// and of the file sidebar body.
     pub scrollbar: bool,
 }
 
