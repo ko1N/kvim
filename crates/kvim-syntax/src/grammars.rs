@@ -3,10 +3,9 @@
 //! Each language sits behind its own Cargo feature, so a consumer compiles only
 //! the grammars that it names. The default build bundles none.
 //!
-//! One entry owns everything that selects and parses one language: the language
-//! names, the file extensions, the complete file names, and the Tree-sitter
-//! grammar with its queries. Nothing here names an editor, a server, or a
-//! terminal.
+//! One entry owns the stable grammar identity and the Tree-sitter grammar with
+//! its queries. Language aliases and path selectors belong to `kvim-language`.
+//! Nothing here names an editor, a server, or a terminal.
 //!
 //! The Terraform highlight query is adapted from nvim-treesitter (Apache-2.0),
 //! runtime/queries/hcl/highlights.scm. The `tree-sitter-hcl` crate ships no
@@ -67,9 +66,9 @@ pub const BUNDLED_LANGUAGES_MAX: usize = 32;
 /// # #[cfg(feature = "grammar-rust")] {
 /// let rust = kvim_syntax::bundled()
 ///     .iter()
-///     .find(|entry| entry.language_names().contains(&"rust"))
+///     .find(|entry| entry.id() == "rust")
 ///     .expect("the feature bundles Rust");
-/// assert!(rust.extensions().contains(&"rs"));
+/// assert_eq!(rust.id(), "rust");
 /// # }
 /// ```
 pub fn bundled() -> &'static [&'static LanguageCatalogEntry] {
@@ -77,55 +76,55 @@ pub fn bundled() -> &'static [&'static LanguageCatalogEntry] {
     REGISTRY.get_or_init(|| {
         let entries: Vec<&'static LanguageCatalogEntry> = [
             #[cfg(feature = "grammar-asm")]
-            &ASM,
+            &ASM_GRAMMAR,
             #[cfg(feature = "grammar-bash")]
-            &BASH,
+            &BASH_GRAMMAR,
             #[cfg(feature = "grammar-c")]
-            &C,
+            &C_GRAMMAR,
             #[cfg(feature = "grammar-cpp")]
-            &CPP,
+            &CPP_GRAMMAR,
             #[cfg(feature = "grammar-css")]
-            &CSS,
+            &CSS_GRAMMAR,
             #[cfg(feature = "grammar-fish")]
-            &FISH,
+            &FISH_GRAMMAR,
             #[cfg(feature = "grammar-glsl")]
-            &GLSL,
+            &GLSL_GRAMMAR,
             #[cfg(feature = "grammar-go")]
-            &GO,
+            &GO_GRAMMAR,
             #[cfg(feature = "grammar-html")]
-            &HTML,
+            &HTML_GRAMMAR,
             #[cfg(feature = "grammar-javascript")]
-            &JAVASCRIPT,
+            &JAVASCRIPT_GRAMMAR,
             #[cfg(feature = "grammar-json")]
-            &JSON,
+            &JSON_GRAMMAR,
             #[cfg(feature = "grammar-lua")]
-            &LUA,
+            &LUA_GRAMMAR,
             #[cfg(feature = "grammar-markdown")]
-            &MARKDOWN,
+            &MARKDOWN_GRAMMAR,
             #[cfg(feature = "grammar-nix")]
-            &NIX,
+            &NIX_GRAMMAR,
             #[cfg(feature = "grammar-python")]
-            &PYTHON,
+            &PYTHON_GRAMMAR,
             #[cfg(feature = "grammar-rust")]
-            &RUST,
+            &RUST_GRAMMAR,
             #[cfg(feature = "grammar-scss")]
-            &SCSS,
+            &SCSS_GRAMMAR,
             #[cfg(feature = "grammar-sql")]
-            &SQL,
+            &SQL_GRAMMAR,
             #[cfg(feature = "grammar-terraform")]
-            &TERRAFORM,
+            &TERRAFORM_GRAMMAR,
             #[cfg(feature = "grammar-toml")]
-            &TOML,
+            &TOML_GRAMMAR,
             #[cfg(feature = "grammar-tsx")]
-            &TSX,
+            &TSX_GRAMMAR,
             #[cfg(feature = "grammar-typescript")]
-            &TYPESCRIPT,
+            &TYPESCRIPT_GRAMMAR,
             #[cfg(feature = "grammar-xml")]
-            &XML,
+            &XML_GRAMMAR,
             #[cfg(feature = "grammar-yaml")]
-            &YAML,
+            &YAML_GRAMMAR,
             #[cfg(feature = "grammar-zig")]
-            &ZIG,
+            &ZIG_GRAMMAR,
         ]
         .to_vec();
         debug_assert!(
@@ -153,123 +152,93 @@ fn joined(cell: &'static OnceLock<String>, parts: &[&str]) -> &'static str {
 }
 
 #[cfg(feature = "grammar-asm")]
-static ASM: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("asm", &["asm", "assembly"], &["S", "asm", "s"], &[], || {
-        Grammar {
-            language: || tree_sitter_asm::LANGUAGE.into(),
-            highlights_query: tree_sitter_asm::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
-    });
+static ASM_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("asm", || Grammar {
+    language: || tree_sitter_asm::LANGUAGE.into(),
+    highlights_query: tree_sitter_asm::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-bash")]
-static BASH: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "bash",
-    &["bash", "sh", "shell"],
-    &["bash", "sh"],
-    &[".bash_logout", ".bash_profile", ".bashrc", ".profile"],
-    || Grammar {
-        language: || tree_sitter_bash::LANGUAGE.into(),
-        // The crate names the query in the singular.
-        highlights_query: tree_sitter_bash::HIGHLIGHT_QUERY,
-        injections_query: "",
-        locals_query: "",
-    },
-);
+static BASH_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("bash", || Grammar {
+    language: || tree_sitter_bash::LANGUAGE.into(),
+    // The crate names the query in the singular.
+    highlights_query: tree_sitter_bash::HIGHLIGHT_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-c")]
-static C: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("c", &["c"], &["c", "h"], &[], || Grammar {
-        language: || tree_sitter_c::LANGUAGE.into(),
-        // The crate names the query in the singular.
-        highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static C_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("c", || Grammar {
+    language: || tree_sitter_c::LANGUAGE.into(),
+    // The crate names the query in the singular.
+    highlights_query: tree_sitter_c::HIGHLIGHT_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-cpp")]
-static CPP: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "cpp",
-    &["c++", "cpp", "cxx"],
-    &["cc", "cpp", "cxx", "hh", "hpp", "hxx"],
-    &[],
-    || Grammar {
-        language: || tree_sitter_cpp::LANGUAGE.into(),
-        highlights_query: {
-            static QUERY: OnceLock<String> = OnceLock::new();
-            // The crates name both queries in the singular.
-            joined(
-                &QUERY,
-                &[
-                    tree_sitter_c::HIGHLIGHT_QUERY,
-                    tree_sitter_cpp::HIGHLIGHT_QUERY,
-                ],
-            )
-        },
-        injections_query: "",
-        locals_query: "",
+static CPP_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("cpp", || Grammar {
+    language: || tree_sitter_cpp::LANGUAGE.into(),
+    highlights_query: {
+        static QUERY: OnceLock<String> = OnceLock::new();
+        // The crates name both queries in the singular.
+        joined(
+            &QUERY,
+            &[
+                tree_sitter_c::HIGHLIGHT_QUERY,
+                tree_sitter_cpp::HIGHLIGHT_QUERY,
+            ],
+        )
     },
-);
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-css")]
-static CSS: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("css", &["css"], &["css"], &[], || Grammar {
-        language: || tree_sitter_css::LANGUAGE.into(),
-        highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static CSS_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("css", || Grammar {
+    language: || tree_sitter_css::LANGUAGE.into(),
+    highlights_query: tree_sitter_css::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-fish")]
-static FISH: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("fish", &["fish"], &["fish"], &[], || Grammar {
-        language: tree_sitter_fish::language,
-        highlights_query: tree_sitter_fish::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static FISH_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("fish", || Grammar {
+    language: tree_sitter_fish::language,
+    highlights_query: tree_sitter_fish::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-glsl")]
-static GLSL: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "glsl",
-    &["glsl"],
-    &["comp", "frag", "geom", "glsl", "tesc", "tese", "vert"],
-    &[],
-    || Grammar {
-        // The crate holds one grammar and names it after its language.
-        language: || tree_sitter_glsl::LANGUAGE_GLSL.into(),
-        highlights_query: tree_sitter_glsl::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    },
-);
+static GLSL_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("glsl", || Grammar {
+    // The crate holds one grammar and names it after its language.
+    language: || tree_sitter_glsl::LANGUAGE_GLSL.into(),
+    highlights_query: tree_sitter_glsl::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-go")]
-static GO: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("go", &["go", "golang"], &["go"], &[], || Grammar {
-        language: || tree_sitter_go::LANGUAGE.into(),
-        highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static GO_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("go", || Grammar {
+    language: || tree_sitter_go::LANGUAGE.into(),
+    highlights_query: tree_sitter_go::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-html")]
-static HTML: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("html", &["html"], &["htm", "html"], &[], || Grammar {
-        language: || tree_sitter_html::LANGUAGE.into(),
-        highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static HTML_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("html", || Grammar {
+    language: || tree_sitter_html::LANGUAGE.into(),
+    highlights_query: tree_sitter_html::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-javascript")]
-static JAVASCRIPT: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "javascript",
-    &["javascript", "js", "jsx"],
-    &["cjs", "js", "jsx", "mjs"],
-    &[],
-    || Grammar {
+static JAVASCRIPT_GRAMMAR: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("javascript", || Grammar {
         language: || tree_sitter_javascript::LANGUAGE.into(),
         highlights_query: {
             // The crate ships the JSX patterns in a second text, because
@@ -286,155 +255,128 @@ static JAVASCRIPT: LanguageCatalogEntry = LanguageCatalogEntry::new(
         },
         injections_query: "",
         locals_query: "",
-    },
-);
+    });
 
 #[cfg(feature = "grammar-json")]
-static JSON: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("json", &["json"], &["json"], &["flake.lock"], || Grammar {
-        language: || tree_sitter_json::LANGUAGE.into(),
-        highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static JSON_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("json", || Grammar {
+    language: || tree_sitter_json::LANGUAGE.into(),
+    highlights_query: tree_sitter_json::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-lua")]
-static LUA: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("lua", &["lua"], &["lua"], &[], || Grammar {
-        language: || tree_sitter_lua::LANGUAGE.into(),
-        highlights_query: tree_sitter_lua::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static LUA_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("lua", || Grammar {
+    language: || tree_sitter_lua::LANGUAGE.into(),
+    highlights_query: tree_sitter_lua::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-markdown")]
-static MARKDOWN: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "markdown",
-    &["markdown", "md"],
-    &["markdown", "md"],
-    &[],
-    || Grammar {
-        // The parser splits Markdown into a block grammar and an inline
-        // grammar. This entry compiles the block grammar.
-        language: || tree_sitter_md::LANGUAGE.into(),
-        highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
-        injections_query: "",
-        locals_query: "",
-    },
-);
+static MARKDOWN_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("markdown", || Grammar {
+    // The parser splits Markdown into a block grammar and an inline
+    // grammar. This entry compiles the block grammar.
+    language: || tree_sitter_md::LANGUAGE.into(),
+    highlights_query: tree_sitter_md::HIGHLIGHT_QUERY_BLOCK,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-nix")]
-static NIX: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("nix", &["nix"], &["nix"], &[], || Grammar {
-        language: || tree_sitter_nix::LANGUAGE.into(),
-        highlights_query: tree_sitter_nix::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static NIX_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("nix", || Grammar {
+    language: || tree_sitter_nix::LANGUAGE.into(),
+    highlights_query: tree_sitter_nix::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-python")]
-static PYTHON: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("python", &["py", "python"], &["py", "pyi"], &[], || {
-        Grammar {
-            language: || tree_sitter_python::LANGUAGE.into(),
-            highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
-            injections_query: "",
-            locals_query: "",
-        }
-    });
+static PYTHON_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("python", || Grammar {
+    language: || tree_sitter_python::LANGUAGE.into(),
+    highlights_query: tree_sitter_python::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-rust")]
-static RUST: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("rust", &["rs", "rust"], &["rs"], &[], || Grammar {
-        language: || tree_sitter_rust::LANGUAGE.into(),
-        highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static RUST_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("rust", || Grammar {
+    language: || tree_sitter_rust::LANGUAGE.into(),
+    highlights_query: tree_sitter_rust::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-scss")]
-static SCSS: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("scss", &["scss"], &["scss"], &[], || Grammar {
-        language: tree_sitter_scss::language,
-        highlights_query: {
-            // The crate ships the SCSS patterns alone, because the upstream
-            // query inherits the CSS patterns. The SCSS grammar is a superset
-            // of the CSS grammar, so every CSS pattern names a node kind that
-            // the SCSS grammar holds.
-            static QUERY: OnceLock<String> = OnceLock::new();
-            joined(
-                &QUERY,
-                &[
-                    tree_sitter_css::HIGHLIGHTS_QUERY,
-                    tree_sitter_scss::HIGHLIGHTS_QUERY,
-                ],
-            )
-        },
-        injections_query: "",
-        locals_query: "",
-    });
+static SCSS_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("scss", || Grammar {
+    language: tree_sitter_scss::language,
+    highlights_query: {
+        // The crate ships the SCSS patterns alone, because the upstream
+        // query inherits the CSS patterns. The SCSS grammar is a superset
+        // of the CSS grammar, so every CSS pattern names a node kind that
+        // the SCSS grammar holds.
+        static QUERY: OnceLock<String> = OnceLock::new();
+        joined(
+            &QUERY,
+            &[
+                tree_sitter_css::HIGHLIGHTS_QUERY,
+                tree_sitter_scss::HIGHLIGHTS_QUERY,
+            ],
+        )
+    },
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-sql")]
-static SQL: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("sql", &["sql"], &["sql"], &[], || Grammar {
-        language: || tree_sitter_sequel::LANGUAGE.into(),
-        highlights_query: tree_sitter_sequel::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static SQL_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("sql", || Grammar {
+    language: || tree_sitter_sequel::LANGUAGE.into(),
+    highlights_query: tree_sitter_sequel::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-terraform")]
-static TERRAFORM: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "terraform",
-    &["terraform", "tf"],
-    &["tf", "tfvars"],
-    &[],
-    || Grammar {
+static TERRAFORM_GRAMMAR: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("terraform", || Grammar {
         language: || tree_sitter_hcl::LANGUAGE.into(),
         highlights_query: include_str!("../queries/hcl/highlights.scm"),
         injections_query: "",
         locals_query: "",
-    },
-);
+    });
 
 #[cfg(feature = "grammar-toml")]
-static TOML: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("toml", &["toml"], &["toml"], &[], || Grammar {
-        language: || tree_sitter_toml_ng::LANGUAGE.into(),
-        highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static TOML_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("toml", || Grammar {
+    language: || tree_sitter_toml_ng::LANGUAGE.into(),
+    highlights_query: tree_sitter_toml_ng::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-tsx")]
-static TSX: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("tsx", &["tsx"], &["tsx"], &[], || Grammar {
-        language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
-        highlights_query: {
-            // TSX reads three dialects at once, and the two crates ship one
-            // text for each of them. The JavaScript patterns come first, the
-            // JSX patterns follow, and the type patterns come last.
-            static QUERY: OnceLock<String> = OnceLock::new();
-            joined(
-                &QUERY,
-                &[
-                    tree_sitter_javascript::HIGHLIGHT_QUERY,
-                    tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
-                    tree_sitter_typescript::HIGHLIGHTS_QUERY,
-                ],
-            )
-        },
-        injections_query: "",
-        locals_query: "",
-    });
+static TSX_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("tsx", || Grammar {
+    language: || tree_sitter_typescript::LANGUAGE_TSX.into(),
+    highlights_query: {
+        // TSX reads three dialects at once, and the two crates ship one
+        // text for each of them. The JavaScript patterns come first, the
+        // JSX patterns follow, and the type patterns come last.
+        static QUERY: OnceLock<String> = OnceLock::new();
+        joined(
+            &QUERY,
+            &[
+                tree_sitter_javascript::HIGHLIGHT_QUERY,
+                tree_sitter_javascript::JSX_HIGHLIGHT_QUERY,
+                tree_sitter_typescript::HIGHLIGHTS_QUERY,
+            ],
+        )
+    },
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-typescript")]
-static TYPESCRIPT: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "typescript",
-    &["ts", "typescript"],
-    &["cts", "mts", "ts"],
-    &[],
-    || Grammar {
+static TYPESCRIPT_GRAMMAR: LanguageCatalogEntry =
+    LanguageCatalogEntry::new("typescript", || Grammar {
         language: || tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
         highlights_query: {
             // The crate ships the type patterns alone, because the upstream
@@ -450,42 +392,28 @@ static TYPESCRIPT: LanguageCatalogEntry = LanguageCatalogEntry::new(
         },
         injections_query: "",
         locals_query: "",
-    },
-);
+    });
 
 #[cfg(feature = "grammar-xml")]
-static XML: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "xml",
-    &["xml"],
-    &["svg", "xml", "xsd", "xsl", "xslt"],
-    &[],
-    || Grammar {
-        language: || tree_sitter_xml::LANGUAGE_XML.into(),
-        highlights_query: tree_sitter_xml::XML_HIGHLIGHT_QUERY,
-        injections_query: "",
-        locals_query: "",
-    },
-);
+static XML_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("xml", || Grammar {
+    language: || tree_sitter_xml::LANGUAGE_XML.into(),
+    highlights_query: tree_sitter_xml::XML_HIGHLIGHT_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-yaml")]
-static YAML: LanguageCatalogEntry = LanguageCatalogEntry::new(
-    "yaml",
-    &["yaml", "yml"],
-    &["yaml", "yml"],
-    &[".clang-format", ".clang-tidy"],
-    || Grammar {
-        language: || tree_sitter_yaml::LANGUAGE.into(),
-        highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    },
-);
+static YAML_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("yaml", || Grammar {
+    language: || tree_sitter_yaml::LANGUAGE.into(),
+    highlights_query: tree_sitter_yaml::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});
 
 #[cfg(feature = "grammar-zig")]
-static ZIG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("zig", &["zig"], &["zig"], &[], || Grammar {
-        language: || tree_sitter_zig::LANGUAGE.into(),
-        highlights_query: tree_sitter_zig::HIGHLIGHTS_QUERY,
-        injections_query: "",
-        locals_query: "",
-    });
+static ZIG_GRAMMAR: LanguageCatalogEntry = LanguageCatalogEntry::new("zig", || Grammar {
+    language: || tree_sitter_zig::LANGUAGE.into(),
+    highlights_query: tree_sitter_zig::HIGHLIGHTS_QUERY,
+    injections_query: "",
+    locals_query: "",
+});

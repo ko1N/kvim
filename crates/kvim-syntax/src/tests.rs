@@ -1,10 +1,9 @@
-//! Tests for language selection, the bounded highlighter, and its outcomes.
+//! Tests for stable grammar selection, the bounded highlighter, and its outcomes.
 //!
 //! Every test runs with the grammar features that the build enables. The tests
 //! that need one concrete grammar name the Rust feature, which the verification
 //! command of this crate enables.
 
-use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use super::{
@@ -13,54 +12,33 @@ use super::{
 };
 
 #[test]
-fn no_two_bundled_languages_claim_one_lookup_key() {
-    // Two languages that claim one key make the selection depend on the table
-    // order, which no consumer can predict.
+fn every_bundled_language_has_a_unique_stable_identifier() {
     for (index, entry) in bundled().iter().enumerate() {
-        for other in &bundled()[index + 1..] {
-            for name in entry.language_names() {
-                assert!(
-                    !other.answers_to(name),
-                    "{} and {} both answer to {name}",
-                    entry.id(),
-                    other.id(),
-                );
-            }
-            for extension in entry.extensions() {
-                let path = format!("probe.{extension}");
-                assert!(
-                    !other.owns_path(Path::new(&path)),
-                    "{} and {} both own the .{extension} extension",
-                    entry.id(),
-                    other.id(),
-                );
-            }
-        }
-    }
-}
-
-#[test]
-fn every_bundled_language_answers_to_its_own_identifier() {
-    for entry in bundled() {
-        let id = entry.id();
         assert!(
-            entry.answers_to(id),
-            "the {id} language answers to its own identifier",
+            bundled()[index + 1..]
+                .iter()
+                .all(|other| other.id() != entry.id()),
+            "the {} grammar identifier is unique",
+            entry.id(),
+        );
+        assert_eq!(
+            super::language(entry.id()).map(|selected| selected.id()),
+            Some(entry.id()),
+            "each bundled grammar selects by its stable identifier",
         );
     }
     assert!(bundled().len() <= BUNDLED_LANGUAGES_MAX);
 }
 
 #[test]
-fn a_language_that_no_feature_bundles_selects_nothing() {
+fn an_identifier_that_no_feature_bundles_selects_nothing() {
     assert!(super::language("no-such-language").is_none());
-    assert!(super::language_of_path(Path::new("notes.unknown-extension")).is_none());
 }
 
 #[cfg(feature = "grammar-rust")]
 mod rust {
     use super::{
-        AtomicBool, HighlightLimits, LimitKind, NeverCancelled, Ordering, Path, SyntaxHighlighter,
+        AtomicBool, HighlightLimits, LimitKind, NeverCancelled, Ordering, SyntaxHighlighter,
         Truncation,
     };
     use crate::{HighlightFailure, SyntaxRole};
@@ -71,18 +49,13 @@ mod rust {
     }
 
     #[test]
-    fn a_language_name_and_a_path_select_the_same_language() {
-        assert_eq!(crate::language("rs").map(|entry| entry.id()), Some("rust"));
-        // The name match folds case, and the path match does not.
+    fn a_grammar_selects_only_by_its_exact_stable_identifier() {
         assert_eq!(
-            crate::language("RUST").map(|entry| entry.id()),
+            crate::language("rust").map(|entry| entry.id()),
             Some("rust")
         );
-        assert_eq!(
-            crate::language_of_path(Path::new("src/main.rs")).map(|entry| entry.id()),
-            Some("rust"),
-        );
-        assert!(crate::language_of_path(Path::new("src/main.RS")).is_none());
+        assert!(crate::language("rs").is_none());
+        assert!(crate::language("RUST").is_none());
     }
 
     #[test]

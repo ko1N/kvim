@@ -52,8 +52,6 @@
 // its own contract, so no implementation API can reach a consumer by accident.
 #![deny(missing_docs)]
 
-use std::path::Path;
-
 mod catalog;
 mod grammars;
 mod highlight;
@@ -75,50 +73,22 @@ pub use limits::{
 };
 pub use role::{HighlightSpan, SyntaxRole};
 
-/// Returns the bundled language that answers to one name.
+/// Returns the bundled grammar with one stable identity.
 ///
-/// The match folds ASCII case, because the name is prose that an author or a
-/// server writes. A name that this build bundles no grammar for returns `None`,
-/// which is no failure: the consumer paints the fragment as plain text.
+/// The lookup is an exact, case-sensitive match against the stable grammar
+/// identifier. Language aliases and path selection belong to `kvim-language`.
+/// An identifier that this build does not bundle returns `None`.
 ///
 /// # Examples
 ///
 /// ```
 /// # #[cfg(feature = "grammar-rust")] {
-/// assert_eq!(kvim_syntax::language("Rust").map(|entry| entry.id()), Some("rust"));
+/// assert_eq!(kvim_syntax::language("rust").map(|entry| entry.id()), Some("rust"));
+/// assert!(kvim_syntax::language("Rust").is_none());
 /// # }
 /// assert!(kvim_syntax::language("no-such-language").is_none());
 /// ```
 #[must_use]
 pub fn language(name: &str) -> Option<&'static LanguageCatalogEntry> {
-    bundled()
-        .iter()
-        .copied()
-        .find(|entry| entry.answers_to(name))
-}
-
-/// Returns the bundled language that owns one path.
-///
-/// The match is case-sensitive, because a path is a filesystem entity where the
-/// case names a different file. The lookup reads the extension of the path and
-/// its complete file name.
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(feature = "grammar-rust")] {
-/// use std::path::Path;
-///
-/// let entry = kvim_syntax::language_of_path(Path::new("src/main.rs"));
-/// assert_eq!(entry.map(|entry| entry.id()), Some("rust"));
-/// // The match is case-sensitive, so an uppercase extension names no language.
-/// assert!(kvim_syntax::language_of_path(Path::new("MAIN.RS")).is_none());
-/// # }
-/// ```
-#[must_use]
-pub fn language_of_path(path: &Path) -> Option<&'static LanguageCatalogEntry> {
-    bundled()
-        .iter()
-        .copied()
-        .find(|entry| entry.owns_path(path))
+    bundled().iter().copied().find(|entry| entry.id() == name)
 }

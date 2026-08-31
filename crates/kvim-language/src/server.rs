@@ -9,14 +9,17 @@
 //! that table is its declaration order, and every merge of two answers reads
 //! that order. See `docs/language-services.md`.
 
+#[cfg(feature = "editor-services")]
 use std::collections::HashSet;
-use std::path::{self, Path};
+use std::path;
 
 use serde_json::Value;
 
+use kvim_lsp::CompletionPolicy;
 use kvim_settings::LanguageSettings;
 
-use super::LanguageRegistry;
+#[cfg(feature = "editor-services")]
+use crate::LanguageRegistry;
 
 /// The largest number of servers that one language adapter declares.
 ///
@@ -112,7 +115,7 @@ impl LanguageServerId {
 /// # Examples
 ///
 /// ```
-/// use kvim_language::{LanguageServerDeclaration, ServerFormatting};
+/// use kvim_language::{CompletionPolicy, LanguageServerDeclaration, ServerFormatting};
 /// use kvim_settings::LanguageSettings;
 ///
 /// let declaration = LanguageServerDeclaration {
@@ -121,6 +124,7 @@ impl LanguageServerId {
 ///     args: &["--stdio"],
 ///     language_id: "example",
 ///     formatting: ServerFormatting::Disabled,
+///     diagnostics_completion: CompletionPolicy::Unsupported,
 ///     root_markers: &[],
 ///     initialization_options: |_| serde_json::Value::Null,
 ///     workspace_settings: None,
@@ -132,12 +136,13 @@ impl LanguageServerId {
 ///     serde_json::Value::Null,
 /// );
 /// ```
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct LanguageServerDeclaration {
     /// The stable identifier of this declaration inside its adapter.
     ///
-    /// The identifier keys the session of this server. It also names the
-    /// producer of a diagnostic whose server sends no `source` field.
+    /// The identifier keys the session. It is also the fallback diagnostic
+    /// source when the server omits `source`. Both uses share the
+    /// `LANGUAGE_SERVICE_ID_BYTES_MAX` validation bound.
     pub id: &'static str,
     /// The executable that runs the server.
     pub program: &'static str,
@@ -148,6 +153,12 @@ pub struct LanguageServerDeclaration {
     /// Whether this server formats the documents of its adapter while the
     /// adapter declares no external formatter.
     pub formatting: ServerFormatting,
+    /// The exact-revision diagnostics completion contract.
+    ///
+    /// `Pull` completes from a pull response for the requested revision.
+    /// `VersionedPush` requires a matching published document version.
+    /// `Unsupported` never completes from an unversioned quiet-period guess.
+    pub diagnostics_completion: CompletionPolicy,
     /// The workspace root markers that prove that the workspace uses this
     /// server.
     ///
@@ -199,6 +210,7 @@ impl LanguageServerDeclaration {
 /// The answer is a normal state of the workspace, never a failure. A server
 /// that the workspace does not use starts no child process. See
 /// `docs/language-services.md`.
+#[cfg(feature = "editor-services")]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ServerGate {
     /// The workspace uses this server, so its session may start.
@@ -212,11 +224,13 @@ pub(super) enum ServerGate {
 /// The value is the complete filesystem knowledge of the server gate. One
 /// probe fills it before the terminal event loop runs, and every later gate
 /// decision reads it alone, so no gate reaches the filesystem on that loop.
+#[cfg(feature = "editor-services")]
 pub(super) struct RootMarkers {
     /// The declared marker names that the workspace root holds.
     present: HashSet<&'static str>,
 }
 
+#[cfg(feature = "editor-services")]
 impl RootMarkers {
     /// Reads one workspace root and records every declared marker that it
     /// holds.
@@ -232,7 +246,7 @@ impl RootMarkers {
     ///
     /// A root that the process cannot read records no marker. Every gated
     /// server then stays off, and every server without a marker still starts.
-    pub(super) fn probe(root: &Path, registry: LanguageRegistry) -> Self {
+    pub(super) fn probe(root: &std::path::Path, registry: LanguageRegistry) -> Self {
         let mut declared: HashSet<&'static str> = HashSet::new();
         for adapter in registry.adapters() {
             let declarations = adapter.language_servers();
@@ -278,7 +292,7 @@ impl RootMarkers {
 /// A marker carries no directory component, so the probe joins it to the root
 /// without leaving that root.
 #[must_use]
-pub(super) fn marker_is_valid(marker: &str) -> bool {
+pub(crate) fn marker_is_valid(marker: &str) -> bool {
     !marker.is_empty() && marker != "." && marker != ".." && !marker.contains(path::is_separator)
 }
 
@@ -290,6 +304,7 @@ pub(super) fn marker_is_valid(marker: &str) -> bool {
 /// markers, and each marker names one entry of the workspace root. The rules
 /// belong to `docs/language-services.md`, and a debug assertion of the services
 /// checks them once for each adapter table.
+#[cfg(feature = "editor-services")]
 #[must_use]
 pub(super) fn declarations_are_valid(declarations: &[LanguageServerDeclaration]) -> bool {
     if declarations.len() > LANGUAGE_SERVERS_MAX {

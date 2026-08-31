@@ -11,7 +11,18 @@ version.workspace = true
 # unsupported/none outcomes, and markup and service construction stay usable.
 # Each feature forwards to the grammar of `kvim-syntax`. An adapter exists only
 # while its grammar does, so a consumer compiles only the languages it names.
-default = []
+default = ["editor-services"]
+
+editor-services = [
+  "dep:kvim-core",
+  "dep:kvim-runtime",
+  "dep:kvim-syntax",
+  "dep:pulldown-cmark",
+  "dep:serde",
+  "dep:tokio",
+  "dep:tokio-util",
+  "dep:tree-sitter",
+]
 
 # Publishes the deterministic mock language server of the `mock` module.
 #
@@ -21,33 +32,33 @@ default = []
 #
 # The mock hands prepared streams to one session, so it also needs the matching
 # seam of `kvim-lsp`.
-test-support = ["kvim-lsp/test-support"]
+test-support = ["editor-services", "kvim-lsp/test-support"]
 
-grammar-asm = ["kvim-syntax/grammar-asm"]
-grammar-bash = ["kvim-syntax/grammar-bash"]
-grammar-c = ["kvim-syntax/grammar-c"]
-grammar-cpp = ["kvim-syntax/grammar-cpp"]
-grammar-css = ["kvim-syntax/grammar-css"]
-grammar-fish = ["kvim-syntax/grammar-fish"]
-grammar-glsl = ["kvim-syntax/grammar-glsl"]
-grammar-go = ["kvim-syntax/grammar-go"]
-grammar-html = ["kvim-syntax/grammar-html"]
-grammar-javascript = ["kvim-syntax/grammar-javascript"]
-grammar-json = ["kvim-syntax/grammar-json"]
-grammar-lua = ["kvim-syntax/grammar-lua"]
-grammar-markdown = ["kvim-syntax/grammar-markdown"]
-grammar-nix = ["kvim-syntax/grammar-nix"]
-grammar-python = ["kvim-syntax/grammar-python"]
-grammar-rust = ["kvim-syntax/grammar-rust"]
-grammar-scss = ["kvim-syntax/grammar-scss"]
-grammar-sql = ["kvim-syntax/grammar-sql"]
-grammar-terraform = ["kvim-syntax/grammar-terraform"]
-grammar-toml = ["kvim-syntax/grammar-toml"]
-grammar-tsx = ["kvim-syntax/grammar-tsx"]
-grammar-typescript = ["kvim-syntax/grammar-typescript"]
-grammar-xml = ["kvim-syntax/grammar-xml"]
-grammar-yaml = ["kvim-syntax/grammar-yaml"]
-grammar-zig = ["kvim-syntax/grammar-zig"]
+grammar-asm = ["editor-services", "kvim-syntax/grammar-asm"]
+grammar-bash = ["editor-services", "kvim-syntax/grammar-bash"]
+grammar-c = ["editor-services", "kvim-syntax/grammar-c"]
+grammar-cpp = ["editor-services", "kvim-syntax/grammar-cpp"]
+grammar-css = ["editor-services", "kvim-syntax/grammar-css"]
+grammar-fish = ["editor-services", "kvim-syntax/grammar-fish"]
+grammar-glsl = ["editor-services", "kvim-syntax/grammar-glsl"]
+grammar-go = ["editor-services", "kvim-syntax/grammar-go"]
+grammar-html = ["editor-services", "kvim-syntax/grammar-html"]
+grammar-javascript = ["editor-services", "kvim-syntax/grammar-javascript"]
+grammar-json = ["editor-services", "kvim-syntax/grammar-json"]
+grammar-lua = ["editor-services", "kvim-syntax/grammar-lua"]
+grammar-markdown = ["editor-services", "kvim-syntax/grammar-markdown"]
+grammar-nix = ["editor-services", "kvim-syntax/grammar-nix"]
+grammar-python = ["editor-services", "kvim-syntax/grammar-python"]
+grammar-rust = ["editor-services", "kvim-syntax/grammar-rust"]
+grammar-scss = ["editor-services", "kvim-syntax/grammar-scss"]
+grammar-sql = ["editor-services", "kvim-syntax/grammar-sql"]
+grammar-terraform = ["editor-services", "kvim-syntax/grammar-terraform"]
+grammar-toml = ["editor-services", "kvim-syntax/grammar-toml"]
+grammar-tsx = ["editor-services", "kvim-syntax/grammar-tsx"]
+grammar-typescript = ["editor-services", "kvim-syntax/grammar-typescript"]
+grammar-xml = ["editor-services", "kvim-syntax/grammar-xml"]
+grammar-yaml = ["editor-services", "kvim-syntax/grammar-yaml"]
+grammar-zig = ["editor-services", "kvim-syntax/grammar-zig"]
 
 all-grammars = [
   "grammar-asm",
@@ -79,28 +90,28 @@ all-grammars = [
 
 [dependencies]
 # kvim crates
-kvim-core.workspace = true
+kvim-core = { workspace = true, optional = true }
 kvim-lsp.workspace = true
-kvim-runtime.workspace = true
+kvim-runtime = { workspace = true, optional = true }
 kvim-settings.workspace = true
-kvim-syntax.workspace = true
+kvim-syntax = { workspace = true, optional = true }
 
 # Basics
 thiserror.workspace = true
 
 # Markup
-pulldown-cmark.workspace = true
+pulldown-cmark = { workspace = true, optional = true }
 
 # Serialization
-serde.workspace = true
+serde = { workspace = true, optional = true }
 serde_json.workspace = true
 
 # Language analysis
-tree-sitter.workspace = true
+tree-sitter = { workspace = true, optional = true }
 
 # Runtime
-tokio.workspace = true
-tokio-util.workspace = true
+tokio = { workspace = true, optional = true }
+tokio-util = { workspace = true, optional = true }
 
 [dev-dependencies]
 # kvim crates

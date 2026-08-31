@@ -1,0 +1,27 @@
+// This file is shared by kvim-language and kvim-syntax through include!.
+// Keep it declarative: it is the one source for language selectors.
+language_selectors!(ASM, "asm", ["asm", "assembly"], ["S", "asm", "s"], []);
+language_selectors!(BASH, "bash", ["bash", "sh", "shell"], ["bash", "sh"], [".bash_logout", ".bash_profile", ".bashrc", ".profile"]);
+language_selectors!(C, "c", ["c"], ["c", "h"], []);
+language_selectors!(CPP, "cpp", ["c++", "cpp", "cxx"], ["cc", "cpp", "cxx", "hh", "hpp", "hxx"], []);
+language_selectors!(CSS, "css", ["css"], ["css"], []);
+language_selectors!(FISH, "fish", ["fish"], ["fish"], []);
+language_selectors!(GLSL, "glsl", ["glsl"], ["comp", "frag", "geom", "glsl", "tesc", "tese", "vert"], []);
+language_selectors!(GO, "go", ["go", "golang"], ["go"], []);
+language_selectors!(HTML, "html", ["html"], ["htm", "html"], []);
+language_selectors!(JAVASCRIPT, "javascript", ["javascript", "js", "jsx"], ["cjs", "js", "jsx", "mjs"], []);
+language_selectors!(JSON, "json", ["json"], ["json"], ["flake.lock"]);
+language_selectors!(LUA, "lua", ["lua"], ["lua"], []);
+language_selectors!(MARKDOWN, "markdown", ["markdown", "md"], ["markdown", "md"], []);
+language_selectors!(NIX, "nix", ["nix"], ["nix"], []);
+language_selectors!(PYTHON, "python", ["py", "python"], ["py", "pyi"], []);
+language_selectors!(RUST, "rust", ["rs", "rust"], ["rs"], []);
+language_selectors!(SCSS, "scss", ["scss"], ["scss"], []);
+language_selectors!(SQL, "sql", ["sql"], ["sql"], []);
+language_selectors!(TERRAFORM, "terraform", ["terraform", "tf"], ["tf", "tfvars"], []);
+language_selectors!(TOML, "toml", ["toml"], ["toml"], []);
+language_selectors!(TSX, "tsx", ["tsx"], ["tsx"], []);
+language_selectors!(TYPESCRIPT, "typescript", ["ts", "typescript"], ["cts", "mts", "ts"], []);
+language_selectors!(XML, "xml", ["xml"], ["svg", "xml", "xsd", "xsl", "xslt"], []);
+language_selectors!(YAML, "yaml", ["yaml", "yml"], ["yaml", "yml"], [".clang-format", ".clang-tidy"]);
+language_selectors!(ZIG, "zig", ["zig"], ["zig"], []);
