@@ -540,6 +540,9 @@ where
         generation: SessionGeneration,
         cancellation: &CancellationToken,
     ) -> AttemptOutcome {
+        if cancellation.is_cancelled() {
+            return AttemptOutcome::Stopped;
+        }
         let opened = ServerProcess::open(&mut self.factory, self.report.clone());
         let (process, streams) = match opened {
             Ok(opened) => opened,

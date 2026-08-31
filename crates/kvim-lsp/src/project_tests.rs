@@ -1,19 +1,33 @@
+use std::ffi::OsString;
+use std::io;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
-use std::sync::{Arc, Mutex, PoisonError};
+use std::process::ExitStatus;
+use std::sync::{
+    Arc, Mutex, PoisonError,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, DuplexStream, duplex};
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time;
+use tokio_util::sync::CancellationToken;
 
-use crate::process::{Transport, TransportFactory};
+use crate::process::{
+    LSP_RESTARTS_MAX, LaunchedServer, ServerLaunchError, ServerLaunchRequest, ServerLauncher,
+    ServerProcessHandle, ServerTerminate, ServerWait, Transport, TransportFactory,
+};
 use crate::protocol::{LSP_OUTPUT_BYTES_MAX, LspBound, LspError, RpcId, read_frame};
 
 use super::{
     Attempt, AttemptEnd, LSP_EVENT_QUEUE_CAPACITY, LSP_OPEN_DOCUMENTS_MAX, ManagerLimits,
-    ProjectDeclaration, ProjectDriver, ProjectHandle, ProjectId, ProjectManager, RequestKey,
-    ServerConversation, ServerDeclaration, ServerEvent, ServerId, WorkspaceRoot,
+    ProjectDeclaration, ProjectDriver, ProjectEvent, ProjectHandle, ProjectId, ProjectManager,
+    RequestKey, ServerConversation, ServerDeclaration, ServerEvent, ServerId, ServerSupervisor,
+    WorkspaceRoot,
 };
 
 /// The capacity of one test pipe, in bytes.
@@ -215,6 +229,335 @@ async fn await_answer(answers: &Answers, project: ProjectId) -> String {
         );
         time::sleep(Duration::from_millis(5)).await;
     }
+}
+
+struct NoopConversation;
+
+impl ServerConversation for NoopConversation {
+    async fn serve(&mut self, _: Attempt<'_>) -> AttemptEnd {
+        panic!("a failed handshake never starts the conversation")
+    }
+}
+
+struct FixtureLifecycle {
+    active: Arc<AtomicUsize>,
+    terminated: Arc<AtomicUsize>,
+    waited: Arc<AtomicUsize>,
+    exit: Arc<Mutex<Option<oneshot::Sender<ExitStatus>>>>,
+    result: Option<oneshot::Receiver<ExitStatus>>,
+}
+
+impl Drop for FixtureLifecycle {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::Relaxed);
+        if let Some(exit) = self.exit.lock().expect("fixture exit lock").take() {
+            let _ = exit.send(ExitStatus::from_raw(0));
+        }
+    }
+}
+
+impl ServerProcessHandle for FixtureLifecycle {
+    fn wait(&mut self) -> ServerWait {
+        self.waited.fetch_add(1, Ordering::Relaxed);
+        let result = self.result.take().expect("Kvim takes one wait future");
+        Box::pin(async move {
+            result
+                .await
+                .map_err(|_| crate::process::ServerWaitError(io::Error::other("fixture stopped")))
+        })
+    }
+
+    fn terminate(&mut self) -> ServerTerminate<'_> {
+        self.terminated.fetch_add(1, Ordering::Relaxed);
+        let exit = self.exit.clone();
+        Box::pin(async move {
+            if let Some(exit) = exit.lock().expect("fixture exit lock").take() {
+                let _ = exit.send(ExitStatus::from_raw(0));
+            }
+            Ok(())
+        })
+    }
+}
+
+struct RecordingProjectLauncher {
+    expected: ServerLaunchRequest,
+    requests: Arc<Mutex<Vec<ServerLaunchRequest>>>,
+    launch_signal: Option<mpsc::UnboundedSender<()>>,
+    keep_handshake_open: bool,
+    peers: Vec<DuplexStream>,
+    active: Arc<AtomicUsize>,
+    terminated: Arc<AtomicUsize>,
+    waited: Arc<AtomicUsize>,
+}
+
+impl ServerLauncher for RecordingProjectLauncher {
+    fn launch(
+        &mut self,
+        request: &ServerLaunchRequest,
+    ) -> Result<LaunchedServer, ServerLaunchError> {
+        assert_eq!(request, &self.expected);
+        self.requests
+            .lock()
+            .expect("request record lock")
+            .push(request.clone());
+        self.active.fetch_add(1, Ordering::Relaxed);
+        if let Some(signal) = &self.launch_signal {
+            let _ = signal.send(());
+        }
+
+        let (input, input_peer) = duplex(PIPE_BYTES);
+        self.peers.push(input_peer);
+        let (output, output_peer) = duplex(PIPE_BYTES);
+        if self.keep_handshake_open {
+            self.peers.push(output_peer);
+        }
+        let (errors, _errors_peer) = duplex(PIPE_BYTES);
+        let (exit, result) = oneshot::channel();
+        Ok(LaunchedServer::new(
+            input,
+            output,
+            errors,
+            FixtureLifecycle {
+                active: self.active.clone(),
+                terminated: self.terminated.clone(),
+                waited: self.waited.clone(),
+                exit: Arc::new(Mutex::new(Some(exit))),
+                result: Some(result),
+            },
+        ))
+    }
+}
+
+fn launch_request() -> ServerLaunchRequest {
+    ServerLaunchRequest::new(
+        OsString::from("fixture-server"),
+        vec![OsString::from("--stdio"), OsString::from("ordered")],
+        WorkspaceRoot::new(PathBuf::from(FIRST_ROOT)).expect("the root is absolute"),
+    )
+    .expect("the launch request is valid")
+}
+
+fn supervisor(
+    launcher: impl ServerLauncher + 'static,
+    events: mpsc::Sender<ProjectEvent>,
+) -> ServerSupervisor<
+    'static,
+    NoopConversation,
+    mpsc::Sender<ProjectEvent>,
+    impl Fn(crate::process::ServerReport) + Clone + Send + 'static,
+> {
+    let root = Box::leak(Box::new(
+        WorkspaceRoot::new(PathBuf::from(FIRST_ROOT)).expect("the root is absolute"),
+    ));
+    let options = Box::leak(Box::new(json!({})));
+    ServerSupervisor {
+        address: ProjectId::FIRST.server(ServerId::new(0)),
+        factory: TransportFactory::process_with(launch_request(), launcher),
+        handshake: super::Handshake {
+            root,
+            options,
+            settings: None,
+        },
+        conversation: NoopConversation,
+        events,
+        report: |_| {},
+    }
+}
+
+#[tokio::test]
+async fn every_restart_reuses_one_launcher_and_the_exact_request() {
+    let expected = launch_request();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let active = Arc::new(AtomicUsize::new(0));
+    let terminated = Arc::new(AtomicUsize::new(0));
+    let waited = Arc::new(AtomicUsize::new(0));
+    let launcher = RecordingProjectLauncher {
+        expected: expected.clone(),
+        requests: requests.clone(),
+        launch_signal: None,
+        keep_handshake_open: false,
+        peers: Vec::new(),
+        active: active.clone(),
+        terminated: terminated.clone(),
+        waited: waited.clone(),
+    };
+    let (events, mut received) = mpsc::channel(32);
+
+    supervisor(launcher, events)
+        .run(&CancellationToken::new())
+        .await;
+
+    assert_eq!(
+        *requests.lock().expect("request record lock"),
+        vec![expected; LSP_RESTARTS_MAX + 1],
+        "one caller-owned launcher receives every bounded attempt"
+    );
+    let mut recorded = Vec::new();
+    while let Ok(event) = received.try_recv() {
+        recorded.push(event.event);
+    }
+    assert_eq!(recorded.len(), LSP_RESTARTS_MAX * 2 + 2);
+    for restart in 0..LSP_RESTARTS_MAX {
+        assert!(
+            matches!(recorded[restart * 2], ServerEvent::Failed(_)),
+            "a transport failure precedes restart: {:?}",
+            recorded[restart * 2]
+        );
+        assert!(matches!(
+            recorded[restart * 2 + 1],
+            ServerEvent::Restarted { generation }
+                if generation.get() == u64::try_from(restart + 1).expect("the bound fits")
+        ));
+    }
+    assert!(matches!(
+        recorded[LSP_RESTARTS_MAX * 2],
+        ServerEvent::Failed(_)
+    ));
+    assert!(matches!(recorded.last(), Some(ServerEvent::Stopped)));
+    assert_eq!(active.load(Ordering::Relaxed), 0);
+    assert_eq!(terminated.load(Ordering::Relaxed), LSP_RESTARTS_MAX + 1);
+    assert_eq!(waited.load(Ordering::Relaxed), LSP_RESTARTS_MAX + 1);
+}
+
+struct UnavailableLauncher {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ServerLauncher for UnavailableLauncher {
+    fn launch(&mut self, _: &ServerLaunchRequest) -> Result<LaunchedServer, ServerLaunchError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Err(ServerLaunchError::Unavailable(io::Error::new(
+            io::ErrorKind::NotFound,
+            "typed fixture absence",
+        )))
+    }
+}
+
+struct StartFailingLauncher {
+    calls: Arc<AtomicUsize>,
+}
+
+impl ServerLauncher for StartFailingLauncher {
+    fn launch(&mut self, _: &ServerLaunchRequest) -> Result<LaunchedServer, ServerLaunchError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        Err(ServerLaunchError::Start(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "typed fixture start failure",
+        )))
+    }
+}
+
+#[tokio::test]
+async fn restartable_launch_failure_keeps_its_typed_source_and_bound() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (events, mut received) = mpsc::channel(16);
+    supervisor(
+        StartFailingLauncher {
+            calls: calls.clone(),
+        },
+        events,
+    )
+    .run(&CancellationToken::new())
+    .await;
+
+    assert_eq!(calls.load(Ordering::Relaxed), LSP_RESTARTS_MAX + 1);
+    for attempt in 0..=LSP_RESTARTS_MAX {
+        let event = received.recv().await.expect("the attempt records failure");
+        let ServerEvent::Failed(LspError::Spawn(source)) = event.event else {
+            panic!("the restartable launch failure stays typed")
+        };
+        assert_eq!(source.kind(), io::ErrorKind::PermissionDenied);
+        if attempt < LSP_RESTARTS_MAX {
+            let restart = received.recv().await.expect("the attempt records restart");
+            assert!(matches!(restart.event, ServerEvent::Restarted { .. }));
+        }
+    }
+    assert!(matches!(
+        received.recv().await.map(|event| event.event),
+        Some(ServerEvent::Stopped)
+    ));
+}
+
+#[tokio::test]
+async fn unavailable_launcher_is_terminal_without_a_restart() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (events, mut received) = mpsc::channel(4);
+    supervisor(
+        UnavailableLauncher {
+            calls: calls.clone(),
+        },
+        events,
+    )
+    .run(&CancellationToken::new())
+    .await;
+
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        received.recv().await.map(|event| event.event),
+        Some(ServerEvent::Unavailable)
+    ));
+    assert!(received.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn cancellation_before_launch_starts_no_attempt() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let (events, mut received) = mpsc::channel(4);
+    let cancellation = CancellationToken::new();
+    cancellation.cancel();
+    supervisor(
+        UnavailableLauncher {
+            calls: calls.clone(),
+        },
+        events,
+    )
+    .run(&cancellation)
+    .await;
+
+    assert_eq!(calls.load(Ordering::Relaxed), 0);
+    assert!(matches!(
+        received.recv().await.map(|event| event.event),
+        Some(ServerEvent::Stopped)
+    ));
+}
+
+#[tokio::test]
+async fn cancellation_during_launch_cleans_up_without_a_restart() {
+    let expected = launch_request();
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let active = Arc::new(AtomicUsize::new(0));
+    let terminated = Arc::new(AtomicUsize::new(0));
+    let waited = Arc::new(AtomicUsize::new(0));
+    let (launched, mut launch_signal) = mpsc::unbounded_channel();
+    let launcher = RecordingProjectLauncher {
+        expected,
+        requests: requests.clone(),
+        launch_signal: Some(launched),
+        keep_handshake_open: true,
+        peers: Vec::new(),
+        active: active.clone(),
+        terminated: terminated.clone(),
+        waited: waited.clone(),
+    };
+    let (events, mut received) = mpsc::channel(4);
+    let cancellation = CancellationToken::new();
+    let run_cancellation = cancellation.clone();
+    let running = tokio::spawn(async move {
+        supervisor(launcher, events).run(&run_cancellation).await;
+    });
+    launch_signal.recv().await.expect("the first launch starts");
+    cancellation.cancel();
+    running.await.expect("the supervisor ends");
+
+    assert_eq!(requests.lock().expect("request record lock").len(), 1);
+    assert_eq!(active.load(Ordering::Relaxed), 0);
+    assert_eq!(terminated.load(Ordering::Relaxed), 1);
+    assert_eq!(waited.load(Ordering::Relaxed), 1);
+    assert!(matches!(
+        received.recv().await.map(|event| event.event),
+        Some(ServerEvent::Stopped)
+    ));
+    assert!(received.try_recv().is_err());
 }
 
 #[tokio::test]
