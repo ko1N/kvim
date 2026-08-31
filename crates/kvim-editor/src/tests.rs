@@ -59,14 +59,30 @@ fn count(value: u32) -> Option<NonZeroU32> {
 }
 
 #[test]
-fn viewport_wheel_scrolls_within_buffer_bounds() {
-    let buffer = buffer("one\ntwo\nthree\nfour\nfive\n");
-    let viewport = viewport(2, 80);
-    assert_eq!(viewport.scrolled_down(4, 100).first_line(), 3);
-    assert_eq!(viewport.scrolled_up(100).first_line(), 0);
-    let window = window(2, 80).scrolled_down(&buffer, 100, ColumnLimit::LastCharacter);
-    assert_eq!(window.viewport().first_line(), 3);
-    assert_eq!(window.cursor().line().get(), 3);
+fn viewport_wheel_scrolls_within_buffer_bounds_and_keeps_scrolloff() {
+    let buffer = buffer("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n");
+    let mut display = DisplaySettings::default();
+    display.scrolloff_rows = 2;
+
+    let down = window(6, 80).scrolled_down(&buffer, 3, ColumnLimit::LastCharacter, &display);
+    assert_eq!(down.viewport().first_line(), 3);
+    assert_eq!(down.cursor().line().get(), 5);
+
+    let bottom = down.scrolled_down(&buffer, 100, ColumnLimit::LastCharacter, &display);
+    assert_eq!(bottom.viewport().first_line(), 4);
+    assert_eq!(bottom.cursor().line().get(), 6);
+
+    let up = bottom.scrolled_up(&buffer, 2, ColumnLimit::LastCharacter, &display);
+    assert_eq!(up.viewport().first_line(), 2);
+    assert_eq!(up.cursor().line().get(), 5);
+
+    let top = up.scrolled_up(&buffer, 100, ColumnLimit::LastCharacter, &display);
+    assert_eq!(top.viewport().first_line(), 0);
+    assert_eq!(top.cursor().line().get(), 3);
+
+    let short = window(2, 80).scrolled_down(&buffer, 3, ColumnLimit::LastCharacter, &display);
+    assert_eq!(short.viewport().first_line(), 3);
+    assert_eq!(short.cursor().line().get(), 3);
 }
 
 fn apply(

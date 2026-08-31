@@ -99,7 +99,9 @@ fn resize_accounts_for_the_line_number_gutter() {
         .expect("the area is valid");
     let mut cells = Buffer::empty(Rect::new(0, 0, 6, 2));
     let rendered = editor.render(&mut cells).expect("the geometry fits");
-    assert_eq!(rendered.cursor().x, 4);
+    // The gutter and the reserved scrollbar column both leave the text, so the
+    // cursor sits on the last text cell of the narrow surface.
+    assert_eq!(rendered.cursor().x, 3);
     assert_eq!(cells[(0, 0)].symbol(), "1");
 }
 
@@ -116,8 +118,10 @@ fn horizontal_unicode_scroll_uses_source_columns_and_terminal_cells() {
         .expect("the command has no register");
     let mut cells = Buffer::empty(Rect::new(0, 0, 4, 2));
     let rendered = editor.render(&mut cells).expect("the geometry fits");
-    assert_eq!(rendered.cursor(), Position::new(3, 0));
-    assert_eq!(cells[(0, 0)].symbol(), "c");
+    // The surface holds four cells and reserves one of them for the scrollbar,
+    // so three text cells follow the cursor over the wide character.
+    assert_eq!(rendered.cursor(), Position::new(2, 0));
+    assert_eq!(cells[(0, 0)].symbol(), "d");
 }
 
 #[test]
@@ -182,6 +186,87 @@ fn pointer_click_wheel_and_drag_use_surface_cells() {
 }
 
 #[test]
+fn memory_scrollbar_draws_proportional_glyphs_and_is_pointer_inert() {
+    let mut editor = no_number_editor("zero\none\ntwo\nthree\nfour\nfive\n", Rect::new(0, 0, 6, 3));
+    let mut cells = Buffer::empty(Rect::new(0, 0, 6, 3));
+    editor.render(&mut cells).unwrap();
+    assert_eq!(cells[(5, 0)].symbol(), "┃");
+    assert_eq!(cells[(5, 1)].symbol(), "│");
+    assert_eq!(cells[(5, 2)].symbol(), "│");
+
+    let cursor = editor.window.cursor();
+    assert_eq!(
+        editor.pointer(pointer(5, 1, PointerAction::Press(PointerButton::Left))),
+        PointerOutcome::Ignored
+    );
+    assert_eq!(editor.window.cursor(), cursor);
+    assert_eq!(editor.pointer_drag, PointerDragState::Idle);
+
+    assert_eq!(
+        editor.pointer(pointer(
+            5,
+            1,
+            PointerAction::Wheel(PointerWheel::new(PointerWheelDirection::Down, 1).unwrap())
+        )),
+        PointerOutcome::Changed
+    );
+    assert!(editor.window.first_line() > 0);
+}
+
+#[test]
+fn memory_scrollbar_draws_only_the_track_when_the_buffer_fully_fits() {
+    let editor = no_number_editor("zero\none\ntwo\n", Rect::new(0, 0, 6, 3));
+    let mut cells = Buffer::empty(Rect::new(0, 0, 6, 3));
+    editor.render(&mut cells).unwrap();
+
+    for y in 0..3 {
+        assert_eq!(cells[(5, y)].symbol(), "│");
+    }
+}
+
+#[test]
+fn disabling_memory_scrollbar_restores_the_full_text_width() {
+    let mut settings = EditorSettings::default();
+    settings.display.number = false;
+    settings.display.relative_number = false;
+    settings.display.scrollbar = false;
+    settings.display.sidescrolloff_cells = 0;
+    let editor = MemoryEditor::open("abcdef\n", settings, Rect::new(0, 0, 6, 1)).unwrap();
+    let mut cells = Buffer::empty(Rect::new(0, 0, 6, 1));
+    editor.render(&mut cells).unwrap();
+    assert_eq!(cells[(5, 0)].symbol(), "f");
+    assert_eq!(editor.source_at_cell(CellPosition::new(5, 0)).column, 5);
+}
+
+#[test]
+fn plain_click_cancels_visual_and_keeps_a_fresh_drag_anchor() {
+    let mut editor = no_number_editor("abcdef\n", Rect::new(0, 0, 8, 1));
+    editor.pointer(pointer(0, 0, PointerAction::Press(PointerButton::Left)));
+    editor.pointer(pointer(2, 0, PointerAction::Drag(PointerButton::Left)));
+    assert_eq!(editor.mode(), Mode::Visual);
+
+    editor.pointer(pointer(4, 0, PointerAction::Press(PointerButton::Left)));
+    assert_eq!(editor.mode(), Mode::Normal);
+    assert!(
+        editor
+            .editing
+            .selection(&editor.buffer, &editor.window)
+            .is_none()
+    );
+
+    editor.pointer(pointer(5, 0, PointerAction::Drag(PointerButton::Left)));
+    assert_eq!(editor.mode(), Mode::Visual);
+    let Selection::Characterwise(range) = editor
+        .editing
+        .selection(&editor.buffer, &editor.window)
+        .expect("the later drag creates a fresh selection")
+    else {
+        panic!("a pointer drag creates a characterwise selection");
+    };
+    assert_eq!((range.start().get(), range.end().get()), (4, 6));
+}
+
+#[test]
 fn reverse_drag_retains_the_original_press_anchor() {
     let mut editor = no_number_editor("abcdef\n", Rect::new(0, 0, 8, 1));
     editor.pointer(pointer(2, 0, PointerAction::Press(PointerButton::Left)));
@@ -216,7 +301,9 @@ fn source_mapping_owns_wide_tab_and_combining_cells() {
 
 #[test]
 fn source_mapping_honors_horizontal_offset_and_clamps_line_end() {
-    let mut editor = no_number_editor("a界bc\n", Rect::new(0, 0, 4, 1));
+    // The surface reserves its last column for the scrollbar, so it holds four
+    // text cells over the four source columns of the line.
+    let mut editor = no_number_editor("a界bc\n", Rect::new(0, 0, 5, 1));
     editor
         .editing
         .move_to(&editor.buffer, &mut editor.window, 0, 1);

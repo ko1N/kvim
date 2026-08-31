@@ -1,12 +1,14 @@
 //! Normalized terminal events and the bounded terminal event source.
 
+use std::future::poll_fn;
 use std::io;
+use std::pin::Pin;
+use std::task::Poll;
 
 use crossterm::event::{
     Event as CrosstermEvent, EventStream, KeyModifiers, MouseButton as CrosstermMouseButton,
     MouseEvent, MouseEventKind,
 };
-use futures_util::FutureExt;
 use futures_util::stream::{Stream, StreamExt};
 
 use kvim_keymap::{Key, PasteError, PasteText};
@@ -63,8 +65,7 @@ fn can_merge_pointer(left: PointerEvent, right: PointerEvent) -> bool {
     match (left.action(), right.action()) {
         (PointerAction::Motion, PointerAction::Motion) => left.modifiers() == right.modifiers(),
         (PointerAction::Wheel(left_wheel), PointerAction::Wheel(right_wheel)) => {
-            left.position() == right.position()
-                && left.modifiers() == right.modifiers()
+            left.modifiers() == right.modifiers()
                 && left_wheel.direction() == right_wheel.direction()
                 && right_wheel.ticks() <= POINTER_EVENTS_COALESCE_MAX - left_wheel.ticks()
         }
@@ -86,7 +87,7 @@ fn merge_pointer(left: &mut PointerEvent, right: PointerEvent) {
             )
             .expect("can_merge_pointer keeps the wheel inside its published bound");
             *left = PointerEvent::new(
-                left.position(),
+                right.position(),
                 left.modifiers(),
                 PointerAction::Wheel(wheel),
             );
@@ -235,7 +236,7 @@ where
         }
     }
 
-    fn coalesce_pointer(&mut self, mut pointer: PointerEvent) -> PointerEvent {
+    async fn coalesce_pointer(&mut self, mut pointer: PointerEvent) -> PointerEvent {
         let mut events_coalesced = 1;
         while events_coalesced < POINTER_EVENTS_COALESCE_MAX
             && matches!(
@@ -248,7 +249,16 @@ where
                 _ => false,
             }
         {
-            let Some(next) = self.events.next().now_or_never() else {
+            // Poll with this task's waker. EventStream keeps one wake task active,
+            // so a no-op waker here can prevent the following read from waking.
+            let Some(next) = poll_fn(|context| {
+                Poll::Ready(match Pin::new(&mut self.events).poll_next(context) {
+                    Poll::Ready(next) => Some(next),
+                    Poll::Pending => None,
+                })
+            })
+            .await
+            else {
                 break;
             };
             let Some(next) = next else {
@@ -298,7 +308,9 @@ where
             };
             match TerminalEvent::from_crossterm(event) {
                 Ok(TerminalEvent::Pointer(pointer)) => {
-                    return Some(Ok(TerminalEvent::Pointer(self.coalesce_pointer(pointer))));
+                    return Some(Ok(TerminalEvent::Pointer(
+                        self.coalesce_pointer(pointer).await,
+                    )));
                 }
                 Ok(normalized) => return Some(Ok(normalized)),
                 // A key release is the other half of a press that already

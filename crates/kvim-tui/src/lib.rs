@@ -67,7 +67,6 @@ mod overlay;
 #[cfg(feature = "editor")]
 mod picker;
 #[cfg(feature = "editor")]
-#[allow(dead_code)]
 mod pointer;
 #[cfg(feature = "editor")]
 mod render;

@@ -99,6 +99,15 @@ fn row(session: &Session, y: u16) -> String {
     row_of(&draw(session), y)
 }
 
+/// Reports whether one rendered row ends with the text and then the scrollbar
+/// column that the window under the overlay reserves.
+///
+/// A decorative overlay paints no cell of the reserved column, so the track
+/// glyph of the window stays the last cell of the row.
+fn row_ends_with(session: &Session, y: u16, text: &str) -> bool {
+    row(session, y).ends_with(&format!("{text}{TRACK}"))
+}
+
 /// Renders one session and returns the style of one cell.
 fn style_at(session: &Session, x: u16, y: u16) -> Style {
     draw(session)
@@ -138,6 +147,22 @@ fn is_reversed(session: &Session, x: u16, y: u16) -> bool {
 fn winbar(width: u16, left: &str, label: &str) -> String {
     let blanks = usize::from(width) - 1 - left.chars().count() - label.chars().count();
     format!("{left}{}{label} ", " ".repeat(blanks))
+}
+
+/// The scrollbar track glyph in the reserved column of a text row.
+const TRACK: &str = "│";
+
+/// The scrollbar thumb glyph in the reserved column of a text row.
+const THUMB: &str = "┃";
+
+/// Returns one text row of a window that reserves its scrollbar column.
+///
+/// The row holds the text, then blanks, then the scrollbar glyph in the last
+/// cell of the window. Every character of the text takes one cell, so a test
+/// that renders a wide glyph writes its row without this helper.
+fn text_row(width: u16, text: &str, mark: &str) -> String {
+    let blanks = usize::from(width) - 1 - text.chars().count();
+    format!("{text}{}{mark}", " ".repeat(blanks))
 }
 
 /// Returns the complete statusline row of one terminal, without its trailing
@@ -333,10 +358,10 @@ fn one_window_shows_the_winbar_the_text_and_the_chrome() {
         row(&session, 0),
         winbar(28, " [Scratch] [+]", "ALL").trim_end()
     );
-    assert_eq!(row(&session, 1), " 1   alpha");
+    assert_eq!(row(&session, 1), text_row(28, " 1   alpha", TRACK));
     assert_eq!(
         row(&session, 2),
-        "~",
+        text_row(28, "~", TRACK),
         "the rows below the buffer are marked"
     );
     // The scratch buffer has no file name, so no language adapter and no
@@ -584,11 +609,11 @@ fn the_number_column_shows_absolute_and_relative_numbers() {
 
     // The cursor line shows its absolute number, left-aligned. Every other line
     // shows its distance from the cursor line, right-aligned.
-    assert_eq!(row(&session, 1), "   2 line0");
-    assert_eq!(row(&session, 2), "   1 line1");
-    assert_eq!(row(&session, 3), " 3   line2");
-    assert_eq!(row(&session, 4), "   1 line3");
-    assert_eq!(row(&session, 5), "   2 line4");
+    assert_eq!(row(&session, 1), text_row(30, "   2 line0", TRACK));
+    assert_eq!(row(&session, 2), text_row(30, "   1 line1", TRACK));
+    assert_eq!(row(&session, 3), text_row(30, " 3   line2", TRACK));
+    assert_eq!(row(&session, 4), text_row(30, "   1 line3", TRACK));
+    assert_eq!(row(&session, 5), text_row(30, "   2 line4", TRACK));
 }
 
 #[test]
@@ -684,7 +709,7 @@ fn a_search_highlights_every_match_and_marks_the_current_one() {
 
     // The search moved the cursor to the match on the second line, so that
     // match becomes the current one and the others stay ordinary matches.
-    assert_eq!(row(&session, 2), " 2   line1");
+    assert_eq!(row(&session, 2), text_row(30, " 2   line1", TRACK));
     assert_eq!(style_at(&session, 5, 2).bg, Some(ACCENT_WARM));
     assert_eq!(style_at(&session, 8, 2).bg, Some(ACCENT_WARM));
     assert_ne!(style_at(&session, 9, 2).bg, Some(ACCENT_WARM));
@@ -720,7 +745,7 @@ fn an_edit_moves_the_search_matches_with_the_text() {
     press_code(&mut session, KeyCode::Enter);
     // Deleting the first line moves every remaining match one row up.
     type_keys(&mut session, "ggdd");
-    assert_eq!(row(&session, 1), " 1   line1");
+    assert_eq!(row(&session, 1), text_row(30, " 1   line1", TRACK));
     assert_eq!(style_at(&session, 5, 1).bg, Some(ACCENT_WARM));
     assert_eq!(style_at(&session, 5, 2).bg, Some(SEARCH));
 }
@@ -729,7 +754,7 @@ fn an_edit_moves_the_search_matches_with_the_text() {
 fn the_bracket_under_the_cursor_and_its_partner_carry_the_pair_highlight() {
     // The cursor stands on the open bracket, so both ends of the pair mark it.
     let session = with_text(30, 8, "(alpha)\n");
-    assert_eq!(row(&session, 1), " 1   (alpha)");
+    assert_eq!(row(&session, 1), text_row(30, " 1   (alpha)", TRACK));
     assert_eq!(
         highlighted_brackets(&session),
         vec![(GUTTER, 1), (GUTTER + 6, 1)]
@@ -779,7 +804,9 @@ fn a_partner_outside_the_viewport_paints_no_cell() {
     let marked = highlighted_brackets(&session);
     assert_eq!(marked.len(), 1, "the open bracket left the viewport");
     assert_eq!(marked[0].0, GUTTER);
-    assert_eq!(row(&session, marked[0].1), " 9   )");
+    // The buffer holds more lines than the window shows, so the scrollbar of
+    // this row carries the thumb.
+    assert_eq!(row(&session, marked[0].1), text_row(30, " 9   )", THUMB));
 }
 
 #[test]
@@ -852,11 +879,12 @@ fn a_long_line_scrolls_horizontally_and_clips_at_the_window_edge() {
     type_keys(&mut session, "abcdefghijklmnopqrstuvwxyz");
     press_code(&mut session, KeyCode::Esc);
 
-    // Wrapping stays disabled. The window holds fifteen text cells, so the view
-    // follows the cursor and clips the rest of the line.
-    assert_eq!(row(&session, 1), " 1   mnopqrstuvwxyz");
+    // Wrapping stays disabled. The gutter takes five cells and the scrollbar
+    // takes one, so the window holds fourteen text cells. The view follows the
+    // cursor and clips the rest of the line.
+    assert_eq!(row(&session, 1), text_row(20, " 1   nopqrstuvwxyz", TRACK));
     type_keys(&mut session, "0");
-    assert_eq!(row(&session, 1), " 1   abcdefghijklmno");
+    assert_eq!(row(&session, 1), text_row(20, " 1   abcdefghijklmn", TRACK));
 }
 
 #[test]
@@ -889,7 +917,7 @@ fn a_tab_expands_to_the_configured_tab_stop() {
 
     // One hard tab after two characters reaches the tab stop at cell four, so
     // it occupies two cells instead of four.
-    assert_eq!(row(&session, 1), " 1   ab  c");
+    assert_eq!(row(&session, 1), text_row(30, " 1   ab  c", TRACK));
 }
 
 #[test]
@@ -906,9 +934,14 @@ fn several_splits_each_render_their_own_winbar_and_focus_style() {
     let buffer = draw(&session);
     let bar = winbar(30, " [Scratch] [+]", "ALL");
     assert_eq!(row_of(&buffer, 0), format!("{bar}{bar}").trim_end());
+    // Each window reserves its own scrollbar column at its right edge.
     assert_eq!(
         row_of(&buffer, 1),
-        " 1   alpha                     1   alpha"
+        format!(
+            "{}{}",
+            text_row(30, " 1   alpha", TRACK),
+            text_row(30, " 1   alpha", TRACK)
+        )
     );
 
     // The focused window carries the title color, and the other window carries
@@ -964,7 +997,11 @@ fn two_splits_paint_two_different_buffers() {
     );
     assert_eq!(
         row_of(&buffer, 1),
-        " 1   fn first() {}             1   fn second() {}",
+        format!(
+            "{}{}",
+            text_row(30, " 1   fn first() {}", TRACK),
+            text_row(30, " 1   fn second() {}", TRACK)
+        ),
         "each window paints the buffer of its own leaf"
     );
     // Only the focused window holds the cursor.
@@ -1137,7 +1174,11 @@ fn a_confirmation_asks_on_the_message_line_and_draws_a_cursor() {
 fn the_which_key_overlay_lists_one_level_of_next_keys() {
     let mut session = session_without_icons(60, 20);
     press(&mut session, ' ');
-    assert_eq!(row(&session, 5), "~", "the overlay waits for the delay");
+    assert_eq!(
+        row(&session, 5),
+        text_row(60, "~", TRACK),
+        "the overlay waits for the delay"
+    );
 
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
@@ -1168,7 +1209,7 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
 
     // `Esc` dismisses the overlay from any depth.
     press_code(&mut session, KeyCode::Esc);
-    assert_eq!(row(&session, 15), "~");
+    assert_eq!(row(&session, 15), text_row(60, "~", TRACK));
 }
 
 #[test]
@@ -1221,7 +1262,11 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
         format!(" Which Key{}+3 more", " ".repeat(42)),
         "the title row reports the mappings that no column holds"
     );
-    assert_eq!(row_of(&buffer, 8), "~", "the buffer stays visible above");
+    assert_eq!(
+        row_of(&buffer, 8),
+        text_row(60, "~", TRACK),
+        "the buffer stays visible above"
+    );
     assert_eq!(row_of(&buffer, 17), " o      Open the buffer picker");
 
     // A body band that cannot hold the title and one mapping over its own half
@@ -1319,9 +1364,9 @@ fn a_narrow_terminal_keeps_the_message_line_and_writes_no_cell_outside() {
             );
         }
     }
-    // A narrow window keeps one text cell beside the gutter.
+    // A narrow window keeps one text cell beside the gutter and the scrollbar.
     let session = with_lines(6, 6, 3);
-    assert_eq!(row(&session, 1), " 1   l");
+    assert_eq!(row(&session, 1), text_row(6, " 1  l", TRACK));
 }
 
 #[test]
@@ -1335,8 +1380,10 @@ fn a_resize_recomputes_the_layout_and_keeps_the_buffer() {
         NOW,
     );
     assert_eq!(session.area(), Rect::new(0, 0, 24, 6));
-    assert_eq!(row(&session, 1), " 1   line0");
-    assert_eq!(row(&session, 3), "   2 line2");
+    // The resized window shows three of the four buffer lines, so its scrollbar
+    // carries a thumb over the first two rows.
+    assert_eq!(row(&session, 1), text_row(24, " 1   line0", THUMB));
+    assert_eq!(row(&session, 3), text_row(24, "   2 line2", TRACK));
 }
 
 #[test]
@@ -1378,14 +1425,32 @@ fn each_window_counts_its_relative_numbers_from_its_own_cursor() {
     type_keys(&mut session, "jj");
 
     // The unfocused window counts from its own cursor line, which is line one.
-    assert_eq!(window_row(&session, left, 1), " 1   line0");
-    assert_eq!(window_row(&session, left, 2), "   1 line1");
-    assert_eq!(window_row(&session, left, 3), "   2 line2");
+    assert_eq!(
+        window_row(&session, left, 1),
+        text_row(40, " 1   line0", TRACK)
+    );
+    assert_eq!(
+        window_row(&session, left, 2),
+        text_row(40, "   1 line1", TRACK)
+    );
+    assert_eq!(
+        window_row(&session, left, 3),
+        text_row(40, "   2 line2", TRACK)
+    );
 
     // The focused window counts from line three.
-    assert_eq!(window_row(&session, right, 1), "   2 line0");
-    assert_eq!(window_row(&session, right, 2), "   1 line1");
-    assert_eq!(window_row(&session, right, 3), " 3   line2");
+    assert_eq!(
+        window_row(&session, right, 1),
+        text_row(40, "   2 line0", TRACK)
+    );
+    assert_eq!(
+        window_row(&session, right, 2),
+        text_row(40, "   1 line1", TRACK)
+    );
+    assert_eq!(
+        window_row(&session, right, 3),
+        text_row(40, " 3   line2", TRACK)
+    );
 
     // The terminal cursor marks the focused window alone.
     let area = session
@@ -1464,8 +1529,12 @@ fn the_notification_overlay_anchors_to_the_bottom_right_corner() {
 
     // The body band ends above the statusline and the message line, so the
     // group title takes the last body row and the item takes the row above it.
-    assert!(row(&session, 20).ends_with("In progress... Building compile-time-deps"));
-    assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
+    assert!(row_ends_with(
+        &session,
+        20,
+        "In progress... Building compile-time-deps"
+    ));
+    assert!(row_ends_with(&session, 21, "rust-analyzer ⠋"));
     // One cell of padding keeps the text off the right edge, and the overlay
     // paints no background: every cell of it keeps the editor background.
     let buffer = draw(&session);
@@ -1499,8 +1568,8 @@ fn the_group_title_carries_the_server_name_and_the_reported_percentage() {
     );
 
     // A `begin` without a message shows the title of the operation.
-    assert!(row(&session, 20).ends_with("In progress... Indexing 42%"));
-    assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
+    assert!(row_ends_with(&session, 20, "In progress... Indexing 42%"));
+    assert!(row_ends_with(&session, 21, "rust-analyzer ⠋"));
     let title = style_at(&session, 79 - "rust-analyzer ⠋".chars().count() as u16, 21);
     assert_eq!(title.fg, Some(TITLE));
     assert!(title.add_modifier.contains(Modifier::BOLD));
@@ -1519,12 +1588,12 @@ fn the_spinner_advances_one_frame_for_each_reported_deadline() {
     // moment of the next frame and the loop waits for it.
     assert_eq!(session.next_deadline(), Some(SPINNER_FRAME));
     assert_eq!(session.tick(SPINNER_FRAME), Redraw::Needed);
-    assert!(row(&session, 21).ends_with("rust-analyzer ⠙"));
+    assert!(row_ends_with(&session, 21, "rust-analyzer ⠙"));
     // The transition leaves a later deadline behind, so the loop never repeats
     // the same catch-up step.
     assert_eq!(session.next_deadline(), Some(SPINNER_FRAME * 2));
     session.tick(SPINNER_FRAME * 2);
-    assert!(row(&session, 21).ends_with("rust-analyzer ⠹"));
+    assert!(row_ends_with(&session, 21, "rust-analyzer ⠹"));
 }
 
 #[test]
@@ -1540,9 +1609,9 @@ fn a_finished_item_shows_the_done_icon_and_leaves_after_its_lifetime() {
         },
     );
 
-    assert!(row(&session, 20).ends_with("✓ Indexed"));
+    assert!(row_ends_with(&session, 20, "✓ Indexed"));
     // No item runs, so the group shows no spinner and only the removal remains.
-    assert!(row(&session, 21).ends_with("rust-analyzer"));
+    assert!(row_ends_with(&session, 21, "rust-analyzer"));
     assert_eq!(session.next_deadline(), Some(NOTIFICATIONS.done_ttl));
 
     assert_eq!(session.tick(NOTIFICATIONS.done_ttl), Redraw::Needed);
@@ -1568,10 +1637,18 @@ fn the_overlay_drops_its_oldest_row_above_the_row_bound() {
     let body_bottom = 40 - 2 - 1;
     let title = body_bottom;
     let top = title + 1 - u16::try_from(NOTIFICATIONS.rows_max).expect("the bound is small");
-    assert!(row(&session, top).ends_with(&format!("crate-{}", items - NOTIFICATIONS.rows_max + 1)));
+    assert!(row_ends_with(
+        &session,
+        top,
+        &format!("crate-{}", items - NOTIFICATIONS.rows_max + 1)
+    ));
     assert!(!row(&session, top - 1).contains("crate-"));
-    assert!(row(&session, title).ends_with("rust-analyzer ⠋"));
-    assert!(row(&session, title - 1).ends_with(&format!("crate-{}", items - 1)));
+    assert!(row_ends_with(&session, title, "rust-analyzer ⠋"));
+    assert!(row_ends_with(
+        &session,
+        title - 1,
+        &format!("crate-{}", items - 1)
+    ));
 }
 
 #[test]
@@ -1652,11 +1729,12 @@ fn the_overlay_paints_no_background_over_the_buffer_text() {
         );
         assert_eq!(cell.style().bg, Some(BASE));
     }
-    // The padding cell beside the widest row keeps the buffer as well.
+    // The padding cell beside the widest row is the reserved scrollbar column,
+    // which the window paints and the overlay leaves alone.
     let padding = buffer
         .cell((79, 20))
         .expect("the test reads a cell inside the terminal");
-    assert_eq!(padding.symbol(), "-");
+    assert_eq!(padding.symbol(), TRACK);
 }
 
 #[test]
@@ -1713,7 +1791,7 @@ fn an_obsolete_session_and_an_unknown_token_never_change_the_overlay() {
 fn a_later_attempt_clears_the_rows_of_the_attempt_that_failed() {
     let mut session = session(80, 24);
     start_indexing(&mut session, NOW, "index", "before the restart");
-    assert!(row(&session, 20).ends_with("before the restart"));
+    assert!(row_ends_with(&session, 20, "before the restart"));
 
     // The first report of the new attempt addresses no item, because the new
     // server assigns its own tokens. It still drops every row of the attempt
@@ -1909,9 +1987,17 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     let last = 22;
     for (offset, candidate) in COMMAND_CANDIDATES.iter().enumerate() {
         let y = first + u16::try_from(offset).expect("the list is short");
+        // The list is decoration over the window, so a candidate row inside the
+        // text band keeps the reserved scrollbar column of that window. The
+        // statusline row reserves no such column.
+        let expected = if y < last {
+            text_row(80, &format!(" {candidate}"), TRACK)
+        } else {
+            format!(" {candidate}")
+        };
         assert_eq!(
             row(&session, y),
-            format!(" {candidate}"),
+            expected,
             "row {y} shows `{candidate}`: {}",
             row(&session, y)
         );
@@ -1932,7 +2018,7 @@ fn the_command_line_lists_its_candidates_above_the_chrome() {
     // The list is decoration, so it moves no cursor and it leaves the rows
     // above it unchanged.
     assert_eq!(cursor_position(&session), before);
-    assert_eq!(row(&session, first - 1), "~");
+    assert_eq!(row(&session, first - 1), text_row(80, "~", TRACK));
 
     // The selected candidate is the text that the command line shows, so the
     // selection color follows every cycle.
@@ -1957,7 +2043,11 @@ fn one_candidate_completes_the_command_line_without_a_list() {
     assert_eq!(row(&session, 23), ":wq");
     assert_eq!(selected_row(&session), None);
     for y in 2..22u16 {
-        assert_eq!(row(&session, y), "~", "row {y} shows the buffer alone");
+        assert_eq!(
+            row(&session, y),
+            text_row(80, "~", TRACK),
+            "row {y} shows the buffer alone"
+        );
     }
 }
 
@@ -1999,14 +2089,14 @@ fn the_candidate_list_covers_the_notification_overlay() {
     // the overlay's last row without ending on it.
     let mut session = session(40, 24);
     start_indexing(&mut session, NOW, "index", "Building compile-time-deps");
-    assert!(row(&session, 21).ends_with("rust-analyzer ⠋"));
+    assert!(row_ends_with(&session, 21, "rust-analyzer ⠋"));
     open_completion(&mut session);
 
     // The user cycles the list with a key and reads it now, so the list draws
     // over the overlay. See `docs/windows.md`.
     let overlay_row = row(&session, 21);
     assert!(
-        overlay_row.starts_with(" wq") && overlay_row.ends_with("rust-analyzer ⠋"),
+        overlay_row.starts_with(" wq") && overlay_row.ends_with(&format!("rust-analyzer ⠋{TRACK}")),
         "the list covers the left cells of the overlay row: {overlay_row}"
     );
     assert!(row(&session, 20).starts_with(" quit"));
@@ -2033,7 +2123,7 @@ fn a_narrow_terminal_keeps_the_command_line_readable() {
     // the list is open, so nothing survives past the end of the list on that
     // twenty-cell row.
     let first = 9 - u16::try_from(COMMAND_CANDIDATES.len()).expect("the list is short");
-    assert_eq!(row(&session, first), " diagnostics");
+    assert_eq!(row(&session, first), text_row(20, " diagnostics", TRACK));
     assert_eq!(row(&session, 8), " write");
 }
 

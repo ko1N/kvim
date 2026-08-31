@@ -1,3 +1,9 @@
+use std::collections::VecDeque;
+use std::pin::Pin;
+use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll, Waker};
+use std::time::Duration;
+
 use crossterm::event::{
     Event as CrosstermEvent, KeyCode as CrosstermKeyCode, KeyEvent, KeyEventKind, KeyModifiers,
     MouseButton, MouseEvent, MouseEventKind,
@@ -21,6 +27,73 @@ fn mouse(kind: MouseEventKind, column: u16, row: u16, modifiers: KeyModifiers) -
         row,
         modifiers,
     })
+}
+
+#[derive(Clone)]
+struct WakeOnceSender {
+    state: Arc<Mutex<WakeOnceState>>,
+}
+
+struct WakeOnceStream {
+    state: Arc<Mutex<WakeOnceState>>,
+}
+
+#[derive(Default)]
+struct WakeOnceState {
+    events: VecDeque<io::Result<CrosstermEvent>>,
+    wake_active: bool,
+    waker: Option<Waker>,
+}
+
+impl WakeOnceStream {
+    fn new(event: CrosstermEvent) -> (Self, WakeOnceSender) {
+        let state = Arc::new(Mutex::new(WakeOnceState {
+            events: VecDeque::from([Ok(event)]),
+            ..WakeOnceState::default()
+        }));
+        (
+            Self {
+                state: Arc::clone(&state),
+            },
+            WakeOnceSender { state },
+        )
+    }
+}
+
+impl Stream for WakeOnceStream {
+    type Item = io::Result<CrosstermEvent>;
+
+    fn poll_next(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        let mut state = self
+            .state
+            .lock()
+            .expect("the test stream lock is available");
+        if let Some(event) = state.events.pop_front() {
+            return Poll::Ready(Some(event));
+        }
+        if !state.wake_active {
+            state.wake_active = true;
+            state.waker = Some(context.waker().clone());
+        }
+        Poll::Pending
+    }
+}
+
+impl WakeOnceSender {
+    fn send(&self, events: impl IntoIterator<Item = CrosstermEvent>) {
+        let waker = {
+            let mut state = self
+                .state
+                .lock()
+                .expect("the test stream lock is available");
+            state.events.extend(events.into_iter().map(Ok));
+            state.wake_active = false;
+            state.waker.take()
+        };
+        if let Some(waker) = waker {
+            waker.wake();
+        }
+    }
 }
 
 #[tokio::test]
@@ -91,6 +164,58 @@ async fn the_source_normalizes_pointer_actions_without_crossterm_values() {
 }
 
 #[tokio::test]
+async fn a_pending_coalescing_probe_keeps_the_event_task_wakeable() {
+    let (stream, sender) =
+        WakeOnceStream::new(mouse(MouseEventKind::ScrollDown, 4, 2, KeyModifiers::NONE));
+    let mut source = EventSource::new(stream);
+
+    tokio::time::timeout(Duration::from_millis(250), async {
+        assert!(matches!(
+            source.next_event().await,
+            Some(Ok(TerminalEvent::Pointer(event)))
+                if matches!(event.action(), PointerAction::Wheel(_))
+        ));
+
+        tokio::spawn(async move {
+            tokio::task::yield_now().await;
+            sender.send([
+                mouse(
+                    MouseEventKind::Down(MouseButton::Left),
+                    4,
+                    2,
+                    KeyModifiers::NONE,
+                ),
+                mouse(
+                    MouseEventKind::Drag(MouseButton::Left),
+                    5,
+                    3,
+                    KeyModifiers::NONE,
+                ),
+                mouse(
+                    MouseEventKind::Up(MouseButton::Left),
+                    5,
+                    3,
+                    KeyModifiers::NONE,
+                ),
+            ]);
+        });
+
+        for expected in [
+            PointerAction::Press(PointerButton::Left),
+            PointerAction::Drag(PointerButton::Left),
+            PointerAction::Release(PointerButton::Left),
+        ] {
+            assert!(matches!(
+                source.next_event().await,
+                Some(Ok(TerminalEvent::Pointer(event))) if event.action() == expected
+            ));
+        }
+    })
+    .await
+    .expect("pointer input wakes the task after an empty coalescing probe");
+}
+
+#[tokio::test]
 async fn the_source_coalesces_immediately_ready_consecutive_wheel_events() {
     let mut source = source(vec![
         mouse(MouseEventKind::ScrollDown, 4, 2, KeyModifiers::NONE),
@@ -152,7 +277,7 @@ fn hosts_can_construct_terminal_neutral_pointer_events() {
 }
 
 #[tokio::test]
-async fn the_source_keeps_a_changed_position_wheel_event_pending() {
+async fn the_source_coalesces_wheel_events_at_changing_positions() {
     let mut source = source(vec![
         mouse(MouseEventKind::ScrollDown, 4, 2, KeyModifiers::NONE),
         mouse(MouseEventKind::ScrollDown, 5, 2, KeyModifiers::NONE),
@@ -161,21 +286,11 @@ async fn the_source_keeps_a_changed_position_wheel_event_pending() {
     assert!(matches!(
         source.next_event().await,
         Some(Ok(TerminalEvent::Pointer(event)))
-            if event.position() == CellPosition::new(4, 2)
-                && event.action()
-                    == PointerAction::Wheel(
-                        PointerWheel::new(PointerWheelDirection::Down, 1)
-                            .expect("one tick is within the coalescing bound"),
-                    )
-    ));
-    assert!(matches!(
-        source.next_event().await,
-        Some(Ok(TerminalEvent::Pointer(event)))
             if event.position() == CellPosition::new(5, 2)
                 && event.action()
                     == PointerAction::Wheel(
-                        PointerWheel::new(PointerWheelDirection::Down, 1)
-                            .expect("one tick is within the coalescing bound"),
+                        PointerWheel::new(PointerWheelDirection::Down, 2)
+                            .expect("two ticks are within the coalescing bound"),
                     )
     ));
 }
@@ -264,6 +379,47 @@ async fn the_source_stops_wheel_coalescing_at_the_published_bound() {
                     PointerWheel::new(PointerWheelDirection::Up, 1)
                         .expect("one tick is within the coalescing bound"),
                 )
+    ));
+}
+
+#[tokio::test]
+async fn sustained_wheel_input_stays_bounded_and_preserves_following_input() {
+    let mut events = Vec::with_capacity(98);
+    events.extend((0..96).map(|_| mouse(MouseEventKind::ScrollDown, 4, 2, KeyModifiers::NONE)));
+    events.push(mouse(
+        MouseEventKind::Up(MouseButton::Left),
+        5,
+        3,
+        KeyModifiers::NONE,
+    ));
+    events.push(CrosstermEvent::Key(KeyEvent::new(
+        CrosstermKeyCode::Esc,
+        KeyModifiers::NONE,
+    )));
+    let mut source = source(events);
+
+    for _ in 0..3 {
+        assert!(matches!(
+            source.next_event().await,
+            Some(Ok(TerminalEvent::Pointer(event)))
+                if event.action()
+                    == PointerAction::Wheel(
+                        PointerWheel::new(
+                            PointerWheelDirection::Down,
+                            POINTER_EVENTS_COALESCE_MAX,
+                        )
+                        .expect("the published coalescing bound is valid"),
+                    )
+        ));
+    }
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.action() == PointerAction::Release(PointerButton::Left)
+    ));
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Key(key))) if key == Key::plain(KeyCode::Esc)
     ));
 }
 

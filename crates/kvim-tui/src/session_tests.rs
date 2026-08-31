@@ -6,6 +6,9 @@
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use ratatui::Terminal;
+use ratatui::backend::TestBackend;
+use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 use tokio_util::sync::CancellationToken;
 
@@ -76,6 +79,21 @@ fn release(column: u16, row: u16) -> TerminalEvent {
     ))
 }
 
+fn release_for(event: &TerminalEvent) -> TerminalEvent {
+    let TerminalEvent::Pointer(pointer) = event else {
+        panic!("a click helper requires one pointer event");
+    };
+    release(pointer.position().column(), pointer.position().row())
+}
+
+fn motion(column: u16, row: u16) -> TerminalEvent {
+    TerminalEvent::Pointer(PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        PointerAction::Motion,
+    ))
+}
+
 /// Creates one bounded vertical wheel event at a terminal cell.
 fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEvent {
     TerminalEvent::Pointer(PointerEvent::new(
@@ -85,6 +103,16 @@ fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEve
             PointerWheel::new(direction, 1).expect("one tick is within the event bound"),
         ),
     ))
+}
+
+fn draw(session: &Session) -> CellBuffer {
+    let area = session.area();
+    let backend = TestBackend::new(area.width, area.height);
+    let mut terminal = Terminal::new(backend).expect("the test backend never fails");
+    terminal
+        .draw(|frame| session.render(frame))
+        .expect("the test backend never fails");
+    terminal.backend().buffer().clone()
 }
 
 #[test]
@@ -117,6 +145,59 @@ fn buffer_drag_selects_forward_and_reverse_and_release_keeps_visual_mode() {
     let _ = session.handle_event(click(x.saturating_add(4), y), NOW);
     let _ = session.handle_event(drag(x.saturating_add(1), y), NOW);
     assert_eq!(character_selection(&session), (1, 5));
+}
+
+#[test]
+fn plain_buffer_click_cancels_visual_and_a_later_drag_starts_a_fresh_selection() {
+    let mut session = with_text(&["alpha beta"]);
+    let area = session
+        .windows
+        .layout()
+        .area(session.windows.focused_window())
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+
+    let _ = session.handle_event(click(x, y), NOW);
+    let _ = session.handle_event(drag(x.saturating_add(3), y), NOW);
+    assert_eq!(session.mode(), Mode::Visual);
+
+    let _ = session.handle_event(click(x.saturating_add(5), y), NOW);
+    assert_eq!(session.mode(), Mode::Normal);
+    assert!(selection(&session).is_none());
+
+    let _ = session.handle_event(drag(x.saturating_add(7), y), NOW);
+    assert_eq!(session.mode(), Mode::Visual);
+    assert_eq!(character_selection(&session), (5, 8));
+}
+
+#[test]
+fn escape_and_control_c_exit_visual_immediately_after_pointer_drag() {
+    for cancel in [Key::plain(KeyCode::Esc), Key::ctrl(KeyCode::Char('c'))] {
+        let mut session = with_text(&["alpha beta"]);
+        let area = session
+            .windows
+            .layout()
+            .area(session.windows.focused_window())
+            .expect("the window is visible");
+        let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+        let x = area.x.saturating_add(gutter);
+        let y = area.y.saturating_add(WINBAR_ROWS);
+
+        let _ = session.handle_event(click(x, y), NOW);
+        let _ = session.handle_event(drag(x.saturating_add(3), y), NOW);
+        let _ = session.handle_event(release(x.saturating_add(3), y), NOW);
+        assert_eq!(session.mode(), Mode::Visual);
+        assert_eq!(
+            session.input_context().scope,
+            BindingScope::Mode(Mode::Visual)
+        );
+
+        let _ = session.handle_event(TerminalEvent::Key(cancel), NOW);
+        assert_eq!(session.mode(), Mode::Normal);
+        assert!(selection(&session).is_none());
+    }
 }
 
 #[test]
@@ -382,6 +463,17 @@ fn sidebar_click_selects_once_and_activates_the_same_row_twice() {
     let event = click(area.x, area.y.saturating_add(TREE_TITLE_ROWS));
 
     assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    assert_eq!(
+        session.handle_event(release_for(&event), Duration::from_millis(50)),
+        Redraw::Skipped
+    );
+    let TerminalEvent::Pointer(pointer) = &event else {
+        panic!("the sidebar click is one pointer event");
+    };
+    let _ = session.handle_event(
+        motion(pointer.position().column(), pointer.position().row()),
+        Duration::from_millis(75),
+    );
     assert_eq!(session.windows.focused_region(), sidebar);
     assert_eq!(
         session.tree.selected_entry_name().as_deref(),
@@ -393,9 +485,10 @@ fn sidebar_click_selects_once_and_activates_the_same_row_twice() {
     );
 
     assert_eq!(
-        session.handle_event(event, Duration::from_millis(100)),
+        session.handle_event(event.clone(), Duration::from_millis(100)),
         Redraw::Needed
     );
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(150));
     assert_ne!(session.windows.focused_region(), sidebar);
     assert!(
         session.take_file_request().is_some(),
@@ -404,15 +497,109 @@ fn sidebar_click_selects_once_and_activates_the_same_row_twice() {
 }
 
 #[test]
+fn sidebar_double_click_toggles_a_directory_and_ignores_its_stale_read() {
+    let mut session = session(80, 10);
+    let root = workspace_root();
+    let directory = root.join("docs");
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: root.clone(),
+        outcome: Ok(DirectoryListing {
+            path: root,
+            identity: DirectoryIdentity::Root,
+            entries: vec![TreeEntry {
+                name: "docs".to_owned(),
+                kind: kvim_workspace::EntryKind::Directory,
+                link: LinkKind::Direct,
+            }],
+            truncation: Truncation::Complete,
+        }),
+    });
+    press_ctrl(&mut session, 'e');
+    press_ctrl(&mut session, 'h');
+    let event = sidebar_first_entry_click(&session);
+
+    let _ = session.handle_event(event.clone(), NOW);
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(50));
+    let _ = session.handle_event(event.clone(), Duration::from_millis(100));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(150));
+    assert!(matches!(
+        session
+            .tree
+            .tree()
+            .selected_row()
+            .and_then(|row| row.kind()),
+        Some(kvim_workspace::EntryKind::Directory)
+    ));
+    assert!(session.take_workspace_request().is_some());
+
+    let _ = session.handle_event(event.clone(), Duration::from_millis(200));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(250));
+    let _ = session.handle_event(event.clone(), Duration::from_millis(300));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(350));
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: directory.clone(),
+        outcome: Ok(DirectoryListing {
+            path: directory.clone(),
+            identity: DirectoryIdentity::Relative(
+                WorktreeRelativePath::new("docs").expect("the fixture path is valid"),
+            ),
+            entries: vec![TreeEntry {
+                name: "guide.md".to_owned(),
+                kind: kvim_workspace::EntryKind::File,
+                link: LinkKind::Direct,
+            }],
+            truncation: Truncation::Complete,
+        }),
+    });
+
+    assert_eq!(session.tree.tree().rows().len(), 1);
+    assert!(
+        session.take_workspace_request().is_none(),
+        "collapsing a pending directory queues no duplicate read"
+    );
+
+    let event = sidebar_first_entry_click(&session);
+    let _ = session.handle_event(event.clone(), Duration::from_millis(400));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(450));
+    let _ = session.handle_event(event.clone(), Duration::from_millis(500));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(550));
+    assert!(session.take_workspace_request().is_some());
+    let _ = session.apply_workspace_result(WorkspaceResult::Directory {
+        path: directory.clone(),
+        outcome: Ok(DirectoryListing {
+            path: directory,
+            identity: DirectoryIdentity::Relative(
+                WorktreeRelativePath::new("docs").expect("the fixture path is valid"),
+            ),
+            entries: vec![TreeEntry {
+                name: "guide.md".to_owned(),
+                kind: kvim_workspace::EntryKind::File,
+                link: LinkKind::Direct,
+            }],
+            truncation: Truncation::Complete,
+        }),
+    });
+    assert_eq!(session.tree.tree().rows().len(), 2);
+
+    let _ = session.handle_event(event.clone(), Duration::from_millis(600));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(650));
+    let _ = session.handle_event(event.clone(), Duration::from_millis(700));
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(750));
+    assert_eq!(session.tree.tree().rows().len(), 1);
+}
+
+#[test]
 fn sidebar_double_click_requires_consecutive_left_clicks() {
     for intervening in [
         TerminalEvent::Key(Key::plain(KeyCode::Char('j'))),
         wheel(0, 0, PointerWheelDirection::Down),
+        drag(0, 0),
     ] {
         let mut session = sidebar_session(&["clicked.rs"]);
         let event = sidebar_first_entry_click(&session);
 
         assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+        let _ = session.handle_event(release_for(&event), Duration::from_millis(25));
         let _ = session.handle_event(intervening, Duration::from_millis(50));
         assert_eq!(
             session.handle_event(event, Duration::from_millis(100)),
@@ -426,10 +613,50 @@ fn sidebar_double_click_requires_consecutive_left_clicks() {
 }
 
 #[test]
+fn sidebar_release_over_a_different_cell_cancels_activation() {
+    let mut session = sidebar_session(&["clicked.rs"]);
+    let event = sidebar_first_entry_click(&session);
+    let TerminalEvent::Pointer(pointer) = &event else {
+        panic!("the sidebar click is one pointer event");
+    };
+
+    assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    let _ = session.handle_event(
+        release(
+            pointer.position().column().saturating_add(1),
+            pointer.position().row(),
+        ),
+        Duration::from_millis(50),
+    );
+    assert_eq!(
+        session.handle_event(event, Duration::from_millis(100)),
+        Redraw::Needed
+    );
+    assert!(session.take_file_request().is_none());
+}
+
+#[test]
+fn sidebar_double_click_requires_a_release_between_presses() {
+    let mut session = sidebar_session(&["clicked.rs"]);
+    let event = sidebar_first_entry_click(&session);
+
+    assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    assert_eq!(
+        session.handle_event(event, Duration::from_millis(100)),
+        Redraw::Needed
+    );
+    assert!(
+        session.take_file_request().is_none(),
+        "two press reports are not one physical double-click"
+    );
+}
+
+#[test]
 fn sidebar_double_click_requires_the_same_stable_entry() {
     let mut session = sidebar_session(&["alpha.rs", "beta.rs"]);
     let event = sidebar_first_entry_click(&session);
     assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(50));
 
     let root = workspace_root();
     let _ = session.apply_workspace_result(WorkspaceResult::Directory {
@@ -465,6 +692,7 @@ fn sidebar_click_after_the_interval_selects_without_activation() {
     let mut session = sidebar_session(&["clicked.rs"]);
     let event = sidebar_first_entry_click(&session);
     assert_eq!(session.handle_event(event.clone(), NOW), Redraw::Needed);
+    let _ = session.handle_event(release_for(&event), Duration::from_millis(1));
     let after_interval = session.settings.mouse.double_click_interval + Duration::from_millis(1);
 
     assert_eq!(session.handle_event(event, after_interval), Redraw::Needed);
@@ -724,6 +952,7 @@ fn wheel_over_file_sidebar_scrolls_without_focus_or_selection_change() {
     let focused = session.windows.focused_region();
     let selected = session.tree.selected_entry_name();
     let before = session.tree.view().first_line();
+    let frame_before = draw(&session);
     let area = session
         .tree_region
         .and_then(|id| session.windows.layout().area(id))
@@ -743,8 +972,65 @@ fn wheel_over_file_sidebar_scrolls_without_focus_or_selection_change() {
     assert_eq!(session.windows.focused_region(), focused);
     assert_eq!(session.tree.selected_entry_name(), selected);
     assert!(session.tree.view().first_line() > before);
+    let frame_after = draw(&session);
+    assert_ne!(
+        frame_after, frame_before,
+        "the first frame after the wheel must show the new sidebar window"
+    );
 }
 
+#[test]
+fn sidebar_wheel_stays_at_bottom_through_time_only_frames_then_selection_reconciles() {
+    let names: Vec<String> = (0..32).map(|index| format!("file-{index:02}.rs")).collect();
+    let entry_refs: Vec<&str> = names.iter().map(String::as_str).collect();
+    let mut session = sidebar_session(&entry_refs);
+    session.float = Some(Float::text("note", "decorative overlay"));
+    let area = session
+        .tree_region
+        .and_then(|id| session.windows.layout().area(id))
+        .expect("the file sidebar is visible");
+    let height = u32::from(area.height.saturating_sub(TREE_TITLE_ROWS));
+    let expected_bottom = session.tree.view().total_lines().saturating_sub(height);
+
+    for _ in 0..32 {
+        let _ = session.handle_event(
+            wheel(
+                area.x,
+                area.y.saturating_add(TREE_TITLE_ROWS),
+                PointerWheelDirection::Down,
+            ),
+            NOW,
+        );
+    }
+    assert_eq!(session.tree.view().first_line(), expected_bottom);
+
+    for frame in 1..=4 {
+        let first_line = session.tree.view().first_line();
+        let _ = session.tick(Duration::from_millis(frame));
+        assert_eq!(
+            session.tree.view().first_line(),
+            first_line,
+            "an unrelated animated frame must not reclaim the directly scrolled viewport"
+        );
+    }
+
+    session
+        .tree
+        .move_selection(crate::tree::TreeMotion::Down(1));
+    let _ = session.tick(Duration::from_millis(5));
+    let first_line = session.tree.view().first_line();
+    let selected = session
+        .tree
+        .view()
+        .selected_index()
+        .expect("the tree selects a row");
+    assert!(selected >= usize::try_from(first_line).expect("viewport lines fit usize"));
+    assert!(
+        selected
+            < usize::try_from(first_line.saturating_add(height)).expect("viewport lines fit usize"),
+        "keyboard selection returns ownership to the scroll-margin reconciliation"
+    );
+}
 #[test]
 fn wheel_inside_picker_results_scrolls_without_changing_selection() {
     let mut session = session(80, 10);
@@ -2955,8 +3241,8 @@ fn the_viewport_follows_the_text_area_instead_of_the_window_rectangle() {
     assert_eq!(viewport.height_rows().get(), 9);
     assert_eq!(
         viewport.width_cells().get(),
-        35,
-        "the gutter takes five of the forty cells"
+        34,
+        "the gutter takes five cells and the scrollbar takes one cell"
     );
     // The cursor sits on the last line, so the view keeps it visible.
     assert!(viewport.first_line() + 9 > 39);

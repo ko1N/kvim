@@ -82,6 +82,86 @@ const MARKER_RANK: BandRank = BandRank::new(1);
 /// not which file it shows.
 const POSITION_RANK: BandRank = BandRank::new(0);
 
+/// The glyph of the scrollbar track.
+const SCROLLBAR_TRACK_GLYPH: &str = "│";
+
+/// The glyph of the scrollbar thumb.
+const SCROLLBAR_THUMB_GLYPH: &str = "┃";
+
+/// The geometry shared by every operation over one editor text surface.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct TextSurfaceGeometry {
+    /// The complete rows below the winbar, including an optional scrollbar.
+    pub(super) rows: Rect,
+    /// The gutter and source-text cells, excluding an optional scrollbar.
+    pub(super) content: Rect,
+    /// The width of the gutter inside `content`.
+    pub(super) gutter: u16,
+    /// The reserved scrollbar column, when the surface can spare one cell.
+    pub(super) scrollbar_x: Option<u16>,
+}
+
+impl TextSurfaceGeometry {
+    /// Returns the source-text width after the gutter and scrollbar reservation.
+    pub(super) const fn text_width(self) -> u16 {
+        self.content.width.saturating_sub(self.gutter)
+    }
+
+    /// Returns whether one column belongs to source text rather than its gutter.
+    pub(super) const fn is_text_column(self, column: u16) -> bool {
+        column >= self.content.x.saturating_add(self.gutter) && column < self.content.right()
+    }
+}
+
+/// Returns the canonical geometry of one editor text surface.
+pub(super) fn text_surface_geometry(
+    area: Rect,
+    buffer: &TextBuffer,
+    display: &DisplaySettings,
+) -> TextSurfaceGeometry {
+    let rows = Rect {
+        y: area.y.saturating_add(WINBAR_ROWS),
+        height: area.height.saturating_sub(WINBAR_ROWS),
+        ..area
+    };
+    let reserve_scrollbar = display.scrollbar && rows.height > 0 && rows.width >= 2;
+    let content = Rect {
+        width: rows.width.saturating_sub(u16::from(reserve_scrollbar)),
+        ..rows
+    };
+    let gutter = gutter_cells(buffer, display, content.width);
+    TextSurfaceGeometry {
+        rows,
+        content,
+        gutter,
+        scrollbar_x: reserve_scrollbar.then(|| rows.right().saturating_sub(1)),
+    }
+}
+
+/// Returns the start and length of a proportional scrollbar thumb for overflow.
+fn scrollbar_thumb(track: u16, lines: usize, first_line: usize) -> Option<(u16, u16)> {
+    if track == 0 || lines <= usize::from(track) {
+        return None;
+    }
+    let track = u128::from(track);
+    let lines = u128::try_from(lines.max(1)).unwrap_or(u128::MAX);
+    let visible = track.min(lines);
+    let max_first = lines.saturating_sub(visible);
+    let thumb_len = (track.saturating_mul(visible) / lines).clamp(1, track);
+    let thumb_start = if max_first == 0 {
+        0
+    } else {
+        let first = u128::try_from(first_line)
+            .unwrap_or(u128::MAX)
+            .min(max_first);
+        first.saturating_mul(track.saturating_sub(thumb_len)) / max_first
+    };
+    Some((
+        u16::try_from(thumb_start).unwrap_or(u16::MAX),
+        u16::try_from(thumb_len).unwrap_or(u16::MAX),
+    ))
+}
+
 /// Whether one window paints the bracket pair that its cursor stands on.
 ///
 /// The pair answers a Normal-mode `%`, and the mode belongs to the focused
@@ -308,32 +388,61 @@ pub(super) fn render_window(
     if area.is_empty() {
         return;
     }
-    let text = Rect {
-        y: area.y.saturating_add(WINBAR_ROWS),
-        height: area.height.saturating_sub(WINBAR_ROWS),
-        ..area
-    };
-    render_winbar(target, area, theme, view, text.height);
-    if text.is_empty() {
+    let geometry = text_surface_geometry(area, view.buffer, view.display);
+    render_winbar(target, area, theme, view, geometry.rows.height);
+    if geometry.content.is_empty() {
         return;
     }
     let painter = RowPainter {
         view,
         theme,
-        gutter: gutter_cells(view.buffer, view.display, text.width),
-        spans: match_spans(view, text.height),
-        brackets: bracket_cells(view, text.height),
+        gutter: geometry.gutter,
+        spans: match_spans(view, geometry.content.height),
+        brackets: bracket_cells(view, geometry.content.height),
     };
     let mut scratch = String::new();
-    for row in 0..text.height {
+    for row in 0..geometry.content.height {
         let line = view.first_line.saturating_add(usize::from(row));
-        let y = text.y.saturating_add(row);
+        let y = geometry.content.y.saturating_add(row);
         if line >= view.buffer.line_count() {
-            painter.render_end_of_buffer(target, text, y);
+            painter.render_end_of_buffer(target, geometry.content, y);
             continue;
         }
-        painter.render_gutter(target, text, y, line);
-        painter.render_text(target, text, y, line, &mut scratch);
+        painter.render_gutter(target, geometry.content, y, line);
+        painter.render_text(target, geometry.content, y, line, &mut scratch);
+    }
+    render_scrollbar(target, theme, view, geometry);
+}
+
+/// Renders the track and proportional thumb of one editor surface.
+fn render_scrollbar(
+    target: &mut CellBuffer,
+    theme: Theme,
+    view: &WindowView<'_>,
+    geometry: TextSurfaceGeometry,
+) {
+    let Some(x) = geometry.scrollbar_x else {
+        return;
+    };
+    let (thumb_start, thumb_len) = scrollbar_thumb(
+        geometry.rows.height,
+        view.buffer.line_count(),
+        view.first_line,
+    )
+    .unwrap_or((u16::MAX, 0));
+    for row in 0..geometry.rows.height {
+        let thumb = row >= thumb_start && row < thumb_start.saturating_add(thumb_len);
+        let (glyph, role) = if thumb {
+            (SCROLLBAR_THUMB_GLYPH, ThemeRole::ScrollbarThumb)
+        } else {
+            (SCROLLBAR_TRACK_GLYPH, ThemeRole::ScrollbarTrack)
+        };
+        target.set_string(
+            x,
+            geometry.rows.y.saturating_add(row),
+            glyph,
+            theme.style(role),
+        );
     }
 }
 
@@ -692,22 +801,18 @@ impl RowPainter<'_> {
 /// editor edits. Returns `None` while the cursor sits outside the visible
 /// cells, which keeps the cursor inside its window rectangle at all times.
 pub(super) fn cursor_cell(area: Rect, view: &WindowView<'_>) -> Option<Position> {
-    let text = Rect {
-        y: area.y.saturating_add(WINBAR_ROWS),
-        height: area.height.saturating_sub(WINBAR_ROWS),
-        ..area
-    };
-    if text.is_empty() {
+    let geometry = text_surface_geometry(area, view.buffer, view.display);
+    if geometry.content.is_empty() {
         return None;
     }
-    let gutter = gutter_cells(view.buffer, view.display, text.width);
-    let width = text.width.saturating_sub(gutter);
+    let gutter = geometry.gutter;
+    let width = geometry.text_width();
     if width == 0 {
         return None;
     }
     let line = view.cursor.line().get();
     let row = u16::try_from(line.checked_sub(view.first_line)?).ok()?;
-    if row >= text.height {
+    if row >= geometry.content.height {
         return None;
     }
     let index = view.buffer.line_index(line).ok()?;
@@ -719,8 +824,12 @@ pub(super) fn cursor_cell(area: Rect, view: &WindowView<'_>) -> Option<Position>
         return None;
     }
     Some(Position {
-        x: text.x.saturating_add(gutter).saturating_add(column),
-        y: text.y.saturating_add(row),
+        x: geometry
+            .content
+            .x
+            .saturating_add(gutter)
+            .saturating_add(column),
+        y: geometry.content.y.saturating_add(row),
     })
 }
 

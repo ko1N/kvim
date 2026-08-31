@@ -87,7 +87,7 @@ use kvim_workspace::{
     recovery_record_path, render_content, write_recovery_record,
 };
 
-use super::buffer_view::{WINBAR_ROWS, gutter_cells};
+use super::buffer_view::text_surface_geometry;
 use super::cells::text_cells;
 use super::changes::ChangeSection;
 use super::chrome::shell_areas;
@@ -1624,8 +1624,8 @@ pub struct Session {
     pointer_scrolled: Option<PointerScrollTarget>,
     /// The active buffer drag, or the legal idle state.
     pointer_drag: PointerDragState,
-    /// The last selected sidebar row and click time, for bounded activation.
-    last_sidebar_click: Option<SidebarClick>,
+    /// The bounded physical click sequence used for sidebar activation.
+    sidebar_click: SidebarClickState,
     /// The elapsed time that the event loop reported last.
     ///
     /// The session reads no clock. The loop passes the elapsed time into every
@@ -1747,7 +1747,7 @@ impl Session {
             notifications: NotificationBoard::default(),
             pointer_scrolled: None,
             pointer_drag: PointerDragState::Idle,
-            last_sidebar_click: None,
+            sidebar_click: SidebarClickState::Idle,
             clock: Duration::ZERO,
             run: RunState::Running,
         };
@@ -2534,12 +2534,18 @@ impl Session {
         if cancels_drag {
             self.pointer_drag = PointerDragState::Idle;
         }
-        if !matches!(
+        let preserves_sidebar_click = matches!(
             &event,
             TerminalEvent::Pointer(pointer)
-                if matches!(pointer.action(), PointerAction::Press(PointerButton::Left))
-        ) {
-            self.last_sidebar_click = None;
+                if matches!(
+                    pointer.action(),
+                    PointerAction::Press(PointerButton::Left)
+                        | PointerAction::Release(PointerButton::Left)
+                        | PointerAction::Motion
+                )
+        );
+        if !preserves_sidebar_click {
+            self.sidebar_click = SidebarClickState::Idle;
         }
         let redraw = match event {
             TerminalEvent::Key(key) => self.handle_key(key, now),
@@ -2666,6 +2672,20 @@ impl Session {
             PointerAction::Drag(PointerButton::Left) => self.handle_pointer_drag(pointer),
             PointerAction::Release(PointerButton::Left) => {
                 self.pointer_drag = PointerDragState::Idle;
+                let position = pointer.position();
+                self.sidebar_click =
+                    match std::mem::replace(&mut self.sidebar_click, SidebarClickState::Idle) {
+                        SidebarClickState::AwaitingRelease(click)
+                            if click.position == position
+                                && self.tree.selected_entry_path().as_ref()
+                                    == Some(&click.path) =>
+                        {
+                            SidebarClickState::AwaitingSecondPress(click)
+                        }
+                        SidebarClickState::Idle
+                        | SidebarClickState::AwaitingRelease(_)
+                        | SidebarClickState::AwaitingSecondPress(_) => SidebarClickState::Idle,
+                    };
                 Redraw::Skipped
             }
             PointerAction::Press(PointerButton::Right | PointerButton::Middle)
@@ -2755,9 +2775,19 @@ impl Session {
                     return Redraw::Skipped;
                 };
                 *state = if down {
-                    state.scrolled_down(file.text(), rows as usize, ColumnLimit::LastCharacter)
+                    state.scrolled_down(
+                        file.text(),
+                        rows as usize,
+                        ColumnLimit::LastCharacter,
+                        &self.settings.display,
+                    )
                 } else {
-                    state.scrolled_up(file.text(), rows as usize, ColumnLimit::LastCharacter)
+                    state.scrolled_up(
+                        file.text(),
+                        rows as usize,
+                        ColumnLimit::LastCharacter,
+                        &self.settings.display,
+                    )
                 };
                 self.pointer_scrolled = Some(PointerScrollTarget::Window(window));
                 Redraw::Needed
@@ -2767,7 +2797,8 @@ impl Session {
 
     fn handle_pointer_click(&mut self, pointer: PointerEvent, now: Duration) -> Redraw {
         self.pointer_drag = PointerDragState::Idle;
-        let previous_sidebar_click = self.last_sidebar_click.take();
+        let previous_sidebar_click =
+            std::mem::replace(&mut self.sidebar_click, SidebarClickState::Idle);
         let cell = Cell::new(pointer.position().column(), pointer.position().row());
         if let Some(picker) = self.picker.as_mut() {
             let area = picker_areas(self.area).results;
@@ -2850,15 +2881,22 @@ impl Session {
                     self.resolver.reset();
                     self.sync_context();
                 }
-                let double = previous_sidebar_click.is_some_and(|click| {
-                    click.path == path
-                        && now >= click.at
-                        && now - click.at <= self.settings.mouse.double_click_interval
-                });
-                self.last_sidebar_click = if double {
-                    None
+                let double = match previous_sidebar_click {
+                    SidebarClickState::AwaitingSecondPress(click) => {
+                        click.path == path
+                            && now >= click.at
+                            && now - click.at <= self.settings.mouse.double_click_interval
+                    }
+                    SidebarClickState::Idle | SidebarClickState::AwaitingRelease(_) => false,
+                };
+                self.sidebar_click = if double {
+                    SidebarClickState::Idle
                 } else {
-                    Some(SidebarClick { path, at: now })
+                    SidebarClickState::AwaitingRelease(SidebarClick {
+                        path,
+                        at: now,
+                        position: pointer.position(),
+                    })
                 };
                 if double {
                     self.open_selected_entry()
@@ -2877,8 +2915,8 @@ impl Session {
                     let Some(file) = self.buffers.get(buffer) else {
                         return Redraw::Skipped;
                     };
-                    let gutter = gutter_cells(file.text(), &self.settings.display, area.width);
-                    pointer.position().column() >= area.x.saturating_add(gutter)
+                    let geometry = text_surface_geometry(area, file.text(), &self.settings.display);
+                    geometry.is_text_column(pointer.position().column())
                 };
                 let (line, column) = {
                     let Some(file) = self.buffers.get(buffer) else {
@@ -2912,6 +2950,12 @@ impl Session {
                 let Some(state) = self.windows.state_mut(window) else {
                     return Redraw::Skipped;
                 };
+                if matches!(
+                    self.editing.mode(),
+                    Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+                ) {
+                    self.editing.enter_mode(file.text(), state, Mode::Normal);
+                }
                 self.editing.move_to(file.text(), state, line, column);
                 if text_press {
                     let anchor = state.cursor().position(file.text());
@@ -2923,9 +2967,9 @@ impl Session {
                 }
                 if focus_changed {
                     self.resolver.reset();
-                    self.sync_context();
                 }
-                self.last_sidebar_click = None;
+                self.sync_context();
+                self.sidebar_click = SidebarClickState::Idle;
                 Redraw::Needed
             }
         }
@@ -2959,9 +3003,14 @@ impl Session {
             self.pointer_drag = PointerDragState::Idle;
             return Redraw::Skipped;
         }
-        let text_top = area.y.saturating_add(WINBAR_ROWS);
-        let text_bottom = area.bottom();
-        if area.width == 0 || text_top >= text_bottom {
+        let Some(file) = self.buffers.get(buffer) else {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        };
+        let geometry = text_surface_geometry(area, file.text(), &self.settings.display);
+        let text_top = geometry.content.y;
+        let text_bottom = geometry.content.bottom();
+        if geometry.content.is_empty() {
             self.pointer_drag = PointerDragState::Idle;
             return Redraw::Skipped;
         }
@@ -2978,9 +3027,19 @@ impl Session {
             };
             let rows = usize::from(self.settings.mouse.scroll_rows);
             *state = if scroll_down {
-                state.scrolled_down(file.text(), rows, ColumnLimit::LastCharacter)
+                state.scrolled_down(
+                    file.text(),
+                    rows,
+                    ColumnLimit::LastCharacter,
+                    &self.settings.display,
+                )
             } else {
-                state.scrolled_up(file.text(), rows, ColumnLimit::LastCharacter)
+                state.scrolled_up(
+                    file.text(),
+                    rows,
+                    ColumnLimit::LastCharacter,
+                    &self.settings.display,
+                )
             };
             self.pointer_scrolled = Some(PointerScrollTarget::Window(window));
         }
@@ -2988,15 +3047,16 @@ impl Session {
             self.pointer_drag = PointerDragState::Idle;
             return Redraw::Skipped;
         };
-        let gutter = gutter_cells(file.text(), &self.settings.display, area.width);
-        let text_left = area
+        let gutter = geometry.gutter;
+        let text_left = geometry
+            .content
             .x
             .saturating_add(gutter)
-            .min(area.right().saturating_sub(1));
+            .min(geometry.content.right().saturating_sub(1));
         let column = pointer
             .position()
             .column()
-            .clamp(text_left, area.right().saturating_sub(1));
+            .clamp(text_left, geometry.content.right().saturating_sub(1));
         let row = pointer
             .position()
             .row()
@@ -3032,6 +3092,7 @@ impl Session {
         self.editing.enter_mode(file.text(), state, Mode::Visual);
         self.editing
             .move_to(file.text(), state, head_line, head_column);
+        self.sync_context();
         Redraw::Needed
     }
 
@@ -8017,15 +8078,15 @@ impl Session {
     /// move in one window scrolls that window alone. See `docs/windows.md`.
     fn reconcile_viewports(&mut self, scrolled: Option<WindowId>) {
         let display = self.settings.display;
-        let regions: Vec<(WindowId, u16, u16)> = self
+        let regions: Vec<(WindowId, Rect)> = self
             .windows
             .layout()
             .regions()
             .iter()
             .filter(|region| region.kind == RegionKind::Surface)
-            .map(|region| (region.id, region.area.width, region.area.height))
+            .map(|region| (region.id, region.area))
             .collect();
-        for (id, area_width, area_height) in regions {
+        for (id, area) in regions {
             if Some(id) == scrolled {
                 continue;
             }
@@ -8037,11 +8098,9 @@ impl Session {
                 continue;
             };
             let text = file.text();
-            let gutter = gutter_cells(text, &display, area_width);
-            let width =
-                NonZeroU16::new(area_width.saturating_sub(gutter)).unwrap_or(NonZeroU16::MIN);
-            let height =
-                NonZeroU16::new(area_height.saturating_sub(WINBAR_ROWS)).unwrap_or(NonZeroU16::MIN);
+            let geometry = text_surface_geometry(area, text, &display);
+            let width = NonZeroU16::new(geometry.text_width()).unwrap_or(NonZeroU16::MIN);
+            let height = NonZeroU16::new(geometry.content.height).unwrap_or(NonZeroU16::MIN);
             let Some(slot) = self.windows.state_mut(id) else {
                 continue;
             };
@@ -8064,6 +8123,15 @@ enum PointerDragState {
 struct SidebarClick {
     path: PathBuf,
     at: Duration,
+    position: CellPosition,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+enum SidebarClickState {
+    #[default]
+    Idle,
+    AwaitingRelease(SidebarClick),
+    AwaitingSecondPress(SidebarClick),
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

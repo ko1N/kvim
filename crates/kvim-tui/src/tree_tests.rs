@@ -193,7 +193,17 @@ fn draw(session: &Session) -> CellBuffer {
     terminal.backend().buffer().clone()
 }
 
+/// The scrollbar track glyph in the reserved column of a text row.
+const TRACK: &str = "│";
+
+/// The scrollbar thumb glyph in the reserved column of a text row.
+const THUMB: &str = "┃";
+
 /// Returns one sidebar row as text, without trailing blanks.
+///
+/// A closed sidebar leaves these columns to the editor window, whose last cell
+/// is the reserved scrollbar column. That cell belongs to the window, so it
+/// leaves the text and a closed sidebar still reads as an empty row.
 fn sidebar_row(session: &Session, row: u16) -> String {
     let buffer = draw(session);
     let mut text = String::new();
@@ -202,6 +212,10 @@ fn sidebar_row(session: &Session, row: u16) -> String {
             text.push_str(cell.symbol());
         }
     }
+    let text = text
+        .strip_suffix(TRACK)
+        .or_else(|| text.strip_suffix(THUMB))
+        .unwrap_or(&text);
     text.trim_end().to_owned()
 }
 

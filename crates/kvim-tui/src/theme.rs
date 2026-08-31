@@ -191,6 +191,10 @@ pub enum ThemeRole {
     CursorLineNumber,
     /// The sign column beside the line numbers.
     SignColumn,
+    /// The subtle track of one editor-pane scrollbar.
+    ScrollbarTrack,
+    /// The brighter thumb of one editor-pane scrollbar.
+    ScrollbarThumb,
     /// The background band of a floating surface or a popup.
     Surface,
     /// The statusline text.
@@ -363,6 +367,8 @@ impl Theme {
                 .bg(self.base)
                 .add_modifier(Modifier::BOLD),
             ThemeRole::SignColumn => Style::new().fg(TEXT_MUTED).bg(self.base),
+            ThemeRole::ScrollbarTrack => Style::new().fg(TEXT_MUTED),
+            ThemeRole::ScrollbarThumb => Style::new().fg(TEXT_DIM),
             ThemeRole::Surface => Style::new().fg(TEXT).bg(self.surface),
             ThemeRole::Statusline => Style::new().fg(TEXT_DIM).bg(self.surface),
             ThemeRole::StatuslineMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),

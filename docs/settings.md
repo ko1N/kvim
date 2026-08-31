@@ -35,6 +35,7 @@ structure, not a flat list of primitives.
 | Vertical scroll margin | 2 rows |
 | Horizontal scroll margin | 4 columns |
 | Sign column | Always visible |
+| Editor-pane scrollbar | Enabled |
 
 [`windows.md`](windows.md) owns the presentation behavior for these fields.
 
@@ -228,6 +229,8 @@ bare primitive:
   icons, and the check depth are modes, not boolean flags or strings.
 - The mouse scroll distance is a row count. Realization validates its nonzero
   bounded raw value before editor state exists.
+- The editor-pane scrollbar is an unconstrained display toggle. It needs no
+  numeric validation.
 
 A constructor validates each value and establishes its invariant. Public fields
 do not bypass this boundary. Realization rejects zero resolver and window bounds,

@@ -9,12 +9,13 @@ and the standalone binding preset. `kvim-terminal` converts crossterm events int
 terminal-neutral keys. The editor, workspace, and TUI consume resolved commands.
 
 State and view code must never compare crossterm events. Such an event exists
-only inside `kvim-terminal`. Every other input boundary uses a `kvim-keymap`
-value or the terminal-neutral pointer values of `kvim-terminal`.
+only inside `kvim-terminal`. Every other input boundary uses terminal-neutral
+key and pointer values owned by `kvim-keymap`.
 
 ## Pointer Input
 
-`kvim-terminal` converts crossterm mouse events into `PointerEvent`. The value
+`kvim-keymap` owns `PointerEvent` and its terminal-neutral pointer vocabulary.
+`kvim-terminal` converts crossterm mouse events into that value. The value
 holds a terminal cell position, non-Shift modifiers, and a typed press, release,
 drag, motion, or wheel action. Terminal cells remain distinct from source-text
 coordinates. Crossterm values never cross this boundary.
@@ -850,9 +851,10 @@ block. It resets its pending grammar instead, so a rejected chord can never run
 the binding of its unmodified key. A waiting operator lives in the editor as
 well, so the reset reports `ReturnToNormal` for it, exactly as a cancel does.
 
-An event that names no input at all, such as a mouse event or an empty paste
-block, never reaches the editor. `EventSource` skips it, so moving the mouse
-ends no pending sequence.
+An empty paste block or a key release names no input and never reaches the
+editor. `EventSource` also skips Shift-modified pointer input, so the terminal
+can own native selection. Other pointer input reaches the addressed surface
+without passing through key-sequence resolution.
 
 ## Reset Rules
 

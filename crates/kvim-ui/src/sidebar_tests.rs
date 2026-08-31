@@ -158,6 +158,25 @@ fn a_replacement_that_changes_the_row_heights_keeps_the_selection_visible() {
 }
 
 #[test]
+fn direct_scroll_updates_the_rendered_placements_without_changing_selection() {
+    let mut sidebar = single_rows(3, 8);
+    sidebar.select(&0);
+    assert_eq!(
+        visible(&sidebar),
+        vec![(0, 0, 1, 0), (1, 0, 1, 1), (2, 0, 1, 2)]
+    );
+
+    sidebar.scroll(2, true);
+
+    assert_eq!(sidebar.first_line(), 2);
+    assert_eq!(sidebar.selected(), Some(&0));
+    assert_eq!(
+        visible(&sidebar),
+        vec![(2, 0, 1, 0), (3, 0, 1, 1), (4, 0, 1, 2)]
+    );
+}
+
+#[test]
 fn a_resize_scrolls_the_selected_row_back_into_the_viewport() {
     let mut sidebar = single_rows(4, 10);
     sidebar.select(&9);

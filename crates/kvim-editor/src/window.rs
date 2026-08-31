@@ -155,21 +155,34 @@ impl WindowState {
         }
     }
 
-    /// Scrolls this window down without moving its cursor unless it leaves the view.
+    /// Scrolls this window down and keeps its cursor inside the scroll margin.
     #[must_use]
-    pub fn scrolled_down(self, buffer: &TextBuffer, rows: usize, limit: ColumnLimit) -> Self {
+    pub fn scrolled_down(
+        self,
+        buffer: &TextBuffer,
+        rows: usize,
+        limit: ColumnLimit,
+        display: &DisplaySettings,
+    ) -> Self {
         self.with_scrolled_viewport(
             buffer,
             self.viewport
                 .scrolled_down(buffer.line_count().saturating_sub(1), rows),
             limit,
+            display,
         )
     }
 
-    /// Scrolls this window up without moving its cursor unless it leaves the view.
+    /// Scrolls this window up and keeps its cursor inside the scroll margin.
     #[must_use]
-    pub fn scrolled_up(self, buffer: &TextBuffer, rows: usize, limit: ColumnLimit) -> Self {
-        self.with_scrolled_viewport(buffer, self.viewport.scrolled_up(rows), limit)
+    pub fn scrolled_up(
+        self,
+        buffer: &TextBuffer,
+        rows: usize,
+        limit: ColumnLimit,
+        display: &DisplaySettings,
+    ) -> Self {
+        self.with_scrolled_viewport(buffer, self.viewport.scrolled_up(rows), limit, display)
     }
 
     fn with_scrolled_viewport(
@@ -177,15 +190,30 @@ impl WindowState {
         buffer: &TextBuffer,
         viewport: Viewport,
         limit: ColumnLimit,
+        display: &DisplaySettings,
     ) -> Self {
         let first = viewport.first_line();
-        let last =
-            first.saturating_add(usize::from(viewport.height_rows().get()).saturating_sub(1));
-        let line = self
-            .cursor
-            .line()
-            .get()
-            .clamp(first, last.min(buffer.line_count().saturating_sub(1)));
+        let height = usize::from(viewport.height_rows().get());
+        let buffer_last = buffer.line_count().saturating_sub(1);
+        let last = first
+            .saturating_add(height.saturating_sub(1))
+            .min(buffer_last);
+        let margin = usize::from(display.scrolloff_rows).min((height - 1) / 2);
+        let first_cursor = if first == 0 {
+            0
+        } else {
+            first.saturating_add(margin)
+        };
+        let last_cursor = if last == buffer_last {
+            buffer_last
+        } else {
+            last.saturating_sub(margin)
+        };
+        debug_assert!(
+            first_cursor <= last_cursor,
+            "the reduced margin leaves at least one legal cursor row"
+        );
+        let line = self.cursor.line().get().clamp(first_cursor, last_cursor);
         Self {
             cursor: Cursor::clamped(buffer, line, self.cursor.column().get(), limit),
             viewport,

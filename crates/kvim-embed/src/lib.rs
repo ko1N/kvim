@@ -119,6 +119,72 @@ struct RowCell {
     column: usize,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct TextSurfaceGeometry {
+    content: Rect,
+    gutter: usize,
+    scrollbar_x: Option<u16>,
+}
+
+impl TextSurfaceGeometry {
+    fn text_x(self) -> u16 {
+        self.content
+            .x
+            .saturating_add(u16::try_from(self.gutter).unwrap_or(self.content.width))
+    }
+
+    fn text_width(self) -> NonZeroU16 {
+        let gutter = u16::try_from(self.gutter).unwrap_or(self.content.width);
+        NonZeroU16::new(self.content.width.saturating_sub(gutter))
+            .expect("surface geometry always leaves one text cell")
+    }
+
+    fn is_text_column(self, column: u16) -> bool {
+        column >= self.text_x() && column < self.content.right()
+    }
+}
+
+fn text_surface_geometry(
+    area: Rect,
+    buffer: &TextBuffer,
+    settings: &EditorSettings,
+) -> TextSurfaceGeometry {
+    let reserve_scrollbar = settings.display.scrollbar && area.height > 0 && area.width >= 2;
+    let content = Rect {
+        width: area.width.saturating_sub(u16::from(reserve_scrollbar)),
+        ..area
+    };
+    let gutter = gutter_width_for(content.width, buffer, settings);
+    TextSurfaceGeometry {
+        content,
+        gutter,
+        scrollbar_x: reserve_scrollbar.then(|| area.right().saturating_sub(1)),
+    }
+}
+
+fn scrollbar_thumb(track: u16, lines: usize, first_line: usize) -> Option<(u16, u16)> {
+    if track == 0 || lines <= usize::from(track) {
+        return None;
+    }
+    let track = u128::from(track);
+    let lines = u128::try_from(lines.max(1)).unwrap_or(u128::MAX);
+    let visible = track.min(lines);
+    let max_first = lines.saturating_sub(visible);
+    let thumb_len = (track.saturating_mul(visible) / lines).clamp(1, track);
+    let thumb_start = if max_first == 0 {
+        0
+    } else {
+        let first = u128::try_from(first_line)
+            .unwrap_or(u128::MAX)
+            .min(max_first);
+        first.saturating_mul(track.saturating_sub(thumb_len)) / max_first
+    };
+    Some((
+        u16::try_from(thumb_start).unwrap_or(u16::MAX),
+        u16::try_from(thumb_len).unwrap_or(u16::MAX),
+    ))
+}
+
 /// A failure while creating or resizing an in-memory editor.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum MemoryEditorError {
@@ -249,9 +315,10 @@ impl MemoryEditor {
         let bytes_max = BufferBytesMax::new(settings.files.max_file_bytes)
             .expect("realized settings validate files.max_file_bytes");
         let buffer = TextBuffer::from_text(text, bytes_max)?;
+        let geometry = text_surface_geometry(area, &buffer, &settings);
         let viewport = Viewport::new(
             NonZeroU16::new(area.height).expect("validated geometry has a nonzero height"),
-            body_width(area, &buffer, &settings),
+            geometry.text_width(),
         );
         Ok(Self {
             buffer,
@@ -389,14 +456,18 @@ impl MemoryEditor {
                 let rows = usize::from(self.settings.mouse.scroll_rows)
                     .saturating_mul(usize::from(wheel.ticks()));
                 self.window = match wheel.direction() {
-                    PointerWheelDirection::Up => {
-                        self.window
-                            .scrolled_up(&self.buffer, rows, ColumnLimit::LastCharacter)
-                    }
-                    PointerWheelDirection::Down => {
-                        self.window
-                            .scrolled_down(&self.buffer, rows, ColumnLimit::LastCharacter)
-                    }
+                    PointerWheelDirection::Up => self.window.scrolled_up(
+                        &self.buffer,
+                        rows,
+                        ColumnLimit::LastCharacter,
+                        &self.settings.display,
+                    ),
+                    PointerWheelDirection::Down => self.window.scrolled_down(
+                        &self.buffer,
+                        rows,
+                        ColumnLimit::LastCharacter,
+                        &self.settings.display,
+                    ),
                     PointerWheelDirection::Left | PointerWheelDirection::Right => {
                         return PointerOutcome::Ignored;
                     }
@@ -404,15 +475,25 @@ impl MemoryEditor {
                 PointerOutcome::Changed
             }
             PointerAction::Press(PointerButton::Left) if inside => {
+                let geometry = text_surface_geometry(self.area, &self.buffer, &self.settings);
+                if !geometry
+                    .content
+                    .contains(Position::new(position.column(), position.row()))
+                {
+                    self.pointer_drag = PointerDragState::Idle;
+                    return PointerOutcome::Ignored;
+                }
                 let source = self.source_at_cell(position);
+                if matches!(
+                    self.editing.mode(),
+                    Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+                ) {
+                    self.editing
+                        .enter_mode(&self.buffer, &mut self.window, Mode::Normal);
+                }
                 self.editing
                     .move_to(&self.buffer, &mut self.window, source.line, source.column);
-                let gutter = gutter_width(self.area, &self.buffer, &self.settings);
-                let text_x = self
-                    .area
-                    .x
-                    .saturating_add(u16::try_from(gutter).unwrap_or(self.area.width));
-                self.pointer_drag = if position.column() >= text_x {
+                self.pointer_drag = if geometry.is_text_column(position.column()) {
                     PointerDragState::Dragging { anchor: source }
                 } else {
                     PointerDragState::Idle
@@ -425,24 +506,31 @@ impl MemoryEditor {
                 };
                 let rows = usize::from(self.settings.mouse.scroll_rows);
                 if position.row() < self.area.y {
-                    self.window =
-                        self.window
-                            .scrolled_up(&self.buffer, rows, ColumnLimit::LastCharacter);
+                    self.window = self.window.scrolled_up(
+                        &self.buffer,
+                        rows,
+                        ColumnLimit::LastCharacter,
+                        &self.settings.display,
+                    );
                 } else if position.row() >= self.area.bottom() {
-                    self.window =
-                        self.window
-                            .scrolled_down(&self.buffer, rows, ColumnLimit::LastCharacter);
+                    self.window = self.window.scrolled_down(
+                        &self.buffer,
+                        rows,
+                        ColumnLimit::LastCharacter,
+                        &self.settings.display,
+                    );
                 }
-                let gutter = u16::try_from(gutter_width(self.area, &self.buffer, &self.settings))
-                    .unwrap_or(self.area.width);
-                let text_left = self
-                    .area
-                    .x
-                    .saturating_add(gutter)
-                    .min(self.area.right() - 1);
+                let geometry = text_surface_geometry(self.area, &self.buffer, &self.settings);
+                let text_left = geometry
+                    .text_x()
+                    .min(geometry.content.right().saturating_sub(1));
                 let position = CellPosition::new(
-                    position.column().clamp(text_left, self.area.right() - 1),
-                    position.row().clamp(self.area.y, self.area.bottom() - 1),
+                    position
+                        .column()
+                        .clamp(text_left, geometry.content.right().saturating_sub(1)),
+                    position
+                        .row()
+                        .clamp(geometry.content.y, geometry.content.bottom() - 1),
                 );
                 let head = self.source_at_cell(position);
                 self.editing
@@ -485,9 +573,10 @@ impl MemoryEditor {
         validate_area(area)?;
         self.pointer_drag = PointerDragState::Idle;
         self.area = area;
+        let geometry = text_surface_geometry(area, &self.buffer, &self.settings);
         self.window = self.window.resized(
             NonZeroU16::new(area.height).expect("validated geometry has a nonzero height"),
-            body_width(area, &self.buffer, &self.settings),
+            geometry.text_width(),
         );
         self.reconcile_window();
         Ok(())
@@ -507,6 +596,7 @@ impl MemoryEditor {
     }
 
     fn source_at_cell(&self, position: CellPosition) -> SourcePosition {
+        let geometry = text_surface_geometry(self.area, &self.buffer, &self.settings);
         let line = self
             .window
             .first_line()
@@ -516,11 +606,7 @@ impl MemoryEditor {
             .buffer
             .line_index(line)
             .expect("the line is clamped to the buffer");
-        let gutter = gutter_width(self.area, &self.buffer, &self.settings);
-        let text_x = self
-            .area
-            .x
-            .saturating_add(u16::try_from(gutter).unwrap_or(self.area.width));
+        let text_x = geometry.text_x();
         let offset = usize::from(position.column().saturating_sub(text_x));
         let text = self.buffer.line_text(line_index);
         let tab_width = usize::from(self.settings.indent.tab_width.get());
@@ -529,7 +615,7 @@ impl MemoryEditor {
             &text,
             tab_width,
             first_cell,
-            usize::from(body_width(self.area, &self.buffer, &self.settings).get()),
+            usize::from(geometry.text_width().get()),
         )
         .get(offset)
         .map_or(self.buffer.line_len_chars(line_index), |cell| cell.column)
@@ -538,7 +624,8 @@ impl MemoryEditor {
     }
 
     fn reconcile_window(&mut self) {
-        let width = body_width(self.area, &self.buffer, &self.settings);
+        let geometry = text_surface_geometry(self.area, &self.buffer, &self.settings);
+        let width = geometry.text_width();
         self.window = self.window.resized(
             NonZeroU16::new(self.area.height).expect("validated geometry has a nonzero height"),
             width,
@@ -557,18 +644,12 @@ impl MemoryEditor {
     }
 }
 
-fn gutter_width(area: Rect, buffer: &TextBuffer, settings: &EditorSettings) -> usize {
+fn gutter_width_for(width: u16, buffer: &TextBuffer, settings: &EditorSettings) -> usize {
     if settings.display.number || settings.display.relative_number {
-        (buffer.line_count().to_string().len() + 1).min(usize::from(area.width - 1))
+        (buffer.line_count().to_string().len() + 1).min(usize::from(width.saturating_sub(1)))
     } else {
         0
     }
-}
-
-fn body_width(area: Rect, buffer: &TextBuffer, settings: &EditorSettings) -> NonZeroU16 {
-    let gutter = u16::try_from(gutter_width(area, buffer, settings))
-        .expect("the gutter cannot exceed the u16 rectangle width");
-    NonZeroU16::new(area.width - gutter).expect("the gutter always leaves one body cell")
 }
 
 fn measure(value: char, cell: usize, tab_width: usize) -> (usize, Option<char>) {
@@ -689,7 +770,8 @@ fn render_editor(
     cells.set_style(area, Style::default());
     let viewport = editor.window.viewport();
     let cursor = editor.window.cursor();
-    let gutter_width = gutter_width(area, &editor.buffer, &editor.settings);
+    let geometry = text_surface_geometry(area, &editor.buffer, &editor.settings);
+    let gutter_width = geometry.gutter;
 
     for row in 0..area.height {
         let line_number = viewport.first_line() + usize::from(row);
@@ -714,10 +796,8 @@ fn render_editor(
                 Style::default().fg(Color::DarkGray),
             );
         }
-        let text_x = area
-            .x
-            .saturating_add(u16::try_from(gutter_width).unwrap_or(area.width));
-        let text_width = usize::from(area.right().saturating_sub(text_x));
+        let text_x = geometry.text_x();
+        let text_width = usize::from(geometry.text_width().get());
         if text_width == 0 {
             continue;
         }
@@ -744,6 +824,21 @@ fn render_editor(
         }
     }
 
+    if let Some(x) = geometry.scrollbar_x {
+        let (thumb_start, thumb_len) = scrollbar_thumb(
+            area.height,
+            editor.buffer.line_count(),
+            viewport.first_line(),
+        )
+        .unwrap_or((u16::MAX, 0));
+        for row in 0..area.height {
+            let thumb = row >= thumb_start && row < thumb_start.saturating_add(thumb_len);
+            let cell = &mut cells[(x, area.y.saturating_add(row))];
+            cell.set_symbol(if thumb { "┃" } else { "│" });
+            cell.set_fg(if thumb { Color::Gray } else { Color::DarkGray });
+        }
+    }
+
     let cursor_y = area.y
         + u16::try_from(cursor.line().get().saturating_sub(viewport.first_line()))
             .unwrap_or(u16::MAX);
@@ -752,9 +847,7 @@ fn render_editor(
     let first_cell = terminal_column(&cursor_text, tab_width, viewport.left_column());
     let cursor_cell = terminal_column(&cursor_text, tab_width, cursor.column().get());
     let cursor_offset = cursor_cell.saturating_sub(first_cell);
-    let text_x = area
-        .x
-        .saturating_add(u16::try_from(gutter_width).unwrap_or(area.width));
+    let text_x = geometry.text_x();
     let cursor_x = text_x.saturating_add(u16::try_from(cursor_offset).unwrap_or(u16::MAX));
     let cursor = Position::new(
         cursor_x.min(area.right() - 1),

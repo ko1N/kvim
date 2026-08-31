@@ -778,7 +778,17 @@ pub struct SidebarState<R> {
     /// rule that keeps the selected row inside the window. See
     /// [`ListViewport`].
     viewport: ListViewport,
+    /// Direct scrolling owns the viewport until a selection or geometry change
+    /// requires the selection rule again.
+    viewport_owner: ViewportOwner,
     placements: Vec<SidebarPlacement<R>>,
+}
+
+/// The state that currently controls the sidebar viewport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ViewportOwner {
+    Selection,
+    ExplicitScroll,
 }
 
 impl<R> Default for SidebarState<R> {
@@ -790,6 +800,7 @@ impl<R> Default for SidebarState<R> {
             visible: Vec::new(),
             selected: None,
             viewport: ListViewport::default(),
+            viewport_owner: ViewportOwner::Selection,
             placements: Vec::new(),
         }
     }
@@ -994,9 +1005,10 @@ impl<R: Clone + Eq> SidebarState<R> {
         let previous = self
             .selected
             .map(|index| (index, self.rows[index].id.clone()));
+        let content_changed = rows != self.rows;
         // The list passed every bound, so the replacement commits in one step.
         self.rows = rows;
-        self.recompute_visibility(previous);
+        self.recompute_visibility(previous, content_changed);
         Ok(())
     }
 
@@ -1070,9 +1082,10 @@ impl<R: Clone + Eq> SidebarState<R> {
         let previous = self
             .selected
             .map(|index| (index, self.rows[index].id.clone()));
+        let content_changed = sections != self.sections;
         // The list passed the bound, so the replacement commits in one step.
         self.sections = sections;
-        self.recompute_visibility(previous);
+        self.recompute_visibility(previous, content_changed);
         Ok(())
     }
 
@@ -1082,12 +1095,15 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// [`Self::set_rows`] and [`Self::set_sections`] both change one input of
     /// [`sidebar_visibility`] and share this recovery, so the rule that turns
     /// a lost selection into the nearest visible row lives once.
-    fn recompute_visibility(&mut self, previous: Option<(usize, R)>) {
+    fn recompute_visibility(&mut self, previous: Option<(usize, R)>, content_changed: bool) {
         self.visible = sidebar_visibility(&self.rows, &self.sections);
         self.selected = previous.and_then(|(index, id)| {
             self.index_of(&id)
                 .or_else(|| self.nearest_selectable(index, Travel::Forward))
         });
+        if content_changed {
+            self.viewport_owner = ViewportOwner::Selection;
+        }
         self.reconcile();
     }
 
@@ -1096,6 +1112,9 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// The sidebar scrolls the selected row back into the viewport, so a resize
     /// never hides it.
     pub fn set_height_rows(&mut self, height_rows: u16) {
+        if height_rows != self.viewport.height_rows() {
+            self.viewport_owner = ViewportOwner::Selection;
+        }
         self.viewport.set_height_rows(height_rows);
         self.reconcile();
     }
@@ -1116,6 +1135,9 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// The margin stops at half the viewport, so a small viewport still shows
     /// the selected row.
     pub fn set_scroll_margin(&mut self, margin_rows: u16) {
+        if margin_rows != self.viewport.scroll_margin() {
+            self.viewport_owner = ViewportOwner::Selection;
+        }
         self.viewport.set_scroll_margin(margin_rows);
         self.reconcile();
     }
@@ -1128,6 +1150,8 @@ impl<R: Clone + Eq> SidebarState<R> {
             .zip(&self.visible)
             .map(|(row, &visible)| ListItem::new(row.height_rows).with_visible(visible));
         self.viewport.scroll(items, rows, down);
+        self.viewport_owner = ViewportOwner::ExplicitScroll;
+        self.refresh_placements();
     }
 
     /// Selects the named row and returns the event of a changed selection.
@@ -1145,6 +1169,7 @@ impl<R: Clone + Eq> SidebarState<R> {
     /// reader last saw them.
     pub fn clear_selection(&mut self) {
         self.selected = None;
+        self.viewport_owner = ViewportOwner::Selection;
         self.reconcile();
     }
 
@@ -1327,6 +1352,7 @@ impl<R: Clone + Eq> SidebarState<R> {
             return None;
         }
         self.selected = index;
+        self.viewport_owner = ViewportOwner::Selection;
         self.reconcile();
         self.selected()
             .cloned()
@@ -1359,12 +1385,12 @@ impl<R: Clone + Eq> SidebarState<R> {
         }
     }
 
-    /// Moves the viewport until it shows the selection, then names the rows
-    /// that it places.
+    /// Reconciles the selected row when it owns the viewport, then names the
+    /// rows that the current viewport places.
     ///
-    /// [`ListViewport`] owns the offset rule and the clipping. This method
-    /// hands it the measure of every row and takes back the visible part of
-    /// each placed row, which it names with the host identity of that row.
+    /// [`ListViewport`] owns the offset rule and the clipping. A direct scroll
+    /// retains its offset until content, geometry, or a selection command
+    /// assigns the viewport back to the selection.
     fn reconcile(&mut self) {
         debug_assert_eq!(
             self.rows.len(),
@@ -1376,7 +1402,14 @@ impl<R: Clone + Eq> SidebarState<R> {
             .iter()
             .zip(&self.visible)
             .map(|(row, &visible)| ListItem::new(row.height_rows).with_visible(visible));
-        self.viewport.reconcile(items, self.selected);
+        if self.viewport_owner == ViewportOwner::Selection {
+            self.viewport.reconcile(items, self.selected);
+        }
+        self.refresh_placements();
+    }
+
+    /// Copies the viewport window into the host row placements.
+    fn refresh_placements(&mut self) {
         self.placements.clear();
         self.placements.extend(
             self.viewport

@@ -306,6 +306,8 @@ pub struct DisplaySettings {
     pub sidescrolloff_cells: u16,
     /// The sign column rule.
     pub signcolumn: SignColumn,
+    /// Show one vertical scrollbar at the right edge of each editor text area.
+    pub scrollbar: bool,
 }
 
 impl Default for DisplaySettings {
@@ -316,6 +318,7 @@ impl Default for DisplaySettings {
             scrolloff_rows: 2,
             sidescrolloff_cells: 4,
             signcolumn: SignColumn::Always,
+            scrollbar: true,
         }
     }
 }

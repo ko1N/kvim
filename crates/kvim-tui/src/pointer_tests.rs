@@ -40,6 +40,22 @@ fn winbar_cells_do_not_map_to_source_text() {
 }
 
 #[test]
+fn scrollbar_cells_do_not_map_to_source_text() {
+    assert!(
+        source_at_cell(
+            &buffer("abc"),
+            Rect::new(5, 7, 20, 4),
+            &DisplaySettings::default(),
+            4,
+            0,
+            0,
+            CellPosition::new(24, 8),
+        )
+        .is_none()
+    );
+}
+
+#[test]
 fn gutter_and_viewport_rows_map_to_visible_source_lines() {
     assert_eq!(
         position("one\ntwo\nthree", CellPosition::new(5, 8), 1, 0),

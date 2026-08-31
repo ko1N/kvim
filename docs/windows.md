@@ -51,12 +51,32 @@ input before sidebars and editor surfaces. Decorative overlays pass input to the
 published region below. A cell outside every region is shell chrome and has no
 action.
 
-The terminal adapter maps a buffer text cell through the window winbar, gutter,
-and viewport offsets. It then uses the same cell row layout as rendering. Tabs,
-combining marks, wide glyphs, horizontal clipping, and cells after the line end
-therefore map deterministically. Both cells of a wide glyph map to its source
-character.
+The standalone presentation adapter maps a buffer text cell through the window
+winbar, gutter, reserved scrollbar column, and viewport offsets. It then uses
+the same cell row layout as rendering. Tabs, combining marks, wide glyphs,
+horizontal clipping, and cells after the line end therefore map
+deterministically. Both cells of a wide glyph map to its source character.
 
+Each editor surface reserves the rightmost cell of its text rows when
+`display.scrollbar` is enabled. The winbar keeps the complete window width. The
+reserved cell draws `│` as a subtle track and `┃` as a brighter proportional
+thumb. A surface with no text row, or with no content cell after reservation,
+draws no scrollbar and keeps its defensive content geometry.
+
+The text-surface geometry is the single source for rendering, cursor placement,
+viewport width, source mapping, click classification, drag clamping, and edge
+scrolling. The scrollbar cell never maps to source text. A left press or drag on
+it is inert. A wheel over it scrolls its editor pane. Interactive overlays keep
+their higher hit priority. Disabling the setting restores the complete previous
+text width. Every split computes its own thumb from its own viewport.
+
+The track height is the text-area height. It always renders as `│` when the
+surface reserves a scrollbar column. A thumb renders only when `lines` exceeds
+the track height. In that case, `visible` is the track height and the thumb
+length is `clamp(floor(track * visible / lines), 1, track)`. The maximum first
+line is `lines - visible`. The thumb starts at
+`min(first_line, max_first) * (track - thumb_len) / max_first`. Calculations
+use a wide integer intermediate.
 
 The window tree is a binary tree with two node kinds:
 

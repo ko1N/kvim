@@ -64,6 +64,17 @@ fn split_ratio_rejects_values_outside_its_domain() {
 }
 
 #[test]
+fn editor_pane_scrollbars_default_to_enabled_without_realization_validation() {
+    let settings = EditorSettings::default();
+    assert!(settings.display.scrollbar);
+    assert_eq!(settings.realize(), Ok(settings));
+
+    let mut disabled = settings;
+    disabled.display.scrollbar = false;
+    assert_eq!(disabled.realize(), Ok(disabled));
+}
+
+#[test]
 fn settings_realization_rejects_invalid_public_numeric_bounds() {
     for settings in [
         EditorSettings {

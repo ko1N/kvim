@@ -13,7 +13,10 @@ use kvim_settings::EditorSettings;
 use kvim_workspace::ExternalChange;
 
 use super::super::theme::{Theme, ThemeRole};
-use super::{BracketHighlight, END_OF_BUFFER_GLYPH, RegionFocus, WindowView, render_window};
+use super::{
+    BracketHighlight, END_OF_BUFFER_GLYPH, RegionFocus, WindowView, render_window, scrollbar_thumb,
+    text_surface_geometry,
+};
 
 /// The window rectangle of every test, including the winbar row.
 const AREA: Rect = Rect {
@@ -134,6 +137,108 @@ fn expected_row(width: u16, left: &str, label: &str) -> String {
 /// Returns one absolute path inside the workspace root.
 fn inside(relative: &str) -> PathBuf {
     Path::new(ROOT).join(relative)
+}
+
+#[test]
+fn scrollbar_thumb_covers_only_long_buffers() {
+    assert_eq!(scrollbar_thumb(4, 0, 0), None);
+    assert_eq!(scrollbar_thumb(4, 1, 0), None);
+    assert_eq!(scrollbar_thumb(4, 4, 0), None);
+    assert_eq!(scrollbar_thumb(4, 8, 0), Some((0, 2)));
+    assert_eq!(scrollbar_thumb(4, 8, 2), Some((1, 2)));
+    assert_eq!(scrollbar_thumb(4, 8, 4), Some((2, 2)));
+    assert_eq!(scrollbar_thumb(0, 8, 0), None);
+}
+
+#[test]
+fn text_geometry_reserves_only_a_usable_enabled_scrollbar() {
+    let buffer = TextBuffer::from_text("abc\n", kvim_core::BufferBytesMax::default()).unwrap();
+    let mut settings = EditorSettings::default();
+    let enabled = text_surface_geometry(Rect::new(0, 0, 8, 3), &buffer, &settings.display);
+    assert_eq!(enabled.content.width, 7);
+    assert_eq!(enabled.scrollbar_x, Some(7));
+
+    settings.display.scrollbar = false;
+    let disabled = text_surface_geometry(Rect::new(0, 0, 8, 3), &buffer, &settings.display);
+    assert_eq!(disabled.content.width, 8);
+    assert_eq!(disabled.scrollbar_x, None);
+
+    settings.display.scrollbar = true;
+    let narrow = text_surface_geometry(Rect::new(0, 0, 1, 3), &buffer, &settings.display);
+    assert_eq!(narrow.content.width, 1);
+    assert_eq!(narrow.scrollbar_x, None);
+}
+
+#[test]
+fn scrollbar_renders_only_the_track_when_the_buffer_fully_fits() {
+    let buffer =
+        TextBuffer::from_text("zero\none\ntwo\n", kvim_core::BufferBytesMax::default()).unwrap();
+    let settings = EditorSettings::default();
+    let view = WindowView {
+        buffer: &buffer,
+        name: "test.rs",
+        path: None,
+        external: None,
+        root: Path::new("/workspace"),
+        first_line: 0,
+        left_column: 0,
+        cursor: Cursor::ORIGIN,
+        selection: None,
+        matches: &[],
+        match_chars: 0,
+        highlights: &[],
+        diagnostics: &[],
+        focus: RegionFocus::Unfocused,
+        brackets: BracketHighlight::Hidden,
+        display: &settings.display,
+        tab_width: 4,
+    };
+    let area = Rect::new(0, 0, 10, 5);
+    let mut target = CellBuffer::empty(area);
+    render_window(&mut target, area, Theme::new(), &view);
+
+    for y in 1..5 {
+        assert_eq!(target[(9, y)].symbol(), "│");
+    }
+}
+
+#[test]
+fn scrollbar_renders_track_and_overflow_thumb_without_changing_the_winbar_width() {
+    let text = (0..8).map(|line| format!("{line}\n")).collect::<String>();
+    let buffer = TextBuffer::from_text(&text, kvim_core::BufferBytesMax::default()).unwrap();
+    let settings = EditorSettings::default();
+    let view = WindowView {
+        buffer: &buffer,
+        name: "test.rs",
+        path: None,
+        external: None,
+        root: Path::new("/workspace"),
+        first_line: 2,
+        left_column: 0,
+        cursor: Cursor::ORIGIN,
+        selection: None,
+        matches: &[],
+        match_chars: 0,
+        highlights: &[],
+        diagnostics: &[],
+        focus: RegionFocus::Unfocused,
+        brackets: BracketHighlight::Hidden,
+        display: &settings.display,
+        tab_width: 4,
+    };
+    let area = Rect::new(0, 0, 10, 5);
+    let mut target = CellBuffer::empty(area);
+    render_window(&mut target, area, Theme::new(), &view);
+
+    assert_eq!(
+        target[(9, 0)].symbol(),
+        " ",
+        "the winbar keeps its full width"
+    );
+    assert_eq!(target[(9, 1)].symbol(), "│");
+    assert_eq!(target[(9, 2)].symbol(), "┃");
+    assert_eq!(target[(9, 3)].symbol(), "┃");
+    assert_eq!(target[(9, 4)].symbol(), "│");
 }
 
 #[test]
@@ -553,7 +658,9 @@ fn an_empty_span_list_renders_plain_text() {
     let target = draw("let value = 1;\n", &[]);
     let plain = Theme::new().style(ThemeRole::Text).fg;
 
-    for x in 0..AREA.width {
+    // The last column of the surface is the reserved scrollbar column, which
+    // carries the color of its own track and no text color.
+    for x in 0..AREA.width - 1 {
         let color = foreground(&target, x);
         assert!(
             color == plain || color.is_none() || x < 5,

@@ -152,9 +152,10 @@ ratatui geometry and rendering. No syntax-only consumer compiles LSP, ratatui,
 or the editor.
 
 `kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
-`TerminalEvent` value alone, including terminal-neutral pointer values. `Session`,
-the standalone presentation adapter, applies one normalized event as one pure
-transition. `kvim-tui` owns no terminal lifecycle code: no raw mode, no alternate screen, no event stream, no
+`TerminalEvent` value alone. Its pointer payload uses the terminal-neutral
+values that `kvim-keymap` owns. `Session`, the standalone presentation adapter,
+applies one normalized event as one pure transition. `kvim-tui` owns no
+terminal lifecycle code: no raw mode, no alternate screen, no event stream, no
 signal handler, no panic hook, and no write to standard output. A structural
 test in `kvim-tui` proves that no module of that crate names such an owner, and
 a structural test in `kvim` proves that its terminal loop holds every one of

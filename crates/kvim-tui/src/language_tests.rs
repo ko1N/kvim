@@ -362,8 +362,12 @@ impl Editor {
             .iter()
             .enumerate()
             .find_map(|(y, row)| {
-                let x = row.find(title)?;
-                let corner = (u16::try_from(x).ok()?, u16::try_from(y).ok()?);
+                // `find` reports a byte offset. A cell left of the float can
+                // hold a multi-byte glyph, like the scrollbar column of a
+                // window beside this one, so the column counts cells.
+                let byte = row.find(title)?;
+                let column = row[..byte].chars().count();
+                let corner = (u16::try_from(column).ok()?, u16::try_from(y).ok()?);
                 Some(corner)
             })
             .unwrap_or_else(|| panic!("the frame shows the float title {title}\n{rows:#?}"));
@@ -844,13 +848,26 @@ const DIAGNOSTIC_TITLE: &str = " Diagnostics ";
 /// The title band of the hover float.
 const HOVER_TITLE: &str = " Hover ";
 
+/// The scrollbar track glyph in the reserved column of a text row.
+const TRACK: &str = "│";
+
+/// The scrollbar thumb glyph in the reserved column of a text row.
+const THUMB: &str = "┃";
+
 /// Returns the text of one float row, without the padding of the float.
 ///
 /// `offset` counts rows from the title band, so offset one is the first text
-/// row. The text of a row starts one cell inside the float.
+/// row. The text of a row starts one cell inside the float. A float ends before
+/// the reserved scrollbar column, so the last cell of the row belongs to the
+/// window behind the float and leaves the text.
 fn float_text(rows: &[String], corner: (u16, u16), offset: usize) -> String {
     let row = &rows[usize::from(corner.1) + offset];
-    row[usize::from(corner.0) + 1..].trim_end().to_owned()
+    let text: String = row.chars().skip(usize::from(corner.0) + 1).collect();
+    let text = text
+        .strip_suffix(TRACK)
+        .or_else(|| text.strip_suffix(THUMB))
+        .unwrap_or(&text);
+    text.trim_end().to_owned()
 }
 
 /// Starts one editor over a buffer that holds `lines` numbered lines.
