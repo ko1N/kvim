@@ -9,17 +9,13 @@
 //! that table is its declaration order, and every merge of two answers reads
 //! that order. See `docs/language-services.md`.
 
-#[cfg(feature = "editor-services")]
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path;
 
 use serde_json::Value;
 
 use kvim_lsp::CompletionPolicy;
 use kvim_settings::LanguageSettings;
-
-#[cfg(feature = "editor-services")]
-use crate::LanguageRegistry;
 
 /// The largest number of servers that one language adapter declares.
 ///
@@ -205,85 +201,83 @@ impl LanguageServerDeclaration {
     }
 }
 
-/// Whether the workspace uses one declared language server.
-///
-/// The answer is a normal state of the workspace, never a failure. A server
-/// that the workspace does not use starts no child process. See
-/// `docs/language-services.md`.
-#[cfg(feature = "editor-services")]
+/// Whether one declaration is used by a workspace.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ServerGate {
-    /// The workspace uses this server, so its session may start.
-    Used,
-    /// The workspace holds no marker of this server, so it never starts.
+pub(crate) enum ServerGate {
+    /// The declaration has no marker requirement.
+    NoMarkersRequired,
+    /// One declared marker exists at the root.
+    Matched {
+        marker: &'static str,
+        kind: MarkerKind,
+    },
+    /// None of the declared markers exists at the root.
     Unused,
 }
 
-/// The declared root markers that one workspace root holds.
-///
-/// The value is the complete filesystem knowledge of the server gate. One
-/// probe fills it before the terminal event loop runs, and every later gate
-/// decision reads it alone, so no gate reaches the filesystem on that loop.
-#[cfg(feature = "editor-services")]
-pub(super) struct RootMarkers {
-    /// The declared marker names that the workspace root holds.
-    present: HashSet<&'static str>,
+/// The filesystem shape of one present marker.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum MarkerKind {
+    File,
+    Directory,
 }
 
-#[cfg(feature = "editor-services")]
+/// The declared root markers that one workspace root holds.
+pub(crate) struct RootMarkers {
+    present: HashMap<&'static str, MarkerKind>,
+}
+
 impl RootMarkers {
-    /// Reads one workspace root and records every declared marker that it
-    /// holds.
-    ///
-    /// The probe asks the filesystem for one path for each distinct marker of
-    /// the registry, so its cost follows the adapter data and never the size of
-    /// the workspace. A marker matches a file of the root, and it matches a
-    /// directory of the root.
-    ///
-    /// The caller runs this probe once, when it creates the language services
-    /// and before the terminal event loop runs. The workspace root does not
-    /// change while the editor runs, so one probe answers for every buffer.
-    ///
-    /// A root that the process cannot read records no marker. Every gated
-    /// server then stays off, and every server without a marker still starts.
-    pub(super) fn probe(root: &std::path::Path, registry: LanguageRegistry) -> Self {
+    /// Probes each distinct marker once with the existing unreadable-as-absent rule.
+    pub(crate) fn probe<'a>(
+        root: &std::path::Path,
+        declarations: impl IntoIterator<Item = &'a LanguageServerDeclaration>,
+    ) -> Self {
         let mut declared: HashSet<&'static str> = HashSet::new();
-        for adapter in registry.adapters() {
-            let declarations = adapter.language_servers();
+        for declaration in declarations {
             debug_assert!(
-                declarations_are_valid(declarations),
-                "an adapter declares at most LANGUAGE_ROOT_MARKERS_MAX root markers for one \
-                 server, and each marker names one entry of the workspace root"
+                declaration.root_markers.len() <= LANGUAGE_ROOT_MARKERS_MAX
+                    && declaration
+                        .root_markers
+                        .iter()
+                        .all(|marker| marker_is_valid(marker)),
+                "registry validation bounds and validates every root marker"
             );
-            for declaration in declarations {
-                declared.extend(declaration.root_markers);
-            }
+            declared.extend(declaration.root_markers);
         }
         let present = declared
             .into_iter()
-            .filter(|marker| root.join(marker).try_exists().unwrap_or(false))
+            .filter_map(|marker| {
+                let path = root.join(marker);
+                if !path.try_exists().unwrap_or(false) {
+                    return None;
+                }
+                let kind = if path.is_dir() {
+                    MarkerKind::Directory
+                } else {
+                    MarkerKind::File
+                };
+                Some((marker, kind))
+            })
             .collect();
         Self { present }
     }
 
-    /// Reports whether the workspace uses the server of one declaration.
-    ///
-    /// The answer is pure: it reads the recorded markers and the declaration
-    /// alone. A declaration that names no marker always answers
-    /// [`ServerGate::Used`].
-    pub(super) fn gate(&self, declaration: &LanguageServerDeclaration) -> ServerGate {
+    /// Returns the pure gate decision for one declaration.
+    pub(crate) fn gate(&self, declaration: &LanguageServerDeclaration) -> ServerGate {
         if declaration.root_markers.is_empty() {
-            return ServerGate::Used;
+            return ServerGate::NoMarkersRequired;
         }
-        let used = declaration
+        declaration
             .root_markers
             .iter()
-            .any(|marker| self.present.contains(marker));
-        if used {
-            ServerGate::Used
-        } else {
-            ServerGate::Unused
-        }
+            .find_map(|marker| {
+                self.present.get(marker).map(|kind| ServerGate::Matched {
+                    marker,
+                    kind: *kind,
+                })
+            })
+            .unwrap_or(ServerGate::Unused)
     }
 }
 

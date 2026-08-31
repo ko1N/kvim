@@ -119,7 +119,13 @@ impl LanguageServices {
     ) -> Result<Self, LspError> {
         let (events, results) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
         let root = WorkspaceRoot::new(root)?;
-        let markers = RootMarkers::probe(root.path(), registry);
+        let markers = RootMarkers::probe(
+            root.path(),
+            registry
+                .adapters()
+                .iter()
+                .flat_map(|adapter| adapter.language_servers()),
+        );
         Ok(Self {
             registry,
             root,
@@ -195,7 +201,7 @@ impl LanguageServices {
         let used: Vec<(LanguageServerId, &LanguageServerDeclaration)> = declarations
             .iter()
             .enumerate()
-            .filter(|(_, declaration)| self.markers.gate(declaration) == ServerGate::Used)
+            .filter(|(_, declaration)| self.markers.gate(declaration) != ServerGate::Unused)
             .map(|(order, declaration)| {
                 (
                     LanguageServerId::new(adapter.id(), order, declaration.id),

@@ -8,10 +8,18 @@ use std::path::Path;
 #[cfg(not(feature = "editor-services"))]
 use thiserror::Error;
 
+mod headless;
 mod profile;
 mod server;
 
+pub use headless::{
+    DiagnosticsMarkerGate, DiagnosticsMarkerKind, HeadlessDiagnosticsError,
+    HeadlessDiagnosticsProject, HeadlessDiagnosticsSelection, OpenedHeadlessDiagnosticsProject,
+    RealizedDiagnosticsServer,
+};
+
 pub use kvim_lsp::{CompletionPolicy, LSP_LANGUAGE_BYTES_MAX};
+pub use kvim_path::WorktreeRelativePath;
 pub use profile::{
     DiagnosticsRegistry, DiagnosticsRegistryError, DiagnosticsRegistryMeasure,
     DiagnosticsSelectionError, FIRST_RELEASE_LANGUAGE_PROFILES,
