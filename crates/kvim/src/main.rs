@@ -11,11 +11,11 @@
 mod editor;
 
 use std::error::Error;
-use std::path::PathBuf;
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use kvim_embed::{WorktreeHostReportRequest, WorktreeHostWorkspace};
-use kvim_path::WorktreeRoot;
+use kvim_path::{WorktreeRelativePath, WorktreeRoot};
 use kvim_settings::EditorSettings;
 use thiserror::Error as ErrorDerive;
 
@@ -90,7 +90,7 @@ fn run() -> Result<(), String> {
 /// composition root also resolves the workspace root once, because the language
 /// services perform no filesystem lookup.
 fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
-    let root = workspace_root()?;
+    let (root, relative) = editor_start(path.as_deref())?;
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -99,10 +99,122 @@ fn start_editor(path: Option<PathBuf>) -> Result<(), String> {
         .block_on(editor::run(
             EditorSettings::default(),
             root,
-            path,
+            relative,
             panic_probe(),
         ))
         .map_err(|error| describe(&error))
+}
+
+/// The largest number of ancestor directories that the project walk reads.
+///
+/// The bound stops the walk at a deep path and at a filesystem that answers a
+/// parent forever.
+const ROOT_WALK_ANCESTORS_MAX: usize = 64;
+
+/// Returns the worktree root of one run and the relative path of its argument.
+///
+/// A run without an argument, and a run whose argument resolves below the
+/// working directory, both take that directory as the root. An argument that
+/// resolves outside it brings its own root instead, so the editor opens a file
+/// that no project of the working directory holds. See `docs/files.md`.
+fn editor_start(
+    path: Option<&Path>,
+) -> Result<(WorktreeRoot, Option<WorktreeRelativePath>), String> {
+    let current = std::env::current_dir()
+        .map_err(|error| format!("cannot read the working directory: {error}"))?;
+    let Some(path) = path else {
+        return Ok((open_root(&current)?, None));
+    };
+    let target = absolute_argument(&current, path);
+    // An argument that names one directory selects that directory and opens no
+    // file, exactly as a run from inside it does.
+    if target.is_dir() {
+        return Ok((open_root(&target)?, None));
+    }
+    let Some(ancestor) = existing_ancestor(&target) else {
+        return Err(format!("no directory of {} exists", target.display()));
+    };
+    let remainder = target.strip_prefix(ancestor).unwrap_or(Path::new(""));
+    let anchor = ancestor
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve {}: {error}", ancestor.display()))?;
+    let canonical = anchor.join(remainder);
+
+    let inside = current
+        .canonicalize()
+        .is_ok_and(|current| canonical.starts_with(current));
+    let root = if inside {
+        open_root(&current)?
+    } else {
+        open_root(&project_root(&anchor))?
+    };
+    let Ok(relative) = canonical.strip_prefix(root.as_path()) else {
+        return Err(format!(
+            "{} lies outside the worktree {}",
+            canonical.display(),
+            root.as_path().display()
+        ));
+    };
+    // An argument that names the root itself opens no file, exactly as a run
+    // without an argument does.
+    if relative.as_os_str().is_empty() {
+        return Ok((root, None));
+    }
+    let relative = WorktreeRelativePath::new(relative)
+        .map_err(|error| format!("cannot open {}: {error}", canonical.display()))?;
+    Ok((root, Some(relative)))
+}
+
+/// Returns the absolute form of one argument, without a `.` or `..` component.
+///
+/// The function reads no directory, so it resolves no symbolic link. The root
+/// selection resolves the links of the directory that it opens.
+fn absolute_argument(current: &Path, path: &Path) -> PathBuf {
+    let joined = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        current.join(path)
+    };
+    let mut absolute = PathBuf::new();
+    for component in joined.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                absolute.pop();
+            }
+            other => absolute.push(other),
+        }
+    }
+    absolute
+}
+
+/// Returns the deepest existing directory above one absolute path.
+fn existing_ancestor(path: &Path) -> Option<&Path> {
+    path.ancestors()
+        .skip(1)
+        .take(ROOT_WALK_ANCESTORS_MAX)
+        .find(|candidate| candidate.is_dir())
+}
+
+/// Returns the project directory that holds one directory.
+///
+/// The walk takes the first ancestor that holds a `.git` entry, so a file deep
+/// inside a repository opens with the whole repository. A `.git` file names a
+/// worktree or a submodule, so the walk reads the entry and not its kind. The
+/// directory itself is the answer when the walk finds no project.
+fn project_root(anchor: &Path) -> PathBuf {
+    anchor
+        .ancestors()
+        .take(ROOT_WALK_ANCESTORS_MAX)
+        .find(|candidate| candidate.join(".git").exists())
+        .unwrap_or(anchor)
+        .to_path_buf()
+}
+
+/// Opens one directory as a worktree root.
+fn open_root(path: &Path) -> Result<WorktreeRoot, String> {
+    WorktreeRoot::open(path)
+        .map_err(|error| format!("cannot open {} as a worktree: {error}", path.display()))
 }
 
 /// Returns the panic probe that the environment selects.
@@ -199,7 +311,7 @@ const fn help_text() -> &'static str {
         "Edit Rust sources in a modal terminal editor.\n\n",
         "Usage: kvim [PATH]\n\n",
         "Arguments:\n",
-        "  [PATH]                  Open one file\n\n",
+        "  [PATH]                  Open one file, or one directory\n\n",
         "Options:\n",
         "  -h, --help              Print help\n",
         "  -V, --version           Print the version\n",

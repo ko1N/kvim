@@ -13,7 +13,7 @@
 //! work. See `docs/responsiveness.md` and `docs/embedding.md`.
 
 use std::io::{self, stdout};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use ratatui::Terminal;
@@ -53,9 +53,6 @@ pub enum EditorError {
     /// The editor facade could not open.
     #[error("the worktree editor could not open")]
     Open(#[source] kvim_embed::WorktreeOpenError),
-    /// The initial path is outside the worktree.
-    #[error("the initial path is outside the worktree")]
-    InitialPath,
 }
 
 /// Whether the editor panics on purpose after its first frame.
@@ -87,7 +84,7 @@ pub(super) fn standalone_binary_preset() -> (WorktreeBindingMode, WorktreePresen
 pub async fn run(
     settings: EditorSettings,
     root: WorktreeRoot,
-    path: Option<PathBuf>,
+    path: Option<WorktreeRelativePath>,
     probe: PanicProbe,
 ) -> Result<(), EditorError> {
     let mut terminal =
@@ -110,7 +107,7 @@ async fn drive<C: TerminalControl>(
     mut terminations: TerminationSource,
     settings: EditorSettings,
     root: WorktreeRoot,
-    path: Option<PathBuf>,
+    path: Option<WorktreeRelativePath>,
     probe: PanicProbe,
 ) -> Result<(), EditorError> {
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout())).map_err(EditorError::Draw)?;
@@ -134,8 +131,7 @@ async fn drive<C: TerminalControl>(
     }
     let mut editor = builder.open().map_err(EditorError::Open)?;
     if let Some(path) = path {
-        let relative = initial_path(&root_path, &path).ok_or(EditorError::InitialPath)?;
-        let _ = editor.open_file(relative);
+        let _ = editor.open_file(path);
     }
 
     let mut events = EventSource::from_terminal();
@@ -212,15 +208,6 @@ fn recovery_state_directory() -> Option<PathBuf> {
         return Some(PathBuf::from(directory));
     }
     std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".local/state"))
-}
-
-fn initial_path(root: &Path, path: &Path) -> Option<WorktreeRelativePath> {
-    let relative = if path.is_absolute() {
-        path.strip_prefix(root).ok()?
-    } else {
-        path
-    };
-    WorktreeRelativePath::new(relative).ok()
 }
 
 fn dispatch(editor: &mut WorktreeEditor) -> WorktreeUpdate {

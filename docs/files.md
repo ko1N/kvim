@@ -31,6 +31,33 @@ instances can use the same relative path under different roots without sharing
 file identity or state. [`architecture.md`](architecture.md) records the
 `cap-std` security purpose.
 
+### Standalone Root Selection
+
+The standalone binary selects one root before the editor opens. One session
+holds exactly one root, and the capability boundary of that root never moves.
+
+An argument that names an existing directory selects that directory as the root
+and opens no file, exactly as a run from inside that directory does. A run
+without an argument takes the working directory.
+
+An argument that names a file keeps the working directory as the root while the
+file resolves below it, so a run inside a project keeps that project.
+
+An argument that names a file outside the working directory brings its own root
+instead. The binary takes the deepest existing ancestor directory of the
+argument. It then walks up from that ancestor for a directory that holds a
+`.git` entry and takes the first one. It takes the ancestor itself when the walk
+finds none. The walk reads at most `ROOT_WALK_ANCESTORS_MAX` ancestors.
+
+The binary resolves the argument to an absolute path, and removes every `.` and
+`..` component, before it reads any directory. It then names the argument as one
+relative path below the selected root.
+
+A missing directory inside the argument ends no run. The editor opens one new
+buffer, and a later save reports the missing directory, exactly as it reports
+any other refused write. A directory that the binary cannot open as a root ends
+the run, and the message names that directory.
+
 ## File Operations
 
 One file operation is one request and one result. The visible-state owner builds

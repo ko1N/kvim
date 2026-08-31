@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use kvim_embed::{
@@ -8,7 +8,128 @@ use ratatui::layout::Rect;
 
 use crate::editor::standalone_binary_preset;
 
-use super::{CliAction, CliError, host_report, parse_cli};
+use super::{CliAction, CliError, editor_start, host_report, parse_cli};
+
+/// One temporary directory that the tests own and remove.
+///
+/// The path is canonical, so a comparison against a selected root never fails
+/// on a symbolic link of the ambient temporary directory.
+struct TestDirectory(PathBuf);
+
+impl TestDirectory {
+    fn new(name: &str) -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "kvim-root-{name}-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&path);
+        std::fs::create_dir_all(&path).expect("the test creates its own directory");
+        Self(path.canonicalize().expect("the new directory resolves"))
+    }
+
+    fn directory(&self, relative: &str) -> PathBuf {
+        let path = self.0.join(relative);
+        std::fs::create_dir_all(&path).expect("the test creates its own directory");
+        path
+    }
+
+    fn file(&self, relative: &str) -> PathBuf {
+        let path = self.0.join(relative);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).expect("the test creates its own directory");
+        }
+        std::fs::write(&path, "text\n").expect("the test writes its own file");
+        path
+    }
+}
+
+impl Drop for TestDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[test]
+fn a_path_outside_the_working_directory_brings_its_own_root() {
+    let outside = TestDirectory::new("outside");
+    let file = outside.file("notes.txt");
+
+    let (root, relative) = editor_start(Some(&file)).expect("the argument names one directory");
+    assert_eq!(root.as_path(), outside.0);
+    assert_eq!(
+        relative.expect("the argument names one file").as_path(),
+        Path::new("notes.txt")
+    );
+}
+
+#[test]
+fn a_path_outside_the_working_directory_takes_its_enclosing_project() {
+    let outside = TestDirectory::new("project");
+    outside.directory(".git");
+    let file = outside.file("crates/inner/src/main.rs");
+
+    // The walk finds the `.git` entry above the file, so the whole project
+    // opens instead of the one directory that holds the file.
+    let (root, relative) = editor_start(Some(&file)).expect("the argument names one directory");
+    assert_eq!(root.as_path(), outside.0);
+    assert_eq!(
+        relative.expect("the argument names one file").as_path(),
+        Path::new("crates/inner/src/main.rs")
+    );
+}
+
+#[test]
+fn a_missing_directory_inside_the_argument_still_opens_one_buffer() {
+    let outside = TestDirectory::new("missing");
+
+    let target = outside.0.join("absent/notes.txt");
+    let (root, relative) = editor_start(Some(&target)).expect("the deepest ancestor exists");
+    assert_eq!(root.as_path(), outside.0);
+    assert_eq!(
+        relative.expect("the argument names one file").as_path(),
+        Path::new("absent/notes.txt")
+    );
+}
+
+#[test]
+fn a_path_inside_the_working_directory_keeps_that_directory_as_the_root() {
+    let current = std::env::current_dir()
+        .and_then(std::fs::canonicalize)
+        .expect("the test process holds a working directory");
+
+    let (root, relative) = editor_start(Some(Path::new("src/main.rs")))
+        .expect("the working directory is one worktree");
+    assert_eq!(root.as_path(), current);
+    assert_eq!(
+        relative.expect("the argument names one file").as_path(),
+        Path::new("src/main.rs")
+    );
+}
+
+#[test]
+fn parent_components_resolve_before_the_root_selection() {
+    let outside = TestDirectory::new("parents");
+    outside.file("notes.txt");
+    let noisy = outside.0.join("./inner/../notes.txt");
+
+    let (root, relative) = editor_start(Some(&noisy)).expect("the argument names one directory");
+    assert_eq!(root.as_path(), outside.0);
+    assert_eq!(
+        relative.expect("the argument names one file").as_path(),
+        Path::new("notes.txt")
+    );
+}
+
+#[test]
+fn an_argument_that_names_the_root_itself_opens_no_file() {
+    let outside = TestDirectory::new("itself");
+
+    let (root, relative) =
+        editor_start(Some(&outside.0)).expect("the argument names one directory");
+    assert_eq!(root.as_path(), outside.0);
+    assert!(relative.is_none());
+}
 
 #[test]
 fn no_argument_selects_an_empty_buffer() {
