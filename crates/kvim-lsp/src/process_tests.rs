@@ -2,7 +2,10 @@ use std::cell::RefCell;
 use std::error::Error;
 use std::ffi::OsString;
 use std::io;
+#[cfg(unix)]
+use std::os::unix::process::ExitStatusExt;
 use std::path::PathBuf;
+use std::process::ExitStatus;
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -63,7 +66,7 @@ impl Drop for FakeLifecycle {
 }
 
 impl ServerProcessHandle for FakeLifecycle {
-    fn wait(&mut self) -> ServerWait<'_> {
+    fn wait(&mut self) -> ServerWait {
         let waited = self.waited.clone();
         Box::pin(async move {
             waited.fetch_add(1, Ordering::Relaxed);
@@ -264,6 +267,278 @@ fn default_launcher_classifies_an_absent_executable_with_its_source() {
     assert_eq!(source.kind(), io::ErrorKind::NotFound);
 }
 
+#[cfg(unix)]
+#[tokio::test]
+async fn default_lifecycle_termination_is_idempotent_after_reap() {
+    let child = Command::new(SHELL)
+        .args(["-c", "exit 0"])
+        .spawn()
+        .expect("the fixture child starts");
+    let mut lifecycle = super::TokioServerHandle::new(child);
+
+    let status = lifecycle.wait().await.expect("the owner reaps the child");
+    assert!(status.success());
+    lifecycle
+        .terminate()
+        .await
+        .expect("termination after exit is idempotent");
+}
+
+struct ControlledLifecycle {
+    dropped: Arc<AtomicBool>,
+    terminated: Arc<AtomicUsize>,
+    waited: Arc<AtomicUsize>,
+    exit: Option<tokio::sync::oneshot::Receiver<Result<ExitStatus, io::Error>>>,
+    terminate_result: Option<io::ErrorKind>,
+    exit_on_terminate:
+        Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<ExitStatus, io::Error>>>>>,
+}
+
+impl Drop for ControlledLifecycle {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Relaxed);
+    }
+}
+
+impl ServerProcessHandle for ControlledLifecycle {
+    fn wait(&mut self) -> ServerWait {
+        self.waited.fetch_add(1, Ordering::Relaxed);
+        let exit = self.exit.take().expect("Kvim takes one wait future");
+        Box::pin(async move {
+            exit.await
+                .expect("the fixture keeps the lifecycle result sender")
+                .map_err(super::ServerWaitError)
+        })
+    }
+
+    fn terminate(&mut self) -> ServerTerminate<'_> {
+        self.terminated.fetch_add(1, Ordering::Relaxed);
+        let result = self.terminate_result;
+        let exit = self
+            .exit_on_terminate
+            .lock()
+            .expect("fixture exit lock")
+            .take();
+        Box::pin(async move {
+            if let Some(exit) = exit {
+                let _ = exit.send(Ok(ExitStatus::from_raw(0)));
+            }
+            match result {
+                Some(kind) => Err(super::ServerTerminateError(io::Error::new(
+                    kind,
+                    "fixture termination failure",
+                ))),
+                None => Ok(()),
+            }
+        })
+    }
+}
+
+struct ControlledLauncher(Option<LaunchedServer>);
+
+impl ServerLauncher for ControlledLauncher {
+    fn launch(&mut self, _: &ServerLaunchRequest) -> Result<LaunchedServer, ServerLaunchError> {
+        Ok(self.0.take().expect("one fixture launch"))
+    }
+}
+
+struct ControlledProcess {
+    process: ServerProcess,
+    reports: mpsc::UnboundedReceiver<ServerReport>,
+    exit: Option<tokio::sync::oneshot::Sender<Result<ExitStatus, io::Error>>>,
+    stderr: Option<tokio::io::DuplexStream>,
+    dropped: Arc<AtomicBool>,
+    terminated: Arc<AtomicUsize>,
+    waited: Arc<AtomicUsize>,
+}
+
+fn controlled_process(
+    terminate_result: Option<io::ErrorKind>,
+    exit_on_terminate: bool,
+) -> ControlledProcess {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let terminated = Arc::new(AtomicUsize::new(0));
+    let waited = Arc::new(AtomicUsize::new(0));
+    let (exit, waited_exit) = tokio::sync::oneshot::channel();
+    let (exit_on_terminate_sender, manual_exit) = if exit_on_terminate {
+        (Some(exit), None)
+    } else {
+        (None, Some(exit))
+    };
+    let (input, _) = duplex(64);
+    let (output, _output_writer) = duplex(64);
+    let (errors, stderr) = duplex(64);
+    let launched = LaunchedServer::new(
+        input,
+        output,
+        errors,
+        ControlledLifecycle {
+            dropped: dropped.clone(),
+            terminated: terminated.clone(),
+            waited: waited.clone(),
+            exit: Some(waited_exit),
+            terminate_result,
+            exit_on_terminate: Arc::new(Mutex::new(exit_on_terminate_sender)),
+        },
+    );
+    let mut factory = TransportFactory::process_with(
+        request(OsString::from("fixture"), vec![]).expect("valid request"),
+        ControlledLauncher(Some(launched)),
+    );
+    let (reports, received) = mpsc::unbounded_channel();
+    let (process, streams) = ServerProcess::open(&mut factory, move |report| {
+        let _ = reports.send(report);
+    })
+    .expect("fixture opens");
+    drop(streams);
+    ControlledProcess {
+        process,
+        reports: received,
+        exit: manual_exit,
+        stderr: Some(stderr),
+        dropped,
+        terminated,
+        waited,
+    }
+}
+
+#[tokio::test]
+async fn graceful_cleanup_reaps_without_termination_and_finishes_stderr() {
+    let mut fixture = controlled_process(None, false);
+    fixture.stderr.take();
+    fixture
+        .exit
+        .take()
+        .expect("manual exit sender")
+        .send(Ok(ExitStatus::from_raw(0)))
+        .expect("wait owner remains");
+    fixture
+        .process
+        .close(super::ServerCloseIntent::Graceful {
+            deadline: time::Instant::now() + Duration::from_secs(1),
+        })
+        .await;
+
+    assert_eq!(fixture.terminated.load(Ordering::Relaxed), 0);
+    assert_eq!(fixture.waited.load(Ordering::Relaxed), 1);
+    assert!(fixture.dropped.load(Ordering::Relaxed));
+    assert!(fixture.reports.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn hung_graceful_cleanup_terminates_once_and_reaps_once() {
+    let fixture = controlled_process(None, true);
+    fixture
+        .process
+        .close(super::ServerCloseIntent::Graceful {
+            deadline: time::Instant::now(),
+        })
+        .await;
+    assert_eq!(fixture.terminated.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.waited.load(Ordering::Relaxed), 1);
+    assert!(fixture.dropped.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn immediate_cleanup_terminates_before_its_single_reap() {
+    let fixture = controlled_process(None, true);
+    fixture
+        .process
+        .close(super::ServerCloseIntent::Immediate)
+        .await;
+    assert_eq!(fixture.terminated.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.waited.load(Ordering::Relaxed), 1);
+}
+
+#[tokio::test]
+async fn immediate_cleanup_of_exited_lifecycle_reports_no_termination_failure() {
+    let mut fixture = controlled_process(None, false);
+    fixture.stderr.take();
+    fixture
+        .exit
+        .take()
+        .expect("manual exit sender")
+        .send(Ok(ExitStatus::from_raw(0)))
+        .expect("wait owner remains");
+
+    fixture
+        .process
+        .close(super::ServerCloseIntent::Immediate)
+        .await;
+
+    assert_eq!(fixture.terminated.load(Ordering::Relaxed), 1);
+    assert_eq!(fixture.waited.load(Ordering::Relaxed), 1);
+    assert!(fixture.dropped.load(Ordering::Relaxed));
+    assert!(fixture.reports.recv().await.is_none());
+}
+
+#[tokio::test]
+async fn cleanup_reports_typed_wait_and_terminate_sources_once() {
+    let mut fixture = controlled_process(Some(io::ErrorKind::PermissionDenied), false);
+    fixture
+        .exit
+        .take()
+        .expect("manual exit sender")
+        .send(Err(io::Error::new(
+            io::ErrorKind::BrokenPipe,
+            "fixture wait failure",
+        )))
+        .expect("wait owner remains");
+    fixture
+        .process
+        .close(super::ServerCloseIntent::Immediate)
+        .await;
+
+    let mut terminate = 0;
+    let mut wait = 0;
+    while let Ok(report) = fixture.reports.try_recv() {
+        match report {
+            ServerReport::CleanupFailed(super::ServerCleanupError::Terminate(error)) => {
+                assert_eq!(error.0.kind(), io::ErrorKind::PermissionDenied);
+                terminate += 1;
+            }
+            ServerReport::CleanupFailed(super::ServerCleanupError::Wait(error)) => {
+                assert_eq!(error.0.kind(), io::ErrorKind::BrokenPipe);
+                wait += 1;
+            }
+            _ => {}
+        }
+    }
+    assert_eq!((terminate, wait), (1, 1));
+}
+
+#[tokio::test]
+async fn forced_cleanup_timeout_is_bounded_and_drop_still_fires() {
+    let fixture = controlled_process(None, false);
+    let dropped = fixture.dropped.clone();
+    time::timeout(
+        super::LSP_FORCED_CLEANUP_DEADLINE + Duration::from_secs(1),
+        fixture.process.close(super::ServerCloseIntent::Immediate),
+    )
+    .await
+    .expect("forced cleanup stays bounded");
+    assert!(dropped.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn stream_only_cleanup_is_bounded_when_the_remote_keeps_output_open() {
+    let (input, _) = duplex(64);
+    let (output, _remote_output) = duplex(64);
+    let mut streams = Some((input, output));
+    let mut factory = TransportFactory::Custom(Box::new(move || {
+        let (input, output) = streams.take().expect("one custom transport");
+        Ok(Transport::new(input, output))
+    }));
+    let (process, streams) = ServerProcess::open(&mut factory, |_| {}).expect("streams open");
+    drop(streams);
+    time::timeout(
+        super::LSP_FORCED_CLEANUP_DEADLINE + Duration::from_secs(1),
+        process.close(super::ServerCloseIntent::Immediate),
+    )
+    .await
+    .expect("stream close stays bounded");
+}
+
 /// Returns the mode of one `textDocumentSync` capability value.
 fn mode(capability: &Value) -> SynchronizationMode {
     synchronization_mode(capability.pointer("/capabilities/textDocumentSync"))
@@ -305,7 +580,7 @@ async fn recorded(reports: &mut mpsc::UnboundedReceiver<ServerReport>) -> (Vec<S
         match report {
             ServerReport::Output(text) => lines.push(text),
             ServerReport::OutputBound => bounds += 1,
-            ServerReport::Started => {}
+            ServerReport::Started | ServerReport::CleanupFailed(_) => {}
         }
     }
     (lines, bounds)
@@ -352,7 +627,7 @@ async fn server_process_opens_a_fresh_custom_transport_for_each_attempt() {
             .await
             .expect("write request frame");
         drop(streams);
-        process.close().await;
+        process.close(super::ServerCloseIntent::Immediate).await;
     }
     assert_eq!(attempts.load(std::sync::atomic::Ordering::Relaxed), 2);
 }
@@ -459,7 +734,7 @@ fn the_recorder_holds_both_of_its_bounds() {
         let mut recorder = ErrorRecorder::new(|report| match report {
             ServerReport::Output(text) => lines.borrow_mut().push(text),
             ServerReport::OutputBound => *bounds.borrow_mut() += 1,
-            ServerReport::Started => {}
+            ServerReport::Started | ServerReport::CleanupFailed(_) => {}
         });
         for _ in 0..writes {
             recorder.take(long.as_bytes());
@@ -495,13 +770,17 @@ async fn records_the_standard_error_of_a_server_that_exits_at_once() {
     // program names its cause on the standard error and exits at once.
     let (process, mut reports) = shell("printf '%s\\n' \"$1\" >&2; exit 1", &["shim", SHIM_LINE]);
 
+    process
+        .close(super::ServerCloseIntent::Graceful {
+            deadline: time::Instant::now() + TEST_DEADLINE,
+        })
+        .await;
     let (lines, bounds) = recorded(&mut reports).await;
     assert!(
         lines.iter().any(|line| line == SHIM_LINE),
         "the recorded output names the cause, not {lines:?}"
     );
     assert_eq!(bounds, 0, "a short output passes no bound");
-    process.close().await;
 }
 
 #[tokio::test]
@@ -518,6 +797,11 @@ async fn drains_a_server_that_writes_more_than_its_bound() {
     );
     let (process, mut reports) = shell(&script, &["flood", &line]);
 
+    process
+        .close(super::ServerCloseIntent::Graceful {
+            deadline: time::Instant::now() + TEST_DEADLINE,
+        })
+        .await;
     let (lines, bounds) = recorded(&mut reports).await;
     assert_eq!(bounds, 1, "the attempt reports the bound that it passed");
     assert!(
@@ -526,7 +810,6 @@ async fn drains_a_server_that_writes_more_than_its_bound() {
             .all(|line| line.len() <= LSP_STDERR_LINE_BYTES_MAX),
         "every recorded line stays inside the line bound"
     );
-    process.close().await;
 }
 
 #[tokio::test]

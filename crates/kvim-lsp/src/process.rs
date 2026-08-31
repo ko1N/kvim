@@ -6,7 +6,9 @@
 //! `initialize` handshake, and ends the process inside a deadline.
 //!
 //! [`ServerProcess`] owns the child. Dropping the value stops both reader tasks
-//! and kills the child, so a cancelled caller leaves no untracked process.
+//! and requests best-effort process termination. Explicit close keeps both
+//! readers alive through graceful exit, then bounds forced termination and
+//! reaping, so a cancelled caller leaves no untracked process.
 //!
 //! The module speaks the protocol only. The caller supplies the program, the
 //! arguments, the working directory, the initialization options, and the
@@ -24,7 +26,7 @@ use serde_json::value::RawValue;
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite};
 use tokio::process::{Child, Command};
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, oneshot};
 use tokio::task::JoinHandle;
 use tokio::time;
 use tokio_util::sync::CancellationToken;
@@ -90,6 +92,39 @@ pub const LSP_INITIALIZE_DEADLINE: Duration = Duration::from_secs(30);
 /// The deadline of the `shutdown` and `exit` sequence.
 pub const LSP_SHUTDOWN_DEADLINE: Duration = Duration::from_millis(250);
 
+/// The deadline for forced termination, reaping, and task cleanup.
+///
+/// This budget starts only after graceful cleanup ends or immediate cleanup
+/// begins. Together with [`LSP_SHUTDOWN_DEADLINE`], it remains below the
+/// project close deadline.
+pub const LSP_FORCED_CLEANUP_DEADLINE: Duration = Duration::from_millis(250);
+
+/// Why Kvim closes one server process.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ServerCloseIntent {
+    /// Protocol `shutdown` and `exit` completed before this absolute deadline.
+    Graceful {
+        /// The absolute deadline shared with the protocol shutdown sequence.
+        deadline: time::Instant,
+    },
+    /// The attempt failed before a graceful protocol shutdown completed.
+    Immediate,
+}
+
+/// A typed failure from bounded server-process cleanup.
+#[derive(Debug, thiserror::Error)]
+pub enum ServerCleanupError {
+    /// Waiting for and reaping the process failed.
+    #[error(transparent)]
+    Wait(#[from] ServerWaitError),
+    /// Requesting forced termination failed.
+    #[error(transparent)]
+    Terminate(#[from] ServerTerminateError),
+    /// Forced cleanup passed its absolute deadline.
+    #[error("forced language server cleanup exceeded its deadline")]
+    ForcedTimeout,
+}
+
 /// The stream that one session writes its messages to.
 pub type ServerInput = Box<dyn AsyncWrite + Send + Unpin>;
 
@@ -113,7 +148,7 @@ pub type Envelopes = mpsc::Receiver<Result<RpcEnvelope, LspError>>;
 /// let ServerReport::Output(line) = &report else { unreachable!() };
 /// assert!(line.len() <= LSP_STDERR_LINE_BYTES_MAX);
 /// ```
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Debug)]
 pub enum ServerReport {
     /// The handshake completed, so the server serves its documents.
     Started,
@@ -126,6 +161,8 @@ pub enum ServerReport {
     /// The recorder keeps no further line of that attempt. It still drains the
     /// stream, so the server never blocks on a full pipe.
     OutputBound,
+    /// Bounded process cleanup failed after the attempt outcome was decided.
+    CleanupFailed(ServerCleanupError),
 }
 
 /// A validated, owned command for one language-server attempt.
@@ -246,8 +283,11 @@ pub struct ServerWaitError(#[source] pub io::Error);
 pub struct ServerTerminateError(#[source] pub io::Error);
 
 /// The boxed future returned by [`ServerProcessHandle::wait`].
-pub type ServerWait<'a> =
-    Pin<Box<dyn Future<Output = Result<ExitStatus, ServerWaitError>> + Send + 'a>>;
+///
+/// The future owns its wait operation. Kvim creates it once and keeps polling
+/// the same value across graceful and forced cleanup.
+pub type ServerWait =
+    Pin<Box<dyn Future<Output = Result<ExitStatus, ServerWaitError>> + Send + 'static>>;
 
 /// The boxed future returned by [`ServerProcessHandle::terminate`].
 pub type ServerTerminate<'a> =
@@ -257,8 +297,11 @@ pub type ServerTerminate<'a> =
 ///
 /// Implementations must initiate best-effort process termination from `Drop`.
 pub trait ServerProcessHandle: Send {
-    /// Waits for process exit and reaps the process.
-    fn wait(&mut self) -> ServerWait<'_>;
+    /// Transfers the process's single wait-and-reap operation to Kvim.
+    ///
+    /// Kvim calls this exactly once. The returned future must remain the sole
+    /// owner of reaping even when a graceful deadline expires.
+    fn wait(&mut self) -> ServerWait;
     /// Requests process termination without consuming the later wait.
     fn terminate(&mut self) -> ServerTerminate<'_>;
 }
@@ -274,6 +317,7 @@ pub trait ServerProcessHandle: Send {
 /// ```
 /// use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
 /// use kvim_lsp::{LaunchedServer, ServerProcessHandle, ServerTerminate, ServerWait};
+/// use std::process::ExitStatus;
 /// use tokio::io::duplex;
 ///
 /// struct FixtureLifecycle(Arc<AtomicBool>);
@@ -284,7 +328,9 @@ pub trait ServerProcessHandle: Send {
 ///     }
 /// }
 /// impl ServerProcessHandle for FixtureLifecycle {
-///     fn wait(&mut self) -> ServerWait<'_> { Box::pin(std::future::pending()) }
+///     fn wait(&mut self) -> ServerWait {
+///         Box::pin(async { std::future::pending::<Result<ExitStatus, _>>().await })
+///     }
 ///     fn terminate(&mut self) -> ServerTerminate<'_> { Box::pin(async { Ok(()) }) }
 /// }
 /// let cleanup_requested = Arc::new(AtomicBool::new(false));
@@ -371,25 +417,94 @@ impl ServerLauncher for DefaultServerLauncher {
             input,
             output,
             errors,
-            TokioServerHandle(child),
+            TokioServerHandle::new(child),
         ))
     }
 }
 
-struct TokioServerHandle(Child);
+struct TokioServerHandle {
+    commands: mpsc::Sender<TokioLifecycleCommand>,
+    waited: Option<oneshot::Receiver<Result<ExitStatus, io::Error>>>,
+}
+
+enum TokioLifecycleCommand {
+    Terminate(oneshot::Sender<Result<(), io::Error>>),
+    Drop,
+}
+
+impl TokioServerHandle {
+    fn new(mut child: Child) -> Self {
+        let (commands, mut requests) = mpsc::channel(2);
+        let (waited_tx, waited) = oneshot::channel();
+        tokio::spawn(async move {
+            let result = loop {
+                tokio::select! {
+                    result = child.wait() => break result,
+                    request = requests.recv() => match request {
+                        Some(TokioLifecycleCommand::Terminate(answer)) => {
+                            let _ = answer.send(child.start_kill());
+                        }
+                        Some(TokioLifecycleCommand::Drop) | None => {
+                            let _ = child.start_kill();
+                        }
+                    }
+                }
+            };
+            let _ = waited_tx.send(result);
+
+            // Keep answering termination after the single wait owner reaps the
+            // child. Immediate cleanup can race with that exit, and termination
+            // of an already-reaped child is an idempotent success.
+            while let Some(request) = requests.recv().await {
+                match request {
+                    TokioLifecycleCommand::Terminate(answer) => {
+                        let _ = answer.send(Ok(()));
+                    }
+                    TokioLifecycleCommand::Drop => break,
+                }
+            }
+        });
+        Self {
+            commands,
+            waited: Some(waited),
+        }
+    }
+}
 
 impl Drop for TokioServerHandle {
     fn drop(&mut self) {
-        let _ = self.0.start_kill();
+        let _ = self.commands.try_send(TokioLifecycleCommand::Drop);
     }
 }
 
 impl ServerProcessHandle for TokioServerHandle {
-    fn wait(&mut self) -> ServerWait<'_> {
-        Box::pin(async move { self.0.wait().await.map_err(ServerWaitError) })
+    fn wait(&mut self) -> ServerWait {
+        let waited = self.waited.take().expect("Kvim takes one wait future");
+        Box::pin(async move {
+            waited
+                .await
+                .map_err(|_| ServerWaitError(io::Error::other("process wait owner stopped")))?
+                .map_err(ServerWaitError)
+        })
     }
+
     fn terminate(&mut self) -> ServerTerminate<'_> {
-        Box::pin(async move { self.0.start_kill().map_err(ServerTerminateError) })
+        let commands = self.commands.clone();
+        Box::pin(async move {
+            let (answer, result) = oneshot::channel();
+            commands
+                .send(TokioLifecycleCommand::Terminate(answer))
+                .await
+                .map_err(|_| {
+                    ServerTerminateError(io::Error::other("process lifecycle owner stopped"))
+                })?;
+            result
+                .await
+                .map_err(|_| {
+                    ServerTerminateError(io::Error::other("process termination answer stopped"))
+                })?
+                .map_err(ServerTerminateError)
+        })
     }
 }
 
@@ -583,12 +698,14 @@ pub struct ServerStreams {
 /// One running language server and the tasks that read it.
 ///
 /// The value owns the child process, the frame reader, and the standard-error
-/// recorder. Dropping it aborts both tasks and kills the child, so no cancelled
-/// caller leaves an untracked process. [`ServerProcess::close`] performs the
-/// same work inside [`LSP_SHUTDOWN_DEADLINE`] and waits for the exit.
+/// recorder. Dropping it aborts both tasks and requests best-effort termination,
+/// so no cancelled caller leaves an untracked process. [`ServerProcess::close`]
+/// preserves both readers through graceful exit, then bounds forced cleanup.
 pub struct ServerProcess {
     /// The lifecycle capability, or `None` after close started.
     lifecycle: Option<Box<dyn ServerProcessHandle>>,
+    /// The nonblocking report sink shared with the standard-error task.
+    report: Box<dyn Fn(ServerReport) + Send>,
     /// The task that reads one frame after another.
     reader: JoinHandle<()>,
     /// The task that drains the standard error, or `None` for a prepared pair.
@@ -626,7 +743,7 @@ impl ServerProcess {
     ///     eprintln!("{report:?}");
     /// })?;
     /// drop(streams);
-    /// process.close().await;
+    /// process.close(kvim_lsp::ServerCloseIntent::Immediate).await;
     /// # Ok(())
     /// # }
     /// ```
@@ -635,7 +752,7 @@ impl ServerProcess {
         report: F,
     ) -> Result<(Self, ServerStreams), LspError>
     where
-        F: Fn(ServerReport) + Send + 'static,
+        F: Fn(ServerReport) + Clone + Send + 'static,
     {
         let Transport {
             input,
@@ -646,13 +763,14 @@ impl ServerProcess {
         // The standard error of the child needs a reader from the first byte,
         // because a pipe that nobody drains fills and stops the child. See
         // `docs/language-services.md`.
-        let errors = errors.map(|stream| tokio::spawn(record_errors(stream, report)));
+        let errors = errors.map(|stream| tokio::spawn(record_errors(stream, report.clone())));
         let (sender, envelopes) = mpsc::channel(LSP_ENVELOPE_QUEUE_CAPACITY);
         // The frame reader owns its stream in one task, so no cancelled future
         // can drop a partly read frame and desynchronize the stream.
         let reader = tokio::spawn(read_envelopes(ProtocolReader::new(output), sender));
         let process = Self {
             lifecycle,
+            report: Box::new(report),
             reader,
             errors,
         };
@@ -663,26 +781,86 @@ impl ServerProcess {
         Ok((process, streams))
     }
 
-    /// Ends the process and waits a bounded time for the last recorded line.
+    /// Ends the process with the supplied lifecycle intent.
     ///
-    /// The call consumes the value, so no caller can read the process after it.
-    /// Every step carries [`LSP_SHUTDOWN_DEADLINE`], so one server that never
-    /// exits cannot stop the caller.
-    pub async fn close(mut self) {
-        self.reader.abort();
-        if let Some(mut lifecycle) = self.lifecycle.take() {
-            let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, lifecycle.terminate()).await;
-            let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, lifecycle.wait()).await;
-        }
-        if let Some(mut task) = self.errors.take() {
-            // The child ended, so the stream ends and the recorder keeps its
-            // last line. Another process may still hold the write end of that
-            // pipe, so the wait carries the deadline and the rest stays
-            // unrecorded.
-            if time::timeout(LSP_SHUTDOWN_DEADLINE, &mut task)
-                .await
-                .is_err()
+    /// Graceful cleanup preserves the frame reader while it waits on the
+    /// absolute protocol deadline. Immediate cleanup skips that wait. Forced
+    /// termination, reaping, and task joins share one later absolute deadline.
+    pub async fn close(mut self, intent: ServerCloseIntent) {
+        let Some(mut lifecycle) = self.lifecycle.take() else {
+            let deadline = time::Instant::now() + LSP_FORCED_CLEANUP_DEADLINE;
+            if time::timeout_at(deadline, &mut self.reader).await.is_err() {
+                self.reader.abort();
+            }
+            if let Some(mut task) = self.errors.take()
+                && time::timeout_at(deadline, &mut task).await.is_err()
             {
+                task.abort();
+            }
+            return;
+        };
+
+        let mut wait = lifecycle.wait();
+        let mut forced_deadline = None;
+        let mut wait_finished = false;
+        let exited = match intent {
+            ServerCloseIntent::Graceful { deadline } => {
+                match time::timeout_at(deadline, &mut wait).await {
+                    Ok(Ok(_)) => {
+                        wait_finished = true;
+                        true
+                    }
+                    Ok(Err(error)) => {
+                        wait_finished = true;
+                        (self.report)(ServerReport::CleanupFailed(error.into()));
+                        false
+                    }
+                    Err(_) => false,
+                }
+            }
+            ServerCloseIntent::Immediate => false,
+        };
+
+        if !exited {
+            let deadline = time::Instant::now() + LSP_FORCED_CLEANUP_DEADLINE;
+            forced_deadline = Some(deadline);
+            let mut timeout_reported = false;
+            match time::timeout_at(deadline, lifecycle.terminate()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => {
+                    (self.report)(ServerReport::CleanupFailed(error.into()));
+                }
+                Err(_) => {
+                    (self.report)(ServerReport::CleanupFailed(
+                        ServerCleanupError::ForcedTimeout,
+                    ));
+                    timeout_reported = true;
+                }
+            }
+            if !wait_finished {
+                match time::timeout_at(deadline, &mut wait).await {
+                    Ok(Ok(_)) => {}
+                    Ok(Err(error)) => {
+                        (self.report)(ServerReport::CleanupFailed(error.into()));
+                    }
+                    Err(_) if !timeout_reported => {
+                        (self.report)(ServerReport::CleanupFailed(
+                            ServerCleanupError::ForcedTimeout,
+                        ));
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+
+        self.reader.abort();
+        if let Some(mut task) = self.errors.take() {
+            // A descendant can inherit the pipe after the owned process was
+            // reaped. Give the recorder one bounded join budget of its own,
+            // then abort it deterministically.
+            let deadline = forced_deadline
+                .unwrap_or_else(|| time::Instant::now() + LSP_FORCED_CLEANUP_DEADLINE);
+            if time::timeout_at(deadline, &mut task).await.is_err() {
                 task.abort();
             }
         }
@@ -975,9 +1153,8 @@ async fn negotiate(
 
 /// Sends `shutdown` and `exit` in the order that the protocol requires.
 ///
-/// The call carries [`LSP_SHUTDOWN_DEADLINE`], so a server that never answers
-/// cannot hold the caller. The caller ends the process after this sequence, so
-/// a failure here still leaves no running child.
+/// The call carries [`LSP_SHUTDOWN_DEADLINE`]. The project supervisor uses the
+/// same absolute budget for protocol shutdown and graceful process exit.
 ///
 /// # Errors
 ///
@@ -989,7 +1166,21 @@ pub async fn shutdown(
     writer: &mut ProtocolWriter<ServerInput>,
     envelopes: &mut Envelopes,
 ) -> Result<(), LspError> {
-    time::timeout(LSP_SHUTDOWN_DEADLINE, exit(writer, envelopes))
+    shutdown_until(
+        writer,
+        envelopes,
+        time::Instant::now() + LSP_SHUTDOWN_DEADLINE,
+    )
+    .await
+}
+
+/// Sends protocol shutdown within a caller-owned absolute cleanup budget.
+pub(crate) async fn shutdown_until(
+    writer: &mut ProtocolWriter<ServerInput>,
+    envelopes: &mut Envelopes,
+    deadline: time::Instant,
+) -> Result<(), LspError> {
+    time::timeout_at(deadline, exit(writer, envelopes))
         .await
         .unwrap_or(Err(LspError::Timeout))
 }

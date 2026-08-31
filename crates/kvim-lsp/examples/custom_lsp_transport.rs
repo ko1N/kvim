@@ -23,6 +23,6 @@ async fn main() -> Result<(), LspError> {
     })?;
     println!("connected with caller-supplied transport");
     drop(streams);
-    process.close().await;
+    process.close(kvim_lsp::ServerCloseIntent::Immediate).await;
     Ok(())
 }

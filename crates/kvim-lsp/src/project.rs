@@ -30,8 +30,9 @@ use tokio::time;
 use tokio_util::sync::CancellationToken;
 
 use crate::process::{
-    Envelopes, Handshake, HandshakeOutcome, LSP_RESTARTS_MAX, ServerCapabilities, ServerInput,
-    ServerProcess, ServerReport, ServerStreams, TransportFactory, initialize, shutdown,
+    Envelopes, Handshake, HandshakeOutcome, LSP_RESTARTS_MAX, LSP_SHUTDOWN_DEADLINE,
+    ServerCapabilities, ServerCloseIntent, ServerInput, ServerProcess, ServerReport, ServerStreams,
+    TransportFactory, initialize, shutdown_until,
 };
 use crate::protocol::{LspBound, LspError, ProtocolWriter, WorkspaceRoot, enforce};
 
@@ -571,13 +572,22 @@ where
             cancellation,
         )
         .await;
-        if matches!(outcome, AttemptOutcome::Stopped) {
-            // The sequence carries its own deadline, and the process ends next,
-            // so a server that refuses the sequence still leaves no running
-            // child.
-            let _ = shutdown(&mut writer, &mut envelopes).await;
-        }
-        process.close().await;
+        let close_intent = if matches!(outcome, AttemptOutcome::Stopped) {
+            // Protocol shutdown and graceful process exit share one absolute
+            // deadline. Only a completed exchange permits graceful waiting.
+            let deadline = time::Instant::now() + LSP_SHUTDOWN_DEADLINE;
+            if shutdown_until(&mut writer, &mut envelopes, deadline)
+                .await
+                .is_ok()
+            {
+                ServerCloseIntent::Graceful { deadline }
+            } else {
+                ServerCloseIntent::Immediate
+            }
+        } else {
+            ServerCloseIntent::Immediate
+        };
+        process.close(close_intent).await;
         outcome
     }
 

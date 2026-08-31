@@ -16,9 +16,10 @@
 //! server holds, so no conversion can split a character.
 //!
 //! [`ServerProcess`] owns one child process, its frame reader, and its
-//! standard-error recorder. Dropping the value kills the child, so a cancelled
-//! caller can leave no untracked process. [`initialize`] and [`shutdown`] each
-//! carry their own deadline.
+//! standard-error recorder. Dropping the value requests best-effort process
+//! termination. Explicit close permits graceful exit before bounded forced
+//! termination and reaping. [`initialize`] and [`shutdown`] each carry an
+//! explicit deadline.
 //!
 //! [`ProjectManager`] opens several projects. The caller names each
 //! [`ProjectId`], so two projects on one root stay independent. Opening returns
@@ -86,14 +87,14 @@ pub use document::{
 pub use encoding::{DocumentMapping, DocumentMirror, PositionEncoding, TextMirroring};
 pub use process::{
     DefaultServerLauncher, DiagnosticsModel, Envelopes, Handshake, HandshakeOutcome,
-    LSP_ENVELOPE_QUEUE_CAPACITY, LSP_INITIALIZE_DEADLINE, LSP_RESTARTS_MAX,
-    LSP_RESULT_ID_BYTES_MAX, LSP_SERVER_ARGUMENT_BYTES_MAX, LSP_SERVER_ARGUMENTS_MAX,
-    LSP_SERVER_COMMAND_BYTES_MAX, LSP_SERVER_PROGRAM_BYTES_MAX, LSP_SHUTDOWN_DEADLINE,
-    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LaunchedServer, ServerCapabilities,
-    ServerInput, ServerLaunchError, ServerLaunchRequest, ServerLauncher, ServerProcess,
-    ServerProcessHandle, ServerReport, ServerStreams, ServerTerminate, ServerTerminateError,
-    ServerWait, ServerWaitError, SynchronizationMode, Transport, TransportFactory, initialize,
-    shutdown,
+    LSP_ENVELOPE_QUEUE_CAPACITY, LSP_FORCED_CLEANUP_DEADLINE, LSP_INITIALIZE_DEADLINE,
+    LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LSP_SERVER_ARGUMENT_BYTES_MAX,
+    LSP_SERVER_ARGUMENTS_MAX, LSP_SERVER_COMMAND_BYTES_MAX, LSP_SERVER_PROGRAM_BYTES_MAX,
+    LSP_SHUTDOWN_DEADLINE, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LaunchedServer,
+    ServerCapabilities, ServerCleanupError, ServerCloseIntent, ServerInput, ServerLaunchError,
+    ServerLaunchRequest, ServerLauncher, ServerProcess, ServerProcessHandle, ServerReport,
+    ServerStreams, ServerTerminate, ServerTerminateError, ServerWait, ServerWaitError,
+    SynchronizationMode, Transport, TransportFactory, initialize, shutdown,
 };
 pub use project::{
     Attempt, AttemptEnd, LSP_EVENT_QUEUE_CAPACITY, LSP_MANAGER_DOCUMENTS_MAX,

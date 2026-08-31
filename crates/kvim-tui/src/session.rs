@@ -5302,6 +5302,9 @@ impl Session {
                 MessageLevel::Warning,
                 "wrote more than the editor records; the log holds no further output of this attempt",
             ),
+            ServerReport::CleanupFailed(error) => {
+                self.record_server(server, MessageLevel::Warning, &error.to_string())
+            }
         }
         Redraw::Skipped
     }
