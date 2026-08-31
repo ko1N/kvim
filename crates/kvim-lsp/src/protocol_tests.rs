@@ -1,3 +1,4 @@
+use std::io;
 use std::path::{Path, PathBuf};
 
 use tokio::io::{AsyncWriteExt, duplex};
@@ -109,6 +110,16 @@ async fn rejects_a_frame_without_a_content_length() {
         .expect_err("a frame without a length is malformed");
     assert!(matches!(error, LspError::MalformedFrame));
     feeder.await.expect("the feeder ends");
+}
+
+#[test]
+fn launch_unavailability_is_not_an_existing_session_failure() {
+    let error = LspError::Unavailable(io::Error::new(
+        io::ErrorKind::NotFound,
+        "fixture executable is absent",
+    ));
+
+    assert!(!error.is_fatal());
 }
 
 #[test]

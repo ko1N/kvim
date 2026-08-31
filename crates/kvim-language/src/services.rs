@@ -41,7 +41,7 @@ use super::session::{
 use super::{AnalysisError, LanguageRegistry};
 use kvim_lsp::{
     LSP_EVENT_QUEUE_CAPACITY, LSP_SESSIONS_MAX, LspBound, LspError, ProjectId, ServerId,
-    TransportFactory, WorkspaceRoot,
+    ServerLaunchRequest, TransportFactory, WorkspaceRoot,
 };
 
 /// The state of one declared server in this workspace.
@@ -285,11 +285,15 @@ impl LanguageServices {
             diagnostics_enabled: self.settings.language.diagnostics_enabled,
             registry: self.registry,
         };
-        let factory = TransportFactory::Process {
-            program: OsString::from(declaration.program),
-            args: declaration.args.iter().map(OsString::from).collect(),
-            root: self.root.path().to_path_buf(),
-        };
+        let factory = TransportFactory::process(
+            ServerLaunchRequest::new(
+                OsString::from(declaration.program),
+                declaration.args.iter().map(OsString::from).collect(),
+                WorkspaceRoot::new(self.root.path().to_path_buf())
+                    .expect("the process root is valid"),
+            )
+            .expect("the process request is valid"),
+        );
         let (handle, task) = start(
             factory,
             config,

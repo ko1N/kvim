@@ -30,8 +30,8 @@ use super::session::{
     FormatIndent, LanguageEvent, LanguageOutcome, LanguageServerHandle, SessionConfig, start,
 };
 use kvim_lsp::{
-    LSP_EVENT_QUEUE_CAPACITY, LSP_OUTPUT_BYTES_MAX, ProjectId, ServerId, TransportFactory,
-    WorkspaceRoot, read_frame,
+    LSP_EVENT_QUEUE_CAPACITY, LSP_OUTPUT_BYTES_MAX, ProjectId, ServerId, ServerLaunchRequest,
+    TransportFactory, WorkspaceRoot, read_frame,
 };
 
 /// The prepared byte streams that [`pipe`] hands to one session.
@@ -372,11 +372,14 @@ pub fn named_session_at(
 pub fn process_session(program: &str, args: &[&str], root: PathBuf) -> Harness {
     let (events, receiver) = mpsc::channel(LSP_EVENT_QUEUE_CAPACITY);
     let (handle, task) = start(
-        TransportFactory::Process {
-            program: OsString::from(program),
-            args: args.iter().map(OsString::from).collect(),
-            root: root.clone(),
-        },
+        TransportFactory::process(
+            ServerLaunchRequest::new(
+                OsString::from(program),
+                args.iter().map(OsString::from).collect(),
+                WorkspaceRoot::new(root.clone()).expect("the process root is valid"),
+            )
+            .expect("the process request is valid"),
+        ),
         config(SERVER, root, true),
         events,
         CancellationToken::new(),

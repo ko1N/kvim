@@ -85,11 +85,15 @@ pub use document::{
 };
 pub use encoding::{DocumentMapping, DocumentMirror, PositionEncoding, TextMirroring};
 pub use process::{
-    DiagnosticsModel, Envelopes, Handshake, HandshakeOutcome, LSP_ENVELOPE_QUEUE_CAPACITY,
-    LSP_INITIALIZE_DEADLINE, LSP_RESTARTS_MAX, LSP_RESULT_ID_BYTES_MAX, LSP_SHUTDOWN_DEADLINE,
-    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, ServerCapabilities, ServerInput,
-    ServerProcess, ServerReport, ServerStreams, SynchronizationMode, Transport, TransportFactory,
-    initialize, shutdown,
+    DefaultServerLauncher, DiagnosticsModel, Envelopes, Handshake, HandshakeOutcome,
+    LSP_ENVELOPE_QUEUE_CAPACITY, LSP_INITIALIZE_DEADLINE, LSP_RESTARTS_MAX,
+    LSP_RESULT_ID_BYTES_MAX, LSP_SERVER_ARGUMENT_BYTES_MAX, LSP_SERVER_ARGUMENTS_MAX,
+    LSP_SERVER_COMMAND_BYTES_MAX, LSP_SERVER_PROGRAM_BYTES_MAX, LSP_SHUTDOWN_DEADLINE,
+    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LaunchedServer, ServerCapabilities,
+    ServerInput, ServerLaunchError, ServerLaunchRequest, ServerLauncher, ServerProcess,
+    ServerProcessHandle, ServerReport, ServerStreams, ServerTerminate, ServerTerminateError,
+    ServerWait, ServerWaitError, SynchronizationMode, Transport, TransportFactory, initialize,
+    shutdown,
 };
 pub use project::{
     Attempt, AttemptEnd, LSP_EVENT_QUEUE_CAPACITY, LSP_MANAGER_DOCUMENTS_MAX,

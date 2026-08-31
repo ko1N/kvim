@@ -13,9 +13,11 @@
 //! workspace settings as data, so no code in this file names one server
 //! product. See `docs/language-services.md`.
 
-use std::ffi::OsString;
-use std::path::PathBuf;
-use std::process::Stdio;
+use std::ffi::{OsStr, OsString};
+use std::future::Future;
+use std::io;
+use std::pin::Pin;
+use std::process::{ExitStatus, Stdio};
 use std::time::Duration;
 
 use serde_json::value::RawValue;
@@ -31,6 +33,18 @@ use crate::encoding::{PositionEncoding, TextMirroring};
 use crate::protocol::{
     LspBound, LspError, ProtocolReader, ProtocolWriter, RpcEnvelope, RpcId, WorkspaceRoot, enforce,
 };
+
+/// The largest executable name in one launch request, in bytes.
+pub const LSP_SERVER_PROGRAM_BYTES_MAX: usize = 4 * 1024;
+
+/// The largest number of arguments in one launch request.
+pub const LSP_SERVER_ARGUMENTS_MAX: usize = 64;
+
+/// The largest single argument in one launch request, in bytes.
+pub const LSP_SERVER_ARGUMENT_BYTES_MAX: usize = 16 * 1024;
+
+/// The largest executable and argument data in one launch request, in bytes.
+pub const LSP_SERVER_COMMAND_BYTES_MAX: usize = 64 * 1024;
 
 /// The bytes of the standard error of one server attempt that the caller
 /// records.
@@ -114,6 +128,271 @@ pub enum ServerReport {
     OutputBound,
 }
 
+/// A validated, owned command for one language-server attempt.
+///
+/// The constructor measures the portable encoded bytes returned by
+/// [`OsStr::as_encoded_bytes`]. It rejects an empty program and every named
+/// launch bound. The operating-system process API remains responsible for
+/// platform-specific command validation, including interior null values.
+/// Nix wrapping and other host command policy stays outside Kvim.
+///
+/// # Examples
+///
+/// ```
+/// use std::{ffi::OsString, path::PathBuf};
+/// use kvim_lsp::{ServerLaunchRequest, WorkspaceRoot};
+/// let root = WorkspaceRoot::new(PathBuf::from("/work/project"))?;
+/// let request = ServerLaunchRequest::new(
+///     OsString::from("rust-analyzer"), vec![OsString::from("--stdio")], root,
+/// )?;
+/// assert_eq!(request.program(), "rust-analyzer");
+/// assert_eq!(request.arguments(), [OsString::from("--stdio")]);
+/// # Ok::<(), kvim_lsp::LspError>(())
+/// ```
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ServerLaunchRequest {
+    program: OsString,
+    arguments: Vec<OsString>,
+    root: WorkspaceRoot,
+}
+
+impl ServerLaunchRequest {
+    /// Validates and owns one executable, its ordered arguments, and its root.
+    pub fn new(
+        program: OsString,
+        arguments: Vec<OsString>,
+        root: WorkspaceRoot,
+    ) -> Result<Self, LspError> {
+        let program_bytes = program.as_encoded_bytes().len();
+        if program_bytes == 0 {
+            return Err(LspError::EmptyProgram);
+        }
+        enforce(
+            program_bytes,
+            LSP_SERVER_PROGRAM_BYTES_MAX,
+            LspBound::ServerProgramBytes,
+        )?;
+        enforce(
+            arguments.len(),
+            LSP_SERVER_ARGUMENTS_MAX,
+            LspBound::ServerArguments,
+        )?;
+        let mut command_bytes = program_bytes;
+        for argument in &arguments {
+            let argument_bytes = argument.as_encoded_bytes().len();
+            enforce(
+                argument_bytes,
+                LSP_SERVER_ARGUMENT_BYTES_MAX,
+                LspBound::ServerArgumentBytes,
+            )?;
+            command_bytes = command_bytes
+                .checked_add(argument_bytes)
+                .ok_or(LspError::Bounds {
+                    measure: LspBound::ServerCommandBytes,
+                    limit: LSP_SERVER_COMMAND_BYTES_MAX,
+                    actual: usize::MAX,
+                })?;
+        }
+        enforce(
+            command_bytes,
+            LSP_SERVER_COMMAND_BYTES_MAX,
+            LspBound::ServerCommandBytes,
+        )?;
+        Ok(Self {
+            program,
+            arguments,
+            root,
+        })
+    }
+
+    /// Returns the executable exactly as supplied.
+    #[must_use]
+    pub fn program(&self) -> &OsStr {
+        &self.program
+    }
+
+    /// Returns the arguments in command order.
+    #[must_use]
+    pub fn arguments(&self) -> &[OsString] {
+        &self.arguments
+    }
+
+    /// Returns the validated workspace root used as the working directory.
+    #[must_use]
+    pub const fn root(&self) -> &WorkspaceRoot {
+        &self.root
+    }
+}
+
+/// A process-start failure from a [`ServerLauncher`].
+#[derive(Debug, thiserror::Error)]
+pub enum ServerLaunchError {
+    /// The requested executable is unavailable on this host.
+    #[error("the language server executable is not installed")]
+    Unavailable(#[source] io::Error),
+    /// The requested executable exists but could not start.
+    #[error("the language server process could not start")]
+    Start(#[source] io::Error),
+}
+
+/// A failure while waiting for a launched server.
+#[derive(Debug, thiserror::Error)]
+#[error("the language server process could not be waited for")]
+pub struct ServerWaitError(#[source] pub io::Error);
+
+/// A failure while requesting termination of a launched server.
+#[derive(Debug, thiserror::Error)]
+#[error("the language server process could not be terminated")]
+pub struct ServerTerminateError(#[source] pub io::Error);
+
+/// The boxed future returned by [`ServerProcessHandle::wait`].
+pub type ServerWait<'a> =
+    Pin<Box<dyn Future<Output = Result<ExitStatus, ServerWaitError>> + Send + 'a>>;
+
+/// The boxed future returned by [`ServerProcessHandle::terminate`].
+pub type ServerTerminate<'a> =
+    Pin<Box<dyn Future<Output = Result<(), ServerTerminateError>> + Send + 'a>>;
+
+/// The owning lifecycle capability of one launched server.
+///
+/// Implementations must initiate best-effort process termination from `Drop`.
+pub trait ServerProcessHandle: Send {
+    /// Waits for process exit and reaps the process.
+    fn wait(&mut self) -> ServerWait<'_>;
+    /// Requests process termination without consuming the later wait.
+    fn terminate(&mut self) -> ServerTerminate<'_>;
+}
+
+/// All streams and lifecycle ownership of one launched server.
+///
+/// External launchers construct this value to transfer all four capabilities.
+/// Standard error is mandatory so Kvim can drain it from the first byte. The
+/// lifecycle must meet [`ServerProcessHandle`]'s termination-on-drop contract.
+///
+/// # Examples
+///
+/// ```
+/// use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
+/// use kvim_lsp::{LaunchedServer, ServerProcessHandle, ServerTerminate, ServerWait};
+/// use tokio::io::duplex;
+///
+/// struct FixtureLifecycle(Arc<AtomicBool>);
+/// impl Drop for FixtureLifecycle {
+///     fn drop(&mut self) {
+///         // The fixture records its synchronous best-effort termination request.
+///         self.0.store(true, Ordering::Relaxed);
+///     }
+/// }
+/// impl ServerProcessHandle for FixtureLifecycle {
+///     fn wait(&mut self) -> ServerWait<'_> { Box::pin(std::future::pending()) }
+///     fn terminate(&mut self) -> ServerTerminate<'_> { Box::pin(async { Ok(()) }) }
+/// }
+/// let cleanup_requested = Arc::new(AtomicBool::new(false));
+/// let (input, _) = duplex(64);
+/// let (output, _) = duplex(64);
+/// let (errors, _) = duplex(64);
+/// let launched = LaunchedServer::new(
+///     input, output, errors, FixtureLifecycle(cleanup_requested.clone()),
+/// );
+/// drop(launched);
+/// assert!(cleanup_requested.load(Ordering::Relaxed));
+/// ```
+pub struct LaunchedServer {
+    input: ServerInput,
+    output: Box<dyn AsyncRead + Send + Unpin>,
+    errors: Box<dyn AsyncRead + Send + Unpin>,
+    lifecycle: Box<dyn ServerProcessHandle>,
+}
+
+impl LaunchedServer {
+    /// Transfers the three streams and one lifecycle capability to Kvim.
+    #[must_use]
+    pub fn new(
+        input: impl AsyncWrite + Send + Unpin + 'static,
+        output: impl AsyncRead + Send + Unpin + 'static,
+        errors: impl AsyncRead + Send + Unpin + 'static,
+        lifecycle: impl ServerProcessHandle + 'static,
+    ) -> Self {
+        Self {
+            input: Box::new(input),
+            output: Box::new(output),
+            errors: Box::new(errors),
+            lifecycle: Box::new(lifecycle),
+        }
+    }
+}
+
+/// Starts one validated language-server request.
+pub trait ServerLauncher: Send {
+    /// Starts exactly the supplied request.
+    fn launch(
+        &mut self,
+        request: &ServerLaunchRequest,
+    ) -> Result<LaunchedServer, ServerLaunchError>;
+}
+
+/// The default Tokio child-process launcher.
+///
+/// It fixes all streams to pipes and enables `kill_on_drop`. Nix policy stays
+/// outside Kvim.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DefaultServerLauncher;
+
+impl ServerLauncher for DefaultServerLauncher {
+    fn launch(
+        &mut self,
+        request: &ServerLaunchRequest,
+    ) -> Result<LaunchedServer, ServerLaunchError> {
+        let mut command = Command::new(request.program());
+        command
+            .args(request.arguments())
+            .current_dir(request.root().path())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .kill_on_drop(true);
+        let mut child = command.spawn().map_err(|source| match source.kind() {
+            io::ErrorKind::NotFound => ServerLaunchError::Unavailable(source),
+            _ => ServerLaunchError::Start(source),
+        })?;
+        let input = child
+            .stdin
+            .take()
+            .expect("the launcher configures piped stdin");
+        let output = child
+            .stdout
+            .take()
+            .expect("the launcher configures piped stdout");
+        let errors = child
+            .stderr
+            .take()
+            .expect("the launcher configures piped stderr");
+        Ok(LaunchedServer::new(
+            input,
+            output,
+            errors,
+            TokioServerHandle(child),
+        ))
+    }
+}
+
+struct TokioServerHandle(Child);
+
+impl Drop for TokioServerHandle {
+    fn drop(&mut self) {
+        let _ = self.0.start_kill();
+    }
+}
+
+impl ServerProcessHandle for TokioServerHandle {
+    fn wait(&mut self) -> ServerWait<'_> {
+        Box::pin(async move { self.0.wait().await.map_err(ServerWaitError) })
+    }
+    fn terminate(&mut self) -> ServerTerminate<'_> {
+        Box::pin(async move { self.0.start_kill().map_err(ServerTerminateError) })
+    }
+}
+
 /// The byte streams of one server attempt.
 ///
 /// The streams are trait objects, because a session runs over the pipes of a
@@ -126,7 +405,7 @@ pub struct Transport {
     /// A prepared stream pair holds no standard error, so a test transport
     /// carries `None` and the attempt starts no recorder.
     errors: Option<Box<dyn AsyncRead + Send + Unpin>>,
-    child: Option<Child>,
+    lifecycle: Option<Box<dyn ServerProcessHandle>>,
 }
 
 impl Transport {
@@ -145,7 +424,7 @@ impl Transport {
             input: Box::new(input),
             output: Box::new(output),
             errors: None,
-            child: None,
+            lifecycle: None,
         }
     }
 }
@@ -170,14 +449,12 @@ impl Transport {
 /// One factory serves the first attempt and every restart of one session, so a
 /// caller declares the program once.
 pub enum TransportFactory {
-    /// Start the declared executable as a child process.
+    /// Start a validated request through an owned launcher.
     Process {
-        /// The declared executable.
-        program: OsString,
-        /// The declared arguments.
-        args: Vec<OsString>,
-        /// The working directory of the child.
-        root: PathBuf,
+        /// The validated request reused for each attempt.
+        request: ServerLaunchRequest,
+        /// The launcher reused for each attempt.
+        launcher: Box<dyn ServerLauncher>,
     },
     /// Ask caller-owned code for the transport of each attempt.
     ///
@@ -197,57 +474,87 @@ pub enum TransportFactory {
 }
 
 impl TransportFactory {
+    /// Creates a process factory with the default Tokio launcher.
+    #[must_use]
+    pub fn process(request: ServerLaunchRequest) -> Self {
+        Self::process_with(request, DefaultServerLauncher)
+    }
+
+    /// Creates a process factory with a caller-supplied reusable launcher.
+    ///
+    /// The factory invokes the same launcher for each attempt. The launcher
+    /// receives the exact validated request and transfers fresh streams and
+    /// lifecycle ownership each time.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use std::{ffi::OsString, path::PathBuf};
+    /// use kvim_lsp::{DefaultServerLauncher, ServerLaunchRequest, TransportFactory, WorkspaceRoot};
+    /// let root = WorkspaceRoot::new(PathBuf::from("/work/project"))?;
+    /// let request = ServerLaunchRequest::new(OsString::from("server"), vec![], root)?;
+    /// let _factory = TransportFactory::process_with(request, DefaultServerLauncher);
+    /// # Ok::<(), kvim_lsp::LspError>(())
+    /// ```
+    #[must_use]
+    pub fn process_with(
+        request: ServerLaunchRequest,
+        launcher: impl ServerLauncher + 'static,
+    ) -> Self {
+        Self::Process {
+            request,
+            launcher: Box::new(launcher),
+        }
+    }
+
+    /// Creates a restartable stream-only factory.
+    ///
+    /// Kvim owns each returned stream but never owns the remote lifecycle.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use kvim_lsp::{LspError, Transport, TransportFactory};
+    /// use tokio::io::duplex;
+    /// let mut endpoints = vec![duplex(64).0];
+    /// let _factory = TransportFactory::custom(move || {
+    ///     let endpoint = endpoints.pop().ok_or(LspError::NotInstalled)?;
+    ///     let (output, input) = tokio::io::split(endpoint);
+    ///     Ok(Transport::new(input, output))
+    /// });
+    /// # Ok::<(), LspError>(())
+    /// ```
+    #[must_use]
+    pub fn custom(create: impl FnMut() -> Result<Transport, LspError> + Send + 'static) -> Self {
+        Self::Custom(Box::new(create))
+    }
+
     /// Creates the transport of the next attempt.
     ///
     /// # Errors
     ///
-    /// Returns [`LspError::NotInstalled`] when the system holds no such
-    /// executable, and [`LspError::Spawn`] for every other start failure. Both
-    /// keep the cause of the operating system as the source of the failure.
+    /// Process factories return [`LspError::Unavailable`] when their launcher
+    /// cannot find the executable. They return [`LspError::Spawn`] for other
+    /// launch failures. Both variants preserve the launcher's operating-system
+    /// source. Stream-only custom factories return their supplied error.
+    /// Exhausted prepared test transports return [`LspError::NotInstalled`].
     fn create(&mut self) -> Result<Transport, LspError> {
         match self {
-            Self::Process {
-                program,
-                args,
-                root,
-            } => {
-                let mut command = Command::new(&*program);
-                command
-                    .args(&*args)
-                    .current_dir(&*root)
-                    .stdin(Stdio::piped())
-                    .stdout(Stdio::piped())
-                    // The server log names the cause of a failure that the
-                    // protocol never reports, so the session captures it. One
-                    // background task drains this pipe from the first byte, so
-                    // the pipe never fills and the child never blocks. See
-                    // `docs/language-services.md`.
-                    .stderr(Stdio::piped())
-                    .kill_on_drop(true);
-                let mut child = command.spawn().map_err(|source| {
-                    if source.kind() == std::io::ErrorKind::NotFound {
-                        LspError::NotInstalled
-                    } else {
-                        LspError::Spawn(source)
-                    }
+            Self::Process { request, launcher } => {
+                let LaunchedServer {
+                    input,
+                    output,
+                    errors,
+                    lifecycle,
+                } = launcher.launch(request).map_err(|error| match error {
+                    ServerLaunchError::Unavailable(source) => LspError::Unavailable(source),
+                    ServerLaunchError::Start(source) => LspError::Spawn(source),
                 })?;
-                let input = child
-                    .stdin
-                    .take()
-                    .expect("the command configures a piped standard input");
-                let output = child
-                    .stdout
-                    .take()
-                    .expect("the command configures a piped standard output");
-                let errors = child
-                    .stderr
-                    .take()
-                    .expect("the command configures a piped standard error");
                 Ok(Transport {
-                    input: Box::new(input),
-                    output: Box::new(output),
-                    errors: Some(Box::new(errors)),
-                    child: Some(child),
+                    input,
+                    output,
+                    errors: Some(errors),
+                    lifecycle: Some(lifecycle),
                 })
             }
             Self::Custom(create) => create(),
@@ -280,11 +587,8 @@ pub struct ServerStreams {
 /// caller leaves an untracked process. [`ServerProcess::close`] performs the
 /// same work inside [`LSP_SHUTDOWN_DEADLINE`] and waits for the exit.
 pub struct ServerProcess {
-    /// The child, or `None` after [`ServerProcess::close`] ended it.
-    ///
-    /// The child carries `kill_on_drop`, so every path that drops this value
-    /// also kills the process.
-    child: Option<Child>,
+    /// The lifecycle capability, or `None` after close started.
+    lifecycle: Option<Box<dyn ServerProcessHandle>>,
     /// The task that reads one frame after another.
     reader: JoinHandle<()>,
     /// The task that drains the standard error, or `None` for a prepared pair.
@@ -300,9 +604,11 @@ impl ServerProcess {
     ///
     /// # Errors
     ///
-    /// Returns the failures of the transport: [`LspError::NotInstalled`] for a
-    /// missing executable, and [`LspError::Spawn`] for every other start
-    /// failure.
+    /// Process launch returns [`LspError::Unavailable`] when the launcher
+    /// cannot find the executable. Other process launch failures return
+    /// [`LspError::Spawn`]. Both preserve their operating-system source.
+    /// Stream-only custom transports return their supplied error. An exhausted
+    /// prepared test transport returns [`LspError::NotInstalled`].
     ///
     /// # Examples
     ///
@@ -310,14 +616,12 @@ impl ServerProcess {
     /// use std::ffi::OsString;
     /// use std::path::PathBuf;
     ///
-    /// use kvim_lsp::{LspError, ServerProcess, TransportFactory};
+    /// use kvim_lsp::{LspError, ServerLaunchRequest, ServerProcess, TransportFactory, WorkspaceRoot};
     ///
     /// # async fn open() -> Result<(), LspError> {
-    /// let mut factory = TransportFactory::Process {
-    ///     program: OsString::from("rust-analyzer"),
-    ///     args: Vec::new(),
-    ///     root: PathBuf::from("/work/project"),
-    /// };
+    /// let root = WorkspaceRoot::new(PathBuf::from("/work/project"))?;
+    /// let request = ServerLaunchRequest::new(OsString::from("rust-analyzer"), Vec::new(), root)?;
+    /// let mut factory = TransportFactory::process(request);
     /// let (process, streams) = ServerProcess::open(&mut factory, |report| {
     ///     eprintln!("{report:?}");
     /// })?;
@@ -337,7 +641,7 @@ impl ServerProcess {
             input,
             output,
             errors,
-            child,
+            lifecycle,
         } = factory.create()?;
         // The standard error of the child needs a reader from the first byte,
         // because a pipe that nobody drains fills and stops the child. See
@@ -348,7 +652,7 @@ impl ServerProcess {
         // can drop a partly read frame and desynchronize the stream.
         let reader = tokio::spawn(read_envelopes(ProtocolReader::new(output), sender));
         let process = Self {
-            child,
+            lifecycle,
             reader,
             errors,
         };
@@ -366,9 +670,9 @@ impl ServerProcess {
     /// exits cannot stop the caller.
     pub async fn close(mut self) {
         self.reader.abort();
-        if let Some(mut child) = self.child.take() {
-            let _ = child.start_kill();
-            let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, child.wait()).await;
+        if let Some(mut lifecycle) = self.lifecycle.take() {
+            let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, lifecycle.terminate()).await;
+            let _ = time::timeout(LSP_SHUTDOWN_DEADLINE, lifecycle.wait()).await;
         }
         if let Some(mut task) = self.errors.take() {
             // The child ended, so the stream ends and the recorder keeps its
@@ -391,9 +695,8 @@ impl Drop for ServerProcess {
         if let Some(errors) = self.errors.as_ref() {
             errors.abort();
         }
-        // The child carries `kill_on_drop`, so dropping the handle here also
-        // kills the process. A cancelled session therefore leaves no untracked
-        // child. See `docs/language-services.md`.
+        // Dropping the lifecycle invokes its mandatory best-effort termination
+        // contract. A cancelled session therefore leaves no untracked child.
     }
 }
 

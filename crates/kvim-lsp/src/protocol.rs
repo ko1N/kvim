@@ -89,6 +89,14 @@ pub enum LspBound {
     HoverBytes,
     /// The size of one pulled result identifier, in bytes.
     ResultIdBytes,
+    /// The size of a declared server executable, in bytes.
+    ServerProgramBytes,
+    /// The arguments in one server launch request.
+    ServerArguments,
+    /// The size of one server argument, in bytes.
+    ServerArgumentBytes,
+    /// The executable and all arguments of one launch request, in bytes.
+    ServerCommandBytes,
     /// The sections of one workspace configuration request.
     ConfigurationItems,
     /// The language-server sessions that one project runs together.
@@ -132,9 +140,15 @@ pub enum LspError {
     /// of one server to the other.
     #[error("two servers of the project take one identity")]
     DuplicateServer,
+    /// The server declaration contains an empty executable name.
+    #[error("the language server executable is empty")]
+    EmptyProgram,
     /// The declared server is not installed on this system.
     #[error("the language server executable is not installed")]
     NotInstalled,
+    /// The launched executable is unavailable, with its operating-system cause.
+    #[error("the language server executable is not installed")]
+    Unavailable(#[source] std::io::Error),
     /// The server process could not start.
     #[error("the language server process could not start")]
     Spawn(#[source] std::io::Error),
@@ -204,8 +218,10 @@ impl LspError {
     /// Reports whether this failure ends the session instead of one request.
     ///
     /// A transport failure, a malformed frame, a refused position encoding, or
-    /// an exhausted cumulative budget leaves the message stream unusable. Every
-    /// other failure belongs to one request, and the session continues.
+    /// an exhausted cumulative budget leaves an existing message stream
+    /// unusable. Launch-time [`LspError::Unavailable`] returns `false` because
+    /// no session stream exists yet; startup supervision handles it separately.
+    /// Every other failure belongs to one request, and the session continues.
     #[must_use]
     pub const fn is_fatal(&self) -> bool {
         match self {

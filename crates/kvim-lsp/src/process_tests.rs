@@ -1,18 +1,26 @@
 use std::cell::RefCell;
 use std::error::Error;
 use std::ffi::OsString;
+use std::io;
 use std::path::PathBuf;
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
+};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt, duplex};
-use tokio::process::{Child, Command};
+use tokio::process::Command;
 use tokio::sync::mpsc;
 use tokio::time;
 
 use super::{
-    ErrorRecorder, LSP_RESULT_ID_BYTES_MAX, LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX,
-    ServerProcess, ServerReport, SynchronizationMode, Transport, TransportFactory,
+    DefaultServerLauncher, ErrorRecorder, LSP_RESULT_ID_BYTES_MAX, LSP_SERVER_ARGUMENT_BYTES_MAX,
+    LSP_SERVER_ARGUMENTS_MAX, LSP_SERVER_COMMAND_BYTES_MAX, LSP_SERVER_PROGRAM_BYTES_MAX,
+    LSP_STDERR_BYTES_MAX, LSP_STDERR_LINE_BYTES_MAX, LaunchedServer, ServerLaunchError,
+    ServerLaunchRequest, ServerLauncher, ServerProcess, ServerProcessHandle, ServerReport,
+    ServerTerminate, ServerWait, SynchronizationMode, Transport, TransportFactory, WorkspaceRoot,
     diagnostics_model, synchronization_mode,
 };
 
@@ -31,6 +39,231 @@ const PROBE_INTERVAL: Duration = Duration::from_millis(10);
 /// The line that a broken server writes before it exits.
 const SHIM_LINE: &str = "info: `rust-analyzer` is unavailable for the active toolchain";
 
+fn request(
+    program: OsString,
+    arguments: Vec<OsString>,
+) -> Result<ServerLaunchRequest, super::LspError> {
+    ServerLaunchRequest::new(
+        program,
+        arguments,
+        WorkspaceRoot::new(PathBuf::from("/")).expect("the root is valid"),
+    )
+}
+
+struct FakeLifecycle {
+    dropped: Arc<AtomicBool>,
+    terminated: Arc<AtomicUsize>,
+    waited: Arc<AtomicUsize>,
+}
+
+impl Drop for FakeLifecycle {
+    fn drop(&mut self) {
+        self.dropped.store(true, Ordering::Relaxed);
+    }
+}
+
+impl ServerProcessHandle for FakeLifecycle {
+    fn wait(&mut self) -> ServerWait<'_> {
+        let waited = self.waited.clone();
+        Box::pin(async move {
+            waited.fetch_add(1, Ordering::Relaxed);
+            std::future::pending().await
+        })
+    }
+
+    fn terminate(&mut self) -> ServerTerminate<'_> {
+        let terminated = self.terminated.clone();
+        Box::pin(async move {
+            terminated.fetch_add(1, Ordering::Relaxed);
+            Ok(())
+        })
+    }
+}
+
+struct RecordingLauncher {
+    requests: Arc<Mutex<Vec<ServerLaunchRequest>>>,
+    dropped: Arc<AtomicBool>,
+    terminated: Arc<AtomicUsize>,
+    waited: Arc<AtomicUsize>,
+}
+
+impl ServerLauncher for RecordingLauncher {
+    fn launch(
+        &mut self,
+        request: &ServerLaunchRequest,
+    ) -> Result<LaunchedServer, ServerLaunchError> {
+        self.requests
+            .lock()
+            .expect("record lock")
+            .push(request.clone());
+        let (input, _) = duplex(64);
+        let (output, _) = duplex(64);
+        let (errors, _) = duplex(64);
+        Ok(LaunchedServer::new(
+            input,
+            output,
+            errors,
+            FakeLifecycle {
+                dropped: self.dropped.clone(),
+                terminated: self.terminated.clone(),
+                waited: self.waited.clone(),
+            },
+        ))
+    }
+}
+
+#[test]
+fn launch_request_preserves_valid_values_and_rejects_every_bound() {
+    let root = WorkspaceRoot::new(PathBuf::from("/")).expect("the root is valid");
+    let valid = ServerLaunchRequest::new(
+        OsString::from("server"),
+        vec![OsString::from("first"), OsString::from("second")],
+        root.clone(),
+    )
+    .expect("the request is valid");
+    assert_eq!(valid.program(), "server");
+    assert_eq!(valid.arguments(), ["first", "second"]);
+    assert_eq!(valid.root(), &root);
+
+    assert!(matches!(
+        request(OsString::new(), vec![]),
+        Err(super::LspError::EmptyProgram)
+    ));
+    let cases = [
+        request(
+            OsString::from("x".repeat(LSP_SERVER_PROGRAM_BYTES_MAX + 1)),
+            vec![],
+        ),
+        request(
+            OsString::from("x"),
+            vec![OsString::new(); LSP_SERVER_ARGUMENTS_MAX + 1],
+        ),
+        request(
+            OsString::from("x"),
+            vec![OsString::from(
+                "x".repeat(LSP_SERVER_ARGUMENT_BYTES_MAX + 1),
+            )],
+        ),
+        request(
+            OsString::from("x"),
+            vec![OsString::from("x".repeat(LSP_SERVER_COMMAND_BYTES_MAX))],
+        ),
+    ];
+    for case in cases {
+        assert!(matches!(case, Err(super::LspError::Bounds { .. })));
+    }
+}
+
+#[test]
+fn process_factory_forwards_the_exact_request_and_owns_the_lifecycle() {
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let dropped = Arc::new(AtomicBool::new(false));
+    let terminated = Arc::new(AtomicUsize::new(0));
+    let waited = Arc::new(AtomicUsize::new(0));
+    let expected = request(
+        OsString::from("fixture"),
+        vec![OsString::from("--one"), OsString::from("two")],
+    )
+    .expect("the request is valid");
+    let mut factory = TransportFactory::process_with(
+        expected.clone(),
+        RecordingLauncher {
+            requests: requests.clone(),
+            dropped: dropped.clone(),
+            terminated: terminated.clone(),
+            waited: waited.clone(),
+        },
+    );
+    let transport = factory.create().expect("the launcher returns a transport");
+    assert_eq!(*requests.lock().expect("record lock"), vec![expected]);
+    assert!(!dropped.load(Ordering::Relaxed));
+    assert_eq!(terminated.load(Ordering::Relaxed), 0);
+    assert_eq!(waited.load(Ordering::Relaxed), 0);
+    drop(transport);
+    assert!(dropped.load(Ordering::Relaxed));
+}
+
+#[tokio::test]
+async fn lifecycle_termination_and_wait_are_distinct_operations() {
+    let dropped = Arc::new(AtomicBool::new(false));
+    let terminated = Arc::new(AtomicUsize::new(0));
+    let waited = Arc::new(AtomicUsize::new(0));
+    let mut lifecycle = FakeLifecycle {
+        dropped: dropped.clone(),
+        terminated: terminated.clone(),
+        waited: waited.clone(),
+    };
+
+    lifecycle
+        .terminate()
+        .await
+        .expect("the fixture accepts termination");
+    assert_eq!(terminated.load(Ordering::Relaxed), 1);
+    assert_eq!(waited.load(Ordering::Relaxed), 0);
+
+    assert!(
+        time::timeout(Duration::from_millis(1), lifecycle.wait())
+            .await
+            .is_err(),
+        "waiting remains a separate reap operation"
+    );
+    assert_eq!(terminated.load(Ordering::Relaxed), 1);
+    assert_eq!(waited.load(Ordering::Relaxed), 1);
+
+    drop(lifecycle);
+    assert!(dropped.load(Ordering::Relaxed));
+}
+
+struct FailingLauncher(io::ErrorKind);
+
+impl ServerLauncher for FailingLauncher {
+    fn launch(&mut self, _: &ServerLaunchRequest) -> Result<LaunchedServer, ServerLaunchError> {
+        let source = io::Error::new(self.0, "fixture start failure");
+        Err(match self.0 {
+            io::ErrorKind::NotFound => ServerLaunchError::Unavailable(source),
+            _ => ServerLaunchError::Start(source),
+        })
+    }
+}
+
+#[test]
+fn process_factory_preserves_typed_start_sources() {
+    for (kind, unavailable) in [
+        (io::ErrorKind::NotFound, true),
+        (io::ErrorKind::PermissionDenied, false),
+    ] {
+        let mut factory = TransportFactory::process_with(
+            request(OsString::from("fixture"), vec![]).expect("the request is valid"),
+            FailingLauncher(kind),
+        );
+        let error = factory.create().err().expect("the launch fails");
+        assert_eq!(
+            matches!(error, super::LspError::Unavailable(_)),
+            unavailable
+        );
+        let source = error
+            .source()
+            .and_then(|cause| cause.downcast_ref::<io::Error>())
+            .expect("the source remains available");
+        assert_eq!(source.kind(), kind);
+    }
+}
+
+#[test]
+fn default_launcher_classifies_an_absent_executable_with_its_source() {
+    let mut launcher = DefaultServerLauncher;
+    let error = launcher
+        .launch(
+            &request(OsString::from("/kvim/no/such/server"), vec![]).expect("the request is valid"),
+        )
+        .err()
+        .expect("the executable is absent");
+    let ServerLaunchError::Unavailable(source) = error else {
+        panic!("the error is typed unavailable")
+    };
+    assert_eq!(source.kind(), io::ErrorKind::NotFound);
+}
+
 /// Returns the mode of one `textDocumentSync` capability value.
 fn mode(capability: &Value) -> SynchronizationMode {
     synchronization_mode(capability.pointer("/capabilities/textDocumentSync"))
@@ -44,11 +277,14 @@ fn mode(capability: &Value) -> SynchronizationMode {
 fn shell(script: &str, args: &[&str]) -> (ServerProcess, mpsc::UnboundedReceiver<ServerReport>) {
     let mut arguments = vec![OsString::from("-c"), OsString::from(script)];
     arguments.extend(args.iter().map(OsString::from));
-    let mut factory = TransportFactory::Process {
-        program: OsString::from(SHELL),
-        args: arguments,
-        root: PathBuf::from("/"),
-    };
+    let mut factory = TransportFactory::process(
+        ServerLaunchRequest::new(
+            OsString::from(SHELL),
+            arguments,
+            WorkspaceRoot::new(PathBuf::from("/")).expect("the process root is valid"),
+        )
+        .expect("the process request is valid"),
+    );
     let (sender, reports) = mpsc::unbounded_channel();
     let (process, streams) = ServerProcess::open(&mut factory, move |report| {
         let _ = sender.send(report);
@@ -297,19 +533,33 @@ async fn drains_a_server_that_writes_more_than_its_bound() {
 async fn dropping_the_process_ends_the_child() {
     // A cancelled session drops its process without closing it. The child
     // must still end, because an untracked server would outlive its editor.
-    let mut factory = TransportFactory::Process {
-        program: OsString::from(SHELL),
-        args: vec![OsString::from("-c"), OsString::from("sleep 600")],
-        root: PathBuf::from("/"),
-    };
+    let marker = std::env::temp_dir().join(format!("kvim-lsp-drop-{}", std::process::id()));
+    let _ = std::fs::remove_file(&marker);
+    let script = format!("printf '%s' $$ > '{}'; exec sleep 600", marker.display());
+    let mut factory = TransportFactory::process(
+        ServerLaunchRequest::new(
+            OsString::from(SHELL),
+            vec![OsString::from("-c"), OsString::from(script)],
+            WorkspaceRoot::new(PathBuf::from("/")).expect("the process root is valid"),
+        )
+        .expect("the process request is valid"),
+    );
     let (process, streams) = ServerProcess::open(&mut factory, |_| {})
         .expect("every supported platform holds the shell");
     drop(streams);
-    let pid = process
-        .child
-        .as_ref()
-        .and_then(Child::id)
-        .expect("the child runs");
+    let deadline = time::Instant::now() + TEST_DEADLINE;
+    let pid = loop {
+        if let Ok(text) = std::fs::read_to_string(&marker)
+            && let Ok(pid) = text.parse::<u32>()
+        {
+            break pid;
+        }
+        assert!(
+            time::Instant::now() < deadline,
+            "the child records its identifier"
+        );
+        time::sleep(PROBE_INTERVAL).await;
+    };
     assert!(is_running(pid).await, "the child runs before the drop");
 
     drop(process);
@@ -324,4 +574,5 @@ async fn dropping_the_process_ends_the_child() {
         );
         time::sleep(PROBE_INTERVAL).await;
     }
+    let _ = std::fs::remove_file(marker);
 }

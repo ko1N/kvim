@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 
 use kvim_path::WorktreeRelativePath;
 
-use crate::process::{Transport, TransportFactory};
+use crate::process::{ServerLaunchRequest, Transport, TransportFactory};
 use crate::project::{
     ManagerLimits, ProjectDeclaration, ProjectHandle, ProjectId, ProjectManager, ServerDeclaration,
     ServerId,
@@ -905,11 +905,14 @@ async fn a_request_over_a_real_child_leaves_no_untracked_process() {
     // The child records its own identifier and then replaces itself, so the
     // recorded identifier names the process that the session must end.
     let script = format!("printf '%s' $$ > '{}'; exec sleep 600", marker.display());
-    let transport = TransportFactory::Process {
-        program: OsString::from(SHELL),
-        args: vec![OsString::from("-c"), OsString::from(script)],
-        root: PathBuf::from("/"),
-    };
+    let transport = TransportFactory::process(
+        ServerLaunchRequest::new(
+            OsString::from(SHELL),
+            vec![OsString::from("-c"), OsString::from(script)],
+            WorkspaceRoot::new(PathBuf::from("/")).expect("the process root is valid"),
+        )
+        .expect("the process request is valid"),
+    );
     let session = Session::open(vec![declared(0, CompletionPolicy::Pull)], vec![transport]);
 
     // The child answers no handshake, so the request reaches its deadline.

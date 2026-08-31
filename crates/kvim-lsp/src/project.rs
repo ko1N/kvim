@@ -483,11 +483,11 @@ where
     /// let (events, _results) = mpsc::channel::<ProjectEvent>(8);
     /// let supervisor = ServerSupervisor {
     ///     address: ProjectId::FIRST.server(ServerId::new(0)),
-    ///     factory: TransportFactory::Process {
-    ///         program: OsString::from("rust-analyzer"),
-    ///         args: Vec::new(),
-    ///         root: root.path().to_path_buf(),
-    ///     },
+    ///     factory: TransportFactory::process(kvim_lsp::ServerLaunchRequest::new(
+    ///         OsString::from("rust-analyzer"),
+    ///         Vec::new(),
+    ///         root.clone(),
+    ///     )?),
     ///     handshake: Handshake {
     ///         root: &root,
     ///         options: &options,
@@ -542,7 +542,9 @@ where
         let opened = ServerProcess::open(&mut self.factory, self.report.clone());
         let (process, streams) = match opened {
             Ok(opened) => opened,
-            Err(LspError::NotInstalled) => return AttemptOutcome::NotInstalled,
+            Err(LspError::NotInstalled | LspError::Unavailable(_)) => {
+                return AttemptOutcome::NotInstalled;
+            }
             Err(error) => return AttemptOutcome::Failed(error),
         };
         let ServerStreams {

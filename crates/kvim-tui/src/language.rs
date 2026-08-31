@@ -584,7 +584,7 @@ impl LanguageNotice {
         match error {
             LspError::UnsupportedPath | LspError::NoServerDeclared => Some(Self::NoServer),
             LspError::UnusedInWorkspace => Some(Self::UnusedInWorkspace),
-            LspError::NotInstalled => Some(Self::NotInstalled),
+            LspError::NotInstalled | LspError::Unavailable(_) => Some(Self::NotInstalled),
             LspError::Stopped => Some(Self::Stopped),
             _ => None,
         }

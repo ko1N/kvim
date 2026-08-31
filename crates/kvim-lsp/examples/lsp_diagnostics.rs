@@ -24,8 +24,8 @@ use std::time::Duration;
 use kvim_lsp::{
     ChangedFile, CompletionPolicy, DiagnosticsHub, DiagnosticsOutcome, DiagnosticsServer,
     DocumentRevision, LSP_MESSAGE_BYTES_MAX, LanguageId, ManagerLimits, ProjectDeclaration,
-    ProjectId, ProjectManager, ServerDeclaration, ServerId, ServerOutcome, TransportFactory,
-    WaitPolicy, WorkspaceRoot, read_frame,
+    ProjectId, ProjectManager, ServerDeclaration, ServerId, ServerLaunchRequest, ServerOutcome,
+    TransportFactory, WaitPolicy, WorkspaceRoot, read_frame,
 };
 use kvim_path::WorktreeRelativePath;
 use serde_json::{Value, json};
@@ -81,14 +81,14 @@ async fn request_diagnostics() -> Result<(), Box<dyn Error>> {
     })?;
 
     let manager = ProjectManager::new(ManagerLimits::default());
-    let declaration = ProjectDeclaration::new(ProjectId::FIRST, root).server(
+    let declaration = ProjectDeclaration::new(ProjectId::FIRST, root.clone()).server(
         ServerDeclaration {
             id: ServerId::new(0),
-            transport: TransportFactory::Process {
-                program: std::env::current_exe()?.into_os_string(),
-                args: vec![OsString::from(FIXTURE_FLAG)],
-                root: std::env::temp_dir(),
-            },
+            transport: TransportFactory::process(ServerLaunchRequest::new(
+                std::env::current_exe()?.into_os_string(),
+                vec![OsString::from(FIXTURE_FLAG)],
+                root.clone(),
+            )?),
             options: json!({}),
             workspace_settings: None,
         },
