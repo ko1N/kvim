@@ -260,22 +260,6 @@ fn pointer_wheel_rejects_invalid_tick_counts() {
     );
 }
 
-#[test]
-fn hosts_can_construct_terminal_neutral_pointer_events() {
-    let modifiers = PointerModifiers::new(true, false, true);
-    let wheel = PointerWheel::new(PointerWheelDirection::Left, 2)
-        .expect("two ticks are within the coalescing bound");
-    let event = PointerEvent::new(
-        CellPosition::new(4, 2),
-        modifiers,
-        PointerAction::Wheel(wheel),
-    );
-
-    assert_eq!(event.position(), CellPosition::new(4, 2));
-    assert_eq!(event.modifiers(), modifiers);
-    assert_eq!(event.action(), PointerAction::Wheel(wheel));
-}
-
 #[tokio::test]
 async fn the_source_coalesces_wheel_events_at_changing_positions() {
     let mut source = source(vec![

@@ -863,7 +863,10 @@ pointer vocabulary: terminal-cell position, non-Shift modifiers, buttons,
 press, release, drag, motion, and wheel. `WorktreeEditor::pointer` accepts the
 same input in both binding modes because pointer dispatch does not use key
 arbitration. `MemoryEditor::pointer` accepts the same one-surface pointer
-vocabulary without terminal dependencies. A host-resolved editor instead uses
+vocabulary without terminal dependencies. A `WorktreeEditor` that owns its
+window tree also answers a press and a drag on one published layout border by
+moving that border, so an embedded editor resizes its own panes without a host
+resize rule. [`windows.md`](windows.md) owns that rule. A host-resolved editor instead uses
 `semantic_dispatch` for keys after its own physical arbitration. The
 binary does not access `Session`, `EditorDriver`, runtime handles, or completion
 payloads.

@@ -262,6 +262,16 @@ answers the orientation that the command selects. A host that binds an adaptive
 split key reaches the same rule that kvim uses, without depending on
 `kvim-settings`. [`windows.md`](windows.md) owns the rule.
 
+`kvim-ui` also publishes the borders of one layout and the rule that moves them.
+`WindowLayout::borders` names every visible split and sidebar edge as a
+`BorderPlacement`, which carries an opaque stable `BorderId`, an `Orientation`,
+and a one-cell hit area. `CompositionLayout::borders` forwards the same
+placements. `WindowTree::resize_border` and `WorkspaceComposer::resize_border`
+move one named border by an absolute cell delta, and the focus takes no part in
+the move. A host that drags a divider with a pointer, or binds its own resize
+key, therefore reaches the rule that kvim uses instead of writing a second
+geometry of its own. [`windows.md`](windows.md) owns the rule.
+
 `kvim-ui` also publishes the tree mechanics of one sidebar. `SidebarRow<R>`
 carries a depth, a collapsed flag, and a section index, through `with_depth`,
 `with_collapsed`, and `with_section`. `SidebarState<R>` hides a collapsed

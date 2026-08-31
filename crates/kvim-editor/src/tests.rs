@@ -61,8 +61,10 @@ fn count(value: u32) -> Option<NonZeroU32> {
 #[test]
 fn viewport_wheel_scrolls_within_buffer_bounds_and_keeps_scrolloff() {
     let buffer = buffer("one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\nnine\nten\n");
-    let mut display = DisplaySettings::default();
-    display.scrolloff_rows = 2;
+    let display = DisplaySettings {
+        scrolloff_rows: 2,
+        ..DisplaySettings::default()
+    };
 
     let down = window(6, 80).scrolled_down(&buffer, 3, ColumnLimit::LastCharacter, &display);
     assert_eq!(down.viewport().first_line(), 3);
