@@ -1761,6 +1761,28 @@ fn selected_name(session: &Session) -> String {
 }
 
 #[test]
+fn the_arrow_keys_move_and_expand_exactly_as_hjkl_do() {
+    let (_dir, mut session) = workspace();
+    reveal(&mut session);
+    assert_eq!(selected_name(&session), "docs");
+
+    // `Down` and `Up` select as `j` and `k` do.
+    press_code(&mut session, KeyCode::Down);
+    assert_eq!(selected_name(&session), "src");
+    press_code(&mut session, KeyCode::Up);
+    assert_eq!(selected_name(&session), "docs");
+
+    // `Right` opens the selected directory, and `Left` closes it again.
+    press_code(&mut session, KeyCode::Right);
+    drain(&mut session);
+    assert_eq!(sidebar_row(&session, 1), "▌  ▾ docs");
+    press_code(&mut session, KeyCode::Left);
+    drain(&mut session);
+    assert_eq!(sidebar_row(&session, 1), "▌  ▸ docs");
+    assert_eq!(selected_name(&session), "docs");
+}
+
+#[test]
 fn l_expands_a_directory_and_h_collapses_it_or_selects_the_parent() {
     let (_dir, mut session) = workspace();
     reveal(&mut session);

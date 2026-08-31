@@ -1051,7 +1051,8 @@ fn add_picker_bindings(table: &mut Vec<Binding>) {
 /// Adds the binding table of the file-tree sidebar.
 ///
 /// The keys follow the reference Neo-tree subset, and the navigation keys
-/// follow the buffer instead, so one row list moves like another. The sidebar
+/// follow the buffer instead, so one row list moves like another. The arrow
+/// keys therefore name the same four keys as `h`, `j`, `k`, and `l`. The sidebar
 /// holds no leader sequence. `n` and `N` move between the search matches, and
 /// `Esc` and `Ctrl-C` end the search, as they do in a buffer window. `Ctrl-E`
 /// and `q` both close the sidebar, the directional focus keys leave it, and the
@@ -1076,6 +1077,16 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     // scope. See `docs/input-actions.md`.
     add_tree(table, ch('l'), Command::TreeExpandEntry);
     add_tree(table, ch('h'), Command::TreeCollapseEntry);
+    // The arrow keys name the same four keys as `h`, `j`, `k`, and `l`, exactly
+    // as they do in a buffer window, so one row list moves like another.
+    for (key, command) in [
+        (Key::plain(KeyCode::Down), Command::MoveDown),
+        (Key::plain(KeyCode::Up), Command::MoveUp),
+        (Key::plain(KeyCode::Right), Command::TreeExpandEntry),
+        (Key::plain(KeyCode::Left), Command::TreeCollapseEntry),
+    ] {
+        add_tree(table, key, command);
+    }
     add_tree(table, ch('R'), Command::TreeRefresh);
     add_tree(table, ch('a'), Command::TreeAddFile);
     add_tree(table, ch('d'), Command::TreeDelete);

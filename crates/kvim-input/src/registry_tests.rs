@@ -357,6 +357,36 @@ fn a_prefix_without_a_binding_produces_no_row() {
 }
 
 #[test]
+fn the_file_tree_arrow_keys_name_the_same_four_keys_as_hjkl() {
+    let registry = Registry::first_release();
+    let cases = [
+        (ch('j'), Key::plain(KeyCode::Down), Command::MoveDown),
+        (ch('k'), Key::plain(KeyCode::Up), Command::MoveUp),
+        (
+            ch('l'),
+            Key::plain(KeyCode::Right),
+            Command::TreeExpandEntry,
+        ),
+        (
+            ch('h'),
+            Key::plain(KeyCode::Left),
+            Command::TreeCollapseEntry,
+        ),
+    ];
+    for (letter, arrow, expected) in cases {
+        assert_eq!(
+            registry.command(BindingScope::Sidebar, &[letter]),
+            Some(expected)
+        );
+        assert_eq!(
+            registry.command(BindingScope::Sidebar, &[arrow]),
+            Some(expected),
+            "the file tree answers `{arrow:?}` exactly as it answers `{letter:?}`"
+        );
+    }
+}
+
+#[test]
 fn the_file_tree_answers_the_resize_keys_itself() {
     // The sidebar owns its own scope, so a resize key that only the Normal
     // scope holds never reaches the focused file tree.

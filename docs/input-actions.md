@@ -1254,8 +1254,9 @@ the workspace root and reports that it has no path to reveal.
 
 These keys act while the file-tree sidebar holds the focus. They follow the
 reference Neo-tree subset, and the navigation keys follow the buffer instead, so
-one row list moves like another. See [`files.md`](files.md) for the behavior
-behind them.
+one row list moves like another. The arrow keys therefore name the same four
+keys as `h`, `j`, `k`, and `l`, exactly as they do in a buffer window. See
+[`files.md`](files.md) for the behavior behind them.
 
 | Keys | Command |
 |---|---|
@@ -1269,6 +1270,7 @@ behind them.
 | `G` | Select the last entry, or the entry of the count |
 | `l` | Expand the selected directory, or open the selected file |
 | `h` | Collapse the selected directory, or select the parent directory |
+| `Down/Up/Right/Left` | The same four keys as `j`, `k`, `l`, and `h` |
 | `Backspace` | Select the parent directory |
 | `Enter` | Open the selected file, or expand the selected directory |
 | `Space` | Expand or collapse the selected directory |
