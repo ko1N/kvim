@@ -40,10 +40,10 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-path` | Canonical worktree roots, safe relative paths, and descriptor-relative capability access. |
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
-| `kvim-lsp` | Project-scoped processes, protocol state, synchronization, diagnostics, deadlines, cancellation, and shutdown. |
+| `kvim-lsp` | Language-neutral project sessions, validated process launch requests, injectable launch and lifecycle capabilities, protocol state, diagnostics, deadlines, cancellation, restart, and shutdown. |
 | `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the one scroll and motion rule of every bounded list, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
-| `kvim-language` | Syntax and LSP adapters, indentation, formatting, hover markup, and editor publication gates. The standalone registry holds 25 adapters. [`language-services.md`](language-services.md) owns the table. |
+| `kvim-language` | Grammar-independent language service profiles and headless diagnostics composition, plus optional syntax and editor adapters, indentation, formatting, hover markup, and editor publication gates. The first-release service registry holds 25 profiles. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
 | `kvim-runtime` | Bounded background work: process and worker services, the filesystem watch service, cancellation, deadlines, request identity, and publication gates. |
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
@@ -131,7 +131,7 @@ The dependency direction is one-way, and Cargo enforces it:
 | 2 | `kvim-lsp` | `kvim-path` |
 | 2 | `kvim-ui` | `kvim-keymap`, `kvim-fuzzy` |
 | 3 | `kvim-editor` | `kvim-core`, `kvim-input`, `kvim-settings` |
-| 3 | `kvim-language` | `kvim-core`, `kvim-lsp`, `kvim-runtime`, `kvim-settings`, `kvim-syntax` |
+| 3 | `kvim-language` | `kvim-lsp`, `kvim-path`, `kvim-settings`; grammar and editor features can also enable `kvim-core`, `kvim-runtime`, and `kvim-syntax` |
 | 3 | `kvim-workspace` | `kvim-core`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-ui` (the `review` partition uses only `kvim-path`) |
 | 4 | `kvim-tui` | `kvim-clipboard`, `kvim-core`, `kvim-editor`, `kvim-fuzzy`, `kvim-input`, `kvim-language`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-terminal`, `kvim-ui`, `kvim-workspace` (the `review` partition uses only neutral input, path, settings, UI, and workspace review partitions) |
 | 5 | `kvim-embed` | `kvim-core`, `kvim-editor`, `kvim-input`, `kvim-keymap`, `kvim-language`, `kvim-lsp`, `kvim-path`, `kvim-runtime`, `kvim-settings`, `kvim-tui`, `kvim-ui`, `kvim-workspace` |
@@ -148,8 +148,15 @@ facade. The facade reuses `kvim-editor` viewport and modal state. Its
 `worktree` feature privately adapts `kvim-tui` and owns its Tokio executor.
 Grammar features imply `worktree` and forward to the matching `kvim-tui`
 language feature. The default dependency closure remains unchanged. `kvim-ui`
-ratatui geometry and rendering. No syntax-only consumer compiles LSP, ratatui,
-or the editor.
+owns ratatui geometry and rendering. No syntax-only consumer compiles LSP,
+ratatui, or the editor.
+
+The headless `kvim-language` path depends on `kvim-lsp`, `kvim-path`, and
+`kvim-settings`. It does not enable `kvim-syntax`, Tree-sitter, `kvim-core`,
+`kvim-runtime`, markup, editor, TUI, terminal, or rendering dependencies.
+Grammar and editor features can enable their optional dependencies. This split
+keeps service profiles and headless diagnostics available without a grammar or
+an editor.
 
 `kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
 `TerminalEvent` value alone. Its pointer payload uses the terminal-neutral
@@ -208,8 +215,10 @@ owns its meaning. A reverse dependency is a Cargo cycle, so it fails the build.
 
 The supported external packages are `kvim-path`, `kvim-fuzzy`, `kvim-core`,
 `kvim-settings`, `kvim-keymap`, `kvim-input`, `kvim-editor`, `kvim-syntax`,
-`kvim-lsp`, `kvim-ui`, and `kvim-embed`. `kvim-embed` is the only supported
-high-level editor facade. `kvim-tui` is an internal presentation
+`kvim-lsp`, `kvim-language`, `kvim-ui`, and `kvim-embed`. `kvim-language` is a
+supported package for grammar-free service discovery and headless diagnostics
+composition. It is not an editor facade. `kvim-embed` remains the only
+supported high-level editor facade. `kvim-tui` is an internal presentation
 implementation. Its hidden adapter module is not a compatibility contract and
 exists only for `kvim-embed`.
 
@@ -474,8 +483,11 @@ checks use the same compatible release. Public feature crates remain at version
 kvim is before its first release. A consumer pins one revision of the Git
 repository, so a version number signals nothing to it yet. A breaking facade
 change therefore needs updated rustdoc and an updated dedicated example, and it
-needs no version increase and no migration note. Both obligations begin at the
-first release.
+needs no version increase. A source-breaking change to a supported lower-level
+package also needs a migration note before the change is complete. Replacing
+the public field-style LSP process constructor with validated constructors is
+such a change. The owning implementation slice must write that note after the
+final public names are known.
 
 From that release, a breaking facade change requires a workspace minor-version
 increase, a migration note, updated rustdoc, and an updated dedicated example. A
@@ -543,18 +555,24 @@ consumers prove each supported package in isolation. The exact matrix is:
 | `kvim-path` | no optional production features | default |
 | `kvim-keymap` | no optional production features | default |
 | `kvim-lsp` | no optional production features | default |
+| `kvim-language` | grammar-free service profiles and headless diagnostics | no grammar, `grammar-rust`, `all-grammars` |
 | `kvim-ui` | no optional production features | default |
 | `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
 | `kvim-embed` | in-memory only | default, no-default, `review`, `worktree`, `grammar-rust`, `all-grammars` |
 | `kvim-tui` | internal only | no grammar, `grammar-rust`, `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
-Its no-grammar registry is valid and empty. Path lookup is typed unsupported,
-language-name lookup returns none, fenced markup stays plain, and service
-construction starts no language process. No lower or facade layer may assume
-that Rust or another adapter exists. The `kvim` binary enables `all-grammars`.
-Private `test-support` features are not external combinations. Record an
-architectural reason before excluding any future combination.
+Its grammar-backed `LanguageRegistry::first_release()` remains valid and empty
+without grammar features. Its separate `DiagnosticsRegistry::first_release()`
+contains every first-release service profile without grammar features. Path
+lookup through the grammar-backed registry remains typed unsupported,
+language-name lookup returns none, fenced markup stays plain, and editor
+service construction starts no language process. The headless registry can
+select and realize diagnostics without enabling syntax or editor code. No lower
+or facade layer may assume that Rust or another grammar adapter exists. The
+`kvim` binary enables `all-grammars`. Private `test-support` features are not
+external combinations. Record an architectural reason before excluding any
+future combination.
 
 ## Enforced Policy
 

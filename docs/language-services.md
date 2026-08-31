@@ -3,8 +3,11 @@
 ## Ownership
 
 `kvim-syntax` owns grammar selection, parser ownership, bounded highlighting,
-and theme-independent syntax classes. `kvim-lsp` owns project-scoped protocol
-and process sessions. `kvim-language` combines both through kvim adapters and
+and theme-independent syntax classes. `kvim-lsp` owns language-neutral,
+project-scoped protocol and process sessions. This includes validated launch
+requests and injectable launch and lifecycle capabilities. `kvim-language`
+owns grammar-independent service profiles, the headless diagnostics registry
+and project projection, and the optional syntax/editor composition. It also
 owns indentation, formatting, hover markup, and editor publication gates.
 
 All parser, filesystem, process, formatter, and LSP work runs off every host
@@ -29,15 +32,22 @@ construction failure does not prevent file editing.
 No facade signature exposes a registry, session, runtime, or service handle.
 
 No grammar feature is a supported configuration. In that configuration,
-`LanguageRegistry::first_release()` returns a valid empty registry and never
-panics. Path lookup returns `AnalysisError::UnsupportedPath`. Language-name
-lookup returns `None`. Analysis and formatter selection therefore return their
-existing typed unsupported or unavailable outcomes. Markup parsing remains
-available, and a fenced block stays plain because no adapter can highlight it.
-`LanguageServices::new` remains available and constructs an empty service set;
-a later path request returns `LspError::UnsupportedPath` without starting a
-process. A worktree facade can therefore use either built-in service policy
-without assuming that Rust or another language exists.
+`LanguageRegistry::first_release()` returns a valid empty grammar-backed
+registry and never panics. Its path lookup returns
+`AnalysisError::UnsupportedPath`. Its language-name lookup returns `None`.
+Analysis and formatter selection therefore return their existing typed
+unsupported or unavailable outcomes. Markup parsing remains available, and a
+fenced block stays plain because no grammar adapter can highlight it.
+`LanguageServices::new` remains available and constructs an empty editor
+service set; a later path request returns `LspError::UnsupportedPath` without
+starting a process. A worktree facade can therefore use either built-in service
+policy without assuming that Rust or another grammar exists.
+
+The separate `DiagnosticsRegistry::first_release()` is grammar-independent and
+contains every first-release language service profile. It supports headless
+path selection and diagnostics composition without `kvim-syntax`, Tree-sitter,
+`kvim-core`, `kvim-runtime`, markup, editor, TUI, terminal, or rendering
+dependencies. Grammar and editor features can enable those optional paths.
 
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
 grammar by default. It provides one feature for each language and one
@@ -57,9 +67,11 @@ file name. Generic `core`, `editor`, `runtime`, `terminal`, `tui`, and
 either key. No name, type, or assumption of one language appears above the
 boundary.
 
-An adapter has a stable identifier and a version. It decides whether it supports
-a path. Registry selection is deterministic. No match means unsupported.
-Multiple matches are an ambiguous typed failure.
+A grammar-independent service profile has a stable language identifier and a
+version. It decides whether it supports a path. Both the headless diagnostics
+registry and a grammar-backed adapter use this profile. Registry selection is
+deterministic. No match means unsupported. Multiple matches are an ambiguous
+typed failure.
 
 Selection reads two lookup keys of the same path: the file extension and the
 complete file name. Both keys are adapter data, so one selection path serves
@@ -87,10 +99,13 @@ The registry reads one complete name. It normalizes no info string, because a
 CommonMark info string may carry an attribute after the name. The reader of the
 fence extracts the name and passes it alone.
 
-An adapter supplies data, not behavior. One `kvim-syntax` catalog entry carries
-everything that selects and parses the language, and the adapter carries
-everything that a grammar cannot answer. The adapter names its catalog entry, so
-no lookup table of one language exists twice.
+A service profile supplies language selection and server data, not behavior.
+It is the only source for path selectors, language names, and ordered language
+server declarations. A syntax adapter delegates these values to its profile and
+adds grammar-backed editor data. No syntax adapter copies a selector or server
+table. One `kvim-syntax` catalog entry carries everything that selects and
+parses the grammar, and the adapter carries the remaining editor data. The
+adapter names its catalog entry, so no grammar lookup table exists twice.
 
 The compiled highlight query belongs to `SyntaxHighlighter`, which owns a
 bounded cache and releases it on drop. One adapter exists only while the Cargo
@@ -99,15 +114,15 @@ build enables and no more:
 
 | Item | Owner | Meaning |
 |---|---|---|
-| Identifier | Catalog entry | The stable name of the language, which also names its grammar in a parser failure. |
-| File extensions | Catalog entry | The case-sensitive extensions that the language owns. |
-| File names | Catalog entry | The case-sensitive complete file names that the language owns, for a file whose extension does not name its format. |
-| Language names | Catalog entry | The names that the language answers to, in lower case. The match folds ASCII case, and it needs no path. |
+| Identifier | Service profile | The stable name of the language and the identity used by headless results. |
+| File extensions | Service profile | The case-sensitive extensions that the language owns. |
+| File names | Service profile | The case-sensitive complete file names that the language owns, for a file whose extension does not name its format. |
+| Language names | Service profile | The names that the language answers to, in lower case. The match folds ASCII case, and it needs no path. |
 | Grammar | Catalog entry | The Tree-sitter grammar entry point, its highlight query, and its optional injection and local queries. |
 | Version | Adapter | The stable name of the analysis implementation. |
 | Comment tokens | Adapter | The line-comment token and the block-comment delimiters, each optional. |
 | Indent rule | Adapter | The width of one indent level, the node kinds that hold their content one level deeper, the characters that close such a node, and the optional body field that a node does not indent. |
-| Language servers | Adapter | The declared servers of the language, in declaration order. One declaration names its stable identifier, the program, its arguments, the protocol language identifier, its formatting role, its workspace root markers, the initialization options, and the optional workspace settings. |
+| Language servers | Service profile | The declared servers of the language, in declaration order. One declaration names its stable identifier, fallback diagnostic source, program, ordered arguments, protocol language identifier, formatting role, workspace root markers, initialization options, optional workspace settings, and diagnostics completion policy. |
 | External formatter | Adapter | The program that formats a buffer of this language, and its arguments in command order. One argument is a literal text, or the place of the document path. |
 
 The analysis, the highlight walk, the indent query, the comment toggle, and the
@@ -524,13 +539,17 @@ Inside one project, kvim runs one persistent session for each selected server.
 The session speaks JSON-RPC and knows no server product. Rust-analyzer is adapter
 data, not a special case inside the client.
 
-The adapter declares each server as data: the identifier, the program, its
-arguments, the protocol language identifier, the formatting role, the workspace
-root markers, the initialization options, and the optional workspace settings.
-The session sends what the declaration names. Adding a language server
-therefore means adding one declaration to one adapter. No code above the
-adapter boundary changes, and no name, type, or assumption of one server
-appears there.
+The service profile declares each server as data: the identifier, fallback
+diagnostic source, program, ordered arguments, protocol language identifier,
+formatting role, workspace root markers, initialization options, optional
+workspace settings, and one explicit `CompletionPolicy`. The policy is `Pull`,
+`VersionedPush`, or `Unsupported`. Each built-in declaration uses a verified
+policy or conservatively uses `Unsupported`. Kvim never infers completion from
+an executable name or negotiated prose. It never guesses versionless push
+completion from a quiet period. The session sends what the declaration names.
+Adding a language server therefore means adding one declaration to one service
+profile. No code above the language boundary changes, and no assumption of one
+server appears there.
 
 One session identity contains project identity, server declaration identity,
 and declaration order. Every request correlation key contains project, server,
@@ -562,21 +581,43 @@ No event loop reads, writes, or waits for a server. A full request queue returns
 a typed saturated result at once, and the caller keeps its previous state.
 
 That work splits over two crates at one seam. `kvim-lsp` owns the neutral half:
-the child process, the bounded transport, the standard-error recorder, the
+validated launch requests, injectable launch and lifecycle capabilities, the
+child process, the bounded transport, the standard-error recorder, the
 `initialize` handshake with its deadline and cancellation, the negotiated
-capabilities, and the `shutdown` and `exit` sequence with its deadline. One
-`ServerProcess` value owns the child and both reader tasks, so dropping or
-cancelling a session kills the child and leaves no untracked process. The
-caller supplies the program, the arguments, the working directory, the
-initialization options, and the workspace settings as data, and it receives
-every recorded process fact through one sink that never waits.
+capabilities, and the `shutdown` and `exit` sequence. A launch request owns a
+validated program, ordered arguments, and `WorkspaceRoot`. A launcher receives
+that request for the first attempt and for every restart. It returns standard
+input, standard output, mandatory standard error, and one owning lifecycle
+capability. Callers never receive a mutable Tokio `Command` and cannot override
+Kvim's pipes, protocol, restart, deadline, standard-error, or completion rules.
+Nix command composition remains host policy outside Kvim.
+
+The lifecycle capability reports typed start, wait, termination, and input or
+output failures with safe source errors. One `ServerProcess` owns the lifecycle
+and all three streams. Graceful close sends `shutdown` and `exit`, then waits
+within one absolute graceful-shutdown deadline. It does not restart that
+budget for each step. If the server does not exit, Kvim performs bounded forced
+termination and reaping. Dropping the lifecycle must initiate best-effort
+termination. Async cleanup alone is not cancellation-safe.
+
+If an attempt fails and cleanup also fails, the attempt failure remains the
+primary failure. Kvim reports the cleanup failure separately through its typed,
+nonblocking bounded event or report path. A missing executable is typed
+unavailable and is not restarted. Other restartable failures use the existing
+bounded restart policy. No classification reads human error text.
+
+A launched process always has Kvim-owned lifecycle. A stream-only custom
+transport remains available for an embedded server or socket. Its remote
+lifecycle stays caller-owned, so Kvim does not claim that shutdown reaps a
+remote process.
 
 `kvim-lsp` also owns the bounded restart loop, because that loop names no editor
-state. `kvim-language` owns the editor half over that seam: the open documents,
-the buffer revisions, the pending requests, the diagnostic pulls, and the hover
-markup. It implements one `ServerConversation` for that half, and it translates
-every neutral `ProjectEvent` into one editor outcome. It also holds the language
-adapters, so no editor type crosses into `kvim-lsp`.
+state. `kvim-language` owns the editor composition and the grammar-independent
+headless composition over that seam. The editor path owns open documents,
+buffer revisions, pending requests, diagnostic pulls, hover markup, and editor
+outcome translation. The headless path owns service-profile selection, marker
+gates, realized settings, and stable projection into neutral LSP declarations.
+No editor type crosses into `kvim-lsp`.
 
 The handshake offers the UTF-8 position encoding first and the UTF-16 position
 encoding second. The Position Encoding section owns the negotiation and the
@@ -605,9 +646,8 @@ only place in kvim that names a setting of one concrete server. See
 
 A language without a server declaration, a language whose servers the workspace
 does not use, and a language whose declared executable is not installed leave
-the editor fully usable with no diagnostics. kvim reports the state once and
-starts no further server for that language. A missing server is never an error
-path that degrades editing.
+the editor fully usable with no diagnostics. Kvim reports the state once. A
+missing executable is an unavailable start outcome and is never restarted.
 
 A reload replaces the whole text of one buffer and advances its generation while
 its edit version restarts at zero. kvim therefore synchronizes a reload as one
@@ -965,10 +1005,11 @@ The task splits the stream into lines and clips one line at
 `LSP_STDERR_LINE_BYTES_MAX` bytes. It drops an empty line, and it replaces every
 byte sequence that is not valid UTF-8.
 
-Each recorded line reaches the editor as one typed result of the session, on the
-event path that carries every other result. The `language` module holds no
-editor log, and it depends on no module above it. The editor records the line.
-See [`windows.md`](windows.md).
+Each recorded line reaches the host through a typed, nonblocking bounded report
+sink. The report path can expose a bounded process report, but raw standard
+error never enters `DiagnosticsOutcome`, `ChangedFileReport`, or
+`ServerOutcome`. The `language` module holds no editor log, and it depends on no
+module above it. The editor can record a report. See [`windows.md`](windows.md).
 
 The session reports its own lifecycle on that same path. It reports the start of
 one server after the handshake, and it already reports a failure, a restart, and
@@ -1099,7 +1140,9 @@ error text.
 One diagnostics hub owns the request side of one project. It creates one
 conversation for each declared server, and the caller hands those conversations
 to the project declaration. The project driver keeps every server warm, so a
-later request reuses one running session.
+later changed-file request reuses one running session. The host owns the async
+runtime and runs the driver. The library creates no runtime and detaches no
+task.
 
 The hub holds one active request. A conversation reads that request as soon as
 its server answers the handshake, so a request that a caller sent before the
@@ -1266,26 +1309,53 @@ as a complete project. `typescript-language-server`,
 workspace root alone. A marker would therefore stop such a server in an
 ordinary subdirectory layout.
 
-The language services read each project root once during project creation. The
-probe runs off the host event loop and asks for one path for each distinct
-marker. Its cost follows adapter data, not workspace size. The answer is the set
-of markers that the root holds. Every later gate decision reads that set alone.
-The root does not change while the project runs, so one probe answers for every
-document of that project.
+The headless project probes all bounded distinct markers once during project
+creation. The probe runs off the host event loop and asks for one path for each
+distinct marker. Its cost follows service-profile data, not workspace size.
+Each realized declaration keeps a typed visible gate outcome: matching file,
+matching directory, absent marker, or no marker requirement. Every later gate
+decision reads those outcomes alone. The root does not change while the project
+runs, so one probe answers for every document of that project.
 
-A root that the process cannot read records no marker. Every gated server then
-stays off, and every server without a marker still starts.
+If the root probe cannot read a marker path, it records no match for that
+marker, as the existing gate does. Every server gated only by unreadable or
+absent markers then stays off. Its visible gate outcome names the unsatisfied
+marker requirement. Every server without a marker still starts.
 
-A gated server starts no child process, so it never enters the session map and
-never counts against `LSP_SESSIONS_MAX`. That bound counts the child processes
-of one editor, and a gated server owns none.
+A gated server starts no child process, enters no session map, and reserves no
+process capacity. It therefore does not count against `LSP_SESSIONS_MAX` or the
+manager process budget. The realized metadata retains the declaration and its
+gate outcome, even though the project declaration and diagnostics hub omit that
+server.
 
-A gated server is a normal state, not a failure. The editor stays fully usable,
-kvim reports the state once, and no request starts that server again. The state
-stays distinct from a server that is not installed. A gated server was never
-meant to run in this workspace. A server that is not installed was meant to run
-and could not. A gated formatting server keeps the format-on-save state of its
-buffer, as a server that is not installed does.
+A gated server is a normal state, not a process failure. The editor stays fully
+usable, Kvim reports the state once, and no request starts that server again.
+The state stays distinct from a server that is not installed. A gated server
+was never meant to run in this workspace. A server that is not installed was
+meant to run and could not. A gated formatting server keeps the format-on-save
+state of its buffer, as a server that is not installed does.
+
+### Headless Project Projection
+
+A headless host selects one language with a validated `WorktreeRelativePath`
+through the same service-profile selectors that editor adapters use. The typed
+selection reports one profile, unsupported, or ambiguous. It preserves the
+profile's stable language identity and every applicable server declaration in
+source order. Several declarations for one language remain several servers.
+
+Project realization validates the workspace root as `WorkspaceRoot`. For each
+declaration it publishes stable language and server identity, fallback
+diagnostic source, program, ordered arguments, protocol language identifier,
+root markers, typed gate outcome, realized initialization options, realized
+workspace settings, and declared `CompletionPolicy`. The neutral server IDs
+used by `DiagnosticsHub` and the project declaration map back to the same
+published identities. Source fallback and merge order therefore remain stable
+across requests and restarts.
+
+Realization does not start a runtime, detach a task, or execute a driver. The
+host owns the runtime, runs the project driver, and can cache the owning project
+value. One cached project keeps warm server sessions across changed-file
+requests. Marker probing occurs only during realization, not for each request.
 
 ## Merging The Answers Of Several Servers
 
