@@ -116,6 +116,30 @@ fn an_arrow_key_carries_its_modifier_chord() {
 }
 
 #[test]
+fn shift_enter_normalizes_to_its_own_code_and_leaves_enter_alone() {
+    // A terminal with enhanced keyboard reporting sends `Shift-Enter` as
+    // `Enter` with the modifier. It becomes one key of its own, so a host can
+    // bind it. See `docs/input-actions.md`.
+    assert_eq!(
+        normalize_key_event(pressed(CrosstermKeyCode::Enter, KeyModifiers::SHIFT)),
+        Ok(Key::plain(KeyCode::ShiftEnter))
+    );
+
+    // A terminal without that capability sends the same bytes as `Enter`, so
+    // the plain key is unchanged and never acquires the shifted meaning.
+    assert_eq!(
+        normalize_key_event(pressed(CrosstermKeyCode::Enter, KeyModifiers::NONE)),
+        Ok(Key::plain(KeyCode::Enter))
+    );
+
+    // The `Alt-Enter` alias of `Ctrl-Alt-J` keeps its own meaning.
+    assert_eq!(
+        normalize_key_event(pressed(CrosstermKeyCode::Enter, KeyModifiers::ALT)),
+        Ok(Key::ctrl_alt(KeyCode::Char('j')))
+    );
+}
+
+#[test]
 fn an_unsupported_modifier_is_rejected_and_never_loses_its_chord() {
     // `docs/input-actions.md` binds `w`, `Up`, and `Tab`. A key that keeps
     // an unsupported modifier must not reach any of those bindings.
@@ -128,6 +152,19 @@ fn an_unsupported_modifier_is_rejected_and_never_loses_its_chord() {
         (
             CrosstermKeyCode::Up,
             KeyModifiers::SHIFT,
+            UnsupportedModifier::Shift,
+        ),
+        // `Shift-Enter` is one key of its own, but no chord over it names a
+        // binding. Both chords therefore reject instead of losing `Shift` and
+        // reaching the binding of `Enter` or of the `Alt-Enter` alias.
+        (
+            CrosstermKeyCode::Enter,
+            KeyModifiers::CONTROL | KeyModifiers::SHIFT,
+            UnsupportedModifier::Shift,
+        ),
+        (
+            CrosstermKeyCode::Enter,
+            KeyModifiers::ALT | KeyModifiers::SHIFT,
             UnsupportedModifier::Shift,
         ),
         (

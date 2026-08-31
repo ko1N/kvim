@@ -40,10 +40,11 @@ pub use review::{
 #[cfg(feature = "worktree")]
 pub use composition::{
     WORKTREE_BINDING_OVERRIDES_MAX, WORKTREE_GROUP_LABEL_BYTES_MAX, WORKTREE_HOST_BINDINGS_MAX,
-    WORKTREE_OWNER_LABEL_BYTES_MAX, WorktreeAddressedCommand, WorktreeBindingCompositionError,
-    WorktreeBindingConflictKind, WorktreeBindingContextError, WorktreeBindingFocus,
-    WorktreeBindingModel, WorktreeBindingOverride, WorktreeBindingOverrideError,
-    WorktreeHostBinding, WorktreeHostBindingError, WorktreeHostBindingLayer, WorktreeHostCommand,
+    WORKTREE_HOST_SCOPES_MAX, WORKTREE_OWNER_LABEL_BYTES_MAX, WorktreeAddressedCommand,
+    WorktreeBindingCompositionError, WorktreeBindingConflictKind, WorktreeBindingContextError,
+    WorktreeBindingFocus, WorktreeBindingModel, WorktreeBindingOverride,
+    WorktreeBindingOverrideError, WorktreeHostBinding, WorktreeHostBindingError,
+    WorktreeHostBindingLayer, WorktreeHostCommand, WorktreeHostScope, WorktreeHostScopeError,
     WorktreeMergedCommand, WorktreeMergedScope,
 };
 

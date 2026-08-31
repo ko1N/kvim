@@ -127,6 +127,37 @@ fn one_sequence_reaches_one_command_in_each_scope() {
 }
 
 #[test]
+fn a_shifted_code_binds_beside_the_unmodified_key() {
+    // `Shift-Enter` is one code of its own, so one scope holds both keys, and
+    // neither key answers for the other. A prefix of one is no prefix of the
+    // other either.
+    let enter = [Key::plain(KeyCode::Enter)];
+    let shift_enter = [Key::plain(KeyCode::ShiftEnter)];
+    let built = registry(&[
+        Binding::surface(Table::Global, &enter, Action::First),
+        Binding::host(Table::Global, &shift_enter, Action::Second),
+    ])
+    .expect("the two codes are two sequences");
+
+    assert_eq!(built.command(Table::Global, &enter), Some(Action::First));
+    assert_eq!(
+        built.command(Table::Global, &shift_enter),
+        Some(Action::Second)
+    );
+    assert!(!built.has_longer_sequence(Table::Global, &enter));
+    assert!(!built.has_longer_sequence(Table::Global, &shift_enter));
+
+    // The same sequence twice in one scope still conflicts, so the distinction
+    // comes from the code and not from a weaker check.
+    let error = registry(&[
+        Binding::surface(Table::Global, &shift_enter, Action::First),
+        Binding::surface(Table::Global, &shift_enter, Action::Second),
+    ])
+    .expect_err("one scope holds one command for one sequence");
+    assert!(matches!(error, RegistryError::DuplicateSequence { .. }));
+}
+
+#[test]
 fn a_duplicate_sequence_is_rejected() {
     let keys = [ch('d')];
     let error = registry(&[

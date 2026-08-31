@@ -13,7 +13,7 @@ use kvim_input::{
 };
 use kvim_keymap::{
     BINDINGS_MAX, Binding, BoundCommand, CommandMetadata, CommandOwner, Registry, RegistryError,
-    Scope, UnboundInput,
+    SCOPES_MAX, Scope, UnboundInput,
 };
 use kvim_settings::PENDING_KEYS_MAX;
 use thiserror::Error;
@@ -21,7 +21,19 @@ use thiserror::Error;
 use crate::worktree::WorktreeBindingContext;
 
 /// The maximum number of host bindings accepted by one merged model.
-pub const WORKTREE_HOST_BINDINGS_MAX: usize = 128;
+///
+/// A host that contributes one leader group needs a few entries. A host that
+/// owns a complete modal surface of its own contributes one table for each of
+/// its modes, so the bound covers that shape as well. The effective ceiling
+/// stays [`BINDINGS_MAX`] over the projected bindings, which
+/// [`WorktreeBindingCompositionError::TooManyProjectedBindings`] reports.
+pub const WORKTREE_HOST_BINDINGS_MAX: usize = 1024;
+/// The maximum number of host scopes that one merged model holds.
+///
+/// The merged registry holds one table for each kvim context, one for
+/// host-global first refusal, one for review, and one for each host scope. The
+/// sum stays inside `SCOPES_MAX`.
+pub const WORKTREE_HOST_SCOPES_MAX: usize = 16;
 /// The maximum number of explicit conflict overrides accepted by one model.
 pub const WORKTREE_BINDING_OVERRIDES_MAX: usize = 128;
 /// The maximum length of a published which-key owner label.
@@ -45,11 +57,72 @@ pub trait WorktreeHostCommand: CommandMetadata {
     fn group_label(&self) -> &str;
 }
 
+/// One table of a host surface, opaque to kvim.
+///
+/// A host names its own scopes, exactly as kvim names its editor contexts with
+/// `BindingScope`. A modal host surface therefore holds one table for each of
+/// its modes, and one sequence means one thing in each of them. Kvim reads the
+/// index and never the meaning behind it.
+///
+/// ```
+/// use kvim_embed::WorktreeHostScope;
+///
+/// let insert = WorktreeHostScope::new(1)?;
+/// assert_ne!(insert, WorktreeHostScope::CHAT);
+/// # Ok::<(), kvim_embed::WorktreeHostScopeError>(())
+/// ```
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct WorktreeHostScope(usize);
+
+impl WorktreeHostScope {
+    /// The first host scope, which a host with one surface uses.
+    pub const CHAT: Self = Self(0);
+
+    /// Names one host scope by its index.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`WorktreeHostScopeError`] for an index at or above
+    /// [`WORKTREE_HOST_SCOPES_MAX`].
+    pub const fn new(index: usize) -> Result<Self, WorktreeHostScopeError> {
+        if index >= WORKTREE_HOST_SCOPES_MAX {
+            return Err(WorktreeHostScopeError::IndexOutOfRange { index });
+        }
+        Ok(Self(index))
+    }
+
+    /// Returns the index of the scope.
+    #[must_use]
+    pub const fn index(self) -> usize {
+        self.0
+    }
+}
+
+impl fmt::Display for WorktreeHostScope {
+    /// Writes the host scope as its index, because kvim holds no host name.
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "Host {}", self.0)
+    }
+}
+
+/// Why one host scope index was rejected.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum WorktreeHostScopeError {
+    /// The index reaches or exceeds the published bound.
+    #[error("the host scope index is {index}, but the maximum is {}", WORKTREE_HOST_SCOPES_MAX - 1)]
+    IndexOutOfRange {
+        /// Rejected index.
+        index: usize,
+    },
+}
+
 /// The focused host surface category used for binding projection.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum WorktreeBindingFocus {
-    /// A host chat surface.
-    Chat,
+    /// One table of a host surface.
+    ///
+    /// A host with one flat surface uses [`WorktreeHostScope::CHAT`].
+    Host(WorktreeHostScope),
     /// A kvim editor surface.
     Editor,
     /// A review surface.
@@ -228,8 +301,13 @@ impl<H: WorktreeHostCommand> WorktreeMergedCommand<H> {
 pub enum WorktreeMergedScope {
     /// Host-global first refusal.
     HostGlobal,
-    /// Host chat bindings.
-    Chat,
+    /// One host table, named by the host itself.
+    ///
+    /// A host surface that holds several modes holds one table for each of
+    /// them, exactly as [`Self::Editor`] holds one table for each kvim
+    /// context. One sequence therefore means one thing in each host mode, and
+    /// two host modes that bind the same sequence are no conflict.
+    Host(WorktreeHostScope),
     /// One kvim editor context with valid host contributions projected into it.
     Editor(BindingScope),
     /// Review bindings from the host and kvim.
@@ -240,7 +318,7 @@ impl fmt::Display for WorktreeMergedScope {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::HostGlobal => formatter.write_str("Host Global"),
-            Self::Chat => formatter.write_str("Chat"),
+            Self::Host(scope) => write!(formatter, "{scope}"),
             Self::Editor(scope) => write!(formatter, "Editor {scope}"),
             Self::Review => formatter.write_str("Review"),
         }
@@ -248,8 +326,13 @@ impl fmt::Display for WorktreeMergedScope {
 }
 
 impl Scope for WorktreeMergedScope {
-    const COUNT: usize = BindingScope::COUNT + 3;
+    const COUNT: usize = BindingScope::COUNT + WORKTREE_HOST_SCOPES_MAX + 2;
 }
+
+// The registry holds one table for each scope, so the merged tables must stay
+// inside the published scope bound. Raising `WORKTREE_HOST_SCOPES_MAX` past the
+// remaining room therefore fails the build instead of one composition.
+const _: () = assert!(WorktreeMergedScope::COUNT <= SCOPES_MAX);
 
 /// An explicit winner for one effective binding conflict.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -481,22 +564,38 @@ impl<H: WorktreeHostCommand> WorktreeBindingModel<H> {
         Arc::clone(&self.registry)
     }
 
-    /// Projects a chat focus into the merged resolver context.
+    /// Projects one host table into the merged resolver context.
+    ///
+    /// A modal host passes the scope of its focused mode, so the resolver reads
+    /// the table of that mode alone. Host-global first refusal stays in place
+    /// for every host scope.
     #[must_use]
-    pub const fn chat_context(
+    pub const fn host_context(
+        scope: WorktreeHostScope,
         generation: ContextGeneration,
     ) -> DispatchContext<WorktreeMergedScope> {
         DispatchContext {
             overlay: None,
             global: Some(WorktreeMergedScope::HostGlobal),
             focus: InputContextSnapshot {
-                scope: WorktreeMergedScope::Chat,
+                scope: WorktreeMergedScope::Host(scope),
                 phases: SemanticPhases::IDLE,
                 text_fallback: TextFallback::Typed(CommandOwner::Host),
                 unbound_input: UnboundInput::Ignored,
                 generation,
             },
         }
+    }
+
+    /// Projects the first host table into the merged resolver context.
+    ///
+    /// This is [`Self::host_context`] over [`WorktreeHostScope::CHAT`], which a
+    /// host with one flat surface uses.
+    #[must_use]
+    pub const fn chat_context(
+        generation: ContextGeneration,
+    ) -> DispatchContext<WorktreeMergedScope> {
+        Self::host_context(WorktreeHostScope::CHAT, generation)
     }
 
     /// Projects the current facade binding context, including picker overlay.
@@ -781,9 +880,9 @@ fn for_each_projected_scope(
 ) {
     match layer {
         WorktreeHostBindingLayer::Global => apply(WorktreeMergedScope::HostGlobal),
-        WorktreeHostBindingLayer::Leader(WorktreeBindingFocus::Chat)
-        | WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat) => {
-            apply(WorktreeMergedScope::Chat);
+        WorktreeHostBindingLayer::Leader(WorktreeBindingFocus::Host(scope))
+        | WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(scope)) => {
+            apply(WorktreeMergedScope::Host(scope));
         }
         WorktreeHostBindingLayer::Leader(WorktreeBindingFocus::Review)
         | WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Review) => {

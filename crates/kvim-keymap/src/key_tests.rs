@@ -11,6 +11,7 @@ const CODES: &[KeyCode] = &[
     KeyCode::Left,
     KeyCode::Right,
     KeyCode::Enter,
+    KeyCode::ShiftEnter,
     KeyCode::Tab,
     KeyCode::BackTab,
     KeyCode::Backspace,
@@ -34,6 +35,19 @@ fn every_label_fits_the_label_bound() {
             );
         }
     }
+}
+
+#[test]
+fn a_shifted_code_is_one_key_of_its_own() {
+    // The model carries no Shift chord, so a shifted key that a terminal
+    // reports distinctly is its own code. It therefore never compares equal to
+    // the unmodified key, and a registry holds one entry for each.
+    assert_ne!(Key::plain(KeyCode::ShiftEnter), Key::plain(KeyCode::Enter));
+    assert_ne!(Key::plain(KeyCode::BackTab), Key::plain(KeyCode::Tab));
+    assert_eq!(
+        Key::plain(KeyCode::ShiftEnter).label().to_string(),
+        "S-Enter"
+    );
 }
 
 #[test]

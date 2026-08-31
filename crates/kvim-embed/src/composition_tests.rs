@@ -72,13 +72,13 @@ fn host_bindings() -> Vec<WorktreeHostBinding<HostCommand>> {
         )
         .unwrap(),
         WorktreeHostBinding::new(
-            WorktreeHostBindingLayer::Leader(WorktreeBindingFocus::Chat),
+            WorktreeHostBindingLayer::Leader(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
             &[key(' '), key('s')],
             HostCommand::Sessions,
         )
         .unwrap(),
         WorktreeHostBinding::new(
-            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
             &[Key::plain(KeyCode::Enter)],
             HostCommand::Send,
         )
@@ -249,13 +249,13 @@ fn which_key_publishes_owner_groups_continuations_and_interruptions() {
 fn composition_rejects_collisions_deterministically() {
     let manifest = BindingProfile::Embedded.manifest().unwrap();
     let first = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Send,
     )
     .unwrap();
     let second = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Sessions,
     )
@@ -375,19 +375,19 @@ fn editor_host_leader_does_not_enter_literal_or_internal_pending_contexts() {
 fn addressed_overrides_select_host_and_editor_winners() {
     let manifest = BindingProfile::Embedded.manifest().unwrap();
     let host_x = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Send,
     )
     .unwrap();
     let other_x = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Sessions,
     )
     .unwrap();
     let host_override = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('x')],
         WorktreeAddressedCommand::Host(HostCommand::Sessions),
     )
@@ -399,9 +399,10 @@ fn addressed_overrides_select_host_and_editor_winners() {
     )
     .unwrap();
     assert_eq!(
-        model
-            .registry()
-            .command(WorktreeMergedScope::Chat, &[key('x')]),
+        model.registry().command(
+            WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
+            &[key('x')]
+        ),
         Some(WorktreeMergedCommand::Host(HostCommand::Sessions))
     );
 
@@ -482,13 +483,13 @@ fn addressed_overrides_select_host_and_editor_winners() {
 fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
     let manifest = BindingProfile::Embedded.manifest().unwrap();
     let binding = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Send,
     )
     .unwrap();
     let stale = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('z')],
         WorktreeAddressedCommand::Host(HostCommand::Send),
     )
@@ -504,7 +505,7 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
     );
 
     let no_conflict = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('x')],
         WorktreeAddressedCommand::Host(HostCommand::Send),
     )
@@ -521,7 +522,7 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
 
     let duplicate = [binding.clone(), binding.clone()];
     let ambiguous = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('x')],
         WorktreeAddressedCommand::Host(HostCommand::Send),
     )
@@ -533,7 +534,7 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
     );
 
     let second = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Sessions,
     )
@@ -547,7 +548,7 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
     ));
 
     let longer = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x'), key('y')],
         HostCommand::Sessions,
     )
@@ -564,7 +565,7 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
         })
     ));
     let longer_wins = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('x'), key('y')],
         WorktreeAddressedCommand::Host(HostCommand::Sessions),
     )
@@ -573,9 +574,10 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
         WorktreeBindingModel::compose_with_overrides(&manifest, &[binding, longer], &[longer_wins])
             .unwrap();
     assert_eq!(
-        model
-            .registry()
-            .command(WorktreeMergedScope::Chat, &[key('x'), key('y')]),
+        model.registry().command(
+            WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
+            &[key('x'), key('y')]
+        ),
         Some(WorktreeMergedCommand::Host(HostCommand::Sessions))
     );
 }
@@ -584,25 +586,25 @@ fn overrides_reject_stale_ambiguous_uncovered_and_prefix_conflicts() {
 fn one_winner_can_remove_multiple_conflicting_losers() {
     let manifest = BindingProfile::Embedded.manifest().unwrap();
     let winner = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Send,
     )
     .unwrap();
     let duplicate = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x')],
         HostCommand::Sessions,
     )
     .unwrap();
     let extension = WorktreeHostBinding::new(
-        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Chat),
+        WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(WorktreeHostScope::CHAT)),
         &[key('x'), key('y')],
         HostCommand::ReviewComment,
     )
     .unwrap();
     let selected = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('x')],
         WorktreeAddressedCommand::Host(HostCommand::Send),
     )
@@ -615,9 +617,10 @@ fn one_winner_can_remove_multiple_conflicting_losers() {
     )
     .unwrap();
     assert_eq!(
-        model
-            .registry()
-            .command(WorktreeMergedScope::Chat, &[key('x')]),
+        model.registry().command(
+            WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
+            &[key('x')]
+        ),
         Some(WorktreeMergedCommand::Host(HostCommand::Send))
     );
 }
@@ -668,14 +671,14 @@ fn reserved_escape_requires_one_complete_host_global_command() {
 fn override_bounds_fail_before_composition() {
     assert_eq!(
         WorktreeBindingOverride::<HostCommand>::new(
-            WorktreeMergedScope::Chat,
+            WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
             &[],
             WorktreeAddressedCommand::Host(HostCommand::Send),
         ),
         Err(WorktreeBindingOverrideError::EmptySequence)
     );
     let override_value = WorktreeBindingOverride::new(
-        WorktreeMergedScope::Chat,
+        WorktreeMergedScope::Host(WorktreeHostScope::CHAT),
         &[key('x')],
         WorktreeAddressedCommand::Host(HostCommand::Send),
     )
@@ -686,4 +689,313 @@ fn override_bounds_fail_before_composition() {
         WorktreeBindingModel::<HostCommand>::compose_with_overrides(&manifest, &[], &oversized),
         Err(WorktreeBindingCompositionError::TooManyOverrides { .. })
     ));
+}
+
+/// The host scopes of one modal host surface.
+///
+/// The names belong to the host. Kvim reads the index alone, so the mapping is
+/// the only place that carries the meaning.
+fn modal_scope(index: usize) -> WorktreeHostScope {
+    WorktreeHostScope::new(index).expect("the test stays inside the published bound")
+}
+
+#[test]
+fn a_modal_host_binds_one_sequence_in_each_of_its_scopes() {
+    // `j` moves in the host Normal mode and types a letter in its Insert mode.
+    // Two host tables therefore hold the same sequence, exactly as two editor
+    // contexts do, and neither is a conflict.
+    let normal = modal_scope(0);
+    let insert = modal_scope(1);
+    let visual = modal_scope(2);
+    let host = vec![
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(normal)),
+            &[key('j')],
+            HostCommand::Sessions,
+        )
+        .unwrap(),
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(insert)),
+            &[key('j')],
+            HostCommand::Send,
+        )
+        .unwrap(),
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(visual)),
+            &[key('j')],
+            HostCommand::Leave,
+        )
+        .unwrap(),
+    ];
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    let model = WorktreeBindingModel::compose(&manifest, &host)
+        .expect("one sequence in three host scopes is no conflict");
+    let registry = model.registry();
+
+    assert_eq!(
+        registry.command(WorktreeMergedScope::Host(normal), &[key('j')]),
+        Some(WorktreeMergedCommand::Host(HostCommand::Sessions))
+    );
+    assert_eq!(
+        registry.command(WorktreeMergedScope::Host(insert), &[key('j')]),
+        Some(WorktreeMergedCommand::Host(HostCommand::Send))
+    );
+    assert_eq!(
+        registry.command(WorktreeMergedScope::Host(visual), &[key('j')]),
+        Some(WorktreeMergedCommand::Host(HostCommand::Leave))
+    );
+
+    // The resolver reads the table of the focused host mode alone.
+    let context =
+        WorktreeBindingModel::<HostCommand>::host_context(insert, ContextGeneration::FIRST);
+    let mut resolver = Resolver::new(Arc::clone(&registry), 4, Duration::ZERO);
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(key('j')), Some(Duration::ZERO)),
+        Dispatch::Host {
+            command: WorktreeMergedCommand::Host(HostCommand::Send),
+        }
+    );
+}
+
+#[test]
+fn host_global_refusal_reaches_every_host_scope() {
+    // The host-global table precedes the focused table in every host mode, so
+    // one host key answers everywhere without a copy in each table.
+    let leave = Key::ctrl(KeyCode::Char('e'));
+    let mut host = host_bindings();
+    for index in 1..4 {
+        host.push(
+            WorktreeHostBinding::new(
+                WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(modal_scope(index))),
+                &[key('j')],
+                HostCommand::Send,
+            )
+            .unwrap(),
+        );
+    }
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    let model = WorktreeBindingModel::compose(&manifest, &host).unwrap();
+    let registry = model.registry();
+
+    for index in 0..4 {
+        let context = WorktreeBindingModel::<HostCommand>::host_context(
+            modal_scope(index),
+            ContextGeneration::FIRST,
+        );
+        let mut resolver = Resolver::new(Arc::clone(&registry), 4, Duration::ZERO);
+        assert_eq!(
+            resolver.dispatch(&context, Input::Key(leave), Some(Duration::ZERO)),
+            Dispatch::Host {
+                command: WorktreeMergedCommand::Host(HostCommand::Leave),
+            },
+            "host-global refusal must reach host scope {index}"
+        );
+    }
+}
+
+#[test]
+fn a_duplicate_inside_one_host_scope_still_fails() {
+    let normal = modal_scope(0);
+    let host = vec![
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(normal)),
+            &[key('j')],
+            HostCommand::Sessions,
+        )
+        .unwrap(),
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(normal)),
+            &[key('j')],
+            HostCommand::Send,
+        )
+        .unwrap(),
+    ];
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    assert!(matches!(
+        WorktreeBindingModel::compose(&manifest, &host),
+        Err(WorktreeBindingCompositionError::UnapprovedConflict {
+            kind: WorktreeBindingConflictKind::DuplicateSequence,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn a_strict_prefix_separates_by_host_scope() {
+    // `g` alone in one host scope and `g d` in another is no conflict. The two
+    // inside one scope still is.
+    let first = modal_scope(0);
+    let second = modal_scope(1);
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    let separated = vec![
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(first)),
+            &[key('g')],
+            HostCommand::Sessions,
+        )
+        .unwrap(),
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(second)),
+            &[key('g'), key('d')],
+            HostCommand::Send,
+        )
+        .unwrap(),
+    ];
+    let model = WorktreeBindingModel::compose(&manifest, &separated)
+        .expect("a prefix in another host scope is no conflict");
+    assert!(
+        !model
+            .registry()
+            .has_longer_sequence(WorktreeMergedScope::Host(first), &[key('g')])
+    );
+    assert!(
+        model
+            .registry()
+            .has_longer_sequence(WorktreeMergedScope::Host(second), &[key('g')])
+    );
+
+    let together = vec![
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(first)),
+            &[key('g')],
+            HostCommand::Sessions,
+        )
+        .unwrap(),
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(first)),
+            &[key('g'), key('d')],
+            HostCommand::Send,
+        )
+        .unwrap(),
+    ];
+    assert!(matches!(
+        WorktreeBindingModel::compose(&manifest, &together),
+        Err(WorktreeBindingCompositionError::UnapprovedConflict {
+            kind: WorktreeBindingConflictKind::StrictPrefix,
+            ..
+        })
+    ));
+}
+
+#[test]
+fn which_key_keeps_its_owner_and_group_labels_in_a_host_scope() {
+    let scope = modal_scope(3);
+    let host = vec![
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Leader(WorktreeBindingFocus::Host(scope)),
+            &[key(' '), key('s')],
+            HostCommand::Sessions,
+        )
+        .unwrap(),
+    ];
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    let model = WorktreeBindingModel::compose(&manifest, &host).unwrap();
+    let registry = model.registry();
+    let context =
+        WorktreeBindingModel::<HostCommand>::host_context(scope, ContextGeneration::FIRST);
+    let mut resolver = Resolver::new(Arc::clone(&registry), 4, Duration::ZERO);
+
+    assert_eq!(
+        resolver.dispatch(&context, Input::Key(key(' ')), Some(Duration::ZERO)),
+        Dispatch::Pending
+    );
+    let hints = resolver.which_key(Duration::ZERO).unwrap();
+    let command = WorktreeMergedCommand::Host(HostCommand::Sessions);
+    assert!(
+        hints
+            .hints()
+            .iter()
+            .any(|hint| hint.hint().commands().contains(&command))
+    );
+    assert_eq!(command.owner_label(), HostCommand::Sessions.owner_label());
+    assert_eq!(command.group_label(), HostCommand::Sessions.group_label());
+}
+
+#[test]
+fn the_host_binding_ceiling_admits_a_complete_modal_surface() {
+    // One host table for each published host scope, filled to the total bound.
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    let mut host = Vec::with_capacity(WORKTREE_HOST_BINDINGS_MAX);
+    for index in 0..WORKTREE_HOST_BINDINGS_MAX {
+        let scope = modal_scope(index % WORKTREE_HOST_SCOPES_MAX);
+        let letter =
+            char::from(b'a' + u8::try_from(index / WORKTREE_HOST_SCOPES_MAX).unwrap() % 26);
+        let digit =
+            char::from(b'0' + u8::try_from(index / (WORKTREE_HOST_SCOPES_MAX * 26)).unwrap());
+        host.push(
+            WorktreeHostBinding::new(
+                WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(scope)),
+                &[key(digit), key(letter)],
+                HostCommand::Sessions,
+            )
+            .unwrap(),
+        );
+    }
+    assert_eq!(host.len(), WORKTREE_HOST_BINDINGS_MAX);
+    assert!(WorktreeBindingModel::compose(&manifest, &host).is_ok());
+
+    host.push(
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(modal_scope(0))),
+            &[key('z'), key('z')],
+            HostCommand::Send,
+        )
+        .unwrap(),
+    );
+    assert!(matches!(
+        WorktreeBindingModel::compose(&manifest, &host),
+        Err(WorktreeBindingCompositionError::TooManyHostBindings { .. })
+    ));
+}
+
+#[test]
+fn a_host_scope_index_stays_inside_its_published_bound() {
+    assert_eq!(WorktreeHostScope::CHAT.index(), 0);
+    assert!(WorktreeHostScope::new(WORKTREE_HOST_SCOPES_MAX - 1).is_ok());
+    assert_eq!(
+        WorktreeHostScope::new(WORKTREE_HOST_SCOPES_MAX),
+        Err(WorktreeHostScopeError::IndexOutOfRange {
+            index: WORKTREE_HOST_SCOPES_MAX,
+        })
+    );
+}
+
+#[test]
+fn a_host_binds_shift_enter_beside_enter() {
+    // `Shift-Enter` is one key code of its own, so a host binds it without
+    // touching the binding of `Enter`. See `docs/input-actions.md`.
+    let scope = WorktreeHostScope::CHAT;
+    let host = vec![
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(scope)),
+            &[Key::plain(KeyCode::Enter)],
+            HostCommand::Send,
+        )
+        .unwrap(),
+        WorktreeHostBinding::new(
+            WorktreeHostBindingLayer::Focused(WorktreeBindingFocus::Host(scope)),
+            &[Key::plain(KeyCode::ShiftEnter)],
+            HostCommand::Leave,
+        )
+        .unwrap(),
+    ];
+    let manifest = BindingProfile::Embedded.manifest().unwrap();
+    let model =
+        WorktreeBindingModel::compose(&manifest, &host).expect("the two codes are two sequences");
+    let registry = model.registry();
+
+    assert_eq!(
+        registry.command(
+            WorktreeMergedScope::Host(scope),
+            &[Key::plain(KeyCode::Enter)]
+        ),
+        Some(WorktreeMergedCommand::Host(HostCommand::Send))
+    );
+    assert_eq!(
+        registry.command(
+            WorktreeMergedScope::Host(scope),
+            &[Key::plain(KeyCode::ShiftEnter)]
+        ),
+        Some(WorktreeMergedCommand::Host(HostCommand::Leave))
+    );
 }

@@ -4,16 +4,17 @@ use std::fmt;
 
 /// The maximum number of bytes that one [`KeyLabel`] writes.
 ///
-/// The longest chord prefix is `C-A-`, and the longest key name is `S-Tab`. A
+/// The longest chord prefix is `C-A-`, and the longest key name is `S-Enter`. A
 /// character key writes at most four bytes after the prefix. The bound therefore
 /// covers every label, and a help layout can reserve one fixed column width.
-pub const KEY_LABEL_BYTES_MAX: usize = 9;
+pub const KEY_LABEL_BYTES_MAX: usize = 11;
 
 /// The modifier chord that a key carries.
 ///
-/// A key accepts three chords only. Shift is already folded into the character
-/// value, and a plain `Alt` chord carries no binding. One chord value per key
-/// keeps an invalid modifier combination unrepresentable.
+/// A key accepts three chords only. Shift never appears here: it is folded into
+/// the character value, or into a key code of its own such as [`KeyCode::BackTab`]
+/// and [`KeyCode::ShiftEnter`]. A plain `Alt` chord carries no binding. One
+/// chord value per key keeps an invalid modifier combination unrepresentable.
 ///
 /// ```
 /// use kvim_keymap::{Chord, Key, KeyCode};
@@ -67,6 +68,14 @@ pub enum KeyCode {
     Right,
     /// The `Enter` key, which some terminals report as `Return`.
     Enter,
+    /// The `Shift-Enter` key, which is its own key and not a modified
+    /// [`KeyCode::Enter`].
+    ///
+    /// A terminal reports this key only under enhanced keyboard reporting. A
+    /// terminal without that capability reports plain `Enter`, so a binding of
+    /// this code never captures the plain key, and the plain key never acquires
+    /// the meaning of this one.
+    ShiftEnter,
     /// The `Tab` key.
     Tab,
     /// The `Shift-Tab` key, which terminals report as one code.
@@ -110,6 +119,7 @@ impl KeyCode {
             Self::Left => "Left",
             Self::Right => "Right",
             Self::Enter => "Enter",
+            Self::ShiftEnter => "S-Enter",
             Self::Tab => "Tab",
             Self::BackTab => "S-Tab",
             Self::Backspace => "BS",

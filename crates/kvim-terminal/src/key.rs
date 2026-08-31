@@ -64,8 +64,9 @@ pub enum KeyRejection {
 /// event, an unsupported modifier, and a key code that kvim does not bind.
 ///
 /// `Shift` is part of the character value, so a character key carries it. The
-/// `BackTab` code is the `Shift-Tab` key itself, so it carries `Shift` too.
-/// Every other `Shift` combination is a rejection.
+/// `BackTab` code is the `Shift-Tab` key itself, and `ShiftEnter` is the
+/// `Shift-Enter` key itself, so both carry `Shift` too. Every other `Shift`
+/// combination is a rejection.
 ///
 /// ```
 /// use crossterm::event::{KeyCode as CrosstermKeyCode, KeyEvent, KeyModifiers};
@@ -100,6 +101,9 @@ pub fn normalize_key_event(event: KeyEvent) -> Result<Key, KeyRejection> {
         CrosstermKeyCode::Down => KeyCode::Down,
         CrosstermKeyCode::Left => KeyCode::Left,
         CrosstermKeyCode::Right => KeyCode::Right,
+        // The Shift modifier survives here as its own code. The rejection above
+        // already refused every chord that this code cannot carry.
+        CrosstermKeyCode::Enter if modifiers.contains(KeyModifiers::SHIFT) => KeyCode::ShiftEnter,
         CrosstermKeyCode::Enter => KeyCode::Enter,
         CrosstermKeyCode::Tab => KeyCode::Tab,
         CrosstermKeyCode::BackTab => KeyCode::BackTab,
@@ -135,11 +139,21 @@ fn unsupported_modifier(
     if !modifiers.contains(KeyModifiers::SHIFT) {
         return None;
     }
-    // A character key already carries Shift in its value, and `BackTab` is the
-    // `Shift-Tab` key itself. Every other Shift combination would lose the
-    // modifier, so it is a rejection.
-    let folds_shift = matches!(code, CrosstermKeyCode::Char(_) | CrosstermKeyCode::BackTab)
-        && !modifiers.contains(KeyModifiers::CONTROL);
+    // Every other Shift combination would lose the modifier, so it is a
+    // rejection.
+    let folds_shift = match code {
+        // A character key already carries Shift in its value, and `BackTab` is
+        // the `Shift-Tab` key itself.
+        CrosstermKeyCode::Char(_) | CrosstermKeyCode::BackTab => {
+            !modifiers.contains(KeyModifiers::CONTROL)
+        }
+        // `Shift-Enter` is a key code of its own, exactly as `Shift-Tab` is. A
+        // control or `Alt` chord over it carries no binding, and the `Alt`
+        // alias of `Enter` names a different key, so both stay rejections
+        // instead of losing the `Shift` modifier.
+        CrosstermKeyCode::Enter => !modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT),
+        _ => false,
+    };
     if folds_shift {
         None
     } else {

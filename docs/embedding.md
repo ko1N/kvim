@@ -185,15 +185,31 @@ host-leader, focused-context, and kvim manifest bindings into one generic
 scope before registry validation. Duplicate sequences and unreachable prefixes
 therefore fail with typed errors, independent of registration order.
 
+A host names its own tables. `WorktreeHostScope` is one opaque host table
+index, bounded by `WORKTREE_HOST_SCOPES_MAX`, and `WorktreeMergedScope::Host`
+carries it exactly as `WorktreeMergedScope::Editor` carries one kvim context.
+A host surface that holds several modes therefore contributes one table for
+each mode, and one sequence means one thing in each of them: two host modes
+that bind the same sequence are no conflict, and a duplicate inside one host
+table still fails. `WorktreeHostScope::CHAT` is the first table, which a host
+with one flat surface uses. `WorktreeBindingModel::host_context` projects the
+focused host table, and `chat_context` is that call over `CHAT`. Kvim reads the
+index and never the meaning behind it, so a host concept stays opaque to kvim.
+
 The host-global scope receives first refusal through the existing
-`DispatchContext` order. Chat focus includes host and chat groups but no editor
-group. Editor focus includes host leader and focused contributions only in
-Normal, Visual, and sidebar contexts. Insert, picker, prompt, confirmation,
+`DispatchContext` order, in every host table. A host focus includes host groups
+but no editor group. Editor focus includes host leader and focused
+contributions only in Normal, Visual, and sidebar contexts. Insert, picker, prompt, confirmation,
 register-selection, and operator-pending contexts retain kvim input ownership.
 Review focus includes host and review groups. The model publishes bounded owner
 and semantic group labels for each command. Hosts use the existing `Resolver`
 or `WorkspaceComposer` for dispatch, pending continuations, interruption hints,
 and one which-key model; no facade resolver runs in parallel.
+
+`WORKTREE_HOST_BINDINGS_MAX` bounds the host contributions of one model. It
+admits a host that owns a complete modal surface, not only a host that
+contributes one leader group. The effective ceiling stays the projected binding
+bound of the registry, which composition reports with its own typed error.
 
 Composition rejects duplicate and strict-prefix conflicts by default. An
 explicit bounded override identifies the effective scope, physical sequence,

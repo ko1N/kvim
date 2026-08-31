@@ -1054,8 +1054,21 @@ A key that carries a modifier which no binding uses is rejected. The `terminal`
 module never removes the modifier, so a modified key never reaches the binding of
 the unmodified key. `Alt` without `Ctrl` and without one of the folds above,
 `Super`, `Hyper`, and `Meta` are always rejections. `Shift` is part of the
-character value, and `Shift-Tab` arrives as its own code, so both keep their
-binding. Every other `Shift` combination is a rejection.
+character value, and `Shift-Tab` and `Shift-Enter` each arrive as their own code,
+so all three keep their binding. Every other `Shift` combination is a rejection.
+
+The key model carries no `Shift` chord. A shifted key that a terminal reports
+distinctly is therefore one `KeyCode` of its own, and the registry holds one
+entry for it beside the unmodified key. `Shift-Enter` never answers for `Enter`,
+and `Enter` never answers for `Shift-Enter`. A terminal reports `Shift-Enter`
+only under enhanced keyboard reporting. A terminal without that capability, and
+a multiplexer that hides it, report plain `Enter` instead, so the plain key keeps
+its own meaning everywhere. A `Ctrl` or `Alt` chord over `Shift-Enter` names no
+binding and stays a rejection, which keeps `Alt-Shift-Enter` away from the
+`Alt-Enter` fold above.
+
+No binding profile of kvim binds `Shift-Enter`. An embedding host binds it
+through its own binding model. See [`embedding.md`](embedding.md).
 
 ### Operators, Registers, And Repeat
 
