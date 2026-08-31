@@ -379,6 +379,243 @@ fn drag_without_press_and_release_without_press_are_inert() {
     assert_eq!(session.mode(), Mode::Normal);
 }
 
+/// Returns the published vertical border of one split session.
+fn vertical_border(session: &Session) -> kvim_ui::BorderPlacement {
+    *session
+        .windows
+        .layout()
+        .borders()
+        .iter()
+        .find(|placement| placement.orientation() == kvim_ui::Orientation::Vertical)
+        .expect("the split publishes one vertical border")
+}
+
+#[test]
+fn a_border_drag_moves_the_edge_and_keeps_the_focus_and_the_cursor() {
+    let (mut session, left, right) = split_session(20);
+    let focused = session.windows.focused_region();
+    let cursor = session.cursor();
+    let border = vertical_border(&session);
+    let column = border.area().x;
+    let row = border.area().y + 5;
+
+    // The press holds the border, so it selects nothing and focuses nothing.
+    assert_eq!(
+        session.handle_event(click(column, row), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.windows.focused_region(), focused);
+    assert_eq!(session.cursor(), cursor);
+
+    // The border follows the pointer, and the panes across it give up the
+    // cells.
+    assert_eq!(
+        session.handle_event(drag(column + 6, row), NOW),
+        Redraw::Needed
+    );
+    let left_width = session
+        .windows
+        .layout()
+        .area(left)
+        .expect("the split is visible")
+        .width;
+    let right_width = session
+        .windows
+        .layout()
+        .area(right)
+        .expect("the split is visible")
+        .width;
+    assert_eq!(left_width, 46);
+    assert_eq!(right_width, 34);
+    assert_eq!(session.windows.focused_region(), focused);
+    assert_eq!(session.cursor(), cursor);
+    assert_eq!(
+        session.mode(),
+        Mode::Normal,
+        "a border drag starts no selection"
+    );
+
+    // The border keeps following the pointer back, without a drift.
+    assert_eq!(session.handle_event(drag(column, row), NOW), Redraw::Needed);
+    assert_eq!(
+        session
+            .windows
+            .layout()
+            .area(left)
+            .expect("the split is visible")
+            .width,
+        40
+    );
+}
+
+#[test]
+fn a_border_drag_ends_at_the_release_and_a_later_drag_is_inert() {
+    let (mut session, left, _right) = split_session(20);
+    let border = vertical_border(&session);
+    let column = border.area().x;
+    let row = border.area().y + 5;
+
+    session.handle_event(click(column, row), NOW);
+    session.handle_event(drag(column + 4, row), NOW);
+    assert_eq!(
+        session.handle_event(release(column + 4, row), NOW),
+        Redraw::Skipped
+    );
+    let width = session
+        .windows
+        .layout()
+        .area(left)
+        .expect("the split is visible")
+        .width;
+
+    assert_eq!(
+        session.handle_event(drag(column + 12, row), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(
+        session
+            .windows
+            .layout()
+            .area(left)
+            .expect("the split is visible")
+            .width,
+        width,
+        "a drag without a press moves no border"
+    );
+}
+
+#[test]
+fn a_key_a_wheel_and_a_terminal_resize_each_cancel_a_border_drag() {
+    for cancel in [
+        TerminalEvent::Key(Key::plain(KeyCode::Esc)),
+        wheel(2, 2, PointerWheelDirection::Down),
+        TerminalEvent::Resize {
+            columns: 80,
+            rows: 24,
+        },
+    ] {
+        let (mut session, left, _right) = split_session(20);
+        let border = vertical_border(&session);
+        let column = border.area().x;
+        let row = border.area().y + 5;
+        session.handle_event(click(column, row), NOW);
+        session.handle_event(cancel.clone(), NOW);
+        let width = session
+            .windows
+            .layout()
+            .area(left)
+            .expect("the split is visible")
+            .width;
+
+        assert_eq!(
+            session.handle_event(drag(column + 8, row), NOW),
+            Redraw::Skipped
+        );
+        assert_eq!(
+            session
+                .windows
+                .layout()
+                .area(left)
+                .expect("the split is visible")
+                .width,
+            width,
+            "the cancelled capture moves no border"
+        );
+    }
+}
+
+#[test]
+fn a_drag_on_the_sidebar_border_resizes_the_sidebar() {
+    let mut session = sidebar_session(&["alpha.rs", "beta.rs"]);
+    let sidebar = session.tree_region.expect("the sidebar is visible");
+    let before = session
+        .windows
+        .layout()
+        .area(sidebar)
+        .expect("the sidebar is visible");
+    let selected = session.tree.selected_entry_name();
+    // The border is the last column of the pane left of the sidebar.
+    let column = before.x - 1;
+    let row = before.y + 2;
+
+    session.handle_event(click(column, row), NOW);
+    assert_eq!(
+        session.handle_event(drag(column - 5, row), NOW),
+        Redraw::Needed
+    );
+    let after = session
+        .windows
+        .layout()
+        .area(sidebar)
+        .expect("the sidebar is visible");
+    assert_eq!(after.width, before.width + 5);
+    assert_eq!(after.x, before.x - 5);
+    assert_eq!(
+        session.tree.selected_entry_name(),
+        selected,
+        "a border drag selects no entry"
+    );
+}
+
+#[test]
+fn a_press_on_a_border_intersection_follows_the_first_movement() {
+    // The left pane holds a horizontal split, so its border row crosses the
+    // vertical border column of the outer split.
+    let (mut session, left, right) = split_session(20);
+    press_ctrl(&mut session, 'h');
+    assert_eq!(session.windows.focused_window(), left);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let lower = session.windows.focused_window();
+
+    let vertical = vertical_border(&session);
+    let horizontal = *session
+        .windows
+        .layout()
+        .borders()
+        .iter()
+        .find(|placement| placement.orientation() == kvim_ui::Orientation::Horizontal)
+        .expect("the second split publishes one horizontal border");
+    let column = vertical.area().x;
+    let row = horizontal.area().y;
+    assert!(
+        kvim_ui::contains_cell(horizontal.area(), kvim_ui::Cell::new(column, row)),
+        "the two borders cross at one cell"
+    );
+
+    // A movement along the columns names the vertical border, so the row edge
+    // of the lower pane stays where it is.
+    let lower_height = session
+        .windows
+        .layout()
+        .area(lower)
+        .expect("the split is visible")
+        .height;
+    session.handle_event(click(column, row), NOW);
+    assert_eq!(
+        session.handle_event(drag(column + 5, row + 1), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(
+        session
+            .windows
+            .layout()
+            .area(right)
+            .expect("the split is visible")
+            .width,
+        35
+    );
+    assert_eq!(
+        session
+            .windows
+            .layout()
+            .area(lower)
+            .expect("the split is visible")
+            .height,
+        lower_height,
+        "the movement chose the vertical border alone"
+    );
+}
+
 #[test]
 fn left_click_focuses_only_the_target_split_and_places_its_cursor() {
     let (mut session, left, right) = split_session(20);

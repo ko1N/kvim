@@ -71,8 +71,8 @@ use kvim_terminal::{
     PointerWheelDirection, TerminalEvent,
 };
 use kvim_ui::{
-    Cell, Direction, HitTarget, ListItem, ListViewport, OverlayInput, PointerOverlay, RegionKind,
-    SidebarSide, WindowId, contains_cell, hit_test,
+    BorderId, Cell, Direction, HitTarget, LayoutChange, ListItem, ListViewport, Orientation,
+    OverlayInput, PointerOverlay, RegionKind, SidebarSide, WindowId, contains_cell, hit_test,
 };
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget,
@@ -1624,6 +1624,8 @@ pub struct Session {
     pointer_scrolled: Option<PointerScrollTarget>,
     /// The active buffer drag, or the legal idle state.
     pointer_drag: PointerDragState,
+    /// The active border drag, or the legal idle state.
+    border_drag: BorderDragState,
     /// The bounded physical click sequence used for sidebar activation.
     sidebar_click: SidebarClickState,
     /// The elapsed time that the event loop reported last.
@@ -1747,6 +1749,7 @@ impl Session {
             notifications: NotificationBoard::default(),
             pointer_scrolled: None,
             pointer_drag: PointerDragState::Idle,
+            border_drag: BorderDragState::Idle,
             sidebar_click: SidebarClickState::Idle,
             clock: Duration::ZERO,
             run: RunState::Running,
@@ -2533,6 +2536,7 @@ impl Session {
         };
         if cancels_drag {
             self.pointer_drag = PointerDragState::Idle;
+            self.border_drag = BorderDragState::Idle;
         }
         let preserves_sidebar_click = matches!(
             &event,
@@ -2672,6 +2676,7 @@ impl Session {
             PointerAction::Drag(PointerButton::Left) => self.handle_pointer_drag(pointer),
             PointerAction::Release(PointerButton::Left) => {
                 self.pointer_drag = PointerDragState::Idle;
+                self.border_drag = BorderDragState::Idle;
                 let position = pointer.position();
                 self.sidebar_click =
                     match std::mem::replace(&mut self.sidebar_click, SidebarClickState::Idle) {
@@ -2693,6 +2698,7 @@ impl Session {
             | PointerAction::Drag(PointerButton::Right | PointerButton::Middle)
             | PointerAction::Motion => {
                 self.pointer_drag = PointerDragState::Idle;
+                self.border_drag = BorderDragState::Idle;
                 Redraw::Skipped
             }
         }
@@ -2795,6 +2801,92 @@ impl Session {
         }
     }
 
+    /// Holds the borders under one pressed cell, if the cell names any.
+    ///
+    /// A press can land where a vertical and a horizontal border cross, so the
+    /// capture keeps both and waits for the first movement to select one. The
+    /// return value reports whether the press belongs to a border at all.
+    fn begin_border_drag(&mut self, position: CellPosition) -> bool {
+        let cell = Cell::new(position.column(), position.row());
+        let mut vertical = None;
+        let mut horizontal = None;
+        for border in self.windows.layout().borders() {
+            if !contains_cell(border.area(), cell) {
+                continue;
+            }
+            match border.orientation() {
+                Orientation::Vertical => vertical = Some(border.id()),
+                Orientation::Horizontal => horizontal = Some(border.id()),
+            }
+        }
+        if vertical.is_none() && horizontal.is_none() {
+            return false;
+        }
+        self.border_drag = BorderDragState::Pending {
+            vertical,
+            horizontal,
+            at: position,
+        };
+        true
+    }
+
+    /// Moves the captured border to the cell that the pointer reports.
+    ///
+    /// The delta is the movement along the axis of the border since the last
+    /// reported cell, so the border follows the pointer without drift. A border
+    /// that the layout no longer publishes ends the capture.
+    fn handle_border_drag(&mut self, position: CellPosition) -> Redraw {
+        let (border, at) = match self.border_drag {
+            BorderDragState::Idle => return Redraw::Skipped,
+            BorderDragState::Capturing { border, at } => (border, at),
+            BorderDragState::Pending {
+                vertical,
+                horizontal,
+                at,
+            } => {
+                let columns = i32::from(position.column()) - i32::from(at.column());
+                let rows = i32::from(position.row()) - i32::from(at.row());
+                if columns == 0 && rows == 0 {
+                    return Redraw::Skipped;
+                }
+                // The dominant axis of the first movement selects the border. A
+                // vertical border moves across columns, so it answers a
+                // movement along that axis.
+                let chosen = if columns.abs() >= rows.abs() {
+                    vertical.or(horizontal)
+                } else {
+                    horizontal.or(vertical)
+                };
+                let Some(border) = chosen else {
+                    self.border_drag = BorderDragState::Idle;
+                    return Redraw::Skipped;
+                };
+                (border, at)
+            }
+        };
+        let Some(placement) = self.windows.layout().border(border) else {
+            self.border_drag = BorderDragState::Idle;
+            return Redraw::Skipped;
+        };
+        let delta = match placement.orientation() {
+            Orientation::Vertical => i32::from(position.column()) - i32::from(at.column()),
+            Orientation::Horizontal => i32::from(position.row()) - i32::from(at.row()),
+        };
+        self.border_drag = BorderDragState::Capturing {
+            border,
+            at: position,
+        };
+        if delta == 0 {
+            return Redraw::Skipped;
+        }
+        // The window views follow the new rectangles inside `resize_border`. A
+        // border move changes no focus, so no other state follows it.
+        match self.windows.resize_border(border, delta) {
+            LayoutChange::Changed => Redraw::Needed,
+            LayoutChange::Unchanged => Redraw::Skipped,
+        }
+    }
+
     fn handle_pointer_click(&mut self, pointer: PointerEvent, now: Duration) -> Redraw {
         self.pointer_drag = PointerDragState::Idle;
         let previous_sidebar_click =
@@ -2850,7 +2942,13 @@ impl Session {
                 surface: (),
             })
             .collect();
-        match hit_test(&surfaces, &overlays, cell) {
+        let target = hit_test(&surfaces, &overlays, cell);
+        // A border lies inside a published region, so it takes the press before
+        // that region. An interactive overlay still outranks it.
+        if !matches!(target, HitTarget::Overlay(())) && self.begin_border_drag(pointer.position()) {
+            return Redraw::Skipped;
+        }
+        match target {
             HitTarget::Overlay(()) | HitTarget::Chrome => Redraw::Skipped,
             HitTarget::Sidebar(sidebar) => {
                 if Some(sidebar) != self.tree_region {
@@ -2979,6 +3077,15 @@ impl Session {
     }
 
     fn handle_pointer_drag(&mut self, pointer: PointerEvent) -> Redraw {
+        // A border capture owns every drag until the button goes up, so the
+        // buffer under the pointer keeps its selection.
+        if self.border_drag != BorderDragState::Idle {
+            if self.picker.is_some() || self.completion_layout().is_some() {
+                self.border_drag = BorderDragState::Idle;
+                return Redraw::Skipped;
+            }
+            return self.handle_border_drag(pointer.position());
+        }
         let PointerDragState::Dragging {
             window,
             buffer,
@@ -8120,6 +8227,27 @@ enum PointerDragState {
         buffer: BufferId,
         anchor: CharPosition,
     },
+}
+
+/// The border that a pointer drag moves.
+///
+/// A press can land on the one cell where a vertical and a horizontal border
+/// cross. The state then holds both candidates, and the first movement selects
+/// the one whose orientation matches the dominant axis of that movement. The
+/// state holds at most one border for each orientation, so it stays bounded.
+/// See `docs/windows.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum BorderDragState {
+    /// No press holds a border.
+    Idle,
+    /// A press holds the borders under one cell, and no movement chose one.
+    Pending {
+        vertical: Option<BorderId>,
+        horizontal: Option<BorderId>,
+        at: CellPosition,
+    },
+    /// One border follows the pointer.
+    Capturing { border: BorderId, at: CellPosition },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

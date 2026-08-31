@@ -17,7 +17,9 @@ use std::num::NonZeroU16;
 use ratatui::layout::Rect;
 use thiserror::Error;
 
-use crate::layout::{RegionKind, WindowLayout, compute_layout, editor_area, first_extent};
+use crate::layout::{
+    BorderId, BorderOwner, RegionKind, WindowLayout, compute_layout, editor_area, first_extent,
+};
 
 /// The largest number of leaf windows that the tree holds.
 ///
@@ -415,7 +417,7 @@ pub enum RegionError {
 /// The layout calculation reports the rectangle of every materialized split
 /// node under this identity, so a resize command finds the divider without a
 /// second layout rule.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct SplitId(u32);
 
 /// One window that shows one host surface.
@@ -746,6 +748,35 @@ fn move_edge<S>(
 /// Returns `false` when the tree holds no such divider, or when no arrangement
 /// keeps every window at its minimum. The staged tree then holds no usable
 /// state, so the caller discards it.
+/// Returns the staged result of the largest legal move toward one delta.
+///
+/// A pointer drag can ask for more cells than the minima allow, and a coalesced
+/// burst can ask for many cells at once. The border then moves as far as it
+/// legally can instead of refusing the whole move, so a fast drag never stalls
+/// at a step that a smaller one would accept.
+///
+/// A move that fits implies that every smaller move of the same sign fits, so
+/// the search halves the range. It performs at most `log2(delta)` staging
+/// attempts, and never mutates the tree.
+fn largest_legal_delta<T>(delta_cells: i32, stage: impl Fn(i32) -> Option<T>) -> Option<T> {
+    debug_assert!(delta_cells != 0, "a zero delta never reaches the search");
+    let sign = delta_cells.signum();
+    let mut low = 1;
+    let mut high = delta_cells.abs();
+    let mut staged = None;
+    while low <= high {
+        let middle = low + (high - low) / 2;
+        match stage(sign * middle) {
+            Some(result) => {
+                staged = Some(result);
+                low = middle + 1;
+            }
+            None => high = middle - 1,
+        }
+    }
+    staged
+}
+
 fn move_divider<S>(
     node: &mut Node<S>,
     id: SplitId,
@@ -1324,6 +1355,82 @@ impl<S: Clone> WindowTree<S> {
         }
     }
 
+    /// Moves one published border by an absolute cell delta.
+    ///
+    /// A positive delta moves a vertical border right and a horizontal border
+    /// down. The move follows the same absolute rule as [`Self::resize`]: the
+    /// panes across the border give up the cells, a pane that reaches its
+    /// minimum passes the rest along, and every other pane keeps its size. A
+    /// delta of zero, an unknown border, and a move that would push a window
+    /// below its minimum all leave the layout unchanged.
+    ///
+    /// The border addresses the move, so the focus takes no part in it. A
+    /// pointer drag and a keyboard command therefore reach one primitive.
+    pub fn resize_border(&mut self, id: BorderId, delta_cells: i32) -> LayoutChange {
+        if delta_cells == 0 {
+            return LayoutChange::Unchanged;
+        }
+        let Some(border) = self.layout.border(id) else {
+            return LayoutChange::Unchanged;
+        };
+        let orientation = border.orientation();
+        match id.owner() {
+            BorderOwner::Split(split) => self.resize_split_border(split, orientation, delta_cells),
+            BorderOwner::Sidebar(window) => self.resize_sidebar_border(window, delta_cells),
+        }
+    }
+
+    /// Moves the divider of one named split node.
+    fn resize_split_border(
+        &mut self,
+        split: SplitId,
+        orientation: Orientation,
+        delta_cells: i32,
+    ) -> LayoutChange {
+        let Some(area) = self.layout.split_area(split) else {
+            return LayoutChange::Unchanged;
+        };
+        let extent = axis_extent(orientation, area);
+        let minimum = self.limits.axis_minimum(orientation);
+        let Some(cells) = largest_legal_delta(delta_cells, |delta| {
+            let mut candidate = self.root.clone();
+            move_divider(&mut candidate, split, orientation, extent, minimum, delta)
+                .then_some(candidate)
+        }) else {
+            return LayoutChange::Unchanged;
+        };
+        self.commit(cells)
+    }
+
+    /// Moves the inner edge of one named sidebar.
+    ///
+    /// The border sits left of the sidebar body for a right sidebar and at the
+    /// end of it for a left sidebar, so one delta changes the two widths in
+    /// opposite ways.
+    fn resize_sidebar_border(&mut self, window: WindowId, delta_cells: i32) -> LayoutChange {
+        let Some(RegionKind::Sidebar(side)) = self.layout.region(window).map(|region| region.kind)
+        else {
+            return LayoutChange::Unchanged;
+        };
+        let Some(sidebar) = self.sidebar(side) else {
+            return LayoutChange::Unchanged;
+        };
+        let width = i32::from(sidebar.width_cells);
+        let grows = match side {
+            SidebarSide::Left => 1,
+            SidebarSide::Right => -1,
+        };
+        let Some((candidate, layout, staged)) = largest_legal_delta(delta_cells, |delta| {
+            self.staged_sidebar(side, width + grows * delta)
+        }) else {
+            return LayoutChange::Unchanged;
+        };
+        self.root = candidate;
+        *self.sidebar_slot(side) = Some(staged);
+        self.layout = layout;
+        LayoutChange::Changed
+    }
+
     /// Moves the divider that the focused window shares with another window.
     ///
     /// The move works in absolute cells. The panes across the divider give up
@@ -1391,11 +1498,40 @@ impl<S: Clone> WindowTree<S> {
             return LayoutChange::Unchanged;
         };
         let target = i32::from(sidebar.width_cells) + if grows { step } else { -step };
+        self.set_sidebar_width(side, target)
+    }
+
+    /// Stages one sidebar width and commits it while every window still fits.
+    ///
+    /// The target width clamps to the sidebar bounds. A target that changes no
+    /// width, and a width that no arrangement of the tree accepts, both leave
+    /// the layout unchanged.
+    fn set_sidebar_width(&mut self, side: SidebarSide, target: i32) -> LayoutChange {
+        let Some((candidate, layout, staged)) = self.staged_sidebar(side, target) else {
+            return LayoutChange::Unchanged;
+        };
+        self.root = candidate;
+        *self.sidebar_slot(side) = Some(staged);
+        self.layout = layout;
+        LayoutChange::Changed
+    }
+
+    /// Returns the tree, the layout, and the sidebar of one staged width.
+    ///
+    /// The target width clamps to the sidebar bounds. A target that changes no
+    /// width, and a width that no arrangement of the tree accepts, both return
+    /// `None`, so the caller learns that the move is refused without a mutation.
+    fn staged_sidebar(
+        &self,
+        side: SidebarSide,
+        target: i32,
+    ) -> Option<(Node<S>, WindowLayout, Sidebar)> {
+        let sidebar = self.sidebar(side)?;
         let width = u16::try_from(target.max(0))
             .unwrap_or(SIDEBAR_WIDTH_MAX_CELLS)
             .clamp(SIDEBAR_WIDTH_MIN_CELLS, SIDEBAR_WIDTH_MAX_CELLS);
         if width == sidebar.width_cells {
-            return LayoutChange::Unchanged;
+            return None;
         }
 
         let staged = Sidebar {
@@ -1406,17 +1542,12 @@ impl<S: Clone> WindowTree<S> {
             SidebarSide::Left => (Some(staged), self.right_sidebar),
             SidebarSide::Right => (self.left_sidebar, Some(staged)),
         };
-        let Some(candidate) = self.staged_tree_beside(left, right, side) else {
-            return LayoutChange::Unchanged;
-        };
+        let candidate = self.staged_tree_beside(left, right, side)?;
         let layout = self.staged_layout(&candidate, self.focused, left, right);
         if !self.accepts(&layout) {
-            return LayoutChange::Unchanged;
+            return None;
         }
-        self.root = candidate;
-        *self.sidebar_slot(side) = Some(staged);
-        self.layout = layout;
-        LayoutChange::Changed
+        Some((candidate, layout, staged))
     }
 
     /// Returns the tree that fills the window rectangle of two staged sidebars.

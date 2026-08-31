@@ -322,6 +322,55 @@ fn host_owned_sidebar_allocates_no_columns_and_embedded_sidebar_keeps_its_geomet
 }
 
 #[test]
+fn a_pointer_border_drag_moves_the_published_split_edge_of_the_facade() {
+    let root = TestRoot::new("pointer-border-drag");
+    let area = Rect::new(0, 0, 80, 8);
+    let mut editor = WorktreeEditor::builder(&root.0, area).open().unwrap();
+    let _ = editor.command(Command::SplitAdaptive, None, None, Duration::ZERO);
+    let surfaces = |editor: &WorktreeEditor| -> Vec<Rect> {
+        let mut areas: Vec<Rect> = editor
+            .region_areas()
+            .into_iter()
+            .filter(|(kind, _)| *kind == kvim_ui::RegionKind::Surface)
+            .map(|(_, region)| region)
+            .collect();
+        areas.sort_by_key(|region| region.x);
+        areas
+    };
+    let before = surfaces(&editor);
+    assert_eq!(before.len(), 2, "the adaptive rule splits the one window");
+    // A vertical border is the last column of the pane left of it.
+    let column = before[0].right() - 1;
+    let row = before[0].y + 2;
+
+    let press = PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        PointerAction::Press(PointerButton::Left),
+    );
+    let drag = PointerEvent::new(
+        CellPosition::new(column + 7, row),
+        PointerModifiers::default(),
+        PointerAction::Drag(PointerButton::Left),
+    );
+    let _ = editor.pointer(press, Duration::ZERO);
+    assert_eq!(
+        editor.pointer(drag, Duration::ZERO),
+        WorktreeUpdate::Redraw,
+        "the facade forwards the drag to the border under it"
+    );
+
+    let after = surfaces(&editor);
+    assert_eq!(after[0].width, before[0].width + 7);
+    assert_eq!(after[1].width, before[1].width - 7);
+    assert_eq!(
+        after[0].width + after[1].width,
+        area.width,
+        "the panes still cover the host area"
+    );
+}
+
+#[test]
 fn host_owned_command_line_requires_its_surface_before_root_or_live_state() {
     let missing_root = std::env::temp_dir().join("kvim-missing-presentation-root");
     let error = WorktreeEditor::builder(&missing_root, Rect::new(0, 0, 20, 3))

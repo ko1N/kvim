@@ -131,7 +131,7 @@ pub use guides::{
     SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_GUIDE_TRUNK,
     sidebar_guides,
 };
-pub use layout::{Region, RegionKind, WindowLayout};
+pub use layout::{BorderId, BorderPlacement, Region, RegionKind, WindowLayout};
 pub use list::{
     LIST_VIEWPORT_LINES_MAX, ListItem, ListMotion, ListPlacement, ListViewport, ListWindow,
 };

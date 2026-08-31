@@ -96,6 +96,169 @@ fn regions(tree: &WindowTree<Surface>) -> WindowLayout {
 }
 
 #[test]
+fn split_border_uses_the_first_child_last_column() {
+    let mut tree = windows(120, 40);
+    split(&mut tree, Orientation::Vertical);
+
+    let borders = tree.layout().borders();
+    assert_eq!(borders.len(), 1);
+    assert_eq!(borders[0].orientation(), Orientation::Vertical);
+    assert_eq!(borders[0].area(), Rect::new(59, 0, 1, 40));
+}
+
+#[test]
+fn horizontal_border_uses_the_second_child_first_row() {
+    let mut tree = windows(120, 40);
+    split(&mut tree, Orientation::Horizontal);
+
+    let borders = tree.layout().borders();
+    assert_eq!(borders.len(), 1);
+    assert_eq!(borders[0].orientation(), Orientation::Horizontal);
+    assert_eq!(borders[0].area(), Rect::new(0, 20, 120, 1));
+}
+
+#[test]
+fn a_sidebar_border_takes_the_last_column_of_the_pane_beside_it() {
+    // A right sidebar borders the window tree, so the border is the last column
+    // of that tree. A left sidebar owns its own last column instead. Neither
+    // rule adds a separator cell.
+    let mut tree = windows(160, 40);
+    let (sidebar, ..) = row_beside_a_sidebar(&mut tree, SidebarSide::Right);
+    let border = *tree
+        .layout()
+        .borders()
+        .iter()
+        .find(|placement| placement.area().x == area(&tree, sidebar).x - 1)
+        .expect("the right sidebar publishes its border");
+    assert_eq!(border.orientation(), Orientation::Vertical);
+    assert_eq!(border.area(), Rect::new(119, 0, 1, 40));
+
+    let mut left_tree = windows(160, 40);
+    let (left_sidebar, ..) = row_beside_a_sidebar(&mut left_tree, SidebarSide::Left);
+    let left_area = area(&left_tree, left_sidebar);
+    let left_border = *left_tree
+        .layout()
+        .borders()
+        .iter()
+        .find(|placement| placement.area().x == left_area.right() - 1)
+        .expect("the left sidebar publishes its border");
+    assert_eq!(left_border.area(), Rect::new(39, 0, 1, 40));
+}
+
+#[test]
+fn a_border_resize_moves_the_addressed_edge_without_the_focus() {
+    let mut tree = windows(160, 40);
+    let (sidebar, left, middle, right) = row_beside_a_sidebar(&mut tree, SidebarSide::Right);
+    let border = tree
+        .layout()
+        .borders()
+        .iter()
+        .find(|placement| placement.area().x == area(&tree, sidebar).x - 1)
+        .expect("the right sidebar publishes its border")
+        .id();
+    // The focus stays in the leftmost pane, which touches no moved edge.
+    focus(&mut tree, left);
+
+    // A vertical border that moves left widens the sidebar beside it.
+    assert_eq!(tree.resize_border(border, -6), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 46);
+    assert_eq!(area(&tree, right).width, 24);
+    assert_eq!(
+        area(&tree, left).width,
+        60,
+        "the pane keeps its exact cells"
+    );
+    assert_eq!(area(&tree, middle).width, 30);
+    assert_eq!(tree.focused_region(), left, "a resize moves no focus");
+    assert_tiles(&tree);
+
+    // The opposite delta restores the exact cell sizes, so no drag drifts.
+    assert_eq!(tree.resize_border(border, 6), LayoutChange::Changed);
+    assert_eq!(area(&tree, sidebar).width, 40);
+    assert_eq!(area(&tree, right).width, 30);
+    assert_tiles(&tree);
+
+    assert_eq!(tree.resize_border(border, 0), LayoutChange::Unchanged);
+}
+
+#[test]
+fn a_split_border_resize_takes_an_arbitrary_delta_and_stops_at_the_minimum() {
+    let mut tree = windows(120, 40);
+    let left = tree.focused_region();
+    let right = split(&mut tree, Orientation::Vertical);
+    let border = tree.layout().borders()[0].id();
+    focus(&mut tree, left);
+
+    assert_eq!(tree.resize_border(border, 17), LayoutChange::Changed);
+    assert_eq!(area(&tree, left).width, 77);
+    assert_eq!(area(&tree, right).width, 43);
+    assert_tiles(&tree);
+
+    // A delta past the minimum of the pane that gives up cells moves the border
+    // as far as that minimum allows, so a fast drag never stalls.
+    let minimum = WindowLimits::default().min_width_cells();
+    assert_eq!(tree.resize_border(border, 1_000), LayoutChange::Changed);
+    assert_eq!(area(&tree, right).width, minimum);
+    assert_eq!(area(&tree, left).width, 120 - minimum);
+    assert_tiles(&tree);
+
+    // The border reached the minimum, so a further move in the same direction
+    // changes nothing at all.
+    assert_eq!(tree.resize_border(border, 3), LayoutChange::Unchanged);
+    assert_eq!(area(&tree, right).width, minimum);
+}
+
+#[test]
+fn a_horizontal_border_resize_moves_the_row_edge_down() {
+    let mut tree = windows(120, 40);
+    let upper = tree.focused_region();
+    let lower = split(&mut tree, Orientation::Horizontal);
+    let border = tree.layout().borders()[0].id();
+
+    assert_eq!(tree.resize_border(border, 5), LayoutChange::Changed);
+    assert_eq!(area(&tree, upper).height, 25);
+    assert_eq!(area(&tree, lower).height, 15);
+    assert_eq!(
+        tree.layout()
+            .border(border)
+            .expect("the split keeps its border")
+            .area(),
+        Rect::new(0, 25, 120, 1),
+        "the border follows the edge that it moved"
+    );
+    assert_tiles(&tree);
+}
+
+#[test]
+fn split_border_identity_survives_reflow_and_topology_changes() {
+    let mut tree = windows(120, 40);
+    let _right = split(&mut tree, Orientation::Vertical);
+    let border = tree.layout().borders()[0];
+
+    tree.set_area(Rect::new(0, 0, 200, 60));
+    let reflowed = tree
+        .layout()
+        .border(border.id())
+        .expect("a surviving split keeps its border identity");
+    assert_eq!(reflowed.orientation(), Orientation::Vertical);
+    assert_eq!(reflowed.area(), Rect::new(99, 0, 1, 60));
+
+    let created = split(&mut tree, Orientation::Horizontal);
+    let nested_border = *tree
+        .layout()
+        .borders()
+        .iter()
+        .find(|placement| placement.id() != border.id())
+        .expect("the new split publishes a second border");
+    assert!(tree.layout().border(border.id()).is_some());
+
+    focus(&mut tree, created);
+    assert_eq!(tree.close_focused(), CloseOutcome::Closed(created));
+    assert!(tree.layout().border(border.id()).is_some());
+    assert!(tree.layout().border(nested_border.id()).is_none());
+}
+
+#[test]
 fn a_vertical_split_opens_the_new_window_to_the_right() {
     let mut tree = windows(120, 40);
     let left = tree.focused_window();

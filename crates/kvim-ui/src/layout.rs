@@ -15,6 +15,71 @@ use crate::window::{
     WindowId, WindowLimits, axis_extent, child_minima,
 };
 
+/// The opaque identity of one visible layout border.
+///
+/// A split keeps this identity through terminal reflow while its topology
+/// survives. A visible sidebar uses its stable window identity instead.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct BorderId(BorderOwner);
+
+impl BorderId {
+    /// Returns the layout node that this border belongs to.
+    pub(crate) const fn owner(self) -> BorderOwner {
+        self.0
+    }
+}
+
+/// The layout node that owns one border.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) enum BorderOwner {
+    /// The divider of one split node.
+    Split(SplitId),
+    /// The inner edge of one visible sidebar.
+    Sidebar(WindowId),
+}
+
+/// The one-cell hit area of a visible split or sidebar border.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BorderPlacement {
+    id: BorderId,
+    orientation: Orientation,
+    area: Rect,
+}
+
+impl BorderPlacement {
+    /// Returns the stable identity of this border.
+    #[must_use]
+    pub const fn id(self) -> BorderId {
+        self.id
+    }
+
+    /// Returns the orientation of the border.
+    #[must_use]
+    pub const fn orientation(self) -> Orientation {
+        self.orientation
+    }
+
+    /// Returns the one-cell-wide hit area of the border.
+    #[must_use]
+    pub const fn area(self) -> Rect {
+        self.area
+    }
+}
+
+/// Returns the border column of one sidebar rectangle.
+///
+/// A vertical border is the last column of the pane left of it, which is the
+/// scrollbar column of that pane. A left sidebar owns that column itself. A
+/// right sidebar borders the window tree beside it, so the border is the last
+/// column of that tree. A right sidebar at the left edge of the host area
+/// borders no pane and publishes no border.
+const fn sidebar_border_column(area: Rect, side: SidebarSide) -> Option<u16> {
+    match side {
+        SidebarSide::Left => Some(area.x.saturating_add(area.width.saturating_sub(1))),
+        SidebarSide::Right => area.x.checked_sub(1),
+    }
+}
+
 /// Reports whether one rectangle names only cells that a buffer holds.
 ///
 /// Every public render checks its rectangle with this function before it writes
@@ -79,6 +144,7 @@ pub struct Region {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct WindowLayout {
     regions: Vec<Region>,
+    borders: Vec<BorderPlacement>,
     splits: Vec<(SplitId, Rect)>,
     hidden_windows: usize,
     hidden_sidebars: usize,
@@ -110,6 +176,22 @@ impl WindowLayout {
     #[must_use]
     pub fn area(&self, id: WindowId) -> Option<Rect> {
         self.region(id).map(|region| region.area)
+    }
+
+    /// Returns every visible split and sidebar border in layout order.
+    ///
+    /// Each placement has a one-cell hit area. A vertical split uses the last
+    /// column of its first child. A horizontal split uses the first row of its
+    /// second child. A sidebar uses its edge beside the window tree.
+    #[must_use]
+    pub fn borders(&self) -> &[BorderPlacement] {
+        &self.borders
+    }
+
+    /// Returns the visible placement of the named border.
+    #[must_use]
+    pub fn border(&self, id: BorderId) -> Option<&BorderPlacement> {
+        self.borders.iter().find(|border| border.id == id)
     }
 
     /// Returns the number of visible windows.
@@ -237,6 +319,21 @@ pub(crate) fn compute_layout<S>(
     let right = carve_sidebar(&mut windows, right, limits, &mut hidden_sidebars);
     layout.hidden_sidebars = hidden_sidebars;
 
+    for region in [left, right].into_iter().flatten() {
+        let RegionKind::Sidebar(side) = region.kind else {
+            continue;
+        };
+        let Some(column) = sidebar_border_column(region.area, side) else {
+            continue;
+        };
+        let area = Rect::new(column, region.area.y, 1, region.area.height);
+        layout.borders.push(BorderPlacement {
+            id: BorderId(BorderOwner::Sidebar(region.id)),
+            orientation: Orientation::Vertical,
+            area,
+        });
+    }
+
     layout.regions.extend(left);
     layout_node(root, windows, focused, limits, &mut layout);
     layout.regions.extend(right);
@@ -355,6 +452,19 @@ fn layout_node<S>(
                     Rect::new(area.x, area.y + head, area.width, area.height - head),
                 ),
             };
+            let border_area = match orientation {
+                Orientation::Vertical => {
+                    Rect::new(first_area.right() - 1, first_area.y, 1, first_area.height)
+                }
+                Orientation::Horizontal => {
+                    Rect::new(second_area.x, second_area.y, second_area.width, 1)
+                }
+            };
+            layout.borders.push(BorderPlacement {
+                id: BorderId(BorderOwner::Split(*id)),
+                orientation: *orientation,
+                area: border_area,
+            });
             layout_node(first, first_area, focused, limits, layout);
             layout_node(second, second_area, focused, limits, layout);
         }

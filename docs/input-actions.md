@@ -43,6 +43,12 @@ drag outside visible text clamps to the nearest visible text cell. Each edge
 drag event scrolls by no more than one configured wheel distance. No drag timer
 or unbounded loop exists.
 
+A press on a published layout border starts a border drag instead. The border
+takes the press before the region that holds it, so the press moves no cursor
+and changes no focus. The drag then moves that border with the pointer.
+[`windows.md`](windows.md) owns the border rule, the axis choice at an
+intersection, and the resize primitive.
+
 Drag capture owns one target. Release, resize, non-pointer input, lost target,
 or overlay ownership change cancels it. Pointer motion and wheel events coalesce
 only when they are consecutive and immediately ready. A returned event includes

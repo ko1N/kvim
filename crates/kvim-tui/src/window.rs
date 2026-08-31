@@ -16,8 +16,8 @@ use kvim_editor::{Viewport, WindowState};
 use kvim_input::Command;
 use kvim_settings::{HorizontalSplitPlacement, VerticalSplitPlacement, WindowSettings};
 use kvim_ui::{
-    AdaptiveSplit, ChildSide, CloseOutcome, Direction, LayoutChange, Orientation, RegionKind,
-    Sidebar, SidebarSide, SplitError, WindowId, WindowLayout, WindowLimits, WindowTree,
+    AdaptiveSplit, BorderId, ChildSide, CloseOutcome, Direction, LayoutChange, Orientation,
+    RegionKind, Sidebar, SidebarSide, SplitError, WindowId, WindowLayout, WindowLimits, WindowTree,
 };
 use kvim_workspace::BufferId;
 
@@ -344,6 +344,19 @@ impl Windows {
     /// vertical command prefers the bottom edge. See `docs/windows.md`.
     pub fn resize(&mut self, direction: Direction) -> LayoutChange {
         let change = self.tree.resize(direction, self.settings.resize_step_cells);
+        if change == LayoutChange::Changed {
+            self.sync_viewports();
+        }
+        change
+    }
+
+    /// Moves one published border by an absolute cell delta.
+    ///
+    /// A positive delta moves a vertical border right and a horizontal border
+    /// down. The border addresses the move, so it changes no focus. See
+    /// `docs/windows.md`.
+    pub fn resize_border(&mut self, id: BorderId, delta_cells: i32) -> LayoutChange {
+        let change = self.tree.resize_border(id, delta_cells);
         if change == LayoutChange::Changed {
             self.sync_viewports();
         }

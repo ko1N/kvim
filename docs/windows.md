@@ -116,6 +116,55 @@ pending key prefix, and every waiting focus or overlay proposal ends.
 [`embedding.md`](embedding.md) owns the transition protocol that this close
 bypasses.
 
+## Border Geometry
+
+`WindowLayout::borders()` publishes every visible split and sidebar inner edge.
+Each `BorderPlacement` has an opaque stable `BorderId`, an `Orientation`, and a
+one-cell half-open hit area. `WindowLayout::border()` looks up one visible
+border by its ID. `CompositionLayout::borders()` forwards the same placements.
+
+A vertical border is the last column of the pane left of it, which is the
+scrollbar column of that pane. A horizontal border is the first row of the pane
+below it, which is the winbar row of that pane. A vertical split therefore uses
+the last column of its first child, and a horizontal split uses the first row of
+its second child. A left sidebar owns its own last column. A right sidebar
+borders the window tree beside it, so its border is the last column of that
+tree. A right sidebar at the left edge of the host area borders no pane and
+publishes no border. The layout adds no gap and no separator cell. A split
+border ID survives terminal reflow and later splits while its split node
+survives. A removed split no longer publishes its border.
+
+`WindowTree::resize_border` moves one published border by an absolute cell
+delta. A positive delta moves a vertical border right and a horizontal border
+down. The border addresses the move, so the move changes no focus, and a pointer
+drag and a keyboard command reach one primitive. The move follows the absolute
+rule of every resize: the panes across the border give up the cells, a pane that
+reaches its minimum passes the rest to the next pane along, and every other pane
+keeps its exact size. A delta larger than the minima allow moves the border as
+far as it legally can, so a fast drag never stalls at a refusal that a smaller
+delta would accept. The search for that distance halves the range and stages
+every attempt, so one event costs a bounded number of attempts and mutates
+nothing until one of them fits.
+
+## Border Dragging
+
+A left press on a published border starts a border capture. A border lies inside
+a published region, so it takes the press before that region: the press moves no
+cursor, selects no entry, and changes no focus. An interactive overlay still
+outranks a border.
+
+One cell can hold both a vertical and a horizontal border. The capture then
+holds both, and the first movement selects the border whose axis dominates that
+movement: a movement over more columns than rows selects the vertical border. A
+movement of zero cells selects nothing and waits for the next event.
+
+Each drag event moves the border by the movement along its own axis since the
+last reported cell, so the border follows the pointer without drift. A capture
+ends at the release, and at every event that cancels a buffer drag: a key, a
+paste, a terminal resize, a wheel, and unsupported input. A border that the
+layout no longer publishes, and an open picker or completion list, both end the
+capture as well.
+
 ## Window View
 
 A window owns the cursor, the selection anchor, the viewport, and the jump

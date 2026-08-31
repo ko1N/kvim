@@ -36,7 +36,7 @@ use kvim_keymap::{
     WhichKeyView,
 };
 
-use crate::layout::RegionKind;
+use crate::layout::{BorderId, BorderPlacement, RegionKind};
 use crate::window::{
     ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit, Orientation,
     RegionError, SidebarSide, SplitError, WINDOWS_MAX, WindowId, WindowLimits, WindowTree,
@@ -287,6 +287,7 @@ pub struct OverlayPlacement<Sid, S> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CompositionLayout<Sid, S> {
     surfaces: Vec<SurfacePlacement<Sid>>,
+    borders: Vec<BorderPlacement>,
     overlay: Option<OverlayPlacement<Sid, S>>,
     fit: LayoutFit,
 }
@@ -299,6 +300,12 @@ impl<Sid, S> CompositionLayout<Sid, S> {
     #[must_use]
     pub fn surfaces(&self) -> &[SurfacePlacement<Sid>] {
         &self.surfaces
+    }
+
+    /// Returns every visible split and sidebar border in layout order.
+    #[must_use]
+    pub fn borders(&self) -> &[BorderPlacement] {
+        &self.borders
     }
 
     /// Returns the placement of the open overlay.
@@ -723,6 +730,15 @@ where
         self.tree.resize(direction, step_cells)
     }
 
+    /// Moves one published border by an absolute cell delta.
+    ///
+    /// A positive delta moves a vertical border right and a horizontal border
+    /// down. The border addresses the move, so a pointer drag over a border and
+    /// a keyboard resize command reach one primitive.
+    pub fn resize_border(&mut self, id: BorderId, delta_cells: i32) -> LayoutChange {
+        self.tree.resize_border(id, delta_cells)
+    }
+
     /// Proposes the focus of the named region.
     ///
     /// # Errors
@@ -1074,6 +1090,7 @@ where
         });
         CompositionLayout {
             surfaces,
+            borders: layout.borders().to_vec(),
             overlay,
             fit: layout.fit(),
         }
