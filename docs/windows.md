@@ -26,6 +26,12 @@ ownership remains the default and keeps the existing geometry and behavior.
 `standalone()` embeds all surfaces. `integrated_host()` assigns all surfaces to
 the host. Mixed ownership is valid.
 
+Kvim owns the semantic state and the geometry that it uses to draw each
+host-owned surface. It publishes bounded current snapshots and placements when
+a host needs them to draw that surface. A host consumes those values and does
+not reproduce state or geometry from a private painter. A snapshot and placement
+can become invalid after the related state or layout changes.
+
 The effective resolver owns which-key presentation. Host-owned which-key uses
 the host resolver and disables internal deadlines, rows, and painting.
 Facade-owned resolution keeps embedded which-key.
@@ -774,6 +780,10 @@ exactly as a host sidebar does. See [List Motion](#list-motion).
 
 ## Confirmation Dialog Popup
 
+A host can use `kvim_ui::Dialog` directly for host chrome. That use owns only
+the host chrome and its action-agnostic dialog state. An editor-attached dialog
+uses the `kvim-embed` lifecycle.
+
 A confirmation is a bounded, action-agnostic dialog owned by `kvim-ui`. The
 owner supplies the body rectangle. The dialog dims only that rectangle and
 never covers host-owned chrome outside it. The popup has no full border. It
@@ -1182,6 +1192,15 @@ roles. A new role belongs here first, and its color stays in code.
 | LineNumber | A line number that is not the cursor line |
 | CursorLineNumber | The absolute number of the cursor line |
 | SignColumn | The sign column beside the line numbers |
+| DialogDim | The dimmed editor body behind a modal dialog |
+| DialogRail | The full-height rail of a modal dialog |
+| DialogIcon | The optional severity glyph on the title row of a modal dialog |
+| DialogBody | The optional detail text of a modal dialog |
+| DialogQuestion | The question text of a modal dialog |
+| DialogFooter | The footer band that holds the choice row of a modal dialog |
+| DialogChoice | One unfocused dialog choice |
+| DialogDefaultChoice | The safe default dialog choice while it is unfocused |
+| DialogFocusedChoice | The focused dialog choice |
 | Surface | The background band of a floating surface or a popup |
 | Statusline | The statusline text |
 | StatuslineMuted | The quiet part of the statusline, such as the format-on-save state |

@@ -378,6 +378,18 @@ internal session type or Kvim action. `kvim-tui` adapts that surface for the
 standalone editor and keeps `ConfirmedAction` private. It maps the affirmative
 choice to destructive continuations only after the dialog answers.
 
+A host may use `kvim_ui::Dialog` directly to draw host chrome. That direct use
+owns only host chrome and its action-agnostic dialog state. A dialog attached to
+an editor keeps its open, input, answer, and invalidation lifecycle in
+`kvim-embed`.
+
+For each host-owned surface, Kvim owns the semantic state and the geometry used
+to draw it. Kvim publishes bounded snapshots of the state and current
+placements when a host must draw that surface. A host consumes those values and
+does not reconstruct state or geometry from a private painter. A snapshot and a
+placement describe current state only. A later state or layout change can
+invalidate them.
+
 `kvim-embed::WorktreeBindingModel` composes bounded host and kvim contributions
 into that generic registry. It projects editor host-leader contributions only
 into Normal, Visual, and sidebar scopes. Literal and internal pending contexts
