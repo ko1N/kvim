@@ -41,7 +41,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Language-neutral project sessions, validated process launch requests, injectable launch and lifecycle capabilities, protocol state, diagnostics, deadlines, cancellation, restart, and shutdown. |
-| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the one scroll and motion rule of every bounded list, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
+| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the one scroll and motion rule of every bounded list, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, bounded action-agnostic dialogs with deterministic layout, rendering, choice placements, and pointer hit-testing, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Grammar-independent language service profiles and headless diagnostics composition, plus optional syntax and editor adapters, indentation, formatting, hover markup, and editor publication gates. The first-release service registry holds 25 profiles. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -363,7 +363,21 @@ no color, and no glyph, so a host fills it with its own parts and keeps kvim's
 precedence. The statusline and the winbar of kvim draw through the same band,
 so no second shedding rule exists. [`windows.md`](windows.md) owns the rule.
 
-`kvim-keymap` publishes three which-key lists and one registry helper.
+`kvim-ui` owns generic dialog state, bounded validation, deterministic layout,
+rendering, exact popup and choice placements, and pointer hit-testing. A dialog
+is action-agnostic. It carries bounded question text, optional bounded body
+lines, named choices, caller-owned stable choice identities, direct keys, and
+safe default and cancel identities. It publishes the `Rect` used to paint the
+popup and one exact `Rect` for every visible choice. It returns the caller's
+choice identity and never names a Kvim action. The dialog uses only supplied
+values and semantic styles, so it remains deterministic and host-neutral.
+
+`kvim-embed` publishes the supported host lifecycle for opening, rendering,
+driving, and answering one dialog through an editor facade. It exposes no
+internal session type or Kvim action. `kvim-tui` adapts that surface for the
+standalone editor and keeps `ConfirmedAction` private. It maps the affirmative
+choice to destructive continuations only after the dialog answers.
+
 `kvim-embed::WorktreeBindingModel` composes bounded host and kvim contributions
 into that generic registry. It projects editor host-leader contributions only
 into Normal, Visual, and sidebar scopes. Literal and internal pending contexts

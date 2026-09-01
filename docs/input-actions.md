@@ -337,12 +337,12 @@ the same word. The forward word motion is its return. A terminal reader presses
 the two arrow chords as one pair, so a prompt that bound only one half would
 strand a reader who moved back too far.
 
-The answer of a confirmation holds no cursor, so the confirmation binds no
-motion key. It ignores every motion key, as it ignores every other key that its
-own table does not hold. The answer holds one `EditedLine` as well, and that
-line keeps its position after the last typed character, where every edit of a
-question applies. The word rule of `Ctrl-W` therefore lives in one place for
-both lines.
+A confirmation dialog holds a focused named choice, not a text cursor. Its
+navigation keys move through choices with wraparound, and its direct keys,
+`Enter`, `Esc`, and `Ctrl-C` answer or cancel it as described in the
+Confirmation section below. It holds no count and no key sequence, so it never
+takes the key of a pending operator or pending count. Opening it resets pending
+input, exactly as opening a prompt does.
 
 A completion writes its candidate over the whole line, so the reader continues
 after that candidate, as they do in Vim and in readline. The restore of a
@@ -362,62 +362,47 @@ than the extension. See `docs/files.md`.
 
 ## Confirmation
 
-An action that destroys data asks the user first. The question sits on the
-message line, in the form `<question>? [y/N]:`. It opens no window and no
-overlay. The confirmation is an input context, not a mode.
+A destructive action opens a bounded popup dialog, not a message-line prompt.
+`kvim-ui` owns the generic action-agnostic dialog. It shows a wrapped question,
+an optional bounded body, and explicit named choices. Each choice has a
+caller-owned stable identity and may have one unique direct key. The safe choice
+is the default and receives initial focus. Kvim keeps `y`, `yes`, `n`, and
+case-insensitive direct-key compatibility where required; its safe default is
+No when the existing confirmation means default-No. Kvim maps the answer to its
+private `ConfirmedAction` in `kvim-tui`.
 
-The confirmation reads a typed answer. One keypress therefore never performs the
-action:
+The choice table reads these keys:
 
 | Keys | Effect |
 |---|---|
-| A printable key | Add the character to the answer |
-| `Backspace` | Remove the character before the answer cursor |
-| `Ctrl-W` | Remove the word before the answer cursor |
-| `Enter` | Read the answer and close the question |
-| `Esc` | Cancel the action |
-| `Ctrl-C` | Cancel the action |
-| Every other key | Change nothing |
+| Declared direct choice key | Answer that choice immediately |
+| `Enter` | Answer the focused choice |
+| `Esc` | Answer the safe cancel choice |
+| `Ctrl-C` | Answer the safe cancel choice |
+| `h`, `k`, `Left`, `Up` | Focus the previous choice |
+| `j`, `l`, `Right`, `Down` | Focus the next choice |
+| Pointer motion over a choice | Focus that choice |
+| Primary pointer press over a choice | Answer that choice |
+| Any other input | Consume it without changing background state |
 
-The answer `y` and the answer `yes` perform the action. The confirmation
-compares the letters without case, so `Y`, `Yes`, and `YES` perform it as well.
-Every other answer cancels the action. The capital `N` of the question names the
-default, so an empty answer cancels the action too.
+Previous and next movement wrap between the first and last choices. Direct
+choice keys take precedence over motion aliases. Pointer hit-testing reads only
+the published dialog placement and its exact choice rectangles. The dialog
+owns all input while it is open. No key or pointer event reaches the prompt,
+editor, host-global binding, or background surface, and pointer input is never
+required to answer it. At most one confirmation is open.
 
-The confirmation completes nothing, so `Tab` and `Shift-Tab` add no character
-and offer no candidate. `Backspace` on an empty answer keeps the question open,
-because only `Enter`, `Esc`, and `Ctrl-C` close it.
-
-The answer holds `CONFIRM_ANSWER_CHARS_MAX` characters, which is 32. A longer
-answer is no accepted word, so the bound rejects the further characters and
-changes nothing else. The row shows the answer after the hint and draws the
-cursor after the answer. A cancelled action changes nothing and leaves no trace
-on the message line.
-
-The confirmation owns every key while it is open, so a key that it does not read
-reaches no other owner. It owns the keys only while it is open, so no key
-reaches it before the question appears or after the answer closes it. It holds
-no count and no key sequence, so it never takes the key of a pending operator or
-of a pending count. Opening it resets pending input, exactly as opening a prompt
-does.
-
-Three owners can be open at the same time, and they own the keys in one order.
-The confirmation owns them first, because it draws over the prompt. An open
-prompt owns them next. The scope of the focus owns them last. Each owner returns
-the keys to the next owner that is still open. A question that opened over a
-prompt therefore returns the keys to that prompt, which keeps its text. A
-question with no open prompt returns them to the scope, so a question of the
-file-tree sidebar returns the keys to the sidebar.
-
-The confirmation reads text, and it stays beside the prompt model. A question
-can open over an open prompt, and that prompt keeps its own text, so the two
-lines must exist at the same time. The confirmation also draws a dynamic
-question instead of a static prefix, and it reads its own small key table. One
-open confirmation therefore holds its question, its answer, and its action in
-one value, and `Enter` reaches the confirmation alone.
+The dialog validates named bounds for the question, optional body lines, choice
+count, choice labels, direct-key set, and popup rectangle. Invalid or oversized
+public input returns a typed refusal; it is never silently truncated. A narrow
+body that cannot hold the popup returns the same typed refusal and does not
+replace the popup with a row confirmation. The popup stays inside the body area
+supplied by the owner, so host chrome remains uncovered unless the host includes
+it in that area. See [`windows.md`](windows.md) and
+[`embedding.md`](embedding.md).
 
 At most one confirmation is open. A second request while one waits is refused,
-and the open question keeps the line.
+and the open dialog keeps its choices and focus.
 
 Every confirmation follows an action of the user. A key opens most questions.
 The overwrite question opens when the worker reports that the destination holds
@@ -561,12 +546,12 @@ any input that neither a binding nor its text fallback takes ends it. The rule
 belongs to the scope, not to the editor, so a host that composes its own scopes
 states the same rule for a scope of its own.
 
-The scopes that declare a text fallback are Insert mode, the prompt, the
-confirmation, and the register selection. Each one names the focused surface as
-its text owner. The prompt scope and the confirmation scope hold their own small
-binding tables for the keys that type no character, so `Enter`, `Esc`,
-`Ctrl-C`, `Backspace`, `Tab`, and `Shift-Tab` are ordinary bindings. Insert mode
-binds `Enter`, `Backspace`, and `Tab` for the same reason.
+The scopes that declare a text fallback are Insert mode, prompts, and the
+register selection. Each one names the focused surface as its text owner. The
+prompt scope holds its own small binding table for keys that type no character,
+so `Enter`, `Esc`, `Ctrl-C`, `Backspace`, `Tab`, and `Shift-Tab` are ordinary
+bindings. The confirmation is not a text fallback: its named choices and
+navigation own its complete input contract.
 
 After every command, text, paste, unbound, unsupported, or cancellation input,
 the editor returns an `InputContextSnapshot`. It contains mode, operator phase,

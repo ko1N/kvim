@@ -126,6 +126,12 @@ The facade owns no such terminal operation.
 worktree facade. Its `#[doc(hidden)]` adapter modules are non-contract seams for
 `kvim-embed` only. New hosts use `kvim-embed`.
 
+`ConfirmedAction` remains private to `kvim-tui`. It maps the answer identity of
+Kvim's internal confirmation dialog to the destructive continuation after the
+user selects the affirmative named choice. The generic dialog state and
+placement stay in `kvim-ui`; the supported facade lifecycle stays in
+`kvim-embed`.
+
 ## Audit Invariant Ownership
 
 Each audit item has one primary document owner. The listed owner records the
@@ -709,7 +715,32 @@ statusline through a prompt, and a host reaches the same fact through
 
 `crates/kvim-ui/examples/chrome_band.rs` is one complete host of one band.
 
-## Editor Events
+## Confirmation Dialog Lifecycle
+
+`kvim-embed` is the supported high-level host boundary for dialogs. A host
+opens at most one bounded action-agnostic dialog through its editor facade. It
+supplies a question, optional bounded body lines, named choices, unique direct
+keys, a safe default, a safe cancel choice, and the body-area `Rect` in which
+the dialog may render. The facade refuses invalid or oversized input with a
+typed error, including a body too small for the popup and a narrow-screen
+geometry that cannot satisfy the minimum layout.
+
+The facade returns the caller-owned stable identity of the selected choice for
+keyboard, cancellation, or pointer activation. `Enter` selects the focused
+choice, while `Esc` and `Ctrl-C` select the safe cancel identity. A host must
+not map the identity to a Kvim action; `kvim-tui` keeps `ConfirmedAction` private
+and performs Kvim destructive continuations internally.
+
+Rendering returns or publishes the popup `Rect` and the exact `Rect` of every
+visible choice. The host uses those published rectangles for pointer motion and
+primary-press hit-testing. It does not reproduce dialog geometry in input code.
+The placement uses the existing half-open containment rule. The dialog owns all
+input while open, including input over its rail and padding, so no background
+surface or host-global binding receives an event. The popup and dimming remain
+inside the supplied body area; host-owned chrome is untouched unless the host
+includes it in that area. The lifecycle is deterministic and consumes no
+terminal, clock, filesystem, process, or network state.
+
 
 `WorktreeEvent` includes these facts and requests:
 

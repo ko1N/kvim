@@ -772,6 +772,29 @@ empty `matches` names a query that keeps nothing.
 a host picker reaches the last row, jumps to a row, and moves by a count,
 exactly as a host sidebar does. See [List Motion](#list-motion).
 
+## Confirmation Dialog Popup
+
+A confirmation is a bounded, action-agnostic dialog owned by `kvim-ui`. The
+owner supplies the body rectangle. The dialog dims only that rectangle and
+never covers host-owned chrome outside it. The popup has no full border. It
+fills its surface and draws a vertical rail along the full left edge, including
+padding and every focused row or control. One blank column separates the rail
+from the content. The popup keeps blank padding above and below its content.
+
+The question wraps inside the popup. An optional bounded body of lines may sit
+between the title and question; it is display text, not a scrollable document.
+The dialog refuses a question, body, choice list, label, direct-key set, or
+popup rectangle that exceeds its named bound. A body too small for the minimum
+rail, padding, wrapped question, and one choice row returns a typed refusal.
+The narrow-screen refusal is deterministic and never falls back to the message
+line. Layout returns the exact popup `Rect` and the exact `Rect` of each visible
+choice from the same calculation that paints them.
+
+The dialog uses semantic theme roles for its surface, dimmed body, rail, text,
+default, and focused choice. The overlays paint in the fixed order defined
+below. Rendering and layout read no terminal, clock, filesystem, process, or
+network state.
+
 ## Chrome
 
 The terminal holds three bands. The window tree receives the body band only.
@@ -789,13 +812,9 @@ The terminal holds three bands. The window tree receives the body band only.
   sidebar holds the keys, because it names the place the reader returns to.
 - The message line is the last row. It shows the last message, and the command
   line and the search prompt share it. An ordinary message takes the normal text
-  color, so only a warning and a failure stand out. A confirmation shows its
-  question on the same row, over the prompt and over the message, because it
-  owns the keys. The user types the answer after the hint of the question, so
-  the line draws the cursor after that answer. An open prompt draws its cursor
-  on the character that its own position names, which is no longer always the
-  end of the line. Every message that this line shows also reaches the editor
-  log, so a replaced message stays readable. See
+  color, so only a warning and a failure stand out. A confirmation dialog is a
+  body overlay, not message-line content. Every message that this line shows
+  also reaches the editor log, so a replaced message stays readable. See
   [`input-actions.md`](input-actions.md) and [The Editor Log](#the-editor-log).
 
 The command line can open a candidate list of the completion. The list is an
@@ -871,7 +890,10 @@ the placement rule and the bounds.
 
 The overlays paint in a fixed order over the window tree: the notification
 overlay first, then the language float, then the command-line candidate list,
-then the which-key overlay, and the picker last over the complete terminal.
+then the which-key overlay, then the confirmation dialog, and the picker last
+over the complete terminal. A confirmation therefore dims and covers only the
+body rectangle supplied by its owner, while retaining priority over the
+background surfaces and lower overlays in that area.
 
 ### Command-Line Candidate List
 
