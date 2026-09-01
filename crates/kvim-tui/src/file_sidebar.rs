@@ -28,6 +28,8 @@
 //! [`EmbeddedEditor::dispatch`]: super::embed::EmbeddedEditor::dispatch
 //! [`EmbeddedEditor::apply`]: super::embed::EmbeddedEditor::apply
 
+use std::num::NonZeroU16;
+
 use kvim_path::WorktreeRelativePath;
 use kvim_settings::FileTreeIcons;
 use kvim_ui::{
@@ -749,7 +751,8 @@ fn fade_clipped_text(
     row_style: Style,
 ) {
     const FADE_CELLS: usize = 3;
-    const FADE_STEPS: u16 = 4;
+    const FADE_STEPS: NonZeroU16 =
+        NonZeroU16::new(4).expect("the fixed fade step count is nonzero");
 
     let available_cells = usize::from(available_cells);
     if text_cells(text) <= available_cells {
@@ -783,11 +786,11 @@ fn fade_clipped_text(
                     foreground_style = row_style.patch(theme.style(role));
                 }
             }
-            let step = u16::try_from(end - fade_start).unwrap_or(FADE_STEPS);
+            let step = u16::try_from(end - fade_start).unwrap_or(FADE_STEPS.get());
             let faded = theme.fade_foreground(
                 foreground_style,
                 foreground_style.bg.or(row_style.bg),
-                step.min(FADE_STEPS - 1),
+                step.min(FADE_STEPS.get() - 1),
                 FADE_STEPS,
             );
             paint_span(canvas, column, cells, faded);

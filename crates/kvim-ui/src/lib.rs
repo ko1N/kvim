@@ -113,6 +113,7 @@
 
 mod band;
 mod cells;
+mod color;
 mod composer;
 mod dialog;
 mod guides;
@@ -128,6 +129,7 @@ mod window;
 pub use band::{
     BAND_SEGMENTS_MAX, BandError, BandPlacement, BandRank, BandSegment, BandSide, ChromeBand,
 };
+pub use color::fade_foreground;
 pub use composer::{
     COMPOSED_SURFACES_MAX, Composition, CompositionEffect, CompositionLayout, OverlayPlacement,
     ResumeError, SurfacePlacement, TransitionId, UnknownSurface, WorkspaceComposer,

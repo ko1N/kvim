@@ -1142,7 +1142,13 @@ widget answer the same question once.
 The theme maps semantic roles to terminal styles. Call sites request a role,
 such as normal text, selection, search match, line number, active line number,
 window title, status text, or a syntax role. Call sites never name a raw color.
-Only the theme holds color values.
+Only the theme holds palette color values.
+
+`kvim_ui::fade_foreground` owns the deterministic RGB calculation for a clipped
+row. It selects no palette value. A caller supplies both colors, a nonzero step
+count, and a step below that count. It returns no color when either input is
+`Reset`, indexed, or ANSI. The standalone file sidebar and a host-drawn sidebar
+therefore use one fade rule without depending on the internal `kvim-tui` crate.
 
 The palette is tokyonight night with a darkened base color `#111317` and a
 surface color `#161a20`. Every other palette value comes from the tokyonight

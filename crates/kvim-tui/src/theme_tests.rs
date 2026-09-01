@@ -1,13 +1,28 @@
 use std::fs;
+use std::num::NonZeroU16;
 use std::path::Path;
 
 use kvim_language::{MarkupRole, SyntaxRole};
-use ratatui::style::Modifier;
+use kvim_ui::fade_foreground;
+use ratatui::style::{Color, Modifier, Style};
 
 use super::{BASE, SURFACE, Theme, ThemeRole};
 
 fn theme() -> Theme {
     Theme::new()
+}
+
+#[test]
+fn theme_fade_delegates_to_the_supported_color_rule() {
+    let steps = NonZeroU16::new(4).expect("the literal four is not zero");
+    let style = Style::new().fg(Color::Rgb(200, 100, 0));
+    let background = Some(Color::Rgb(0, 0, 200));
+
+    assert_eq!(
+        theme().fade_foreground(style, background, 1, steps),
+        fade_foreground(style.fg, background, 1, steps)
+            .map_or_else(Style::new, |foreground| Style::new().fg(foreground))
+    );
 }
 
 #[test]

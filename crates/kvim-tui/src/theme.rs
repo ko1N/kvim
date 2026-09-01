@@ -7,6 +7,9 @@
 //! palette is tokyonight night with a darkened base color and surface color.
 //! See `docs/windows.md`.
 
+use std::num::NonZeroU16;
+
+use kvim_ui::fade_foreground;
 use ratatui::style::{Color, Modifier, Style};
 
 #[cfg(feature = "editor")]
@@ -345,27 +348,11 @@ impl Theme {
         style: Style,
         background: Option<Color>,
         step: u16,
-        steps: u16,
+        steps: NonZeroU16,
     ) -> Style {
-        debug_assert!(step < steps, "the fade keeps one visible foreground share");
-        debug_assert!(steps > 0, "the fixed fade has at least one step");
-        let (Some(Color::Rgb(red, green, blue)), Some(Color::Rgb(bg_red, bg_green, bg_blue))) =
-            (style.fg, background)
-        else {
-            return Style::new();
-        };
-        let foreground_share = steps - step;
-        let blend = |foreground: u8, background: u8| {
-            let value = u16::from(foreground) * foreground_share + u16::from(background) * step;
-            u8::try_from(value / steps).expect("the average of two bytes is one byte")
-        };
-        Style::new().fg(Color::Rgb(
-            blend(red, bg_red),
-            blend(green, bg_green),
-            blend(blue, bg_blue),
-        ))
+        fade_foreground(style.fg, background, step, steps)
+            .map_or_else(Style::new, |foreground| Style::new().fg(foreground))
     }
-
     /// Returns the style of one semantic role.
     ///
     /// A role that only decorates existing text returns the decoration alone,
