@@ -259,6 +259,7 @@ async fn shutdown(editor: WorktreeEditor) {
             | WorktreeEvent::WorkspaceReconciliationRequired { .. }
             | WorktreeEvent::RecoveryCandidate { .. }
             | WorktreeEvent::FileActivated { .. }
+            | WorktreeEvent::DialogAnswered(_)
             | WorktreeEvent::RedrawRequested
             | WorktreeEvent::FocusBoundary(_)
             | WorktreeEvent::CloseRequested => {}

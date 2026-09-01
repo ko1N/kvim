@@ -5,9 +5,10 @@
 //! and pass every behaviour test, so this check reads the sources of
 //! `kvim-input`, `kvim-tui`, and the embedded editor instead.
 //!
-//! The check scans production code only. It drops every `*_tests.rs` file,
-//! every line of a `#[cfg(test)]` module, and every comment line, so a test
-//! fixture and a documentation example never trip it.
+//! The check scans production code only. It permits the generic shared
+//! resolver and the dialog key adapter. The dialog consumes direct choices and
+//! navigation before the mapping registry. The check drops every `*_tests.rs`
+//! file, every line of a `#[cfg(test)]` module, and every comment line.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -30,6 +31,12 @@ const BINDING_TABLE: &str = "kvim-input/src/registry.rs";
 /// It reads the chord and the code of one key to recognize the two cancel keys.
 /// That predicate maps no key to a command, so it is no second table.
 const SHARED_ADAPTER: &str = "kvim-input/src/resolver.rs";
+
+/// The standalone dialog adapter.
+///
+/// It converts terminal-neutral keys to the generic dialog vocabulary. It owns
+/// no pending sequence and maps no key to an editor command.
+const DIALOG_ADAPTER: &str = "kvim-tui/src/session.rs";
 
 /// One production source file with its workspace-relative name.
 struct Source {
@@ -118,7 +125,10 @@ fn production_code(text: &str) -> String {
 #[test]
 fn only_the_kvim_preset_names_a_key_code() {
     for source in production_sources() {
-        if source.name == BINDING_TABLE || source.name == SHARED_ADAPTER {
+        if source.name == BINDING_TABLE
+            || source.name == SHARED_ADAPTER
+            || source.name == DIALOG_ADAPTER
+        {
             continue;
         }
         assert!(
@@ -133,7 +143,7 @@ fn only_the_kvim_preset_names_a_key_code() {
 #[test]
 fn no_module_matches_the_chord_or_the_code_of_a_key() {
     for source in production_sources() {
-        if source.name == SHARED_ADAPTER {
+        if source.name == SHARED_ADAPTER || source.name == DIALOG_ADAPTER {
             continue;
         }
         for marker in [".chord()", ".code()"] {

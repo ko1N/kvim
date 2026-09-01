@@ -915,17 +915,13 @@ fn add_review_bindings(table: &mut Vec<Binding>) {
     );
 }
 
-/// Adds the binding tables of the prompt line and of the confirmation.
+/// Adds the binding table of the prompt line.
 ///
 /// Every prompt reads the same keys, so one table serves the command line, the
 /// search prompt, the file-tree prompts, and the picker query. A printable key
 /// reaches no binding and falls through to the text of the scope.
-///
-/// The confirmation completes nothing, so it holds no completion key. Every key
-/// that its table does not hold stays unbound, and the open question keeps it.
 fn add_prompt_bindings(table: &mut Vec<Binding>) {
     const PROMPT: &[BindingScope] = &[BindingScope::Prompt];
-    const CONFIRMATION: &[BindingScope] = &[BindingScope::Confirmation];
     let shared = [
         (Key::plain(KeyCode::Enter), Command::PromptAccept),
         (Key::plain(KeyCode::Esc), Command::PromptCancel),
@@ -941,7 +937,6 @@ fn add_prompt_bindings(table: &mut Vec<Binding>) {
     ];
     for (key, command) in shared {
         add_scoped(table, PROMPT, &[key], command);
-        add_scoped(table, CONFIRMATION, &[key], command);
     }
     add_scoped(
         table,
@@ -955,10 +950,8 @@ fn add_prompt_bindings(table: &mut Vec<Binding>) {
         &[Key::plain(KeyCode::BackTab)],
         Command::PromptCompletePrevious,
     );
-    // The answer of a confirmation holds no cursor, so only the prompt scope
-    // binds a motion. Each motion takes the key that a terminal reader already
-    // presses: the arrow keys, `Home` and `End`, and the readline chords of
-    // every shell. `Ctrl-Left` and `Ctrl-Right` already name the two word
+    // Each motion takes a key that a terminal reader already presses: the
+    // arrow keys, `Home` and `End`, and the readline chords of every shell. `Ctrl-Left` and `Ctrl-Right` already name the two word
     // motions in the editing scopes, and `kvim-terminal` folds the macOS
     // `Option` arrows into them, so the prompt reuses the pair. See
     // `docs/input-actions.md`.

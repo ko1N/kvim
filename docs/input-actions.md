@@ -94,6 +94,11 @@ confirmation are input contexts too. See the sections below.
 
 ## Binding Scopes
 
+`BindingScope::Confirmation` publishes the current input owner. The dialog
+facade resolves each confirmation key and pointer event before the mapping
+registry. This scope has no free-text fallback and no confirmation binding
+table.
+
 The mapping registry is generic over command identity, scope identity, and
 surface identity. One binding names command ownership as host or surface. The
 resolver evaluates the active overlay, host-global, and focused-surface scopes

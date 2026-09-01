@@ -731,15 +731,26 @@ choice, while `Esc` and `Ctrl-C` select the safe cancel identity. A host must
 not map the identity to a Kvim action; `kvim-tui` keeps `ConfirmedAction` private
 and performs Kvim destructive continuations internally.
 
-Rendering returns or publishes the popup `Rect` and the exact `Rect` of every
-visible choice. The host uses those published rectangles for pointer motion and
-primary-press hit-testing. It does not reproduce dialog geometry in input code.
-The placement uses the existing half-open containment rule. The dialog owns all
-input while open, including input over its rail and padding, so no background
-surface or host-global binding receives an event. The popup and dimming remain
-inside the supplied body area; host-owned chrome is untouched unless the host
-includes it in that area. The lifecycle is deterministic and consumes no
-terminal, clock, filesystem, process, or network state.
+The facade returns one `DialogAnswer` with the caller-owned `DialogChoiceId`.
+`MemoryEditorEvent::DialogAnswered` and `WorktreeEvent::DialogAnswered` carry
+that answer. `take_event` drains it exactly once. A pending answer blocks another
+open request until the host drains it. An explicit close returns no answer. An
+accepted resize also closes without an answer when the fixed body no longer
+fits.
+
+An open dialog publishes `BindingScope::Confirmation`. The facade generation
+changes when the dialog opens, changes focus, closes, answers, or invalidates
+placement. The scope states input ownership only. It does not publish a
+free-text resolver route. The dialog owns all input, including its rail and
+padding. No event reaches a background surface or host-global binding.
+
+Rendering publishes the owner-supplied body area, popup `Rect`, body-text and
+question rectangles, and the exact `Rect` of every visible choice. This is the
+current placement only. Opening, focus movement, closing, answering, and resize
+invalidate an older placement. Pointer input without a current placement is
+consumed and changes no background state. The popup and dimming stay inside the
+supplied body area. Host chrome stays unchanged unless the host includes it.
+The lifecycle reads no terminal, clock, filesystem, process, or network state.
 
 
 `WorktreeEvent` includes these facts and requests:
@@ -751,6 +762,7 @@ terminal, clock, filesystem, process, or network state.
 - `WorkspaceReconciliationRequired`,
 - `RecoveryCandidate { id, path, status }`,
 - `FileActivated`,
+- `DialogAnswered(DialogAnswer)`,
 - `RedrawRequested`,
 - `FocusBoundary(Direction)`,
 - `CloseRequested`.
@@ -972,6 +984,7 @@ The required examples are:
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
 - `crates/kvim-lsp/examples/custom_lsp_transport.rs`
 - `crates/kvim-language/examples/headless_diagnostics.rs`
+- `crates/kvim-embed/examples/confirmation_dialog.rs`
 - `crates/kvim-embed/examples/host_owned_chrome.rs`
 - `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
@@ -981,6 +994,7 @@ The required examples are:
 - `crates/kvim-embed/examples/worktree_editor.rs`
 - `crates/kvim-embed/examples/worktree_review.rs`
 - `crates/kvim-ui/examples/composer.rs`
+- `crates/kvim-ui/examples/confirmation_dialog.rs`
 - `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
 - `crates/kvim-ui/examples/split_windows.rs`

@@ -81,4 +81,4 @@ pub use profile::{
 };
 pub use reducer::{Reduced, Reduction, SemanticOperation, SemanticReducer, is_register_name};
 pub use registry::{Binding, Registry, RegistryError, WhichKeyRow, WhichKeyTarget};
-pub use resolver::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};
+pub use resolver::{PromptEdit, Resolution, Resolver};

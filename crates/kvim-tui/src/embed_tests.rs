@@ -584,8 +584,12 @@ fn every_workspace_mutation_publishes_its_fact() {
     // Delete the copy, so the `docs` directory can take the source instead.
     select_copy_in_docs(&mut session);
     let _ = session.apply_command(Command::TreeDelete, None, None, NOW);
-    let _ = session.insert_literal("y", NOW);
-    let _ = session.apply_command(Command::PromptAccept, None, None, NOW);
+    let _ = session.handle_event(
+        kvim_terminal::TerminalEvent::Key(kvim_terminal::Key::plain(kvim_terminal::KeyCode::Char(
+            'y',
+        ))),
+        NOW,
+    );
     settle(&mut session);
     assert!(
         matches!(one_mutation(&mut session), FileOperation::Delete { .. }),

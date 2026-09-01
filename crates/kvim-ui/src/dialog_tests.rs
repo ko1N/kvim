@@ -55,9 +55,9 @@ fn starts_focused_on_the_safe_default() {
 #[test]
 fn previous_and_next_wrap_between_choices() {
     let mut dialog = dialog();
-    assert_eq!(dialog.previous(), DialogOutcome::Focused(Id::Discard));
-    assert_eq!(dialog.next(), DialogOutcome::Focused(Id::Keep));
-    assert_eq!(dialog.next(), DialogOutcome::Focused(Id::Discard));
+    assert_eq!(dialog.move_previous(), DialogOutcome::Focused(Id::Discard));
+    assert_eq!(dialog.move_next(), DialogOutcome::Focused(Id::Keep));
+    assert_eq!(dialog.move_next(), DialogOutcome::Focused(Id::Discard));
 }
 
 #[test]
@@ -349,7 +349,7 @@ fn choice_placements_name_all_and_only_painted_choice_cells() {
         Id::Keep,
     )
     .expect("bounded dialog");
-    dialog.next();
+    dialog.move_next();
     let body = Rect::new(7, 5, 32, 10);
     let mut target = Buffer::empty(Rect::new(0, 0, 48, 20));
     target.set_style(*target.area(), Style::default().bg(Color::Red));

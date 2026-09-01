@@ -3299,7 +3299,6 @@ impl Session {
                 register,
             } => self.dispatch_command(command, count, register),
             Resolution::Prompt(edit) => self.apply_prompt(edit),
-            Resolution::Confirmation(_) => Redraw::Skipped,
             // A pending sequence and a cancelled sequence both change only the
             // which-key overlay, and `settle` publishes that change.
             Resolution::Pending | Resolution::Cancelled => Redraw::Skipped,
@@ -8140,9 +8139,9 @@ impl Session {
     /// Moves input to the owner that holds the keys.
     ///
     /// Three owners can be open at the same time, and they own the keys in one
-    /// order. An open confirmation owns them first, because it draws over the
-    /// prompt and reads its own answer. One `Enter` therefore reaches the
-    /// confirmation alone. An open prompt owns them next. The scope
+    /// order. An open confirmation owns them first because its dialog draws
+    /// over the prompt and resolves input directly. One `Enter` therefore
+    /// reaches the confirmation alone. An open prompt owns them next. The scope
     /// of the focus owns them last. Each owner therefore returns the keys to
     /// the next owner that is still open, so a question that opened over a
     /// prompt returns them to that prompt and not to the scope below it.

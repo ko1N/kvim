@@ -542,8 +542,8 @@ to catch it.
 A published enum that names an input also derives `Ord` and `PartialOrd`. A
 host can use that value inside its own command vocabulary without building a
 parallel type. This rule applies to supported component APIs such as
-`PromptEdit`, `ConfirmEdit`, `ListMotion`, `CompletionCycle`, and
-`AdaptiveSplit`. An enum that names an outcome or a fact needs no order.
+`PromptEdit`, `ListMotion`, `CompletionCycle`, and `AdaptiveSplit`. An enum that
+names an outcome or a fact needs no order.
 
 The rule covers the payload of a variant as well as the variant list. A changed
 payload type is a breaking facade change because every host must decide how to
@@ -552,11 +552,11 @@ private presentation and workspace types must not leak through `kvim-embed`.
 
 Every supported surface in this section carries rustdoc, one owning document,
 and the dedicated example of its feature. The supported set includes generic
-`kvim-ui` composition and sidebar components, prompt editing, candidate menus,
-the editing mode and semantic command, status, and sidebar publications of
-`WorktreeEditor`, the rendered worktree facade, and `ReviewSurface`. It does not
-include private `kvim-tui` adapter payloads or a multi-surface composer adapter
-for `WorktreeEditor`.
+`kvim-ui` composition, dialog, and sidebar components. It also includes prompt
+editing, candidate menus, editing mode, semantic commands, worktree status,
+worktree sidebar publications, the rendered worktree facade, and
+`ReviewSurface`. It does not include private `kvim-tui` adapter payloads or a
+multi-surface composer adapter for `WorktreeEditor`.
 `crates/kvim/tests/repository_policy.rs` proves that last link, so the same
 rule governs all of them.
 

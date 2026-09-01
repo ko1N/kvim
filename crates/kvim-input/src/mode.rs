@@ -135,10 +135,10 @@ pub enum BindingScope {
     /// Every prompt reads the same keys, so one table holds them. A printable
     /// key falls through to the prompt text.
     Prompt,
-    /// One open confirmation owns the keys.
+    /// One open confirmation dialog owns all input.
     ///
-    /// The confirmation reads its own answer, so it holds a smaller table than
-    /// a prompt and completes nothing.
+    /// The dialog facade resolves its named choices before the mapping
+    /// registry. This scope publishes ownership and no free-text behavior.
     Confirmation,
     /// The register selection waits for the name of a register.
     ///
@@ -222,10 +222,9 @@ impl BindingScope {
 
     /// Returns the owner that takes printable input as literal text.
     ///
-    /// Insert mode, a prompt, a confirmation, and the register selection each
-    /// read text. The editor owns every one of them, so the fallback always
-    /// names the focused surface. Every other scope leaves printable input
-    /// unbound.
+    /// Insert mode, a prompt, and the register selection each read text. The
+    /// editor owns every one of them, so the fallback always names the focused
+    /// surface. Every other scope leaves printable input unbound.
     ///
     /// ```
     /// use kvim_input::{BindingScope, Mode};
@@ -244,13 +243,15 @@ impl BindingScope {
     #[must_use]
     pub const fn text_fallback(self) -> TextFallback {
         match self {
-            Self::Mode(Mode::Insert)
-            | Self::Prompt
-            | Self::Confirmation
-            | Self::RegisterSelection => TextFallback::Typed(CommandOwner::Surface),
-            Self::Mode(_) | Self::Sidebar | Self::Picker | Self::OperatorPending | Self::Review => {
-                TextFallback::None
+            Self::Mode(Mode::Insert) | Self::Prompt | Self::RegisterSelection => {
+                TextFallback::Typed(CommandOwner::Surface)
             }
+            Self::Mode(_)
+            | Self::Sidebar
+            | Self::Picker
+            | Self::OperatorPending
+            | Self::Confirmation
+            | Self::Review => TextFallback::None,
         }
     }
 
@@ -283,8 +284,8 @@ impl BindingScope {
     pub const fn unbound_input(self) -> UnboundInput {
         match self {
             Self::RegisterSelection => UnboundInput::Cancels,
-            // A prompt and a confirmation both bind their own cancel keys, so
-            // an unbound key there leaves the open line untouched.
+            // A prompt binds its own cancel keys. A dialog resolves all input
+            // before the registry. Unbound input leaves either surface open.
             Self::Mode(_)
             | Self::Sidebar
             | Self::Picker
@@ -309,7 +310,8 @@ impl BindingScope {
             // The review walks hunks and files, and a count before a walk names
             // how many to pass, exactly as it does for a motion.
             Self::Review => true,
-            // Each of these scopes reads text, so a digit is part of that text.
+            // The picker and prompt read text. The confirmation dialog resolves
+            // choices before this registry. None of these scopes accepts a count.
             Self::Picker | Self::Prompt | Self::Confirmation | Self::RegisterSelection => false,
         }
     }
@@ -479,12 +481,11 @@ pub enum InputContext {
         /// The scope that regains input when the prompt closes.
         return_to: BindingScope,
     },
-    /// One open confirmation owns input.
+    /// One open confirmation dialog owns input.
     ///
-    /// The confirmation reads its own answer beside the prompt, because a
-    /// question can open over an open prompt and that prompt keeps its text.
-    /// The variant therefore holds no prompt kind. See
-    /// `docs/input-actions.md`.
+    /// The dialog resolves its choices before the mapping registry. A question
+    /// can open over a prompt without changing that prompt. The variant holds
+    /// no prompt kind. See `docs/input-actions.md`.
     Confirmation {
         /// The scope that regains input when the confirmation closes.
         return_to: BindingScope,
@@ -510,9 +511,9 @@ impl InputContext {
 
     /// Returns the scope that owns the keys right now.
     ///
-    /// A prompt and a confirmation each own one table of their own, so this
-    /// answer differs from [`InputContext::scope`], which names the scope that
-    /// regains input when the prompt or the confirmation closes.
+    /// A prompt owns one binding table. A confirmation dialog resolves input
+    /// before the registry. This answer differs from [`InputContext::scope`],
+    /// which names the scope that regains input when either surface closes.
     ///
     /// ```
     /// use kvim_input::{BindingScope, InputContext, PromptKind};
@@ -535,7 +536,7 @@ impl InputContext {
 
     /// Returns the prompt that owns input.
     ///
-    /// A confirmation owns its own answer line, so it reports no prompt.
+    /// A confirmation dialog is not a prompt, so it reports no prompt kind.
     #[inline]
     pub const fn prompt(self) -> Option<PromptKind> {
         match self {

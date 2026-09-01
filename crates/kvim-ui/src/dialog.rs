@@ -369,7 +369,7 @@ pub struct DialogPlacement<Id> {
 ///     "keep",
 ///     "keep",
 /// )?;
-/// assert_eq!(dialog.next(), DialogOutcome::Focused("discard"));
+/// assert_eq!(dialog.move_next(), DialogOutcome::Focused("discard"));
 /// assert_eq!(dialog.answer_for_direct_key('d'), Some(DialogOutcome::Answered("discard")));
 /// # Ok::<(), kvim_ui::DialogError>(())
 /// ```
@@ -754,7 +754,7 @@ impl<Id: Eq> Dialog<Id> {
     }
 
     /// Moves focus to the previous choice, wrapping from the first choice.
-    pub fn previous(&mut self) -> DialogOutcome<Id>
+    pub fn move_previous(&mut self) -> DialogOutcome<Id>
     where
         Id: Clone,
     {
@@ -767,7 +767,7 @@ impl<Id: Eq> Dialog<Id> {
     }
 
     /// Moves focus to the next choice, wrapping from the last choice.
-    pub fn next(&mut self) -> DialogOutcome<Id>
+    pub fn move_next(&mut self) -> DialogOutcome<Id>
     where
         Id: Clone,
     {
@@ -849,14 +849,18 @@ impl<Id: Eq> Dialog<Id> {
     where
         Id: Clone,
     {
-        if let DialogKey::Char(character) = key {
-            if let Some(outcome) = self.answer_for_direct_key(character) {
-                return DialogKeyOutcome::Interaction(outcome);
-            }
+        if let DialogKey::Char(character) = key
+            && let Some(outcome) = self.answer_for_direct_key(character)
+        {
+            return DialogKeyOutcome::Interaction(outcome);
         }
         let outcome = match key {
-            DialogKey::Char('h' | 'k') | DialogKey::Left | DialogKey::Up => Some(self.previous()),
-            DialogKey::Char('j' | 'l') | DialogKey::Right | DialogKey::Down => Some(self.next()),
+            DialogKey::Char('h' | 'k') | DialogKey::Left | DialogKey::Up => {
+                Some(self.move_previous())
+            }
+            DialogKey::Char('j' | 'l') | DialogKey::Right | DialogKey::Down => {
+                Some(self.move_next())
+            }
             DialogKey::Enter => Some(self.answer_focused()),
             DialogKey::Esc | DialogKey::CtrlC => Some(self.answer_cancel()),
             DialogKey::Char(_) | DialogKey::Unsupported => None,

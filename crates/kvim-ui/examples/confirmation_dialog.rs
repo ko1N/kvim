@@ -57,7 +57,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         placement.body_area, placement.popup, placement.choices
     );
     assert_eq!(
-        dialog.next(),
+        dialog.move_next(),
         DialogOutcome::Focused(ChoiceId::DiscardChanges)
     );
     let answer = dialog.answer_focused();

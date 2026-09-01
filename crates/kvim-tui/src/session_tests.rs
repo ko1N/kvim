@@ -2761,8 +2761,8 @@ fn the_quit_command_asks_and_a_confirmed_answer_ends_the_editor() {
 
 #[test]
 fn a_cancelled_quit_keeps_the_buffer_and_the_window() {
-    // `n` names the default of the question, the empty text names it as well,
-    // and `no` and `ya` stand for every remaining answer.
+    // The test helper maps each legacy non-affirmative input to the direct
+    // safe negative choice.
     for value in ["n", "", "no", "ya"] {
         let mut session = modified_session();
         run_command(&mut session, "q");
@@ -5158,13 +5158,8 @@ fn the_edit_command_reloads_a_clean_buffer_and_asks_before_a_dirty_one() {
     );
     assert_eq!(session.buffer().to_string(), "typed one\ntwo\n");
 
-    // A lone `y` reads no file, because it performs no action.
+    // The direct `y` choice answers and starts the reload immediately.
     press(&mut session, 'y');
-    assert!(
-        session.take_file_request().is_none(),
-        "one keypress reloads nothing"
-    );
-    press_code(&mut session, KeyCode::Enter);
     run_file_request(&mut session);
     assert_eq!(session.buffer().to_string(), "one\ntwo\n");
     assert!(!session.buffer().is_modified());
@@ -5172,8 +5167,8 @@ fn the_edit_command_reloads_a_clean_buffer_and_asks_before_a_dirty_one() {
 
 #[test]
 fn a_cancelled_reload_keeps_the_buffer_and_its_unsaved_text() {
-    // `n` names the default of the question, the empty text names it as well,
-    // and `no` and `ya` stand for every remaining answer.
+    // Legacy helper inputs map to the safe negative choice before this
+    // call.
     for value in ["n", "", "no", "ya"] {
         let (_directory, path, mut session) =
             opened_file("session-reload-cancel", "main.rs", "one\n");

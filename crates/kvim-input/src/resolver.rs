@@ -129,98 +129,6 @@ impl PromptEdit {
     }
 }
 
-/// One edit of the answer of an open confirmation.
-///
-/// The confirmation completes nothing, so this enumeration holds no completion
-/// edit. The answer holds no cursor, so it holds no motion either, and the
-/// prompt scope alone binds the motion keys. See `docs/input-actions.md`.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ConfirmEdit {
-    /// Append one character to the answer.
-    Insert(char),
-    /// Remove the character before the cursor.
-    DeleteBackward,
-    /// Remove the word before the cursor.
-    ///
-    /// The answer takes the same edit as the prompt line, because the
-    /// confirmation scope binds the same keys.
-    DeleteWordBackward,
-    /// Read the answer and close the question.
-    Accept,
-    /// Cancel the action and close the question.
-    Cancel,
-    /// Change nothing and keep the question open.
-    ///
-    /// An open confirmation owns every key, so a key that its table does not
-    /// hold reaches no other owner and inserts no buffer text.
-    Ignore,
-}
-
-impl ConfirmEdit {
-    /// Returns the edit that one resolved command names for an open question.
-    ///
-    /// The question completes nothing, so it names fewer edits than a prompt.
-    /// A command that it does not name returns `None`, and the caller decides
-    /// whether the question ignores that command or lets it pass.
-    ///
-    /// ```
-    /// use kvim_input::{Command, ConfirmEdit};
-    ///
-    /// assert_eq!(
-    ///     ConfirmEdit::of_command(Command::PromptCancel),
-    ///     Some(ConfirmEdit::Cancel)
-    /// );
-    /// assert_eq!(ConfirmEdit::of_command(Command::PromptCompleteNext), None);
-    /// ```
-    #[must_use]
-    pub const fn of_command(command: Command) -> Option<Self> {
-        match command {
-            Command::PromptAccept => Some(Self::Accept),
-            Command::PromptCancel => Some(Self::Cancel),
-            Command::PromptDeleteBackward => Some(Self::DeleteBackward),
-            Command::PromptDeleteWordBackward => Some(Self::DeleteWordBackward),
-            _ => None,
-        }
-    }
-}
-
-/// The answer to one open confirmation.
-///
-/// The resolver reads the keys, and this value reads the typed word, so one
-/// keypress never performs the action. See `docs/input-actions.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum ConfirmAnswer {
-    /// Perform the action that waits for the answer.
-    Yes,
-    /// Cancel the action and change nothing.
-    No,
-}
-
-impl ConfirmAnswer {
-    /// Returns the answer that one typed text gives.
-    ///
-    /// The text `y` and the text `yes` confirm, in any letter case. The capital
-    /// `N` of the question names the default, so every other text cancels, and
-    /// an empty text cancels as well.
-    ///
-    /// ```
-    /// use kvim_input::ConfirmAnswer;
-    ///
-    /// assert_eq!(ConfirmAnswer::from_text("y"), ConfirmAnswer::Yes);
-    /// assert_eq!(ConfirmAnswer::from_text("YES"), ConfirmAnswer::Yes);
-    /// assert_eq!(ConfirmAnswer::from_text("no"), ConfirmAnswer::No);
-    /// assert_eq!(ConfirmAnswer::from_text(""), ConfirmAnswer::No);
-    /// ```
-    #[inline]
-    #[must_use]
-    pub fn from_text(text: &str) -> Self {
-        if text.eq_ignore_ascii_case("y") || text.eq_ignore_ascii_case("yes") {
-            return Self::Yes;
-        }
-        Self::No
-    }
-}
-
 /// The outcome of one resolution request.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Resolution {
@@ -235,8 +143,6 @@ pub enum Resolution {
     },
     /// An open prompt owns input and the key edits its line.
     Prompt(PromptEdit),
-    /// An open confirmation owns input and the key edits its answer.
-    Confirmation(ConfirmEdit),
     /// The focused scope takes the key as literal text.
     ///
     /// Insert mode reaches this outcome for every printable key, and the editor
@@ -505,15 +411,9 @@ fn resolution(reduced: Reduced, scope: BindingScope) -> Resolution {
         // The reducer already reset every grammar phase, and no owner takes
         // input that no binding accepts, so nothing else changes.
         Reduction::Unsupported => Resolution::NoMatch,
-        Reduction::Unbound => match scope {
-            // An open confirmation owns every key, so an unbound key changes
-            // nothing and reaches no owner below the question.
-            BindingScope::Confirmation => Resolution::Confirmation(ConfirmEdit::Ignore),
-            _ => Resolution::NoMatch,
-        },
+        Reduction::Unbound => Resolution::NoMatch,
         Reduction::Text(TypedText::Typed(value)) => match scope {
             BindingScope::Prompt => Resolution::Prompt(PromptEdit::Insert(value)),
-            BindingScope::Confirmation => Resolution::Confirmation(ConfirmEdit::Insert(value)),
             _ => Resolution::Text(value),
         },
         Reduction::Text(TypedText::Pasted(_)) => {
@@ -530,14 +430,11 @@ fn resolution(reduced: Reduced, scope: BindingScope) -> Resolution {
 
 /// Reports one completed operation.
 ///
-/// A prompt command and a confirmation command name an edit of the open line.
+/// A prompt command names an edit of the open line.
 /// Every other command reaches the editor with its count and its register.
 fn operation_resolution(scope: BindingScope, operation: SemanticOperation) -> Resolution {
     let edit = match scope {
         BindingScope::Prompt => PromptEdit::of_command(operation.command).map(Resolution::Prompt),
-        BindingScope::Confirmation => {
-            ConfirmEdit::of_command(operation.command).map(Resolution::Confirmation)
-        }
         _ => None,
     };
     edit.unwrap_or(Resolution::Command {

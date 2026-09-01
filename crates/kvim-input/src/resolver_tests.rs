@@ -5,7 +5,7 @@ use crate::{BindingScope, Command, InputContext, Mode, PromptKind, Registry};
 use kvim_keymap::{Key, KeyCode, UnboundInput};
 use kvim_settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
 
-use super::{ConfirmAnswer, ConfirmEdit, PromptEdit, Resolution, Resolver};
+use super::{PromptEdit, Resolution, Resolver};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -622,67 +622,20 @@ fn the_sidebar_scope_resolves_its_own_keys() {
 }
 
 #[test]
-fn a_confirmation_context_takes_every_key_as_an_answer_edit() {
-    let cases = [
-        (ch('y'), ConfirmEdit::Insert('y')),
-        // The capital letters reach the answer as well, because the answer
-        // compares them without case.
-        (ch('Y'), ConfirmEdit::Insert('Y')),
-        (ch('n'), ConfirmEdit::Insert('n')),
-        (Key::plain(KeyCode::Backspace), ConfirmEdit::DeleteBackward),
-        // The answer takes the word delete of the prompt line, because the
-        // confirmation scope binds the same keys.
-        (
-            Key::ctrl(KeyCode::Char('w')),
-            ConfirmEdit::DeleteWordBackward,
-        ),
-        (Key::plain(KeyCode::Enter), ConfirmEdit::Accept),
-        (Key::plain(KeyCode::Esc), ConfirmEdit::Cancel),
-        (Key::ctrl(KeyCode::Char('c')), ConfirmEdit::Cancel),
-        // The confirmation completes nothing, so both completion keys
-        // change nothing.
-        (Key::plain(KeyCode::Tab), ConfirmEdit::Ignore),
-        (Key::plain(KeyCode::BackTab), ConfirmEdit::Ignore),
-        (Key::ctrl(KeyCode::Char('y')), ConfirmEdit::Ignore),
-        // The answer holds no cursor, so the prompt scope alone binds the
-        // motion keys and the question ignores every one of them.
-        (Key::plain(KeyCode::Left), ConfirmEdit::Ignore),
-        (Key::plain(KeyCode::Home), ConfirmEdit::Ignore),
-        (Key::ctrl(KeyCode::Char('a')), ConfirmEdit::Ignore),
-        (Key::ctrl(KeyCode::Right), ConfirmEdit::Ignore),
-    ];
-    for (key, edit) in cases {
+fn a_confirmation_scope_publishes_ownership_without_resolving_keys() {
+    for key in [
+        ch('y'),
+        Key::plain(KeyCode::Enter),
+        Key::plain(KeyCode::Esc),
+        Key::ctrl(KeyCode::Char('c')),
+        Key::plain(KeyCode::Left),
+    ] {
         let mut resolver = resolver();
         resolver.set_context(InputContext::NORMAL.open_confirmation());
         assert_eq!(
             resolver.resolve(key, NOW),
-            Resolution::Confirmation(edit),
-            "{key:?} in a confirmation"
-        );
-    }
-}
-
-#[test]
-fn the_accepted_answers_are_y_and_yes_in_every_letter_case() {
-    for text in ["y", "Y", "yes", "Yes", "YES", "yEs"] {
-        assert_eq!(
-            ConfirmAnswer::from_text(text),
-            ConfirmAnswer::Yes,
-            "{text} performs the action"
-        );
-    }
-}
-
-#[test]
-fn every_other_answer_cancels_the_action() {
-    // The empty text is the default that the capital `N` of the question
-    // names. The blank cases prove that the answer takes the text exactly
-    // as the user typed it.
-    for text in ["", "n", "N", "no", "ya", "yess", " y", "y ", "yes!"] {
-        assert_eq!(
-            ConfirmAnswer::from_text(text),
-            ConfirmAnswer::No,
-            "{text:?} cancels the action"
+            Resolution::NoMatch,
+            "{key:?} is resolved by the dialog before the mapping registry"
         );
     }
 }
