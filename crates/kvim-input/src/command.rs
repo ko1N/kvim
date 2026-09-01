@@ -208,6 +208,7 @@ semantic_commands! {
     // Files and buffers.
     SaveBuffer => ("save-buffer", "Save the active buffer"),
     SaveBufferAndClose => ("save-buffer-and-close", "Save the active buffer and close it"),
+    SaveAllBuffers => ("save-all-buffers", "Save every modified buffer"),
     RevealInFileTree => ("reveal-in-file-tree", "Reveal the active file in the file tree"),
     OpenBufferPicker => ("open-buffer-picker", "Open the buffer picker"),
     // `CloseBuffer` and `UnloadBuffer` differ only in what the last loaded
@@ -342,6 +343,7 @@ impl Command {
 
             Self::SaveBuffer
             | Self::SaveBufferAndClose
+            | Self::SaveAllBuffers
             | Self::TreeAddFile
             | Self::TreeAddDirectory
             | Self::TreeDelete
@@ -583,6 +585,7 @@ impl Command {
 
             Self::SaveBuffer
             | Self::SaveBufferAndClose
+            | Self::SaveAllBuffers
             | Self::RevealInFileTree
             | Self::OpenBufferPicker
             | Self::CloseBuffer

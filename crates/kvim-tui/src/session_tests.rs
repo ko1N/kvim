@@ -4871,6 +4871,145 @@ fn save_buffer_and_close_writes_the_file_then_closes_the_buffer() {
     assert_ne!(session.active(), second, "the close falls back to another");
 }
 
+/// Modifies the active buffer with one inserted character.
+fn modify_active_buffer(session: &mut Session) {
+    press(session, 'i');
+    type_keys(session, "z");
+    press_code(session, KeyCode::Esc);
+    assert!(session.active_buffer().is_modified());
+}
+
+#[test]
+fn save_all_buffers_writes_every_modified_buffer_from_one_command() {
+    let directory = TempDir::new("session-save-all");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut session = file_session(&directory.path);
+
+    let _first = open_file(&mut session, first_path.clone());
+    modify_active_buffer(&mut session);
+    let second = open_file(&mut session, second_path.clone());
+    modify_active_buffer(&mut session);
+
+    let _ = session.apply_command(Command::SaveAllBuffers, None, None, NOW);
+    // The editor runs one file operation at a time, so the run queues one save
+    // for each buffer, one after the other.
+    run_file_request(&mut session);
+    run_file_request(&mut session);
+
+    assert_eq!(
+        std::fs::read_to_string(&first_path).expect("the first file exists"),
+        "zone\n",
+        "the run wrote the buffer that was not active"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&second_path).expect("the second file exists"),
+        "ztwo\n"
+    );
+    assert_eq!(session.active(), second, "the run changed no active buffer");
+    assert_eq!(message(&session), "2 buffers written");
+    assert!(
+        session.take_file_request().is_none(),
+        "the complete run queues no further save"
+    );
+}
+
+#[test]
+fn save_all_buffers_never_writes_the_scratch_buffer() {
+    let directory = TempDir::new("session-save-all-scratch");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session(&directory.path);
+
+    // A fresh session holds one scratch buffer, which no file backs.
+    let scratch = session.active();
+    modify_active_buffer(&mut session);
+    let _loaded = open_file(&mut session, path.clone());
+    modify_active_buffer(&mut session);
+
+    let _ = session.apply_command(Command::SaveAllBuffers, None, None, NOW);
+    run_file_request(&mut session);
+
+    assert_eq!(
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "zone\n"
+    );
+    assert_eq!(message(&session), "1 buffer written");
+    assert!(
+        session
+            .buffers()
+            .get(scratch)
+            .expect("the scratch buffer stays loaded")
+            .is_modified(),
+        "the scratch buffer holds no file name, so no save reached it"
+    );
+    assert!(
+        session.take_file_request().is_none(),
+        "the scratch buffer never blocks the run"
+    );
+}
+
+#[test]
+fn save_all_buffers_reports_no_modified_buffer_and_starts_no_file_operation() {
+    let directory = TempDir::new("session-save-all-clean");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = file_session(&directory.path);
+
+    let _loaded = open_file(&mut session, path);
+
+    let _ = session.apply_command(Command::SaveAllBuffers, None, None, NOW);
+
+    assert_eq!(message(&session), "no modified buffer to save");
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Info)
+    );
+    assert!(
+        session.take_file_request().is_none(),
+        "a run without a buffer starts no file operation"
+    );
+}
+
+#[test]
+fn save_all_buffers_stops_the_run_on_a_failed_save() {
+    let directory = TempDir::new("session-save-all-failure");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut session = file_session(&directory.path);
+
+    let _first = open_file(&mut session, first_path.clone());
+    modify_active_buffer(&mut session);
+    let _second = open_file(&mut session, second_path.clone());
+    modify_active_buffer(&mut session);
+
+    let _ = session.apply_command(Command::SaveAllBuffers, None, None, NOW);
+    let request = session
+        .take_file_request()
+        .expect("the run queued one save");
+    let FileRequest::Save(request) = request else {
+        panic!("the request is a save");
+    };
+    let _ = session.apply_file_result(FileResult::Saved {
+        buffer: request.buffer,
+        requested: request.target,
+        outcome: DurableOutcome::Unchanged(SaveError::Conflict),
+    });
+
+    assert!(message(&session).contains("cannot save"));
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+    assert!(
+        session.take_file_request().is_none(),
+        "the failed save ends the run"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&second_path).expect("the second file exists"),
+        "two\n",
+        "the run wrote no later buffer"
+    );
+}
+
 /// Reports one workspace change, like the coalesced burst of the watcher.
 ///
 /// A content change names no path at all, so one burst asks the session to

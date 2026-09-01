@@ -472,6 +472,19 @@ enum PendingFile {
     },
 }
 
+/// The write of every modified buffer, which runs one save at a time.
+///
+/// The editor runs one file operation at a time, so the run keeps the buffers
+/// that still wait for their save. The buffer list bounds itself at
+/// [`BUFFERS_MAX`] entries, so the queue needs no bound of its own.
+#[derive(Debug, Eq, PartialEq)]
+struct SaveAllRun {
+    /// The buffers that still wait for their save, in queue order.
+    remaining: Vec<BufferId>,
+    /// The buffers that the run wrote.
+    written: usize,
+}
+
 /// What the save report names about the format that ran before it.
 ///
 /// The save writes the message line after the format, so a format that writes
@@ -1559,6 +1572,8 @@ pub struct Session {
     file_outbox: Option<FileRequest>,
     /// The file operation that the editor waits for.
     file_pending: Option<PendingFile>,
+    /// The write of every modified buffer, while one runs.
+    save_all: Option<SaveAllRun>,
     /// Reports whether a workspace change still needs its reload check.
     ///
     /// The editor runs one file operation at a time, so a burst that arrives
@@ -1759,6 +1774,7 @@ impl Session {
             active,
             file_outbox: None,
             file_pending: None,
+            save_all: None,
             reload_due: false,
             windows: Windows::new(
                 active,
@@ -3402,6 +3418,7 @@ impl Session {
             Command::SaveBufferAndClose => {
                 return self.save_active(AfterSave::CloseBuffer).or(cleared);
             }
+            Command::SaveAllBuffers => return self.save_all_buffers().or(cleared),
             Command::UnloadBuffer => return self.unload_active().or(cleared),
             Command::CloseBuffer => return self.close_active().or(cleared),
             Command::CloseWindow => {
@@ -7351,20 +7368,32 @@ impl Session {
     /// `format` names what a format before this save produced, and the save
     /// report names that state beside its own result.
     fn start_save(&mut self, then: AfterSave, format: FormatBeforeSave) -> Redraw {
+        self.start_buffer_save(self.active, then, format)
+    }
+
+    /// Writes one named buffer and runs the step that follows the save.
+    ///
+    /// The write of every modified buffer reaches a buffer that is not the
+    /// active one, so the caller names the buffer that the request carries.
+    fn start_buffer_save(
+        &mut self,
+        buffer: BufferId,
+        then: AfterSave,
+        format: FormatBeforeSave,
+    ) -> Redraw {
         if self.access == EditorAccess::ViewOnly {
             return self.refuse(Refusal::ViewOnly);
         }
-        let buffer = self.active;
         // Build the complete request before the operation starts, so a rejected
         // save never changes the buffer.
-        let staged = self.buffers.get(buffer).and_then(|active| {
-            let target = active.target()?.clone();
+        let staged = self.buffers.get(buffer).and_then(|file| {
+            let target = file.target()?.clone();
             Some(SaveRequest {
                 buffer,
-                content: render_content(active.text()),
-                revision: active.text().revision(),
-                expected: active.identity(),
-                snapshot: active.text().clone(),
+                content: render_content(file.text()),
+                revision: file.text().revision(),
+                expected: file.identity(),
+                snapshot: file.text().clone(),
                 files: self.settings.files,
                 target,
             })
@@ -7396,6 +7425,73 @@ impl Session {
             },
         );
         self.write_slot = Some(slot);
+        redraw
+    }
+
+    /// Writes every modified buffer that holds a file name.
+    ///
+    /// The editor runs one file operation at a time, so the run collects its
+    /// buffers first, starts the first save, and starts each later save from
+    /// the completed one. A scratch buffer holds no file name, so no run ever
+    /// queues it.
+    ///
+    /// No queued save formats first. A format asks the language server of the
+    /// active buffer alone, and one question runs at a time, so a run of many
+    /// buffers would answer for the wrong buffer. See
+    /// `docs/language-services.md`.
+    fn save_all_buffers(&mut self) -> Redraw {
+        if self.access == EditorAccess::ViewOnly {
+            return self.refuse(Refusal::ViewOnly);
+        }
+        if self.file_pending.is_some() {
+            return self.refuse_running_file_operation();
+        }
+        let queued: Vec<BufferId> = self
+            .buffers
+            .ids()
+            .into_iter()
+            .filter(|id| {
+                self.buffers
+                    .get(*id)
+                    .is_some_and(|file| file.is_modified() && file.target().is_some())
+            })
+            .collect();
+        let Some((first, remaining)) = queued.split_first() else {
+            self.set_message("no modified buffer to save", MessageLevel::Info);
+            return Redraw::Needed;
+        };
+        let run = SaveAllRun {
+            remaining: remaining.to_vec(),
+            written: 0,
+        };
+        let redraw = self.start_buffer_save(*first, AfterSave::Stay, FormatBeforeSave::Silent);
+        // The run exists only while its save runs, so a refused first save
+        // leaves its own report and no queue behind.
+        if self.file_pending.is_some() {
+            self.save_all = Some(run);
+        }
+        redraw
+    }
+
+    /// Starts the next save of the running write of every modified buffer, or
+    /// reports the complete run.
+    fn advance_save_all(&mut self) -> Redraw {
+        let Some(mut run) = self.save_all.take() else {
+            debug_assert!(false, "the caller checked that one run holds the save");
+            return Redraw::Skipped;
+        };
+        run.written = run.written.saturating_add(1);
+        if run.remaining.is_empty() {
+            let written = run.written;
+            let noun = if written == 1 { "buffer" } else { "buffers" };
+            self.set_message(format!("{written} {noun} written"), MessageLevel::Info);
+            return Redraw::Needed;
+        }
+        let next = run.remaining.remove(0);
+        let redraw = self.start_buffer_save(next, AfterSave::Stay, FormatBeforeSave::Silent);
+        if self.file_pending.is_some() {
+            self.save_all = Some(run);
+        }
         redraw
     }
 
@@ -7889,6 +7985,9 @@ impl Session {
             DurableOutcome::Committed(saved) => saved,
             DurableOutcome::Unchanged(error) => {
                 self.release_slot(slot);
+                // A failed save ends the run, so no later write replaces the
+                // report of the failure.
+                self.save_all = None;
                 self.set_message(
                     format!("cannot save {}: {error}", requested.display()),
                     MessageLevel::Error,
@@ -7896,6 +7995,7 @@ impl Session {
                 return Redraw::Needed;
             }
             DurableOutcome::Indeterminate(report) => {
+                self.save_all = None;
                 let relative = requested
                     .strip_prefix(self.root.as_path())
                     .ok()
@@ -7915,7 +8015,11 @@ impl Session {
         // through the slot that the save reserved. See `docs/embedding.md`.
         self.publish_write(slot, saved.target.relative_path().clone());
         let Some(target) = self.buffers.get_mut(buffer) else {
-            // The buffer left the list while the save ran.
+            // The buffer left the list while the save ran. The file holds its
+            // text, so a running run counts the write and continues.
+            if self.save_all.is_some() {
+                return self.advance_save_all();
+            }
             return Redraw::Skipped;
         };
         let lines = saved.lines;
@@ -7942,6 +8046,11 @@ impl Session {
             None => written,
         };
         self.set_message(report, format.level());
+        // The run writes one buffer at a time, so the completed save starts the
+        // next one. Every queued save stays, so no follow-up step runs here.
+        if self.save_all.is_some() {
+            return self.advance_save_all();
+        }
         // A stale apply means the buffer changed again while the save ran, so
         // the written file no longer holds the buffer text. Neither close runs
         // then, because both would discard the text that the save missed.
