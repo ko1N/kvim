@@ -83,12 +83,12 @@ use kvim_workspace::{
     DurableOutcome, EntryKind, ExternalChange, FileBuffer, FileOperation, FileRequest, FileResult,
     FileTarget, FileTree, GitStatusFailure, GitStatusRead, GitStatusRequest, MutationError,
     MutationOutcome, OpenError, OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX,
-    PickerKind, PickerRequest, PickerResult, PickerSlot, RELOAD_TARGETS_MAX, RecoveryBaseline,
-    RecoveryCandidate, RecoveryError, RecoveryRecord, ReloadOutcome, ReloadRequest, ReloadTarget,
-    ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer,
-    TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode, WorkspaceRequest, WorkspaceResult,
-    WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest, delete_recovery_record,
-    recovery_record_path, render_content, write_recovery_record,
+    PickerKind, PickerRequest, PickerResult, PickerSlot, PreviewKey, RELOAD_TARGETS_MAX,
+    RecoveryBaseline, RecoveryCandidate, RecoveryError, RecoveryRecord, ReloadOutcome,
+    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError,
+    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
+    WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
+    delete_recovery_record, recovery_record_path, render_content, write_recovery_record,
 };
 
 use super::buffer_view::text_surface_geometry;
@@ -720,12 +720,41 @@ impl HostProbeFailure {
     }
 }
 
+/// The text that one analysis job describes.
+///
+/// The two kinds share one worker slot, one highlighter, and one publication
+/// path. Each one carries the identity that its own transition rejects an
+/// obsolete answer by: the buffer revision of an open file, or the
+/// [`PreviewKey`] of one picker row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum AnalysisTarget {
+    /// One open buffer, at the revision that the job read.
+    Buffer {
+        /// The buffer that the job analyzes.
+        buffer: BufferId,
+        /// The revision whose text the job read.
+        revision: BufferRevision,
+    },
+    /// The preview text of one picker row.
+    Preview(PreviewKey),
+}
+
+impl AnalysisTarget {
+    /// Reports whether the job analyzes the text of one named buffer.
+    fn analyzes(&self, buffer: BufferId) -> bool {
+        match self {
+            Self::Buffer { buffer: named, .. } => *named == buffer,
+            Self::Preview(_) => false,
+        }
+    }
+}
+
 /// One analysis job that the bounded worker service runs.
 ///
 /// The session builds the job and never runs it, so parsing stays off the
 /// terminal event loop. See `docs/language-services.md`.
 pub struct AnalysisRequest {
-    buffer: BufferId,
+    target: AnalysisTarget,
     adapter: &'static dyn LanguageAdapter,
     input: AnalysisInput,
     /// The highlighter that the session owns.
@@ -737,10 +766,14 @@ pub struct AnalysisRequest {
 }
 
 impl AnalysisRequest {
-    /// Returns the buffer that the job analyzes.
+    /// Returns the buffer that the job analyzes, or `None` for a picker
+    /// preview.
     #[must_use]
-    pub const fn buffer(&self) -> BufferId {
-        self.buffer
+    pub const fn buffer(&self) -> Option<BufferId> {
+        match self.target {
+            AnalysisTarget::Buffer { buffer, .. } => Some(buffer),
+            AnalysisTarget::Preview(_) => None,
+        }
     }
 
     /// Parses the source and collects the highlight spans.
@@ -754,7 +787,7 @@ impl AnalysisRequest {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         AnalysisResult {
-            buffer: self.buffer,
+            target: self.target,
             outcome: self
                 .adapter
                 .analyze(&self.input, &mut highlighter, cancellation),
@@ -767,7 +800,7 @@ impl AnalysisRequest {
 /// Highlighting is decoration, so a typed failure renders plain text and
 /// changes no buffer content.
 pub struct AnalysisResult {
-    buffer: BufferId,
+    target: AnalysisTarget,
     outcome: Result<Analysis, AnalysisError>,
 }
 
@@ -1640,11 +1673,12 @@ pub struct Session {
     languages: LanguageRegistry,
     /// The analysis state of every buffer that a language adapter serves.
     analysis: BTreeMap<BufferId, BufferAnalysis>,
-    /// The buffer and version of the analysis job that runs now.
+    /// The text that the analysis job which runs now describes.
     ///
-    /// One job runs at a time, so a newer buffer version replaces the job that
-    /// it supersedes instead of adding a second one.
-    analysis_pending: Option<(BufferId, BufferRevision)>,
+    /// One job runs at a time, so a newer buffer version and a newer picker
+    /// preview each replace the job that they supersede instead of adding a
+    /// second one.
+    analysis_pending: Option<AnalysisTarget>,
     recovery: RecoveryCheckpoints,
     /// The language-server requests, diagnostics, and per-buffer settings.
     ///
@@ -5161,19 +5195,74 @@ impl Session {
         self.record_job(JOB_RECOVERY, MessageLevel::Warning, &report);
     }
 
-    /// Returns the analysis job that the active buffer needs, if any.
+    /// Returns the analysis job that the visible text needs, if any.
     ///
     /// The session never parses, so the event loop hands the job to the bounded
-    /// worker service. The job carries the buffer version of its source, and
-    /// [`Session::apply_analysis_result`] rejects an obsolete result. A buffer
-    /// without a path, or without an adapter, needs no job and renders plain
-    /// text. See `docs/language-services.md`.
+    /// worker service. Each job carries the identity of its source, and
+    /// [`Session::apply_analysis_result`] rejects an obsolete result. A text
+    /// that no language adapter serves needs no job and renders plain text. See
+    /// `docs/language-services.md`.
+    ///
+    /// An open picker covers the complete terminal, so its preview comes before
+    /// the buffer below it. Both share one worker slot, so this transition
+    /// starts no second job while the job that it already asked for still runs.
     pub fn take_analysis_request(&mut self) -> Option<AnalysisRequest> {
+        self.take_preview_analysis_request()
+            .or_else(|| self.take_buffer_analysis_request())
+    }
+
+    /// Returns the analysis job of the picker preview, if it needs one.
+    ///
+    /// The preview text is loose text, not a buffer, so the job carries the
+    /// [`PreviewKey`] of the selected row as its identity. A preview of a file
+    /// that no adapter serves answers no span at all, which paints plain text
+    /// and asks for no further job.
+    fn take_preview_analysis_request(&mut self) -> Option<AnalysisRequest> {
+        let key = self.picker.as_ref()?.highlight_wanted()?.clone();
+        let Ok(adapter) = self.languages.adapter(key.path()) else {
+            // The empty answer paints exactly what the preview already paints,
+            // so the frame needs no redraw.
+            let _ = self.picker.as_mut()?.apply_highlight(&key, Vec::new());
+            return None;
+        };
+        let target = AnalysisTarget::Preview(key);
+        if self.analysis_pending.as_ref() == Some(&target) {
+            return None;
+        }
+        let source = self.picker.as_ref()?.preview_source()?;
+        self.analysis_pending = Some(target.clone());
+        Some(AnalysisRequest {
+            target,
+            adapter,
+            // The preview is one region of one file and never an edit history,
+            // so it reuses no tree and carries the first revision.
+            input: AnalysisInput::new(BufferRevision::default(), Arc::from(source)),
+            highlighter: Arc::clone(&self.highlighter),
+        })
+    }
+
+    /// Returns the analysis job that the active buffer needs, if any.
+    ///
+    /// A buffer without a path, or without an adapter, needs no job and renders
+    /// plain text.
+    ///
+    /// A running preview highlight holds the shared slot until it answers. The
+    /// two kinds submit through one slot, and a submission cancels the job that
+    /// held it, so a buffer job started here would cancel the preview job that
+    /// [`Session::take_preview_analysis_request`] is still waiting for. That
+    /// preview would then ask again, cancel this job in turn, and neither kind
+    /// would ever finish. The preview covers the buffer while it runs, so it
+    /// keeps the slot and the buffer job follows it.
+    fn take_buffer_analysis_request(&mut self) -> Option<AnalysisRequest> {
+        if matches!(self.analysis_pending, Some(AnalysisTarget::Preview(_))) {
+            return None;
+        }
         let buffer = self.active;
         let file = self.buffers.get(buffer)?;
         let adapter = self.languages.adapter(file.path()?).ok()?;
         let revision = file.text().revision();
-        if self.analysis_pending == Some((buffer, revision)) {
+        let target = AnalysisTarget::Buffer { buffer, revision };
+        if self.analysis_pending.as_ref() == Some(&target) {
             return None;
         }
         let entry = self.analysis.entry(buffer).or_default();
@@ -5190,19 +5279,20 @@ impl Session {
         {
             input = input.reusing(tree.clone());
         }
-        self.analysis_pending = Some((buffer, revision));
+        self.analysis_pending = Some(target.clone());
         Some(AnalysisRequest {
-            buffer,
+            target,
             adapter,
             input,
             highlighter: Arc::clone(&self.highlighter),
         })
     }
 
-    /// Publishes one completed analysis behind the buffer-version gate.
+    /// Publishes one completed analysis behind the identity gate of its source.
     ///
-    /// A result for an obsolete buffer version changes nothing and enters no
-    /// cache. A typed failure renders plain text and keeps the buffer editable.
+    /// A result for an obsolete buffer version, and a result for a picker row
+    /// that the reader already left, both change nothing and enter no cache. A
+    /// typed failure renders plain text and keeps the buffer editable.
     ///
     /// Neither outcome reaches the message line, because highlighting is
     /// decoration. Both therefore reach the editor log, so a user reads why one
@@ -5210,12 +5300,26 @@ impl Session {
     #[must_use]
     pub fn apply_analysis_result(&mut self, result: AnalysisResult) -> Redraw {
         self.analysis_pending = None;
-        let Some(file) = self.buffers.get(result.buffer) else {
+        match result.target {
+            AnalysisTarget::Buffer { buffer, .. } => {
+                self.publish_buffer_analysis(buffer, result.outcome)
+            }
+            AnalysisTarget::Preview(key) => self.publish_preview_highlight(&key, result.outcome),
+        }
+    }
+
+    /// Publishes one completed buffer analysis behind the buffer-version gate.
+    fn publish_buffer_analysis(
+        &mut self,
+        buffer: BufferId,
+        outcome: Result<Analysis, AnalysisError>,
+    ) -> Redraw {
+        let Some(file) = self.buffers.get(buffer) else {
             // The buffer left the list while the job ran.
             return Redraw::Skipped;
         };
         let current = file.text().revision();
-        let analysis = match result.outcome {
+        let analysis = match outcome {
             Ok(analysis) => analysis,
             Err(error) => {
                 self.record_job(
@@ -5226,7 +5330,7 @@ impl Session {
                 return Redraw::Skipped;
             }
         };
-        let Some(entry) = self.analysis.get_mut(&result.buffer) else {
+        let Some(entry) = self.analysis.get_mut(&buffer) else {
             debug_assert!(
                 false,
                 "the session creates the entry when it builds the job"
@@ -5242,6 +5346,34 @@ impl Session {
             .analysis()
             .map(|accepted| (current, accepted.tree().clone()));
         Redraw::Needed
+    }
+
+    /// Publishes the spans of one preview highlight behind its key gate.
+    ///
+    /// A failed analysis answers no span, so the preview paints plain text and
+    /// asks for no further job. The log names the outcome instead, because a
+    /// preview highlight is decoration.
+    fn publish_preview_highlight(
+        &mut self,
+        key: &PreviewKey,
+        outcome: Result<Analysis, AnalysisError>,
+    ) -> Redraw {
+        let spans = match outcome {
+            Ok(analysis) => analysis.highlights().to_vec(),
+            Err(error) => {
+                self.record_job(
+                    JOB_ANALYSIS,
+                    MessageLevel::Warning,
+                    &format!("failed: {error}"),
+                );
+                Vec::new()
+            }
+        };
+        let Some(picker) = self.picker.as_mut() else {
+            // The reader closed the overlay that asked for the highlight.
+            return Redraw::Skipped;
+        };
+        picker.apply_highlight(key, spans)
     }
 
     /// Reports that one analysis job produced no result.
@@ -7722,7 +7854,11 @@ impl Session {
         if let Some(entry) = self.analysis.get_mut(&buffer) {
             *entry = BufferAnalysis::default();
         }
-        if self.analysis_pending.is_some_and(|(id, _)| id == buffer) {
+        if self
+            .analysis_pending
+            .as_ref()
+            .is_some_and(|target| target.analyzes(buffer))
+        {
             self.analysis_pending = None;
         }
         if buffer == self.active {
@@ -7874,7 +8010,11 @@ impl Session {
         if let Some(entry) = self.analysis.get_mut(&buffer) {
             *entry = BufferAnalysis::default();
         }
-        if self.analysis_pending.is_some_and(|(id, _)| id == buffer) {
+        if self
+            .analysis_pending
+            .as_ref()
+            .is_some_and(|target| target.analyzes(buffer))
+        {
             self.analysis_pending = None;
         }
         if buffer == self.active {

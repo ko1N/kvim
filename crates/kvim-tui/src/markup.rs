@@ -18,6 +18,7 @@ use kvim_language::{
 };
 
 use super::cells::{clip_cells, text_cells, wrap_ranges};
+use super::highlight::role_pieces;
 use super::language::FLOAT_ROWS_MAX;
 
 /// The glyph that marks one item of an unordered list.
@@ -198,59 +199,19 @@ fn block_lines(
 
 /// Returns the pieces of one row of one code block.
 ///
-/// `line` names the row inside its own block, and one span of that row
-/// addresses the text by its bytes, exactly as one span of a buffer line does.
-/// The pieces partition the text: a range that one span names takes the syntax
-/// role of that span, and every other range takes the code span role. A block
-/// without a span therefore paints in one role, as every fence did before the
-/// highlight.
-///
-/// The caller passes the text that the row paints, which the clip already
-/// shortened. A span behind that cut adds no piece, and a span across it ends
-/// at the cut, so the pieces stay aligned to what the row shows. The clip
-/// counts terminal cells and never splits a character, so every kept range
-/// still addresses a character boundary.
+/// [`role_pieces`] owns the partition, so a fence and a picker preview both
+/// split one line by the same rule. A range that no span names takes the code
+/// span role here, so a block without a span paints in one role, as every
+/// fence did before the highlight.
 fn code_spans(text: &str, highlights: &[HighlightSpan], line: usize) -> Vec<FloatSpan> {
     let code = FloatStyle::Markup(MarkupRole::InlineCode);
-    let Ok(line) = u32::try_from(line) else {
-        debug_assert!(false, "one code block holds fewer lines than u32 counts");
-        return vec![FloatSpan::new(text, code)];
-    };
-
-    let first = highlights.partition_point(|span| span.line < line);
-    let mut spans: Vec<FloatSpan> = Vec::new();
-    let mut painted = 0;
-
-    for span in highlights[first..]
-        .iter()
-        .take_while(|span| span.line == line)
-    {
-        // A malformed span never breaks the partition: the range starts at the
-        // end of the piece before it and stops at the end of the text.
-        let start = (span.start_byte as usize).max(painted).min(text.len());
-        let end = (span.end_byte as usize).min(text.len());
-        if start >= end || !text.is_char_boundary(start) || !text.is_char_boundary(end) {
-            continue;
-        }
-        if painted < start {
-            spans.push(FloatSpan::new(&text[painted..start], code));
-        }
-        spans.push(FloatSpan::new(
-            &text[start..end],
-            FloatStyle::Syntax(span.role),
-        ));
-        painted = end;
-    }
-    if painted < text.len() {
-        spans.push(FloatSpan::new(&text[painted..], code));
-    }
-
-    debug_assert_eq!(
-        spans.iter().map(|span| span.text.len()).sum::<usize>(),
-        text.len(),
-        "the pieces of one row partition the text of that row"
-    );
-    spans
+    role_pieces(text, highlights, line)
+        .into_iter()
+        .map(|(piece, role)| match role {
+            Some(role) => FloatSpan::new(piece, FloatStyle::Syntax(role)),
+            None => FloatSpan::new(piece, code),
+        })
+        .collect()
 }
 
 /// Appends the wrapped rows of one styled text.

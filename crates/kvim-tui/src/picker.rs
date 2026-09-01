@@ -32,6 +32,7 @@ use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 
 use kvim_input::PromptKind;
+use kvim_language::HighlightSpan;
 use kvim_path::WorktreeRoot;
 use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
@@ -41,6 +42,7 @@ use kvim_workspace::{
 
 use super::cells::text_cells;
 use super::chrome::prompt_cursor_x;
+use super::highlight::role_pieces;
 use super::icons::{ICON_CELLS, file_icon};
 use super::session::{PromptLine, Redraw};
 use super::theme::{Theme, ThemeRole};
@@ -298,6 +300,35 @@ pub(super) fn picker_areas(area: Rect) -> PickerAreas {
     }
 }
 
+/// The preview that the picker shows, and the syntax of its text.
+///
+/// The spans belong to this exact region of this exact file, so they travel
+/// with it. A span therefore cannot outlive the text that it addresses.
+#[derive(Debug)]
+pub(super) struct ShownPreview {
+    /// The selection that the preview describes.
+    key: PreviewKey,
+    /// The bounded region of the file.
+    preview: Preview,
+    /// The spans of the preview text, or `None` while no highlight answered
+    /// yet.
+    ///
+    /// A file that no language adapter serves, and a text that the analysis
+    /// rejects, both answer an empty list, so the preview paints plain text and
+    /// asks for no further job.
+    highlights: Option<Vec<HighlightSpan>>,
+}
+
+impl ShownPreview {
+    /// Returns the spans that the preview paints.
+    ///
+    /// A preview that waits for its highlight paints plain text, exactly as a
+    /// preview of an unsupported file does.
+    fn highlights(&self) -> &[HighlightSpan] {
+        self.highlights.as_deref().unwrap_or_default()
+    }
+}
+
 /// The open picker of one editor.
 #[derive(Debug)]
 pub(super) struct PickerState {
@@ -308,7 +339,7 @@ pub(super) struct PickerState {
     /// The preview request that waits for the event loop.
     preview_outbox: Option<PickerRequest>,
     /// The preview that the picker shows.
-    preview: Option<(PreviewKey, Preview)>,
+    preview: Option<ShownPreview>,
     /// The selection that the running preview describes.
     preview_pending: Option<PreviewKey>,
     /// The first visible result row.
@@ -356,8 +387,53 @@ impl PickerState {
     }
 
     /// Returns the preview of the selected row.
-    pub(super) const fn preview(&self) -> Option<&(PreviewKey, Preview)> {
+    pub(super) const fn preview(&self) -> Option<&ShownPreview> {
         self.preview.as_ref()
+    }
+
+    /// Returns the selection whose preview text still needs its highlight.
+    ///
+    /// The picker runs no parser, so the caller builds one background analysis
+    /// of [`PickerState::preview_source`] under this identity. A preview that
+    /// already holds its answer needs no job.
+    pub(super) fn highlight_wanted(&self) -> Option<&PreviewKey> {
+        let shown = self.preview.as_ref()?;
+        shown.highlights.is_none().then(|| &shown.key)
+    }
+
+    /// Returns the exact text that one preview highlight analyzes.
+    ///
+    /// The lines join with one line feed, so the line of one answered span is
+    /// the row of the preview that carries it. The preview is bounded in lines
+    /// and in characters, so this text is bounded as well.
+    pub(super) fn preview_source(&self) -> Option<String> {
+        Some(self.preview.as_ref()?.preview.lines.join("\n"))
+    }
+
+    /// Publishes the spans of one preview highlight behind its key gate.
+    ///
+    /// A key that no longer names the shown preview changes nothing, so a
+    /// highlight of an older selection never paints over a newer preview.
+    pub(super) fn apply_highlight(
+        &mut self,
+        key: &PreviewKey,
+        spans: Vec<HighlightSpan>,
+    ) -> Redraw {
+        let Some(shown) = self.preview.as_mut() else {
+            return Redraw::Skipped;
+        };
+        if shown.key != *key {
+            // The reader already moved past this row.
+            return Redraw::Skipped;
+        }
+        let painted = !spans.is_empty();
+        shown.highlights = Some(spans);
+        if painted {
+            Redraw::Needed
+        } else {
+            // An empty answer paints exactly what the preview already paints.
+            Redraw::Skipped
+        }
     }
 
     /// Returns the picker request that the event loop must submit.
@@ -437,7 +513,11 @@ impl PickerState {
                 match outcome {
                     Ok(preview) => {
                         let truncated = preview.truncated;
-                        self.preview = Some((key, preview));
+                        self.preview = Some(ShownPreview {
+                            key,
+                            preview,
+                            highlights: None,
+                        });
                         self.publish_notice();
                         if truncated && self.notice.is_none() {
                             self.notice = Some(PREVIEW_TRUNCATED_NOTE);
@@ -541,10 +621,7 @@ impl PickerState {
             self.preview_outbox = None;
             return;
         };
-        if self
-            .preview
-            .as_ref()
-            .is_some_and(|(shown, _)| *shown == key)
+        if self.preview.as_ref().is_some_and(|shown| shown.key == key)
             || self.preview_pending.as_ref() == Some(&key)
         {
             return;
@@ -1003,10 +1080,17 @@ fn render_hint(target: &mut CellBuffer, area: Rect, theme: Theme) {
 }
 
 /// Renders the preview of the selected row.
+///
+/// The rows paint the spans that one background analysis already answered, so
+/// this pass runs no parser. A preview that waits for its highlight, and a
+/// preview of a file that no language adapter serves, both paint plain text.
 fn render_preview(target: &mut CellBuffer, area: Rect, theme: Theme, state: &PickerState) {
-    let Some((key, preview)) = state.preview() else {
+    let Some(shown) = state.preview() else {
         return;
     };
+    let key = &shown.key;
+    let preview = &shown.preview;
+    let highlights = shown.highlights();
     let name = key.path().file_name().map_or_else(
         || key.path().display().to_string(),
         |name| name.to_string_lossy().into_owned(),
@@ -1039,7 +1123,8 @@ fn render_preview(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
         };
         let number = preview.first_line.saturating_add(usize::from(offset));
         // Only a search row marks one line, so a file preview shows plain text.
-        let style = if key.target().marks(number) {
+        let marked = key.target().marks(number);
+        let style = if marked {
             theme
                 .style(ThemeRole::Text)
                 .patch(theme.style(ThemeRole::CurrentSearchMatch))
@@ -1048,13 +1133,30 @@ fn render_preview(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
         };
         let y = body.y.saturating_add(offset);
         target.set_style(Rect::new(body.x, y, body.width, 1), style);
-        target.set_stringn(
-            body.x.saturating_add(1),
-            y,
-            line,
-            usize::from(body.width.saturating_sub(1)),
-            style,
-        );
+        let right = body.right();
+        let mut x = body.x.saturating_add(1);
+        // The band of the matched line names the row that the reader searched,
+        // so it paints over the syntax of that row and stays visible.
+        if marked || highlights.is_empty() {
+            target.set_stringn(x, y, line, usize::from(right.saturating_sub(x)), style);
+            continue;
+        }
+        for (piece, role) in role_pieces(line, highlights, usize::from(offset)) {
+            if x >= right {
+                break;
+            }
+            let piece_style = match role {
+                Some(role) => style.patch(theme.style(ThemeRole::Syntax(role))),
+                None => style,
+            };
+            (x, _) = target.set_stringn(
+                x,
+                y,
+                piece,
+                usize::from(right.saturating_sub(x)),
+                piece_style,
+            );
+        }
     }
 }
 

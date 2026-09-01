@@ -5702,7 +5702,7 @@ fn an_accepted_analysis_reaches_the_view_and_an_obsolete_one_is_rejected() {
     let request = session
         .take_analysis_request()
         .expect("a Rust buffer needs one analysis");
-    assert_eq!(request.buffer(), session.active());
+    assert_eq!(request.buffer(), Some(session.active()));
     assert!(
         session.take_analysis_request().is_none(),
         "one analysis runs at a time"

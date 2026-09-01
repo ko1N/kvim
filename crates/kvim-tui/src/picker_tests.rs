@@ -140,6 +140,30 @@ fn drain_file(session: &mut Session) {
     }
 }
 
+/// Runs the queued analysis job, as the event loop does.
+///
+/// An open picker covers the buffer below it, so the one job that this call
+/// runs is the highlight of the shown preview.
+fn drain_analysis(session: &mut Session) -> Redraw {
+    let Some(request) = session.take_analysis_request() else {
+        return Redraw::Skipped;
+    };
+    session.apply_analysis_result(request.run(&CancellationToken::new()))
+}
+
+/// Returns the body of the preview column, below its title row and the gap.
+fn preview_body(session: &Session) -> Rect {
+    let preview = picker_areas(session.area())
+        .preview
+        .expect("the test terminal is wide");
+    Rect::new(
+        preview.x,
+        preview.y + 2,
+        preview.width,
+        preview.height.saturating_sub(2),
+    )
+}
+
 /// Renders one session and returns the terminal cell buffer.
 fn draw(session: &Session) -> CellBuffer {
     let area = session.area();
@@ -938,6 +962,214 @@ fn a_stale_preview_never_reaches_the_screen() {
         rows.iter().all(|row| !row.contains("stale preview line")),
         "the reader already moved past that row: {rows:?}"
     );
+}
+
+#[cfg(feature = "grammar-rust")]
+#[test]
+fn the_preview_paints_the_syntax_of_a_rust_file() {
+    use kvim_language::SyntaxRole;
+
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "main");
+    drain(&mut session);
+    assert_eq!(
+        drain_analysis(&mut session),
+        Redraw::Needed,
+        "the highlight of a Rust preview reaches the screen"
+    );
+
+    let body = preview_body(&session);
+    let buffer = draw(&session);
+    // The first line of the previewed file is `fn main() {`, and the text of
+    // every preview row starts one cell inside the column.
+    assert_eq!(
+        symbol_at(&buffer, body.x + 1, body.y),
+        "f",
+        "the preview starts at the first line of the file"
+    );
+    assert_eq!(
+        foreground_at(&buffer, body.x + 1, body.y),
+        role(ThemeRole::Syntax(SyntaxRole::Keyword)).fg,
+        "the keyword of the preview carries its syntax color"
+    );
+    assert_ne!(
+        foreground_at(&buffer, body.x + 1, body.y),
+        role(ThemeRole::Text).fg,
+        "a highlighted preview no longer paints one plain color"
+    );
+}
+
+#[test]
+fn a_preview_of_an_unsupported_file_paints_plain_text() {
+    // No adapter of any build serves a `.gitignore` file, so its preview asks
+    // for no highlight job at all.
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "gitig");
+    drain(&mut session);
+    assert_eq!(
+        drain_analysis(&mut session),
+        Redraw::Skipped,
+        "an unsupported preview publishes no span"
+    );
+
+    let body = preview_body(&session);
+    let buffer = draw(&session);
+    assert_eq!(
+        region_row(&buffer, body, body.y),
+        " target/",
+        "the preview shows the file"
+    );
+    for x in body.x..body.right() {
+        assert_eq!(
+            foreground_at(&buffer, x, body.y),
+            role(ThemeRole::Text).fg,
+            "every cell of an unsupported preview keeps the text color"
+        );
+    }
+}
+
+#[cfg(feature = "grammar-rust")]
+#[test]
+fn a_stale_preview_highlight_never_reaches_the_screen() {
+    // The query keeps the two Rust files alone, so both rows ask for one
+    // highlight and the stale answer names the row that the reader left.
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "rs");
+    drain(&mut session);
+    let stale = session
+        .take_analysis_request()
+        .expect("the selected Rust preview asks for one highlight");
+
+    press_ctrl(&mut session, 'j');
+    drain(&mut session);
+    assert_eq!(
+        session.apply_analysis_result(stale.run(&CancellationToken::new())),
+        Redraw::Skipped,
+        "the reader already moved past that row"
+    );
+
+    let body = preview_body(&session);
+    let buffer = draw(&session);
+    for x in body.x..body.right() {
+        assert_eq!(
+            foreground_at(&buffer, x, body.y),
+            role(ThemeRole::Text).fg,
+            "the newer preview keeps its plain text until its own answer arrives"
+        );
+    }
+
+    // The rejection kept the slot of the newer row free, so that row still
+    // receives its own highlight.
+    assert_eq!(
+        drain_analysis(&mut session),
+        Redraw::Needed,
+        "the newer selection asks for its own highlight and paints it"
+    );
+    let buffer = draw(&session);
+    assert_ne!(
+        foreground_at(&buffer, body.x + 1, body.y),
+        role(ThemeRole::Text).fg,
+        "the answer of the newer row reaches the screen"
+    );
+}
+
+#[cfg(feature = "grammar-rust")]
+#[test]
+fn a_running_preview_highlight_keeps_the_shared_analysis_slot() {
+    // The preview highlight and the buffer analysis submit through one slot,
+    // and a submission cancels the job that held it. A buffer job taken while
+    // a preview highlight runs would therefore cancel that highlight, the
+    // preview would ask again and cancel the buffer job in turn, and neither
+    // kind would ever answer. The preview keeps the slot until it answers.
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "rs");
+    drain(&mut session);
+
+    let running = session
+        .take_analysis_request()
+        .expect("the selected Rust preview asks for one highlight");
+    assert_eq!(
+        running.buffer(),
+        None,
+        "the job names the preview, no buffer"
+    );
+    assert!(
+        session.take_analysis_request().is_none(),
+        "the buffer analysis waits for the running preview highlight"
+    );
+
+    assert_eq!(
+        session.apply_analysis_result(running.run(&CancellationToken::new())),
+        Redraw::Needed,
+        "the highlight of the selected row reaches the screen"
+    );
+    assert!(
+        session.take_analysis_request().is_none(),
+        "the answered highlight is never asked for a second time"
+    );
+}
+
+#[cfg(feature = "grammar-rust")]
+#[test]
+fn the_matched_line_of_a_search_preview_paints_over_the_highlight() {
+    use kvim_language::SyntaxRole;
+
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "f/");
+    type_keys(&mut session, "needle");
+    let request = session
+        .take_picker_request()
+        .expect("the query starts one search");
+    let result = request.publish(&ProcessOutput {
+        status_code: Some(0),
+        stdout: b"./src/main.rs:3:9:    let needle = 1;\n".to_vec(),
+        stderr: Vec::new(),
+    });
+    let _ = session.apply_picker_result(result);
+    drain(&mut session);
+    assert_eq!(
+        drain_analysis(&mut session),
+        Redraw::Needed,
+        "the highlight of a Rust preview reaches the screen"
+    );
+
+    let body = preview_body(&session);
+    let buffer = draw(&session);
+    assert_eq!(
+        foreground_at(&buffer, body.x + 1, body.y),
+        role(ThemeRole::Syntax(SyntaxRole::Keyword)).fg,
+        "the unmarked rows of the same preview carry their syntax colors"
+    );
+
+    // The match stands on the third line of the file, and the preview starts
+    // at the first one, so the marked row is the third row of the body. Its
+    // text is `    let needle = 1;`, whose keyword would otherwise be colored.
+    let marked = role(ThemeRole::Text).patch(role(ThemeRole::CurrentSearchMatch));
+    assert_eq!(
+        symbol_at(&buffer, body.x + 5, body.y + 2),
+        "l",
+        "the marked row holds the matched line"
+    );
+    for x in body.x..body.right() {
+        assert_eq!(
+            background_at(&buffer, x, body.y + 2),
+            marked.bg,
+            "the band of the matched line covers the complete row"
+        );
+        assert_eq!(
+            foreground_at(&buffer, x, body.y + 2),
+            marked.fg,
+            "the marker of the matched line paints over its syntax colors"
+        );
+    }
 }
 
 #[test]

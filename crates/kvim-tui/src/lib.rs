@@ -53,6 +53,8 @@ mod embed;
 #[cfg(feature = "editor")]
 mod file_sidebar;
 #[cfg(feature = "editor")]
+mod highlight;
+#[cfg(feature = "editor")]
 mod icons;
 #[cfg(feature = "editor")]
 mod jumps;
