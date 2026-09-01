@@ -103,8 +103,14 @@ prepare_local_source() {
     git -C "$REPO_ROOT" archive HEAD -- Cargo.toml Cargo.lock crates fixtures/consumer | tar -x -C "$source_copy"
 
     # Apply tracked modifications, deletions, and both sides of renames exactly.
-    git -C "$REPO_ROOT" diff --binary --no-renames HEAD -- Cargo.toml Cargo.lock crates fixtures/consumer \
-        | git -C "$source_copy" apply --binary --whitespace=nowarn
+    # A clean worktree produces an empty diff, and `git apply` refuses empty
+    # input, so the archive of HEAD already holds every tracked source file.
+    local tracked_changes
+    tracked_changes="$(git -C "$REPO_ROOT" diff --binary --no-renames HEAD -- Cargo.toml Cargo.lock crates fixtures/consumer)"
+    if [[ -n "$tracked_changes" ]]; then
+        printf '%s\n' "$tracked_changes" \
+            | git -C "$source_copy" apply --binary --whitespace=nowarn
+    fi
 
     local path
     while IFS= read -r -d '' path; do
