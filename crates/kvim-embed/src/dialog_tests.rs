@@ -1,3 +1,5 @@
+use ratatui::style::Color;
+
 use super::*;
 
 fn request(area: Rect) -> DialogRequest {
@@ -135,6 +137,52 @@ fn explicit_close_emits_no_answer_and_pending_answer_blocks_reopen() {
     );
     host.take_answer();
     host.open(request(area)).unwrap();
+}
+
+#[test]
+fn conversion_carries_the_icon_and_footer_fields() {
+    let styles = DialogStyles {
+        icon: Style::default().fg(Color::Yellow),
+        footer: Style::default().bg(Color::Black),
+        ..DialogStyles::default()
+    };
+    let converted: UiStyles = styles.into();
+    assert_eq!(converted.icon, styles.icon);
+    assert_eq!(converted.footer, styles.footer);
+
+    let area = Rect::new(0, 0, 40, 10);
+    let mut host = DialogHost::new();
+    host.open(request(area)).unwrap();
+    let mut cells = Buffer::empty(area);
+    host.render(&mut cells).unwrap();
+    let placement = host
+        .snapshot()
+        .unwrap()
+        .placement()
+        .cloned()
+        .expect("the render published a placement");
+    assert_ne!(placement.footer, Rect::default());
+}
+
+#[test]
+fn request_with_icon_refuses_an_unpaintable_glyph() {
+    let cancel = DialogChoiceId::new(1);
+    let request = DialogRequest::new(
+        "Continue?",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(cancel, "Cancel")],
+        cancel,
+        cancel,
+        Rect::new(0, 0, 40, 10),
+        DialogStyles::default(),
+    )
+    .expect("the fixture is valid");
+    assert_eq!(
+        request.with_icon('\u{0301}'),
+        Err(DialogOpenError::Invalid(UiError::InvalidIcon {
+            icon: '\u{0301}'
+        }))
+    );
 }
 
 #[test]

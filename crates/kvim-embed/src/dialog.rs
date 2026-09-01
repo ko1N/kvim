@@ -65,10 +65,14 @@ pub struct DialogStyles {
     pub surface: Style,
     /// Full-height rail style.
     pub rail: Style,
+    /// Style of the optional severity glyph on the title row.
+    pub icon: Style,
     /// Optional body-text style.
     pub body: Style,
     /// Question style.
     pub question: Style,
+    /// Style of the footer band that holds the choice row.
+    pub footer: Style,
     /// Ordinary choice style.
     pub choice: Style,
     /// Unfocused safe-default style.
@@ -83,8 +87,10 @@ impl From<DialogStyles> for UiStyles {
             dim: styles.dim,
             surface: styles.surface,
             rail: styles.rail,
+            icon: styles.icon,
             body: styles.body,
             question: styles.question,
+            footer: styles.footer,
             choice: styles.choice,
             default_choice: styles.default_choice,
             focused_choice: styles.focused_choice,
@@ -154,6 +160,21 @@ impl DialogRequest {
             body_area,
             styles,
         })
+    }
+
+    /// Returns the request with one severity glyph on its title row.
+    ///
+    /// Validation happens here, not at render, because a refused render
+    /// paints no popup while the dialog still holds the keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed refusal when the glyph occupies no terminal cell, or
+    /// when the wider title row no longer fits the request's body rectangle.
+    pub fn with_icon(mut self, icon: char) -> Result<Self, DialogOpenError> {
+        self.dialog = self.dialog.with_icon(icon)?;
+        self.dialog.placement_for(self.body_area)?;
+        Ok(self)
     }
 
     /// Returns the owner-supplied body rectangle.
@@ -234,6 +255,9 @@ pub struct DialogPlacement {
     pub body_text: Rect,
     /// Wrapped-question rectangle.
     pub question: Rect,
+    /// Footer band rectangle, including its blank padding rows and the
+    /// choice row.
+    pub footer: Rect,
     /// Exact visible choice rectangles.
     pub choices: Vec<DialogChoicePlacement>,
 }
@@ -247,6 +271,7 @@ impl From<UiPlacement<DialogChoiceId>> for DialogPlacement {
             content: value.content,
             body_text: value.body_text,
             question: value.question,
+            footer: value.footer,
             choices: value
                 .choices
                 .into_iter()
