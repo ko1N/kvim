@@ -69,6 +69,13 @@ const CURRENT_SEARCH_FOREGROUND: Color = Color::Rgb(0x15, 0x16, 0x1e);
 /// The background of the selected popup row.
 const POPUP_SELECTION_BACKGROUND: Color = Color::Rgb(0x34, 0x3a, 0x55);
 
+/// The background of the footer band of a modal dialog.
+///
+/// The band sits one step lighter than the popup surface, so the choice row
+/// separates from the body above it, the way the reference popup separates
+/// its button row from its body.
+const DIALOG_FOOTER_BACKGROUND: Color = Color::Rgb(0x1e, 0x22, 0x2b);
+
 /// The color of an error message.
 const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
 
@@ -199,10 +206,14 @@ pub enum ThemeRole {
     DialogDim,
     /// The full-height rail of a modal dialog.
     DialogRail,
+    /// The optional severity glyph on the title row of a modal dialog.
+    DialogIcon,
     /// The optional detail text of a modal dialog.
     DialogBody,
     /// The question text of a modal dialog.
     DialogQuestion,
+    /// The footer band that holds the choice row of a modal dialog.
+    DialogFooter,
     /// One unfocused dialog choice.
     DialogChoice,
     /// The safe default dialog choice while it is unfocused.
@@ -384,20 +395,35 @@ impl Theme {
             ThemeRole::ScrollbarTrack => Style::new().fg(TEXT_MUTED),
             ThemeRole::ScrollbarThumb => Style::new().fg(TEXT_DIM),
             ThemeRole::DialogDim => Style::new().fg(TEXT_MUTED).bg(self.base),
-            ThemeRole::DialogRail => Style::new()
-                .fg(TITLE)
-                .bg(self.surface)
-                .add_modifier(Modifier::BOLD),
+            // The reference popup marks a destructive confirmation with a
+            // warm accent rail, not the blue window-title color, so the rail
+            // and the severity glyph below share the one warm accent.
+            ThemeRole::DialogRail => Style::new().fg(ACCENT_WARM).bg(self.surface),
+            ThemeRole::DialogIcon => Style::new().fg(ACCENT_WARM).bg(self.surface),
             ThemeRole::DialogBody => Style::new().fg(TEXT_DIM).bg(self.surface),
-            ThemeRole::DialogQuestion => Style::new().fg(TEXT).bg(self.surface),
-            ThemeRole::DialogChoice => Style::new().fg(TEXT).bg(self.surface),
-            ThemeRole::DialogDefaultChoice => Style::new()
-                .fg(TITLE)
+            ThemeRole::DialogQuestion => Style::new()
+                .fg(TEXT)
                 .bg(self.surface)
                 .add_modifier(Modifier::BOLD),
+            // The footer band paints its own background, distinct from the
+            // popup surface, so the choice row reads as a separated band.
+            ThemeRole::DialogFooter => Style::new().fg(TEXT).bg(DIALOG_FOOTER_BACKGROUND),
+            // An unfocused chip reads as quiet text on the footer band, so it
+            // carries no background of its own; render patches it over the
+            // footer style. It stays at the absent-text color rather than the
+            // line-number color, because a choice the reader can select must
+            // stay legible against the band.
+            ThemeRole::DialogChoice => Style::new().fg(NON_TEXT),
+            // The safe default stays distinguishable from a plain choice
+            // without competing with the filled focused chip, so it reads
+            // brighter than a plain choice but carries no bold weight.
+            ThemeRole::DialogDefaultChoice => Style::new().fg(TEXT_DIM),
+            // The focused chip fills with the warm accent behind a dark
+            // foreground, the same pairing that the current search match
+            // already uses for a filled accent cell.
             ThemeRole::DialogFocusedChoice => Style::new()
-                .fg(TEXT)
-                .bg(POPUP_SELECTION_BACKGROUND)
+                .fg(CURRENT_SEARCH_FOREGROUND)
+                .bg(ACCENT_WARM)
                 .add_modifier(Modifier::BOLD),
             ThemeRole::Surface => Style::new().fg(TEXT).bg(self.surface),
             ThemeRole::Statusline => Style::new().fg(TEXT_DIM).bg(self.surface),

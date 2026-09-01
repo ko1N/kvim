@@ -64,8 +64,12 @@ const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
 /// The title color of the reference palette.
 const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
 
-/// The focused choice background of the reference palette.
-const DIALOG_FOCUS: Color = Color::Rgb(0x34, 0x3a, 0x55);
+/// The dark foreground that the focused dialog choice and the current search
+/// match share in the reference palette.
+const DIALOG_FOCUS_FOREGROUND: Color = Color::Rgb(0x15, 0x16, 0x1e);
+
+/// The footer band background of a modal dialog in the reference palette.
+const DIALOG_FOOTER: Color = Color::Rgb(0x1e, 0x22, 0x2b);
 
 /// The muted foreground that dims the body behind a dialog.
 const TEXT_MUTED: Color = Color::Rgb(0x3b, 0x42, 0x61);
@@ -103,6 +107,16 @@ fn row_of(buffer: &CellBuffer, y: u16) -> String {
 /// Renders one session and returns one row as text.
 fn row(session: &Session, y: u16) -> String {
     row_of(&draw(session), y)
+}
+
+/// Returns the terminal column of the first match of `needle` in `row`.
+///
+/// `str::find` returns a byte offset, and a dialog rail or a severity glyph
+/// paints a multi-byte character ahead of the match, so the column counts
+/// characters instead of reusing that byte offset directly.
+fn column_of(row: &str, needle: &str) -> u16 {
+    let byte_index = row.find(needle).expect("the text paints in this row");
+    u16::try_from(row[..byte_index].chars().count()).expect("a terminal row fits u16 columns")
 }
 
 /// Reports whether one rendered row ends with the text and then the scrollbar
@@ -1165,26 +1179,43 @@ fn a_confirmation_renders_over_the_body_and_keeps_the_message_line() {
         "the message row stays outside the dimmed body"
     );
     assert!(
-        (0..9).any(|y| row_of(&buffer, y).contains("Delete one entry")),
-        "the question paints in the body"
+        (0..9).any(|y| row_of(&buffer, y).contains("⚠ Delete one entry")),
+        "the question paints with its severity glyph in the body"
     );
     assert!(
-        (0..9).any(|y| row_of(&buffer, y).starts_with('│')),
+        (0..9).any(|y| row_of(&buffer, y).starts_with('▌')),
         "the popup paints its full-height rail"
     );
-    let yes = (0..9)
-        .find_map(|y| row_of(&buffer, y).find("> Yes").map(|x| (x as u16, y)))
-        .expect("the affirmative choice is explicit");
-    let no = (0..9)
-        .find_map(|y| row_of(&buffer, y).find("> No").map(|x| (x as u16, y)))
-        .expect("the safe choice is explicit");
+    let choice_row = (0..9)
+        .find(|&y| {
+            let text = row_of(&buffer, y);
+            text.contains("Yes") && text.contains("No")
+        })
+        .expect("the horizontal choice row holds both choices");
+    let choice_text = row_of(&buffer, choice_row);
+    let yes = (column_of(&choice_text, "Yes"), choice_row);
+    let no = (column_of(&choice_text, "No"), choice_row);
+    // The cell two columns before the first chip is the footer band itself,
+    // one column before the chip's own leading padding space.
+    let footer_band = buffer
+        .cell((column_of(&choice_text, "Yes") - 2, choice_row))
+        .expect("the footer band pads the chip");
+    assert_eq!(
+        footer_band.bg, DIALOG_FOOTER,
+        "the footer band separates from the popup surface"
+    );
     assert_ne!(
         buffer.cell(yes).expect("Yes is inside the frame").bg,
-        DIALOG_FOCUS,
+        ACCENT_WARM,
         "Yes is not initially focused"
     );
     let no_style = buffer.cell(no).expect("No is inside the frame").style();
-    assert_eq!(no_style.bg, Some(DIALOG_FOCUS), "No owns safe focus");
+    assert_eq!(no_style.bg, Some(ACCENT_WARM), "No owns safe focus");
+    assert_eq!(
+        no_style.fg,
+        Some(DIALOG_FOCUS_FOREGROUND),
+        "the focused chip paints a dark foreground over its accent fill"
+    );
     assert!(
         no_style.add_modifier.contains(Modifier::BOLD),
         "the focused No choice stays explicit"

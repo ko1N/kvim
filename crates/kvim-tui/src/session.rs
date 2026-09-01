@@ -4113,7 +4113,9 @@ impl Session {
             YesNo::No,
             YesNo::No,
         )
-        .expect("Kvim's fixed yes/no dialog meets every published bound");
+        .expect("Kvim's fixed yes/no dialog meets every published bound")
+        .with_icon('⚠')
+        .expect("the warning sign occupies one terminal cell");
         self.confirmation = Some(Confirmation {
             dialog,
             action,

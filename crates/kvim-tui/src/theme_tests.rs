@@ -214,3 +214,55 @@ fn the_active_tab_takes_the_body_background_and_the_bar_stays_above_it() {
         "the active tab reads brighter than the rest"
     );
 }
+
+#[test]
+fn the_dialog_roles_supply_only_the_background_their_layer_needs() {
+    // `Dialog::render` patches `DialogRail`, `DialogIcon`, `DialogBody`, and
+    // `DialogQuestion` over `Surface`, and patches `DialogChoice`,
+    // `DialogDefaultChoice`, and `DialogFocusedChoice` over `DialogFooter`. A
+    // role that needs no different background stays `None`, so the layer
+    // below it shows through instead of a role silently owning a background
+    // that another role already supplies.
+    let theme = theme();
+    let footer = theme.style(ThemeRole::DialogFooter);
+    let surface = theme.style(ThemeRole::Surface);
+    assert_ne!(
+        footer.bg, surface.bg,
+        "the footer band separates from the popup surface"
+    );
+
+    for role in [ThemeRole::DialogChoice, ThemeRole::DialogDefaultChoice] {
+        assert_eq!(
+            theme.style(role).bg,
+            None,
+            "{role:?} inherits the footer band background instead of owning one"
+        );
+    }
+
+    let focused = theme.style(ThemeRole::DialogFocusedChoice);
+    assert!(
+        focused.bg.is_some() && focused.bg != footer.bg,
+        "the focused chip fills with its own accent, distinct from the footer band"
+    );
+    assert_ne!(
+        focused.fg,
+        theme.style(ThemeRole::DialogChoice).fg,
+        "the filled chip's dark foreground differs from an unfocused chip"
+    );
+}
+
+#[test]
+fn the_default_dialog_choice_stays_distinguishable_from_a_plain_choice_and_the_focused_chip() {
+    let theme = theme();
+    let choice = theme.style(ThemeRole::DialogChoice);
+    let default_choice = theme.style(ThemeRole::DialogDefaultChoice);
+    let focused = theme.style(ThemeRole::DialogFocusedChoice);
+    assert_ne!(
+        default_choice.fg, choice.fg,
+        "the safe default reads brighter than a plain unfocused choice"
+    );
+    assert_ne!(
+        default_choice, focused,
+        "the unfocused default never paints like the focused chip"
+    );
+}
