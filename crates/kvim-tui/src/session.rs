@@ -116,6 +116,7 @@ use super::language::{
 };
 use super::log::{EditorLog, LOG_BUFFER_NAME, LogSource};
 use super::notify::NotificationBoard;
+use super::overlay::WhichKeyView;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::pointer::source_at_cell;
 use super::review::{ReviewOutcome, ReviewSurface};
@@ -1271,7 +1272,9 @@ pub(super) struct Visible<'a> {
     pub(super) confirmation: Option<&'a Confirmation>,
     pub(super) message: Option<&'a Message>,
     pub(super) float: Option<&'a Float>,
-    pub(super) which_key: Option<&'a [WhichKeyRow]>,
+    /// The open which-key overlay, with the hints and the keys that reached
+    /// them.
+    pub(super) which_key: Option<WhichKeyView<'a>>,
     /// The notification board that the bottom-right overlay paints.
     pub(super) notifications: &'a NotificationBoard,
 }
@@ -2699,7 +2702,10 @@ impl Session {
             confirmation: self.confirmation.as_ref(),
             message: self.message.as_ref(),
             float: self.float.as_ref(),
-            which_key: self.which_key.as_deref(),
+            which_key: self.which_key.as_deref().map(|rows| WhichKeyView {
+                rows,
+                pending: self.resolver.pending_keys(),
+            }),
             notifications: &self.notifications,
         }
     }

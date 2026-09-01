@@ -1,6 +1,7 @@
+use kvim_input::{Key, KeyCode};
 use ratatui::layout::{Position, Rect, Size};
 
-use super::float_area;
+use super::{breadcrumb, float_area};
 
 /// One editor window that starts at the top left corner.
 const WINDOW: Rect = Rect {
@@ -17,6 +18,26 @@ const SPLIT: Rect = Rect {
     width: 20,
     height: 10,
 };
+
+#[test]
+fn the_breadcrumb_joins_the_pressed_keys_in_their_help_form() {
+    let leader = Key::plain(KeyCode::Char(' '));
+    assert_eq!(
+        breadcrumb(&[leader, Key::plain(KeyCode::Char('w'))]),
+        "Space » w",
+        "one marker points from each key to the next"
+    );
+    assert_eq!(
+        breadcrumb(&[leader]),
+        "Space",
+        "one key writes its label alone"
+    );
+    assert_eq!(
+        breadcrumb(&[]),
+        "",
+        "an overlay without a pending key shows no breadcrumb"
+    );
+}
 
 #[test]
 fn a_float_sits_below_the_cursor_line() {

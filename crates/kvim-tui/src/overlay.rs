@@ -18,14 +18,19 @@
 //! It is decoration as well: it moves no cursor, and it paints its text over the
 //! buffer without a background.
 
+use std::fmt::Write as _;
+
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::{Position, Rect, Size};
 use ratatui::style::Style;
 
-use kvim_input::WhichKeyRow;
+use kvim_input::{Key, WhichKeyRow};
 use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
-use kvim_ui::{WhichKeyFooter, WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+use kvim_ui::{
+    WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyOverlay, WhichKeyOverlayRow,
+    WhichKeyStyles,
+};
 
 use super::cells::{text_cells, wrap_cells};
 use super::icons::Icon;
@@ -36,6 +41,28 @@ use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the overlay title occupies.
 const TITLE_ROWS: u16 = 1;
+
+/// The marker between two keys of the which-key breadcrumb.
+///
+/// The breadcrumb reads as the path that the reader walked, so the marker
+/// points from one key to the next.
+const BREADCRUMB_MARKER: &str = " » ";
+
+/// The keys that navigate the which-key overlay itself.
+///
+/// The two entries name the keys that leave the overlay, not the keys that
+/// reach a command, so they stand apart from the hint rows above them. Both
+/// glyphs occupy one terminal cell, so the footer needs no patched font.
+const WHICH_KEY_LEGEND: [WhichKeyLegendEntry<'static>; 2] = [
+    WhichKeyLegendEntry {
+        key: "ESC",
+        action: "close",
+    },
+    WhichKeyLegendEntry {
+        key: "⌫",
+        action: "back",
+    },
+];
 
 /// The number of cells that a float keeps beside its widest row.
 ///
@@ -150,22 +177,61 @@ fn row_width(row: &[(String, ThemeRole)]) -> u16 {
     u16::try_from(cells).unwrap_or(u16::MAX)
 }
 
+/// The visible state of one open which-key overlay.
+///
+/// The overlay answers one pending key sequence, so its hint rows and the keys
+/// that reached them are one fact. The two travel together, and an overlay
+/// that is absent carries neither.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct WhichKeyView<'a> {
+    /// The keys that may follow the pending sequence, one level at a time.
+    pub(super) rows: &'a [WhichKeyRow],
+    /// The keys that the reader already pressed, in press order.
+    pub(super) pending: &'a [Key],
+}
+
+/// Returns the breadcrumb of one pending key sequence.
+///
+/// Every key writes its help form, and one marker separates two keys, so the
+/// footer reads as the path that the reader walked. [`Key::label`] is the one
+/// key-label rule of the workspace, so a breadcrumb key and a hint key can
+/// never disagree. An empty sequence writes an empty text.
+///
+/// The result is bounded without a bound of its own: the settings reject a
+/// pending-key limit above `PENDING_KEYS_MAX`, and the resolver holds no more
+/// keys than that limit, so the text stays far inside the text bound of the
+/// widget.
+fn breadcrumb(pending: &[Key]) -> String {
+    let mut text = String::new();
+    for key in pending {
+        if !text.is_empty() {
+            text.push_str(BREADCRUMB_MARKER);
+        }
+        // Writing into a `String` never fails, so the result carries no case
+        // that this render could answer.
+        let _ = write!(text, "{}", key.label());
+    }
+    text
+}
+
 /// Renders the which-key overlay at the bottom of the body band.
 ///
 /// `kvim-ui` owns the bounded overlay, its column layout, and its clipping.
 /// This function is the theme adapter: it resolves every row into its final
-/// texts, it selects the icon of the command group, and it names the palette
-/// colors of the surface, of the footer, and of the keys. The one file-tree
-/// icon setting also turns these icons off, and the columns stay aligned
-/// without them. See `docs/input-actions.md`.
+/// texts, it selects the icon of the command group, it builds the breadcrumb of
+/// the pressed keys and the legend of the navigation keys, and it names the
+/// palette colors of the surface, of the footer, and of the keys. The one
+/// file-tree icon setting also turns these icons off, and the columns stay
+/// aligned without them. See `docs/input-actions.md`.
 pub(super) fn render_which_key(
     target: &mut CellBuffer,
     body: Rect,
     theme: Theme,
-    rows: &[WhichKeyRow],
+    view: WhichKeyView<'_>,
     icons: FileTreeIcons,
 ) {
-    let texts: Vec<(String, String, Option<Icon>)> = rows
+    let texts: Vec<(String, String, Option<Icon>)> = view
+        .rows
         .iter()
         .map(|row| {
             (
@@ -197,11 +263,16 @@ pub(super) fn render_which_key(
         surface,
         key: title,
         note: title,
-        breadcrumb: title,
-        legend_key: title,
-        legend_action: surface,
+        breadcrumb: theme.style(ThemeRole::WhichKeyBreadcrumb),
+        legend_key: theme.style(ThemeRole::WhichKeyLegendKey),
+        legend_action: theme.style(ThemeRole::WhichKeyLegendAction),
     };
-    let Ok(overlay) = WhichKeyOverlay::new(WhichKeyFooter::default(), &hints, styles) else {
+    let breadcrumb = breadcrumb(view.pending);
+    let footer = WhichKeyFooter {
+        breadcrumb: &breadcrumb,
+        legend: &WHICH_KEY_LEGEND,
+    };
+    let Ok(overlay) = WhichKeyOverlay::new(footer, &hints, styles) else {
         debug_assert!(
             false,
             "the registry bounds every command label, so one level of hints stays inside the overlay bounds"

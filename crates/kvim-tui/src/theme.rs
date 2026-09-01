@@ -244,6 +244,12 @@ pub enum ThemeRole {
     PickerMuted,
     /// The key name of one picker hint, such as `esc` or the arrow glyphs.
     PickerHintKey,
+    /// The breadcrumb of the pressed keys in the which-key footer.
+    WhichKeyBreadcrumb,
+    /// The key glyph of one which-key footer legend entry, such as `ESC`.
+    WhichKeyLegendKey,
+    /// The action word of one which-key footer legend entry, such as `close`.
+    WhichKeyLegendAction,
     /// The state of one running item of the notification overlay.
     NotificationRunning,
     /// The state of one finished item of the notification overlay.
@@ -441,6 +447,14 @@ impl Theme {
             // row, and the hint row already paint.
             ThemeRole::PickerMuted => Style::new().fg(TEXT_MUTED),
             ThemeRole::PickerHintKey => Style::new().fg(TEXT_DIM),
+            // The which-key footer reports where the reader stands and which
+            // keys leave the overlay. None of that is the answer the reader
+            // came for, so every part carries a foreground color only and
+            // stays quieter than the hint keys above it. The surface band of
+            // the overlay therefore shows through the complete footer row.
+            ThemeRole::WhichKeyBreadcrumb => Style::new().fg(TEXT_MUTED),
+            ThemeRole::WhichKeyLegendKey => Style::new().fg(TITLE),
+            ThemeRole::WhichKeyLegendAction => Style::new().fg(TEXT_DIM),
             // The notification overlay paints text alone over the buffer, as
             // the reference configuration does, so every role of it carries a
             // foreground color only. A background would hide the buffer text

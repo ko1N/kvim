@@ -37,6 +37,12 @@ fn workspace_root() -> PathBuf {
 /// The which-key delay of the settings that every test session holds.
 const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 
+/// The legend of the which-key footer, with the gaps that the widget paints.
+///
+/// The two entries name the keys that navigate the overlay itself, so every
+/// footer row of every level holds the same text.
+const WHICH_KEY_LEGEND: &str = "ESC close  ⌫ back";
+
 /// The background of a Visual selection in the reference palette.
 const SELECTION: Color = Color::Rgb(0x28, 0x34, 0x57);
 
@@ -1292,11 +1298,50 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     assert_eq!(row_of(&buffer, 14), " /  Open the ripgrep search picker");
     assert_eq!(row_of(&buffer, 15), " b  Open the buffer picker");
     assert_eq!(row_of(&buffer, 16), " f  Open the file search picker");
-    assert_eq!(row_of(&buffer, 17), "", "the footer row counts no hint");
+    assert_eq!(
+        row_of(&buffer, 17),
+        format!(" Space » f{}{WHICH_KEY_LEGEND}", " ".repeat(11)),
+        "the footer row names the pressed keys and counts no hint"
+    );
 
     // `Esc` dismisses the overlay from any depth.
     press_code(&mut session, KeyCode::Esc);
     assert_eq!(row(&session, 15), text_row(60, "~", TRACK));
+}
+
+#[test]
+fn the_which_key_footer_names_the_pressed_keys_and_the_navigation_keys() {
+    let mut session = session_without_icons(60, 20);
+    type_keys(&mut session, " w");
+    session.tick(WHICH_KEY_DELAY);
+    let buffer = draw(&session);
+    assert_eq!(
+        row_of(&buffer, 17),
+        format!(" Space » w{}{WHICH_KEY_LEGEND}", " ".repeat(11)),
+        "the breadcrumb names both pressed keys, and the legend follows it"
+    );
+    let color = |x: u16| {
+        buffer
+            .cell((x, 17))
+            .expect("the footer paints inside the terminal")
+            .style()
+            .fg
+    };
+    assert_eq!(
+        color(1),
+        role(ThemeRole::WhichKeyBreadcrumb).fg,
+        "the breadcrumb stays quieter than the keys above it"
+    );
+    assert_eq!(
+        color(21),
+        role(ThemeRole::WhichKeyLegendKey).fg,
+        "a legend key carries the accent of the overlay"
+    );
+    assert_eq!(
+        color(25),
+        role(ThemeRole::WhichKeyLegendAction).fg,
+        "the action word beside a legend key stays muted"
+    );
 }
 
 #[test]
@@ -1332,7 +1377,11 @@ fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
     assert_eq!(row_of(&buffer, 14), " /  Open the ripgrep search picker");
     assert_eq!(row_of(&buffer, 15), " b  Open the buffer picker");
     assert_eq!(row_of(&buffer, 16), " f  Open the file search picker");
-    assert_eq!(row_of(&buffer, 17), "", "the footer row closes the overlay");
+    assert_eq!(
+        row_of(&buffer, 17),
+        format!(" Space » f {WHICH_KEY_LEGEND}"),
+        "a narrow footer keeps the breadcrumb and the legend beside it"
+    );
 }
 
 #[test]
@@ -1345,7 +1394,11 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     // and eight of those show a mapping.
     assert_eq!(
         row_of(&buffer, 17),
-        format!("{}+4 more", " ".repeat(52)),
+        format!(
+            " Space{}{WHICH_KEY_LEGEND}{}+4 more",
+            " ".repeat(15),
+            " ".repeat(14)
+        ),
         "the footer row reports the mappings that no column holds"
     );
     assert_eq!(

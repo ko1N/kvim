@@ -267,14 +267,14 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             view.prompt.map(|prompt| &prompt.completion_viewport),
         );
     }
-    if let Some(rows) = view.which_key {
+    if let Some(which_key) = view.which_key {
         // The overlay reads the one icon setting of the file tree, so a
         // terminal without a patched font turns every glyph off together.
         render_which_key(
             target,
             bands.body,
             theme,
-            rows,
+            which_key,
             view.settings.windows.file_tree_icons,
         );
     }
