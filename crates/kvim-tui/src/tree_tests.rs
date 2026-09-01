@@ -2379,15 +2379,15 @@ fn the_header_row_shortens_the_home_directory_to_one_character() {
 
 #[test]
 fn the_header_row_names_the_root_behind_an_open_directory_icon() {
-    let (dir, session) = appearance_workspace(FileTreeIcons::Shown);
+    let (_dir, session) = appearance_workspace(FileTreeIcons::Shown);
     let header = sidebar_row(&session, 0);
     assert!(
         header.starts_with(" \u{f07c} "),
         "the header holds the open-directory icon: `{header}`"
     );
-    // The sidebar is narrower than a temporary path, so the header holds the
-    // first cells of the root path.
-    let root = dir.path.display().to_string();
+    // The sidebar is narrower than the root label, so the header holds its
+    // first cells.
+    let root = session.file_root_label();
     assert!(
         root.starts_with(header.trim_start_matches([' ', '\u{f07c}'])),
         "the header names the workspace root: `{header}`"

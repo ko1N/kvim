@@ -1,8 +1,9 @@
 # kvim
 
-kvim is a modal terminal editor for Rust projects on macOS and Linux. It
+kvim is an embeddable editor platform and standalone modal terminal editor for
+macOS and Linux. It
 provides Vim-style editing, workspace navigation, fuzzy search, Tree-sitter
-highlighting, language server support, and format-on-save in one executable.
+highlighting, language-aware editing, and format-on-save in one executable.
 
 ![kvim editor showing a Rust workspace](docs/screenshot.png)
 
