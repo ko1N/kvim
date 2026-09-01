@@ -57,6 +57,12 @@ grammar by default. It provides one feature for each language and one
 `all-grammars` feature. `kvim-language` forwards these features without a
 default grammar. The standalone `kvim` binary enables all 25 grammars.
 
+The default Nix development shell supplies every first-release language server
+and external formatter declared below. It is the runnable reference for the
+exact external tools that a fully featured kvim checkout needs. The pinned Rust
+toolchain supplies `rust-analyzer`; nixpkgs supplies the other commands. The
+minimal `msrv` shell does not include these optional editor tools.
+
 ## Language Adapter Boundary
 
 The adapter boundary is the multi-language extension point of kvim. kvim is

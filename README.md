@@ -36,7 +36,8 @@ nix profile install github:ko1N/kvim
 
 The Nix package includes `git`, `rg`, and `rust-analyzer` on the executable
 search path. To build or develop from a checkout, use `nix build` or
-`nix develop`.
+`nix develop`. The default development shell includes every language server
+and external formatter that kvim declares.
 
 ## Use
 

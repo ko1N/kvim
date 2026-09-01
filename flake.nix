@@ -45,6 +45,38 @@
           pkgs = pkgsFor system;
           msrvToolchain = msrvToolchainFor pkgs;
           rustToolchain = toolchainFor pkgs;
+          languageTools = [
+            # Language servers. The Rust toolchain supplies `rust-analyzer`.
+            pkgs.asm-lsp
+            pkgs.bash-language-server
+            pkgs.clang-tools
+            pkgs.fish-lsp
+            pkgs.glsl_analyzer
+            pkgs.gopls
+            pkgs.lemminx
+            pkgs.lua-language-server
+            pkgs.marksman
+            pkgs.nil
+            pkgs.pyright
+            pkgs.sqls
+            pkgs.taplo
+            pkgs.tofu-ls
+            pkgs.typescript-language-server
+            pkgs.vscode-langservers-extracted
+            pkgs.yaml-language-server
+            pkgs.zls
+
+            # External formatters. Some packages also supply a server above.
+            pkgs.black
+            pkgs.gotools
+            pkgs.luaformatter
+            pkgs.opentofu
+            pkgs.prettier
+            pkgs.shfmt
+            pkgs.sql-formatter
+            pkgs.xmlformat
+            pkgs.yamlfmt
+          ];
         in
         {
           default = pkgs.mkShellNoCC {
@@ -55,7 +87,8 @@
               # The toolchain supplies Cargo, Rust, rustfmt, Clippy, and
               # `rust-analyzer` at the pinned version.
               rustToolchain
-            ];
+            ]
+            ++ languageTools;
           };
 
           msrv = pkgs.mkShellNoCC {
