@@ -207,8 +207,13 @@ semantic_commands! {
 
     // Files and buffers.
     SaveBuffer => ("save-buffer", "Save the active buffer"),
+    SaveBufferAndClose => ("save-buffer-and-close", "Save the active buffer and close it"),
     RevealInFileTree => ("reveal-in-file-tree", "Reveal the active file in the file tree"),
     OpenBufferPicker => ("open-buffer-picker", "Open the buffer picker"),
+    // `CloseBuffer` and `UnloadBuffer` differ only in what the last loaded
+    // buffer does. `CloseBuffer` closes the editor, as Neovim's `:q` does.
+    // `UnloadBuffer` opens the scratch buffer and keeps the editor open.
+    CloseBuffer => ("close-buffer", "Close the active buffer"),
     UnloadBuffer => ("unload-buffer", "Unload the active buffer"),
     OpenFilePicker => ("open-file-picker", "Open the file search picker"),
     OpenRipgrepPicker => ("open-ripgrep-picker", "Open the ripgrep search picker"),
@@ -336,6 +341,7 @@ impl Command {
             | Self::ToggleComment => CommandAuthority::Text,
 
             Self::SaveBuffer
+            | Self::SaveBufferAndClose
             | Self::TreeAddFile
             | Self::TreeAddDirectory
             | Self::TreeDelete
@@ -433,6 +439,9 @@ impl Command {
             | Self::EndSearch
             | Self::RevealInFileTree
             | Self::OpenBufferPicker
+            // Closing and unloading write nothing durably, exactly as
+            // `CloseWindow` writes nothing.
+            | Self::CloseBuffer
             | Self::UnloadBuffer
             | Self::OpenFilePicker
             | Self::OpenRipgrepPicker
@@ -573,8 +582,10 @@ impl Command {
             | Self::CloseWindow => CommandGroup::Window,
 
             Self::SaveBuffer
+            | Self::SaveBufferAndClose
             | Self::RevealInFileTree
             | Self::OpenBufferPicker
+            | Self::CloseBuffer
             | Self::UnloadBuffer
             | Self::OpenFilePicker
             | Self::OpenRipgrepPicker => CommandGroup::Buffer,

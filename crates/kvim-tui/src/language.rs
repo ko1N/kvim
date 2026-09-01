@@ -303,6 +303,8 @@ pub(super) enum AfterSave {
     Stay,
     /// Close the focused window, like `:wq`.
     CloseWindow,
+    /// Close the saved buffer, like `<leader>w q`.
+    CloseBuffer,
 }
 
 /// Why the editor asked one question.

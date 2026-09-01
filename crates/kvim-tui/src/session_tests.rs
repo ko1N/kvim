@@ -15,7 +15,9 @@ use tokio_util::sync::CancellationToken;
 use kvim_clipboard::{CLIPBOARD_BYTES_MAX, ClipboardFailure};
 use kvim_core::BufferRevision;
 use kvim_editor::Selection;
-use kvim_input::{BindingScope, CommandLineCommand, EditedLine, Mode, PromptKind, TreePrompt};
+use kvim_input::{
+    BindingScope, Command, CommandLineCommand, EditedLine, Mode, PromptKind, TreePrompt,
+};
 use kvim_language::{Diagnostic, DiagnosticSeverity, DocumentPosition, LspError, SourceSpan};
 use kvim_path::WorktreeRelativePath;
 use kvim_runtime::{ProcessOutput, WatchBatch, WatchEvent, WatchKind};
@@ -26,10 +28,10 @@ use kvim_terminal::{
 };
 use kvim_workspace::temp::TempDir;
 use kvim_workspace::{
-    BUFFERS_MAX, BufferPathUpdate, Candidate, DirectoryIdentity, DirectoryListing, DurableOutcome,
-    ExternalChange, FileRequest, FileResult, LinkKind, MutationOutcome, PickerKind, PickerRequest,
-    PickerResult, RecoveryBaseline, RecoveryRecord, SaveError, TreeEntry, Truncation,
-    WorkspaceResult, recovery_record_path, write_recovery_record,
+    BUFFERS_MAX, BufferId, BufferPathUpdate, Candidate, DirectoryIdentity, DirectoryListing,
+    DurableOutcome, ExternalChange, FileRequest, FileResult, LinkKind, MutationOutcome, PickerKind,
+    PickerRequest, PickerResult, RecoveryBaseline, RecoveryRecord, SaveError, TreeEntry,
+    Truncation, WorkspaceResult, recovery_record_path, write_recovery_record,
 };
 
 use crate::buffer_view::{WINBAR_ROWS, gutter_cells};
@@ -4744,6 +4746,129 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
         Some(session.active()),
         "every window follows the unload"
     );
+}
+
+/// Opens one file into the session and returns the buffer that holds it.
+fn open_file(session: &mut Session, path: PathBuf) -> BufferId {
+    session.open_path(path);
+    run_file_request(session);
+    session.active()
+}
+
+#[test]
+fn close_buffer_removes_one_of_several_buffers_and_moves_its_windows() {
+    let directory = TempDir::new("session-close-buffer");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut session = file_session(&directory.path);
+
+    let _first = open_file(&mut session, first_path);
+    let second = open_file(&mut session, second_path);
+    assert_eq!(session.active(), second);
+    let loaded = session.buffers().len();
+
+    let _ = session.apply_command(Command::CloseBuffer, None, None, NOW);
+    assert!(
+        session.buffers().get(second).is_none(),
+        "the closed buffer left the list"
+    );
+    assert_eq!(
+        session.buffers().len(),
+        loaded - 1,
+        "no buffer took its place"
+    );
+    assert_ne!(session.active(), second, "the close falls back to another");
+    assert_eq!(
+        session.windows().buffer(session.windows().focused_window()),
+        Some(session.active()),
+        "every window follows the close"
+    );
+    assert_eq!(
+        session.run_state(),
+        RunState::Running,
+        "another buffer stays loaded, so the editor keeps running"
+    );
+}
+
+#[test]
+fn close_buffer_ends_the_editor_on_the_last_buffer_and_unload_keeps_it_open() {
+    let directory = TempDir::new("session-close-last-buffer");
+
+    // A fresh session holds its scratch buffer alone, so both commands act on
+    // the last loaded buffer here.
+    let mut unloading = file_session(&directory.path);
+    assert_eq!(unloading.buffers().len(), 1);
+    let scratch = unloading.active();
+    let _ = unloading.apply_command(Command::UnloadBuffer, None, None, NOW);
+    assert_ne!(
+        unloading.active(),
+        scratch,
+        "a new scratch buffer took over"
+    );
+    assert_eq!(unloading.buffers().len(), 1);
+    assert_eq!(
+        unloading.run_state(),
+        RunState::Running,
+        "an unload never ends the editor"
+    );
+
+    // Closing the last buffer ends the editor, as Neovim's `:q` does.
+    let mut closing = file_session(&directory.path);
+    assert_eq!(closing.buffers().len(), 1);
+    let _ = closing.apply_command(Command::CloseBuffer, None, None, NOW);
+    assert_eq!(closing.run_state(), RunState::Finished);
+}
+
+#[test]
+fn close_buffer_refuses_a_modified_buffer_while_another_stays_loaded() {
+    let directory = TempDir::new("session-close-dirty-buffer");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut session = file_session(&directory.path);
+
+    let _ = open_file(&mut session, first_path);
+    let second = open_file(&mut session, second_path);
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "z");
+    press_code(&mut session, KeyCode::Esc);
+    assert!(session.active_buffer().is_modified());
+
+    let _ = session.apply_command(Command::CloseBuffer, None, None, NOW);
+    assert_eq!(session.active(), second, "a dirty buffer stays loaded");
+    assert_eq!(
+        session.message().map(|message| message.level()),
+        Some(MessageLevel::Error)
+    );
+}
+
+#[test]
+fn save_buffer_and_close_writes_the_file_then_closes_the_buffer() {
+    let directory = TempDir::new("session-save-and-close");
+    let first_path = directory.write("first.rs", "one\n");
+    let second_path = directory.write("second.rs", "two\n");
+    let mut session = file_session(&directory.path);
+
+    let _first = open_file(&mut session, first_path);
+    let second = open_file(&mut session, second_path.clone());
+
+    press(&mut session, 'i');
+    type_keys(&mut session, "z");
+    press_code(&mut session, KeyCode::Esc);
+
+    let _ = session.apply_command(Command::SaveBufferAndClose, None, None, NOW);
+    run_file_request(&mut session);
+
+    assert_eq!(
+        std::fs::read_to_string(&second_path).expect("the file exists"),
+        "ztwo\n",
+        "the save reached the file before the close"
+    );
+    assert!(
+        session.buffers().get(second).is_none(),
+        "the saved buffer then closed"
+    );
+    assert_ne!(session.active(), second, "the close falls back to another");
 }
 
 /// Reports one workspace change, like the coalesced burst of the watcher.

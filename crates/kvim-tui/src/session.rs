@@ -424,6 +424,28 @@ enum UnsavedChanges {
     Discard,
 }
 
+/// What the editor does when the removed buffer was the only loaded one.
+///
+/// This is the single difference between closing a buffer and unloading one.
+/// Every other step of the removal is shared. See `docs/files.md`.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LastBuffer {
+    /// Open the scratch buffer and keep the editor open, like `<leader>x`.
+    OpenScratch,
+    /// End the editor, like Neovim's `:q` and like `<leader>q`.
+    CloseEditor,
+}
+
+impl LastBuffer {
+    /// Returns the message that the completed removal writes.
+    const fn note(self) -> &'static str {
+        match self {
+            Self::OpenScratch => "the buffer is unloaded",
+            Self::CloseEditor => "the buffer is closed",
+        }
+    }
+}
+
 /// The file operation that the editor waits for.
 ///
 /// The editor runs one file operation at a time, so a second request cannot
@@ -3377,7 +3399,11 @@ impl Session {
             // The file and buffer commands reach the same paths as `:w`, `:q`,
             // and the buffer list, so both entry points behave alike.
             Command::SaveBuffer => return self.save_active(AfterSave::Stay).or(cleared),
+            Command::SaveBufferAndClose => {
+                return self.save_active(AfterSave::CloseBuffer).or(cleared);
+            }
             Command::UnloadBuffer => return self.unload_active().or(cleared),
+            Command::CloseBuffer => return self.close_active().or(cleared),
             Command::CloseWindow => {
                 return self.close_window(UnsavedChanges::Ask).or(cleared);
             }
@@ -7916,13 +7942,20 @@ impl Session {
             None => written,
         };
         self.set_message(report, format.level());
+        // A stale apply means the buffer changed again while the save ran, so
+        // the written file no longer holds the buffer text. Neither close runs
+        // then, because both would discard the text that the save missed.
         match (then, applied) {
-            (AfterSave::Stay, _) | (AfterSave::CloseWindow, SaveApplyOutcome::Stale) => {
+            (AfterSave::Stay, _)
+            | (AfterSave::CloseWindow | AfterSave::CloseBuffer, SaveApplyOutcome::Stale) => {
                 Redraw::Needed
             }
             (AfterSave::CloseWindow, SaveApplyOutcome::Current) => self
                 .close_window(UnsavedChanges::Discard)
                 .or(Redraw::Needed),
+            (AfterSave::CloseBuffer, SaveApplyOutcome::Current) => {
+                self.close_active().or(Redraw::Needed)
+            }
         }
     }
 
@@ -7970,16 +8003,41 @@ impl Session {
         self.close_window(UnsavedChanges::Discard)
     }
 
-    /// Removes the active buffer from the buffer list.
+    /// Removes the active buffer from the buffer list and opens the scratch
+    /// buffer after the last one.
     fn unload_active(&mut self) -> Redraw {
+        self.remove_active_buffer(LastBuffer::OpenScratch)
+    }
+
+    /// Removes the active buffer from the buffer list and ends the editor after
+    /// the last one, as Neovim's `:q` does.
+    fn close_active(&mut self) -> Redraw {
+        self.remove_active_buffer(LastBuffer::CloseEditor)
+    }
+
+    /// Removes the active buffer from the buffer list.
+    ///
+    /// `last` names what happens when the removed buffer was the only loaded
+    /// one, which is the single difference between closing and unloading.
+    ///
+    /// A buffer that still holds unsaved text stays, because removing it would
+    /// destroy that text without an answer. The one exception is the last
+    /// buffer of [`LastBuffer::CloseEditor`]: that removal ends the editor, so
+    /// the quit question of [`Session::close_window`] owns the unsaved text and
+    /// asks before anything is lost.
+    fn remove_active_buffer(&mut self, last: LastBuffer) -> Redraw {
         let id = self.active;
+        // Stage the replacement before the removal, so no window ever points at
+        // a buffer that the list no longer holds.
+        let other = self.buffers.ids().into_iter().find(|other| *other != id);
+        if other.is_none() && last == LastBuffer::CloseEditor {
+            return self.close_window(UnsavedChanges::Ask);
+        }
         if self.active_buffer().is_modified() {
             self.set_message(UNSAVED_UNLOAD_NOTE, MessageLevel::Error);
             return Redraw::Needed;
         }
-        // Stage the replacement before the removal, so no window ever points at
-        // a buffer that the list no longer holds.
-        let next = match self.buffers.ids().into_iter().find(|other| *other != id) {
+        let next = match other {
             Some(next) => next,
             None => {
                 let scratch = FileBuffer::scratch(&self.settings.files);
@@ -8012,7 +8070,7 @@ impl Session {
             }
         }
         let redraw = self.switch_to(next);
-        self.set_message("the buffer is unloaded", MessageLevel::Info);
+        self.set_message(last.note(), MessageLevel::Info);
         redraw.or(Redraw::Needed)
     }
 
