@@ -94,6 +94,14 @@ fn motion(column: u16, row: u16) -> TerminalEvent {
     ))
 }
 
+fn pointer_action(column: u16, row: u16, action: PointerAction) -> TerminalEvent {
+    TerminalEvent::Pointer(PointerEvent::new(
+        CellPosition::new(column, row),
+        PointerModifiers::default(),
+        action,
+    ))
+}
+
 /// Creates one bounded vertical wheel event at a terminal cell.
 fn wheel(column: u16, row: u16, direction: PointerWheelDirection) -> TerminalEvent {
     TerminalEvent::Pointer(PointerEvent::new(
@@ -3175,6 +3183,191 @@ fn confirmation_starts_on_safe_no_and_direct_keys_answer() {
         assert_eq!(message(&session), expected);
         assert_eq!(question(&session), "");
     }
+}
+
+#[test]
+fn confirmation_pointer_uses_the_retained_non_zero_placement() {
+    let mut session = Session::new(
+        Rect::new(7, 3, 40, 10),
+        EditorSettings::default(),
+        test_root(workspace_root()),
+    );
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    assert_eq!(session.handle_event(motion(20, 8), NOW), Redraw::Skipped);
+    assert_eq!(focused_answer(&session), Some(YesNo::No));
+
+    let mut target = CellBuffer::empty(Rect::new(0, 0, 47, 13));
+    session
+        .confirmation
+        .as_ref()
+        .expect("the confirmation is open")
+        .render(
+            &mut target,
+            Rect::new(7, 3, 40, 9),
+            kvim_ui::DialogStyles::default(),
+        )
+        .expect("the non-zero body fits its buffer");
+    let placement = session
+        .confirmation
+        .as_ref()
+        .and_then(Confirmation::placement)
+        .expect("a successful frame publishes its exact placement");
+
+    assert_eq!(placement.body_area.x, 7);
+    assert_eq!(placement.body_area.y, 3);
+    let yes = placement
+        .choices
+        .iter()
+        .find(|choice| choice.identity == YesNo::Yes)
+        .expect("the published placement names Yes")
+        .area;
+    let no = placement
+        .choices
+        .iter()
+        .find(|choice| choice.identity == YesNo::No)
+        .expect("the published placement names No")
+        .area;
+
+    assert_eq!(
+        session.handle_event(motion(yes.x, yes.y), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(focused_answer(&session), Some(YesNo::Yes));
+    assert_eq!(session.handle_event(click(no.x, no.y), NOW), Redraw::Needed);
+    assert_eq!(
+        question(&session),
+        "",
+        "a primary click on No closes safely"
+    );
+
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    session
+        .confirmation
+        .as_ref()
+        .expect("the second confirmation is open")
+        .render(
+            &mut target,
+            Rect::new(7, 3, 40, 9),
+            kvim_ui::DialogStyles::default(),
+        )
+        .expect("the second non-zero body fits");
+    let yes = session
+        .confirmation
+        .as_ref()
+        .and_then(Confirmation::placement)
+        .expect("the second frame publishes a placement")
+        .choices
+        .into_iter()
+        .find(|choice| choice.identity == YesNo::Yes)
+        .expect("the published placement names Yes")
+        .area;
+    assert_eq!(
+        session.handle_event(click(yes.right() - 1, yes.y), NOW),
+        Redraw::Needed
+    );
+    assert_eq!(message(&session), CONFIRMED);
+}
+
+#[test]
+fn confirmation_pointer_consumes_popup_background_and_outside_input() {
+    let mut session = with_text(&["alpha", "beta", "gamma"]);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    let _ = draw(&session);
+    let placement = session
+        .confirmation
+        .as_ref()
+        .and_then(Confirmation::placement)
+        .expect("the frame publishes a placement");
+    let focused = session.windows.focused_window();
+    let before_view = session
+        .windows
+        .state(focused)
+        .expect("the focused window has visible state");
+    let cells = [
+        CellPosition::new(placement.rail.x, placement.rail.y),
+        CellPosition::new(placement.content.x, placement.popup.y),
+        CellPosition::new(placement.popup.x.saturating_sub(1), placement.popup.y),
+    ];
+
+    for cell in cells {
+        for action in [
+            PointerAction::Motion,
+            PointerAction::Press(PointerButton::Right),
+            PointerAction::Release(PointerButton::Left),
+            PointerAction::Drag(PointerButton::Left),
+            PointerAction::Wheel(
+                PointerWheel::new(PointerWheelDirection::Down, 1)
+                    .expect("one wheel tick is bounded"),
+            ),
+        ] {
+            assert_eq!(
+                session.handle_event(pointer_action(cell.column(), cell.row(), action), NOW),
+                Redraw::Skipped
+            );
+            assert_eq!(question(&session), "Delete one entry");
+            assert_eq!(
+                session.windows.state(focused),
+                Some(before_view),
+                "dialog input changes no background cursor or viewport"
+            );
+        }
+    }
+}
+
+#[test]
+fn confirmation_pointer_needs_a_current_successful_frame() {
+    let mut session = session(40, 10);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    assert_eq!(session.handle_event(click(20, 5), NOW), Redraw::Skipped);
+    assert_eq!(question(&session), "Delete one entry");
+
+    let _ = draw(&session);
+    let choice = session
+        .confirmation
+        .as_ref()
+        .and_then(Confirmation::placement)
+        .expect("the frame publishes a placement")
+        .choices[0]
+        .area;
+    assert_eq!(
+        session.handle_event(
+            TerminalEvent::Resize {
+                columns: 60,
+                rows: 15,
+            },
+            NOW,
+        ),
+        Redraw::Needed
+    );
+    assert!(
+        session
+            .confirmation
+            .as_ref()
+            .and_then(Confirmation::placement)
+            .is_none(),
+        "resize invalidates the old published placement"
+    );
+    assert_eq!(
+        session.handle_event(click(choice.x, choice.y), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(question(&session), "Delete one entry");
+}
+
+#[test]
+fn a_too_small_confirmation_frame_publishes_no_pointer_placement() {
+    let mut session = session(4, 3);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    let _ = draw(&session);
+    assert!(
+        session
+            .confirmation
+            .as_ref()
+            .and_then(Confirmation::placement)
+            .is_none()
+    );
+    assert_eq!(session.handle_event(click(1, 1), NOW), Redraw::Skipped);
+    assert_eq!(question(&session), "Delete one entry");
 }
 
 #[test]

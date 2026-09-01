@@ -26,6 +26,7 @@
 //! The session reads no clock. The event loop measures the elapsed time and
 //! passes it in, which keeps every transition deterministic and testable.
 
+use std::cell::RefCell;
 use std::collections::{BTreeMap, VecDeque};
 use std::mem;
 use std::num::NonZeroU8;
@@ -71,9 +72,11 @@ use kvim_terminal::{
     PointerWheelDirection, TerminalEvent,
 };
 use kvim_ui::{
-    BorderId, Cell, Dialog, DialogChoice, DialogKey, DialogKeyOutcome, DialogOutcome, DialogStyles,
-    Direction, HitTarget, LayoutChange, ListItem, ListViewport, Orientation, OverlayInput,
-    PointerOverlay, RegionKind, SidebarSide, WindowId, contains_cell, hit_test,
+    BorderId, Cell, Dialog, DialogChoice, DialogError, DialogKey, DialogKeyOutcome, DialogOutcome,
+    DialogPlacement, DialogPointerAction, DialogPointerButton, DialogPointerEvent,
+    DialogPointerOutcome, DialogStyles, Direction, HitTarget, LayoutChange, ListItem, ListViewport,
+    Orientation, OverlayInput, PointerOverlay, RegionKind, SidebarSide, WindowId, contains_cell,
+    hit_test,
 };
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget,
@@ -141,6 +144,27 @@ fn dialog_key(key: Key) -> DialogKey {
         (Chord::Plain, KeyCode::Esc) => DialogKey::Esc,
         (Chord::Ctrl, KeyCode::Char('c' | 'C')) => DialogKey::CtrlC,
         (Chord::Plain | Chord::Ctrl | Chord::CtrlAlt, _) => DialogKey::Unsupported,
+    }
+}
+
+/// Converts one terminal-neutral Kvim pointer event to the dialog vocabulary.
+fn dialog_pointer_event(pointer: PointerEvent) -> DialogPointerEvent {
+    let position = pointer.position();
+    let button = |button| match button {
+        PointerButton::Left => DialogPointerButton::Primary,
+        PointerButton::Right => DialogPointerButton::Secondary,
+        PointerButton::Middle => DialogPointerButton::Middle,
+    };
+    let action = match pointer.action() {
+        PointerAction::Motion => DialogPointerAction::Motion,
+        PointerAction::Press(value) => DialogPointerAction::Press(button(value)),
+        PointerAction::Release(value) => DialogPointerAction::Release(button(value)),
+        PointerAction::Drag(value) => DialogPointerAction::Drag(button(value)),
+        PointerAction::Wheel(_) => DialogPointerAction::Wheel,
+    };
+    DialogPointerEvent {
+        cell: Cell::new(position.column(), position.row()),
+        action,
     }
 }
 
@@ -1058,11 +1082,29 @@ enum YesNo {
 pub(super) struct Confirmation {
     dialog: Dialog<YesNo>,
     action: ConfirmedAction,
+    /// The exact placement returned by the last successful dialog render.
+    placement: RefCell<Option<DialogPlacement<YesNo>>>,
 }
 
 impl Confirmation {
-    pub(super) fn render(&self, target: &mut CellBuffer, body: Rect, styles: DialogStyles) {
-        let _ = self.dialog.render(target, body, styles);
+    pub(super) fn render(
+        &self,
+        target: &mut CellBuffer,
+        body: Rect,
+        styles: DialogStyles,
+    ) -> Result<(), DialogError> {
+        let rendered = self.dialog.render(target, body, styles);
+        self.placement.replace(rendered.as_ref().ok().cloned());
+        rendered.map(|_| ())
+    }
+
+    fn invalidate_placement(&self) {
+        self.placement.replace(None);
+    }
+
+    #[cfg(test)]
+    fn placement(&self) -> Option<DialogPlacement<YesNo>> {
+        self.placement.borrow().clone()
     }
 
     #[cfg(test)]
@@ -2553,7 +2595,12 @@ impl Session {
                     self.insert_owned_text(text.as_str()).or(closed)
                 }
             }
-            TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
+            TerminalEvent::Resize { columns, rows } => {
+                if let Some(confirmation) = &self.confirmation {
+                    confirmation.invalidate_placement();
+                }
+                self.resize(Rect::new(0, 0, columns, rows))
+            }
             TerminalEvent::Pointer(pointer) => self.handle_pointer(pointer, self.clock),
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
@@ -2667,6 +2714,9 @@ impl Session {
     }
 
     fn handle_pointer(&mut self, pointer: PointerEvent, now: Duration) -> Redraw {
+        if self.confirmation.is_some() {
+            return self.drive_confirmation_pointer(dialog_pointer_event(pointer));
+        }
         match pointer.action() {
             PointerAction::Wheel(wheel) => self.handle_pointer_wheel(pointer, wheel),
             PointerAction::Press(PointerButton::Left) => self.handle_pointer_click(pointer, now),
@@ -3226,6 +3276,9 @@ impl Session {
 
     /// Resolves one key and applies the command, the prompt edit, or the text.
     fn handle_key(&mut self, key: Key, now: Duration) -> Redraw {
+        if self.confirmation.is_some() {
+            return self.drive_confirmation_key(dialog_key(key));
+        }
         // A float is decoration of one answer, so the next key closes it.
         let closed = self.close_float();
         self.resolve_key(key, now).or(closed)
@@ -3245,9 +3298,6 @@ impl Session {
                 count,
                 register,
             } => self.dispatch_command(command, count, register),
-        if self.confirmation.is_some() {
-            return self.drive_confirmation_key(dialog_key(key));
-        }
             Resolution::Prompt(edit) => self.apply_prompt(edit),
             Resolution::Confirmation(_) => Redraw::Skipped,
             // A pending sequence and a cancelled sequence both change only the
@@ -4065,7 +4115,11 @@ impl Session {
             YesNo::No,
         )
         .expect("Kvim's fixed yes/no dialog meets every published bound");
-        self.confirmation = Some(Confirmation { dialog, action });
+        self.confirmation = Some(Confirmation {
+            dialog,
+            action,
+            placement: RefCell::new(None),
+        });
         self.sync_context();
         ConfirmationRequest::Opened
     }
@@ -4085,6 +4139,29 @@ impl Session {
                 self.answer_confirmation(answer)
             }
             DialogKeyOutcome::Consumed => Redraw::Skipped,
+        }
+    }
+
+    /// Drives one portable pointer event through the last rendered placement.
+    fn drive_confirmation_pointer(&mut self, event: DialogPointerEvent) -> Redraw {
+        let outcome = {
+            let Some(confirmation) = self.confirmation.as_mut() else {
+                debug_assert!(false, "dialog input requires one open confirmation");
+                return Redraw::Skipped;
+            };
+            let Some(placement) = confirmation.placement.get_mut().as_ref() else {
+                return Redraw::Skipped;
+            };
+            confirmation.dialog.drive_pointer(event, placement)
+        };
+        match outcome {
+            DialogPointerOutcome::Interaction(DialogOutcome::Focused(_)) => Redraw::Needed,
+            DialogPointerOutcome::Interaction(DialogOutcome::Answered(answer)) => {
+                self.answer_confirmation(answer)
+            }
+            DialogPointerOutcome::Consumed
+            | DialogPointerOutcome::OutsidePopup
+            | DialogPointerOutcome::PlacementMismatch => Redraw::Skipped,
         }
     }
 

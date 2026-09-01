@@ -289,7 +289,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             default_choice: theme.style(ThemeRole::DialogDefaultChoice),
             focused_choice: theme.style(ThemeRole::DialogFocusedChoice),
         };
-        confirmation.render(target, bands.body, styles);
+        let _ = confirmation.render(target, bands.body, styles);
         cursor_at = None;
         sidebar_cursor = None;
     }
