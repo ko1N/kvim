@@ -33,7 +33,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         choices,
         ChoiceId::KeepEditing,
         ChoiceId::KeepEditing,
-    )?;
+    )?
+    .with_icon('⚠')?;
 
     println!("focused: {:?}", dialog.focused_identity());
     let body = Rect::new(0, 0, 48, 12);
@@ -45,8 +46,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             dim: Style::default().bg(Color::Black),
             surface: Style::default().bg(Color::DarkGray),
             rail: Style::default().fg(Color::Cyan),
+            icon: Style::default().fg(Color::Yellow),
             body: Style::default(),
             question: Style::default(),
+            footer: Style::default().bg(Color::Black),
             choice: Style::default(),
             default_choice: Style::default().fg(Color::Green),
             focused_choice: Style::default().fg(Color::Yellow),

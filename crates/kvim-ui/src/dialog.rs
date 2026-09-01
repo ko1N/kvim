@@ -235,6 +235,12 @@ pub enum DialogError {
         /// The duplicate key.
         key: char,
     },
+    /// The severity glyph has no printable width.
+    #[error("dialog icon {icon:?} must have a printable width")]
+    InvalidIcon {
+        /// The invalid glyph.
+        icon: char,
+    },
     /// The safe default identity names no choice.
     #[error("the dialog safe default identity names no choice")]
     UnknownDefault,
@@ -309,10 +315,14 @@ pub struct DialogStyles {
     pub surface: Style,
     /// The style of the full-height left rail.
     pub rail: Style,
+    /// The style of the optional severity glyph on the title row.
+    pub icon: Style,
     /// The style of optional body text.
     pub body: Style,
     /// The style of the wrapped question.
     pub question: Style,
+    /// The style of the footer band that holds the choice row.
+    pub footer: Style,
     /// The style of a non-default unfocused choice.
     pub choice: Style,
     /// The style of the safe default choice when it is unfocused.
@@ -340,12 +350,23 @@ pub struct DialogPlacement<Id> {
     /// The full-height rectangle occupied by the left rail.
     pub rail: Rect,
     /// The content rectangle after the rail and blank separator column.
+    ///
+    /// The content rectangle bounds the title row, the wrapped question, and
+    /// any optional body text, including the one blank row that separates
+    /// them. It does not include the footer band or the choice row.
     pub content: Rect,
-    /// The rectangle occupied by optional body text lines.
+    /// The rectangle occupied by optional body text lines, painted below the
+    /// question.
     pub body_text: Rect,
-    /// The rectangle occupied by wrapped question lines.
+    /// The rectangle occupied by wrapped question lines, painted above any
+    /// optional body text.
     pub question: Rect,
-    /// The exact rectangles occupied by visible choices.
+    /// The rectangle occupied by the footer band, including its blank
+    /// padding rows and the choice row. The band spans the popup width minus
+    /// the rail.
+    pub footer: Rect,
+    /// The exact rectangles occupied by visible choices, including the
+    /// leading and trailing padding cell that each chip paints.
     pub choices: Vec<DialogChoicePlacement<Id>>,
 }
 
@@ -381,6 +402,7 @@ pub struct Dialog<Id> {
     default: usize,
     cancel: usize,
     focused: usize,
+    icon: Option<char>,
 }
 
 impl<Id: Eq> Dialog<Id> {
@@ -470,7 +492,29 @@ impl<Id: Eq> Dialog<Id> {
             default,
             cancel,
             focused: default,
+            icon: None,
         })
+    }
+
+    /// Returns the dialog with one severity glyph on its title row.
+    ///
+    /// `Dialog::new` keeps its own signature, so a caller that wants no icon
+    /// changes nothing. The glyph is validated here, not at layout, because a
+    /// refused layout paints no popup while the dialog still holds the keys.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed refusal when the glyph occupies no terminal cell.
+    pub fn with_icon(mut self, icon: char) -> Result<Self, DialogError> {
+        icon_indent(Some(icon))?;
+        self.icon = Some(icon);
+        Ok(self)
+    }
+
+    /// Returns the severity glyph, if the dialog has one.
+    #[must_use]
+    pub const fn icon(&self) -> Option<char> {
+        self.icon
     }
 
     /// Validates one rectangle before it becomes a popup rectangle.
@@ -546,9 +590,37 @@ impl<Id: Eq> Dialog<Id> {
             target.set_stringn(
                 placement.rail.x,
                 y,
-                "│",
+                "▌",
                 1,
                 styles.surface.patch(styles.rail),
+            );
+        }
+        let indent = icon_indent(self.icon).expect("the constructor validated the icon width");
+        let text_width = usize::from(placement.question.width).saturating_sub(indent);
+        let question_lines = wrap(&self.question, text_width)
+            .expect("placement validates the wrapped question against the content width");
+        for (index, (line, y)) in question_lines
+            .iter()
+            .zip(placement.question.y..placement.question.bottom())
+            .enumerate()
+        {
+            if index == 0
+                && let Some(icon) = self.icon
+            {
+                target.set_stringn(
+                    placement.content.x,
+                    y,
+                    icon.to_string(),
+                    indent.saturating_sub(1),
+                    styles.surface.patch(styles.icon),
+                );
+            }
+            target.set_stringn(
+                placement.content.x + u16::try_from(indent).expect("indent fits the content width"),
+                y,
+                line,
+                text_width,
+                styles.surface.patch(styles.question),
             );
         }
         for (line, y) in self
@@ -564,19 +636,8 @@ impl<Id: Eq> Dialog<Id> {
                 styles.surface.patch(styles.body),
             );
         }
-        for (line, y) in wrap(&self.question, usize::from(placement.content.width))
-            .expect("placement validates every question character against the content width")
-            .iter()
-            .zip(placement.question.y..placement.question.bottom())
-        {
-            target.set_stringn(
-                placement.content.x,
-                y,
-                line,
-                usize::from(placement.content.width),
-                styles.surface.patch(styles.question),
-            );
-        }
+        let footer_style = styles.surface.patch(styles.footer);
+        target.set_style(placement.footer, footer_style);
         for (index, choice) in placement.choices.iter().enumerate() {
             let style = if index == self.focused {
                 styles.focused_choice
@@ -585,43 +646,59 @@ impl<Id: Eq> Dialog<Id> {
             } else {
                 styles.choice
             };
-            let label = format!("> {}", self.choices[index].label());
+            let label = format!(" {} ", self.choices[index].label());
             target.set_stringn(
                 choice.area.x,
                 choice.area.y,
                 label,
                 usize::from(choice.area.width),
-                styles.surface.patch(style),
+                footer_style.patch(style),
             );
         }
         Ok(placement)
     }
 
+    /// Calculates one placement.
+    ///
+    /// The rail and the blank separator column take two columns. One blank
+    /// padding row opens the popup, and one blank row closes the content
+    /// region before the footer band. The footer band always holds three
+    /// rows: one blank row, the choice row, and one blank row, regardless of
+    /// how many choices the dialog holds.
     fn geometry(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
     where
         Id: Clone,
     {
         const FRAME_COLUMNS: u16 = 2;
-        const FRAME_ROWS: u16 = 2;
+        const TOP_PAD_ROWS: u16 = 1;
+        const CLOSE_PAD_ROWS: u16 = 1;
+        const FOOTER_ROWS: u16 = 3;
+        const CHOICE_PADDING_CELLS: usize = 2;
+        const CHOICE_GAP_CELLS: usize = 2;
+
         let Some(body_right) = body.x.checked_add(body.width) else {
             return Err(DialogError::InvalidBodyArea { body });
         };
         let Some(body_bottom) = body.y.checked_add(body.height) else {
             return Err(DialogError::InvalidBodyArea { body });
         };
-        let widest_choice = self
+        let indent = icon_indent(self.icon).expect("the constructor validated the icon width");
+        let choice_count = self.choices.len();
+        let total_choices_width = self
             .choices
             .iter()
-            .map(|choice| text_cells(choice.label()).saturating_add(2))
-            .max()
-            .unwrap_or(0);
+            .map(|choice| text_cells(choice.label()) + CHOICE_PADDING_CELLS)
+            .sum::<usize>()
+            + CHOICE_GAP_CELLS * choice_count.saturating_sub(1);
         let widest_body = self
             .body
             .iter()
             .map(|line| text_cells(line))
             .max()
             .unwrap_or(0);
-        let required_content_width = widest_choice.max(widest_body).max(1);
+        let required_content_width = total_choices_width
+            .max(widest_body)
+            .max(indent.saturating_add(1));
         let required_width = u16::try_from(required_content_width)
             .ok()
             .and_then(|width| width.checked_add(FRAME_COLUMNS))
@@ -631,17 +708,30 @@ impl<Id: Eq> Dialog<Id> {
             return Err(DialogError::BodyTooSmall { body });
         }
         let content_width = max_width - FRAME_COLUMNS;
-        let question = wrap(&self.question, usize::from(content_width))
+        let text_width = usize::from(content_width)
+            .checked_sub(indent)
+            .filter(|width| *width > 0)
             .ok_or(DialogError::BodyTooSmall { body })?;
-        let content_rows = self
-            .body
+        let question_lines =
+            wrap(&self.question, text_width).ok_or(DialogError::BodyTooSmall { body })?;
+        let body_rows = if self.body.is_empty() {
+            0
+        } else {
+            self.body
+                .len()
+                .checked_add(1)
+                .ok_or(DialogError::BodyTooSmall { body })?
+        };
+        let content_rows = question_lines
             .len()
-            .checked_add(question.len())
-            .and_then(|rows| rows.checked_add(self.choices.len()))
+            .checked_add(body_rows)
             .ok_or(DialogError::BodyTooSmall { body })?;
-        let height = u16::try_from(content_rows)
-            .ok()
-            .and_then(|rows| rows.checked_add(FRAME_ROWS))
+        let content_rows =
+            u16::try_from(content_rows).map_err(|_| DialogError::BodyTooSmall { body })?;
+        let height = TOP_PAD_ROWS
+            .checked_add(content_rows)
+            .and_then(|rows| rows.checked_add(CLOSE_PAD_ROWS))
+            .and_then(|rows| rows.checked_add(FOOTER_ROWS))
             .ok_or(DialogError::BodyTooSmall { body })?;
         if height > body.height || height > DIALOG_POPUP_ROWS_MAX {
             return Err(DialogError::BodyTooSmall { body });
@@ -671,41 +761,81 @@ impl<Id: Eq> Dialog<Id> {
             .ok_or(DialogError::InvalidBodyArea { body })?;
         let content_y = popup
             .y
-            .checked_add(1)
+            .checked_add(TOP_PAD_ROWS)
             .ok_or(DialogError::InvalidBodyArea { body })?;
-        let content = Rect::new(content_x, content_y, content_width, height - FRAME_ROWS);
-        let body_text = Rect::new(
+        let content = Rect::new(content_x, content_y, content_width, content_rows);
+        let question = Rect::new(
             content.x,
             content.y,
             content.width,
-            u16::try_from(self.body.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
+            u16::try_from(question_lines.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
         );
-        let question_y = body_text.bottom();
-        let question = Rect::new(
-            content.x,
-            question_y,
-            content.width,
-            u16::try_from(question.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
+        let body_text = if self.body.is_empty() {
+            Rect::new(content.x, question.bottom(), content.width, 0)
+        } else {
+            let body_y = question
+                .bottom()
+                .checked_add(CLOSE_PAD_ROWS)
+                .ok_or(DialogError::InvalidBodyArea { body })?;
+            Rect::new(
+                content.x,
+                body_y,
+                content.width,
+                u16::try_from(self.body.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
+            )
+        };
+        debug_assert_eq!(
+            body_text.bottom(),
+            content.bottom(),
+            "the content rectangle bounds the question and any optional body text exactly"
         );
-        let choices_y = question.bottom();
-        let choices = self
-            .choices
-            .iter()
-            .enumerate()
-            .map(|(index, choice)| {
-                let cells = u16::try_from(text_cells(choice.label()).saturating_add(2))
-                    .map_err(|_| DialogError::BodyTooSmall { body })?;
-                let y = choices_y
-                    .checked_add(
-                        u16::try_from(index).map_err(|_| DialogError::BodyTooSmall { body })?,
-                    )
+        let footer_y = content
+            .bottom()
+            .checked_add(CLOSE_PAD_ROWS)
+            .ok_or(DialogError::InvalidBodyArea { body })?;
+        let footer = Rect::new(
+            popup
+                .x
+                .checked_add(1)
+                .ok_or(DialogError::InvalidBodyArea { body })?,
+            footer_y,
+            popup
+                .width
+                .checked_sub(1)
+                .ok_or(DialogError::InvalidBodyArea { body })?,
+            FOOTER_ROWS,
+        );
+        debug_assert_eq!(
+            footer.bottom(),
+            popup.bottom(),
+            "the footer band's fixed row count reaches the popup's bottom edge by construction"
+        );
+        let choices_y = footer
+            .y
+            .checked_add(1)
+            .ok_or(DialogError::InvalidBodyArea { body })?;
+        let mut x = content.x;
+        let mut choices = Vec::with_capacity(self.choices.len());
+        for (index, choice) in self.choices.iter().enumerate() {
+            if index > 0 {
+                x = x
+                    .checked_add(u16::try_from(CHOICE_GAP_CELLS).expect("small constant fits u16"))
                     .ok_or(DialogError::InvalidBodyArea { body })?;
-                Ok(DialogChoicePlacement {
-                    identity: choice.identity.clone(),
-                    area: Rect::new(content.x, y, cells, 1),
-                })
-            })
-            .collect::<Result<Vec<_>, DialogError>>()?;
+            }
+            let chip_width = u16::try_from(text_cells(choice.label()) + CHOICE_PADDING_CELLS)
+                .map_err(|_| DialogError::BodyTooSmall { body })?;
+            choices.push(DialogChoicePlacement {
+                identity: choice.identity.clone(),
+                area: Rect::new(x, choices_y, chip_width, 1),
+            });
+            x = x
+                .checked_add(chip_width)
+                .ok_or(DialogError::InvalidBodyArea { body })?;
+        }
+        debug_assert!(
+            x <= content.right(),
+            "the horizontal choice row fits the content width because required_content_width bounded it"
+        );
         Ok(DialogPlacement {
             body_area: body,
             popup,
@@ -713,6 +843,7 @@ impl<Id: Eq> Dialog<Id> {
             content,
             body_text,
             question,
+            footer,
             choices,
         })
     }
@@ -920,6 +1051,20 @@ impl<Id: Eq> Dialog<Id> {
             Ok(expected) => expected == *placement,
             Err(_) => false,
         }
+    }
+}
+
+/// Returns the content-column indent that one optional severity glyph needs.
+///
+/// The indent covers the glyph cells and the one blank cell that separates
+/// the glyph from the question. It is zero when the dialog has no icon.
+fn icon_indent(icon: Option<char>) -> Result<usize, DialogError> {
+    match icon {
+        None => Ok(0),
+        Some(icon) => match UnicodeWidthChar::width(icon) {
+            Some(width) if width > 0 => Ok(width + 1),
+            _ => Err(DialogError::InvalidIcon { icon }),
+        },
     }
 }
 

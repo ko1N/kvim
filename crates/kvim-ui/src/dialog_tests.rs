@@ -26,8 +26,10 @@ fn styles() -> DialogStyles {
         dim: Style::default().bg(Color::Blue),
         surface: Style::default().bg(Color::Black),
         rail: Style::default().fg(Color::Cyan),
+        icon: Style::default().fg(Color::Red),
         body: Style::default().fg(Color::Green),
         question: Style::default().fg(Color::White),
+        footer: Style::default().bg(Color::DarkGray),
         choice: Style::default().fg(Color::Gray),
         default_choice: Style::default().fg(Color::Magenta),
         focused_choice: Style::default().fg(Color::Yellow),
@@ -268,6 +270,7 @@ fn rejects_unknown_and_ambiguous_focus_identities() {
         default: 0,
         cancel: 0,
         focused: 0,
+        icon: None,
     };
     assert_eq!(dialog.focus(&Id::Keep), Err(DialogError::AmbiguousChoice));
 }
@@ -275,7 +278,7 @@ fn rejects_unknown_and_ambiguous_focus_identities() {
 #[test]
 fn placement_and_render_share_exact_popup_geometry() {
     let dialog = dialog();
-    let body = Rect::new(4, 3, 30, 10);
+    let body = Rect::new(4, 3, 40, 10);
     let pure = dialog
         .placement_for(body)
         .expect("the body holds the fixed dialog");
@@ -285,18 +288,19 @@ fn placement_and_render_share_exact_popup_geometry() {
         .expect("the body is inside its buffer");
     assert_eq!(rendered, pure);
     assert_eq!(pure.body_area, body);
-    assert_eq!(pure.popup, Rect::new(4, 5, 30, 5));
-    assert_eq!(pure.rail, Rect::new(4, 5, 1, 5));
-    assert_eq!(pure.content, Rect::new(6, 6, 28, 3));
-    assert_eq!(pure.choices[0].area, Rect::new(6, 7, 14, 1));
-    assert_eq!(pure.choices[1].area, Rect::new(6, 8, 17, 1));
+    assert_eq!(pure.popup, Rect::new(4, 5, 40, 6));
+    assert_eq!(pure.rail, Rect::new(4, 5, 1, 6));
+    assert_eq!(pure.content, Rect::new(6, 6, 38, 1));
+    assert_eq!(pure.footer, Rect::new(5, 8, 39, 3));
+    assert_eq!(pure.choices[0].area, Rect::new(6, 9, 14, 1));
+    assert_eq!(pure.choices[1].area, Rect::new(22, 9, 17, 1));
 }
 
 #[test]
 fn rendering_dims_only_the_supplied_body_and_keeps_the_rail_styled() {
     let dialog = dialog();
-    let buffer = Rect::new(0, 0, 40, 16);
-    let body = Rect::new(4, 3, 30, 10);
+    let buffer = Rect::new(0, 0, 48, 16);
+    let body = Rect::new(4, 3, 40, 10);
     let mut target = Buffer::empty(buffer);
     target.set_style(buffer, Style::default().bg(Color::Red));
     let placement = dialog
@@ -312,7 +316,7 @@ fn rendering_dims_only_the_supplied_body_and_keeps_the_rail_styled() {
     );
     for y in placement.popup.y..placement.popup.bottom() {
         let cell = target.cell((placement.rail.x, y)).expect("rail cell");
-        assert_eq!(cell.symbol(), "│");
+        assert_eq!(cell.symbol(), "▌");
         assert_eq!(cell.style().fg, Some(Color::Cyan));
         assert_eq!(cell.style().bg, Some(Color::Black));
     }
@@ -320,11 +324,11 @@ fn rendering_dims_only_the_supplied_body_and_keeps_the_rail_styled() {
         .cell((placement.choices[0].area.x, placement.choices[0].area.y))
         .expect("focused choice");
     assert_eq!(focused.style().fg, Some(Color::Yellow));
-    assert_eq!(focused.style().bg, Some(Color::Black));
+    assert_eq!(focused.style().bg, Some(Color::DarkGray));
     let rail_next_to_focused = target
         .cell((placement.rail.x, placement.choices[0].area.y))
         .expect("focused choice rail");
-    assert_eq!(rail_next_to_focused.symbol(), "│");
+    assert_eq!(rail_next_to_focused.symbol(), "▌");
     assert_eq!(rail_next_to_focused.style().fg, Some(Color::Cyan));
     assert_eq!(rail_next_to_focused.style().bg, Some(Color::Black));
     assert_eq!(
@@ -334,10 +338,14 @@ fn rendering_dims_only_the_supplied_body_and_keeps_the_rail_styled() {
             .symbol(),
         " "
     );
+    let footer_background = target
+        .cell((placement.footer.x, placement.footer.y))
+        .expect("footer background");
+    assert_eq!(footer_background.style().bg, Some(Color::DarkGray));
 }
 
 #[test]
-fn choice_placements_name_all_and_only_painted_choice_cells() {
+fn choice_placements_are_horizontal_chips_that_cover_their_own_padding() {
     let mut dialog = Dialog::new(
         "Question",
         ["detail"],
@@ -356,13 +364,18 @@ fn choice_placements_name_all_and_only_painted_choice_cells() {
     let placement = dialog
         .render(&mut target, body, styles())
         .expect("valid render");
+    assert_eq!(placement.choices[0].area, Rect::new(9, 12, 6, 1));
+    assert_eq!(placement.choices[1].area, Rect::new(17, 12, 9, 1));
+    assert_eq!(placement.choices[0].area.y, placement.choices[1].area.y);
     for choice in &placement.choices {
         let expected = match choice.identity {
-            Id::Keep => "> Keep",
-            Id::Discard => "> Discard",
+            Id::Keep => " Keep ",
+            Id::Discard => " Discard ",
             Id::Other => unreachable!("the test dialog has two choices"),
         };
-        assert_eq!(choice.area.x, placement.content.x);
+        // The published chip rectangle covers the leading and trailing
+        // padding cell, so a pointer press anywhere on the chip, including
+        // its padding, lands inside the published area.
         assert_eq!(
             choice.area.width,
             u16::try_from(expected.len()).expect("short label")
@@ -378,26 +391,30 @@ fn choice_placements_name_all_and_only_painted_choice_cells() {
         assert_eq!(painted, expected);
         assert_eq!(
             target
-                .cell((choice.area.x - 1, choice.area.y))
-                .expect("separator")
-                .symbol(),
-            " "
-        );
-        assert_eq!(
-            target
                 .cell((placement.rail.x, choice.area.y))
                 .expect("rail")
                 .symbol(),
-            "│"
-        );
-        assert_eq!(
-            target
-                .cell((choice.area.right(), choice.area.y))
-                .expect("outside choice")
-                .symbol(),
-            " "
+            "▌"
         );
     }
+    // The two-cell gap between chips holds no painted label content.
+    assert_eq!(
+        target
+            .cell((
+                placement.choices[0].area.right(),
+                placement.choices[0].area.y
+            ))
+            .expect("gap")
+            .symbol(),
+        " "
+    );
+    assert_eq!(
+        target
+            .cell((placement.choices[1].area.x - 1, placement.choices[1].area.y))
+            .expect("gap")
+            .symbol(),
+        " "
+    );
 }
 
 #[test]
@@ -418,9 +435,9 @@ fn maximum_content_returns_a_typed_fit_refusal_under_popup_bounds() {
 }
 
 #[test]
-fn popup_stays_inside_the_supplied_body_and_has_top_and_bottom_rail_padding() {
+fn popup_stays_inside_the_supplied_body_and_has_top_padding_and_a_bottom_footer() {
     let dialog = dialog();
-    let body = Rect::new(4, 3, 30, 10);
+    let body = Rect::new(4, 3, 40, 10);
     let placement = dialog.placement_for(body).expect("body fits");
     assert_eq!(placement.body_area, body);
     assert!(placement.popup.x >= body.x);
@@ -429,12 +446,16 @@ fn popup_stays_inside_the_supplied_body_and_has_top_and_bottom_rail_padding() {
     assert!(placement.popup.bottom() <= body.bottom());
     assert_eq!(placement.rail.y, placement.popup.y);
     assert_eq!(placement.rail.bottom(), placement.popup.bottom());
+    // One blank row opens the popup before the content region.
     assert_eq!(placement.content.y, placement.popup.y + 1);
-    assert_eq!(placement.content.bottom() + 1, placement.popup.bottom());
+    // One blank row closes the content region before the footer band.
+    assert_eq!(placement.content.bottom() + 1, placement.footer.y);
+    // The footer band reaches the popup's bottom edge; no row follows it.
+    assert_eq!(placement.footer.bottom(), placement.popup.bottom());
 }
 
 #[test]
-fn wraps_question_and_places_optional_body_before_it() {
+fn wraps_question_and_places_optional_body_after_it() {
     let dialog = Dialog::new(
         "a question that must wrap across several columns",
         ["detail one", "detail two"],
@@ -448,12 +469,20 @@ fn wraps_question_and_places_optional_body_before_it() {
         .expect("body fits");
     assert_eq!(placement.body_text.height, 2);
     assert!(placement.question.height > 1);
-    assert_eq!(placement.body_text.bottom(), placement.question.y);
-    assert_eq!(placement.question.bottom(), placement.choices[0].area.y);
+    // The body follows the question, separated by one blank row.
+    assert_eq!(placement.body_text.y, placement.question.bottom() + 1);
+    assert_eq!(placement.body_text.bottom(), placement.content.bottom());
+    // The footer band, and inside it the choice row, follow the content
+    // region after its closing blank row.
+    assert_eq!(placement.footer.y, placement.content.bottom() + 1);
+    assert_eq!(placement.choices[0].area.y, placement.footer.y + 1);
 }
 
 #[test]
-fn narrow_bodies_require_complete_choice_and_body_text() {
+fn narrow_bodies_require_a_complete_choice_row() {
+    // The narrowest single choice needs one leading and one trailing
+    // padding cell plus its label, and the fixed six-row popup (top pad,
+    // one question row, the closing pad row, and the three-row footer).
     let narrow_dialog = Dialog::new(
         "q",
         std::iter::empty::<&str>(),
@@ -462,16 +491,22 @@ fn narrow_bodies_require_complete_choice_and_body_text() {
         Id::Keep,
     )
     .expect("short dialog");
-    let narrow = Rect::new(9, 4, 5, 4);
+    let narrow = Rect::new(9, 4, 5, 6);
     let placement = narrow_dialog
         .placement_for(narrow)
-        .expect("the narrowest complete choice fits");
+        .expect("the narrowest complete choice row fits");
     assert_eq!(placement.content.width, 3);
     assert_eq!(placement.choices[0].area.width, 3);
     assert_eq!(
-        narrow_dialog.placement_for(Rect::new(9, 4, 4, 4)),
+        narrow_dialog.placement_for(Rect::new(9, 4, 4, 6)),
         Err(DialogError::BodyTooSmall {
-            body: Rect::new(9, 4, 4, 4)
+            body: Rect::new(9, 4, 4, 6)
+        })
+    );
+    assert_eq!(
+        narrow_dialog.placement_for(Rect::new(9, 4, 5, 5)),
+        Err(DialogError::BodyTooSmall {
+            body: Rect::new(9, 4, 5, 5)
         })
     );
     let wide = Dialog::new(
@@ -483,23 +518,9 @@ fn narrow_bodies_require_complete_choice_and_body_text() {
     )
     .expect("wide label is bounded");
     assert_eq!(
-        wide.placement_for(Rect::new(9, 4, 5, 4)),
+        wide.placement_for(Rect::new(9, 4, 5, 6)),
         Err(DialogError::BodyTooSmall {
-            body: Rect::new(9, 4, 5, 4)
-        })
-    );
-    let wide_question = Dialog::new(
-        "界",
-        std::iter::empty::<&str>(),
-        [DialogChoice::new(Id::Keep, "x")],
-        Id::Keep,
-        Id::Keep,
-    )
-    .expect("wide question is bounded");
-    assert_eq!(
-        wide_question.placement_for(Rect::new(9, 4, 4, 4)),
-        Err(DialogError::BodyTooSmall {
-            body: Rect::new(9, 4, 4, 4)
+            body: Rect::new(9, 4, 5, 6)
         })
     );
     let body_line = Dialog::new(
@@ -511,11 +532,94 @@ fn narrow_bodies_require_complete_choice_and_body_text() {
     )
     .expect("bounded dialog");
     assert_eq!(
-        body_line.placement_for(Rect::new(0, 0, 9, 5)),
+        body_line.placement_for(Rect::new(0, 0, 10, 8)),
         Err(DialogError::BodyTooSmall {
-            body: Rect::new(0, 0, 9, 5)
+            body: Rect::new(0, 0, 10, 8)
         })
     );
+}
+
+#[test]
+fn footer_band_is_published_and_never_overlaps_the_content_region() {
+    let dialog = dialog();
+    let placement = dialog
+        .placement_for(Rect::new(4, 3, 40, 10))
+        .expect("body fits");
+    // The footer starts strictly below the content region's last row, so the
+    // two rectangles' row ranges never intersect.
+    assert!(placement.footer.y > placement.content.bottom());
+    assert_eq!(placement.footer.bottom(), placement.popup.bottom());
+    assert_eq!(placement.footer, Rect::new(5, 8, 39, 3));
+}
+
+#[test]
+fn question_wrap_indents_continuation_lines_under_the_icon() {
+    let dialog = Dialog::new(
+        "a question that must wrap across several columns",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(Id::Keep, "Keep")],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("bounded dialog")
+    .with_icon('⚠')
+    .expect("a warning glyph occupies one cell");
+    let body = Rect::new(2, 1, 16, 9);
+    let mut target = Buffer::empty(body);
+    let placement = dialog
+        .render(&mut target, body, styles())
+        .expect("the icon and question both fit");
+    assert!(
+        placement.question.height > 1,
+        "the question wraps across several lines"
+    );
+    let icon_cell = target
+        .cell((placement.content.x, placement.question.y))
+        .expect("icon cell");
+    assert_eq!(icon_cell.symbol(), "⚠");
+    assert_eq!(icon_cell.style().fg, Some(Color::Red));
+    // The title row's question text starts two columns past the icon glyph:
+    // one cell for the glyph and one blank separator cell.
+    let title_text_x = placement.content.x + 2;
+    assert_eq!(
+        target
+            .cell((title_text_x, placement.question.y))
+            .expect("title text cell")
+            .symbol(),
+        "a"
+    );
+    // A continuation line paints no glyph: its icon column stays the blank
+    // surface, and its text still starts at the same indented column.
+    let continuation_y = placement.question.y + 1;
+    let blank_under_icon = target
+        .cell((placement.content.x, continuation_y))
+        .expect("blank under icon");
+    assert_eq!(blank_under_icon.symbol(), " ");
+    assert_eq!(blank_under_icon.style().bg, Some(Color::Black));
+    assert_ne!(blank_under_icon.style().fg, Some(Color::Red));
+    assert_eq!(
+        target
+            .cell((title_text_x, continuation_y))
+            .expect("continuation text cell")
+            .symbol(),
+        "h"
+    );
+}
+
+#[test]
+fn the_constructor_rejects_an_icon_with_no_printable_width() {
+    // A refused layout paints no popup while the dialog still holds the keys,
+    // so an unpaintable glyph must fail before the dialog exists.
+    let refused = Dialog::new(
+        "q",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(Id::Keep, "x")],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("short dialog")
+    .with_icon('\u{0301}');
+    assert_eq!(refused, Err(DialogError::InvalidIcon { icon: '\u{0301}' }));
 }
 
 #[test]
@@ -559,7 +663,7 @@ fn invalid_bodies_return_typed_errors_without_rendering() {
 
 fn placement(dialog: &Dialog<Id>) -> DialogPlacement<Id> {
     dialog
-        .placement_for(Rect::new(11, 7, 30, 10))
+        .placement_for(Rect::new(11, 7, 40, 10))
         .expect("the fixed dialog has a published placement")
 }
 
