@@ -84,6 +84,91 @@ pub enum DialogOutcome<Id> {
     Answered(Id),
 }
 
+/// One portable keyboard input for a dialog.
+///
+/// A host converts its own keyboard events into this small vocabulary. The
+/// dialog does not depend on a terminal event library.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogKey {
+    /// One unmodified character.
+    Char(char),
+    /// The left arrow key.
+    Left,
+    /// The right arrow key.
+    Right,
+    /// The up arrow key.
+    Up,
+    /// The down arrow key.
+    Down,
+    /// The Enter key.
+    Enter,
+    /// The Escape key.
+    Esc,
+    /// The Ctrl-C key chord.
+    CtrlC,
+    /// A key that has no dialog-specific representation.
+    Unsupported,
+}
+
+/// The result of driving one dialog keyboard input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DialogKeyOutcome<Id> {
+    /// The input moved focus or answered the dialog.
+    Interaction(DialogOutcome<Id>),
+    /// The dialog consumed an unsupported input.
+    Consumed,
+}
+
+/// One pointer button that a dialog can receive.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogPointerButton {
+    /// The primary pointer button.
+    Primary,
+    /// The secondary pointer button.
+    Secondary,
+    /// The middle pointer button.
+    Middle,
+    /// Another pointer button.
+    Other,
+}
+
+/// One portable pointer action for a dialog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DialogPointerAction {
+    /// The pointer moved without a button capture.
+    Motion,
+    /// A pointer button was pressed.
+    Press(DialogPointerButton),
+    /// A pointer button was released.
+    Release(DialogPointerButton),
+    /// A pointer button dragged across a cell.
+    Drag(DialogPointerButton),
+    /// A wheel moved over a cell.
+    Wheel,
+}
+
+/// One portable pointer input for a dialog.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DialogPointerEvent {
+    /// The terminal cell that received the pointer action.
+    pub cell: crate::Cell,
+    /// The pointer action at `cell`.
+    pub action: DialogPointerAction,
+}
+
+/// The result of driving one dialog pointer input.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DialogPointerOutcome<Id> {
+    /// The input moved focus or answered the dialog.
+    Interaction(DialogOutcome<Id>),
+    /// The input was inside the popup but did not target a choice.
+    Consumed,
+    /// The input was outside the popup and was consumed by the open dialog.
+    OutsidePopup,
+    /// The placement does not describe this dialog's published choices.
+    PlacementMismatch,
+}
+
 /// The reason that a dialog request was refused.
 #[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
 pub enum DialogError {
@@ -753,6 +838,84 @@ impl<Id: Eq> Dialog<Id> {
         self.direct_key_identity(key)
             .cloned()
             .map(DialogOutcome::Answered)
+    }
+
+    /// Drives one keyboard input and consumes every key while the dialog is open.
+    ///
+    /// Declared direct keys take precedence over movement aliases. This keeps a
+    /// caller-owned `h`, `j`, `k`, `l`, `y`, or `n` direct choice reachable.
+    #[must_use]
+    pub fn drive_key(&mut self, key: DialogKey) -> DialogKeyOutcome<Id>
+    where
+        Id: Clone,
+    {
+        if let DialogKey::Char(character) = key {
+            if let Some(outcome) = self.answer_for_direct_key(character) {
+                return DialogKeyOutcome::Interaction(outcome);
+            }
+        }
+        let outcome = match key {
+            DialogKey::Char('h' | 'k') | DialogKey::Left | DialogKey::Up => Some(self.previous()),
+            DialogKey::Char('j' | 'l') | DialogKey::Right | DialogKey::Down => Some(self.next()),
+            DialogKey::Enter => Some(self.answer_focused()),
+            DialogKey::Esc | DialogKey::CtrlC => Some(self.answer_cancel()),
+            DialogKey::Char(_) | DialogKey::Unsupported => None,
+        };
+        match outcome {
+            Some(outcome) => DialogKeyOutcome::Interaction(outcome),
+            None => DialogKeyOutcome::Consumed,
+        }
+    }
+
+    /// Drives one pointer input through a published placement.
+    ///
+    /// The placement is the sole geometry source. Every event is consumed while
+    /// the dialog is open, including events outside the popup.
+    #[must_use]
+    pub fn drive_pointer(
+        &mut self,
+        event: DialogPointerEvent,
+        placement: &DialogPlacement<Id>,
+    ) -> DialogPointerOutcome<Id>
+    where
+        Id: Clone,
+    {
+        if !self.placement_matches(placement) {
+            return DialogPointerOutcome::PlacementMismatch;
+        }
+        if !crate::contains_cell(placement.popup, event.cell) {
+            return DialogPointerOutcome::OutsidePopup;
+        }
+        let Some(choice) = placement
+            .choices
+            .iter()
+            .find(|choice| crate::contains_cell(choice.area, event.cell))
+        else {
+            return DialogPointerOutcome::Consumed;
+        };
+        match event.action {
+            DialogPointerAction::Motion => DialogPointerOutcome::Interaction(
+                self.focus(&choice.identity)
+                    .expect("the validated placement names one dialog choice"),
+            ),
+            DialogPointerAction::Press(DialogPointerButton::Primary) => {
+                DialogPointerOutcome::Interaction(DialogOutcome::Answered(choice.identity.clone()))
+            }
+            DialogPointerAction::Press(_)
+            | DialogPointerAction::Release(_)
+            | DialogPointerAction::Drag(_)
+            | DialogPointerAction::Wheel => DialogPointerOutcome::Consumed,
+        }
+    }
+
+    fn placement_matches(&self, placement: &DialogPlacement<Id>) -> bool
+    where
+        Id: Clone,
+    {
+        match self.geometry(placement.body_area) {
+            Ok(expected) => expected == *placement,
+            Err(_) => false,
+        }
     }
 }
 

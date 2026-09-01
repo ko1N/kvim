@@ -135,8 +135,9 @@ pub use composer::{
 pub use dialog::{
     DIALOG_BODY_LINE_CHARS_MAX, DIALOG_BODY_LINES_MAX, DIALOG_CHOICE_LABEL_CHARS_MAX,
     DIALOG_CHOICES_MAX, DIALOG_DIRECT_KEYS_MAX, DIALOG_POPUP_COLUMNS_MAX, DIALOG_POPUP_ROWS_MAX,
-    DIALOG_QUESTION_CHARS_MAX, Dialog, DialogChoice, DialogChoicePlacement, DialogError,
-    DialogOutcome, DialogPlacement, DialogStyles,
+    DIALOG_QUESTION_CHARS_MAX, Dialog, DialogChoice, DialogChoicePlacement, DialogError, DialogKey,
+    DialogKeyOutcome, DialogOutcome, DialogPlacement, DialogPointerAction, DialogPointerButton,
+    DialogPointerEvent, DialogPointerOutcome, DialogStyles,
 };
 pub use guides::{
     SIDEBAR_GUIDE_BLANK, SIDEBAR_GUIDE_ELBOW, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_GUIDE_TRUNK,

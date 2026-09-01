@@ -5,6 +5,7 @@ use ratatui::{
 };
 
 use super::*;
+use crate::Cell;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Id {
@@ -555,6 +556,251 @@ fn invalid_bodies_return_typed_errors_without_rendering() {
         Err(DialogError::InvalidBodyArea { body: impossible })
     );
 }
+
+fn placement(dialog: &Dialog<Id>) -> DialogPlacement<Id> {
+    dialog
+        .placement_for(Rect::new(11, 7, 30, 10))
+        .expect("the fixed dialog has a published placement")
+}
+
+#[test]
+fn keyboard_enter_answers_initial_safe_default() {
+    let mut dialog = dialog();
+    assert_eq!(
+        dialog.drive_key(DialogKey::Enter),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Keep))
+    );
+}
+
+#[test]
+fn keyboard_driving_answers_navigates_and_consumes_all_keys() {
+    let mut dialog = dialog();
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('h')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Discard))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('k')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Left),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Discard))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Up),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('j')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Discard))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('l')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Right),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Discard))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Down),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Enter),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Esc),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::CtrlC),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('z')),
+        DialogKeyOutcome::Consumed
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Unsupported),
+        DialogKeyOutcome::Consumed
+    );
+}
+
+#[test]
+fn direct_keys_precede_movement_aliases() {
+    let mut dialog = Dialog::new(
+        "Question",
+        std::iter::empty::<&str>(),
+        [
+            DialogChoice::new(Id::Keep, "Keep").with_direct_key('j'),
+            DialogChoice::new(Id::Discard, "Discard").with_direct_key('n'),
+        ],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("valid direct keys");
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('j')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Keep))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('n')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Discard))
+    );
+}
+
+#[test]
+fn pointer_driving_uses_only_published_placement_and_consumes_background() {
+    let mut dialog = dialog();
+    let placement = placement(&dialog);
+    let keep = placement.choices[0].area;
+    let discard = placement.choices[1].area;
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(discard.x, discard.y),
+                action: DialogPointerAction::Motion,
+            },
+            &placement,
+        ),
+        DialogPointerOutcome::Interaction(DialogOutcome::Focused(Id::Discard))
+    );
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(keep.x, keep.y),
+                action: DialogPointerAction::Press(DialogPointerButton::Primary),
+            },
+            &placement,
+        ),
+        DialogPointerOutcome::Interaction(DialogOutcome::Answered(Id::Keep))
+    );
+    for cell in [
+        Cell::new(placement.rail.x, keep.y),
+        Cell::new(placement.popup.x + 1, placement.popup.y),
+        Cell::new(placement.content.x, placement.popup.y),
+    ] {
+        assert_eq!(
+            dialog.drive_pointer(
+                DialogPointerEvent {
+                    cell,
+                    action: DialogPointerAction::Motion,
+                },
+                &placement,
+            ),
+            DialogPointerOutcome::Consumed
+        );
+    }
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(placement.popup.right(), placement.popup.y),
+                action: DialogPointerAction::Motion,
+            },
+            &placement,
+        ),
+        DialogPointerOutcome::OutsidePopup
+    );
+    for action in [
+        DialogPointerAction::Press(DialogPointerButton::Secondary),
+        DialogPointerAction::Release(DialogPointerButton::Primary),
+        DialogPointerAction::Drag(DialogPointerButton::Primary),
+        DialogPointerAction::Wheel,
+    ] {
+        assert_eq!(
+            dialog.drive_pointer(
+                DialogPointerEvent {
+                    cell: Cell::new(keep.x, keep.y),
+                    action,
+                },
+                &placement,
+            ),
+            DialogPointerOutcome::Consumed
+        );
+    }
+}
+
+#[test]
+fn pointer_driving_rejects_modified_geometry() {
+    let dialog = dialog();
+    let original = placement(&dialog);
+
+    let mut modified_popup = original.clone();
+    modified_popup.popup.x += 1;
+    assert_eq!(
+        dialog.clone().drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(original.popup.x, original.popup.y),
+                action: DialogPointerAction::Motion,
+            },
+            &modified_popup,
+        ),
+        DialogPointerOutcome::PlacementMismatch
+    );
+
+    let mut modified_choice = original.clone();
+    modified_choice.choices[0].area.x += 1;
+    assert_eq!(
+        dialog.clone().drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(original.choices[0].area.x, original.choices[0].area.y),
+                action: DialogPointerAction::Motion,
+            },
+            &modified_choice,
+        ),
+        DialogPointerOutcome::PlacementMismatch
+    );
+}
+
+#[test]
+fn pointer_driving_rejects_stale_body_geometry() {
+    let mut dialog = dialog();
+    let mut placement = placement(&dialog);
+    placement.body_area = Rect::new(12, 7, 30, 10);
+    assert_eq!(
+        dialog.clone().drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(placement.popup.x, placement.popup.y),
+                action: DialogPointerAction::Motion,
+            },
+            &placement,
+        ),
+        DialogPointerOutcome::PlacementMismatch
+    );
+
+    placement.body_area = Rect::new(11, 7, 1, 1);
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(placement.popup.x, placement.popup.y),
+                action: DialogPointerAction::Motion,
+            },
+            &placement,
+        ),
+        DialogPointerOutcome::PlacementMismatch
+    );
+}
+
+#[test]
+fn pointer_driving_rejects_stale_placements() {
+    let mut dialog = dialog();
+    let mut placement = placement(&dialog);
+    placement.choices[0].identity = Id::Other;
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(placement.popup.x, placement.popup.y),
+                action: DialogPointerAction::Motion,
+            },
+            &placement,
+        ),
+        DialogPointerOutcome::PlacementMismatch
+    );
+}
+
 #[test]
 fn validates_popup_rectangle_bounds() {
     assert_eq!(
