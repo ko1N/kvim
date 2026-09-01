@@ -6,22 +6,49 @@ use ratatui::style::{Color, Style};
 
 use crate::which_key::{ColumnLayout, column_layout};
 use crate::{
-    Cell, WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyIcon,
-    WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyPlacement, WhichKeyStyles,
+    Cell, WHICH_KEY_HINTS_MAX, WHICH_KEY_LEGEND_ENTRIES_MAX, WHICH_KEY_TEXT_CHARS_MAX,
+    WhichKeyError, WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyOverlay,
+    WhichKeyOverlayRow, WhichKeyPlacement, WhichKeyStyles,
 };
 
-/// The title that the standalone editor gives its overlay.
-const TITLE: &str = " Which Key ";
+/// The breadcrumb that the standalone editor gives its overlay.
+const BREADCRUMB: &str = "SPC";
 
-/// The color of the title row and of every key.
+/// The navigation keys that the standalone editor names.
+const LEGEND: [WhichKeyLegendEntry<'static>; 2] = [
+    WhichKeyLegendEntry {
+        key: "ESC",
+        action: "close",
+    },
+    WhichKeyLegendEntry {
+        key: "BS",
+        action: "back",
+    },
+];
+
+/// The color of the footer and of every key.
 const ACCENT: Color = Color::Yellow;
+
+/// The footer of the tests that read the hint rows alone.
+///
+/// It carries the breadcrumb and no legend, so the last row of the overlay
+/// stays short and every hint row keeps its own assertion.
+const fn footer() -> WhichKeyFooter<'static> {
+    WhichKeyFooter {
+        breadcrumb: BREADCRUMB,
+        legend: &[],
+    }
+}
 
 fn styles() -> WhichKeyStyles {
     let accent = Style::default().fg(ACCENT);
     WhichKeyStyles {
         surface: Style::default().bg(Color::Black),
-        title: accent,
         key: accent,
+        note: accent,
+        breadcrumb: accent,
+        legend_key: accent,
+        legend_action: Style::default().fg(Color::Gray),
     }
 }
 
@@ -48,12 +75,28 @@ fn painted_page(
 ) -> (Buffer, WhichKeyPlacement) {
     let body = Rect::new(0, 0, width, height);
     let mut target = Buffer::empty(body);
-    let drawn = WhichKeyOverlay::new(TITLE, hints, styles())
+    let drawn = WhichKeyOverlay::new(footer(), hints, styles())
         .expect("the hints stay inside every bound")
         .at_page(page)
         .render(&mut target, body)
         .expect("the band covers the whole cell buffer");
     (target, drawn)
+}
+
+/// Renders one hint list under a footer that carries the breadcrumb and the
+/// legend.
+fn painted_with_legend(hints: &[WhichKeyOverlayRow<'_>], width: u16, height: u16) -> Buffer {
+    let body = Rect::new(0, 0, width, height);
+    let mut target = Buffer::empty(body);
+    let footer = WhichKeyFooter {
+        breadcrumb: BREADCRUMB,
+        legend: &LEGEND,
+    };
+    WhichKeyOverlay::new(footer, hints, styles())
+        .expect("the hints stay inside every bound")
+        .render(&mut target, body)
+        .expect("the band covers the whole cell buffer");
+    target
 }
 
 /// Builds one hint list of the named length, with one distinct key per row.
@@ -146,18 +189,22 @@ fn the_overlay_aligns_its_keys_and_its_labels_at_the_bottom_of_the_body() {
         WhichKeyOverlayRow::new("C-w", "+3 commands"),
     ];
     let target = painted(&hints, 40, 12);
-    // The body holds twelve rows, so the overlay takes the title row and two
-    // hint rows at the bottom.
-    assert_eq!(row_of(&target, 9), " Which Key");
-    assert_eq!(row_of(&target, 10), " /    Toggle the comment");
+    // The body holds twelve rows, so the overlay takes two hint rows and the
+    // footer row at the bottom.
+    assert_eq!(row_of(&target, 9), " /    Toggle the comment");
     assert_eq!(
-        row_of(&target, 11),
+        row_of(&target, 10),
         " C-w  +3 commands",
         "the label column starts behind the widest key"
     );
     assert_eq!(
+        row_of(&target, 11),
+        " SPC",
+        "the footer holds the last row of the overlay"
+    );
+    assert_eq!(
         target
-            .cell((1, 10))
+            .cell((1, 9))
             .expect("the overlay shows its first key")
             .style()
             .fg,
@@ -177,15 +224,15 @@ fn one_icon_reserves_the_same_width_in_every_row() {
         WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 16, 8);
-    assert_eq!(row_of(&target, 6), " * a  First");
+    assert_eq!(row_of(&target, 5), " * a  First");
     assert_eq!(
-        row_of(&target, 7),
+        row_of(&target, 6),
         "   b  Second",
         "a row without an icon keeps the reserved cells blank"
     );
     assert_eq!(
         target
-            .cell((1, 6))
+            .cell((1, 5))
             .expect("the overlay paints the icon cell")
             .style()
             .fg,
@@ -202,11 +249,11 @@ fn a_key_style_marks_the_key_without_an_icon() {
         WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 16, 8);
-    assert_eq!(row_of(&target, 6), " a  First");
-    assert_eq!(row_of(&target, 7), " b  Second");
+    assert_eq!(row_of(&target, 5), " a  First");
+    assert_eq!(row_of(&target, 6), " b  Second");
     assert_eq!(
         target
-            .cell((1, 6))
+            .cell((1, 5))
             .expect("the overlay paints the marked key")
             .style()
             .fg,
@@ -215,7 +262,7 @@ fn a_key_style_marks_the_key_without_an_icon() {
     );
     assert_eq!(
         target
-            .cell((1, 7))
+            .cell((1, 6))
             .expect("the overlay paints the unmarked key")
             .style()
             .fg,
@@ -238,15 +285,15 @@ fn a_row_carries_an_icon_and_a_key_style_at_once() {
         WhichKeyOverlayRow::new("b", "Second"),
     ];
     let target = painted(&hints, 16, 8);
-    assert_eq!(row_of(&target, 6), " ! a  First");
+    assert_eq!(row_of(&target, 5), " ! a  First");
     assert_eq!(
-        row_of(&target, 7),
+        row_of(&target, 6),
         "   b  Second",
         "an unmarked row keeps the reserved icon cell blank"
     );
     assert_eq!(
         target
-            .cell((1, 6))
+            .cell((1, 5))
             .expect("the overlay paints the icon")
             .style()
             .fg,
@@ -255,7 +302,7 @@ fn a_row_carries_an_icon_and_a_key_style_at_once() {
     );
     assert_eq!(
         target
-            .cell((3, 6))
+            .cell((3, 5))
             .expect("the overlay paints the marked key")
             .style()
             .fg,
@@ -264,7 +311,7 @@ fn a_row_carries_an_icon_and_a_key_style_at_once() {
     );
     assert_eq!(
         target
-            .cell((3, 7))
+            .cell((3, 6))
             .expect("the overlay paints the unmarked key")
             .style()
             .fg,
@@ -274,7 +321,7 @@ fn a_row_carries_an_icon_and_a_key_style_at_once() {
 }
 
 #[test]
-fn the_title_row_reports_the_hints_that_no_column_holds() {
+fn the_footer_row_reports_the_hints_that_no_column_holds() {
     let keys: Vec<String> = (0..12).map(|index| index.to_string()).collect();
     let labels: Vec<String> = (0..12).map(|index| format!("Command {index}")).collect();
     let hints: Vec<WhichKeyOverlayRow<'_>> = keys
@@ -286,12 +333,12 @@ fn the_title_row_reports_the_hints_that_no_column_holds() {
     // One column of five rows fits into the half of a body band of twelve
     // rows, so seven hints stay out of the overlay.
     let target = painted(&hints, 30, 12);
+    assert_eq!(row_of(&target, 6), " 0   Command 0");
     assert_eq!(
-        row_of(&target, 6),
-        format!(" Which Key{}+7 more", " ".repeat(12)),
-        "the title row reports the hints that no column holds"
+        row_of(&target, 11),
+        format!(" SPC{}+7 more", " ".repeat(18)),
+        "the footer row reports the hints that no column holds"
     );
-    assert_eq!(row_of(&target, 7), " 0   Command 0");
     assert_eq!(
         row_of(&target, 5),
         "",
@@ -300,20 +347,20 @@ fn the_title_row_reports_the_hints_that_no_column_holds() {
 }
 
 #[test]
-fn a_body_band_that_cannot_hold_the_title_and_one_row_paints_nothing() {
+fn a_body_band_that_cannot_hold_the_footer_and_one_row_paints_nothing() {
     let hints = [WhichKeyOverlayRow::new("a", "First")];
     let target = painted(&hints, 30, 3);
     assert!(
         (0..3).all(|y| row_of(&target, y).is_empty()),
-        "the body keeps its own text instead of a title without a row"
+        "the body keeps its own text instead of a footer without a row"
     );
 }
 
 #[test]
-fn the_overlay_states_both_of_its_bounds() {
+fn the_overlay_states_its_bounds() {
     let many = vec![WhichKeyOverlayRow::new("a", "First"); WHICH_KEY_HINTS_MAX + 1];
     assert_eq!(
-        WhichKeyOverlay::new(TITLE, &many, styles()).unwrap_err(),
+        WhichKeyOverlay::new(footer(), &many, styles()).unwrap_err(),
         WhichKeyError::Hints {
             hints: WHICH_KEY_HINTS_MAX + 1,
             max: WHICH_KEY_HINTS_MAX,
@@ -321,7 +368,7 @@ fn the_overlay_states_both_of_its_bounds() {
     );
     let most = vec![WhichKeyOverlayRow::new("a", "First"); WHICH_KEY_HINTS_MAX];
     assert!(
-        WhichKeyOverlay::new(TITLE, &most, styles()).is_ok(),
+        WhichKeyOverlay::new(footer(), &most, styles()).is_ok(),
         "the pages reach the hints of an accepted list, and the bound stands"
     );
 
@@ -332,13 +379,43 @@ fn the_overlay_states_both_of_its_bounds() {
         max: WHICH_KEY_TEXT_CHARS_MAX,
     };
     assert_eq!(
-        WhichKeyOverlay::new(TITLE, &hints, styles()).unwrap_err(),
+        WhichKeyOverlay::new(footer(), &hints, styles()).unwrap_err(),
         too_long
     );
+    let long_breadcrumb = WhichKeyFooter {
+        breadcrumb: &long,
+        legend: &[],
+    };
     assert_eq!(
-        WhichKeyOverlay::new(&long, &[], styles()).unwrap_err(),
+        WhichKeyOverlay::new(long_breadcrumb, &[], styles()).unwrap_err(),
         too_long,
-        "the bound covers the title as well"
+        "the bound covers the breadcrumb as well"
+    );
+    let long_legend = [WhichKeyLegendEntry {
+        key: "ESC",
+        action: &long,
+    }];
+    let long_action = WhichKeyFooter {
+        breadcrumb: BREADCRUMB,
+        legend: &long_legend,
+    };
+    assert_eq!(
+        WhichKeyOverlay::new(long_action, &[], styles()).unwrap_err(),
+        too_long,
+        "the bound covers every legend text as well"
+    );
+
+    let entries = vec![LEGEND[0]; WHICH_KEY_LEGEND_ENTRIES_MAX + 1];
+    let crowded = WhichKeyFooter {
+        breadcrumb: BREADCRUMB,
+        legend: &entries,
+    };
+    assert_eq!(
+        WhichKeyOverlay::new(crowded, &[], styles()).unwrap_err(),
+        WhichKeyError::Legend {
+            entries: WHICH_KEY_LEGEND_ENTRIES_MAX + 1,
+            max: WHICH_KEY_LEGEND_ENTRIES_MAX,
+        }
     );
 }
 
@@ -352,10 +429,10 @@ fn a_wide_key_reserves_two_cells_of_the_key_column() {
     // The wide key occupies two cells, so both labels start behind two cells
     // and the gap. A measurement that counted characters would move them left.
     let symbol = |x: u16, y: u16| target.cell((x, y)).map(|cell| cell.symbol().to_owned());
-    assert_eq!(symbol(5, 6), Some("F".to_owned()));
-    assert_eq!(symbol(5, 7), Some("S".to_owned()));
+    assert_eq!(symbol(5, 5), Some("F".to_owned()));
+    assert_eq!(symbol(5, 6), Some("S".to_owned()));
     assert_eq!(
-        symbol(1, 7),
+        symbol(1, 6),
         Some("b".to_owned()),
         "every key starts at the same cell"
     );
@@ -370,7 +447,8 @@ fn a_band_outside_the_buffer_returns_the_error_and_changes_no_cell() {
     let buffer = Rect::new(0, 0, 30, 8);
     let mut target = Buffer::empty(buffer);
     let untouched = target.clone();
-    let overlay = WhichKeyOverlay::new(TITLE, &hints, styles()).expect("the hints stay in bounds");
+    let overlay =
+        WhichKeyOverlay::new(footer(), &hints, styles()).expect("the hints stay in bounds");
 
     // The band starts inside the buffer and reaches past its last row, which
     // is the shape that a host produces from a stale frame size.
@@ -397,15 +475,13 @@ fn the_pages_of_a_long_list_reach_every_hint_exactly_once() {
         assert_eq!(drawn.page(), page);
         let range = drawn.drawn();
         assert!(!range.is_empty(), "every page holds one hint");
-        // The row below the title starts the first column, so it names the
+        // The top row of the overlay starts the first column, so it names the
         // first hint of the reported range. The widest key is three cells.
-        let title_row = (0..target.area.bottom())
-            .find(|y| row_of(&target, *y).starts_with(" Which Key"))
-            .expect("the page paints its title row");
+        let first_row = drawn.rows()[0].area.y;
         let key = &keys[range.start];
         let padding = " ".repeat(3 - key.chars().count() + 2);
         assert!(
-            row_of(&target, title_row + 1)
+            row_of(&target, first_row)
                 .starts_with(&format!(" {key}{padding}{}", labels[range.start])),
             "the first painted row is the first hint of the reported range"
         );
@@ -471,7 +547,7 @@ fn a_page_past_the_end_draws_the_last_page() {
 fn a_frame_that_holds_no_hint_reports_no_page() {
     let hints = [WhichKeyOverlayRow::new("a", "First")];
     let (_, drawn) = painted_page(&hints, 30, 3, 0);
-    assert_eq!(drawn.pages(), 0, "the band holds no title row with a hint");
+    assert_eq!(drawn.pages(), 0, "the band holds no footer row with a hint");
     assert_eq!(drawn.drawn(), 0..0);
     assert_eq!(drawn.total(), 1, "the report still names the whole list");
 
@@ -514,7 +590,7 @@ fn a_key_style_on_some_rows_leaves_the_page_width_unchanged() {
     );
     assert_eq!(
         first_page
-            .cell((1, 7))
+            .cell((1, 6))
             .expect("the first page paints its first key")
             .style()
             .fg,
@@ -523,7 +599,7 @@ fn a_key_style_on_some_rows_leaves_the_page_width_unchanged() {
     );
     assert_eq!(
         second_page
-            .cell((1, 7))
+            .cell((1, 6))
             .expect("the second page paints its first key")
             .style()
             .fg,
@@ -534,8 +610,8 @@ fn a_key_style_on_some_rows_leaves_the_page_width_unchanged() {
     // The label column starts six cells in on both pages: one pad cell, the
     // three-cell key column, and the two-cell gap. The key style marker adds
     // no cell, so the column stays put whether the opening row carries it.
-    assert_eq!(row_of(&first_page, 7).chars().nth(6), Some('C'));
-    assert_eq!(row_of(&second_page, 7).chars().nth(6), Some('C'));
+    assert_eq!(row_of(&first_page, 6).chars().nth(6), Some('C'));
+    assert_eq!(row_of(&second_page, 6).chars().nth(6), Some('C'));
 }
 
 #[test]
@@ -547,7 +623,7 @@ fn the_pure_placement_agrees_with_the_rendered_placement() {
     let body = Rect::new(0, 0, 60, 24);
 
     for page in [0, 1, usize::MAX] {
-        let overlay = WhichKeyOverlay::new(TITLE, &hints, styles())
+        let overlay = WhichKeyOverlay::new(footer(), &hints, styles())
             .expect("the hints stay inside every bound")
             .at_page(page);
         let pure = overlay.placement_for(body);
@@ -568,8 +644,8 @@ fn a_host_reads_the_placement_without_a_buffer() {
         WhichKeyOverlayRow::new("/", "Toggle the comment"),
         WhichKeyOverlayRow::new("C-w", "+3 commands"),
     ];
-    let overlay =
-        WhichKeyOverlay::new(TITLE, &hints, styles()).expect("the hints stay inside every bound");
+    let overlay = WhichKeyOverlay::new(footer(), &hints, styles())
+        .expect("the hints stay inside every bound");
     let body = Rect::new(0, 0, 40, 12);
 
     // No `Buffer` exists at this point, and `placement_for` takes `&self`,
@@ -588,14 +664,14 @@ fn row_placements_use_the_rendered_non_zero_origin_layout() {
         WhichKeyOverlayRow::new("b", "Beta"),
     ];
     let body = Rect::new(11, 7, 30, 12);
-    let overlay = WhichKeyOverlay::new(TITLE, &hints, styles()).expect("bounded hints");
+    let overlay = WhichKeyOverlay::new(footer(), &hints, styles()).expect("bounded hints");
     let placement = overlay.placement_for(body);
 
     assert_eq!(placement.rows().len(), 2);
     assert_eq!(placement.rows()[0].index, 0);
-    assert_eq!(placement.rows()[0].area, Rect::new(12, 18, 10, 1));
+    assert_eq!(placement.rows()[0].area, Rect::new(12, 17, 10, 1));
     assert_eq!(placement.rows()[1].index, 1);
-    assert_eq!(placement.rows()[1].area, Rect::new(22, 18, 10, 1));
+    assert_eq!(placement.rows()[1].area, Rect::new(22, 17, 10, 1));
 
     let mut target = Buffer::empty(Rect::new(0, 0, 48, 24));
     let drawn = overlay.render(&mut target, body).expect("body fits buffer");
@@ -623,12 +699,12 @@ fn row_placements_clip_to_the_overlay_and_hit_test_half_open_cells() {
         WhichKeyOverlayRow::new("b", "Beta"),
     ];
     let body = Rect::new(9, 5, 5, 12);
-    let placement = WhichKeyOverlay::new(TITLE, &hints, styles())
+    let placement = WhichKeyOverlay::new(footer(), &hints, styles())
         .expect("bounded hints")
         .placement_for(body);
     let first = placement.rows()[0];
 
-    assert_eq!(first.area, Rect::new(10, 15, 4, 1));
+    assert_eq!(first.area, Rect::new(10, 14, 4, 1));
     assert!(first.area.x >= body.x && first.area.right() <= body.right());
     assert!(first.area.y >= body.y && first.area.bottom() <= body.bottom());
     assert_eq!(
@@ -651,7 +727,7 @@ fn row_placements_clip_to_the_overlay_and_hit_test_half_open_cells() {
 #[test]
 fn empty_or_too_small_bodies_publish_no_row_placements() {
     let hints = [WhichKeyOverlayRow::new("a", "Alpha")];
-    let overlay = WhichKeyOverlay::new(TITLE, &hints, styles()).expect("bounded hints");
+    let overlay = WhichKeyOverlay::new(footer(), &hints, styles()).expect("bounded hints");
 
     for body in [Rect::new(4, 3, 0, 8), Rect::new(4, 3, 30, 3)] {
         let placement = overlay.placement_for(body);
@@ -663,13 +739,13 @@ fn empty_or_too_small_bodies_publish_no_row_placements() {
 #[test]
 fn a_body_that_holds_no_hint_answers_zero_pages_from_the_pure_call() {
     let hints = [WhichKeyOverlayRow::new("a", "First")];
-    let narrow_band = WhichKeyOverlay::new(TITLE, &hints, styles())
+    let narrow_band = WhichKeyOverlay::new(footer(), &hints, styles())
         .expect("the hints stay inside every bound")
         .placement_for(Rect::new(0, 0, 30, 3));
     assert_eq!(
         narrow_band.pages(),
         0,
-        "the band holds no title row with a hint"
+        "the band holds no footer row with a hint"
     );
     assert_eq!(narrow_band.drawn(), 0..0);
     assert_eq!(
@@ -678,10 +754,99 @@ fn a_body_that_holds_no_hint_answers_zero_pages_from_the_pure_call() {
         "the report still names the whole list"
     );
 
-    let empty_list = WhichKeyOverlay::new(TITLE, &[], styles())
+    let empty_list = WhichKeyOverlay::new(footer(), &[], styles())
         .expect("an empty list stays inside every bound")
         .placement_for(Rect::new(0, 0, 30, 12));
     assert_eq!(empty_list.total(), 0);
     assert_eq!(empty_list.pages(), 0);
     assert!(!empty_list.has_next_page());
+}
+
+#[test]
+fn the_footer_row_holds_the_breadcrumb_beside_the_centered_legend() {
+    let hints = [
+        WhichKeyOverlayRow::new("/", "Toggle the comment"),
+        WhichKeyOverlayRow::new("C-w", "+3 commands"),
+    ];
+    let target = painted_with_legend(&hints, 40, 12);
+    // The legend holds eighteen cells, so a row of forty cells centers it at
+    // the eleventh cell, four cells behind the breadcrumb.
+    assert_eq!(
+        row_of(&target, 11),
+        format!(" SPC{}ESC close  BS back", " ".repeat(7))
+    );
+    assert_eq!(
+        target
+            .cell((11, 11))
+            .expect("the footer paints the first legend key")
+            .style()
+            .fg,
+        Some(ACCENT),
+        "the legend key carries the key style of the caller"
+    );
+    assert_eq!(
+        target
+            .cell((15, 11))
+            .expect("the footer paints the first legend action")
+            .style()
+            .fg,
+        Some(Color::Gray),
+        "the action word carries its own style beside the key glyph"
+    );
+}
+
+#[test]
+fn a_narrow_footer_row_drops_the_note_before_the_legend() {
+    let (keys, labels) = long_hints(12);
+    let hints = hints_of(&keys, &labels);
+
+    // Thirty cells hold the breadcrumb and the legend, but not the note that
+    // counts the seven hints behind the page.
+    let target = painted_with_legend(&hints, 30, 12);
+    assert_eq!(row_of(&target, 11), " SPC  ESC close  BS back");
+
+    // Twenty cells hold neither the legend nor the legend beside the note, so
+    // the row keeps the breadcrumb and reports the count again.
+    let narrow = painted_with_legend(&hints, 20, 12);
+    assert_eq!(
+        row_of(&narrow, 11),
+        format!(" SPC{}+7 more", " ".repeat(8)),
+        "a row without the legend still counts the hints behind the page"
+    );
+}
+
+#[test]
+fn no_row_placement_names_the_footer_row() {
+    let hints = [
+        WhichKeyOverlayRow::new("/", "Toggle the comment"),
+        WhichKeyOverlayRow::new("C-w", "+3 commands"),
+    ];
+    let body = Rect::new(0, 0, 40, 12);
+    let overlay = WhichKeyOverlay::new(footer(), &hints, styles()).expect("bounded hints");
+    let placement = overlay.placement_for(body);
+    let mut target = Buffer::empty(body);
+    overlay
+        .render(&mut target, body)
+        .expect("the band covers the whole cell buffer");
+
+    // The hints open the overlay, so a pointer over the last hint row selects
+    // that hint and the footer row below it selects none.
+    let first = placement.rows()[0];
+    let last = placement.rows()[1];
+    assert_eq!(first.area.y, 9, "the first hint row opens the overlay");
+    assert_eq!(last.area.y, 10);
+    assert_eq!(
+        placement.row_at(Cell::new(first.area.x, first.area.y)),
+        Some(&first)
+    );
+    assert_eq!(
+        placement.row_at(Cell::new(last.area.x, last.area.y)),
+        Some(&last)
+    );
+    assert_eq!(
+        placement.row_at(Cell::new(first.area.x, last.area.y + 1)),
+        None,
+        "the footer row answers no hint"
+    );
+    assert_eq!(row_of(&target, last.area.y + 1), " SPC");
 }

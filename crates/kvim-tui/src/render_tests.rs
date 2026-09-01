@@ -1268,15 +1268,15 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
 
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 10), " /      Toggle the comment");
+    assert_eq!(row_of(&buffer, 9), " /      Toggle the comment");
     assert_eq!(
-        row_of(&buffer, 14),
+        row_of(&buffer, 13),
         " f      +3 commands",
         "a key that reaches several commands shows a group marker"
     );
     assert_eq!(
         buffer
-            .cell((1, 10))
+            .cell((1, 9))
             .expect("the overlay shows its first key")
             .style()
             .fg,
@@ -1288,10 +1288,11 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     press(&mut session, 'f');
     session.tick(WHICH_KEY_DELAY * 2);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 14), " Which Key");
-    assert_eq!(row_of(&buffer, 15), " /  Open the ripgrep search picker");
-    assert_eq!(row_of(&buffer, 16), " b  Open the buffer picker");
-    assert_eq!(row_of(&buffer, 17), " f  Open the file search picker");
+    // The hints open the overlay, and its footer row closes it.
+    assert_eq!(row_of(&buffer, 14), " /  Open the ripgrep search picker");
+    assert_eq!(row_of(&buffer, 15), " b  Open the buffer picker");
+    assert_eq!(row_of(&buffer, 16), " f  Open the file search picker");
+    assert_eq!(row_of(&buffer, 17), "", "the footer row counts no hint");
 
     // `Esc` dismisses the overlay from any depth.
     press_code(&mut session, KeyCode::Esc);
@@ -1305,9 +1306,8 @@ fn the_which_key_overlay_fills_a_wide_terminal_with_columns() {
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
     // Three columns of thirty-five cells fit, so one row holds every mapping.
-    assert_eq!(row_of(&buffer, 26), " Which Key");
     assert_eq!(
-        row_of(&buffer, 27),
+        row_of(&buffer, 26),
         format!(
             " {:<35}{:<35}{}",
             "/  Open the ripgrep search picker",
@@ -1329,10 +1329,10 @@ fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
     type_keys(&mut session, " f");
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 14), " Which Key");
-    assert_eq!(row_of(&buffer, 15), " /  Open the ripgrep search picker");
-    assert_eq!(row_of(&buffer, 16), " b  Open the buffer picker");
-    assert_eq!(row_of(&buffer, 17), " f  Open the file search picker");
+    assert_eq!(row_of(&buffer, 14), " /  Open the ripgrep search picker");
+    assert_eq!(row_of(&buffer, 15), " b  Open the buffer picker");
+    assert_eq!(row_of(&buffer, 16), " f  Open the file search picker");
+    assert_eq!(row_of(&buffer, 17), "", "the footer row closes the overlay");
 }
 
 #[test]
@@ -1344,25 +1344,26 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     // The body band holds eighteen rows, so the overlay keeps nine of them,
     // and eight of those show a mapping.
     assert_eq!(
-        row_of(&buffer, 9),
-        format!(" Which Key{}+4 more", " ".repeat(42)),
-        "the title row reports the mappings that no column holds"
+        row_of(&buffer, 17),
+        format!("{}+4 more", " ".repeat(52)),
+        "the footer row reports the mappings that no column holds"
     );
     assert_eq!(
         row_of(&buffer, 8),
         text_row(60, "~", TRACK),
         "the buffer stays visible above"
     );
-    assert_eq!(row_of(&buffer, 17), " o      Open the buffer picker");
+    assert_eq!(row_of(&buffer, 9), " /      Toggle the comment");
+    assert_eq!(row_of(&buffer, 16), " o      Open the buffer picker");
 
-    // A body band that cannot hold the title and one mapping over its own half
+    // A body band that cannot hold the footer and one mapping over its own half
     // shows no overlay at all, so the buffer never disappears behind it.
     let mut small = session_without_icons(60, 4);
     press(&mut small, ' ');
     small.tick(WHICH_KEY_DELAY);
     let painted = draw(&small);
     assert!(
-        (0..4).all(|y| !row_of(&painted, y).contains("Which Key")),
+        (0..4).all(|y| !row_of(&painted, y).contains("Toggle the comment")),
         "a body band of two rows shows no overlay at all"
     );
 }
@@ -1381,9 +1382,9 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
     };
     // `/` toggles the comment, which is a language service. `\` splits the
     // window. `f` opens the pickers, which all reach a file or a buffer.
-    let (code, code_color) = icon(12);
-    let (window, window_color) = icon(13);
-    let (files, files_color) = icon(16);
+    let (code, code_color) = icon(11);
+    let (window, window_color) = icon(12);
+    let (files, files_color) = icon(15);
     assert_eq!(code_color, Some(ACCENT_WARM));
     assert_eq!(window_color, Some(INFO));
     assert_eq!(files_color, Some(TEXT));
@@ -1396,7 +1397,7 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
         "each group carries its own glyph"
     );
     assert_eq!(
-        row_of(&buffer, 12),
+        row_of(&buffer, 11),
         format!(" {code} /      Toggle the comment"),
         "the icon sits left of the key and the label"
     );
@@ -1416,7 +1417,7 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     let buffers = format!("{files} b  Open the buffer picker");
     let files_picker = format!("{files} f  Open the file search picker");
     assert_eq!(
-        row_of(&draw(&painted), 27),
+        row_of(&draw(&painted), 26),
         format!(" {ripgrep:<37}{buffers:<37}{files_picker}")
     );
 
@@ -1424,7 +1425,7 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     type_keys(&mut plain, " f");
     plain.tick(WHICH_KEY_DELAY);
     assert_eq!(
-        row_of(&draw(&plain), 27),
+        row_of(&draw(&plain), 26),
         format!(
             " {:<35}{:<35}{}",
             "/  Open the ripgrep search picker",

@@ -34,7 +34,10 @@ use kvim_keymap::{
     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
     Registry, Resolver, Scope, ScopedWhichKeyHint,
 };
-use kvim_ui::{WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+use kvim_ui::{
+    WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyOverlay, WhichKeyOverlayRow,
+    WhichKeyStyles,
+};
 
 /// The commands that the host binds.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -158,6 +161,21 @@ const WHICH_KEY_DELAY: Duration = Duration::from_millis(500);
 /// paints. One measured host list holds this many.
 const IDLE_KEYS: usize = 91;
 
+/// The keys that navigate the overlay itself.
+///
+/// The widget owns no text, so the host names both the key glyph and the
+/// action word of every navigation key.
+const LEGEND: [WhichKeyLegendEntry<'static>; 2] = [
+    WhichKeyLegendEntry {
+        key: "ESC",
+        action: "close",
+    },
+    WhichKeyLegendEntry {
+        key: "BS",
+        action: "back",
+    },
+];
+
 /// The body band that the host gives the overlay.
 const BODY: Rect = Rect {
     x: 0,
@@ -168,6 +186,27 @@ const BODY: Rect = Rect {
 
 fn key(value: char) -> Key {
     Key::plain(KeyCode::Char(value))
+}
+
+/// Returns the footer row of this host: one breadcrumb beside the legend.
+fn footer(breadcrumb: &str) -> WhichKeyFooter<'_> {
+    WhichKeyFooter {
+        breadcrumb,
+        legend: &LEGEND,
+    }
+}
+
+/// Returns the styles that this host gives the overlay.
+fn host_styles() -> WhichKeyStyles {
+    let accent = Style::default().fg(Color::Yellow);
+    WhichKeyStyles {
+        surface: Style::default().bg(Color::Black).fg(Color::Gray),
+        key: accent,
+        note: accent,
+        breadcrumb: accent,
+        legend_key: accent,
+        legend_action: Style::default().fg(Color::Gray),
+    }
 }
 
 fn main() {
@@ -265,13 +304,8 @@ fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
         .with_key_style(interruption_key_style);
 
     let rows = [extension_row, interruption_row];
-    let styles = WhichKeyStyles {
-        surface: Style::default().bg(Color::Black).fg(Color::Gray),
-        title: Style::default().fg(Color::Yellow),
-        key: Style::default().fg(Color::Yellow),
-    };
     let mut target = Buffer::empty(BODY);
-    WhichKeyOverlay::new(" Which Key ", &rows, styles)
+    WhichKeyOverlay::new(footer("\u{2423}"), &rows, host_styles())
         .expect("two rows stay inside every bound")
         .render(&mut target, BODY)
         .expect("the band covers the cell buffer of this example");
@@ -287,10 +321,10 @@ fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
 /// holds one page for each frame of columns, and every render reports the page
 /// it drew, so a host binds one key that steps through the list.
 ///
-/// This host writes the page count into the title it is about to draw, for
-/// example " Which Key (page 2 of 5) ". It reads the count from
+/// This host writes the page count into the footer it is about to draw, for
+/// example "g (page 2 of 5)". It reads the count from
 /// [`WhichKeyOverlay::placement_for`] first, with no paint, so it never
-/// renders the band once to learn the count and once more to draw the title.
+/// renders the band once to learn the count and once more to draw the footer.
 fn step_through_a_long_list() {
     let keys: Vec<String> = (0..IDLE_KEYS).map(|index| format!("g{index}")).collect();
     let labels: Vec<String> = (0..IDLE_KEYS)
@@ -301,22 +335,19 @@ fn step_through_a_long_list() {
         .zip(&labels)
         .map(|(key, label)| WhichKeyOverlayRow::new(key, label))
         .collect();
-    // The title carries no page count yet, because the count depends on the
-    // page. A first overlay reads the geometry only; a host never paints it.
-    let untitled = WhichKeyOverlay::new(" Which Key ", &rows, WhichKeyStyles::default())
+    // The breadcrumb carries no page count yet, because the count depends on
+    // the page. A first overlay reads the geometry only; a host never paints
+    // it.
+    let measured = WhichKeyOverlay::new(WhichKeyFooter::default(), &rows, host_styles())
         .expect("the idle list stays inside every bound");
 
     let mut reached: Vec<usize> = Vec::new();
     let mut page = 0;
     loop {
-        let opened = untitled.at_page(page);
+        let opened = measured.at_page(page);
         let placement = opened.placement_for(BODY);
-        let title = format!(
-            " Which Key (page {} of {}) ",
-            placement.page() + 1,
-            placement.pages()
-        );
-        let overlay = WhichKeyOverlay::new(&title, &rows, WhichKeyStyles::default())
+        let breadcrumb = format!("g (page {} of {})", placement.page() + 1, placement.pages());
+        let overlay = WhichKeyOverlay::new(footer(&breadcrumb), &rows, host_styles())
             .expect("the idle list stays inside every bound")
             .at_page(page);
 
@@ -376,15 +407,9 @@ fn painted(hints: &[ScopedWhichKeyHint<Command, Global>]) -> Buffer {
             })
         })
         .collect();
-    let accent = Style::default().fg(Color::Yellow);
-    let styles = WhichKeyStyles {
-        surface: Style::default().bg(Color::Black).fg(Color::Gray),
-        title: accent,
-        key: accent,
-    };
 
     let mut target = Buffer::empty(BODY);
-    WhichKeyOverlay::new(" Which Key ", &rows, styles)
+    WhichKeyOverlay::new(footer("\u{2423}"), &rows, host_styles())
         .expect("one level of hints stays inside every bound")
         .render(&mut target, BODY)
         .expect("the band covers the cell buffer of this example");

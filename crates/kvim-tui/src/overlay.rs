@@ -25,7 +25,7 @@ use ratatui::style::Style;
 use kvim_input::WhichKeyRow;
 use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
-use kvim_ui::{WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+use kvim_ui::{WhichKeyFooter, WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
 
 use super::cells::{text_cells, wrap_cells};
 use super::icons::Icon;
@@ -36,9 +36,6 @@ use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the overlay title occupies.
 const TITLE_ROWS: u16 = 1;
-
-/// The title of the which-key overlay.
-const OVERLAY_TITLE: &str = " Which Key ";
 
 /// The number of cells that a float keeps beside its widest row.
 ///
@@ -158,9 +155,9 @@ fn row_width(row: &[(String, ThemeRole)]) -> u16 {
 /// `kvim-ui` owns the bounded overlay, its column layout, and its clipping.
 /// This function is the theme adapter: it resolves every row into its final
 /// texts, it selects the icon of the command group, and it names the palette
-/// colors of the surface, of the title, and of the keys. The one file-tree icon
-/// setting also turns these icons off, and the columns stay aligned without
-/// them. See `docs/input-actions.md`.
+/// colors of the surface, of the footer, and of the keys. The one file-tree
+/// icon setting also turns these icons off, and the columns stay aligned
+/// without them. See `docs/input-actions.md`.
 pub(super) fn render_which_key(
     target: &mut CellBuffer,
     body: Rect,
@@ -198,10 +195,13 @@ pub(super) fn render_which_key(
     let title = theme.style(ThemeRole::Title);
     let styles = WhichKeyStyles {
         surface,
-        title,
         key: title,
+        note: title,
+        breadcrumb: title,
+        legend_key: title,
+        legend_action: surface,
     };
-    let Ok(overlay) = WhichKeyOverlay::new(OVERLAY_TITLE, &hints, styles) else {
+    let Ok(overlay) = WhichKeyOverlay::new(WhichKeyFooter::default(), &hints, styles) else {
         debug_assert!(
             false,
             "the registry bounds every command label, so one level of hints stays inside the overlay bounds"
