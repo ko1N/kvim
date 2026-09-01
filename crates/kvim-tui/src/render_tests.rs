@@ -64,6 +64,12 @@ const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
 /// The title color of the reference palette.
 const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
 
+/// The focused choice background of the reference palette.
+const DIALOG_FOCUS: Color = Color::Rgb(0x34, 0x3a, 0x55);
+
+/// The muted foreground that dims the body behind a dialog.
+const TEXT_MUTED: Color = Color::Rgb(0x3b, 0x42, 0x61);
+
 /// The editor background of the reference palette.
 const BASE: Color = Color::Rgb(0x11, 0x13, 0x17);
 
@@ -1132,42 +1138,73 @@ fn a_wide_character_before_the_prompt_cursor_moves_it_by_two_cells() {
 }
 
 #[test]
-fn a_confirmation_asks_on_the_message_line_and_draws_a_cursor() {
-    let mut session = session(40, 6);
-    // No formatter serves the scratch buffer, so the toggle reports that and
-    // fills the message line.
+fn a_confirmation_renders_over_the_body_and_keeps_the_message_line() {
+    let mut session = session(40, 10);
     type_keys(&mut session, " cf");
     let report = "no formatter serves this buffer";
-    assert_eq!(row(&session, 5), report);
+    assert_eq!(row(&session, 9), report);
 
     session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-    let hint = "Delete one entry? [y/N]:";
+    let buffer = draw(&session);
+    assert_eq!(row_of(&buffer, 9), report);
+    assert!(
+        !row_of(&buffer, 9).contains("Delete one entry"),
+        "the message row contains no confirmation question"
+    );
     assert_eq!(
-        row(&session, 5),
-        hint,
-        "the question covers the last message"
+        buffer.cell((0, 0)).expect("the body has a first cell").fg,
+        TEXT_MUTED,
+        "only the body behind the popup is dimmed"
     );
-    let end = u16::try_from(hint.chars().count()).expect("the question fits the terminal");
+    assert_ne!(
+        buffer
+            .cell((0, 9))
+            .expect("the message has a first cell")
+            .fg,
+        TEXT_MUTED,
+        "the message row stays outside the dimmed body"
+    );
     assert!(
-        is_reversed(&session, end, 5),
-        "the user types the answer, so the row draws a cursor"
+        (0..9).any(|y| row_of(&buffer, y).contains("Delete one entry")),
+        "the question paints in the body"
+    );
+    assert!(
+        (0..9).any(|y| row_of(&buffer, y).starts_with('│')),
+        "the popup paints its full-height rail"
+    );
+    let yes = (0..9)
+        .find_map(|y| row_of(&buffer, y).find("> Yes").map(|x| (x as u16, y)))
+        .expect("the affirmative choice is explicit");
+    let no = (0..9)
+        .find_map(|y| row_of(&buffer, y).find("> No").map(|x| (x as u16, y)))
+        .expect("the safe choice is explicit");
+    assert_ne!(
+        buffer.cell(yes).expect("Yes is inside the frame").bg,
+        DIALOG_FOCUS,
+        "Yes is not initially focused"
+    );
+    let no_style = buffer.cell(no).expect("No is inside the frame").style();
+    assert_eq!(no_style.bg, Some(DIALOG_FOCUS), "No owns safe focus");
+    assert!(
+        no_style.add_modifier.contains(Modifier::BOLD),
+        "the focused No choice stays explicit"
+    );
+    let mut cursor_buffer = CellBuffer::empty(session.area());
+    assert_eq!(
+        super::draw(&mut cursor_buffer, &session.visible()),
+        None,
+        "the confirmation owns the frame and hides the editor cursor"
     );
 
-    // The typed answer follows the hint, and the cursor follows the answer.
-    type_keys(&mut session, "yes");
-    assert_eq!(row(&session, 5), format!("{hint}yes"));
-    assert!(
-        is_reversed(&session, end + 3, 5),
-        "the cursor sits after the typed answer"
-    );
-    assert!(
-        !is_reversed(&session, end, 5),
-        "the cursor left the first cell of the answer"
-    );
-
-    // The cancelled question leaves the row exactly as it found it.
     press_code(&mut session, KeyCode::Esc);
-    assert_eq!(row(&session, 5), report);
+    assert_eq!(row(&session, 9), report);
+
+    press(&mut session, '/');
+    type_keys(&mut session, "al");
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+    assert_eq!(row(&session, 9), "/al", "the open prompt remains visible");
+    press(&mut session, 'n');
+    assert_eq!(row(&session, 9), "/al", "the prompt survives cancellation");
 }
 
 #[test]

@@ -195,6 +195,20 @@ pub enum ThemeRole {
     ScrollbarTrack,
     /// The brighter thumb of one editor-pane scrollbar.
     ScrollbarThumb,
+    /// The dimmed editor body behind a modal dialog.
+    DialogDim,
+    /// The full-height rail of a modal dialog.
+    DialogRail,
+    /// The optional detail text of a modal dialog.
+    DialogBody,
+    /// The question text of a modal dialog.
+    DialogQuestion,
+    /// One unfocused dialog choice.
+    DialogChoice,
+    /// The safe default dialog choice while it is unfocused.
+    DialogDefaultChoice,
+    /// The focused dialog choice.
+    DialogFocusedChoice,
     /// The background band of a floating surface or a popup.
     Surface,
     /// The statusline text.
@@ -369,6 +383,22 @@ impl Theme {
             ThemeRole::SignColumn => Style::new().fg(TEXT_MUTED).bg(self.base),
             ThemeRole::ScrollbarTrack => Style::new().fg(TEXT_MUTED),
             ThemeRole::ScrollbarThumb => Style::new().fg(TEXT_DIM),
+            ThemeRole::DialogDim => Style::new().fg(TEXT_MUTED).bg(self.base),
+            ThemeRole::DialogRail => Style::new()
+                .fg(TITLE)
+                .bg(self.surface)
+                .add_modifier(Modifier::BOLD),
+            ThemeRole::DialogBody => Style::new().fg(TEXT_DIM).bg(self.surface),
+            ThemeRole::DialogQuestion => Style::new().fg(TEXT).bg(self.surface),
+            ThemeRole::DialogChoice => Style::new().fg(TEXT).bg(self.surface),
+            ThemeRole::DialogDefaultChoice => Style::new()
+                .fg(TITLE)
+                .bg(self.surface)
+                .add_modifier(Modifier::BOLD),
+            ThemeRole::DialogFocusedChoice => Style::new()
+                .fg(TEXT)
+                .bg(POPUP_SELECTION_BACKGROUND)
+                .add_modifier(Modifier::BOLD),
             ThemeRole::Surface => Style::new().fg(TEXT).bg(self.surface),
             ThemeRole::Statusline => Style::new().fg(TEXT_DIM).bg(self.surface),
             ThemeRole::StatuslineMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),

@@ -42,9 +42,9 @@ use crate::log::LOG_ENTRIES_MAX;
 use crate::picker::{PickerState, picker_areas};
 use crate::review::ReviewSurface;
 use crate::session::{
-    CONFIRM_ANSWER_CHARS_MAX, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel,
-    PromptSeed, RecoveryDecision, RecoveryDecisionError, RecoveryOperation,
-    RecoverySubmissionFailure, Redraw, RunState, Session, test_root,
+    Confirmation, ConfirmationRequest, ConfirmedAction, HostProbeFailure, MessageLevel, PromptSeed,
+    RecoveryDecision, RecoveryDecisionError, RecoveryOperation, RecoverySubmissionFailure, Redraw,
+    RunState, Session, YesNo, test_root,
 };
 use crate::tree::TREE_TITLE_ROWS;
 use kvim_ui::{SidebarSide, WindowId};
@@ -1522,13 +1522,14 @@ fn type_keys(session: &mut Session, keys: &str) {
     }
 }
 
-/// Answers the open question with one typed text and `Enter`.
-///
-/// The question reads the text only when `Enter` closes it, so the returned
-/// redraw request belongs to that last key.
+/// Answers the open yes/no dialog through its direct key.
 fn answer(session: &mut Session, text: &str) -> Redraw {
-    type_keys(session, text);
-    press_code(session, KeyCode::Enter)
+    let key = if text.eq_ignore_ascii_case("y") || text.eq_ignore_ascii_case("yes") {
+        'y'
+    } else {
+        'n'
+    };
+    press(session, key)
 }
 
 /// Returns the open question, or an empty text while none waits.
@@ -1536,7 +1537,9 @@ fn question(session: &Session) -> String {
     session
         .visible()
         .confirmation
-        .map_or_else(String::new, |confirmation| confirmation.question.clone())
+        .map_or_else(String::new, |confirmation| {
+            confirmation.question().to_owned()
+        })
 }
 
 /// Returns the text of the open prompt, or an empty text while none is open.
@@ -2743,14 +2746,8 @@ fn the_quit_command_asks_and_a_confirmed_answer_ends_the_editor() {
         "the open question ends no editor"
     );
 
-    // A lone `y` reaches the answer alone, so the editor keeps running.
+    // The direct affirmative key answers immediately.
     press(&mut session, 'y');
-    assert_eq!(
-        session.run_state(),
-        RunState::Running,
-        "one keypress ends no editor"
-    );
-    press_code(&mut session, KeyCode::Enter);
     assert_eq!(session.run_state(), RunState::Finished);
 }
 
@@ -3160,190 +3157,113 @@ fn every_prompt_but_rename_still_opens_with_the_cursor_after_its_text() {
 /// The message that the test action of a confirmation reports.
 const CONFIRMED: &str = "the confirmation reached its action";
 
-/// Returns the typed answer of the open question, or an empty text.
-fn typed_answer(session: &Session) -> String {
+/// Returns the focused stable answer of the open dialog.
+fn focused_answer(session: &Session) -> Option<YesNo> {
     session
         .visible()
         .confirmation
-        .map_or_else(String::new, |confirmation| {
-            confirmation.answer.text().to_owned()
-        })
+        .map(Confirmation::focused_answer)
 }
 
 #[test]
-fn a_confirmed_question_performs_its_action_and_returns_the_keys() {
-    // Both accepted words perform the action, in every letter case.
-    for value in ["y", "Y", "yes", "Yes", "YES", "yEs"] {
-        let mut session = session(40, 10);
-        assert_eq!(
-            session.open_confirmation("Delete one entry", ConfirmedAction::Report),
-            ConfirmationRequest::Opened
-        );
-        assert_eq!(answer(&mut session, value), Redraw::Needed);
-        assert_eq!(message(&session), CONFIRMED, "{value} performs the action");
-        assert_eq!(question(&session), "", "{value} closes the question");
-        // The answer closes the question, so the mode below owns the keys again.
-        press(&mut session, 'i');
-        assert_eq!(session.mode(), Mode::Insert, "{value} returns the keys");
-    }
-}
-
-#[test]
-fn one_keypress_performs_no_action() {
-    let mut session = session(40, 10);
-    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-
-    // The whole word reaches the answer, and no key of it performs the action.
-    for value in ['y', 'e', 's'] {
-        assert_eq!(press(&mut session, value), Redraw::Needed);
-        assert_eq!(message(&session), "", "{value} alone performs no action");
-        assert_eq!(
-            question(&session),
-            "Delete one entry",
-            "{value} alone closes no question"
-        );
-    }
-    assert_eq!(
-        typed_answer(&session),
-        "yes",
-        "every key reached the answer"
-    );
-
-    // Only `Enter` reads the answer.
-    press_code(&mut session, KeyCode::Enter);
-    assert_eq!(message(&session), CONFIRMED);
-}
-
-#[test]
-fn every_other_answer_cancels_a_question_and_leaves_no_trace() {
-    // `n` names the default of the question, the empty text names it as well,
-    // and `no` and `ya` stand for every remaining answer.
-    for value in ["n", "", "no", "ya"] {
+fn confirmation_starts_on_safe_no_and_direct_keys_answer() {
+    for (key, expected) in [('y', CONFIRMED), ('Y', CONFIRMED), ('n', ""), ('N', "")] {
         let mut session = session(40, 10);
         session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-        assert_eq!(answer(&mut session, value), Redraw::Needed);
-        assert_eq!(message(&session), "", "{value:?} performs no action");
-        assert_eq!(question(&session), "", "{value:?} closes the question");
+        assert_eq!(focused_answer(&session), Some(YesNo::No));
+        assert_eq!(press(&mut session, key), Redraw::Needed);
+        assert_eq!(message(&session), expected);
+        assert_eq!(question(&session), "");
+    }
+}
+
+#[test]
+fn confirmation_navigation_and_enter_use_the_focused_choice() {
+    for code in [KeyCode::Left, KeyCode::Up] {
+        let mut session = session(40, 10);
+        session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+        assert_eq!(press_code(&mut session, code), Redraw::Needed);
+        assert_eq!(focused_answer(&session), Some(YesNo::Yes));
+        press_code(&mut session, KeyCode::Enter);
+        assert_eq!(message(&session), CONFIRMED);
+    }
+    for code in [KeyCode::Right, KeyCode::Down] {
+        let mut session = session(40, 10);
+        session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+        press_code(&mut session, KeyCode::Left);
+        assert_eq!(press_code(&mut session, code), Redraw::Needed);
+        assert_eq!(focused_answer(&session), Some(YesNo::No));
+        press_code(&mut session, KeyCode::Enter);
+        assert_eq!(message(&session), "");
+    }
+}
+
+#[test]
+fn confirmation_cancel_keys_choose_no() {
+    for key in [Key::plain(KeyCode::Esc), Key::ctrl(KeyCode::Char('c'))] {
+        let mut session = session(40, 10);
+        session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+        press_code(&mut session, KeyCode::Left);
         assert_eq!(
-            session.buffer().to_string(),
-            "\n",
-            "{value:?} changes no text"
+            session.handle_event(TerminalEvent::Key(key), NOW),
+            Redraw::Needed
         );
-        press(&mut session, 'i');
-        assert_eq!(session.mode(), Mode::Insert, "{value:?} returns the keys");
+        assert_eq!(message(&session), "");
+        assert_eq!(question(&session), "");
     }
 }
 
 #[test]
-fn a_cancel_key_closes_a_question_at_any_time() {
-    // `Esc` and `Ctrl-C` cancel, and they cancel the typed `y` as well.
-    let escape = Key::plain(KeyCode::Esc);
-    let interrupt = Key::ctrl(KeyCode::Char('c'));
-    for typed in ["", "y"] {
-        for key in [escape, interrupt] {
-            let mut editor = session(40, 10);
-            editor.open_confirmation("Delete one entry", ConfirmedAction::Report);
-            type_keys(&mut editor, typed);
-            assert_eq!(
-                editor.handle_event(TerminalEvent::Key(key), NOW),
-                Redraw::Needed
-            );
-            assert_eq!(
-                message(&editor),
-                "",
-                "{key:?} performs no action after {typed:?}"
-            );
-            assert_eq!(question(&editor), "", "{key:?} closes the question");
-            assert_eq!(editor.mode(), Mode::Normal);
-        }
-    }
-}
-
-#[test]
-fn a_question_completes_nothing_and_keeps_its_answer() {
+fn open_confirmation_consumes_unknown_keys_paste_and_preserves_prompt() {
     let mut session = session(40, 10);
-    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-
-    // `Tab` and `Shift-Tab` complete nothing, so they add no character.
-    for code in [KeyCode::Tab, KeyCode::BackTab] {
-        assert_eq!(press_code(&mut session, code), Redraw::Skipped);
-        assert_eq!(typed_answer(&session), "", "{code:?} adds no character");
-        assert_eq!(question(&session), "Delete one entry");
-    }
-
-    // A `Backspace` removes the character before the cursor, and one on the
-    // empty answer keeps the question open.
-    assert_eq!(
-        press_code(&mut session, KeyCode::Backspace),
-        Redraw::Skipped
-    );
-    assert_eq!(question(&session), "Delete one entry");
-    type_keys(&mut session, "ye");
-    press_code(&mut session, KeyCode::Backspace);
-    assert_eq!(typed_answer(&session), "y");
-
-    // `Tab` between the characters still completes nothing.
-    press_code(&mut session, KeyCode::Tab);
-    assert_eq!(typed_answer(&session), "y", "Tab writes no candidate");
-    press_code(&mut session, KeyCode::Enter);
-    assert_eq!(message(&session), CONFIRMED);
-}
-
-#[test]
-fn the_control_w_chord_removes_one_word_from_the_answer_of_a_question() {
-    let mut session = session(40, 10);
-    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-    type_keys(&mut session, "yes");
-    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Needed);
-    assert_eq!(typed_answer(&session), "", "the chord removes the answer");
-
-    // The empty answer keeps the question open, as a `Backspace` does.
-    assert_eq!(press_ctrl(&mut session, 'w'), Redraw::Skipped);
-    assert_eq!(question(&session), "Delete one entry");
-}
-
-#[test]
-fn the_answer_of_a_question_holds_a_bounded_number_of_characters() {
-    let mut session = session(40, 10);
-    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-
-    // The bound keeps the question and its answer inside one row.
-    type_keys(&mut session, &"n".repeat(CONFIRM_ANSWER_CHARS_MAX + 4));
-    assert_eq!(
-        typed_answer(&session).chars().count(),
-        CONFIRM_ANSWER_CHARS_MAX,
-        "the answer drops the characters above the bound"
-    );
-
-    press_code(&mut session, KeyCode::Enter);
-    assert_eq!(message(&session), "", "a long answer performs no action");
-}
-
-#[test]
-fn an_open_question_owns_every_key_over_insert_mode() {
-    // The overwrite question follows a worker result, so a question can open
-    // over Insert mode. A key that the question does not read must reach no
-    // buffer.
-    let mut session = session(40, 10);
-    press(&mut session, 'i');
-    assert_eq!(session.mode(), Mode::Insert);
+    press(&mut session, '/');
+    type_keys(&mut session, "al");
     session.open_confirmation("Overwrite one entry", ConfirmedAction::Report);
 
-    for code in [KeyCode::Tab, KeyCode::BackTab] {
+    for code in [KeyCode::Tab, KeyCode::Backspace, KeyCode::PageDown] {
         assert_eq!(press_code(&mut session, code), Redraw::Skipped);
-        assert_eq!(
-            session.buffer().to_string(),
-            "\n",
-            "{code:?} inserts no buffer text"
-        );
-        assert_eq!(typed_answer(&session), "", "{code:?} adds no character");
+        assert_eq!(prompt_text(&session), "al");
+        assert_eq!(question(&session), "Overwrite one entry");
     }
+    let paste = PasteText::new("pasted").expect("the paste is bounded");
+    assert_eq!(
+        session.handle_event(TerminalEvent::Paste(paste), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(prompt_text(&session), "al");
+    assert_eq!(question(&session), "Overwrite one entry");
+    assert_eq!(
+        session.handle_event(TerminalEvent::Unsupported, NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(prompt_text(&session), "al");
     assert_eq!(question(&session), "Overwrite one entry");
 
-    // The answer still reaches the question, and Insert mode regains the keys.
-    answer(&mut session, "y");
-    assert_eq!(message(&session), CONFIRMED);
-    assert_eq!(session.mode(), Mode::Insert);
+    press(&mut session, 'n');
+    assert_eq!(prompt_text(&session), "al");
+    type_keys(&mut session, "pha");
+    assert_eq!(prompt_text(&session), "alpha");
+}
+
+#[test]
+fn resize_preserves_the_open_confirmation_and_safe_focus() {
+    let mut session = session(40, 10);
+    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
+
+    assert_eq!(
+        session.handle_event(
+            TerminalEvent::Resize {
+                columns: 60,
+                rows: 15,
+            },
+            NOW,
+        ),
+        Redraw::Needed
+    );
+    assert_eq!(question(&session), "Delete one entry");
+    assert_eq!(focused_answer(&session), Some(YesNo::No));
+    press_code(&mut session, KeyCode::Enter);
+    assert_eq!(message(&session), "");
 }
 
 #[test]
@@ -3354,90 +3274,8 @@ fn a_second_question_is_refused_while_one_waits() {
         session.open_confirmation("Delete two entries", ConfirmedAction::Report),
         ConfirmationRequest::Refused
     );
-    answer(&mut session, "y");
+    press(&mut session, 'y');
     assert_eq!(message(&session), CONFIRMED);
-    // Only one question waited, so the next `y` reaches the yank operator.
-    press(&mut session, 'y');
-    assert_eq!(
-        message(&session),
-        "",
-        "the refused question never reached the message line"
-    );
-}
-
-#[test]
-fn no_key_reaches_a_closed_question() {
-    let mut session = session(40, 10);
-    // Without an open question `y` reaches the yank operator instead.
-    press(&mut session, 'y');
-    press(&mut session, 'y');
-    assert_ne!(
-        message(&session),
-        CONFIRMED,
-        "`y` answers no question while none is open"
-    );
-
-    session.open_confirmation("Delete one entry", ConfirmedAction::Report);
-    answer(&mut session, "n");
-    press(&mut session, 'y');
-    press(&mut session, 'y');
-    assert_ne!(
-        message(&session),
-        CONFIRMED,
-        "the answered question takes no further key"
-    );
-    press(&mut session, 'i');
-    assert_eq!(session.mode(), Mode::Insert);
-}
-
-#[test]
-fn a_question_over_a_prompt_returns_the_keys_to_that_prompt() {
-    // A question can open while a prompt reads a line, because the overwrite
-    // question follows a worker result instead of a key.
-    for value in ["y", "n"] {
-        let mut session = session(40, 10);
-        press(&mut session, '/');
-        type_keys(&mut session, "al");
-        session.open_confirmation("Overwrite one entry", ConfirmedAction::Report);
-        assert_eq!(
-            prompt_text(&session),
-            "al",
-            "the question keeps the text of the prompt"
-        );
-
-        // The question owns the keys, so its own characters reach no prompt.
-        type_keys(&mut session, value);
-        assert_eq!(
-            prompt_text(&session),
-            "al",
-            "{value} reaches the answer, not the prompt"
-        );
-        assert_eq!(typed_answer(&session), value);
-
-        // The `Enter` of the answer closes the question alone. The prompt keeps
-        // its text and runs nothing.
-        press_code(&mut session, KeyCode::Enter);
-        assert_eq!(question(&session), "", "{value} closes the question");
-        assert_eq!(
-            prompt_text(&session),
-            "al",
-            "one Enter reaches the question alone, so the prompt stays open"
-        );
-        type_keys(&mut session, "pha");
-        assert_eq!(
-            prompt_text(&session),
-            "alpha",
-            "the prompt reads the keys again after {value}"
-        );
-
-        press_code(&mut session, KeyCode::Esc);
-        press(&mut session, 'i');
-        assert_eq!(
-            session.mode(),
-            Mode::Insert,
-            "the closed prompt returns the keys to the mode after {value}"
-        );
-    }
 }
 
 #[test]

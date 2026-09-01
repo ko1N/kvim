@@ -52,8 +52,8 @@ use kvim_editor::{
 };
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandAuthority, CommandLineCommand,
-    ConfirmAnswer, ConfirmEdit, EditedLine, InputContextSnapshot, LineChange, Mode, PasteText,
-    PromptEdit, PromptKind, Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
+    EditedLine, InputContextSnapshot, LineChange, Mode, PasteText, PromptEdit, PromptKind,
+    Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
@@ -67,12 +67,13 @@ use kvim_path::{WORKTREE_PATH_BYTES_MAX, WorktreeRelativePath, WorktreeRoot};
 use kvim_runtime::{ProcessOutput, ProcessRequest, WatchBatch, WatchCoverage, watch_limit_setting};
 use kvim_settings::EditorSettings;
 use kvim_terminal::{
-    CellPosition, Key, PointerAction, PointerButton, PointerEvent, PointerWheel,
+    CellPosition, Chord, Key, KeyCode, PointerAction, PointerButton, PointerEvent, PointerWheel,
     PointerWheelDirection, TerminalEvent,
 };
 use kvim_ui::{
-    BorderId, Cell, Direction, HitTarget, LayoutChange, ListItem, ListViewport, Orientation,
-    OverlayInput, PointerOverlay, RegionKind, SidebarSide, WindowId, contains_cell, hit_test,
+    BorderId, Cell, Dialog, DialogChoice, DialogKey, DialogKeyOutcome, DialogOutcome, DialogStyles,
+    Direction, HitTarget, LayoutChange, ListItem, ListViewport, Orientation, OverlayInput,
+    PointerOverlay, RegionKind, SidebarSide, WindowId, contains_cell, hit_test,
 };
 use kvim_workspace::{
     Acceptance, BUFFERS_MAX, BufferId, Buffers, Candidate, DiffComparison, DiffTarget,
@@ -128,12 +129,20 @@ use super::window::{WindowOutcome, Windows};
 /// only protects the line against an unexpectedly long path.
 pub const MESSAGE_CHARS_MAX: usize = 512;
 
-/// The largest answer that one confirmation accepts, in characters.
-///
-/// The accepted words are `y` and `yes`, so a longer answer cancels the action
-/// already. The bound keeps the question and its answer inside one row. See
-/// `docs/input-actions.md`.
-pub const CONFIRM_ANSWER_CHARS_MAX: usize = 32;
+/// Converts one terminal-neutral Kvim key to the dialog vocabulary.
+fn dialog_key(key: Key) -> DialogKey {
+    match (key.chord(), key.code()) {
+        (Chord::Plain, KeyCode::Char(value)) => DialogKey::Char(value),
+        (Chord::Plain, KeyCode::Left) => DialogKey::Left,
+        (Chord::Plain, KeyCode::Right) => DialogKey::Right,
+        (Chord::Plain, KeyCode::Up) => DialogKey::Up,
+        (Chord::Plain, KeyCode::Down) => DialogKey::Down,
+        (Chord::Plain, KeyCode::Enter) => DialogKey::Enter,
+        (Chord::Plain, KeyCode::Esc) => DialogKey::Esc,
+        (Chord::Ctrl, KeyCode::Char('c' | 'C')) => DialogKey::CtrlC,
+        (Chord::Plain | Chord::Ctrl | Chord::CtrlAlt, _) => DialogKey::Unsupported,
+    }
+}
 
 /// The name of the buffer analysis in the editor log.
 ///
@@ -732,28 +741,13 @@ pub enum MessageLevel {
     Info,
 }
 
-/// Clips one text to the [`MESSAGE_CHARS_MAX`] characters of the message line.
-///
-/// The message and the question of a confirmation share the row, so both take
-/// the same bound.
+/// Clips one text to the [`MESSAGE_CHARS_MAX`] characters accepted internally.
 fn clip_message_line(text: impl Into<String>) -> String {
     let text = text.into();
     if text.chars().count() <= MESSAGE_CHARS_MAX {
         return text;
     }
     text.chars().take(MESSAGE_CHARS_MAX).collect()
-}
-
-/// Returns whether one changed line needs a new frame.
-///
-/// Only the edits that a caller owns report [`LineChange::Deferred`], and the
-/// prompt and the confirmation both answer those themselves, so no undecided
-/// change reaches this function.
-const fn line_redraw(change: LineChange) -> Redraw {
-    match change {
-        LineChange::TextChanged | LineChange::CursorMoved => Redraw::Needed,
-        LineChange::Unchanged | LineChange::Deferred => Redraw::Skipped,
-    }
 }
 
 /// Reports whether one operation can replace the entry of a destination.
@@ -1050,47 +1044,42 @@ pub(super) enum ConfirmedAction {
     Report,
 }
 
-/// One open confirmation, its typed answer, and the action that waits for it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum YesNo {
+    Yes,
+    No,
+}
+
+/// One open confirmation and the action that waits for it.
 ///
-/// The question holds no answer hint. The message line adds `? [y/N]:` when it
-/// draws the row, so every question takes the same form. See `docs/windows.md`.
-///
-/// The confirmation stays beside the prompt model, because a question can open
-/// over an open prompt and that prompt keeps its own text. One value therefore
-/// holds the question, the answer, and the action together, so no two fields of
-/// the session can disagree. See `docs/input-actions.md`.
+/// The generic dialog owns bounded content, safe focus, and every answer rule.
+/// The private action stays beside it so an answer can never name editor work.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct Confirmation {
-    /// The question, bounded by [`MESSAGE_CHARS_MAX`].
-    pub(super) question: String,
-    /// The answer that the user typed, bounded by
-    /// [`CONFIRM_ANSWER_CHARS_MAX`].
-    ///
-    /// The answer holds no cursor of its own, because the confirmation binds no
-    /// motion key. Its line therefore keeps the cursor after the last typed
-    /// character, where every edit of a question applies. See
-    /// `docs/input-actions.md`.
-    pub(super) answer: EditedLine,
-    /// The action that a `y` answer performs.
+    dialog: Dialog<YesNo>,
     action: ConfirmedAction,
 }
 
-/// The key that closes one open confirmation.
-///
-/// `Esc` and `Ctrl-C` cancel at any time, so they read no answer. `Enter` reads
-/// the typed answer instead. See `docs/input-actions.md`.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ConfirmationClose {
-    /// `Enter` closes the question and reads the typed answer.
-    Accept,
-    /// `Esc` or `Ctrl-C` closes the question and cancels the action.
-    Cancel,
+impl Confirmation {
+    pub(super) fn render(&self, target: &mut CellBuffer, body: Rect, styles: DialogStyles) {
+        let _ = self.dialog.render(target, body, styles);
+    }
+
+    #[cfg(test)]
+    pub(super) fn question(&self) -> &str {
+        self.dialog.question()
+    }
+
+    #[cfg(test)]
+    fn focused_answer(&self) -> YesNo {
+        *self.dialog.focused_identity()
+    }
 }
 
 /// The outcome of one request to open a confirmation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ConfirmationRequest {
-    /// The confirmation opened and waits for the typed answer.
+    /// The confirmation opened and waits for a named choice.
     Opened,
     /// Another confirmation waits already, so the editor opened none.
     Refused,
@@ -1201,7 +1190,7 @@ pub(super) struct Visible<'a> {
     pub(super) editing: &'a EditingState,
     pub(super) search: Option<&'a ActiveSearch>,
     pub(super) prompt: Option<&'a PromptLine>,
-    /// The open confirmation, which owns the message line while it waits.
+    /// The open confirmation, which owns input above all underlying state.
     pub(super) confirmation: Option<&'a Confirmation>,
     pub(super) message: Option<&'a Message>,
     pub(super) float: Option<&'a Float>,
@@ -1583,7 +1572,7 @@ pub struct Session {
     language: LanguageState,
     search: Option<ActiveSearch>,
     prompt: Option<PromptLine>,
-    /// The confirmation that waits for a typed answer, while one is open.
+    /// The confirmation that waits for a named choice, while one is open.
     ///
     /// At most one question waits, so a second request opens none. See
     /// `docs/input-actions.md`.
@@ -2255,7 +2244,7 @@ impl Session {
         // The question owns the keys above the prompt, so it closes first and
         // the prompt below it closes next.
         if self.confirmation.is_some() {
-            redraw = self.edit_confirmation(ConfirmEdit::Cancel).or(redraw);
+            redraw = self.answer_confirmation(YesNo::No).or(redraw);
         }
         if self.prompt.is_some() {
             redraw = self.apply_prompt(PromptEdit::Cancel).or(redraw);
@@ -2557,16 +2546,24 @@ impl Session {
             // and one undo unit. A float is decoration of one answer, so the
             // paste closes it exactly as a key does.
             TerminalEvent::Paste(text) => {
-                let closed = self.close_float();
-                self.insert_owned_text(text.as_str()).or(closed)
+                if self.confirmation.is_some() {
+                    Redraw::Skipped
+                } else {
+                    let closed = self.close_float();
+                    self.insert_owned_text(text.as_str()).or(closed)
+                }
             }
             TerminalEvent::Resize { columns, rows } => self.resize(Rect::new(0, 0, columns, rows)),
             TerminalEvent::Pointer(pointer) => self.handle_pointer(pointer, self.clock),
             // Input that no binding accepts resets every pending grammar phase,
             // so a rejected chord never runs the binding of its unmodified key.
             TerminalEvent::Unsupported => {
-                let resolution = self.resolver.unsupported();
-                self.apply_resolution(resolution)
+                if self.confirmation.is_some() {
+                    Redraw::Skipped
+                } else {
+                    let resolution = self.resolver.unsupported();
+                    self.apply_resolution(resolution)
+                }
             }
         };
         let settled = self.settle(now).or(redraw);
@@ -3248,8 +3245,11 @@ impl Session {
                 count,
                 register,
             } => self.dispatch_command(command, count, register),
+        if self.confirmation.is_some() {
+            return self.drive_confirmation_key(dialog_key(key));
+        }
             Resolution::Prompt(edit) => self.apply_prompt(edit),
-            Resolution::Confirmation(edit) => self.edit_confirmation(edit),
+            Resolution::Confirmation(_) => Redraw::Skipped,
             // A pending sequence and a cancelled sequence both change only the
             // which-key overlay, and `settle` publishes that change.
             Resolution::Pending | Resolution::Cancelled => Redraw::Skipped,
@@ -3422,16 +3422,11 @@ impl Session {
 
     /// Routes one command to the open question or the open prompt line.
     ///
-    /// [`PromptEdit::of_command`] and [`ConfirmEdit::of_command`] own the one
-    /// mapping, so a host-supplied command reaches the same owner as the key
-    /// that names it. A command that no open line owns returns `None` and
-    /// continues to the ordinary owners.
+    /// [`PromptEdit::of_command`] owns the prompt mapping. An open dialog
+    /// consumes every command that reached this boundary.
     fn route_to_open_line(&mut self, command: Command) -> Option<Redraw> {
         if self.confirmation.is_some() {
-            // A question owns every key below it, so an unnamed command edits
-            // nothing and reaches no owner under the question.
-            let edit = ConfirmEdit::of_command(command).unwrap_or(ConfirmEdit::Ignore);
-            return Some(self.edit_confirmation(edit));
+            return Some(self.drive_confirmation_key(DialogKey::Unsupported));
         }
         // An open picker owns its own chords above the query line, so only the
         // prompt commands reach the line itself.
@@ -3929,13 +3924,9 @@ impl Session {
         if text.is_empty() {
             return Redraw::Skipped;
         }
-        // The open question and the open prompt line own literal text before
-        // the buffer does, exactly as they do for one resolved key. Neither
-        // one changes a file, so view-only access reaches both.
+        // An open dialog owns pasted text but does not treat it as an answer.
         if self.confirmation.is_some() {
-            return text.chars().fold(Redraw::Skipped, |redraw, value| {
-                redraw.or(self.edit_confirmation(ConfirmEdit::Insert(value)))
-            });
+            return Redraw::Skipped;
         }
         if self.prompt.is_some() {
             return text.chars().fold(Redraw::Skipped, |redraw, value| {
@@ -4063,63 +4054,50 @@ impl Session {
         if self.confirmation.is_some() {
             return ConfirmationRequest::Refused;
         }
-        self.confirmation = Some(Confirmation {
-            question: clip_message_line(question),
-            answer: EditedLine::opened(String::new(), CONFIRM_ANSWER_CHARS_MAX)
-                .expect("the seed meets the limit"),
-            action,
-        });
+        let dialog = Dialog::new(
+            clip_message_line(question),
+            std::iter::empty::<String>(),
+            [
+                DialogChoice::new(YesNo::Yes, "Yes").with_direct_key('y'),
+                DialogChoice::new(YesNo::No, "No").with_direct_key('n'),
+            ],
+            YesNo::No,
+            YesNo::No,
+        )
+        .expect("Kvim's fixed yes/no dialog meets every published bound");
+        self.confirmation = Some(Confirmation { dialog, action });
         self.sync_context();
         ConfirmationRequest::Opened
     }
 
-    /// Applies one edit of the answer of the open confirmation.
-    ///
-    /// Only `Enter`, `Esc`, and `Ctrl-C` close the question, so a `Backspace` on
-    /// the empty answer keeps it open. One keypress therefore never performs the
-    /// action. See `docs/input-actions.md`.
-    fn edit_confirmation(&mut self, edit: ConfirmEdit) -> Redraw {
-        let Some(confirmation) = self.confirmation.as_mut() else {
-            debug_assert!(
-                false,
-                "the resolver edits a confirmation only while one is open"
-            );
-            return Redraw::Skipped;
+    /// Drives one portable key through the generic dialog.
+    fn drive_confirmation_key(&mut self, key: DialogKey) -> Redraw {
+        let outcome = {
+            let Some(confirmation) = self.confirmation.as_mut() else {
+                debug_assert!(false, "dialog input requires one open confirmation");
+                return Redraw::Skipped;
+            };
+            confirmation.dialog.drive_key(key)
         };
-        match edit {
-            ConfirmEdit::Insert(value) => line_redraw(confirmation.answer.insert(value)),
-            ConfirmEdit::DeleteBackward => line_redraw(confirmation.answer.delete_backward()),
-            ConfirmEdit::DeleteWordBackward => {
-                line_redraw(confirmation.answer.delete_word_backward())
+        match outcome {
+            DialogKeyOutcome::Interaction(DialogOutcome::Focused(_)) => Redraw::Needed,
+            DialogKeyOutcome::Interaction(DialogOutcome::Answered(answer)) => {
+                self.answer_confirmation(answer)
             }
-            ConfirmEdit::Accept => self.close_confirmation(ConfirmationClose::Accept),
-            ConfirmEdit::Cancel => self.close_confirmation(ConfirmationClose::Cancel),
-            ConfirmEdit::Ignore => Redraw::Skipped,
+            DialogKeyOutcome::Consumed => Redraw::Skipped,
         }
     }
 
-    /// Closes the open confirmation and performs the action that it approves.
-    ///
-    /// A cancelled question performs nothing and leaves no trace, so the editor
-    /// returns to the state that it held before the question. An accepted
-    /// question reads the typed answer, and only `y` and `yes` perform the
-    /// action.
-    fn close_confirmation(&mut self, close: ConfirmationClose) -> Redraw {
+    /// Closes the open confirmation and runs only its affirmative action.
+    fn answer_confirmation(&mut self, answer: YesNo) -> Redraw {
         let Some(confirmation) = self.confirmation.take() else {
-            debug_assert!(
-                false,
-                "the resolver closes a confirmation only while one is open"
-            );
+            debug_assert!(false, "an answer requires one open confirmation");
             return Redraw::Skipped;
         };
         self.sync_context();
-        let answer = match close {
-            ConfirmationClose::Cancel => ConfirmAnswer::No,
-            ConfirmationClose::Accept => ConfirmAnswer::from_text(confirmation.answer.text()),
-        };
         match answer {
-            ConfirmAnswer::No => Redraw::Needed,
-            ConfirmAnswer::Yes => self
+            YesNo::No => Redraw::Needed,
+            YesNo::Yes => self
                 .perform_confirmed(confirmation.action)
                 .or(Redraw::Needed),
         }

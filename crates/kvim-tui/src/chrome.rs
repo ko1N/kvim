@@ -16,7 +16,7 @@ use kvim_ui::{BandRank, BandSegment, ChromeBand};
 
 use super::embed::EditorPresentation;
 use super::language::FormatOnSave;
-use super::session::{Confirmation, Message, MessageLevel, PromptLine};
+use super::session::{Message, MessageLevel, PromptLine};
 use super::theme::{Theme, ThemeRole};
 
 /// How long the mode survives a narrow statusline.
@@ -216,11 +216,10 @@ pub(super) fn render_statusline(
     draw_band(target, area, theme, &parts);
 }
 
-/// Renders the open confirmation, the open prompt, or the last message, into
-/// the message line.
+/// Renders the open prompt or the last message into the message line.
 ///
-/// The confirmation owns the keys, so its question covers both other entries.
-/// The question, its hint, and the typed answer share the row.
+/// A modal confirmation is a body overlay, so it does not replace either
+/// message-line entry.
 ///
 /// The message line holds no shedding rule and therefore no band. It shows one
 /// entry and clips it to the row, so it never chooses between parts. A band
@@ -229,7 +228,6 @@ pub(super) fn render_message(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
-    confirmation: Option<&Confirmation>,
     prompt: Option<&PromptLine>,
     message: Option<&Message>,
 ) {
@@ -238,21 +236,6 @@ pub(super) fn render_message(
     }
     let base = theme.style(ThemeRole::Text);
     target.set_style(area, base);
-    if let Some(confirmation) = confirmation {
-        // The user types the answer after the hint, so the row draws its own
-        // cursor behind that answer, exactly as a prompt does. See
-        // `docs/windows.md`.
-        let line = format!(
-            "{}? [y/N]:{}",
-            confirmation.question,
-            confirmation.answer.text()
-        );
-        let (x, _) = target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
-        if let Some(cell) = target.cell_mut((x, area.y)) {
-            cell.set_style(base.patch(theme.style(ThemeRole::Cursor)));
-        }
-        return;
-    }
     if let Some(prompt) = prompt {
         let line = format!("{}{}", prompt.kind.prefix(), prompt.line.text());
         target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);

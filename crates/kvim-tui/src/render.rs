@@ -10,7 +10,7 @@ use ratatui::layout::{Position, Rect};
 
 use kvim_editor::Cursor;
 use kvim_input::{Mode, PromptKind};
-use kvim_ui::RegionKind;
+use kvim_ui::{DialogStyles, RegionKind};
 
 use super::buffer_view::{BracketHighlight, RegionFocus, WindowView, cursor_cell, render_window};
 use super::chrome::{StatuslineParts, render_message, render_statusline, shell_areas};
@@ -66,14 +66,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             view.focused_format_on_save(),
             StatuslineParts::Shown,
         );
-        render_message(
-            target,
-            bands.message,
-            theme,
-            view.confirmation,
-            view.prompt,
-            view.message,
-        );
+        render_message(target, bands.message, theme, view.prompt, view.message);
         return None;
     }
 
@@ -224,7 +217,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     });
     let internal_message_area = if bands.message.is_empty()
         && view.picker.is_none()
-        && (view.confirmation.is_some() || internal_prompt.is_some())
+        && internal_prompt.is_some()
         && !bands.body.is_empty()
     {
         Rect::new(bands.body.x, bands.body.bottom() - 1, bands.body.width, 1)
@@ -240,7 +233,6 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         target,
         internal_message_area,
         theme,
-        view.confirmation,
         visible_prompt,
         view.message,
     );
@@ -285,6 +277,21 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             rows,
             view.settings.windows.file_tree_icons,
         );
+    }
+    if let Some(confirmation) = view.confirmation {
+        let styles = DialogStyles {
+            dim: theme.style(ThemeRole::DialogDim),
+            surface: theme.style(ThemeRole::Surface),
+            rail: theme.style(ThemeRole::DialogRail),
+            body: theme.style(ThemeRole::DialogBody),
+            question: theme.style(ThemeRole::DialogQuestion),
+            choice: theme.style(ThemeRole::DialogChoice),
+            default_choice: theme.style(ThemeRole::DialogDefaultChoice),
+            focused_choice: theme.style(ThemeRole::DialogFocusedChoice),
+        };
+        confirmation.render(target, bands.body, styles);
+        cursor_at = None;
+        sidebar_cursor = None;
     }
     // The picker covers the complete terminal, so it renders last and owns the
     // one cursor cell that the frame reports. See `docs/files.md`.

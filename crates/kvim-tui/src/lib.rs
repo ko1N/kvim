@@ -160,8 +160,8 @@ pub use language::{
 pub use picker::PickerFailure;
 #[cfg(feature = "editor")]
 pub use session::{
-    AnalysisRequest, AnalysisResult, CONFIRM_ANSWER_CHARS_MAX, FileRequestFailure,
-    HostProbeFailure, MESSAGE_CHARS_MAX, Message, MessageLevel, Redraw, RunState, Session,
+    AnalysisRequest, AnalysisResult, FileRequestFailure, HostProbeFailure, MESSAGE_CHARS_MAX,
+    Message, MessageLevel, Redraw, RunState, Session,
 };
 #[cfg(feature = "editor")]
 pub use theme::{IconRole, Theme, ThemeRole};
