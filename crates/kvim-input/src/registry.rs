@@ -1051,14 +1051,17 @@ fn add_operator_pending_bindings(table: &mut Vec<Binding>) {
 ///
 /// The picker reads a query, so every printable key belongs to that query. Only
 /// these chords reach a command. `Esc` and `Ctrl-C` close the picker through
-/// the prompt, and `Enter` accepts the selected row. See
-/// `docs/input-actions.md`.
+/// the prompt, and `Enter` accepts the selected row. `Ctrl-D` and `Ctrl-U` move
+/// the selection by half a result page, so the result list steps like a buffer
+/// window. See `docs/input-actions.md`.
 fn add_picker_bindings(table: &mut Vec<Binding>) {
     for (key, command) in [
         (Key::plain(KeyCode::Down), Command::PickerSelectNext),
         (Key::plain(KeyCode::Up), Command::PickerSelectPrevious),
         (ctrl('j'), Command::PickerSelectNext),
         (ctrl('k'), Command::PickerSelectPrevious),
+        (ctrl('d'), Command::PickerSelectPageNext),
+        (ctrl('u'), Command::PickerSelectPagePrevious),
     ] {
         table.push(Binding::surface(BindingScope::Picker, &[key], command));
     }
@@ -1088,11 +1091,14 @@ fn add_tree_bindings(table: &mut Vec<Binding>) {
     add_tree_keys(table, &[ch('g'), ch('g')], Command::MoveFirstLine);
     add_tree(table, ch('G'), Command::MoveLastLine);
     add_tree(table, Key::plain(KeyCode::Enter), Command::TreeOpenEntry);
-    // `l` and `h` open and close an entry, and `Enter` opens it, so the toggle
-    // needs no key of its own. The leader key belongs to the leader in every
-    // scope. See `docs/input-actions.md`.
+    // `l` and `h` open and close an entry, and `Enter` opens it. `Tab` toggles
+    // it, so one key answers both directions. The leader key belongs to the
+    // leader in every scope. See `docs/input-actions.md`.
     add_tree(table, ch('l'), Command::TreeExpandEntry);
     add_tree(table, ch('h'), Command::TreeCollapseEntry);
+    // An embedding host reserves `Tab` and `S-Tab` in the sidebar, so the
+    // embedded profile strips this binding and keeps its own navigation key.
+    add_tree(table, Key::plain(KeyCode::Tab), Command::TreeToggleEntry);
     // The arrow keys name the same four keys as `h`, `j`, `k`, and `l`, exactly
     // as they do in a buffer window, so one row list moves like another.
     for (key, command) in [

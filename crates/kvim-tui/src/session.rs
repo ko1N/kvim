@@ -4370,6 +4370,9 @@ impl Session {
 
     /// Applies one semantic command while a picker owns the keys.
     fn apply_picker_command(&mut self, command: Command) -> Redraw {
+        // The picker holds no terminal size, so the half-page step reads the
+        // visible result rows from the layout, as the scroll path does.
+        let rows_visible = usize::from(picker_areas(self.area).results.height);
         let Some(picker) = self.picker.as_mut() else {
             debug_assert!(false, "the caller checked that one picker is open");
             return Redraw::Skipped;
@@ -4377,6 +4380,8 @@ impl Session {
         match command {
             Command::PickerSelectNext => picker.select_next(),
             Command::PickerSelectPrevious => picker.select_previous(),
+            Command::PickerSelectPageNext => picker.select_page_next(rows_visible),
+            Command::PickerSelectPagePrevious => picker.select_page_previous(rows_visible),
             // The picker table holds no other command.
             _ => return Redraw::Skipped,
         }

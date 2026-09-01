@@ -242,6 +242,10 @@ semantic_commands! {
     // The pickers.
     PickerSelectNext => ("picker-select-next", "Select the next result"),
     PickerSelectPrevious => ("picker-select-previous", "Select the previous result"),
+    // The picker reads no buffer, so the half-page step of a buffer window
+    // names no picker motion. These two commands carry it instead.
+    PickerSelectPageNext => ("picker-select-page-next", "Select the result half a page later"),
+    PickerSelectPagePrevious => ("picker-select-page-previous", "Select the result half a page earlier"),
 
     // Windows.
     FocusWindowLeft => ("focus-window-left", "Focus the window to the left"),
@@ -459,6 +463,8 @@ impl Command {
             | Self::TreeSearch
             | Self::PickerSelectNext
             | Self::PickerSelectPrevious
+            | Self::PickerSelectPageNext
+            | Self::PickerSelectPagePrevious
             | Self::FocusWindowLeft
             | Self::FocusWindowDown
             | Self::FocusWindowUp
@@ -725,7 +731,9 @@ impl Command {
             | Self::ShiftSelectionLeft
             | Self::ShiftSelectionRight
             | Self::PickerSelectNext
-            | Self::PickerSelectPrevious => CommandGroup::Other,
+            | Self::PickerSelectPrevious
+            | Self::PickerSelectPageNext
+            | Self::PickerSelectPagePrevious => CommandGroup::Other,
         }
     }
 

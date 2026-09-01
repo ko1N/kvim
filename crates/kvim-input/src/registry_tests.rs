@@ -156,6 +156,8 @@ fn the_picker_arrow_keys_and_control_chords_select_results() {
         (Key::plain(KeyCode::Up), Command::PickerSelectPrevious),
         (ctrl('j'), Command::PickerSelectNext),
         (ctrl('k'), Command::PickerSelectPrevious),
+        (ctrl('d'), Command::PickerSelectPageNext),
+        (ctrl('u'), Command::PickerSelectPagePrevious),
     ] {
         assert_eq!(
             registry.command(BindingScope::Picker, &[key]),
@@ -431,6 +433,40 @@ fn the_file_tree_arrow_keys_name_the_same_four_keys_as_hjkl() {
             "the file tree answers `{arrow:?}` exactly as it answers `{letter:?}`"
         );
     }
+}
+
+#[test]
+fn the_file_tree_toggles_one_entry_with_tab() {
+    let registry = Registry::first_release();
+    assert_eq!(
+        registry.command(BindingScope::Sidebar, &[Key::plain(KeyCode::Tab)]),
+        Some(Command::TreeToggleEntry)
+    );
+    // The one-directional keys keep their own meanings beside the toggle.
+    for (key, expected) in [
+        (ch('l'), Command::TreeExpandEntry),
+        (ch('h'), Command::TreeCollapseEntry),
+        (Key::plain(KeyCode::Enter), Command::TreeOpenEntry),
+    ] {
+        assert_eq!(
+            registry.command(BindingScope::Sidebar, &[key]),
+            Some(expected)
+        );
+    }
+    assert_eq!(
+        registry.command(BindingScope::Sidebar, &[Key::plain(KeyCode::BackTab)]),
+        None,
+        "`S-Tab` stays free in the sidebar"
+    );
+    // An embedding host owns `Tab` in the sidebar, so the embedded profile
+    // strips the toggle instead of taking the key from the host.
+    let embedded = crate::BindingProfile::Embedded
+        .registry()
+        .expect("the embedded profile is valid");
+    assert_eq!(
+        embedded.command(BindingScope::Sidebar, &[Key::plain(KeyCode::Tab)]),
+        None
+    );
 }
 
 #[test]

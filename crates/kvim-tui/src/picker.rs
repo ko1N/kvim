@@ -468,6 +468,32 @@ impl PickerState {
         self.refresh_preview();
     }
 
+    /// Moves the selection half a result page away from the prompt.
+    ///
+    /// The caller passes the visible result rows, because the picker holds no
+    /// terminal size of its own. The last row stops the move, exactly as
+    /// one-row motion does, and an empty result list moves nothing.
+    pub(super) fn select_page_next(&mut self, rows_visible: usize) {
+        let Some(selected) = self.picker.selected_row() else {
+            return;
+        };
+        self.picker
+            .select_row(selected.saturating_add(page_step(rows_visible)));
+        self.refresh_preview();
+    }
+
+    /// Moves the selection half a result page toward the prompt.
+    ///
+    /// The first row stops the move, and an empty result list moves nothing.
+    pub(super) fn select_page_previous(&mut self, rows_visible: usize) {
+        let Some(selected) = self.picker.selected_row() else {
+            return;
+        };
+        self.picker
+            .select_row(selected.saturating_sub(page_step(rows_visible)));
+        self.refresh_preview();
+    }
+
     /// Selects one visible result row.
     pub(super) fn select_row(&mut self, row: usize) -> bool {
         if row >= self.picker.matches().len() {
@@ -641,6 +667,15 @@ impl PickerState {
             None
         };
     }
+}
+
+/// Returns the row count of one half-page selection step.
+///
+/// A picker that shows fewer than two rows still steps one row, so the key
+/// never becomes inert.
+const fn page_step(rows_visible: usize) -> usize {
+    let half = rows_visible / 2;
+    if half == 0 { 1 } else { half }
 }
 
 /// Renders one open picker over the complete terminal.

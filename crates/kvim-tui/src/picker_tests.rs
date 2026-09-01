@@ -83,6 +83,26 @@ fn workspace_with(width: u16, height: u16, settings: EditorSettings) -> (TempDir
     (dir, session)
 }
 
+/// Creates one workspace of `files` root files, and one session over it.
+///
+/// Every file carries its own name in its first line, so the preview of one
+/// selected row names the row that asked for it. The names sit at the root, so
+/// the file picker lists exactly `files` rows and none of them scrolls while
+/// the count stays inside the visible result rows.
+fn numbered_workspace(files: usize) -> (TempDir, Session) {
+    let dir = TempDir::new("picker-page");
+    for index in 0..files {
+        let name = format!("row{index}.rs");
+        dir.file(&name, &format!("// {name}\n"));
+    }
+    let session = Session::new(
+        Rect::new(0, 0, WIDTH, HEIGHT),
+        EditorSettings::default(),
+        test_root(dir.path.clone()),
+    );
+    (dir, session)
+}
+
 /// Feeds one plain character key.
 fn press(session: &mut Session, value: char) {
     session.handle_event(TerminalEvent::Key(Key::plain(KeyCode::Char(value))), NOW);
@@ -305,6 +325,27 @@ fn selected_row(session: &Session) -> Option<u16> {
     })
 }
 
+/// Returns the filename of the selected result row.
+///
+/// The offset that [`selected_row`] answers counts from the first visible row,
+/// so the caller must keep every row visible for this lookup to name the
+/// selected candidate.
+fn selected_name(session: &Session) -> String {
+    let row = selected_row(session).expect("one result row is selected");
+    let rows = results(session);
+    let row = rows
+        .get(usize::from(row))
+        .expect("the painted selection sits on one listed row");
+    split_result_row(row).0.trim_end().to_owned()
+}
+
+/// Returns the first text row of the preview column.
+fn preview_first_row(session: &Session) -> String {
+    let body = preview_body(session);
+    let buffer = draw(session);
+    region_row(&buffer, body, body.y).trim_start().to_owned()
+}
+
 #[test]
 fn the_file_picker_lists_the_workspace_with_the_filename_first() {
     let (_dir, mut session) = workspace();
@@ -433,6 +474,111 @@ fn the_control_keys_move_the_selection_inside_the_picker() {
     press_ctrl(&mut session, 'k');
     drain(&mut session);
     assert_eq!(selected_row(&session), Some(0));
+}
+
+#[test]
+fn the_half_page_keys_step_the_picker_selection_and_stop_at_both_ends() {
+    // Seven rows sit inside the nine visible rows of the test terminal, so no
+    // row scrolls and the painted offset names the selected candidate.
+    const ROWS: usize = 7;
+    let (_dir, mut session) = numbered_workspace(ROWS);
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    let step = picker_areas(session.area()).results.height / 2;
+    let last = u16::try_from(ROWS - 1).expect("the row count is small");
+    assert!(
+        step > 1,
+        "the test terminal shows more than three result rows"
+    );
+    assert!(step < last, "the step reaches the last row in two moves");
+    assert_eq!(
+        results(&session).len(),
+        ROWS,
+        "every row fits without a scroll"
+    );
+    assert_eq!(selected_row(&session), Some(0));
+
+    press_ctrl(&mut session, 'd');
+    drain(&mut session);
+    assert_eq!(selected_row(&session), Some(step));
+
+    // The second step passes the end of the list, so the last row holds it.
+    press_ctrl(&mut session, 'd');
+    drain(&mut session);
+    assert_eq!(selected_row(&session), Some(last));
+
+    press_ctrl(&mut session, 'd');
+    drain(&mut session);
+    assert_eq!(
+        selected_row(&session),
+        Some(last),
+        "a step from the last row keeps the last row"
+    );
+
+    press_ctrl(&mut session, 'u');
+    drain(&mut session);
+    assert_eq!(selected_row(&session), Some(last - step));
+
+    // The step passes the prompt, so the first row holds it.
+    press_ctrl(&mut session, 'u');
+    drain(&mut session);
+    assert_eq!(selected_row(&session), Some(0));
+
+    press_ctrl(&mut session, 'u');
+    drain(&mut session);
+    assert_eq!(
+        selected_row(&session),
+        Some(0),
+        "a step from the first row keeps the first row"
+    );
+}
+
+#[test]
+fn the_half_page_keys_move_the_picker_preview_with_the_selection() {
+    let (_dir, mut session) = numbered_workspace(7);
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    let first = selected_name(&session);
+    assert_eq!(preview_first_row(&session), format!("// {first}"));
+
+    press_ctrl(&mut session, 'd');
+    drain(&mut session);
+    let stepped = selected_name(&session);
+    assert_ne!(stepped, first, "the step selected another row");
+    assert_eq!(
+        preview_first_row(&session),
+        format!("// {stepped}"),
+        "the preview follows the stepped selection"
+    );
+
+    press_ctrl(&mut session, 'u');
+    drain(&mut session);
+    assert_eq!(selected_name(&session), first);
+    assert_eq!(
+        preview_first_row(&session),
+        format!("// {first}"),
+        "the preview follows the selection back"
+    );
+}
+
+#[test]
+fn the_half_page_keys_move_nothing_while_no_result_matches() {
+    let (_dir, mut session) = numbered_workspace(7);
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "zqxjv");
+    drain(&mut session);
+    assert!(results(&session).is_empty(), "the query matches no row");
+
+    for key in ['d', 'u'] {
+        press_ctrl(&mut session, key);
+        drain(&mut session);
+        assert_eq!(
+            selected_row(&session),
+            None,
+            "an empty result list selects no row"
+        );
+    }
 }
 
 #[test]
