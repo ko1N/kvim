@@ -288,12 +288,15 @@ fn placement_and_render_share_exact_popup_geometry() {
         .expect("the body is inside its buffer");
     assert_eq!(rendered, pure);
     assert_eq!(pure.body_area, body);
-    assert_eq!(pure.popup, Rect::new(4, 5, 40, 6));
-    assert_eq!(pure.rail, Rect::new(4, 5, 1, 6));
-    assert_eq!(pure.content, Rect::new(6, 6, 38, 1));
-    assert_eq!(pure.footer, Rect::new(5, 8, 39, 3));
-    assert_eq!(pure.choices[0].area, Rect::new(6, 9, 14, 1));
-    assert_eq!(pure.choices[1].area, Rect::new(22, 9, 17, 1));
+    // The popup shrinks to its content width (the choice row, at 33 cells,
+    // needs more than the 24-cell question), rather than filling the full
+    // 40-cell body.
+    assert_eq!(pure.popup, Rect::new(6, 5, 35, 6));
+    assert_eq!(pure.rail, Rect::new(6, 5, 1, 6));
+    assert_eq!(pure.content, Rect::new(8, 6, 33, 1));
+    assert_eq!(pure.footer, Rect::new(7, 8, 34, 3));
+    assert_eq!(pure.choices[0].area, Rect::new(8, 9, 14, 1));
+    assert_eq!(pure.choices[1].area, Rect::new(24, 9, 17, 1));
 }
 
 #[test]
@@ -364,8 +367,8 @@ fn choice_placements_are_horizontal_chips_that_cover_their_own_padding() {
     let placement = dialog
         .render(&mut target, body, styles())
         .expect("valid render");
-    assert_eq!(placement.choices[0].area, Rect::new(9, 12, 6, 1));
-    assert_eq!(placement.choices[1].area, Rect::new(17, 12, 9, 1));
+    assert_eq!(placement.choices[0].area, Rect::new(15, 12, 6, 1));
+    assert_eq!(placement.choices[1].area, Rect::new(23, 12, 9, 1));
     assert_eq!(placement.choices[0].area.y, placement.choices[1].area.y);
     for choice in &placement.choices {
         let expected = match choice.identity {
@@ -540,6 +543,69 @@ fn narrow_bodies_require_a_complete_choice_row() {
 }
 
 #[test]
+fn short_question_yields_a_popup_narrower_than_the_body_and_stays_centered() {
+    let dialog = dialog();
+    let body = Rect::new(0, 0, DIALOG_POPUP_COLUMNS_MAX, 12);
+    let placement = dialog.placement_for(body).expect("body fits");
+    assert!(
+        placement.popup.width < body.width,
+        "a short question and short choices must not stretch to the full body width"
+    );
+    let left_margin = placement.popup.x - body.x;
+    let right_margin = body.right() - placement.popup.right();
+    assert!(
+        right_margin.abs_diff(left_margin) <= 1,
+        "the narrower popup still centers in the body"
+    );
+}
+
+#[test]
+fn long_question_wraps_inside_the_maximum_popup_width() {
+    let question = "word ".repeat(60);
+    let dialog = Dialog::new(
+        question,
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(Id::Keep, "Ok")],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("the repeated word list stays inside the question character bound");
+    let body = Rect::new(0, 0, 100, DIALOG_POPUP_ROWS_MAX);
+    let placement = dialog.placement_for(body).expect("body fits");
+    assert!(
+        placement.popup.width <= DIALOG_POPUP_COLUMNS_MAX,
+        "the popup wraps the question instead of growing past the published maximum"
+    );
+    assert!(
+        placement.question.height > 1,
+        "the question wraps across several lines"
+    );
+}
+
+#[test]
+fn wide_choice_row_widens_the_popup_beyond_the_question_alone() {
+    let dialog = Dialog::new(
+        "Go?",
+        std::iter::empty::<&str>(),
+        [
+            DialogChoice::new(Id::Keep, "Keep everything as it is"),
+            DialogChoice::new(Id::Discard, "Discard all unsaved changes"),
+        ],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("bounded dialog");
+    let body = Rect::new(0, 0, DIALOG_POPUP_COLUMNS_MAX, 12);
+    let placement = dialog.placement_for(body).expect("body fits");
+    let question_cells =
+        u16::try_from(text_cells("Go?")).expect("a three-character question fits u16");
+    assert!(
+        placement.content.width > question_cells,
+        "the wide choice row, not the short question, drives the content width"
+    );
+}
+
+#[test]
 fn footer_band_is_published_and_never_overlaps_the_content_region() {
     let dialog = dialog();
     let placement = dialog
@@ -549,7 +615,7 @@ fn footer_band_is_published_and_never_overlaps_the_content_region() {
     // two rectangles' row ranges never intersect.
     assert!(placement.footer.y > placement.content.bottom());
     assert_eq!(placement.footer.bottom(), placement.popup.bottom());
-    assert_eq!(placement.footer, Rect::new(5, 8, 39, 3));
+    assert_eq!(placement.footer, Rect::new(7, 8, 34, 3));
 }
 
 #[test]

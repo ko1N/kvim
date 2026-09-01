@@ -1184,9 +1184,24 @@ fn a_confirmation_renders_over_the_body_and_keeps_the_message_line() {
         (0..9).any(|y| row_of(&buffer, y).contains("⚠ Delete one entry")),
         "the question paints with its severity glyph in the body"
     );
+    // The popup is only as wide as its content, so it stands centered in the
+    // body and its rail no longer falls on the first body column.
+    let rail_rows: Vec<u16> = (0..9)
+        .filter(|&y| row_of(&buffer, y).contains('▌'))
+        .collect();
+    let rail_column = column_of(
+        &row_of(
+            &buffer,
+            *rail_rows.first().expect("the popup paints its rail"),
+        ),
+        "▌",
+    );
+    assert!(rail_column > 0, "the centered popup leaves the body edge");
     assert!(
-        (0..9).any(|y| row_of(&buffer, y).starts_with('▌')),
-        "the popup paints its full-height rail"
+        rail_rows
+            .iter()
+            .all(|&y| column_of(&row_of(&buffer, y), "▌") == rail_column),
+        "the rail stands in one column across every popup row"
     );
     let choice_row = (0..9)
         .find(|&y| {

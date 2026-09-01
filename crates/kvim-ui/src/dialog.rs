@@ -707,7 +707,18 @@ impl<Id: Eq> Dialog<Id> {
         if required_width > max_width {
             return Err(DialogError::BodyTooSmall { body });
         }
-        let content_width = max_width - FRAME_COLUMNS;
+        // The popup grows only as wide as its content wants, up to `max_width`.
+        // `wanted_content_width` never drops below `required_content_width`, so
+        // clamping it to `max_content_width` (itself >= `required_content_width`
+        // because `required_width <= max_width` above) keeps `content_width` in
+        // `[required_content_width, max_content_width]`. The choice-row debug
+        // assertion below relies on that lower bound.
+        let question_width = text_cells(&self.question).saturating_add(indent);
+        let wanted_content_width = question_width.max(required_content_width);
+        let max_content_width = max_width - FRAME_COLUMNS;
+        let content_width = u16::try_from(wanted_content_width)
+            .unwrap_or(max_content_width)
+            .min(max_content_width);
         let text_width = usize::from(content_width)
             .checked_sub(indent)
             .filter(|width| *width > 0)
@@ -736,7 +747,9 @@ impl<Id: Eq> Dialog<Id> {
         if height > body.height || height > DIALOG_POPUP_ROWS_MAX {
             return Err(DialogError::BodyTooSmall { body });
         }
-        let width = max_width;
+        let width = content_width
+            .checked_add(FRAME_COLUMNS)
+            .ok_or(DialogError::BodyTooSmall { body })?;
         let popup_x = body
             .x
             .checked_add((body.width - width) / 2)
