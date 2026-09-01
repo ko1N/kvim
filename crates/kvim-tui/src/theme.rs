@@ -234,6 +234,13 @@ pub enum ThemeRole {
     TitleMuted,
     /// The selected row of a popup list.
     PopupSelection,
+    /// The filled selection band of the picker's selected result row.
+    PickerSelection,
+    /// The muted picker chrome text: the query placeholder, the `esc` title
+    /// hint, and the descriptions of the key hint row.
+    PickerMuted,
+    /// The key name of one picker hint, such as `esc` or the arrow glyphs.
+    PickerHintKey,
     /// The state of one running item of the notification overlay.
     NotificationRunning,
     /// The state of one finished item of the notification overlay.
@@ -395,11 +402,12 @@ impl Theme {
             ThemeRole::ScrollbarTrack => Style::new().fg(TEXT_MUTED),
             ThemeRole::ScrollbarThumb => Style::new().fg(TEXT_DIM),
             ThemeRole::DialogDim => Style::new().fg(TEXT_MUTED).bg(self.base),
-            // The reference popup marks a destructive confirmation with a
-            // warm accent rail, not the blue window-title color, so the rail
-            // and the severity glyph below share the one warm accent.
-            ThemeRole::DialogRail => Style::new().fg(ACCENT_WARM).bg(self.surface),
-            ThemeRole::DialogIcon => Style::new().fg(ACCENT_WARM).bg(self.surface),
+            // The rail keeps the accent of this palette, so the popup reads as
+            // part of the editor and not as a guest from another theme. The
+            // severity glyph beside it takes the warning color instead,
+            // because it names the risk of the question, not the popup.
+            ThemeRole::DialogRail => Style::new().fg(TITLE).bg(self.surface),
+            ThemeRole::DialogIcon => Style::new().fg(WARNING).bg(self.surface),
             ThemeRole::DialogBody => Style::new().fg(TEXT_DIM).bg(self.surface),
             ThemeRole::DialogQuestion => Style::new()
                 .fg(TEXT)
@@ -418,12 +426,11 @@ impl Theme {
             // without competing with the filled focused chip, so it reads
             // brighter than a plain choice but carries no bold weight.
             ThemeRole::DialogDefaultChoice => Style::new().fg(TEXT_DIM),
-            // The focused chip fills with the warm accent behind a dark
-            // foreground, the same pairing that the current search match
-            // already uses for a filled accent cell.
+            // The focused chip fills with the palette accent behind the editor
+            // background, which reads as text on a filled band.
             ThemeRole::DialogFocusedChoice => Style::new()
-                .fg(CURRENT_SEARCH_FOREGROUND)
-                .bg(ACCENT_WARM)
+                .fg(self.base)
+                .bg(TITLE)
                 .add_modifier(Modifier::BOLD),
             ThemeRole::Surface => Style::new().fg(TEXT).bg(self.surface),
             ThemeRole::Statusline => Style::new().fg(TEXT_DIM).bg(self.surface),
@@ -435,6 +442,18 @@ impl Theme {
                 .add_modifier(Modifier::BOLD),
             ThemeRole::TitleMuted => Style::new().fg(TEXT_MUTED).bg(self.surface),
             ThemeRole::PopupSelection => Style::new().bg(POPUP_SELECTION_BACKGROUND),
+            // The picker marks its one selected row with the same filled
+            // accent band that the focused dialog chip uses, so the two
+            // popups read as one visual vocabulary.
+            ThemeRole::PickerSelection => Style::new()
+                .fg(self.base)
+                .bg(TITLE)
+                .add_modifier(Modifier::BOLD),
+            // Picker chrome text carries a foreground color only, so it
+            // patches over the surface band that the title row, the query
+            // row, and the hint row already paint.
+            ThemeRole::PickerMuted => Style::new().fg(TEXT_MUTED),
+            ThemeRole::PickerHintKey => Style::new().fg(TEXT_DIM),
             // The notification overlay paints text alone over the buffer, as
             // the reference configuration does, so every role of it carries a
             // foreground color only. A background would hide the buffer text

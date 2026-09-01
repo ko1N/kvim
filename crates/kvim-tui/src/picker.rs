@@ -9,10 +9,14 @@
 //! `docs/files.md` and `docs/responsiveness.md`.
 //!
 //! The layout follows the reference configuration: the picker covers the
-//! complete terminal, the prompt sits at the top, the results ascend from the
-//! prompt with the best match first, and the preview receives
-//! [`PREVIEW_WIDTH_PERCENT`] of the width. No region carries a divider glyph.
-//! One blank row and one blank column separate them. See `docs/windows.md`.
+//! complete terminal, an optional title row names the picker kind and the
+//! close key, the prompt sits below it, the results ascend from the prompt
+//! with the best match first, an optional hint row below the results names
+//! the picker keys, and the preview receives [`PREVIEW_WIDTH_PERCENT`] of the
+//! width. No region carries a divider glyph. One blank row and one blank
+//! column separate them. A terminal too short for the title row and the hint
+//! row drops both together and keeps at least one result row. See
+//! `docs/windows.md`.
 
 use std::sync::Arc;
 
@@ -27,6 +31,7 @@ use kvim_workspace::{
     PreviewKey,
 };
 
+use super::cells::text_cells;
 use super::chrome::prompt_cursor_x;
 use super::session::{PromptLine, Redraw};
 use super::theme::{Theme, ThemeRole};
@@ -49,11 +54,62 @@ const PROMPT_ROWS: u16 = 1;
 /// The number of rows between the prompt and the first result.
 const GAP_ROWS: u16 = 1;
 
+/// The number of rows that the title occupies.
+const TITLE_ROWS: u16 = 1;
+
+/// The number of rows that the key hint occupies.
+const HINT_ROWS: u16 = 1;
+
 /// The number of cells between the result column and the preview column.
 const GAP_CELLS: u16 = 1;
 
+/// The number of cells between two segments of the key hint row.
+const HINT_SEGMENT_GAP_CELLS: u16 = 4;
+
 /// The smallest query that starts one search.
 const SEARCH_CHARS_MIN: usize = 1;
+
+/// The placeholder that the query row shows in place of a bare prefix.
+const QUERY_PLACEHOLDER: &str = "Search";
+
+/// The hint that the title row shows for the close key.
+const TITLE_CLOSE_HINT: &str = "esc";
+
+/// The glyph that marks the selected result row.
+const RESULT_SELECTED_MARKER: &str = "\u{25cf} ";
+
+/// The width of the marker column that every result row reserves, selected or
+/// not, so the candidate text of every row lines up on the same column.
+const RESULT_MARKER_CELLS: u16 = 2;
+
+/// One key and the motion or the action that it performs, for the hint row
+/// below the results.
+struct PickerHint {
+    /// The key name, such as `esc` or the arrow glyphs.
+    key: &'static str,
+    /// The motion or the action that the key performs.
+    action: &'static str,
+}
+
+/// The picker keys that the hint row names.
+///
+/// The registry binds `Up`, `Down`, `Ctrl-j`, and `Ctrl-k` to move the
+/// selection, `Enter` to accept it, and `Esc` to close the picker. See
+/// `crates/kvim-input/src/registry_tests.rs`.
+const PICKER_HINTS: [PickerHint; 3] = [
+    PickerHint {
+        key: "\u{2191}\u{2193}",
+        action: "move",
+    },
+    PickerHint {
+        key: "\u{23ce}",
+        action: "open",
+    },
+    PickerHint {
+        key: "esc",
+        action: "close",
+    },
+];
 
 /// The message that a picker without a matching row shows.
 const NO_RESULT_NOTE: &str = "no result";
@@ -105,10 +161,16 @@ impl PickerFailure {
 /// The rectangles of one open picker.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PickerAreas {
+    /// The row that names the picker kind and the close key, or `None` in a
+    /// terminal too short for the complete chrome.
+    pub(super) title: Option<Rect>,
     /// The row that holds the query.
     pub(super) prompt: Rect,
     /// The rows that hold the results, with the best match first.
     pub(super) results: Rect,
+    /// The row that names the picker keys, or `None` in a terminal too short
+    /// for the complete chrome.
+    pub(super) hint: Option<Rect>,
     /// The preview column, or `None` in a narrow terminal.
     pub(super) preview: Option<Rect>,
 }
@@ -117,7 +179,10 @@ pub(super) struct PickerAreas {
 ///
 /// The picker covers the complete terminal, so it keeps no padding on either
 /// axis. A terminal that cannot hold both columns drops the preview and gives
-/// the complete width to the results.
+/// the complete width to the results. The title row and the hint row are
+/// optional chrome around the mandatory prompt: a terminal too short for the
+/// complete form drops both together and keeps at least one result row,
+/// because a picker without a visible match serves the reader nothing.
 pub(super) fn picker_areas(area: Rect) -> PickerAreas {
     let preview_width = area.width.saturating_mul(PREVIEW_WIDTH_PERCENT) / 100;
     let results_width = area.width.saturating_sub(preview_width);
@@ -137,17 +202,50 @@ pub(super) fn picker_areas(area: Rect) -> PickerAreas {
     } else {
         (area.width, None)
     };
-    let prompt = Rect::new(area.x, area.y, results_width, PROMPT_ROWS.min(area.height));
-    let used = PROMPT_ROWS.saturating_add(GAP_ROWS);
-    let results = Rect::new(
+
+    let prompt_chrome = PROMPT_ROWS.saturating_add(GAP_ROWS);
+    let full_chrome = TITLE_ROWS
+        .saturating_add(GAP_ROWS)
+        .saturating_add(prompt_chrome)
+        .saturating_add(GAP_ROWS)
+        .saturating_add(HINT_ROWS);
+    // One more row than the complete chrome keeps at least one result row
+    // under it; anything narrower drops the title row and the hint row
+    // together and keeps the mandatory prompt.
+    let show_chrome = area.height > full_chrome;
+    let title_chrome = if show_chrome {
+        TITLE_ROWS.saturating_add(GAP_ROWS)
+    } else {
+        0
+    };
+    let hint_chrome = if show_chrome {
+        GAP_ROWS.saturating_add(HINT_ROWS)
+    } else {
+        0
+    };
+
+    let title = show_chrome.then(|| Rect::new(area.x, area.y, results_width, TITLE_ROWS));
+    let prompt_y = area.y.saturating_add(title_chrome).min(area.bottom());
+    let prompt = Rect::new(
         area.x,
-        area.y.saturating_add(used).min(area.bottom()),
+        prompt_y,
         results_width,
-        area.height.saturating_sub(used),
+        PROMPT_ROWS.min(area.height),
     );
+    let results_y = prompt_y.saturating_add(prompt_chrome).min(area.bottom());
+    let results_height = area
+        .height
+        .saturating_sub(title_chrome)
+        .saturating_sub(prompt_chrome)
+        .saturating_sub(hint_chrome);
+    let results = Rect::new(area.x, results_y, results_width, results_height);
+    let hint = show_chrome.then(|| Rect::new(area.x, results.bottom(), results_width, HINT_ROWS));
+
     PickerAreas {
+        title,
         prompt,
         results,
+        hint,
         preview,
     }
 }
@@ -449,14 +547,46 @@ pub(super) fn render_picker(
     }
     target.set_style(area, text);
 
+    if let Some(title) = areas.title {
+        render_title(target, title, theme, state);
+    }
     let cursor = render_prompt(target, areas.prompt, theme, state, prompt);
     render_notice(target, &areas, theme, state);
     render_results(target, areas.results, theme, state);
+    if let Some(hint) = areas.hint {
+        render_hint(target, hint, theme);
+    }
     if let Some(preview) = areas.preview {
         target.set_style(Rect::new(preview.x, preview.y, preview.width, 1), surface);
         render_preview(target, preview, theme, state);
     }
     cursor
+}
+
+/// Renders the title row: the picker kind at the left and the close hint at
+/// the right.
+fn render_title(target: &mut CellBuffer, area: Rect, theme: Theme, state: &PickerState) {
+    if area.is_empty() {
+        return;
+    }
+    let surface = theme.style(ThemeRole::Surface);
+    target.set_style(area, surface);
+    target.set_stringn(
+        area.x,
+        area.y,
+        state.picker().kind().title(),
+        usize::from(area.width),
+        theme.style(ThemeRole::Title),
+    );
+    let hint_cells = u16::try_from(text_cells(TITLE_CLOSE_HINT)).unwrap_or(area.width);
+    let hint_x = area.right().saturating_sub(hint_cells).max(area.x);
+    target.set_stringn(
+        hint_x,
+        area.y,
+        TITLE_CLOSE_HINT,
+        usize::from(area.right().saturating_sub(hint_x)),
+        theme.style(ThemeRole::PickerMuted),
+    );
 }
 
 /// Renders the query row and returns the cell of its cursor.
@@ -477,8 +607,23 @@ fn render_prompt(
     let surface = theme.style(ThemeRole::Surface);
     target.set_style(area, surface);
     let prefix = PromptKind::Picker.prefix();
-    let line = format!("{prefix}{}", state.picker().query());
-    target.set_stringn(area.x, area.y, &line, usize::from(area.width), surface);
+    let query = state.picker().query();
+    if query.is_empty() {
+        // A bare prefix reads as an empty row, so the placeholder names the
+        // picker's search field the way the reference popup does.
+        let prefix_cells = u16::try_from(text_cells(prefix)).unwrap_or(area.width);
+        let placeholder_x = area.x.saturating_add(prefix_cells).min(area.right());
+        target.set_stringn(
+            placeholder_x,
+            area.y,
+            QUERY_PLACEHOLDER,
+            usize::from(area.right().saturating_sub(placeholder_x)),
+            theme.style(ThemeRole::PickerMuted),
+        );
+    } else {
+        let line = format!("{prefix}{query}");
+        target.set_stringn(area.x, area.y, &line, usize::from(area.width), surface);
+    }
     target.set_stringn(
         area.x,
         area.y,
@@ -512,12 +657,16 @@ fn render_notice(target: &mut CellBuffer, areas: &PickerAreas, theme: Theme, sta
 }
 
 /// Renders the matched rows, with the best match next to the prompt.
+///
+/// Every row reserves [`RESULT_MARKER_CELLS`] for the leading marker, selected
+/// or not, so the candidate text of every row lines up on the same column.
 fn render_results(target: &mut CellBuffer, area: Rect, theme: Theme, state: &PickerState) {
     if area.is_empty() {
         return;
     }
     let selected = state.picker().selected_row();
-    let width = usize::from(area.width);
+    let text_x = area.x.saturating_add(RESULT_MARKER_CELLS);
+    let width = usize::from(area.width.saturating_sub(RESULT_MARKER_CELLS));
     for (offset, (row, index)) in state
         .picker
         .matches()
@@ -537,23 +686,84 @@ fn render_results(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
             continue;
         };
         let y = area.y.saturating_add(offset);
-        let style = if selected == Some(row) {
+        let is_selected = selected == Some(row);
+        let style = if is_selected {
             theme
                 .style(ThemeRole::Text)
-                .patch(theme.style(ThemeRole::PopupSelection))
+                .patch(theme.style(ThemeRole::PickerSelection))
         } else {
             theme.style(ThemeRole::Text)
         };
         target.set_style(Rect::new(area.x, y, area.width, 1), style);
-        target.set_stringn(area.x, y, candidate.row(), width, style);
-        // The filename stands before its directory, so it carries the title
-        // color and the reader finds it first. It keeps the background of its
-        // row, so the selection covers the complete row.
-        let name = Style {
-            bg: style.bg,
-            ..theme.style(ThemeRole::Title)
+        if is_selected {
+            target.set_stringn(
+                area.x,
+                y,
+                RESULT_SELECTED_MARKER,
+                usize::from(RESULT_MARKER_CELLS),
+                style,
+            );
+        }
+        target.set_stringn(text_x, y, candidate.row(), width, style);
+        // The filename stands before its directory, so it normally carries
+        // the title color and the reader finds it first. The filled
+        // selection band paints a dark foreground across the complete row,
+        // so a selected filename keeps that same dark foreground instead;
+        // the title accent color would vanish against the accent
+        // background.
+        let name = if is_selected {
+            style
+        } else {
+            Style {
+                bg: style.bg,
+                ..theme.style(ThemeRole::Title)
+            }
         };
-        target.set_stringn(area.x, y, candidate.name(), width, name);
+        target.set_stringn(text_x, y, candidate.name(), width, name);
+    }
+}
+
+/// Renders the key hint row below the results.
+///
+/// The row names a fixed, bounded set of picker keys: it draws only
+/// [`PICKER_HINTS`] and stops once the row runs out of width, so a narrow
+/// column never overflows into the column beside it.
+fn render_hint(target: &mut CellBuffer, area: Rect, theme: Theme) {
+    if area.is_empty() {
+        return;
+    }
+    let surface = theme.style(ThemeRole::Surface);
+    target.set_style(area, surface);
+    let key_style = theme.style(ThemeRole::PickerHintKey);
+    let action_style = theme.style(ThemeRole::PickerMuted);
+    let right = area.right();
+    let mut x = area.x;
+    for (index, hint) in PICKER_HINTS.iter().enumerate() {
+        if index > 0 {
+            x = x.saturating_add(HINT_SEGMENT_GAP_CELLS);
+        }
+        if x >= right {
+            break;
+        }
+        let (after_key, _) = target.set_stringn(
+            x,
+            area.y,
+            hint.key,
+            usize::from(right.saturating_sub(x)),
+            key_style,
+        );
+        x = after_key.saturating_add(1);
+        if x >= right {
+            break;
+        }
+        let (after_action, _) = target.set_stringn(
+            x,
+            area.y,
+            hint.action,
+            usize::from(right.saturating_sub(x)),
+            action_style,
+        );
+        x = after_action;
     }
 }
 

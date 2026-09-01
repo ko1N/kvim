@@ -24,6 +24,7 @@ use kvim_workspace::temp::TempDir;
 use crate::buffer_view::WINBAR_ROWS;
 use crate::clipboard::SessionClipboard;
 use crate::session::{ConfirmedAction, MessageLevel, Redraw, Session, test_root};
+use crate::theme::{Theme, ThemeRole};
 use kvim_ui::WindowId;
 
 const NOW: Duration = Duration::ZERO;
@@ -64,12 +65,13 @@ const ERROR: Color = Color::Rgb(0xdb, 0x4b, 0x4b);
 /// The title color of the reference palette.
 const TITLE: Color = Color::Rgb(0x7a, 0xa2, 0xf7);
 
-/// The dark foreground that the focused dialog choice and the current search
-/// match share in the reference palette.
-const DIALOG_FOCUS_FOREGROUND: Color = Color::Rgb(0x15, 0x16, 0x1e);
-
-/// The footer band background of a modal dialog in the reference palette.
-const DIALOG_FOOTER: Color = Color::Rgb(0x1e, 0x22, 0x2b);
+/// Returns the style that the theme gives one semantic role.
+///
+/// The dialog assertions read every expected color through this lookup, so a
+/// recolor of the popup never edits this file.
+fn role(role: ThemeRole) -> Style {
+    Theme::new().style(role)
+}
 
 /// The muted foreground that dims the body behind a dialog.
 const TEXT_MUTED: Color = Color::Rgb(0x3b, 0x42, 0x61);
@@ -1200,20 +1202,21 @@ fn a_confirmation_renders_over_the_body_and_keeps_the_message_line() {
     let footer_band = buffer
         .cell((column_of(&choice_text, "Yes") - 2, choice_row))
         .expect("the footer band pads the chip");
+    let focused = role(ThemeRole::DialogFocusedChoice);
     assert_eq!(
-        footer_band.bg, DIALOG_FOOTER,
+        Some(footer_band.bg),
+        role(ThemeRole::DialogFooter).bg,
         "the footer band separates from the popup surface"
     );
     assert_ne!(
-        buffer.cell(yes).expect("Yes is inside the frame").bg,
-        ACCENT_WARM,
+        Some(buffer.cell(yes).expect("Yes is inside the frame").bg),
+        focused.bg,
         "Yes is not initially focused"
     );
     let no_style = buffer.cell(no).expect("No is inside the frame").style();
-    assert_eq!(no_style.bg, Some(ACCENT_WARM), "No owns safe focus");
+    assert_eq!(no_style.bg, focused.bg, "No owns safe focus");
     assert_eq!(
-        no_style.fg,
-        Some(DIALOG_FOCUS_FOREGROUND),
+        no_style.fg, focused.fg,
         "the focused chip paints a dark foreground over its accent fill"
     );
     assert!(

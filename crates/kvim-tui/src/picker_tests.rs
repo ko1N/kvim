@@ -11,7 +11,7 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
-use ratatui::style::Color;
+use ratatui::style::Style;
 use tokio_util::sync::CancellationToken;
 
 use kvim_runtime::ProcessOutput;
@@ -19,8 +19,9 @@ use kvim_settings::EditorSettings;
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{PickerResult, PickerSlot, Preview, PreviewKey, PreviewTarget, temp::TempDir};
 
-use crate::picker::{PREVIEW_WIDTH_PERCENT, PickerFailure, picker_areas};
+use crate::picker::{PREVIEW_WIDTH_PERCENT, PickerFailure, RESULT_MARKER_CELLS, picker_areas};
 use crate::session::{Redraw, Session, test_root};
+use crate::theme::{Theme, ThemeRole};
 
 const NOW: Duration = Duration::ZERO;
 
@@ -31,10 +32,18 @@ const WIDTH: u16 = 80;
 const HEIGHT: u16 = 16;
 
 /// The first result row of the picker.
-const FIRST_RESULT_ROW: u16 = 2;
+///
+/// The title row and its gap, then the query row and its gap, sit above the
+/// results: two rows each.
+const FIRST_RESULT_ROW: u16 = 4;
 
-/// The background of the selected row in the reference palette.
-const SELECTION: Color = Color::Rgb(0x34, 0x3a, 0x55);
+/// Returns the style that the theme gives one semantic role.
+///
+/// The tests read every expected color through this lookup, so the palette
+/// stays owned by the theme module alone and a recolor never edits a test.
+fn role(role: ThemeRole) -> Style {
+    Theme::new().style(role)
+}
 
 /// The largest number of picker operations that one test drains.
 const PICKER_STEPS_MAX: usize = 8;
@@ -170,10 +179,13 @@ fn region_row(buffer: &CellBuffer, area: Rect, y: u16) -> String {
     text.trim_end().to_owned()
 }
 
-/// Returns the visible result rows of the picker.
+/// Returns the visible result rows of the picker, without the leading marker
+/// column, so the assertions read the candidate text alone.
 fn results(session: &Session) -> Vec<String> {
     let buffer = draw(session);
-    let area = picker_areas(session.area()).results;
+    let mut area = picker_areas(session.area()).results;
+    area.x = area.x.saturating_add(RESULT_MARKER_CELLS);
+    area.width = area.width.saturating_sub(RESULT_MARKER_CELLS);
     (area.y..area.bottom())
         .map(|y| region_row(&buffer, area, y))
         .filter(|row| !row.is_empty())
@@ -192,7 +204,7 @@ fn selected_row(session: &Session) -> Option<u16> {
     let buffer = draw(session);
     (FIRST_RESULT_ROW..HEIGHT).find_map(|y| {
         let cell = buffer.cell((0, y))?;
-        (cell.style().bg == Some(SELECTION)).then_some(y - FIRST_RESULT_ROW)
+        (cell.style().bg == role(ThemeRole::PickerSelection).bg).then_some(y - FIRST_RESULT_ROW)
     })
 }
 
@@ -202,7 +214,11 @@ fn the_file_picker_lists_the_workspace_with_the_filename_first() {
     open_picker(&mut session, "ff");
     drain(&mut session);
 
-    assert_eq!(prompt_row(&session), ">", "the prompt sits at the top");
+    assert_eq!(
+        prompt_row(&session),
+        "> Search",
+        "the empty query shows the placeholder"
+    );
     let rows = results(&session);
     assert!(
         rows.iter().any(|row| row.starts_with("main.rs  src")),
@@ -247,7 +263,11 @@ fn the_control_w_chord_removes_one_word_from_the_query() {
 
     press_ctrl(&mut session, 'w');
     drain(&mut session);
-    assert_eq!(prompt_row(&session), ">", "the chord removes the word");
+    assert_eq!(
+        prompt_row(&session),
+        "> Search",
+        "the chord removes the word and the placeholder returns"
+    );
     let rows = results(&session);
     assert!(
         rows.iter().any(|row| row.starts_with("main.rs")),
@@ -319,6 +339,46 @@ fn the_control_keys_move_the_selection_inside_the_picker() {
 }
 
 #[test]
+fn the_selected_row_paints_its_filename_with_the_row_foreground_not_the_title_color() {
+    // The picker normally colors a candidate's filename with the title accent
+    // so the reader finds it first, but that accent disappears against the
+    // filled selection band, so the selected row must keep the band's own
+    // readable foreground across the complete row, filename included.
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+
+    let buffer = draw(&session);
+    let area = picker_areas(session.area()).results;
+    let filename_x = area.x + 2;
+    let filename_fg = buffer
+        .cell((filename_x, area.y))
+        .expect("the selected row paints its first result")
+        .style()
+        .fg;
+    assert_eq!(
+        filename_fg,
+        role(ThemeRole::PickerSelection).fg,
+        "the filename keeps the readable foreground of the filled selection band"
+    );
+    assert_ne!(
+        filename_fg,
+        role(ThemeRole::Title).fg,
+        "the title accent color would vanish against the accent selection band"
+    );
+
+    let marker_fg = buffer
+        .cell((area.x, area.y))
+        .expect("the selected row paints its marker")
+        .style()
+        .fg;
+    assert_eq!(
+        marker_fg, filename_fg,
+        "the marker and the filename share the one readable foreground"
+    );
+}
+
+#[test]
 fn the_wide_layout_gives_the_preview_three_quarters_of_the_width() {
     let areas = picker_areas(Rect::new(0, 0, 120, 40));
     let preview = areas.preview.expect("a wide terminal shows the preview");
@@ -328,11 +388,51 @@ fn the_wide_layout_gives_the_preview_three_quarters_of_the_width() {
         areas.results.width + 1,
         "one column separates them"
     );
-    assert_eq!(areas.prompt.y, 0, "the prompt sits at the top");
+    let title = areas.title.expect("a tall terminal shows the title row");
+    assert_eq!(title.y, 0, "the title sits at the top");
+    assert_eq!(
+        areas.prompt.y,
+        title.y + 2,
+        "the title row and its gap sit above the prompt"
+    );
     assert_eq!(
         areas.results.y,
         areas.prompt.y + 2,
         "one row separates them"
+    );
+    let hint = areas.hint.expect("a tall terminal shows the hint row");
+    assert_eq!(
+        hint.y,
+        areas.results.bottom(),
+        "the hint row sits directly below the results"
+    );
+}
+
+#[test]
+fn a_terminal_that_just_affords_the_complete_chrome_keeps_one_result_row() {
+    let areas = picker_areas(Rect::new(0, 0, 80, 7));
+    assert!(
+        areas.title.is_some() && areas.hint.is_some(),
+        "seven rows are the shortest terminal that affords the complete chrome"
+    );
+    assert_eq!(areas.results.height, 1, "one result row remains");
+}
+
+#[test]
+fn a_short_terminal_drops_the_title_row_and_the_hint_row_but_keeps_one_result_row() {
+    let areas = picker_areas(Rect::new(0, 0, 80, 3));
+    assert_eq!(
+        areas.title, None,
+        "three rows cannot afford the title row and one result row too"
+    );
+    assert_eq!(
+        areas.hint, None,
+        "the hint row drops together with the title row"
+    );
+    assert_eq!(areas.prompt.height, 1, "the prompt stays mandatory");
+    assert_eq!(
+        areas.results.height, 1,
+        "the picker always shows at least one match"
     );
 }
 
