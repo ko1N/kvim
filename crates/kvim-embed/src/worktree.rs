@@ -221,6 +221,9 @@ pub enum FileSidebarNoticeKind {
 }
 
 /// Stable identity of one file-sidebar row for this editor lifetime.
+///
+/// Obtain this opaque identity from [`FileSidebarRow::id`], then pass it to
+/// [`FileSidebarCommand::Select`].
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FileSidebarRowId(FileSidebarRowIdentity);
 
@@ -456,8 +459,14 @@ impl FileSidebarSnapshot {
 }
 
 /// One semantic input for a host-owned file sidebar.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileSidebarCommand {
+    /// Select the currently published row with this identity.
+    ///
+    /// The command selects entry rows only. A notice or an identity from an
+    /// earlier snapshot returns [`FileSidebarOutcome::NotSelected`] and keeps
+    /// the current selection unchanged.
+    Select(FileSidebarRowId),
     /// Move to the previous selectable row.
     MoveUp,
     /// Move to the next selectable row.
@@ -487,6 +496,10 @@ pub enum FileSidebarCommand {
 /// Result of one host-owned file-sidebar command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileSidebarOutcome {
+    /// The requested row was absent or does not accept selection.
+    ///
+    /// The sidebar selection and editor body remain unchanged.
+    NotSelected(FileSidebarRowId),
     /// Sidebar state was applied.
     Applied(WorktreeUpdate),
     /// A file activation was queued in the editor.
@@ -2263,7 +2276,27 @@ impl WorktreeEditor {
         if let FileSidebarCommand::FocusBoundary(direction) = command {
             return FileSidebarOutcome::HostFocusBoundary(direction);
         }
+        if let FileSidebarCommand::Select(id) = command {
+            let before = self.inner().file_rows();
+            let input = TuiFileSidebarInput::Select(convert_file_sidebar_identity(&id));
+            return match self.inner_mut().file_sidebar(input) {
+                TuiFileSidebarOutcome::NotSelected => FileSidebarOutcome::NotSelected(id),
+                TuiFileSidebarOutcome::Applied => {
+                    let update = if self.inner().file_rows() == before {
+                        WorktreeUpdate::Unchanged
+                    } else {
+                        WorktreeUpdate::Redraw
+                    };
+                    FileSidebarOutcome::Applied(update)
+                }
+                TuiFileSidebarOutcome::Activated { .. } => {
+                    debug_assert!(false, "selecting a sidebar row cannot activate a file");
+                    FileSidebarOutcome::NotSelected(id)
+                }
+            };
+        }
         let input = match command {
+            FileSidebarCommand::Select(_) => unreachable!("selection commands return above"),
             FileSidebarCommand::MoveUp => TuiFileSidebarInput::Move(TuiListMotion::Up(1)),
             FileSidebarCommand::MoveDown => TuiFileSidebarInput::Move(TuiListMotion::Down(1)),
             FileSidebarCommand::MoveFirst => TuiFileSidebarInput::Move(TuiListMotion::ToRow(0)),
@@ -2277,6 +2310,9 @@ impl WorktreeEditor {
         };
         let before = self.inner().file_rows();
         match self.inner_mut().file_sidebar(input) {
+            TuiFileSidebarOutcome::NotSelected => {
+                FileSidebarOutcome::Applied(WorktreeUpdate::Unchanged)
+            }
             TuiFileSidebarOutcome::Applied => {
                 let update = if self.inner().file_rows() == before {
                     WorktreeUpdate::Unchanged
@@ -3065,6 +3101,20 @@ impl Drop for WorktreeEditor {
             .take()
             .expect("a live editor owns its executor")
             .shutdown_background();
+    }
+}
+
+fn convert_file_sidebar_identity(id: &FileSidebarRowId) -> TuiFileRowIdentity {
+    match &id.0 {
+        FileSidebarRowIdentity::Entry(path) => TuiFileRowIdentity::Entry(path.clone()),
+        FileSidebarRowIdentity::Notice { parent, kind } => TuiFileRowIdentity::Notice {
+            parent: parent.clone(),
+            kind: match kind {
+                FileSidebarNoticeKind::Truncated => TuiFileRowNoticeKind::Truncated,
+                FileSidebarNoticeKind::Unreadable => TuiFileRowNoticeKind::Unreadable,
+                FileSidebarNoticeKind::Hidden => TuiFileRowNoticeKind::Hidden,
+            },
+        },
     }
 }
 

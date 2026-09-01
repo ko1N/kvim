@@ -345,13 +345,68 @@ fn host_owned_sidebar_publishes_stable_bounded_rows_and_semantic_commands() {
     );
     assert_eq!(hidden_notice.icon(), None);
     assert_eq!(hidden_notice.icon_glyph(), None);
-    let readme_id = readme.id().clone();
     let ids = first
         .rows()
         .iter()
         .map(|row| row.id())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(ids.len(), first.rows().len());
+    let readme_id = readme.id().clone();
+    assert!(matches!(
+        editor.file_sidebar_command(FileSidebarCommand::Select(readme_id.clone())),
+        FileSidebarOutcome::Applied(_)
+    ));
+    assert!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.id() == &readme_id && row.is_selected())
+    );
+
+    let selected_before_notice = editor
+        .file_sidebar_snapshot()
+        .unwrap()
+        .rows()
+        .iter()
+        .find(|row| row.is_selected())
+        .map(|row| row.id().clone());
+    let hidden_notice_id = hidden_notice.id().clone();
+    assert_eq!(
+        editor.file_sidebar_command(FileSidebarCommand::Select(hidden_notice_id.clone())),
+        FileSidebarOutcome::NotSelected(hidden_notice_id)
+    );
+    assert_eq!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .find(|row| row.is_selected())
+            .map(|row| row.id().clone()),
+        selected_before_notice
+    );
+
+    let _ = editor.file_sidebar_command(FileSidebarCommand::MoveFirst);
+    let selected_before_motion = editor
+        .file_sidebar_snapshot()
+        .unwrap()
+        .rows()
+        .iter()
+        .find(|row| row.is_selected())
+        .map(|row| row.id().clone());
+    let _ = editor.file_sidebar_command(FileSidebarCommand::MoveDown);
+    let selected_after_motion = editor
+        .file_sidebar_snapshot()
+        .unwrap()
+        .rows()
+        .iter()
+        .find(|row| row.is_selected())
+        .map(|row| row.id().clone());
+    assert_ne!(selected_after_motion, selected_before_motion);
+
+    fs::remove_file(root.0.join("README.md")).unwrap();
     fs::write(
         root.0.join("0-new-sibling.rs"),
         "pub const NEW: bool = true;\n",
@@ -372,14 +427,33 @@ fn host_owned_sidebar_publishes_stable_bounded_rows_and_semantic_commands() {
                 .unwrap()
                 .rows()
                 .iter()
-                .any(|row| row.id() == &readme_id)
+                .any(|row| row.label() == "0-new-sibling.rs")
             {
                 break;
             }
         }
     });
     let refreshed = editor.file_sidebar_snapshot().unwrap();
-    assert!(refreshed.rows().iter().any(|row| row.id() == &readme_id));
+    assert!(!refreshed.rows().iter().any(|row| row.id() == &readme_id));
+    let selection_before_stale = refreshed
+        .rows()
+        .iter()
+        .find(|row| row.is_selected())
+        .map(|row| row.id().clone());
+    assert_eq!(
+        editor.file_sidebar_command(FileSidebarCommand::Select(readme_id.clone())),
+        FileSidebarOutcome::NotSelected(readme_id)
+    );
+    assert_eq!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .find(|row| row.is_selected())
+            .map(|row| row.id().clone()),
+        selection_before_stale
+    );
 
     assert_eq!(
         editor.file_sidebar_command(FileSidebarCommand::FocusBoundary(Direction::Left)),

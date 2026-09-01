@@ -871,8 +871,13 @@ pub(super) fn draw_git_mark(
 /// let down = FileSidebarInput::Move(ListMotion::Down(1));
 /// assert_eq!(down, FileSidebarInput::Move(ListMotion::Down(1)));
 /// ```
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub enum FileSidebarInput {
+    /// Select the current selectable row that has this stable identity.
+    ///
+    /// A stale identity and a [`FileRowKind::Note`] identity leave the current
+    /// selection unchanged and return [`FileSidebarOutcome::NotSelected`].
+    Select(FileRowIdentity),
     /// Move the selection by one bounded move.
     ///
     /// The move stops at the first and the last row, so it never wraps. A
@@ -908,6 +913,10 @@ pub enum FileSidebarInput {
 /// behind another event. See `docs/embedding.md`.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FileSidebarOutcome {
+    /// The requested row was absent or does not accept selection.
+    ///
+    /// The current selection remains unchanged.
+    NotSelected,
     /// The sidebar applied the input and asks the host for nothing.
     Applied,
     /// The reader activated one file of the worktree.
@@ -946,7 +955,7 @@ impl FileSidebarOutcome {
     #[must_use]
     pub fn event(&self) -> Option<EditorEvent> {
         match self {
-            Self::Applied => None,
+            Self::Applied | Self::NotSelected => None,
             Self::Activated { path } => Some(EditorEvent::FileActivated { path: path.clone() }),
         }
     }
@@ -956,7 +965,7 @@ impl FileSidebarOutcome {
     #[must_use]
     pub const fn activated(&self) -> Option<&WorktreeRelativePath> {
         match self {
-            Self::Applied => None,
+            Self::Applied | Self::NotSelected => None,
             Self::Activated { path } => Some(path),
         }
     }

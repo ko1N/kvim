@@ -1077,6 +1077,21 @@ impl TreeSidebar {
     /// [`TreeSidebar::take_request`] hands to the worker service.
     pub(super) fn reduce_host(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
         let activated = match input {
+            FileSidebarInput::Select(identity) => {
+                let Some(row) = self
+                    .host_rows()
+                    .into_iter()
+                    .find(|row| row.identity() == &identity)
+                else {
+                    return FileSidebarOutcome::NotSelected;
+                };
+                let Some(path) = row.path() else {
+                    return FileSidebarOutcome::NotSelected;
+                };
+                let path = self.root.as_path().join(path.as_path());
+                self.tree.select(&path);
+                return FileSidebarOutcome::Applied;
+            }
             FileSidebarInput::Move(motion) => {
                 // `Parent` reaches the directory that holds the selected
                 // entry through the same method the standalone editor's

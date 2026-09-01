@@ -63,7 +63,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 row.label()
             );
         }
-        let _ = editor.file_sidebar_command(FileSidebarCommand::MoveDown);
+        let selected = snapshot
+            .rows()
+            .iter()
+            .find(|row| !matches!(row.kind(), kvim_embed::FileSidebarRowKind::Notice(_)))
+            .expect("the worktree contains selectable rows");
+        let _ = editor.file_sidebar_command(FileSidebarCommand::Select(selected.id().clone()));
 
         match editor.shutdown(Duration::from_secs(5)).await {
             WorktreeShutdown::Finished { .. } => {}
