@@ -392,6 +392,86 @@ impl ReviewModel {
         &self.panel_rows
     }
 
+    /// Publishes the complete current changed-file panel state for one review area.
+    pub fn panel_snapshot(&self, area: Rect, root: &str) -> ReviewPanelSnapshot {
+        let panel_width = area.width.min(self.panel_cells());
+        let body_width = area.width.saturating_sub(panel_width);
+        let header = Rect::new(
+            area.x.saturating_add(body_width),
+            area.y,
+            panel_width,
+            PANEL_HEADER_ROWS.min(area.height),
+        );
+        let rows_area = below(area).map_or(
+            Rect::new(header.x, area.bottom(), panel_width, 0),
+            |below| Rect::new(header.x, below.y, panel_width, below.height),
+        );
+        let sections = self
+            .sections()
+            .tabs()
+            .map(|tab| ReviewPanelSection {
+                section: match *tab.id {
+                    ChangeSection::Staged => ReviewPanelSectionKind::Staged,
+                    ChangeSection::Unstaged => ReviewPanelSectionKind::Unstaged,
+                },
+                heading: tab.label.to_owned(),
+                active: tab.active,
+                git: panel_git(tab.id.git_status()),
+                repository_mark: git_mark(tab.id.git_status()),
+            })
+            .collect();
+        let selected = self.changes().selected().map(|row| match row {
+            ChangesRow::Directory { section, path } => ReviewPanelRowId::Directory {
+                section: panel_section(*section),
+                path: path.clone(),
+            },
+            ChangesRow::File { section, path } => ReviewPanelRowId::File {
+                section: panel_section(*section),
+                path: path.clone(),
+            },
+        });
+        let placements = self
+            .changes()
+            .placements()
+            .iter()
+            .map(|placement| PanelPlacement {
+                index: placement.index(),
+                area: placement.area(rows_area),
+                first_line: placement.first_line(),
+                lines: placement.lines(),
+            })
+            .collect();
+        ReviewPanelSnapshot {
+            header,
+            rows_area,
+            root: root.to_owned(),
+            sections,
+            rows: self.panel_rows.clone(),
+            identities: self
+                .changes()
+                .rows()
+                .iter()
+                .map(|row| match row.id() {
+                    ChangesRow::Directory { section, path } => ReviewPanelRowId::Directory {
+                        section: panel_section(*section),
+                        path: path.clone(),
+                    },
+                    ChangesRow::File { section, path } => ReviewPanelRowId::File {
+                        section: panel_section(*section),
+                        path: path.clone(),
+                    },
+                })
+                .collect(),
+            selected,
+            selection_mark: SELECTION_MARK,
+            focused: self.focus() == ReviewFocus::Panel,
+            first_line: self.changes().first_line(),
+            height_rows: self.changes().height_rows(),
+            total_lines: self.changes().total_lines(),
+            placements,
+        }
+    }
+
     /// Returns the review that the cursor walks.
     pub(super) fn active(&self) -> Option<&ReviewState> {
         match self.section() {
@@ -1318,7 +1398,7 @@ fn draw_changes(target: &mut CellBuffer, area: Rect, theme: Theme, review: &Revi
             );
         }
         if let Some(status) = row.git {
-            render_git_mark(canvas, status, theme, style);
+            render_git_mark(canvas, painter_git(status), theme, style);
         }
     });
 }
@@ -1332,19 +1412,127 @@ pub(super) struct BodyCounts {
     pub(super) removed: usize,
 }
 
+/// One current immutable view of the changed-file panel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewPanelSnapshot {
+    /// Panel header rectangle.
+    pub header: Rect,
+    /// Panel row rectangle.
+    pub rows_area: Rect,
+    /// Header label.
+    pub root: String,
+    /// Available review sections.
+    pub sections: Vec<ReviewPanelSection>,
+    /// Rows in model order.
+    pub rows: Vec<PanelRow>,
+    /// Stable row identities in model order.
+    pub identities: Vec<ReviewPanelRowId>,
+    /// Selected row identity.
+    pub selected: Option<ReviewPanelRowId>,
+    /// Exact glyph drawn in the selected row's first cell.
+    pub selection_mark: &'static str,
+    /// Whether the panel owns input.
+    pub focused: bool,
+    /// First visible terminal line.
+    pub first_line: u32,
+    /// Viewport height in rows.
+    pub height_rows: u16,
+    /// Total row lines.
+    pub total_lines: u32,
+    /// Visible row placements.
+    pub placements: Vec<PanelPlacement>,
+}
+
+/// One section shown above the changed-file panel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewPanelSection {
+    /// Section identity.
+    pub section: ReviewPanelSectionKind,
+    /// Exact heading text.
+    pub heading: String,
+    /// Whether this section is active.
+    pub active: bool,
+    /// Repository state used for its mark.
+    pub git: ReviewPanelGitState,
+    /// Exact repository mark glyph.
+    pub repository_mark: &'static str,
+}
+
+/// One review section identity.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewPanelSectionKind {
+    /// Staged changes.
+    Staged,
+    /// Unstaged changes.
+    Unstaged,
+}
+
+/// One opaque row identity from the changed-file panel.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ReviewPanelRowId {
+    /// Directory row.
+    Directory {
+        /// Owning section.
+        section: ReviewPanelSectionKind,
+        /// Worktree-relative directory path.
+        path: std::path::PathBuf,
+    },
+    /// File row.
+    File {
+        /// Owning section.
+        section: ReviewPanelSectionKind,
+        /// Validated worktree-relative file path.
+        path: WorktreeRelativePath,
+    },
+}
+
+/// One repository state used by the panel painter.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewPanelGitState {
+    /// Staged repository state.
+    Staged,
+    /// Modified repository state.
+    Modified,
+}
+
+/// One visible row placement in panel coordinates.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PanelPlacement {
+    /// Index into the complete row list.
+    pub index: usize,
+    /// Visible row rectangle.
+    pub area: Rect,
+    /// First visible line within the row.
+    pub first_line: u16,
+    /// Number of visible lines.
+    pub lines: u16,
+}
+
 /// The drawn text of one row of the changes panel.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct PanelRow {
+pub struct PanelRow {
     /// The text that the row draws, with its guides and its icon.
-    pub(super) text: String,
+    pub text: String,
+    /// The file or directory name drawn after the icon.
+    pub label: String,
+    /// The exact indent-guide text drawn before the icon.
+    pub guides: String,
+    /// The exact icon glyph drawn before the label.
+    pub icon: &'static str,
+    /// The tree depth of the row.
+    pub depth: usize,
     /// Reports whether the row names a directory.
-    pub(super) directory: bool,
+    pub directory: bool,
     /// Reports whether the reader finished every hunk of the file.
-    pub(super) complete: bool,
+    pub complete: bool,
+    /// Reports whether a collection bound truncated the file.
+    pub truncated: bool,
     /// The repository state that the row draws, for a file row.
-    pub(super) git: Option<GitStatus>,
+    pub git: Option<ReviewPanelGitState>,
+    /// The exact repository mark glyph, for a file row.
+    pub repository_mark: Option<&'static str>,
     /// The number of characters that the indent guides of the row occupy.
-    pub(super) guide_cells: usize,
+    pub guide_cells: usize,
 }
 
 /// Builds the drawn text of every row of the changes panel.
@@ -1370,13 +1558,21 @@ fn build_panel_rows(
                     let name = path
                         .file_name()
                         .unwrap_or_else(|| path.as_os_str())
-                        .to_string_lossy();
+                        .to_string_lossy()
+                        .into_owned();
+                    let guide_cells = guides.chars().count();
                     PanelRow {
                         text: format!("{mark}{guides}{DIRECTORY_ICON} {name}"),
+                        label: name,
+                        guides,
+                        icon: DIRECTORY_ICON,
+                        depth: row.depth(),
                         directory: true,
                         complete: false,
+                        truncated: false,
                         git: None,
-                        guide_cells: guides.chars().count(),
+                        repository_mark: None,
+                        guide_cells,
                     }
                 }
                 ChangesRow::File { section, path, .. } => {
@@ -1391,12 +1587,20 @@ fn build_panel_rows(
                     // The mark and the color are the ones that the file tree
                     // draws for the same repository state.
                     let status = section.git_status();
+                    let truncated = entry.is_some_and(|entry| entry.truncated);
+                    let guide_cells = guides.chars().count();
                     PanelRow {
                         text: format!("{mark}{guides}{FILE_ICON} {label}"),
+                        label,
+                        guides,
+                        icon: FILE_ICON,
+                        depth: row.depth(),
                         directory: false,
                         complete: entry.is_some_and(ChangeEntry::is_complete),
-                        git: Some(status),
-                        guide_cells: guides.chars().count(),
+                        truncated,
+                        git: Some(panel_git(status)),
+                        repository_mark: Some(git_mark(status)),
+                        guide_cells,
                     }
                 }
             }
@@ -1437,6 +1641,28 @@ const CHANGES_PANEL_CELLS_MIN: u16 = 16;
 
 /// The widest changes panel, in cells.
 const CHANGES_PANEL_CELLS_MAX: u16 = 80;
+
+fn panel_section(section: ChangeSection) -> ReviewPanelSectionKind {
+    match section {
+        ChangeSection::Staged => ReviewPanelSectionKind::Staged,
+        ChangeSection::Unstaged => ReviewPanelSectionKind::Unstaged,
+    }
+}
+
+fn panel_git(status: GitStatus) -> ReviewPanelGitState {
+    match status {
+        GitStatus::Staged => ReviewPanelGitState::Staged,
+        GitStatus::Modified => ReviewPanelGitState::Modified,
+        _ => unreachable!("review sections only use staged and modified repository states"),
+    }
+}
+
+fn painter_git(status: ReviewPanelGitState) -> GitStatus {
+    match status {
+        ReviewPanelGitState::Staged => GitStatus::Staged,
+        ReviewPanelGitState::Modified => GitStatus::Modified,
+    }
+}
 
 fn paint_span(
     canvas: &mut kvim_ui::SidebarCanvas<'_>,

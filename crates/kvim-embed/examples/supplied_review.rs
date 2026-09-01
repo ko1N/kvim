@@ -26,6 +26,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         ReviewConfig::new(area).with_root_label("Supplied review")?,
     )?;
 
+    let panel = review.panel_snapshot();
+    assert_eq!(panel.root_label(), "Supplied review");
+    for placement in panel.placements() {
+        let row = &panel.rows()[placement.row()];
+        assert!(placement.area().width <= panel.rows_area().width);
+        println!("{}", row.text());
+    }
+
     let _ = review.input(ReviewInput::command(ReviewCommand::MarkRead))?;
     let mut cells = Buffer::empty(area);
     let _ = review.render(&mut cells)?;

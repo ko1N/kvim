@@ -109,6 +109,44 @@ fn review_binding_overrides_reject_editor_commands() {
 }
 
 #[test]
+fn changed_file_panel_snapshot_matches_the_current_painter_model() {
+    let review = surface("candidate-1", "one");
+    let panel = review.panel_snapshot();
+
+    assert_eq!(panel.root_label(), "Review");
+    assert_eq!(panel.focus(), ReviewFocus::Diff);
+    assert_eq!(panel.rows().len(), 2);
+    assert_eq!(panel.selected(), Some(panel.rows()[1].id()));
+    assert!(panel.rows()[0].is_directory());
+    assert_eq!(panel.rows()[0].label(), "src");
+    assert_eq!(panel.rows()[0].icon(), "\u{f07c}");
+    assert_eq!(panel.rows()[1].label(), "lib.rs");
+    assert_eq!(panel.rows()[1].icon(), "\u{f15b}");
+    assert_eq!(panel.rows()[1].git(), Some(ReviewPanelGitState::Modified));
+    assert_eq!(panel.placements().len(), 2);
+    assert_eq!(panel.placements()[1].row(), 1);
+    assert_eq!(panel.placements()[0].area().x, panel.rows_area().x);
+    assert_eq!(panel.placements()[0].area().y, panel.rows_area().y);
+    assert!(panel.placements()[0].area().right() <= panel.rows_area().right());
+    assert_eq!(panel.headings().len(), 1);
+    assert_eq!(panel.headings()[0].section(), ReviewPanelSection::Unstaged);
+    assert!(panel.headings()[0].is_active());
+
+    let mut painted = Buffer::empty(Rect::new(0, 0, 80, 16));
+    review.render(&mut painted).expect("snapshot geometry fits");
+    for placement in panel.placements() {
+        let row = &panel.rows()[placement.row()];
+        let drawn: String = (placement.area().x..placement.area().right())
+            .filter_map(|x| painted.cell((x, placement.area().y)))
+            .map(|cell| cell.symbol())
+            .collect();
+        let expected: String = row.text().chars().skip(1).collect();
+        let drawn_without_selection_mark: String = drawn.chars().skip(1).collect();
+        assert!(drawn_without_selection_mark.starts_with(&expected));
+    }
+}
+
+#[test]
 fn supplied_review_renders_and_publishes_host_events() {
     let mut review = surface("candidate-1", "one");
     let mut cells = Buffer::empty(Rect::new(0, 0, 80, 16));

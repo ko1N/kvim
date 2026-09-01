@@ -123,7 +123,9 @@ pub mod __review {
     //! Internal pure-review adapter seam for `kvim-embed`.
 
     pub use crate::review::{
-        ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter, ReviewRestore,
+        PanelPlacement, PanelRow, ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter,
+        ReviewPanelGitState, ReviewPanelRowId, ReviewPanelSection, ReviewPanelSectionKind,
+        ReviewPanelSnapshot, ReviewRestore,
     };
     pub use crate::theme::Theme;
 }

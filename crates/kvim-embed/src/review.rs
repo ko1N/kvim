@@ -11,7 +11,8 @@ use std::num::NonZeroU32;
 #[cfg(feature = "worktree")]
 use std::num::NonZeroU64;
 #[cfg(feature = "worktree")]
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
 #[cfg(feature = "worktree")]
 use std::sync::Arc;
 #[cfg(feature = "worktree")]
@@ -33,7 +34,11 @@ use kvim_runtime::{
 };
 use kvim_settings::{DiffSettings, DiffView};
 use kvim_tui::__review::{
-    ReviewFocus as PrivateFocus, ReviewModel, ReviewOutcome, ReviewPainter, Theme,
+    PanelPlacement as PrivatePanelPlacement, PanelRow as PrivatePanelRow,
+    ReviewFocus as PrivateFocus, ReviewModel, ReviewOutcome, ReviewPainter,
+    ReviewPanelGitState as PrivatePanelGitState, ReviewPanelRowId as PrivatePanelRowId,
+    ReviewPanelSection as PrivatePanelSection, ReviewPanelSectionKind as PrivatePanelSectionKind,
+    ReviewPanelSnapshot as PrivatePanelSnapshot, Theme,
 };
 use kvim_workspace::{
     CandidateAuthority, CommentBody as PrivateCommentBody, DIFF_FILE_HUNKS_MAX, DIFF_FILES_MAX,
@@ -59,6 +64,8 @@ pub const REVIEW_EVENTS_MAX: usize = 64;
 /// Maximum anchors in a persisted review snapshot.
 pub const REVIEW_SNAPSHOT_ANCHORS_MAX: usize =
     REVIEW_CANDIDATES_MAX * REVIEW_FILES_MAX * REVIEW_FILE_HUNKS_MAX + 1;
+/// Maximum rows in a changed-file panel snapshot.
+pub const REVIEW_PANEL_ROWS_MAX: usize = kvim_ui::SIDEBAR_ROWS_MAX;
 /// Maximum bytes in the review panel heading.
 pub const REVIEW_ROOT_LABEL_BYTES_MAX: usize = 256;
 /// Maximum candidates in one supplied review.
@@ -547,6 +554,267 @@ pub enum ReviewFocus {
     Panel,
 }
 
+/// One section identity in a changed-file panel snapshot.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub enum ReviewPanelSection {
+    /// Staged changes.
+    Staged,
+    /// Unstaged changes.
+    Unstaged,
+}
+
+/// One repository state drawn for a changed-file row or section.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewPanelGitState {
+    /// The candidate belongs to the index.
+    Staged,
+    /// The candidate belongs to the working tree.
+    Modified,
+}
+
+/// One stable identity from the current changed-file panel model.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub enum ReviewPanelRowId {
+    /// A directory grouping row.
+    Directory {
+        /// The owning section.
+        section: ReviewPanelSection,
+        /// The worktree-relative directory path.
+        path: PathBuf,
+    },
+    /// A selectable changed-file row.
+    File {
+        /// The owning section.
+        section: ReviewPanelSection,
+        /// The validated worktree-relative path.
+        path: WorktreeRelativePath,
+    },
+}
+
+/// One section heading shown by the review.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewPanelHeading {
+    section: ReviewPanelSection,
+    label: Box<str>,
+    active: bool,
+    git: ReviewPanelGitState,
+    repository_mark: Box<str>,
+}
+impl ReviewPanelHeading {
+    /// Returns the section identity.
+    #[must_use]
+    pub const fn section(&self) -> ReviewPanelSection {
+        self.section
+    }
+    /// Returns the exact heading text, including its repository-mark cell.
+    #[must_use]
+    pub const fn label(&self) -> &str {
+        &self.label
+    }
+    /// Reports whether this section owns the current rows.
+    #[must_use]
+    pub const fn is_active(&self) -> bool {
+        self.active
+    }
+    /// Returns the repository state used for the section mark.
+    #[must_use]
+    pub const fn git(&self) -> ReviewPanelGitState {
+        self.git
+    }
+    /// Returns the exact repository mark glyph.
+    #[must_use]
+    pub const fn repository_mark(&self) -> &str {
+        &self.repository_mark
+    }
+}
+
+/// One immutable changed-file panel row.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewPanelRow {
+    id: ReviewPanelRowId,
+    text: Box<str>,
+    label: Box<str>,
+    guides: Box<str>,
+    icon: Box<str>,
+    depth: usize,
+    directory: bool,
+    complete: bool,
+    truncated: bool,
+    git: Option<ReviewPanelGitState>,
+    repository_mark: Option<Box<str>>,
+}
+impl ReviewPanelRow {
+    /// Returns the stable model identity.
+    #[must_use]
+    pub const fn id(&self) -> &ReviewPanelRowId {
+        &self.id
+    }
+    /// Returns the exact composed row text used by Kvim's painter.
+    #[must_use]
+    pub const fn text(&self) -> &str {
+        &self.text
+    }
+    /// Returns the file or directory label.
+    #[must_use]
+    pub const fn label(&self) -> &str {
+        &self.label
+    }
+    /// Returns exact indent-guide characters.
+    #[must_use]
+    pub const fn guides(&self) -> &str {
+        &self.guides
+    }
+    /// Returns the exact icon glyph.
+    #[must_use]
+    pub const fn icon(&self) -> &str {
+        &self.icon
+    }
+    /// Returns tree depth.
+    #[must_use]
+    pub const fn depth(&self) -> usize {
+        self.depth
+    }
+    /// Reports whether this is an inert directory row.
+    #[must_use]
+    pub const fn is_directory(&self) -> bool {
+        self.directory
+    }
+    /// Reports whether every published hunk is read.
+    #[must_use]
+    pub const fn is_complete(&self) -> bool {
+        self.complete
+    }
+    /// Reports whether collection stopped at a file bound.
+    #[must_use]
+    pub const fn is_truncated(&self) -> bool {
+        self.truncated
+    }
+    /// Returns the repository state for a file row.
+    #[must_use]
+    pub const fn git(&self) -> Option<ReviewPanelGitState> {
+        self.git
+    }
+    /// Returns the exact repository mark glyph, for a file row.
+    #[must_use]
+    pub fn repository_mark(&self) -> Option<&str> {
+        self.repository_mark.as_deref()
+    }
+}
+
+/// One visible row rectangle from the current panel viewport.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct ReviewPanelPlacement {
+    row: usize,
+    area: Rect,
+    first_line: u16,
+    lines: u16,
+}
+impl ReviewPanelPlacement {
+    /// Returns the row index in [`ReviewPanelSnapshot::rows`].
+    #[must_use]
+    pub const fn row(&self) -> usize {
+        self.row
+    }
+    /// Returns the visible row rectangle.
+    #[must_use]
+    pub const fn area(&self) -> Rect {
+        self.area
+    }
+    /// Returns the first visible line within the row.
+    #[must_use]
+    pub const fn first_line(&self) -> u16 {
+        self.first_line
+    }
+    /// Returns the number of visible lines.
+    #[must_use]
+    pub const fn lines(&self) -> u16 {
+        self.lines
+    }
+}
+
+/// A bounded immutable snapshot of the current changed-file panel.
+///
+/// The snapshot is current only until the next successful state-changing
+/// review operation. Request it again after [`ReviewUpdate::Changed`] or a
+/// [`ReviewEvent::Redraw`]. Geometry is the same geometry Kvim uses to paint.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewPanelSnapshot {
+    header: Rect,
+    rows_area: Rect,
+    root_label: Box<str>,
+    headings: Vec<ReviewPanelHeading>,
+    rows: Vec<ReviewPanelRow>,
+    selected: Option<ReviewPanelRowId>,
+    selection_mark: Box<str>,
+    focus: ReviewFocus,
+    first_line: u32,
+    height_rows: u16,
+    total_lines: u32,
+    placements: Vec<ReviewPanelPlacement>,
+}
+impl ReviewPanelSnapshot {
+    /// Returns the panel header rectangle.
+    #[must_use]
+    pub const fn header(&self) -> Rect {
+        self.header
+    }
+    /// Returns the rectangle that contains panel rows.
+    #[must_use]
+    pub const fn rows_area(&self) -> Rect {
+        self.rows_area
+    }
+    /// Returns the exact header label.
+    #[must_use]
+    pub const fn root_label(&self) -> &str {
+        &self.root_label
+    }
+    /// Returns available section headings.
+    #[must_use]
+    pub fn headings(&self) -> &[ReviewPanelHeading] {
+        &self.headings
+    }
+    /// Returns all bounded model rows.
+    #[must_use]
+    pub fn rows(&self) -> &[ReviewPanelRow] {
+        &self.rows
+    }
+    /// Returns the selected row identity.
+    #[must_use]
+    pub const fn selected(&self) -> Option<&ReviewPanelRowId> {
+        self.selected.as_ref()
+    }
+    /// Returns the exact selected-row mark glyph.
+    #[must_use]
+    pub const fn selection_mark(&self) -> &str {
+        &self.selection_mark
+    }
+    /// Returns the focused review region.
+    #[must_use]
+    pub const fn focus(&self) -> ReviewFocus {
+        self.focus
+    }
+    /// Returns the first visible terminal line.
+    #[must_use]
+    pub const fn first_line(&self) -> u32 {
+        self.first_line
+    }
+    /// Returns the viewport height in rows.
+    #[must_use]
+    pub const fn height_rows(&self) -> u16 {
+        self.height_rows
+    }
+    /// Returns total terminal lines in the panel.
+    #[must_use]
+    pub const fn total_lines(&self) -> u32 {
+        self.total_lines
+    }
+    /// Returns exact visible row placements.
+    #[must_use]
+    pub fn placements(&self) -> &[ReviewPanelPlacement] {
+        &self.placements
+    }
+}
+
 /// Bounded state that can outlive a review surface.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewSnapshot {
@@ -913,6 +1181,36 @@ impl ReviewSurface {
                 Ok(ReviewUpdate::Event)
             }
         }
+    }
+
+    /// Returns the bounded current changed-file panel snapshot.
+    ///
+    /// The snapshot owns no mutable private model. Its rows and placements
+    /// come from the same values that [`Self::render`] consumes.
+    ///
+    /// ```
+    /// use kvim_embed::{ReviewCandidate, ReviewCandidateId, ReviewConfig, ReviewSection, ReviewSurface};
+    /// use ratatui::layout::Rect;
+    /// let candidate = ReviewCandidate::new(
+    ///     ReviewCandidateId::new("patch-1")?,
+    ///     ReviewSection::Unstaged,
+    ///     &[],
+    /// )?;
+    /// let review = ReviewSurface::from_candidates(
+    ///     &[candidate],
+    ///     ReviewConfig::new(Rect::new(2, 1, 40, 12)),
+    /// )?;
+    /// let panel = review.panel_snapshot();
+    /// assert_eq!(panel.header().y, 1);
+    /// assert!(panel.rows().len() <= kvim_embed::REVIEW_PANEL_ROWS_MAX);
+    /// # Ok::<(), kvim_embed::ReviewError>(())
+    /// ```
+    #[must_use]
+    pub fn panel_snapshot(&self) -> ReviewPanelSnapshot {
+        convert_panel_snapshot(
+            self.model
+                .panel_snapshot(self.config.area, &self.config.root_label),
+        )
     }
 
     /// Renders into a caller-owned cell buffer.
@@ -1816,6 +2114,108 @@ fn convert_candidate(candidate: ReviewCandidate) -> Result<WorktreeDiff, ReviewE
         DiffTruncation::Complete,
     )
     .map_err(display_candidate)
+}
+
+fn convert_panel_snapshot(snapshot: PrivatePanelSnapshot) -> ReviewPanelSnapshot {
+    debug_assert_eq!(
+        snapshot.rows.len(),
+        snapshot.identities.len(),
+        "the private panel builds one identity for every painter row"
+    );
+    debug_assert!(
+        snapshot.rows.len() <= REVIEW_PANEL_ROWS_MAX,
+        "the neutral sidebar enforces the public panel row bound"
+    );
+    let rows = snapshot
+        .rows
+        .into_iter()
+        .zip(snapshot.identities)
+        .map(|(row, id)| convert_panel_row(row, id))
+        .collect();
+    ReviewPanelSnapshot {
+        header: snapshot.header,
+        rows_area: snapshot.rows_area,
+        root_label: snapshot.root.into_boxed_str(),
+        headings: snapshot
+            .sections
+            .into_iter()
+            .map(convert_panel_heading)
+            .collect(),
+        rows,
+        selected: snapshot.selected.map(convert_panel_row_id),
+        selection_mark: snapshot.selection_mark.into(),
+        focus: if snapshot.focused {
+            ReviewFocus::Panel
+        } else {
+            ReviewFocus::Diff
+        },
+        first_line: snapshot.first_line,
+        height_rows: snapshot.height_rows,
+        total_lines: snapshot.total_lines,
+        placements: snapshot
+            .placements
+            .into_iter()
+            .map(|placement: PrivatePanelPlacement| ReviewPanelPlacement {
+                row: placement.index,
+                area: placement.area,
+                first_line: placement.first_line,
+                lines: placement.lines,
+            })
+            .collect(),
+    }
+}
+
+fn convert_panel_heading(heading: PrivatePanelSection) -> ReviewPanelHeading {
+    ReviewPanelHeading {
+        section: convert_panel_section(heading.section),
+        label: heading.heading.into_boxed_str(),
+        active: heading.active,
+        git: convert_panel_git(heading.git),
+        repository_mark: heading.repository_mark.into(),
+    }
+}
+
+fn convert_panel_row(row: PrivatePanelRow, id: PrivatePanelRowId) -> ReviewPanelRow {
+    ReviewPanelRow {
+        id: convert_panel_row_id(id),
+        text: row.text.into_boxed_str(),
+        label: row.label.into_boxed_str(),
+        guides: row.guides.into_boxed_str(),
+        icon: row.icon.into(),
+        depth: row.depth,
+        directory: row.directory,
+        complete: row.complete,
+        truncated: row.truncated,
+        git: row.git.map(convert_panel_git),
+        repository_mark: row.repository_mark.map(Into::into),
+    }
+}
+
+fn convert_panel_row_id(id: PrivatePanelRowId) -> ReviewPanelRowId {
+    match id {
+        PrivatePanelRowId::Directory { section, path } => ReviewPanelRowId::Directory {
+            section: convert_panel_section(section),
+            path,
+        },
+        PrivatePanelRowId::File { section, path } => ReviewPanelRowId::File {
+            section: convert_panel_section(section),
+            path,
+        },
+    }
+}
+
+const fn convert_panel_section(section: PrivatePanelSectionKind) -> ReviewPanelSection {
+    match section {
+        PrivatePanelSectionKind::Staged => ReviewPanelSection::Staged,
+        PrivatePanelSectionKind::Unstaged => ReviewPanelSection::Unstaged,
+    }
+}
+
+const fn convert_panel_git(git: PrivatePanelGitState) -> ReviewPanelGitState {
+    match git {
+        PrivatePanelGitState::Staged => ReviewPanelGitState::Staged,
+        PrivatePanelGitState::Modified => ReviewPanelGitState::Modified,
+    }
 }
 
 fn convert_file(file: ReviewFile) -> Result<PrivateFile, ReviewError> {
