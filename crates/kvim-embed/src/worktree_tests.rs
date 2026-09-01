@@ -4,6 +4,8 @@ use std::time::Duration;
 use kvim_input::KeyCode;
 use kvim_keymap::{CellPosition, PointerAction, PointerButton, PointerModifiers};
 
+use crate::{DialogChoice, DialogChoiceId, DialogStyles};
+
 use super::*;
 
 const TEST_STEPS_MAX: usize = 64;
@@ -27,6 +29,118 @@ impl Drop for TestRoot {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.0);
     }
+}
+
+fn dialog_request(area: Rect) -> DialogRequest {
+    let cancel = DialogChoiceId::new(1);
+    DialogRequest::new(
+        "Continue?",
+        std::iter::empty::<&str>(),
+        [
+            DialogChoice::new(cancel, "Cancel"),
+            DialogChoice::new(DialogChoiceId::new(2), "Continue"),
+        ],
+        cancel,
+        cancel,
+        area,
+        DialogStyles::default(),
+    )
+    .unwrap()
+}
+
+#[test]
+fn host_dialog_lifecycle_owns_context_render_semantics_and_event() {
+    let root = TestRoot::new("host-dialog-lifecycle");
+    let area = Rect::new(2, 1, 40, 10);
+    let mut editor = WorktreeEditor::builder(&root.0, area)
+        .binding_mode(WorktreeBindingMode::HostResolved {
+            reserved_escape: Key::ctrl(KeyCode::Char(']')),
+        })
+        .presentation(WorktreePresentation::standalone().which_key(SurfaceOwnership::HostOwned))
+        .open()
+        .unwrap();
+    let before = editor.input_context();
+    editor.open_dialog(dialog_request(area)).unwrap();
+    let opened = editor.input_context();
+    assert_eq!(opened.scope, BindingScope::Confirmation);
+    assert_ne!(opened.generation, before.generation);
+    assert_eq!(editor.binding_context().unwrap().context(), opened);
+    assert_eq!(editor.binding_context().unwrap().overlay_scope(), None);
+
+    let mut cells = Buffer::empty(Rect::new(0, 0, 48, 14));
+    editor.render(&mut cells).unwrap();
+    assert!(editor.dialog_snapshot().unwrap().placement().is_some());
+    assert_eq!(
+        editor.literal("leak", Duration::ZERO),
+        WorktreeInputOutcome::Applied
+    );
+    assert_eq!(
+        editor.paste(&PasteText::new("leak").unwrap(), Duration::ZERO),
+        WorktreeInputOutcome::Applied
+    );
+    assert_eq!(
+        editor.command(Command::InsertBeforeCursor, None, None, Duration::ZERO,),
+        Ok(WorktreeInputOutcome::Applied)
+    );
+    let addressed = WorktreeSemanticDispatch::new(
+        editor.instance(),
+        opened.generation,
+        WorktreeDispatchDecision::Unbound,
+    );
+    assert_eq!(
+        editor.semantic_dispatch(addressed, Duration::ZERO),
+        Ok(WorktreeDispatchOutcome::Consumed)
+    );
+    let stale = WorktreeSemanticDispatch::new(
+        editor.instance(),
+        before.generation,
+        WorktreeDispatchDecision::Unbound,
+    );
+    assert_eq!(
+        editor.semantic_dispatch(stale, Duration::ZERO),
+        Err(WorktreeDispatchError::StaleGeneration)
+    );
+
+    assert_eq!(
+        editor.dialog_input(DialogInput::Key(Key::plain(KeyCode::Down))),
+        DialogInputOutcome::Redraw
+    );
+    let focused = editor.input_context();
+    assert_eq!(focused.scope, BindingScope::Confirmation);
+    assert_ne!(focused.generation, opened.generation);
+    editor.render(&mut cells).unwrap();
+    assert_eq!(
+        editor.dialog_input(DialogInput::Key(Key::plain(KeyCode::Enter))),
+        DialogInputOutcome::Answered
+    );
+    let closed = editor.input_context();
+    assert_ne!(closed.scope, BindingScope::Confirmation);
+    assert_ne!(closed.generation, focused.generation);
+    assert_eq!(
+        editor.take_event(),
+        Some(WorktreeEvent::DialogAnswered(DialogAnswer {
+            choice: DialogChoiceId::new(2),
+        }))
+    );
+    assert!(!matches!(
+        editor.take_event(),
+        Some(WorktreeEvent::DialogAnswered(_))
+    ));
+}
+
+#[test]
+fn accepted_resize_closes_dialog_when_fixed_body_no_longer_fits() {
+    let root = TestRoot::new("dialog-resize-close");
+    let area = Rect::new(0, 0, 40, 10);
+    let mut editor = WorktreeEditor::builder(&root.0, area).open().unwrap();
+    editor.open_dialog(dialog_request(area)).unwrap();
+    editor.resize(Rect::new(0, 0, 20, 6)).unwrap();
+    assert!(!editor.dialog_is_open());
+    assert!(editor.dialog_snapshot().is_none());
+    assert!(!matches!(
+        editor.take_event(),
+        Some(WorktreeEvent::DialogAnswered(_))
+    ));
 }
 
 #[test]

@@ -3,6 +3,7 @@
 //! `crates/kvim-embed/examples/worktree_editor.rs` demonstrates its complete
 //! lifecycle.
 
+use std::cell::Cell;
 use std::error::Error as StdError;
 use std::fmt;
 use std::num::NonZeroU32;
@@ -10,6 +11,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
+use crate::{
+    DialogAnswer, DialogInput, DialogInputOutcome, DialogOpenError, DialogRequest, DialogSnapshot,
+};
 use kvim_input::{
     BindingManifest, BindingProfile, BindingScope, Command, CommandLineCommand, CommandLineError,
     CommandOwner, ContextGeneration, Dispatch, InputContextSnapshot, Key, Mode, PasteText,
@@ -1238,6 +1242,8 @@ pub enum WorktreeDispatchOutcome {
     Pending,
     /// Literal text was applied.
     TextFallback(WorktreeInputOutcome),
+    /// The open dialog consumed the addressed decision.
+    Consumed,
     /// Kvim cleared pending state after an unbound decision.
     Unbound,
     /// The host must complete a cancel-pending transition before acting.
@@ -1500,6 +1506,8 @@ pub enum WorktreeEvent {
         /// Activated contained path.
         path: WorktreeRelativePath,
     },
+    /// The user answered a host-opened action-agnostic dialog.
+    DialogAnswered(DialogAnswer),
     /// Visible state changed.
     RedrawRequested,
     /// Focus reached an outer edge.
@@ -1956,6 +1964,7 @@ impl WorktreeEditorBuilder {
             }
         })?;
         drop(_guard);
+        let generation = inner.input_context().generation;
         Ok(WorktreeEditor {
             instance: WorktreeInstanceId(inner.instance().get()),
             inner: Some(inner),
@@ -1963,6 +1972,10 @@ impl WorktreeEditorBuilder {
             binding_mode: self.binding_mode,
             manifest: Arc::new(manifest),
             presentation: self.presentation,
+            dialog: crate::dialog::DialogHost::new(),
+            facade_generation: Cell::new(generation),
+            inner_generation: Cell::new(generation),
+            dialog_generation: Cell::new(ContextGeneration::FIRST),
             #[cfg(test)]
             capabilities: self.capabilities,
         })
@@ -2009,6 +2022,10 @@ pub struct WorktreeEditor {
     binding_mode: WorktreeBindingMode,
     manifest: Arc<BindingManifest>,
     presentation: WorktreePresentation,
+    dialog: crate::dialog::DialogHost,
+    facade_generation: Cell<ContextGeneration>,
+    inner_generation: Cell<ContextGeneration>,
+    dialog_generation: Cell<ContextGeneration>,
     #[cfg(test)]
     capabilities: WorktreeCapabilities,
 }
@@ -2074,11 +2091,22 @@ impl WorktreeEditor {
         self.inner().area()
     }
     /// Changes the accepted rectangle.
+    ///
+    /// An accepted resize closes an open dialog without an answer when its
+    /// fixed body rectangle no longer fits.
     pub fn resize(&mut self, area: Rect) -> Result<WorktreeUpdate, WorktreeGeometryError> {
-        self.inner_mut()
+        let update = self
+            .inner_mut()
             .set_area(area)
             .map(convert_redraw)
-            .map_err(Into::into)
+            .map_err(WorktreeGeometryError::from)?;
+        if !self.dialog.body_fits(area) {
+            let closed = self.dialog.close();
+            debug_assert!(closed, "a non-fitting body implies an open dialog");
+        } else {
+            self.dialog.invalidate();
+        }
+        Ok(update)
     }
     /// Queues one contained file for asynchronous opening.
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
@@ -2120,6 +2148,36 @@ impl WorktreeEditor {
             root_label: self.inner().file_root_label(),
             rows: rows.into_iter().map(convert_file_sidebar_row).collect(),
         })
+    }
+
+    /// Opens one validated host dialog above this editor.
+    pub fn open_dialog(&mut self, request: DialogRequest) -> Result<(), DialogOpenError> {
+        crate::dialog::validate_dialog_body(&request, self.area())?;
+        self.dialog.open(request)
+    }
+
+    /// Closes an open host dialog without producing an answer event.
+    #[must_use]
+    pub fn close_dialog(&mut self) -> bool {
+        self.dialog.close()
+    }
+
+    /// Returns the current host-dialog snapshot.
+    #[must_use]
+    pub fn dialog_snapshot(&self) -> Option<DialogSnapshot> {
+        self.dialog.snapshot()
+    }
+
+    /// Returns whether a host dialog currently owns all input.
+    #[must_use]
+    pub fn dialog_is_open(&self) -> bool {
+        self.dialog.is_open()
+    }
+
+    /// Drives dialog-owned physical input before host-global or editor input.
+    #[must_use]
+    pub fn dialog_input(&mut self, input: DialogInput) -> DialogInputOutcome {
+        self.dialog.input(input)
     }
 
     /// Applies one semantic command to a host-owned file sidebar.
@@ -2165,14 +2223,33 @@ impl WorktreeEditor {
 
     /// Applies one normalized host input.
     ///
-    /// Pointer and resize input do not use key-binding arbitration. They remain
-    /// accepted in both binding modes. Host-resolved editors reject keys,
-    /// paste, and unsupported raw input before mutation.
+    /// An open dialog consumes every non-resize input. An accepted resize
+    /// closes the dialog without an answer if its fixed body no longer fits.
+    /// Host-resolved editors reject other raw keys, paste, and unsupported input.
     pub fn input(
         &mut self,
         input: WorktreeInput,
         now: Duration,
     ) -> Result<WorktreeUpdate, WorktreeInputError> {
+        if self.dialog.is_open() {
+            let dialog_input = match input {
+                WorktreeInput::Key(key) => Some(DialogInput::Key(key)),
+                WorktreeInput::Paste(_) => Some(DialogInput::Paste),
+                WorktreeInput::Pointer(pointer) => Some(DialogInput::Pointer(pointer)),
+                WorktreeInput::Unsupported => Some(DialogInput::Unsupported),
+                WorktreeInput::Resize { .. } => None,
+            };
+            if let Some(input) = dialog_input {
+                return Ok(match self.dialog.input(input) {
+                    DialogInputOutcome::Redraw | DialogInputOutcome::Answered => {
+                        WorktreeUpdate::Redraw
+                    }
+                    DialogInputOutcome::Consumed | DialogInputOutcome::NotOpen => {
+                        WorktreeUpdate::Unchanged
+                    }
+                });
+            }
+        }
         if matches!(self.binding_mode, WorktreeBindingMode::HostResolved { .. })
             && !matches!(
                 input,
@@ -2181,6 +2258,7 @@ impl WorktreeEditor {
         {
             return Err(WorktreeInputError::HostResolved);
         }
+        let resized = matches!(input, WorktreeInput::Resize { .. });
         let input = match input {
             WorktreeInput::Key(key) => TuiTerminalEvent::Key(key),
             WorktreeInput::Paste(text) => TuiTerminalEvent::Paste(text),
@@ -2188,7 +2266,17 @@ impl WorktreeEditor {
             WorktreeInput::Resize { columns, rows } => TuiTerminalEvent::Resize { columns, rows },
             WorktreeInput::Unsupported => TuiTerminalEvent::Unsupported,
         };
-        Ok(convert_redraw(self.inner_mut().input(input, now)))
+        let update = convert_redraw(self.inner_mut().input(input, now));
+        if resized {
+            let area = self.area();
+            if !self.dialog.body_fits(area) {
+                let closed = self.dialog.close();
+                debug_assert!(closed, "a non-fitting body implies an open dialog");
+            } else {
+                self.dialog.invalidate();
+            }
+        }
+        Ok(update)
     }
     /// Applies one terminal-neutral pointer event.
     ///
@@ -2196,6 +2284,14 @@ impl WorktreeEditor {
     /// available in both binding modes.
     #[must_use]
     pub fn pointer(&mut self, pointer: PointerEvent, now: Duration) -> WorktreeUpdate {
+        if self.dialog.is_open() {
+            return match self.dialog.input(DialogInput::Pointer(pointer)) {
+                DialogInputOutcome::Redraw | DialogInputOutcome::Answered => WorktreeUpdate::Redraw,
+                DialogInputOutcome::Consumed | DialogInputOutcome::NotOpen => {
+                    WorktreeUpdate::Unchanged
+                }
+            };
+        }
         convert_redraw(
             self.inner_mut()
                 .input(TuiTerminalEvent::Pointer(pointer), now),
@@ -2218,6 +2314,9 @@ impl WorktreeEditor {
         register: Option<char>,
         now: Duration,
     ) -> Result<WorktreeInputOutcome, WorktreeCommandError> {
+        if self.dialog.is_open() {
+            return Ok(WorktreeInputOutcome::Applied);
+        }
         if let Some(name) = register
             && !is_register_name(name)
         {
@@ -2232,6 +2331,9 @@ impl WorktreeEditor {
     /// This method bypasses physical binding resolution. It remains available
     /// in both binding modes for host-owned text entry.
     pub fn literal(&mut self, text: &str, now: Duration) -> WorktreeInputOutcome {
+        if self.dialog.is_open() {
+            return WorktreeInputOutcome::Applied;
+        }
         convert_reduction(self.inner_mut().insert_literal(text, now))
     }
     /// Applies direct semantic pasted text.
@@ -2240,6 +2342,9 @@ impl WorktreeEditor {
     /// the host must arbitrate the physical paste event before it calls this
     /// method. [`Self::input`] rejects the raw paste path in that mode.
     pub fn paste(&mut self, text: &PasteText, now: Duration) -> WorktreeInputOutcome {
+        if self.dialog.is_open() {
+            return WorktreeInputOutcome::Applied;
+        }
         convert_reduction(self.inner_mut().paste(text, now))
     }
     /// Returns the bounded editor command catalog for the current context.
@@ -2547,7 +2652,28 @@ impl WorktreeEditor {
     /// Returns the current resolved-input context.
     #[must_use]
     pub fn input_context(&self) -> InputContextSnapshot<BindingScope> {
-        self.inner().input_context()
+        let inner = self.inner().input_context();
+        let dialog_generation = self.dialog.generation();
+        if inner.generation != self.inner_generation.get()
+            || dialog_generation != self.dialog_generation.get()
+        {
+            self.inner_generation.set(inner.generation);
+            self.dialog_generation.set(dialog_generation);
+            self.facade_generation
+                .set(self.facade_generation.get().advanced());
+        }
+        let generation = self.facade_generation.get();
+        if self.dialog.is_open() {
+            InputContextSnapshot {
+                generation,
+                ..InputContextSnapshot::idle(BindingScope::Confirmation)
+            }
+        } else {
+            InputContextSnapshot {
+                generation,
+                ..inner
+            }
+        }
     }
     /// Returns bounded changing metadata for host-owned resolution.
     #[must_use]
@@ -2555,11 +2681,21 @@ impl WorktreeEditor {
         let WorktreeBindingMode::HostResolved { reserved_escape } = self.binding_mode else {
             return None;
         };
-        let (context, overlay_scope) = self.inner().binding_context();
+        let (inner_context, overlay_scope) = self.inner().binding_context();
+        let context = self.input_context();
+        debug_assert_eq!(
+            inner_context.generation,
+            self.inner_generation.get(),
+            "input_context records the current private generation"
+        );
         Some(WorktreeBindingContext {
             instance: self.instance,
             context,
-            overlay_scope,
+            overlay_scope: if self.dialog.is_open() {
+                None
+            } else {
+                overlay_scope
+            },
             reserved_escape,
         })
     }
@@ -2581,6 +2717,16 @@ impl WorktreeEditor {
         dispatch: WorktreeSemanticDispatch,
         now: Duration,
     ) -> Result<WorktreeDispatchOutcome, WorktreeDispatchError> {
+        if self.dialog.is_open() {
+            let current = self.input_context();
+            if dispatch.instance != self.instance {
+                return Err(WorktreeDispatchError::WrongInstance);
+            }
+            if dispatch.generation != current.generation {
+                return Err(WorktreeDispatchError::StaleGeneration);
+            }
+            return Ok(WorktreeDispatchOutcome::Consumed);
+        }
         if !matches!(self.binding_mode, WorktreeBindingMode::HostResolved { .. }) {
             return Err(WorktreeDispatchError::FacadeResolved);
         }
@@ -2698,9 +2844,15 @@ impl WorktreeEditor {
             TuiRunState::Finished => WorktreeRunState::ExitRequested,
         }
     }
-    /// Renders into host-owned cells.
+    /// Renders the editor and an open host dialog into host-owned cells.
+    ///
+    /// Successful request and resize validation make dialog composition
+    /// infallible after the base editor accepts the target buffer.
     pub fn render(&self, cells: &mut Buffer) -> Result<WorktreeCursor, WorktreeGeometryError> {
         let cursor = self.inner().draw(cells, self.inner().area())?;
+        self.dialog
+            .render(cells)
+            .expect("dialog request and accepted resize keep render geometry valid");
         Ok(WorktreeCursor {
             position: cursor.position,
             shape: match cursor.shape {
@@ -2712,6 +2864,9 @@ impl WorktreeEditor {
     /// Takes one facade-owned event.
     #[must_use]
     pub fn take_event(&mut self) -> Option<WorktreeEvent> {
+        if let Some(answer) = self.dialog.take_answer() {
+            return Some(WorktreeEvent::DialogAnswered(answer));
+        }
         self.inner_mut().take_event().map(convert_published)
     }
     /// Resolves one recovery event by its facade-owned address.

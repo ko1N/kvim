@@ -23,6 +23,58 @@ fn no_number_editor(text: &str, area: Rect) -> MemoryEditor {
 }
 
 #[test]
+fn dialog_consumes_semantic_input_and_resize_closes_when_body_no_longer_fits() {
+    let area = Rect::new(0, 0, 40, 10);
+    let mut editor = editor("alpha\n", area);
+    let cancel = DialogChoiceId::new(1);
+    editor
+        .open_dialog(
+            DialogRequest::new(
+                "Continue?",
+                std::iter::empty::<&str>(),
+                [DialogChoice::new(cancel, "Cancel")],
+                cancel,
+                cancel,
+                area,
+                DialogStyles::default(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    assert_eq!(
+        editor.command(Command::DeleteLine, None, None),
+        Ok(CommandOutcome::Applied)
+    );
+    assert_eq!(editor.literal("leak"), LiteralOutcome::Consumed);
+    assert_eq!(editor.text(), "alpha\n");
+    editor.resize(Rect::new(0, 0, 20, 6)).unwrap();
+    assert!(!editor.dialog_is_open());
+    assert!(editor.take_event().is_none());
+}
+
+#[test]
+fn request_outside_editor_is_refused() {
+    let mut editor = editor("text", Rect::new(5, 5, 20, 6));
+    let cancel = DialogChoiceId::new(1);
+    let request = DialogRequest::new(
+        "Continue?",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(cancel, "Cancel")],
+        cancel,
+        cancel,
+        Rect::new(0, 0, 20, 6),
+        DialogStyles::default(),
+    )
+    .unwrap();
+    assert!(matches!(
+        editor.open_dialog(request),
+        Err(DialogOpenError::Invalid(
+            kvim_ui::DialogError::TargetArea { .. }
+        ))
+    ));
+}
+
+#[test]
 fn supplied_text_edits_through_commands_and_literals() {
     let mut editor = editor("alpha\n", Rect::new(0, 0, 20, 3));
     assert_eq!(editor.text(), "alpha\n");

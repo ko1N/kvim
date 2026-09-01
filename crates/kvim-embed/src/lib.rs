@@ -15,10 +15,23 @@
 
 #[cfg(feature = "worktree")]
 mod composition;
+mod dialog;
 #[cfg(feature = "review")]
 mod review;
 #[cfg(feature = "worktree")]
 mod worktree;
+
+pub use kvim_ui::{
+    DIALOG_BODY_LINE_CHARS_MAX, DIALOG_BODY_LINES_MAX, DIALOG_CHOICE_LABEL_CHARS_MAX,
+    DIALOG_CHOICES_MAX, DIALOG_DIRECT_KEYS_MAX, DIALOG_POPUP_COLUMNS_MAX, DIALOG_POPUP_ROWS_MAX,
+    DIALOG_QUESTION_CHARS_MAX,
+};
+
+pub use dialog::{
+    DialogAnswer, DialogChoice, DialogChoiceId, DialogChoicePlacement, DialogInput,
+    DialogInputOutcome, DialogOpenError, DialogPlacement, DialogRequest, DialogSnapshot,
+    DialogStyles,
+};
 
 #[cfg(feature = "review")]
 pub use kvim_input::ReviewBindingProfile;
@@ -214,11 +227,20 @@ pub enum MemoryEditorError {
     },
 }
 
+/// One facade-owned in-memory editor event.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum MemoryEditorEvent {
+    /// The user answered a host-opened action-agnostic dialog.
+    DialogAnswered(DialogAnswer),
+}
+
 /// The result of literal text input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LiteralOutcome {
     /// The text changed the buffer.
     Changed,
+    /// The open dialog consumed the text without changing editor state.
+    Consumed,
     /// Insert mode was not active, so the text was refused.
     Refused,
     /// A configured bound refused the text.
@@ -237,6 +259,8 @@ pub enum TickOutcome {
 pub enum PointerOutcome {
     /// Visible editor state changed.
     Changed,
+    /// An open dialog consumed the pointer without changing visible state.
+    Consumed,
     /// The pointer action did not apply to this surface.
     Ignored,
 }
@@ -298,6 +322,7 @@ pub struct MemoryEditor {
     window: WindowState,
     area: Rect,
     pointer_drag: PointerDragState,
+    dialog: dialog::DialogHost,
 }
 
 impl MemoryEditor {
@@ -329,6 +354,7 @@ impl MemoryEditor {
             window: WindowState::new(viewport),
             area,
             pointer_drag: PointerDragState::Idle,
+            dialog: dialog::DialogHost::new(),
         })
     }
 
@@ -348,6 +374,69 @@ impl MemoryEditor {
         self.editing.mode()
     }
 
+    /// Returns whether a host dialog currently owns all input.
+    #[must_use]
+    pub fn dialog_is_open(&self) -> bool {
+        self.dialog.is_open()
+    }
+
+    /// Opens one validated host dialog.
+    ///
+    /// ```
+    /// use kvim_embed::{DialogChoice, DialogChoiceId, DialogRequest, DialogStyles, MemoryEditor};
+    /// use kvim_settings::EditorSettings;
+    /// use ratatui::{buffer::Buffer, layout::Rect};
+    ///
+    /// let area = Rect::new(0, 0, 40, 10);
+    /// let cancel = DialogChoiceId::new(1);
+    /// let mut editor = MemoryEditor::open("text", EditorSettings::default(), area)?;
+    /// editor.open_dialog(DialogRequest::new(
+    ///     "Continue?",
+    ///     std::iter::empty::<&str>(),
+    ///     [DialogChoice::new(cancel, "Cancel")],
+    ///     cancel,
+    ///     cancel,
+    ///     area,
+    ///     DialogStyles::default(),
+    /// )?)?;
+    /// let mut cells = Buffer::empty(area);
+    /// editor.render(&mut cells)?;
+    /// assert!(editor.dialog_snapshot().and_then(|value| value.placement().cloned()).is_some());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn open_dialog(&mut self, request: DialogRequest) -> Result<(), DialogOpenError> {
+        dialog::validate_dialog_body(&request, self.area)?;
+        self.dialog.open(request)
+    }
+
+    /// Closes an open dialog without producing an answer event.
+    ///
+    /// Returns `true` when a dialog was closed. A queued answer remains queued.
+    #[must_use]
+    pub fn close_dialog(&mut self) -> bool {
+        self.dialog.close()
+    }
+
+    /// Returns the current dialog snapshot and latest current placement.
+    #[must_use]
+    pub fn dialog_snapshot(&self) -> Option<DialogSnapshot> {
+        self.dialog.snapshot()
+    }
+
+    /// Applies physical dialog input before any editor or host-global input.
+    #[must_use]
+    pub fn dialog_input(&mut self, input: DialogInput) -> DialogInputOutcome {
+        self.dialog.input(input)
+    }
+
+    /// Takes the next facade-owned event.
+    #[must_use]
+    pub fn take_event(&mut self) -> Option<MemoryEditorEvent> {
+        self.dialog
+            .take_answer()
+            .map(MemoryEditorEvent::DialogAnswered)
+    }
+
     /// Applies one resolved semantic command.
     /// Returns [`MemoryEditorError::InvalidRegisterName`] without changing
     /// state when `register` is not an ASCII letter, digit, `"`, or `_`.
@@ -357,6 +446,9 @@ impl MemoryEditor {
         count: Option<NonZeroU32>,
         register: Option<char>,
     ) -> Result<CommandOutcome, MemoryEditorError> {
+        if self.dialog.is_open() {
+            return Ok(CommandOutcome::Applied);
+        }
         self.pointer_drag = PointerDragState::Idle;
         if let Some(name) = register
             && !is_register_name(name)
@@ -383,6 +475,9 @@ impl MemoryEditor {
 
     /// Applies literal text when Insert mode owns text input.
     pub fn literal(&mut self, text: &str) -> LiteralOutcome {
+        if self.dialog.is_open() {
+            return LiteralOutcome::Consumed;
+        }
         self.pointer_drag = PointerDragState::Idle;
         if self.mode() != Mode::Insert {
             return LiteralOutcome::Refused;
@@ -446,6 +541,17 @@ impl MemoryEditor {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn pointer(&mut self, pointer: PointerEvent) -> PointerOutcome {
+        if self.dialog.is_open() {
+            let outcome = self.dialog.input(DialogInput::Pointer(pointer));
+            return match outcome {
+                DialogInputOutcome::Redraw | DialogInputOutcome::Answered => {
+                    PointerOutcome::Changed
+                }
+                DialogInputOutcome::Consumed | DialogInputOutcome::NotOpen => {
+                    PointerOutcome::Consumed
+                }
+            };
+        }
         let position = pointer.position();
         let inside = position.column() >= self.area.x
             && position.column() < self.area.right()
@@ -570,8 +676,17 @@ impl MemoryEditor {
     }
 
     /// Changes the accepted render rectangle.
+    ///
+    /// An accepted resize closes an open dialog without an answer when its
+    /// fixed body rectangle no longer fits.
     pub fn resize(&mut self, area: Rect) -> Result<(), MemoryEditorError> {
         validate_area(area)?;
+        if !self.dialog.body_fits(area) {
+            let closed = self.dialog.close();
+            debug_assert!(closed, "a non-fitting body implies an open dialog");
+        } else {
+            self.dialog.invalidate();
+        }
         self.pointer_drag = PointerDragState::Idle;
         self.area = area;
         let geometry = text_surface_geometry(area, &self.buffer, &self.settings);
@@ -593,7 +708,11 @@ impl MemoryEditor {
                 buffer: cells.area,
             });
         }
-        render_editor(self, cells)
+        let outcome = render_editor(self, cells)?;
+        self.dialog
+            .render(cells)
+            .expect("dialog request and accepted resize keep render geometry valid");
+        Ok(outcome)
     }
 
     fn source_at_cell(&self, position: CellPosition) -> SourcePosition {

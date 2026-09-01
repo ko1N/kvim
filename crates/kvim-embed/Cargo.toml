@@ -52,7 +52,6 @@ worktree = [
   "dep:kvim-path",
   "dep:kvim-runtime",
   "dep:kvim-tui",
-  "dep:kvim-ui",
   "dep:kvim-workspace",
   "kvim-tui/editor",
   "kvim-workspace/services",
@@ -143,7 +142,7 @@ kvim-lsp = { workspace = true, optional = true }
 kvim-path = { workspace = true, optional = true }
 kvim-runtime = { workspace = true, optional = true }
 kvim-tui = { workspace = true, optional = true, default-features = false }
-kvim-ui = { workspace = true, optional = true }
+kvim-ui.workspace = true
 kvim-workspace = { workspace = true, optional = true, default-features = false }
 
 # Basics
