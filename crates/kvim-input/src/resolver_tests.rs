@@ -457,30 +457,18 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
     assert_eq!(
         listed,
         vec![
-            ("/".to_owned(), "Toggle the comment".to_owned()),
-            (
-                "\\".to_owned(),
-                "Split the window with the inverse adaptive rule".to_owned()
-            ),
-            (
-                "c".to_owned(),
-                "Toggle format-on-save for the active buffer".to_owned()
-            ),
-            ("e".to_owned(), "Show the diagnostic float".to_owned()),
+            ("/".to_owned(), "Toggle comment".to_owned()),
+            ("\\".to_owned(), "Split window (inverse)".to_owned()),
+            ("c".to_owned(), "Toggle format-on-save".to_owned()),
+            ("e".to_owned(), "Show diagnostic".to_owned()),
             ("f".to_owned(), "+3 commands".to_owned()),
-            (
-                "g".to_owned(),
-                "Show the changes of the worktree".to_owned()
-            ),
-            ("k".to_owned(), "Show hover information".to_owned()),
-            ("o".to_owned(), "Open the buffer picker".to_owned()),
-            ("q".to_owned(), "Close the active buffer".to_owned()),
+            ("g".to_owned(), "Show worktree changes".to_owned()),
+            ("k".to_owned(), "Show hover".to_owned()),
+            ("o".to_owned(), "Open buffer picker".to_owned()),
+            ("q".to_owned(), "Close buffer".to_owned()),
             ("w".to_owned(), "+3 commands".to_owned()),
-            ("x".to_owned(), "Unload the active buffer".to_owned()),
-            (
-                "Enter".to_owned(),
-                "Split the window with the adaptive rule".to_owned()
-            ),
+            ("x".to_owned(), "Unload buffer".to_owned()),
+            ("Enter".to_owned(), "Split window".to_owned()),
         ]
     );
 
@@ -499,9 +487,9 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
     assert_eq!(
         listed,
         vec![
-            ("/".to_owned(), "Open the ripgrep search picker".to_owned()),
-            ("b".to_owned(), "Open the buffer picker".to_owned()),
-            ("f".to_owned(), "Open the file search picker".to_owned()),
+            ("/".to_owned(), "Open ripgrep picker".to_owned()),
+            ("b".to_owned(), "Open buffer picker".to_owned()),
+            ("f".to_owned(), "Open file picker".to_owned()),
         ]
     );
 }

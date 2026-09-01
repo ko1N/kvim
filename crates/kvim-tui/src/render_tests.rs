@@ -1279,7 +1279,7 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     let buffer = draw(&session);
     assert_eq!(
         row_of(&buffer, 10),
-        format!("    /     {WHICH_KEY_MARKER} Toggle the comment")
+        format!("    /     {WHICH_KEY_MARKER} Toggle comment")
     );
     assert_eq!(
         row_of(&buffer, 14),
@@ -1302,17 +1302,18 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     let buffer = draw(&session);
     // One blank row opens the overlay, one blank row closes its hints, and the
     // footer row closes the overlay.
-    assert_eq!(
-        row_of(&buffer, 13),
-        format!("    / {WHICH_KEY_MARKER} Open the ripgrep search picker")
-    );
+    assert_eq!(row_of(&buffer, 13), "", "one blank row opens the overlay");
     assert_eq!(
         row_of(&buffer, 14),
-        format!("    b {WHICH_KEY_MARKER} Open the buffer picker")
+        format!(
+            "    {:<25}{}",
+            format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
+            format!("f {WHICH_KEY_MARKER} Open file picker")
+        )
     );
     assert_eq!(
         row_of(&buffer, 15),
-        format!("    f {WHICH_KEY_MARKER} Open the file search picker")
+        format!("    b {WHICH_KEY_MARKER} Open buffer picker")
     );
     assert_eq!(row_of(&buffer, 16), "", "one blank row closes the hints");
     assert_eq!(
@@ -1367,14 +1368,14 @@ fn the_which_key_overlay_fills_a_wide_terminal_with_columns() {
     type_keys(&mut session, " f");
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    // Three columns of thirty-six cells fit, so one row holds every mapping.
+    // Three columns of twenty-five cells fit, so one row holds every mapping.
     assert_eq!(
         row_of(&buffer, 25),
         format!(
-            "    {:<36}{:<36}{}",
-            format!("/ {WHICH_KEY_MARKER} Open the ripgrep search picker"),
-            format!("b {WHICH_KEY_MARKER} Open the buffer picker"),
-            format!("f {WHICH_KEY_MARKER} Open the file search picker")
+            "    {:<25}{:<25}{}",
+            format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
+            format!("b {WHICH_KEY_MARKER} Open buffer picker"),
+            format!("f {WHICH_KEY_MARKER} Open file picker")
         )
         .trim_end()
     );
@@ -1393,15 +1394,15 @@ fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
     let buffer = draw(&session);
     assert_eq!(
         row_of(&buffer, 13),
-        format!("    / {WHICH_KEY_MARKER} Open the ripgrep search picker")
+        format!("    / {WHICH_KEY_MARKER} Open ripgrep picker")
     );
     assert_eq!(
         row_of(&buffer, 14),
-        format!("    b {WHICH_KEY_MARKER} Open the buffer picker")
+        format!("    b {WHICH_KEY_MARKER} Open buffer picker")
     );
     assert_eq!(
         row_of(&buffer, 15),
-        format!("    f {WHICH_KEY_MARKER} Open the file search picker")
+        format!("    f {WHICH_KEY_MARKER} Open file picker")
     );
     assert_eq!(
         row_of(&buffer, 17),
@@ -1435,11 +1436,11 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     assert_eq!(row_of(&buffer, 9), "", "one blank row opens the overlay");
     assert_eq!(
         row_of(&buffer, 10),
-        format!("    /     {WHICH_KEY_MARKER} Toggle the comment")
+        format!("    /     {WHICH_KEY_MARKER} Toggle comment")
     );
     assert_eq!(
         row_of(&buffer, 15),
-        format!("    g     {WHICH_KEY_MARKER} Show the changes of the worktree")
+        format!("    g     {WHICH_KEY_MARKER} Show worktree changes")
     );
 
     // A body band that cannot hold the footer and one mapping over its own half
@@ -1449,7 +1450,7 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     small.tick(WHICH_KEY_DELAY);
     let painted = draw(&small);
     assert!(
-        (0..4).all(|y| !row_of(&painted, y).contains("Toggle the comment")),
+        (0..4).all(|y| !row_of(&painted, y).contains("Toggle comment")),
         "a body band of two rows shows no overlay at all"
     );
 }
@@ -1470,9 +1471,9 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
     };
     // `/` toggles the comment, which is a language service. `\` splits the
     // window. `f` opens the pickers, which all reach a file or a buffer.
-    let (code, code_color) = icon(12);
-    let (window, window_color) = icon(13);
-    let (files, files_color) = icon(16);
+    let (code, code_color) = icon(14);
+    let (window, window_color) = icon(15);
+    let (files, files_color) = icon(18);
     assert_eq!(code_color, Some(ACCENT_WARM));
     assert_eq!(window_color, Some(INFO));
     assert_eq!(files_color, Some(TEXT));
@@ -1485,8 +1486,12 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
         "each group carries its own glyph"
     );
     assert_eq!(
-        row_of(&buffer, 12),
-        format!("    /     {WHICH_KEY_MARKER} {code} Toggle the comment"),
+        row_of(&buffer, 14),
+        format!(
+            "    {:<34}{}",
+            format!("/     {WHICH_KEY_MARKER} {code} Toggle comment"),
+            format!("k     {WHICH_KEY_MARKER} {code} Show hover")
+        ),
         "the key opens the row, and the icon sits between the marker and the label"
     );
 }
@@ -1501,12 +1506,12 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     painted.tick(WHICH_KEY_DELAY);
     // With icons every column keeps two further cells, and the columns stay
     // evenly spaced.
-    let ripgrep = format!("/ {WHICH_KEY_MARKER} {files} Open the ripgrep search picker");
-    let buffers = format!("b {WHICH_KEY_MARKER} {files} Open the buffer picker");
-    let files_picker = format!("f {WHICH_KEY_MARKER} {files} Open the file search picker");
+    let ripgrep = format!("/ {WHICH_KEY_MARKER} {files} Open ripgrep picker");
+    let buffers = format!("b {WHICH_KEY_MARKER} {files} Open buffer picker");
+    let files_picker = format!("f {WHICH_KEY_MARKER} {files} Open file picker");
     assert_eq!(
         row_of(&draw(&painted), 25),
-        format!("    {ripgrep:<38}{buffers:<38}{files_picker}")
+        format!("    {ripgrep:<27}{buffers:<27}{files_picker}")
     );
 
     let mut plain = session_without_icons(120, 30);
@@ -1515,10 +1520,10 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     assert_eq!(
         row_of(&draw(&plain), 25),
         format!(
-            "    {:<36}{:<36}{}",
-            format!("/ {WHICH_KEY_MARKER} Open the ripgrep search picker"),
-            format!("b {WHICH_KEY_MARKER} Open the buffer picker"),
-            format!("f {WHICH_KEY_MARKER} Open the file search picker")
+            "    {:<25}{:<25}{}",
+            format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
+            format!("b {WHICH_KEY_MARKER} Open buffer picker"),
+            format!("f {WHICH_KEY_MARKER} Open file picker")
         ),
         "every column loses the same two cells, and every row keeps its marker"
     );
