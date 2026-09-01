@@ -348,7 +348,12 @@ this repository names the new one.
 `WhichKeyOverlay::placement_for` answers that same `WhichKeyPlacement` from the
 hints and the body rectangle, without a buffer and without a mutable borrow, so
 a host that writes "page 1 of 2" into a title reads the count before it draws.
-Both entry points call one private geometry, so one capacity rule remains.
+`WhichKeyPlacement::rows` publishes one `WhichKeyRowPlacement` for each visible
+row. Each placement carries the source hint index and the exact clipped,
+half-open row rectangle used by rendering. Empty and too-small layouts publish
+no row placement. `WhichKeyPlacement::row_at` uses those rectangles for pointer
+hit-testing. Both entry points call one private geometry, so one capacity rule
+remains.
 [`input-actions.md`](input-actions.md) owns these rules.
 
 `kvim-ui` also publishes the shedding rule of every one-row band. `ChromeBand`

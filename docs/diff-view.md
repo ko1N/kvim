@@ -151,9 +151,14 @@ editor's `OpenReview` binding cannot alter navigation in an open review.
 
 The surface supports
 `from_candidates` without I/O and `for_worktree` with bounded Git capture.
-Integrated and standalone review share private state, relocation, and painting.
-Snapshots preserve bounded review position and read state. Comment persistence
-and host meaning remain outside kvim.
+`ReviewFile::new` supplies a complete file, while
+`ReviewFile::with_truncation` preserves a supplied `DiffTruncation` value.
+A truncated supplied file names its bound in `ReviewPanelSnapshot` and never
+dims as complete. Integrated and standalone review share private state,
+relocation, and painting. `ReviewSurface::panel_snapshot` publishes the same
+bounded section headings, rows, identities, semantic state, selection, focus,
+viewport facts, and visible placements that the current private painter uses.
+Comment persistence and host meaning remain outside kvim.
 
 
 The review draws over the window tree. It changes no window, no viewport, and no

@@ -787,7 +787,11 @@ holds no selection. See [`windows.md`](windows.md).
 Every render reports one `WhichKeyPlacement`. It names the drawn rows, the size
 of the complete list, the drawn page, and the number of pages of that frame, so
 a host paints the position and knows whether a further step reaches another
-page. The overlay draws no position marker of its own.
+page. `WhichKeyPlacement::rows` publishes one `WhichKeyRowPlacement` for each
+visible row. Each value names the source hint index and the exact clipped row
+rectangle used by rendering. `WhichKeyPlacement::row_at` uses ratatui half-open
+containment over those rectangles. Empty and too-small layouts publish no
+phantom placement. The overlay draws no position marker of its own.
 
 `WhichKeyOverlay::placement_for` answers that same report before any paint. It
 takes the body band and returns the `WhichKeyPlacement` of the overlay's own

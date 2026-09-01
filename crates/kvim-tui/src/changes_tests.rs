@@ -119,7 +119,7 @@ fn a_truncated_file_never_reads_as_complete() {
 
     let entries = entries(&review);
     assert_eq!(entries[0].unread, 0);
-    assert!(entries[0].truncated);
+    assert_eq!(entries[0].truncation, Some(DiffLimit::Hunks));
     assert!(!entries[0].is_complete());
     assert!(
         entries[0].label().contains('…'),

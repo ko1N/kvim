@@ -272,9 +272,16 @@ When the host owns the sidebar, it publishes at most
 identity derived from its validated contained path or its parent and notice
 kind. Labels, root labels, depth, paths, and the snapshot row list have
 published bounds. Rows also carry kind and expansion/loading state, selection,
-Git state, symbolic-link state, and semantic icon role. Notice rows carry no
+Git state, symbolic-link state, held or generated dimming, typed notice kind,
+a bounded search span in Unicode scalar-value character positions, semantic
+icon role, and the exact one-cell icon glyph used by Kvim. Notice rows carry no
 path. Snapshot reads copy loaded state only and perform no filesystem or Git
 work.
+
+`FileSidebarCommand::Select` accepts a current `FileSidebarRowId` for pointer
+selection. Only selectable entry identities can move selection. A notice,
+missing, stale, or inert identity returns `FileSidebarOutcome::NotSelected` and
+leaves the current selection unchanged.
 
 `WorktreeEditor::file_sidebar_command` accepts bounded movement, expansion,
 collapse, refresh, activation, and focus-boundary commands. Directory and Git
@@ -327,24 +334,37 @@ same cancel-before-focus ordering as other pending input.
 ### Editor Sidebar Publication
 
 Host-owned sidebar rows publish bounded identity, path, depth, kind, loading,
-selection, Git, symlink, and icon-role facts. Kvim publishes its tree separately
-and never accepts or merges host tree rows.
+selection, Git, symlink, held or generated dimming, typed notice kind,
+character-indexed search match, semantic icon role, and exact icon-glyph facts.
+Kvim publishes its tree separately and never accepts or merges host tree rows.
+`FileSidebarCommand::Select` selects a current selectable row identity. It
+returns `FileSidebarOutcome::NotSelected` without moving selection for a stale,
+absent, notice, or inert identity.
 
 ### Standalone Review
 
 `ReviewSurface` is an additional standalone surface behind the `review`
 feature. It does not replace integrated review in `WorktreeEditor`.
 `ReviewSurface::from_candidates` accepts bounded immutable candidates and
-performs no input or output. It uses facade-owned commands, events, errors, and
-snapshots. Snapshot restoration relocates durable anchors without guessing.
-The host owns focus policy, file opening, comment persistence, and comment
-meaning. `ReviewConfig` selects `ReviewBindingProfile::Standalone` or
+performs no input or output. `ReviewFile::new` constructs a complete file.
+`ReviewFile::with_truncation` preserves a supplied `DiffTruncation` value. A
+truncated file reports its bound in the panel and never becomes complete.
+The surface uses facade-owned commands, events, errors, and snapshots. Snapshot
+restoration relocates durable anchors without guessing. The host owns focus
+policy, file opening, comment persistence, and comment meaning. `ReviewConfig` selects `ReviewBindingProfile::Standalone` or
 `ReviewBindingProfile::HostResolved` independently from editor bindings. It can
 also supply bounded semantic review overrides. `ReviewSurface::bindings`
 publishes the realized review-only manifest for host arbitration. The facade
 accepts `ReviewInput` after arbitration. It does not resolve raw keys for
 `ReviewSurface`. The standalone profile keeps the traditional review table. The host-resolved profile leaves `Tab` and
 `Shift-Tab` unclaimed and publishes `]s` and `[s` for section navigation.
+
+`ReviewSurface::panel_snapshot` publishes one bounded
+`ReviewPanelSnapshot` from the same private panel model and geometry that Kvim
+paints. It includes section headings, all model rows, row identities, semantic
+row state, selection, focus, viewport facts, and visible row placements. The
+snapshot is current only until the next successful review state change or
+redraw event.
 
 `ReviewSurface::for_worktree` adds bounded Git capture behind the `worktree`
 feature. The surface privately owns capture dispatch, readiness, application,
@@ -504,8 +524,11 @@ scopes. A host bounds or filters the list before it hands it to
 One frame of columns holds far fewer rows than that bound. The overlay pages an
 accepted list: `WhichKeyOverlay::at_page` names the page, and the render
 returns one `kvim_ui::WhichKeyPlacement` that names the drawn rows, the size of
-the list, the drawn page, and the number of pages. Bind one key that steps the
-page, and paint the reported position beside the overlay.
+the list, the drawn page, and the number of pages. Its
+`WhichKeyRowPlacement` values carry each visible source hint index and the exact
+clipped, half-open row rectangle used by rendering. `row_at` uses those
+rectangles for pointer hit-testing. Bind one key that steps the page, and paint
+the reported position beside the overlay.
 See [`input-actions.md`](input-actions.md).
 
 `BindingScope::RegisterSelection` binds no key. It waits for one register name,

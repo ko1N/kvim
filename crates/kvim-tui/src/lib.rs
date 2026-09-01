@@ -32,7 +32,7 @@
 
 #[cfg(feature = "editor")]
 mod buffer_view;
-#[cfg_attr(not(feature = "editor"), allow(dead_code))]
+#[cfg(any(feature = "editor", feature = "review"))]
 mod cells;
 #[cfg(feature = "review")]
 mod changes;
