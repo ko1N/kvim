@@ -470,6 +470,16 @@ impl Picker {
         self.candidates.get(index)
     }
 
+    /// Returns the number of candidates that the query ranks against.
+    ///
+    /// The count follows [`Picker::set_candidates`], so it already stops at
+    /// [`PICKER_CANDIDATES_MAX`]. It is the denominator of the match counter
+    /// that the picker shows beside its query.
+    #[must_use]
+    pub fn candidate_count(&self) -> usize {
+        self.candidates.len()
+    }
+
     /// Returns the selected candidate, or `None` while no row matches.
     #[must_use]
     pub fn selected(&self) -> Option<&Candidate> {

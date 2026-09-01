@@ -33,9 +33,9 @@ const HEIGHT: u16 = 16;
 
 /// The first result row of the picker.
 ///
-/// The title row and its gap, then the query row and its gap, sit above the
-/// results: two rows each.
-const FIRST_RESULT_ROW: u16 = 4;
+/// The title row and its gap, then the query row and its gap, then the header
+/// row of the result list sit above the results.
+const FIRST_RESULT_ROW: u16 = 5;
 
 /// Returns the style that the theme gives one semantic role.
 ///
@@ -53,6 +53,11 @@ const PICKER_STEPS_MAX: usize = 8;
 /// The root is the canonical path of the temporary directory, so it matches
 /// the path that a loaded buffer holds.
 fn workspace() -> (TempDir, Session) {
+    workspace_sized(WIDTH, HEIGHT)
+}
+
+/// Creates one workspace and one session of one terminal size over it.
+fn workspace_sized(width: u16, height: u16) -> (TempDir, Session) {
     let dir = TempDir::new("picker");
     dir.file(
         "src/main.rs",
@@ -64,7 +69,7 @@ fn workspace() -> (TempDir, Session) {
     dir.file("target/debug/kvim", "binary\n");
     let root = dir.path.clone();
     let session = Session::new(
-        Rect::new(0, 0, WIDTH, HEIGHT),
+        Rect::new(0, 0, width, height),
         EditorSettings::default(),
         test_root(root),
     );
@@ -192,11 +197,28 @@ fn results(session: &Session) -> Vec<String> {
         .collect()
 }
 
-/// Returns the query row of the picker.
-fn prompt_row(session: &Session) -> String {
+/// Returns the complete query row of the picker, match counter included.
+fn query_row(session: &Session) -> String {
     let buffer = draw(session);
     let area = picker_areas(session.area()).prompt;
     region_row(&buffer, area, area.y)
+}
+
+/// Returns the query row of the picker without its match counter.
+///
+/// The counter stands at the right edge of the same row, so at least two blanks
+/// separate it from the typed query in every test terminal.
+fn prompt_row(session: &Session) -> String {
+    let row = query_row(session);
+    match row.rsplit_once("  ") {
+        Some((query, _)) => query.trim_end().to_owned(),
+        None => row,
+    }
+}
+
+/// Returns the number of blank cells before the first glyph of one row.
+fn leading_blanks(row: &str) -> usize {
+    row.chars().take_while(|value| *value == ' ').count()
 }
 
 /// Returns the offset of the selected result row.
@@ -379,6 +401,122 @@ fn the_selected_row_paints_its_filename_with_the_row_foreground_not_the_title_co
 }
 
 #[test]
+fn each_picker_kind_centers_its_own_title_beside_the_close_hint() {
+    for (keys, title) in [("ff", "Files"), ("f/", "Search"), ("o", "Buffers")] {
+        let (_dir, mut session) = workspace();
+        open_picker(&mut session, keys);
+        drain(&mut session);
+
+        let area = picker_areas(session.area())
+            .title
+            .expect("the test terminal shows the title row");
+        let row = region_row(&draw(&session), area, area.y);
+        assert!(
+            row.ends_with("esc"),
+            "the close hint keeps the right edge of the title row: {row}"
+        );
+        assert_eq!(
+            row.trim_end_matches("esc").trim(),
+            title,
+            "the title row names this picker kind: {row}"
+        );
+        assert_eq!(
+            leading_blanks(&row),
+            (usize::from(area.width) - title.len()) / 2,
+            "the title centers over the results column: {row}"
+        );
+    }
+}
+
+#[test]
+fn a_narrow_results_column_keeps_the_centered_title_clear_of_the_close_hint() {
+    // A narrow column cannot center `Buffers` and still clear the `esc` hint,
+    // so the title moves left and then clips. The hint always survives.
+    for width in [10, 12] {
+        let (_dir, mut session) = workspace_sized(width, HEIGHT);
+        open_picker(&mut session, "o");
+        drain(&mut session);
+
+        let area = picker_areas(session.area())
+            .title
+            .expect("the test terminal shows the title row");
+        let row = region_row(&draw(&session), area, area.y);
+        assert!(
+            row.ends_with("esc"),
+            "the close hint survives the narrow column: {row}"
+        );
+        let title = row.trim_end_matches("esc");
+        assert!(
+            title.ends_with(' '),
+            "one blank stands between the title and the hint: {row}"
+        );
+        let title = title.trim();
+        assert!(
+            !title.is_empty() && "Buffers".starts_with(title),
+            "the title clips instead of printing over the hint: {row}"
+        );
+    }
+}
+
+#[test]
+fn the_query_row_reports_the_matched_count_beside_the_candidate_count() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+
+    // The fixture holds four files that the ignore rules keep.
+    assert!(
+        query_row(&session).ends_with("4 / 4"),
+        "the empty query matches every candidate: {}",
+        query_row(&session)
+    );
+
+    type_keys(&mut session, "main");
+    drain(&mut session);
+    assert!(
+        query_row(&session).ends_with("1 / 4"),
+        "the query narrows the matched count alone: {}",
+        query_row(&session)
+    );
+    assert_eq!(
+        prompt_row(&session),
+        "> main",
+        "the counter never prints over the typed query"
+    );
+}
+
+#[test]
+fn the_results_header_and_the_preview_title_center_over_their_columns() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    type_keys(&mut session, "main");
+    drain(&mut session);
+
+    let areas = picker_areas(session.area());
+    let buffer = draw(&session);
+    let header = areas
+        .results_header
+        .expect("the test terminal shows the header row");
+    let row = region_row(&buffer, header, header.y);
+    assert_eq!(row.trim(), "Results");
+    assert_eq!(
+        leading_blanks(&row),
+        (usize::from(header.width) - "Results".len()) / 2,
+        "the header centers over the results column: {row}"
+    );
+
+    let preview = areas.preview.expect("the test terminal is wide");
+    let title = region_row(&buffer, preview, preview.y);
+    assert_eq!(title.trim(), "main.rs");
+    assert_eq!(
+        leading_blanks(&title),
+        (usize::from(preview.width) - " main.rs ".len()) / 2 + 1,
+        "the preview title centers over the preview column: {title}"
+    );
+}
+
+#[test]
 fn the_wide_layout_gives_the_preview_three_quarters_of_the_width() {
     let areas = picker_areas(Rect::new(0, 0, 120, 40));
     let preview = areas.preview.expect("a wide terminal shows the preview");
@@ -395,10 +533,18 @@ fn the_wide_layout_gives_the_preview_three_quarters_of_the_width() {
         title.y + 2,
         "the title row and its gap sit above the prompt"
     );
+    let header = areas
+        .results_header
+        .expect("a tall terminal shows the header row");
+    assert_eq!(
+        header.y,
+        areas.prompt.y + 2,
+        "one row separates the prompt from the header of the result list"
+    );
     assert_eq!(
         areas.results.y,
-        areas.prompt.y + 2,
-        "one row separates them"
+        header.y + 1,
+        "the results start directly below their header"
     );
     let hint = areas.hint.expect("a tall terminal shows the hint row");
     assert_eq!(
@@ -410,10 +556,10 @@ fn the_wide_layout_gives_the_preview_three_quarters_of_the_width() {
 
 #[test]
 fn a_terminal_that_just_affords_the_complete_chrome_keeps_one_result_row() {
-    let areas = picker_areas(Rect::new(0, 0, 80, 7));
+    let areas = picker_areas(Rect::new(0, 0, 80, 8));
     assert!(
-        areas.title.is_some() && areas.hint.is_some(),
-        "seven rows are the shortest terminal that affords the complete chrome"
+        areas.title.is_some() && areas.results_header.is_some() && areas.hint.is_some(),
+        "eight rows are the shortest terminal that affords the complete chrome"
     );
     assert_eq!(areas.results.height, 1, "one result row remains");
 }
@@ -433,6 +579,29 @@ fn a_short_terminal_drops_the_title_row_and_the_hint_row_but_keeps_one_result_ro
     assert_eq!(
         areas.results.height, 1,
         "the picker always shows at least one match"
+    );
+}
+
+#[test]
+fn a_terminal_too_short_for_the_header_row_drops_it_and_keeps_the_result_rows() {
+    // Seven rows afford the complete chrome of every row except the header of
+    // the result list, so the chrome drops together rather than eating the one
+    // row that the results need.
+    let areas = picker_areas(Rect::new(0, 0, 80, 7));
+    assert_eq!(
+        areas.results_header, None,
+        "the header row drops with the rest of the optional chrome"
+    );
+    assert_eq!(areas.title, None, "the title row drops with the header row");
+    assert_eq!(areas.hint, None, "the hint row drops with the header row");
+    assert_eq!(
+        areas.results.y,
+        areas.prompt.y + 2,
+        "without the header the results follow the notice row directly"
+    );
+    assert!(
+        areas.results.height >= 1,
+        "a short terminal still shows a result row"
     );
 }
 
