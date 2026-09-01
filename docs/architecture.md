@@ -585,7 +585,12 @@ consumers prove each supported package in isolation. The exact matrix is:
 | `kvim-ui` | no optional production features | default |
 | `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
 | `kvim-embed` | in-memory only | default, no-default, `review`, `worktree`, `grammar-rust`, `all-grammars` |
-| `kvim-tui` | internal editor with no grammar | default, no-default + `grammar-rust`, no-default + `all-grammars` |
+| `kvim-tui` | internal editor with no grammar | empty partition, default no-grammar editor, no-default + `grammar-rust`, no-default + `all-grammars` |
+
+`kvim-tui` has a valid empty partition under `--no-default-features`. The
+required no-grammar editor check uses its default `editor` feature. Each grammar
+feature implies `editor`, so the grammar checks disable defaults and select one
+grammar feature explicitly.
 
 `kvim-language` forwards the same grammar features without a default grammar.
 Its grammar-backed `LanguageRegistry::first_release()` remains valid and empty

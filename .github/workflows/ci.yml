@@ -136,7 +136,8 @@ jobs:
           tokio tokio-util tree-sitter
 
       # `kvim-language` supports a no-feature headless partition. `kvim-tui`
-      # defaults to its no-grammar editor partition; grammar features imply it.
+      # has a distinct empty partition; its default enables the no-grammar
+      # editor partition, and grammar features imply that editor partition.
       - name: Check the language and presentation grammar matrices
         run: |
           set -euo pipefail
@@ -144,6 +145,7 @@ jobs:
           cargo check --locked -p kvim-language --no-default-features --features grammar-rust
           cargo check --locked -p kvim-language --no-default-features --features all-grammars
 
+          cargo check --locked -p kvim-tui --no-default-features
           cargo check --locked -p kvim-tui
           cargo check --locked -p kvim-tui --no-default-features --features grammar-rust
           cargo check --locked -p kvim-tui --no-default-features --features all-grammars

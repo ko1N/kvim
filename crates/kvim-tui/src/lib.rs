@@ -34,6 +34,7 @@
 mod buffer_view;
 #[cfg_attr(not(feature = "editor"), allow(dead_code))]
 mod cells;
+#[cfg(feature = "review")]
 mod changes;
 #[cfg(feature = "editor")]
 mod chrome;
@@ -43,6 +44,7 @@ mod clipboard;
 mod completion;
 #[cfg(feature = "editor")]
 mod diagnostics;
+#[cfg(feature = "review")]
 mod diff_view;
 #[cfg(feature = "editor")]
 mod driver;
@@ -70,9 +72,11 @@ mod picker;
 mod pointer;
 #[cfg(feature = "editor")]
 mod render;
+#[cfg(feature = "review")]
 mod review;
 #[cfg(feature = "editor")]
 mod session;
+#[cfg(feature = "review")]
 mod theme;
 #[cfg(feature = "editor")]
 mod tree;
