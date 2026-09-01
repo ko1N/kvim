@@ -29,16 +29,17 @@ use kvim_tui::__private::{
     EditorAccess as TuiEditorAccess, EditorCapacity as TuiEditorCapacity,
     EditorEvent as TuiEditorEvent, EditorFormatterStatus as TuiFormatterStatus,
     EditorShutdown as TuiEditorShutdown, EmbeddedEditor, FileRow as TuiFileRow,
-    FileRowGit as TuiFileRowGit, FileRowIdentity as TuiFileRowIdentity,
-    FileRowKind as TuiFileRowKind, FileRowNoticeKind as TuiFileRowNoticeKind,
-    FileSidebarInput as TuiFileSidebarInput, FileSidebarOutcome as TuiFileSidebarOutcome,
-    GeometryError as TuiGeometryError, HostReportRequest as TuiHostReportRequest,
-    HostWorkspace as TuiHostWorkspace, IconRole as TuiIconRole, InputRequest as TuiInputRequest,
-    ListMotion as TuiListMotion, PublishedEvent as TuiPublishedEvent,
-    RecoveryDecision as TuiRecoveryDecision, RecoveryDecisionError as TuiRecoveryDecisionError,
-    RecoveryIdentity as TuiRecoveryIdentity, RecoveryStatus as TuiRecoveryStatus,
-    Redraw as TuiRedraw, Reduction as TuiReduction, ReductionOutcome as TuiReductionOutcome,
-    Refusal as TuiRefusal, RunState as TuiRunState, TerminalEvent as TuiTerminalEvent,
+    FileRowDimming as TuiFileRowDimming, FileRowGit as TuiFileRowGit,
+    FileRowIdentity as TuiFileRowIdentity, FileRowKind as TuiFileRowKind,
+    FileRowNoticeKind as TuiFileRowNoticeKind, FileSidebarInput as TuiFileSidebarInput,
+    FileSidebarOutcome as TuiFileSidebarOutcome, GeometryError as TuiGeometryError,
+    HostReportRequest as TuiHostReportRequest, HostWorkspace as TuiHostWorkspace,
+    IconRole as TuiIconRole, InputRequest as TuiInputRequest, ListMotion as TuiListMotion,
+    PublishedEvent as TuiPublishedEvent, RecoveryDecision as TuiRecoveryDecision,
+    RecoveryDecisionError as TuiRecoveryDecisionError, RecoveryIdentity as TuiRecoveryIdentity,
+    RecoveryStatus as TuiRecoveryStatus, Redraw as TuiRedraw, Reduction as TuiReduction,
+    ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal, RunState as TuiRunState,
+    TerminalEvent as TuiTerminalEvent,
 };
 use kvim_ui::Direction;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode};
@@ -243,8 +244,8 @@ pub enum FileSidebarRowKind {
     DirectoryExpanded,
     /// An expanded directory whose listing is pending.
     DirectoryLoading,
-    /// A non-selectable bounded notice.
-    Notice,
+    /// A non-selectable bounded notice of the given kind.
+    Notice(FileSidebarNoticeKind),
 }
 
 /// Recorded Git state of one file-sidebar row.
@@ -296,6 +297,45 @@ pub enum FileSidebarIconRole {
     Unknown,
 }
 
+/// Why kvim dims one file-sidebar entry.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarDimming {
+    /// A generated name or Git ignored state marks machine output.
+    Generated,
+    /// The file-operation clipboard holds this entry.
+    Held(WorkspaceTransfer),
+}
+
+/// One bounded match in a file-sidebar label.
+///
+/// Both values count Unicode scalar-value characters. They are not byte
+/// offsets or terminal-cell columns, and their end does not exceed the label.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FileSidebarLabelMatch {
+    start: usize,
+    len: usize,
+}
+
+impl FileSidebarLabelMatch {
+    /// Returns the zero-based matched character position in the label.
+    #[must_use]
+    pub const fn start(self) -> usize {
+        self.start
+    }
+
+    /// Returns the number of matched characters.
+    #[must_use]
+    pub const fn len(self) -> usize {
+        self.len
+    }
+
+    /// Reports whether the span is empty.
+    #[must_use]
+    pub const fn is_empty(self) -> bool {
+        self.len == 0
+    }
+}
+
 /// One bounded semantic row of a host-owned file sidebar.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileSidebarRow {
@@ -307,7 +347,10 @@ pub struct FileSidebarRow {
     selected: bool,
     git: Option<FileSidebarGitState>,
     symlink: FileSidebarSymlinkState,
+    dimming: Option<FileSidebarDimming>,
+    matched: Option<FileSidebarLabelMatch>,
     icon: Option<FileSidebarIconRole>,
+    icon_glyph: Option<&'static str>,
 }
 
 impl FileSidebarRow {
@@ -351,10 +394,38 @@ impl FileSidebarRow {
     pub const fn symlink(&self) -> FileSidebarSymlinkState {
         self.symlink
     }
+    /// Returns why kvim dims this entry, independently of its Git state.
+    #[must_use]
+    pub const fn dimming(&self) -> Option<FileSidebarDimming> {
+        self.dimming
+    }
+    /// Returns the typed notice kind. Entry rows return `None`.
+    #[must_use]
+    pub const fn notice_kind(&self) -> Option<FileSidebarNoticeKind> {
+        match self.kind {
+            FileSidebarRowKind::Notice(kind) => Some(kind),
+            FileSidebarRowKind::File
+            | FileSidebarRowKind::DirectoryCollapsed
+            | FileSidebarRowKind::DirectoryExpanded
+            | FileSidebarRowKind::DirectoryLoading => None,
+        }
+    }
+    /// Returns the current bounded search match in label-character positions.
+    #[must_use]
+    pub const fn matched_characters(&self) -> Option<FileSidebarLabelMatch> {
+        self.matched
+    }
     /// Returns the semantic icon role.
     #[must_use]
     pub const fn icon(&self) -> Option<FileSidebarIconRole> {
         self.icon
+    }
+    /// Returns the exact one-cell icon glyph used by kvim.
+    ///
+    /// The glyph requires the patched font described in `docs/files.md`.
+    #[must_use]
+    pub const fn icon_glyph(&self) -> Option<&'static str> {
+        self.icon_glyph
     }
 }
 
@@ -3014,7 +3085,16 @@ fn convert_file_sidebar_row(row: TuiFileRow) -> FileSidebarRow {
         TuiFileRowKind::ClosedDirectory => FileSidebarRowKind::DirectoryCollapsed,
         TuiFileRowKind::OpenDirectory => FileSidebarRowKind::DirectoryExpanded,
         TuiFileRowKind::LoadingDirectory => FileSidebarRowKind::DirectoryLoading,
-        TuiFileRowKind::Note => FileSidebarRowKind::Notice,
+        TuiFileRowKind::Note => FileSidebarRowKind::Notice(
+            match row
+                .notice_kind()
+                .expect("the private row type gives every notice a typed identity")
+            {
+                TuiFileRowNoticeKind::Truncated => FileSidebarNoticeKind::Truncated,
+                TuiFileRowNoticeKind::Unreadable => FileSidebarNoticeKind::Unreadable,
+                TuiFileRowNoticeKind::Hidden => FileSidebarNoticeKind::Hidden,
+            },
+        ),
     };
     let git = row.git().map(|git| match git {
         TuiFileRowGit::Ignored => FileSidebarGitState::Ignored,
@@ -3044,6 +3124,14 @@ fn convert_file_sidebar_row(row: TuiFileRow) -> FileSidebarRow {
             unreachable!("file-tree rows cannot carry command icon roles")
         }
     });
+    let dimming = row.dimming().map(|dimming| match dimming {
+        TuiFileRowDimming::Generated => FileSidebarDimming::Generated,
+        TuiFileRowDimming::HeldCopy => FileSidebarDimming::Held(WorkspaceTransfer::Copy),
+        TuiFileRowDimming::HeldMove => FileSidebarDimming::Held(WorkspaceTransfer::Move),
+    });
+    let matched = row
+        .matched_characters()
+        .map(|(start, len)| FileSidebarLabelMatch { start, len });
     FileSidebarRow {
         id,
         label: row.label().to_owned(),
@@ -3057,7 +3145,10 @@ fn convert_file_sidebar_row(row: TuiFileRow) -> FileSidebarRow {
         } else {
             FileSidebarSymlinkState::Direct
         },
+        dimming,
+        matched,
         icon,
+        icon_glyph: row.icon_glyph(),
     }
 }
 

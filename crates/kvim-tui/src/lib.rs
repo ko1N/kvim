@@ -99,8 +99,8 @@ pub mod __private {
         GeometryError, InputRequest, PublishedEvent, Reduction, ReductionOutcome, Refusal,
     };
     pub use crate::file_sidebar::{
-        FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowGit, FileRowIdentity,
-        FileRowKind, FileRowNoticeKind, FileSidebarInput, FileSidebarOutcome,
+        FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowDimming, FileRowGit,
+        FileRowIdentity, FileRowKind, FileRowNoticeKind, FileSidebarInput, FileSidebarOutcome,
     };
     pub use crate::review::{
         ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter, ReviewRestore,

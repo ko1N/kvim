@@ -285,6 +285,8 @@ fn every_presentation_combination_opens_and_writes_only_the_accepted_rectangle()
 fn host_owned_sidebar_publishes_stable_bounded_rows_and_semantic_commands() {
     let root = TestRoot::new("host-sidebar-state");
     fs::create_dir_all(root.0.join("src")).unwrap();
+    fs::create_dir_all(root.0.join("target")).unwrap();
+    fs::write(root.0.join(".hidden"), "hidden\n").unwrap();
     fs::write(root.0.join("src/main.rs"), "fn main() {}\n").unwrap();
     fs::write(root.0.join("README.md"), "read me\n").unwrap();
     let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
@@ -321,6 +323,28 @@ fn host_owned_sidebar_publishes_stable_bounded_rows_and_semantic_commands() {
     assert_eq!(readme.path().unwrap().as_path(), Path::new("README.md"));
     assert_eq!(readme.kind(), FileSidebarRowKind::File);
     assert_eq!(readme.icon(), Some(FileSidebarIconRole::Document));
+    assert_eq!(readme.icon_glyph(), Some("\u{f48a}"));
+    assert_eq!(readme.dimming(), None);
+    assert_eq!(readme.notice_kind(), None);
+    assert_eq!(readme.matched_characters(), None);
+    let generated = first
+        .rows()
+        .iter()
+        .find(|row| row.label() == "target")
+        .unwrap();
+    assert_eq!(generated.dimming(), Some(FileSidebarDimming::Generated));
+    assert_ne!(generated.git(), Some(FileSidebarGitState::Ignored));
+    let hidden_notice = first
+        .rows()
+        .iter()
+        .find(|row| matches!(row.kind(), FileSidebarRowKind::Notice(_)))
+        .unwrap();
+    assert_eq!(
+        hidden_notice.notice_kind(),
+        Some(FileSidebarNoticeKind::Hidden)
+    );
+    assert_eq!(hidden_notice.icon(), None);
+    assert_eq!(hidden_notice.icon_glyph(), None);
     let readme_id = readme.id().clone();
     let ids = first
         .rows()

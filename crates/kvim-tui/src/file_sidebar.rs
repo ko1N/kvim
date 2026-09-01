@@ -34,6 +34,7 @@ use kvim_ui::{
     ListMotion, SIDEBAR_GUIDE_INDENT_CELLS, SIDEBAR_LABEL_CHARS_MAX, SIDEBAR_ROWS_MAX,
     SidebarCanvas,
 };
+use kvim_workspace::TransferMode;
 use ratatui::style::Style;
 use unicode_width::UnicodeWidthChar;
 
@@ -216,6 +217,17 @@ impl FileRowGit {
     }
 }
 
+/// Why one file-sidebar entry uses kvim's dimmed row style.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileRowDimming {
+    /// A fixed generated name or Git ignore state marks machine output.
+    Generated,
+    /// The file-operation clipboard holds the entry for copying.
+    HeldCopy,
+    /// The file-operation clipboard holds the entry for moving.
+    HeldMove,
+}
+
 /// The characters of one row label that the file-tree search matched.
 ///
 /// The span counts characters of the label, not cells and not bytes, so a
@@ -354,10 +366,8 @@ impl FileRow {
 
     /// Sets the icon of the row.
     ///
-    /// The glyph stays unpublished, because it needs a patched font that a
-    /// host may not hold. [`FileRow::icon_role`] publishes the role beside it,
-    /// and [`draw_file_row`] draws the glyph for a host that wants kvim's own
-    /// look.
+    /// The row publishes both the exact glyph and its semantic role. Kvim's
+    /// painter reads this same icon value, so a host can reproduce its output.
     #[must_use]
     pub(super) const fn with_icon(mut self, icon: Option<Icon>) -> Self {
         self.icon = icon;
@@ -366,8 +376,15 @@ impl FileRow {
 
     /// Sets the characters of the label that the file-tree search matched.
     #[must_use]
-    pub(super) const fn with_matched(mut self, matched: Option<LabelMatch>) -> Self {
-        self.matched = matched;
+    pub(super) fn with_matched(mut self, matched: Option<LabelMatch>) -> Self {
+        let label_chars = self.label.chars().count();
+        self.matched = matched.filter(|matched| {
+            matched.len > 0
+                && matched
+                    .start
+                    .checked_add(matched.len)
+                    .is_some_and(|end| end <= label_chars)
+        });
         self
     }
 
@@ -464,6 +481,55 @@ impl FileRow {
     pub const fn icon_role(&self) -> Option<IconRole> {
         match self.icon {
             Some(icon) => Some(icon.role),
+            None => None,
+        }
+    }
+
+    /// Returns why kvim dims this entry, or `None` for a non-dimmed row.
+    ///
+    /// Git ignored state remains available separately through [`Self::git`].
+    #[inline]
+    #[must_use]
+    pub const fn dimming(&self) -> Option<FileRowDimming> {
+        match self.state {
+            RowState::Generated => Some(FileRowDimming::Generated),
+            RowState::Held(TransferMode::Copy) => Some(FileRowDimming::HeldCopy),
+            RowState::Held(TransferMode::Move) => Some(FileRowDimming::HeldMove),
+            RowState::Directory | RowState::File | RowState::Omitted | RowState::Incomplete => None,
+        }
+    }
+
+    /// Returns the semantic notice kind, or `None` for an entry row.
+    #[inline]
+    #[must_use]
+    pub const fn notice_kind(&self) -> Option<FileRowNoticeKind> {
+        match &self.identity {
+            FileRowIdentity::Notice { kind, .. } => Some(*kind),
+            FileRowIdentity::Entry(_) => None,
+        }
+    }
+
+    /// Returns the exact one-cell icon glyph that kvim draws.
+    ///
+    /// The glyph requires the patched font described in `docs/files.md`.
+    #[inline]
+    #[must_use]
+    pub const fn icon_glyph(&self) -> Option<&'static str> {
+        match self.icon {
+            Some(icon) => Some(icon.glyph),
+            None => None,
+        }
+    }
+
+    /// Returns the matched label span as `(start, length)` in characters.
+    ///
+    /// These values are not byte offsets or terminal-cell columns. Both values
+    /// are bounded by [`FILE_SIDEBAR_LABEL_CHARS_MAX`].
+    #[inline]
+    #[must_use]
+    pub const fn matched_characters(&self) -> Option<(usize, usize)> {
+        match self.matched {
+            Some(matched) => Some((matched.start, matched.len)),
             None => None,
         }
     }

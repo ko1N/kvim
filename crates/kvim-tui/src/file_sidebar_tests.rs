@@ -486,6 +486,38 @@ fn short_row_text_keeps_its_style_and_a_selected_fade_keeps_its_background() {
 }
 
 #[test]
+fn published_rows_expose_bounded_character_matches_and_exact_icon_glyphs() {
+    let label = "éclair.rs";
+    let row = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new(label).unwrap()),
+        WorktreeRelativePath::new(label).ok(),
+        label.to_owned(),
+        SIDEBAR_GUIDE_BLANK.to_owned(),
+        0,
+        FileRowKind::File,
+        RowState::Generated,
+    )
+    .with_icon(Some(crate::icons::file_icon(label)))
+    .with_matched(Some(LabelMatch { start: 0, len: 6 }));
+
+    assert_eq!(row.dimming(), Some(FileRowDimming::Generated));
+    assert_eq!(row.matched_characters(), Some((0, 6)));
+    assert_eq!(row.icon_glyph(), Some("\u{e7a8}"));
+    assert_eq!(row.icon_role(), Some(IconRole::Code));
+
+    let held = FileRow::new(
+        FileRowIdentity::Entry(WorktreeRelativePath::new("held.rs").unwrap()),
+        WorktreeRelativePath::new("held.rs").ok(),
+        "held.rs".to_owned(),
+        SIDEBAR_GUIDE_BLANK.to_owned(),
+        0,
+        FileRowKind::File,
+        RowState::Held(kvim_workspace::TransferMode::Move),
+    );
+    assert_eq!(held.dimming(), Some(FileRowDimming::HeldMove));
+}
+
+#[test]
 fn a_note_row_reports_its_directory_and_takes_no_selection() {
     let directory = TempDir::new("file-sidebar-note");
     directory.file(".hidden", "one line\n");

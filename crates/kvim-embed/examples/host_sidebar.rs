@@ -53,7 +53,15 @@ fn main() -> Result<(), Box<dyn Error>> {
             .file_sidebar_snapshot()
             .expect("the host owns the sidebar");
         for row in snapshot.rows() {
-            println!("kvim tree: {:?} {}", row.id(), row.label());
+            println!(
+                "kvim tree: {:?} icon={:?} dimming={:?} notice={:?} match={:?} {}",
+                row.id(),
+                row.icon_glyph(),
+                row.dimming(),
+                row.notice_kind(),
+                row.matched_characters(),
+                row.label()
+            );
         }
         let _ = editor.file_sidebar_command(FileSidebarCommand::MoveDown);
 

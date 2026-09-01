@@ -548,7 +548,10 @@ entries reports a choice of the reader, so it stays quiet. A truncated or a
 failed read keeps entries out that the reader expects, so it warns.
 
 The tree search marks every matched name over the state of its row, so a match
-inside a dimmed or held entry still reads as one match.
+inside a dimmed or held entry still reads as one match. The public sidebar row
+reports this bounded span as a zero-based start and length in Unicode
+scalar-value characters of its label. These values are not byte offsets or
+terminal-cell columns.
 
 ### Icons
 
@@ -569,7 +572,9 @@ occupies one terminal cell.
 
 The theme colors each icon through an icon role, such as code, configuration,
 document, script, version control, generated, media, or unknown. A call site
-names the role, never a color. See [`windows.md`](windows.md).
+names the role, never a color. The public sidebar row also reports the exact
+one-cell glyph from this table, so a host can reproduce Kvim's painter without
+copying the table. See [`windows.md`](windows.md).
 
 The same table also holds one icon for each which-key command group: search,
 code, window, buffer, file tree, and one default icon for every other command.
