@@ -1099,12 +1099,18 @@ row opens:
 | `Space f/` | The ripgrep search | Opens the file at the matched line |
 | `Space o`, `Space fb` | The loaded buffer list | Shows the buffer |
 
-The picker covers the complete terminal and keeps no padding on either axis. The
-prompt sits at the top. The result list ascends from the prompt, so the best
-match sits next to it. A result shows the filename first, then its directory. A
-wide layout gives the preview 75 percent of the width, on the right. No region
-carries a divider glyph: one blank row and one blank column separate them. See
-[`windows.md`](windows.md).
+The picker covers the complete terminal and keeps no padding on either axis. An
+optional title row names the picker kind at the left and the `esc` close key at
+the right. The prompt follows the title row, and an empty query shows a muted
+`Search` placeholder instead of a bare prefix. The result list ascends from the
+prompt, so the best match sits next to it. Every result row reserves a
+two-cell marker column, and the selected row fills that row with an accent
+band and a leading marker glyph. A result shows the filename first, then its
+directory. An optional hint row below the results names the picker keys. A
+terminal too short for the title row and the hint row drops both together and
+keeps at least one result row. A wide layout gives the preview 75 percent of
+the width, on the right. No region carries a divider glyph: one blank row and
+one blank column separate the regions. See [`windows.md`](windows.md).
 
 A terminal that cannot hold a readable preview column and a readable result
 column shows the results alone, over the complete width.

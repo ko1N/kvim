@@ -777,23 +777,48 @@ exactly as a host sidebar does. See [List Motion](#list-motion).
 A confirmation is a bounded, action-agnostic dialog owned by `kvim-ui`. The
 owner supplies the body rectangle. The dialog dims only that rectangle and
 never covers host-owned chrome outside it. The popup has no full border. It
-fills its surface and draws a vertical rail along the full left edge, including
-padding and every focused row or control. One blank column separates the rail
-from the content. The popup keeps blank padding above and below its content.
+draws a solid rail along its full left edge, over the complete popup height,
+including every padding row and the footer band. Two blank columns separate
+the rail from the content, and two more blank columns close the popup on the
+right, so content never touches either popup edge.
 
-The question wraps inside the popup. An optional bounded body of lines may sit
-between the title and question; it is display text, not a scrollable document.
-The dialog refuses a question, body, choice list, label, direct-key set, or
-popup rectangle that exceeds its named bound. A body too small for the minimum
-rail, padding, wrapped question, and one choice row returns a typed refusal.
-The narrow-screen refusal is deterministic and never falls back to the message
-line. Layout returns the exact popup `Rect` and the exact `Rect` of each visible
-choice from the same calculation that paints them.
+The popup is only as wide as its content needs. Layout compares the width of
+the unwrapped question against the width that the choice row, the widest body
+line, and the severity glyph require, and sizes the popup content to the wider
+of the two, up to the body width and `DIALOG_POPUP_COLUMNS_MAX`. A question
+wider than that maximum wraps instead of growing the popup further. A narrow
+question next to a wide choice row still produces a popup wide enough for the
+choices. The popup stays centered in the body on both axes.
 
-The dialog uses semantic theme roles for its surface, dimmed body, rail, text,
-default, and focused choice. The overlays paint in the fixed order defined
-below. Rendering and layout read no terminal, clock, filesystem, process, or
-network state.
+One blank row opens the popup. The title row follows: an optional severity
+glyph, one blank cell, then the question. A wrapped question continues on
+further rows that indent under the first question cell, past the glyph. An
+optional bounded body of lines sits below the question, separated from it by
+one blank row; the body is display text, not a scrollable document. One blank
+row closes the content region.
+
+A three-row footer band follows: one blank row, the choice row, and one blank
+row. The band paints its own background over the popup width minus the rail,
+so it reads as a band separate from the body above it. Each choice paints as a
+chip: one leading space, the label, and one trailing space. Two blank cells
+separate two chips.
+
+The dialog refuses a question, body, choice list, label, direct-key set,
+severity glyph, or popup rectangle that exceeds its named bound. A body too
+small for the minimum rail, padding, wrapped question, and the footer band
+returns a typed refusal; the smallest popup that this layout can produce is 6
+rows. The narrow-screen refusal is deterministic and never falls back to the
+message line. Layout returns the exact popup `Rect`, the exact footer `Rect`,
+and the exact `Rect` of each visible choice from the same calculation that
+paints them, including the leading and trailing padding cell of each chip, so
+a pointer press on that padding still answers.
+
+The dialog uses semantic theme roles for its surface, dimmed body, rail,
+severity glyph, question, body text, footer band, and default and focused
+choice. `Dialog::with_icon` sets the optional severity glyph; `Dialog::new`
+keeps its own signature, so a caller that wants no glyph changes nothing. The
+overlays paint in the fixed order defined below. Rendering and layout read no
+terminal, clock, filesystem, process, or network state.
 
 ## Chrome
 
@@ -927,9 +952,11 @@ character.
 
 The text of a row starts one cell inside the list, so a candidate stands above
 the text of the command line, which follows the `:` prefix. The selected row
-carries the selection color of a popup list, which the picker uses for its own
-selected row. The list is decoration: it changes no buffer text, no cursor
-position, and no line mapping.
+carries the selection color of a popup list, the same muted band that the file
+sidebar and the diff view use for their own selected row. The file picker
+paints a different, filled accent band for its own selected row instead. See
+[`files.md`](files.md). The list is decoration: it changes no buffer text, no
+cursor position, and no line mapping.
 
 kvim publishes the list, so a host that offers candidates of its own draws the
 same list and writes no second one. `kvim_tui::LineCompletion` is the model, and
