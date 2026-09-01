@@ -19,6 +19,11 @@
 //! them. A terminal too short for the title row, the header row, and the hint
 //! row drops all three together and keeps at least one result row. See
 //! `docs/windows.md`.
+//!
+//! One result row shows the selection marker, the icon of the file, the
+//! filename in the title color, and the directory that holds it in a dim color.
+//! The one icon setting of the file tree turns the icon column off, and the
+//! rows stay aligned without it. See `docs/files.md`.
 
 use std::sync::Arc;
 
@@ -28,13 +33,15 @@ use ratatui::style::Style;
 
 use kvim_input::PromptKind;
 use kvim_path::WorktreeRoot;
+use kvim_settings::FileTreeIcons;
 use kvim_workspace::{
-    Acceptance, Candidate, Picker, PickerKind, PickerRequest, PickerResult, PickerSlot, Preview,
-    PreviewKey,
+    Acceptance, Candidate, CandidateTarget, Picker, PickerKind, PickerRequest, PickerResult,
+    PickerSlot, Preview, PreviewKey,
 };
 
 use super::cells::text_cells;
 use super::chrome::prompt_cursor_x;
+use super::icons::{ICON_CELLS, file_icon};
 use super::session::{PromptLine, Redraw};
 use super::theme::{Theme, ThemeRole};
 
@@ -95,6 +102,20 @@ const RESULT_SELECTED_MARKER: &str = "\u{25cf} ";
 /// The width of the marker column that every result row reserves, selected or
 /// not, so the candidate text of every row lines up on the same column.
 const RESULT_MARKER_CELLS: u16 = 2;
+
+/// The width of the icon column that every result row reserves while the editor
+/// shows icons.
+///
+/// The picker reserves the same width as the file tree, so both lists show one
+/// icon column of the same shape. The one icon setting turns the column off,
+/// and the column then reserves no cell at all.
+const RESULT_ICON_CELLS: u16 = ICON_CELLS as u16;
+
+/// The number of cells between two text columns of one result row.
+///
+/// A gap cell carries no glyph, so it keeps the background of the row and the
+/// filled selection band stays unbroken across it.
+const RESULT_COLUMN_GAP_CELLS: u16 = 2;
 
 /// One key and the motion or the action that it performs, for the hint row
 /// below the results.
@@ -549,12 +570,17 @@ impl PickerState {
 ///
 /// The function returns the cell of the prompt cursor, so the terminal draws
 /// its own cursor where the reader types.
+///
+/// `icons` is the one icon setting of the editor, so a terminal without a
+/// patched font turns the icon column of the result rows off together with
+/// every other glyph.
 pub(super) fn render_picker(
     target: &mut CellBuffer,
     area: Rect,
     theme: Theme,
     state: &PickerState,
     prompt: Option<&PromptLine>,
+    icons: FileTreeIcons,
 ) -> Option<Position> {
     if area.is_empty() {
         return None;
@@ -582,7 +608,7 @@ pub(super) fn render_picker(
     if let Some(header) = areas.results_header {
         render_results_header(target, header, theme);
     }
-    render_results(target, areas.results, theme, state);
+    render_results(target, areas.results, theme, state, icons);
     if let Some(hint) = areas.hint {
         render_hint(target, hint, theme);
     }
@@ -774,16 +800,17 @@ fn render_notice(target: &mut CellBuffer, areas: &PickerAreas, theme: Theme, sta
 }
 
 /// Renders the matched rows, with the best match next to the prompt.
-///
-/// Every row reserves [`RESULT_MARKER_CELLS`] for the leading marker, selected
-/// or not, so the candidate text of every row lines up on the same column.
-fn render_results(target: &mut CellBuffer, area: Rect, theme: Theme, state: &PickerState) {
+fn render_results(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    state: &PickerState,
+    icons: FileTreeIcons,
+) {
     if area.is_empty() {
         return;
     }
     let selected = state.picker().selected_row();
-    let text_x = area.x.saturating_add(RESULT_MARKER_CELLS);
-    let width = usize::from(area.width.saturating_sub(RESULT_MARKER_CELLS));
     for (offset, (row, index)) in state
         .picker
         .matches()
@@ -803,40 +830,131 @@ fn render_results(target: &mut CellBuffer, area: Rect, theme: Theme, state: &Pic
             continue;
         };
         let y = area.y.saturating_add(offset);
-        let is_selected = selected == Some(row);
-        let style = if is_selected {
-            theme
-                .style(ThemeRole::Text)
-                .patch(theme.style(ThemeRole::PickerSelection))
-        } else {
-            theme.style(ThemeRole::Text)
-        };
-        target.set_style(Rect::new(area.x, y, area.width, 1), style);
-        if is_selected {
-            target.set_stringn(
-                area.x,
-                y,
-                RESULT_SELECTED_MARKER,
-                usize::from(RESULT_MARKER_CELLS),
-                style,
-            );
+        render_result_row(
+            target,
+            Rect::new(area.x, y, area.width, 1),
+            theme,
+            candidate,
+            icons,
+            selected == Some(row),
+        );
+    }
+}
+
+/// Renders the columns of one result row inside the one-row `area`.
+///
+/// The columns follow one cursor from the left edge of the row: the marker, the
+/// icon of the file, the filename, the directory that holds it, and the matched
+/// line of a search row. Every column takes the width that the column before it
+/// left, and each one clips at the right edge, so a narrow result column writes
+/// no cell outside the row.
+///
+/// Every row reserves [`RESULT_MARKER_CELLS`] for the marker, selected or not,
+/// so the icons and the filenames of every row line up on the same column. The
+/// icon column reserves [`RESULT_ICON_CELLS`] only while the editor shows
+/// icons; a hidden icon reserves no cell and the rows stay aligned without it.
+fn render_result_row(
+    target: &mut CellBuffer,
+    area: Rect,
+    theme: Theme,
+    candidate: &Candidate,
+    icons: FileTreeIcons,
+    selected: bool,
+) {
+    let style = if selected {
+        theme
+            .style(ThemeRole::Text)
+            .patch(theme.style(ThemeRole::PickerSelection))
+    } else {
+        theme.style(ThemeRole::Text)
+    };
+    // The band covers the complete row, so the reader finds the selected row at
+    // any width and the gap cells between two columns keep its background.
+    target.set_style(area, style);
+    let right = area.right();
+    let mut x = area.x;
+    if selected {
+        target.set_stringn(
+            x,
+            area.y,
+            RESULT_SELECTED_MARKER,
+            usize::from(RESULT_MARKER_CELLS),
+            style,
+        );
+    }
+    x = x.saturating_add(RESULT_MARKER_CELLS);
+    if icons == FileTreeIcons::Shown {
+        let icon = file_icon(candidate.name());
+        // The icon carries its own color over the row style, so a selected row
+        // keeps the band behind the glyph.
+        target.set_stringn(
+            x,
+            area.y,
+            icon.glyph,
+            usize::from(right.saturating_sub(x)),
+            style.patch(theme.style(ThemeRole::Icon(icon.role))),
+        );
+        x = x.saturating_add(RESULT_ICON_CELLS);
+    }
+    // The filename stands before its directory, so it normally carries the
+    // title color and the reader finds it first. The filled selection band
+    // paints a dark foreground across the complete row, so a selected filename
+    // keeps that same dark foreground instead; the title accent color would
+    // vanish against the accent background.
+    let name_style = if selected {
+        style
+    } else {
+        Style {
+            bg: style.bg,
+            ..theme.style(ThemeRole::Title)
         }
-        target.set_stringn(text_x, y, candidate.row(), width, style);
-        // The filename stands before its directory, so it normally carries
-        // the title color and the reader finds it first. The filled
-        // selection band paints a dark foreground across the complete row,
-        // so a selected filename keeps that same dark foreground instead;
-        // the title accent color would vanish against the accent
-        // background.
-        let name = if is_selected {
+    };
+    (x, _) = target.set_stringn(
+        x,
+        area.y,
+        candidate.name(),
+        usize::from(right.saturating_sub(x)),
+        name_style,
+    );
+    if let CandidateTarget::Match { line, .. } = candidate.target() {
+        // The reader counts lines from one, so the row shows the human form of
+        // the zero-based line of the match.
+        let position = format!(":{}", line.saturating_add(1));
+        (x, _) = target.set_stringn(
+            x,
+            area.y,
+            &position,
+            usize::from(right.saturating_sub(x)),
+            style,
+        );
+    }
+    let directory = candidate.directory();
+    if !directory.is_empty() {
+        x = x.saturating_add(RESULT_COLUMN_GAP_CELLS);
+        // The directory follows the name that the reader searches, so a dim
+        // color holds it behind that name. A selected row keeps the readable
+        // foreground of its band for the same reason the filename does.
+        let directory_style = if selected {
             style
         } else {
             Style {
                 bg: style.bg,
-                ..theme.style(ThemeRole::Title)
+                ..theme.style(ThemeRole::PickerMuted)
             }
         };
-        target.set_stringn(text_x, y, candidate.name(), width, name);
+        (x, _) = target.set_stringn(
+            x,
+            area.y,
+            directory,
+            usize::from(right.saturating_sub(x)),
+            directory_style,
+        );
+    }
+    if let CandidateTarget::Match { text, .. } = candidate.target()
+        && !text.is_empty()
+    {
+        x = x.saturating_add(RESULT_COLUMN_GAP_CELLS);
+        target.set_stringn(x, area.y, text, usize::from(right.saturating_sub(x)), style);
     }
 }
 

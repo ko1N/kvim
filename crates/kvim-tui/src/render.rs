@@ -297,9 +297,18 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     }
     // The picker covers the complete terminal, so it renders last and owns the
     // one cursor cell that the frame reports. See `docs/files.md`.
-    let picker_cursor = view
-        .picker
-        .and_then(|picker| render_picker(target, view.area, theme, picker, view.prompt));
+    // The result rows read the one icon setting of the file tree, so a terminal
+    // without a patched font turns every glyph off together.
+    let picker_cursor = view.picker.and_then(|picker| {
+        render_picker(
+            target,
+            view.area,
+            theme,
+            picker,
+            view.prompt,
+            view.settings.windows.file_tree_icons,
+        )
+    });
     picker_cursor.or(sidebar_cursor).or(cursor_at)
 }
 

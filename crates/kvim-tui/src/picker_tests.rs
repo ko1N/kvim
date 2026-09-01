@@ -11,15 +11,20 @@ use ratatui::Terminal;
 use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
-use ratatui::style::Style;
+use ratatui::style::{Color, Style};
 use tokio_util::sync::CancellationToken;
 
 use kvim_runtime::ProcessOutput;
-use kvim_settings::EditorSettings;
+use kvim_settings::{EditorSettings, FileTreeIcons};
 use kvim_terminal::{Key, KeyCode, TerminalEvent};
 use kvim_workspace::{PickerResult, PickerSlot, Preview, PreviewKey, PreviewTarget, temp::TempDir};
 
-use crate::picker::{PREVIEW_WIDTH_PERCENT, PickerFailure, RESULT_MARKER_CELLS, picker_areas};
+use crate::cells::text_cells;
+use crate::icons::file_icon;
+use crate::picker::{
+    PREVIEW_WIDTH_PERCENT, PickerFailure, RESULT_COLUMN_GAP_CELLS, RESULT_ICON_CELLS,
+    RESULT_MARKER_CELLS, RESULT_SELECTED_MARKER, picker_areas,
+};
 use crate::session::{Redraw, Session, test_root};
 use crate::theme::{Theme, ThemeRole};
 
@@ -58,6 +63,12 @@ fn workspace() -> (TempDir, Session) {
 
 /// Creates one workspace and one session of one terminal size over it.
 fn workspace_sized(width: u16, height: u16) -> (TempDir, Session) {
+    workspace_with(width, height, EditorSettings::default())
+}
+
+/// Creates one workspace and one session of one terminal size and one settings
+/// value over it.
+fn workspace_with(width: u16, height: u16, settings: EditorSettings) -> (TempDir, Session) {
     let dir = TempDir::new("picker");
     dir.file(
         "src/main.rs",
@@ -68,11 +79,7 @@ fn workspace_sized(width: u16, height: u16) -> (TempDir, Session) {
     dir.file(".gitignore", "target/\n");
     dir.file("target/debug/kvim", "binary\n");
     let root = dir.path.clone();
-    let session = Session::new(
-        Rect::new(0, 0, width, height),
-        EditorSettings::default(),
-        test_root(root),
-    );
+    let session = Session::new(Rect::new(0, 0, width, height), settings, test_root(root));
     (dir, session)
 }
 
@@ -185,12 +192,20 @@ fn region_row(buffer: &CellBuffer, area: Rect, y: u16) -> String {
 }
 
 /// Returns the visible result rows of the picker, without the leading marker
-/// column, so the assertions read the candidate text alone.
+/// column and the icon column, so the assertions read the candidate text alone.
+///
+/// Every test session keeps the shown icons of the default settings, so the
+/// icon column stands between the marker and the filename.
 fn results(session: &Session) -> Vec<String> {
+    result_rows(session, RESULT_MARKER_CELLS + RESULT_ICON_CELLS)
+}
+
+/// Returns the visible result rows of the picker after `skip` leading cells.
+fn result_rows(session: &Session, skip: u16) -> Vec<String> {
     let buffer = draw(session);
     let mut area = picker_areas(session.area()).results;
-    area.x = area.x.saturating_add(RESULT_MARKER_CELLS);
-    area.width = area.width.saturating_sub(RESULT_MARKER_CELLS);
+    area.x = area.x.saturating_add(skip);
+    area.width = area.width.saturating_sub(skip);
     (area.y..area.bottom())
         .map(|y| region_row(&buffer, area, y))
         .filter(|row| !row.is_empty())
@@ -214,6 +229,42 @@ fn prompt_row(session: &Session) -> String {
         Some((query, _)) => query.trim_end().to_owned(),
         None => row,
     }
+}
+
+/// Returns the glyph that one rendered cell holds.
+fn symbol_at(buffer: &CellBuffer, x: u16, y: u16) -> String {
+    buffer
+        .cell((x, y))
+        .expect("the tests read cells of the rendered terminal")
+        .symbol()
+        .to_owned()
+}
+
+/// Returns the foreground color of one rendered cell.
+fn foreground_at(buffer: &CellBuffer, x: u16, y: u16) -> Option<Color> {
+    buffer
+        .cell((x, y))
+        .expect("the tests read cells of the rendered terminal")
+        .style()
+        .fg
+}
+
+/// Returns the background color of one rendered cell.
+fn background_at(buffer: &CellBuffer, x: u16, y: u16) -> Option<Color> {
+    buffer
+        .cell((x, y))
+        .expect("the tests read cells of the rendered terminal")
+        .style()
+        .bg
+}
+
+/// Splits one painted result row into its filename and its directory.
+///
+/// The row leaves [`RESULT_COLUMN_GAP_CELLS`] blank cells between the two, so
+/// the first run of two blanks names the boundary.
+fn split_result_row(row: &str) -> (&str, &str) {
+    row.split_once("  ")
+        .map_or((row, ""), |(name, rest)| (name, rest.trim_start()))
 }
 
 /// Returns the number of blank cells before the first glyph of one row.
@@ -372,7 +423,7 @@ fn the_selected_row_paints_its_filename_with_the_row_foreground_not_the_title_co
 
     let buffer = draw(&session);
     let area = picker_areas(session.area()).results;
-    let filename_x = area.x + 2;
+    let filename_x = area.x + RESULT_MARKER_CELLS + RESULT_ICON_CELLS;
     let filename_fg = buffer
         .cell((filename_x, area.y))
         .expect("the selected row paints its first result")
@@ -397,6 +448,236 @@ fn the_selected_row_paints_its_filename_with_the_row_foreground_not_the_title_co
     assert_eq!(
         marker_fg, filename_fg,
         "the marker and the filename share the one readable foreground"
+    );
+}
+
+#[test]
+fn a_file_row_paints_the_marker_column_the_icon_the_name_and_the_dim_directory() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    // Both files of `src` match the query, and the selection moves to the
+    // second of them, so the first row shows the colors of a plain row.
+    type_keys(&mut session, "src");
+    drain(&mut session);
+    press_ctrl(&mut session, 'j');
+    drain(&mut session);
+
+    let buffer = draw(&session);
+    let area = picker_areas(session.area()).results;
+    let y = area.y;
+    for x in area.x..area.x + RESULT_MARKER_CELLS {
+        assert_eq!(
+            symbol_at(&buffer, x, y),
+            " ",
+            "a row that is not selected keeps its marker column blank"
+        );
+    }
+
+    let mut text_area = area;
+    let text_x = RESULT_MARKER_CELLS + RESULT_ICON_CELLS;
+    text_area.x += text_x;
+    text_area.width -= text_x;
+    let text = region_row(&buffer, text_area, y);
+    let (name, directory) = split_result_row(&text);
+    assert_eq!(directory, "src", "the row names the directory of the file");
+
+    let icon = file_icon(name);
+    let icon_x = area.x + RESULT_MARKER_CELLS;
+    assert_eq!(
+        symbol_at(&buffer, icon_x, y),
+        icon.glyph,
+        "the icon column shows the one file icon of `{name}`"
+    );
+    assert_eq!(
+        foreground_at(&buffer, icon_x, y),
+        role(ThemeRole::Icon(icon.role)).fg,
+        "the icon carries the color of its own role"
+    );
+    assert_eq!(
+        foreground_at(&buffer, text_area.x, y),
+        role(ThemeRole::Title).fg,
+        "the filename carries the title color, so the reader finds it first"
+    );
+    let directory_x = text_area.x
+        + u16::try_from(text_cells(name)).expect("the filename stays inside the terminal")
+        + RESULT_COLUMN_GAP_CELLS;
+    assert_eq!(
+        foreground_at(&buffer, directory_x, y),
+        role(ThemeRole::PickerMuted).fg,
+        "the directory follows the filename in a dim color"
+    );
+}
+
+#[test]
+fn a_search_row_names_its_line_its_directory_and_its_matched_text_after_the_icon() {
+    // The result column of the default test terminal is too narrow for the
+    // matched text, so this session takes a wider one.
+    let (_dir, mut session) = workspace_sized(160, HEIGHT);
+    open_picker(&mut session, "f/");
+    type_keys(&mut session, "needle");
+    let request = session
+        .take_picker_request()
+        .expect("the query starts one search");
+    let result = request.publish(&ProcessOutput {
+        status_code: Some(0),
+        stdout: b"./src/main.rs:3:9:    let needle = 1;\n".to_vec(),
+        stderr: Vec::new(),
+    });
+    let _ = session.apply_picker_result(result);
+
+    assert_eq!(
+        results(&session),
+        vec!["main.rs:3  src  let needle = 1;".to_owned()],
+        "the matched row keeps the filename, the line, the directory, and the text"
+    );
+    let buffer = draw(&session);
+    let area = picker_areas(session.area()).results;
+    assert_eq!(
+        symbol_at(&buffer, area.x + RESULT_MARKER_CELLS, area.y),
+        file_icon("main.rs").glyph,
+        "a search row carries the icon of the file that holds the match"
+    );
+}
+
+#[test]
+fn a_buffer_row_without_a_directory_ends_after_its_name() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "o");
+
+    assert_eq!(
+        results(&session),
+        vec!["[Scratch]".to_owned()],
+        "a buffer without a file shows its name alone"
+    );
+    let buffer = draw(&session);
+    let area = picker_areas(session.area()).results;
+    assert_eq!(
+        symbol_at(&buffer, area.x + RESULT_MARKER_CELLS, area.y),
+        file_icon("[Scratch]").glyph,
+        "a buffer name without an extension takes the default file icon"
+    );
+}
+
+#[test]
+fn hidden_icons_reserve_no_cell_and_keep_the_result_columns_aligned() {
+    let mut settings = EditorSettings::default();
+    settings.windows.file_tree_icons = FileTreeIcons::Hidden;
+    let (_dir, mut session) = workspace_with(WIDTH, HEIGHT, settings);
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+
+    let rows = result_rows(&session, RESULT_MARKER_CELLS);
+    assert!(
+        rows.iter().any(|row| row.starts_with("main.rs  src")),
+        "the hidden icon column moves the name to the marker column: {rows:?}"
+    );
+    let buffer = draw(&session);
+    let area = picker_areas(session.area()).results;
+    for (offset, row) in rows.iter().enumerate() {
+        let y = area.y
+            + u16::try_from(offset).expect("the visible rows stay inside the terminal height");
+        assert_eq!(
+            symbol_at(&buffer, area.x + RESULT_MARKER_CELLS, y),
+            row.chars()
+                .next()
+                .expect("every listed row holds one glyph")
+                .to_string(),
+            "every name starts on the same column when the icons stay hidden"
+        );
+    }
+}
+
+#[test]
+fn the_marker_and_the_selection_band_mark_the_selected_row_alone() {
+    let (_dir, mut session) = workspace();
+    open_picker(&mut session, "ff");
+    drain(&mut session);
+    press_ctrl(&mut session, 'j');
+    drain(&mut session);
+
+    let buffer = draw(&session);
+    let area = picker_areas(session.area()).results;
+    let selected = area.y + 1;
+    let marker = Rect::new(area.x, selected, RESULT_MARKER_CELLS, 1);
+    assert_eq!(
+        region_row(&buffer, marker, selected),
+        RESULT_SELECTED_MARKER.trim_end(),
+        "the marker names the selected row"
+    );
+    let band = role(ThemeRole::PickerSelection).bg;
+    for x in area.x..area.right() {
+        assert_eq!(
+            background_at(&buffer, x, selected),
+            band,
+            "the band covers the complete selected row"
+        );
+    }
+    assert_eq!(
+        region_row(
+            &buffer,
+            Rect::new(area.x, area.y, RESULT_MARKER_CELLS, 1),
+            area.y
+        ),
+        "",
+        "no other row shows the marker"
+    );
+    assert_ne!(
+        background_at(&buffer, area.x, area.y),
+        band,
+        "no other row carries the band"
+    );
+}
+
+#[test]
+fn a_narrow_results_column_clips_every_result_row_inside_its_rectangle() {
+    // The width keeps the preview beside the smallest result column that the
+    // layout allows, so every row of the search picker runs past its edge.
+    let (_dir, mut session) = workspace_sized(68, HEIGHT);
+    open_picker(&mut session, "f/");
+    type_keys(&mut session, "needle");
+    let request = session
+        .take_picker_request()
+        .expect("the query starts one search");
+    let result = request.publish(&ProcessOutput {
+        status_code: Some(0),
+        stdout: b"./src/main.rs:3:9:    let needle = 1;\n".to_vec(),
+        stderr: Vec::new(),
+    });
+    let _ = session.apply_picker_result(result);
+
+    let areas = picker_areas(session.area());
+    let column = areas.results;
+    let preview = areas.preview.expect("the width keeps one preview");
+    assert!(
+        usize::from(column.width) < text_cells("main.rs:3  src  let needle = 1;"),
+        "the narrow column cannot hold the complete row"
+    );
+    assert_eq!(
+        results(&session),
+        vec!["main.rs:3  s".to_owned()],
+        "the row stops at the right edge of the result column"
+    );
+
+    let buffer = draw(&session);
+    for y in column.y..column.bottom() {
+        for x in column.right()..preview.x {
+            assert_eq!(
+                symbol_at(&buffer, x, y),
+                " ",
+                "no row writes a cell outside the result column"
+            );
+        }
+    }
+    assert_eq!(
+        background_at(&buffer, column.right() - 1, column.y),
+        role(ThemeRole::PickerSelection).bg,
+        "the band of the selected row reaches the right edge of the column"
+    );
+    assert_ne!(
+        background_at(&buffer, column.right(), column.y),
+        role(ThemeRole::PickerSelection).bg,
+        "the band stops at that edge"
     );
 }
 
