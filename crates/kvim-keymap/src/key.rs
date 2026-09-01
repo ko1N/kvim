@@ -4,7 +4,7 @@ use std::fmt;
 
 /// The maximum number of bytes that one [`KeyLabel`] writes.
 ///
-/// The longest chord prefix is `C-A-`, and the longest key name is `S-Enter`. A
+/// The longest chord prefix is `C-A-`, and the longest key name is `S-Tab`. A
 /// character key writes at most four bytes after the prefix. The bound therefore
 /// covers every label, and a help layout can reserve one fixed column width.
 pub const KEY_LABEL_BYTES_MAX: usize = 11;
@@ -99,30 +99,37 @@ pub enum KeyCode {
 impl KeyCode {
     /// Returns the help name of the code, or `None` for a character.
     ///
-    /// A character key writes its own value, so it carries no fixed name. The
-    /// space character is invisible, so it carries the name `Space`.
+    /// A character key writes its own value, so it carries no fixed name. An
+    /// invisible key carries the glyph that the reader recognizes, such as `␣`
+    /// for the space key. Every such glyph occupies one terminal cell, so a
+    /// help layout that sizes a key column to its widest name stays narrow, and
+    /// no patched font is needed.
+    ///
+    /// The arrow keys keep their written names. A which-key hint row already
+    /// marks the gap between a key and its label with `→`, so an arrow glyph
+    /// there would read as a second marker.
     ///
     /// ```
     /// use kvim_keymap::KeyCode;
     ///
     /// assert_eq!(KeyCode::BackTab.name(), Some("S-Tab"));
-    /// assert_eq!(KeyCode::Char(' ').name(), Some("Space"));
+    /// assert_eq!(KeyCode::Char(' ').name(), Some("␣"));
     /// assert_eq!(KeyCode::Char('d').name(), None);
     /// ```
     #[inline]
     pub const fn name(self) -> Option<&'static str> {
         let name = match self {
-            Self::Char(' ') => "Space",
+            Self::Char(' ') => "␣",
             Self::Char(_) => return None,
             Self::Up => "Up",
             Self::Down => "Down",
             Self::Left => "Left",
             Self::Right => "Right",
-            Self::Enter => "Enter",
-            Self::ShiftEnter => "S-Enter",
+            Self::Enter => "↵",
+            Self::ShiftEnter => "S-↵",
             Self::Tab => "Tab",
             Self::BackTab => "S-Tab",
-            Self::Backspace => "BS",
+            Self::Backspace => "⌫",
             Self::Delete => "Del",
             Self::Home => "Home",
             Self::End => "End",
@@ -275,14 +282,14 @@ impl Key {
 
 /// One key in the help form that a which-key overlay shows.
 ///
-/// The form names a chord prefix and a key name, such as `C-d`, `Space`, or
-/// `Enter`. It is help text, never a value that code compares. One label writes
-/// at most [`KEY_LABEL_BYTES_MAX`] bytes.
+/// The form names a chord prefix and a key name, such as `C-d`, `␣`, or `↵`. It
+/// is help text, never a value that code compares. One label writes at most
+/// [`KEY_LABEL_BYTES_MAX`] bytes.
 ///
 /// ```
 /// use kvim_keymap::{Key, KeyCode};
 ///
-/// assert_eq!(Key::plain(KeyCode::Char(' ')).label().to_string(), "Space");
+/// assert_eq!(Key::plain(KeyCode::Char(' ')).label().to_string(), "␣");
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct KeyLabel(Key);

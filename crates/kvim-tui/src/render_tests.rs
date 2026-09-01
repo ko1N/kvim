@@ -1277,13 +1277,23 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
 
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
+    // The leader level names the space key `␣` and the return key `↵`, so its
+    // key column holds one cell and two columns of mappings fit.
     assert_eq!(
         row_of(&buffer, 10),
-        format!("    /     {WHICH_KEY_MARKER} Toggle comment")
+        format!(
+            "    {:<28}{}",
+            format!("/ {WHICH_KEY_MARKER} Toggle comment"),
+            format!("k {WHICH_KEY_MARKER} Show hover")
+        )
     );
     assert_eq!(
         row_of(&buffer, 14),
-        format!("    f     {WHICH_KEY_MARKER} +3 commands"),
+        format!(
+            "    {:<28}{}",
+            format!("f {WHICH_KEY_MARKER} +3 commands"),
+            format!("x {WHICH_KEY_MARKER} Unload buffer")
+        ),
         "a key that reaches several commands shows a group marker"
     );
     assert_eq!(
@@ -1318,7 +1328,7 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     assert_eq!(row_of(&buffer, 16), "", "one blank row closes the hints");
     assert_eq!(
         row_of(&buffer, 17),
-        format!("    Space » f{}{WHICH_KEY_LEGEND}", " ".repeat(8)),
+        format!("    ␣ » f{}{WHICH_KEY_LEGEND}", " ".repeat(12)),
         "the footer row names the pressed keys and counts no hint"
     );
 
@@ -1335,7 +1345,7 @@ fn the_which_key_footer_names_the_pressed_keys_and_the_navigation_keys() {
     let buffer = draw(&session);
     assert_eq!(
         row_of(&buffer, 17),
-        format!("    Space » w{}{WHICH_KEY_LEGEND}", " ".repeat(8)),
+        format!("    ␣ » w{}{WHICH_KEY_LEGEND}", " ".repeat(12)),
         "the breadcrumb names both pressed keys, and the legend follows it"
     );
     let color = |x: u16| {
@@ -1406,14 +1416,16 @@ fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
     );
     assert_eq!(
         row_of(&buffer, 17),
-        "    Space » f",
-        "a row that cannot center the legend behind the breadcrumb keeps the breadcrumb alone"
+        format!("    ␣ » f  {WHICH_KEY_LEGEND}"),
+        "a shorter breadcrumb leaves room for the legend beside it"
     );
 }
 
 #[test]
 fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
-    let mut session = session_without_icons(60, 20);
+    // Forty cells hold one column of the leader level, so the twelve mappings
+    // need more rows than the body band grants.
+    let mut session = session_without_icons(40, 20);
     press(&mut session, ' ');
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
@@ -1422,25 +1434,25 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     assert_eq!(
         row_of(&buffer, 17),
         format!(
-            "    Space{}{WHICH_KEY_LEGEND}{}+6 more",
-            " ".repeat(12),
-            " ".repeat(14)
+            "    ␣{}{WHICH_KEY_LEGEND}{}+6 more",
+            " ".repeat(6),
+            " ".repeat(4)
         ),
         "the footer row reports the mappings that no column holds"
     );
     assert_eq!(
         row_of(&buffer, 8),
-        text_row(60, "~", TRACK),
+        text_row(40, "~", TRACK),
         "the buffer stays visible above"
     );
     assert_eq!(row_of(&buffer, 9), "", "one blank row opens the overlay");
     assert_eq!(
         row_of(&buffer, 10),
-        format!("    /     {WHICH_KEY_MARKER} Toggle comment")
+        format!("    / {WHICH_KEY_MARKER} Toggle comment")
     );
     assert_eq!(
         row_of(&buffer, 15),
-        format!("    g     {WHICH_KEY_MARKER} Show worktree changes")
+        format!("    g {WHICH_KEY_MARKER} Show worktree changes")
     );
 
     // A body band that cannot hold the footer and one mapping over its own half
@@ -1461,11 +1473,11 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
     press(&mut session, ' ');
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    // The key column holds five cells, and the marker column stands between it
-    // and the icon column, so every icon sits at the same cell.
+    // The leader level names every key with one cell, and the marker column
+    // stands between the key and the icon, so every icon sits at the same cell.
     let icon = |y: u16| {
         let cell = buffer
-            .cell((12, y))
+            .cell((8, y))
             .expect("the overlay paints an icon cell");
         (cell.symbol().to_owned(), cell.style().fg)
     };
@@ -1488,9 +1500,9 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
     assert_eq!(
         row_of(&buffer, 14),
         format!(
-            "    {:<34}{}",
-            format!("/     {WHICH_KEY_MARKER} {code} Toggle comment"),
-            format!("k     {WHICH_KEY_MARKER} {code} Show hover")
+            "    {:<30}{}",
+            format!("/ {WHICH_KEY_MARKER} {code} Toggle comment"),
+            format!("k {WHICH_KEY_MARKER} {code} Show hover")
         ),
         "the key opens the row, and the icon sits between the marker and the label"
     );

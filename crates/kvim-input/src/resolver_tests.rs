@@ -468,7 +468,7 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
             ("q".to_owned(), "Close buffer".to_owned()),
             ("w".to_owned(), "+3 commands".to_owned()),
             ("x".to_owned(), "Unload buffer".to_owned()),
-            ("Enter".to_owned(), "Split window".to_owned()),
+            ("↵".to_owned(), "Split window".to_owned()),
         ]
     );
 

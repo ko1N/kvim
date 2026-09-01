@@ -106,8 +106,8 @@ impl Borrow<[Key]> for KeySequence {
 impl fmt::Display for KeySequence {
     /// Writes the keys separated by one space.
     ///
-    /// A named key such as `Space` is several characters wide, so a separator
-    /// keeps `Space f` distinct from a single key.
+    /// A named key such as `S-Tab` is several characters wide, so a separator
+    /// keeps `S-Tab f` distinct from a single key.
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         for (index, key) in self.0.iter().enumerate() {
             if index > 0 {

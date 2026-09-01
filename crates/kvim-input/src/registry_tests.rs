@@ -493,10 +493,10 @@ fn the_file_tree_answers_the_resize_keys_itself() {
 fn key_sequences_render_with_their_chord_and_name() {
     let cases = [
         (vec![ch('g'), ch('g')], "g g"),
-        (vec![leader(), ch('f'), ch('/')], "Space f /"),
+        (vec![leader(), ch('f'), ch('/')], "␣ f /"),
         (vec![ctrl('d')], "C-d"),
         (vec![ctrl_alt('h')], "C-A-h"),
-        (vec![Key::ctrl(KeyCode::Enter)], "C-Enter"),
+        (vec![Key::ctrl(KeyCode::Enter)], "C-↵"),
         (vec![Key::plain(KeyCode::Esc)], "Esc"),
     ];
     for (keys, expected) in cases {

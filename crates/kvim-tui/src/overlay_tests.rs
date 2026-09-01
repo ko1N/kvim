@@ -24,14 +24,10 @@ fn the_breadcrumb_joins_the_pressed_keys_in_their_help_form() {
     let leader = Key::plain(KeyCode::Char(' '));
     assert_eq!(
         breadcrumb(&[leader, Key::plain(KeyCode::Char('w'))]),
-        "Space » w",
+        "␣ » w",
         "one marker points from each key to the next"
     );
-    assert_eq!(
-        breadcrumb(&[leader]),
-        "Space",
-        "one key writes its label alone"
-    );
+    assert_eq!(breadcrumb(&[leader]), "␣", "one key writes its label alone");
     assert_eq!(
         breadcrumb(&[]),
         "",
