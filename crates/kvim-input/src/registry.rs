@@ -669,6 +669,26 @@ fn first_release_bindings() -> Vec<Binding> {
         &[leader(), ch('x')],
         Command::UnloadBuffer,
     );
+    // The write group of the reference configuration. `<leader>w` opens it, so
+    // no command may take that prefix alone.
+    add_scoped(
+        table,
+        LEADER_SCOPES,
+        &[leader(), ch('w'), ch('a')],
+        Command::SaveAllBuffers,
+    );
+    add_scoped(
+        table,
+        LEADER_SCOPES,
+        &[leader(), ch('w'), ch('w')],
+        Command::SaveBuffer,
+    );
+    add_scoped(
+        table,
+        LEADER_SCOPES,
+        &[leader(), ch('w'), ch('q')],
+        Command::SaveBufferAndClose,
+    );
     add_scoped(
         table,
         LEADER_SCOPES,
@@ -721,13 +741,16 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::SplitInverseAdaptive,
     );
     add(table, NORMAL, &[ctrl('\\')], Command::SplitInverseAdaptive);
+    // `<leader>q` and `<C-q>` close the buffer, as the reference configuration
+    // does. No buffer key closes the window itself: the `:q` and `:q!` command
+    // lines own that path. The sidebar keeps its own close keys.
     add_scoped(
         table,
         LEADER_SCOPES,
         &[leader(), ch('q')],
-        Command::CloseWindow,
+        Command::CloseBuffer,
     );
-    add(table, ALL_MODES, &[ctrl('q')], Command::CloseWindow);
+    add(table, ALL_MODES, &[ctrl('q')], Command::CloseBuffer);
 
     // Language services.
     add(

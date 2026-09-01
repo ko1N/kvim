@@ -293,7 +293,54 @@ fn a_group_row_carries_the_group_that_every_command_behind_it_shares() {
     // keeps that one group.
     assert_eq!(group_of("f"), Some(CommandGroup::Buffer));
     assert_eq!(group_of("c"), Some(CommandGroup::Code));
-    assert_eq!(group_of("q"), Some(CommandGroup::Window));
+    assert_eq!(group_of("q"), Some(CommandGroup::Buffer));
+}
+
+#[test]
+fn the_leader_write_group_reaches_the_three_write_commands() {
+    let registry = Registry::first_release();
+    for (key, expected) in [
+        (ch('a'), Command::SaveAllBuffers),
+        (ch('w'), Command::SaveBuffer),
+        (ch('q'), Command::SaveBufferAndClose),
+    ] {
+        for scope in [BindingScope::Mode(Mode::Normal), BindingScope::Sidebar] {
+            assert_eq!(
+                registry.command(scope, &[leader(), ch('w'), key]),
+                Some(expected),
+                "{scope} `Space w {}` must reach `{expected}`",
+                key.label()
+            );
+        }
+    }
+    let rows = registry.rows_for_prefix(Mode::Normal, &[leader()]);
+    let write_row = rows
+        .iter()
+        .find(|row| row.key_label().to_string() == "w")
+        .expect("the leader reaches the write group");
+    assert_eq!(write_row.target, WhichKeyTarget::Group { commands: 3 });
+}
+
+#[test]
+fn the_close_keys_close_the_buffer_and_the_unload_key_stays() {
+    let registry = Registry::first_release();
+    assert_eq!(
+        registry.command(Mode::Normal, &[leader(), ch('q')]),
+        Some(Command::CloseBuffer)
+    );
+    // `<C-q>` stays reachable while the user types, so every mode carries it.
+    for mode in Mode::ALL {
+        assert_eq!(
+            registry.command(mode, &[ctrl('q')]),
+            Some(Command::CloseBuffer),
+            "{mode} `<C-q>` must close the buffer"
+        );
+    }
+    assert_eq!(
+        registry.command(Mode::Normal, &[leader(), ch('x')]),
+        Some(Command::UnloadBuffer),
+        "`Space x` keeps the unload command that leaves the editor open"
+    );
 }
 
 #[test]

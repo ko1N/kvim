@@ -474,7 +474,8 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
             ),
             ("k".to_owned(), "Show hover information".to_owned()),
             ("o".to_owned(), "Open the buffer picker".to_owned()),
-            ("q".to_owned(), "Close the focused window".to_owned()),
+            ("q".to_owned(), "Close the active buffer".to_owned()),
+            ("w".to_owned(), "+3 commands".to_owned()),
             ("x".to_owned(), "Unload the active buffer".to_owned()),
             (
                 "Enter".to_owned(),
@@ -547,7 +548,7 @@ fn the_overlay_hides_after_a_command_a_cancel_and_a_reset() {
     assert!(completed.which_key(WHICH_KEY_DELAY).is_some());
     assert_eq!(
         completed.resolve(ch('q'), WHICH_KEY_DELAY),
-        command(Command::CloseWindow)
+        command(Command::CloseBuffer)
     );
     assert!(
         completed.which_key(WHICH_KEY_DELAY).is_none(),

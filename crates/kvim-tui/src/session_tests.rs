@@ -1312,6 +1312,38 @@ fn wheel_inside_picker_results_scrolls_without_changing_selection() {
 }
 
 #[test]
+fn both_picker_close_keys_clear_the_picker_and_its_prompt() {
+    // The picker reads its keys through the prompt, so `Esc` and `<C-c>` must
+    // close both surfaces together. See `add_picker_bindings` in `kvim-input`.
+    let open_picker = || {
+        let mut session = session(80, 12);
+        session.picker = Some(PickerState::open(
+            PickerKind::Buffers,
+            test_root(workspace_root()),
+            Vec::new(),
+        ));
+        let _ = session.open_prompt(PromptKind::Picker);
+        session.reconcile_picker();
+        assert!(session.picker.is_some(), "the fixture opens the picker");
+        assert!(session.prompt.is_some(), "the fixture opens the prompt");
+        session
+    };
+
+    let mut escaped = open_picker();
+    assert_eq!(press_code(&mut escaped, KeyCode::Esc), Redraw::Needed);
+    assert!(escaped.picker.is_none(), "`Esc` closes the picker");
+    assert!(escaped.prompt.is_none(), "`Esc` closes the picker prompt");
+
+    let mut cancelled = open_picker();
+    assert_eq!(press_ctrl(&mut cancelled, 'c'), Redraw::Needed);
+    assert!(cancelled.picker.is_none(), "`<C-c>` closes the picker");
+    assert!(
+        cancelled.prompt.is_none(),
+        "`<C-c>` closes the picker prompt"
+    );
+}
+
+#[test]
 fn wheel_inside_completion_scrolls_without_changing_candidate_or_prompt() {
     let mut session = session(80, 12);
     press(&mut session, ':');

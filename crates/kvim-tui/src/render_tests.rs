@@ -1345,7 +1345,7 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     // and eight of those show a mapping.
     assert_eq!(
         row_of(&buffer, 9),
-        format!(" Which Key{}+3 more", " ".repeat(42)),
+        format!(" Which Key{}+4 more", " ".repeat(42)),
         "the title row reports the mappings that no column holds"
     );
     assert_eq!(
