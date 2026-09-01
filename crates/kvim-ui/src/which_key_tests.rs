@@ -6,8 +6,8 @@ use ratatui::style::{Color, Style};
 
 use crate::which_key::{ColumnLayout, column_layout};
 use crate::{
-    WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyIcon, WhichKeyOverlay,
-    WhichKeyOverlayRow, WhichKeyPlacement, WhichKeyStyles,
+    Cell, WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyIcon,
+    WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyPlacement, WhichKeyStyles,
 };
 
 /// The title that the standalone editor gives its overlay.
@@ -579,6 +579,85 @@ fn a_host_reads_the_placement_without_a_buffer() {
     assert_eq!(placement.total(), 2);
     assert_eq!(placement.pages(), 1);
     assert!(!placement.has_next_page());
+}
+
+#[test]
+fn row_placements_use_the_rendered_non_zero_origin_layout() {
+    let hints = [
+        WhichKeyOverlayRow::new("a", "Alpha"),
+        WhichKeyOverlayRow::new("b", "Beta"),
+    ];
+    let body = Rect::new(11, 7, 30, 12);
+    let overlay = WhichKeyOverlay::new(TITLE, &hints, styles()).expect("bounded hints");
+    let placement = overlay.placement_for(body);
+
+    assert_eq!(placement.rows().len(), 2);
+    assert_eq!(placement.rows()[0].index, 0);
+    assert_eq!(placement.rows()[0].area, Rect::new(12, 18, 10, 1));
+    assert_eq!(placement.rows()[1].index, 1);
+    assert_eq!(placement.rows()[1].area, Rect::new(22, 18, 10, 1));
+
+    let mut target = Buffer::empty(Rect::new(0, 0, 48, 24));
+    let drawn = overlay.render(&mut target, body).expect("body fits buffer");
+    assert_eq!(drawn, placement, "rendering uses the published row layout");
+    assert_eq!(
+        target
+            .cell((placement.rows()[0].area.x, placement.rows()[0].area.y))
+            .expect("first key cell")
+            .symbol(),
+        "a"
+    );
+    assert_eq!(
+        target
+            .cell((placement.rows()[1].area.x, placement.rows()[1].area.y))
+            .expect("second key cell")
+            .symbol(),
+        "b"
+    );
+}
+
+#[test]
+fn row_placements_clip_to_the_overlay_and_hit_test_half_open_cells() {
+    let hints = [
+        WhichKeyOverlayRow::new("a", "Alpha"),
+        WhichKeyOverlayRow::new("b", "Beta"),
+    ];
+    let body = Rect::new(9, 5, 5, 12);
+    let placement = WhichKeyOverlay::new(TITLE, &hints, styles())
+        .expect("bounded hints")
+        .placement_for(body);
+    let first = placement.rows()[0];
+
+    assert_eq!(first.area, Rect::new(10, 15, 4, 1));
+    assert!(first.area.x >= body.x && first.area.right() <= body.right());
+    assert!(first.area.y >= body.y && first.area.bottom() <= body.bottom());
+    assert_eq!(
+        placement.row_at(Cell::new(first.area.x, first.area.y)),
+        Some(&first)
+    );
+    assert_eq!(
+        placement.row_at(Cell::new(first.area.right(), first.area.y)),
+        None,
+        "the right edge is outside a ratatui rectangle"
+    );
+    let last = placement.rows()[1];
+    assert_eq!(
+        placement.row_at(Cell::new(last.area.x, last.area.bottom())),
+        None,
+        "the bottom edge is outside a ratatui rectangle"
+    );
+}
+
+#[test]
+fn empty_or_too_small_bodies_publish_no_row_placements() {
+    let hints = [WhichKeyOverlayRow::new("a", "Alpha")];
+    let overlay = WhichKeyOverlay::new(TITLE, &hints, styles()).expect("bounded hints");
+
+    for body in [Rect::new(4, 3, 0, 8), Rect::new(4, 3, 30, 3)] {
+        let placement = overlay.placement_for(body);
+        assert!(placement.rows().is_empty());
+        assert_eq!(placement.row_at(Cell::new(body.x, body.y)), None);
+    }
 }
 
 #[test]

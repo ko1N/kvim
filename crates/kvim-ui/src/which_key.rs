@@ -274,48 +274,35 @@ pub struct WhichKeyStyles {
     pub key: Style,
 }
 
-/// The page that one render drew, and the size of the complete hint list.
-///
-/// A frame holds a whole number of columns of a bounded height, so a hint list
-/// that outgrows one frame holds several pages. Every hint belongs to exactly
-/// one page: the pages never overlap, and together they cover the list. The
-/// value reports which of them the render drew, so a host paints the position
-/// and knows whether a further step reaches another page.
-///
-/// A frame that holds no hint reports no page at all. An empty hint list and a
-/// body band that cannot hold the title row with one hint both report zero
-/// pages and an empty range.
-///
-/// # Examples
-///
-/// ```
-/// use ratatui::buffer::Buffer;
-/// use ratatui::layout::Rect;
-///
-/// use kvim_ui::{WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
-///
-/// let body = Rect::new(0, 0, 24, 8);
-/// let mut target = Buffer::empty(body);
-/// let hints = [
-///     WhichKeyOverlayRow::new("f", "Find"),
-///     WhichKeyOverlayRow::new("q", "Quit"),
-/// ];
-///
-/// let overlay = WhichKeyOverlay::new(" Which Key ", &hints, WhichKeyStyles::default())?;
-/// let drawn = overlay.render(&mut target, body)?;
-/// assert_eq!(drawn.drawn(), 0..2);
-/// assert_eq!(drawn.total(), 2);
-/// assert_eq!(drawn.pages(), 1);
-/// assert!(!drawn.has_next_page());
-/// # Ok::<(), kvim_ui::WhichKeyError>(())
-/// ```
+/// The exact visible rectangle and source index of one which-key row.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WhichKeyRowPlacement {
+    /// The index of this row in the hint slice supplied to
+    /// [`WhichKeyOverlay::new`].
+    pub index: usize,
+    /// The exact visible cells of this row's column, clipped to the overlay.
+    ///
+    /// The rectangle includes the column gap after the row. This makes every
+    /// visible cell of the row's column answer the same hint. It uses ratatui
+    /// half-open containment: its right and bottom edges are outside it.
+    pub area: Rect,
+}
+
+/// The page that one render drew, the visible row placements, and the size of
+/// the complete hint list.
+///
+/// A host can use [`WhichKeyPlacement::rows`] and
+/// [`WhichKeyPlacement::row_at`] to answer a pointer event without repeating
+/// the overlay layout. The rows use the same geometry that
+/// [`WhichKeyOverlay::render`] paints.
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WhichKeyPlacement {
     page: usize,
     pages: usize,
     first: usize,
     shown: usize,
     total: usize,
+    rows: Vec<WhichKeyRowPlacement>,
 }
 
 impl WhichKeyPlacement {
@@ -327,7 +314,29 @@ impl WhichKeyPlacement {
             first: 0,
             shown: 0,
             total,
+            rows: Vec::new(),
         }
+    }
+
+    /// Returns the exact visible placement of every drawn hint row.
+    ///
+    /// Each row identifies an item in the hint slice supplied to
+    /// [`WhichKeyOverlay::new`]. The rectangles stay within the overlay and
+    /// body band. An empty or too-small body returns no rows.
+    #[must_use]
+    pub fn rows(&self) -> &[WhichKeyRowPlacement] {
+        &self.rows
+    }
+
+    /// Returns the visible row that contains `cell`.
+    ///
+    /// The lookup uses ratatui half-open rectangles. A cell on the right or
+    /// bottom edge of a row therefore selects no row.
+    #[must_use]
+    pub fn row_at(&self, cell: crate::Cell) -> Option<&WhichKeyRowPlacement> {
+        self.rows
+            .iter()
+            .find(|row| crate::contains_cell(row.area, cell))
     }
 
     /// Returns the positions of the drawn hints in the supplied hint list.
@@ -588,16 +597,16 @@ impl<'a> WhichKeyOverlay<'a> {
         // placement that `WhichKeyOverlay::placement_for` reports, and this
         // render paints from it instead of computing the rule a second time.
         let geometry = self.page_geometry(body);
-        let Some(paint) = geometry.paint else {
-            return Ok(geometry.placement);
-        };
         let placement = geometry.placement;
-        let Ok(height) = u16::try_from(paint.layout.rows_per_column) else {
-            debug_assert!(false, "the row bound keeps the overlay height small");
-            return Ok(WhichKeyPlacement::empty(placement.total));
+        let Some(paint) = geometry.paint else {
+            return Ok(placement);
         };
-        let height = height.saturating_add(TITLE_ROWS);
-        let area = Rect::new(body.x, body.bottom() - height, body.width, height);
+        debug_assert_eq!(
+            placement.rows.len(),
+            placement.shown,
+            "one placement exists for every row that the shared layout draws"
+        );
+        let area = paint.area;
         fill(target, area, " ");
         target.set_style(area, self.styles.surface);
         self.render_title(
@@ -607,20 +616,9 @@ impl<'a> WhichKeyOverlay<'a> {
         );
 
         let hints = &self.hints[placement.drawn()];
-        for (index, hint) in hints.iter().enumerate() {
-            let column = index / paint.layout.rows_per_column;
-            let offset = index % paint.layout.rows_per_column;
-            let (Some(x), Ok(offset)) = (
-                column_start(area, column, paint.column_cells),
-                u16::try_from(offset),
-            ) else {
-                // A column that starts outside the body paints nothing, which
-                // the one-column minimum only reaches on a terminal narrower
-                // than one column.
-                continue;
-            };
-            let y = area.y + TITLE_ROWS + offset;
-            let mut cursor = x;
+        for (hint, row) in hints.iter().zip(&placement.rows) {
+            let mut cursor = row.area.x;
+            let y = row.area.y;
             if paint.icon_cells > 0 {
                 let glyph = hint.icon.map_or(0, |icon| text_cells(icon.glyph));
                 if let Some(icon) = hint.icon {
@@ -746,6 +744,29 @@ impl<'a> WhichKeyOverlay<'a> {
             shown == hints.len(),
             "one page never holds more hints than one frame of columns"
         );
+        let height = u16::try_from(layout.rows_per_column)
+            .expect("the row bound keeps the overlay height small")
+            .saturating_add(TITLE_ROWS);
+        let area = Rect::new(body.x, body.bottom() - height, body.width, height);
+        let mut rows = Vec::with_capacity(shown);
+        for index in 0..shown {
+            let column = index / layout.rows_per_column;
+            let offset = u16::try_from(index % layout.rows_per_column)
+                .expect("the row bound keeps the row offset small");
+            let x = column_start(area, column, column_cells)
+                .expect("the shared column layout keeps every drawn row inside the overlay");
+            rows.push(WhichKeyRowPlacement {
+                index: first + index,
+                area: Rect::new(
+                    x,
+                    area.y + TITLE_ROWS + offset,
+                    u16::try_from(column_cells)
+                        .expect("the terminal width bounds one column")
+                        .min(area.right() - x),
+                    1,
+                ),
+            });
+        }
         PageGeometry {
             placement: WhichKeyPlacement {
                 page,
@@ -753,12 +774,12 @@ impl<'a> WhichKeyOverlay<'a> {
                 first,
                 shown,
                 total,
+                rows,
             },
             paint: Some(PagePaint {
-                column_cells,
+                area,
                 icon_cells,
                 key_cells,
-                layout,
             }),
         }
     }
@@ -790,15 +811,13 @@ impl PageGeometry {
 
 /// The measurements that painting one page needs, beyond its placement.
 struct PagePaint {
-    /// The width of one column, its own gap included, in terminal cells.
-    column_cells: usize,
+    /// The exact overlay rectangle that the page layout selected.
+    area: Rect,
     /// The width that the icon column reserves, or zero while no hint of the
     /// complete list carries an icon.
     icon_cells: usize,
     /// The width of the widest key of the complete list, in terminal cells.
     key_cells: usize,
-    /// The column count and the row count of the drawn page.
-    layout: ColumnLayout,
 }
 
 /// Rejects one text above the character bound.

@@ -162,7 +162,7 @@ pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabSt
 pub use which_key::{
     WHICH_KEY_BODY_SHARE, WHICH_KEY_COLUMN_ROWS_MAX, WHICH_KEY_HINTS_MAX, WHICH_KEY_TEXT_CHARS_MAX,
     WhichKeyError, WhichKeyIcon, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyPlacement,
-    WhichKeyStyles,
+    WhichKeyRowPlacement, WhichKeyStyles,
 };
 pub use window::{
     AdaptiveSplit, ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit,
