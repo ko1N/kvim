@@ -43,6 +43,28 @@ fn a_tree_prompt_returns_input_to_the_sidebar() {
 }
 
 #[test]
+fn prompt_kinds_declare_empty_backspace_cancellation() {
+    let cancelling = [
+        PromptKind::CommandLine,
+        PromptKind::Search,
+        PromptKind::Tree(TreePrompt::AddFile),
+        PromptKind::Tree(TreePrompt::AddDirectory),
+        PromptKind::Tree(TreePrompt::Search),
+        PromptKind::Picker,
+    ];
+    for kind in cancelling {
+        assert!(
+            kind.cancels_on_empty_backspace(),
+            "{kind:?} cancels when Backspace reaches an empty line"
+        );
+    }
+    assert!(
+        !PromptKind::Tree(TreePrompt::Rename).cancels_on_empty_backspace(),
+        "rename stays open so the seed can be replaced"
+    );
+}
+
+#[test]
 fn the_register_selection_is_the_only_scope_that_unbound_input_cancels() {
     // The scope waits for one register name that it binds nowhere, so any
     // other input ends it. Every other scope binds its own cancel keys or

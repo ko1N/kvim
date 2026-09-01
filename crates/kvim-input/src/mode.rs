@@ -425,6 +425,24 @@ pub enum PromptKind {
 }
 
 impl PromptKind {
+    /// Reports whether `Backspace` cancels this prompt when its line is empty.
+    ///
+    /// The command line, searches, picker, and file-tree add and search prompts
+    /// use Vim-style cancellation. Rename stays open, so a user can clear its
+    /// seed before entering a replacement name.
+    ///
+    /// ```
+    /// use kvim_input::{PromptKind, TreePrompt};
+    ///
+    /// assert!(PromptKind::CommandLine.cancels_on_empty_backspace());
+    /// assert!(!PromptKind::Tree(TreePrompt::Rename).cancels_on_empty_backspace());
+    /// ```
+    #[inline]
+    #[must_use]
+    pub const fn cancels_on_empty_backspace(self) -> bool {
+        !matches!(self, Self::Tree(TreePrompt::Rename))
+    }
+
     /// Returns the text that the prompt line shows before the input.
     ///
     /// ```

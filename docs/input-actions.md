@@ -313,10 +313,14 @@ Every edit of the line applies at that position:
 The bound of the line counts the whole line and not the text before the
 position, so an insert in the middle meets the same limit as one at the end.
 
-`Backspace` on the empty line cancels the prompt, like Vim. The empty line
-alone decides that, and not the position, so a `Backspace` at the start of a
-written line removes nothing and keeps the prompt open. `Ctrl-W` never closes
-a prompt, because a host can bind that chord for its own purpose.
+`Backspace` on an empty command line, search, picker, add-file, add-directory,
+or tree-search line cancels that prompt, like Vim. `PromptKind` publishes this
+policy through `cancels_on_empty_backspace`, so hosts apply the same rule. Rename
+is the exception. Its empty line stays open so a reader can clear its seed before
+entering a replacement name. The empty line alone decides the cancellation rule,
+and not the position. A `Backspace` at the start of a written line removes
+nothing and keeps the prompt open. `Ctrl-W` never closes a prompt, because a host
+can bind that chord for its own purpose.
 
 Every motion takes a key that a terminal reader already presses. The arrow
 keys, `Home`, and `End` move as they do in every terminal line editor.
