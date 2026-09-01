@@ -35,8 +35,10 @@ pub const LANGUAGE_WORKSPACE_SETTINGS_BYTES_MAX: usize = LSP_MESSAGE_BYTES_MAX;
 
 /// One grammar-independent language and its declared services.
 ///
-/// The profile is the only source for selectors and ordered server declarations.
-/// Grammar-backed adapters delegate these values to the profile.
+/// The stable identifier is the identity reported to a headless host. The
+/// profile is the only source for case-sensitive path selectors, folded
+/// language aliases, and ordered server declarations. Grammar-backed adapters
+/// delegate to it. A profile creates no runtime, process, or task.
 ///
 /// # Examples
 ///
@@ -146,9 +148,14 @@ pub enum DiagnosticsSelectionError {
 
 /// A grammar-independent registry of language service profiles.
 ///
-/// Explicit registries may contain cross-profile path duplicates. Lookup reports
-/// those paths as [`DiagnosticsSelectionError::AmbiguousPath`]. Language names
-/// and stable profile identifiers must remain unique.
+/// [`DiagnosticsRegistry::first_release`] is available with
+/// `--no-default-features`; it always contains the 25 service profiles.
+/// [`crate::LanguageRegistry::first_release`] is the editor/syntax registry and
+/// remains empty without grammar features. Explicit registries may contain
+/// cross-profile path duplicates. Lookup reports those paths as
+/// [`DiagnosticsSelectionError::AmbiguousPath`]. Language names and stable
+/// profile identifiers must remain unique. Construction validates the complete
+/// table before publishing it and creates no runtime or task.
 ///
 /// # Examples
 ///

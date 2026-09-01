@@ -24,7 +24,7 @@ readonly REPO_ROOT
 readonly ARCHITECTURE="$REPO_ROOT/docs/architecture.md"
 
 # The supported external packages of `docs/architecture.md`.
-readonly PUBLIC_PACKAGES="kvim-path kvim-fuzzy kvim-core kvim-settings kvim-keymap kvim-input kvim-editor kvim-syntax kvim-lsp kvim-ui kvim-embed"
+readonly PUBLIC_PACKAGES="kvim-path kvim-fuzzy kvim-core kvim-settings kvim-keymap kvim-input kvim-editor kvim-syntax kvim-lsp kvim-language kvim-ui kvim-embed"
 
 # The external crates that one isolation charter refuses.
 #
@@ -38,6 +38,7 @@ kvim-syntax crossterm notify ratatui tokio tokio-util
 kvim-keymap cap-std crossterm notify ratatui tokio tokio-util
 kvim-path crossterm notify ratatui tokio tokio-util
 kvim-lsp crossterm ratatui
+kvim-language-headless pulldown-cmark tree-sitter kvim-core kvim-runtime kvim-syntax kvim-terminal kvim-tui
 kvim-input cap-std crossterm notify ratatui tokio tokio-util
 kvim-editor cap-std crossterm notify ratatui tokio tokio-util
 kvim-embed cap-std crossterm notify tokio tokio-util
@@ -185,16 +186,21 @@ check_external_isolation() {
     local name forbidden reached crate
     while read -r name forbidden; do
         [[ -n "$name" ]] || continue
-        if [[ "$name" == "kvim-embed" ]]; then
-            reached="$(cargo tree --quiet -p "$name" -e normal --prefix none --no-dedupe |
-                awk '{ print $1 }' | sort -u)"
-        else
-            reached="$(cargo tree --quiet -p "$name" -e normal --all-features --prefix none --no-dedupe |
-                awk '{ print $1 }' | sort -u)"
+        local subject="$name"
+        if [[ "$name" == "kvim-language-headless" ]]; then
+            subject="kvim-language"
         fi
+        local -a tree_args=(--quiet -p "$subject" -e normal --prefix none --no-dedupe)
+        if [[ "$name" == "kvim-language-headless" ]]; then
+            tree_args+=(--no-default-features)
+        elif [[ "$name" != "kvim-embed" ]]; then
+            tree_args+=(--all-features)
+        fi
+        reached="$(cargo tree "${tree_args[@]}" |
+            awk '{ print $1 }' | sort -u)"
         for crate in $forbidden; do
             if printf '%s\n' "$reached" | grep -qx "$crate"; then
-                fail "$name reaches $crate, but its charter compiles no $crate"
+                fail "$subject reaches $crate, but its charter compiles no $crate"
             fi
         done
     done <<<"$FORBIDDEN_EXTERNAL"

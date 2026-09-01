@@ -9,3 +9,4 @@ publish = false
 
 [dependencies]
 kvim-lsp = { git = "https://github.com/ko1N/kvim.git", rev = "6cdbd15", default-features = false }
+tokio = { version = "1.47", features = ["io-util"] }

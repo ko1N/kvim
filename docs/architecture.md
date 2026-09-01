@@ -152,11 +152,11 @@ owns ratatui geometry and rendering. No syntax-only consumer compiles LSP,
 ratatui, or the editor.
 
 The headless `kvim-language` path depends on `kvim-lsp`, `kvim-path`, and
-`kvim-settings`. It does not enable `kvim-syntax`, Tree-sitter, `kvim-core`,
-`kvim-runtime`, markup, editor, TUI, terminal, or rendering dependencies.
-Grammar and editor features can enable their optional dependencies. This split
-keeps service profiles and headless diagnostics available without a grammar or
-an editor.
+`kvim-settings`. Select it with `--no-default-features`. The default
+`editor-services` feature preserves existing editor consumers. Every grammar
+feature implies `editor-services`. The headless path does not enable
+`kvim-syntax`, Tree-sitter, `kvim-core`, `kvim-runtime`, markup, editor, TUI,
+terminal, or rendering dependencies.
 
 `kvim-tui` keeps its dependency on `kvim-terminal`. The edge carries the
 `TerminalEvent` value alone. Its pointer payload uses the terminal-neutral

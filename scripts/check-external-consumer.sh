@@ -9,7 +9,7 @@ readonly REPO_ROOT
 readonly FIXTURES_ROOT="$REPO_ROOT/fixtures/consumer"
 readonly CONSUMERS=(
     kvim-path kvim-fuzzy kvim-core kvim-settings kvim-keymap kvim-input
-    kvim-editor kvim-syntax kvim-lsp kvim-ui kvim-embed-memory
+    kvim-editor kvim-syntax kvim-lsp kvim-language-headless kvim-ui kvim-embed-memory
     kvim-embed-worktree kvim-embed-host-composition
     kvim-embed-mixed-presentation kvim-embed-unified-host
     kvim-embed-host-sidebar kvim-embed-review-supplied
@@ -159,7 +159,7 @@ if "workspace" not in manifest:
 
 supported = {
     "kvim-path", "kvim-fuzzy", "kvim-core", "kvim-settings", "kvim-keymap",
-    "kvim-input", "kvim-editor", "kvim-syntax", "kvim-lsp", "kvim-ui",
+    "kvim-input", "kvim-editor", "kvim-syntax", "kvim-lsp", "kvim-language", "kvim-ui",
     "kvim-embed",
 }
 for name, dependency in manifest.get("dependencies", {}).items():

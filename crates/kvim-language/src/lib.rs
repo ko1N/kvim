@@ -1,4 +1,10 @@
 //! Grammar-independent Kvim language service declarations.
+//!
+//! The default `editor-services` feature preserves the editor-facing APIs.
+//! Disable default features for grammar-free [`DiagnosticsRegistry`] and
+//! [`HeadlessDiagnosticsProject`] composition. This headless path creates no
+//! runtime or task. See `examples/headless_diagnostics.rs` for a complete warm
+//! project with an injected launcher.
 
 #![deny(missing_docs)]
 

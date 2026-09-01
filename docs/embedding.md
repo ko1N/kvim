@@ -940,6 +940,7 @@ The required examples are:
 - `crates/kvim-syntax/examples/highlight.rs`
 - `crates/kvim-lsp/examples/lsp_diagnostics.rs`
 - `crates/kvim-lsp/examples/custom_lsp_transport.rs`
+- `crates/kvim-language/examples/headless_diagnostics.rs`
 - `crates/kvim-embed/examples/host_owned_chrome.rs`
 - `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
@@ -962,8 +963,10 @@ Each example demonstrates one feature and its minimum setup. Supporting public
 types use their owning feature example. Internal helpers do not require another
 example.
 
-The LSP example starts itself as a deterministic fixture server. A UI example
-renders into a test buffer, or prints the state that it drives when the feature
+The LSP example starts itself as a deterministic fixture server. The headless
+language example uses an injected in-memory launcher. It runs two exact
+revisions through one warm grammar-free project. A UI example renders into a
+test buffer, or prints the state that it drives when the feature
 paints no cell. The in-memory editor example uses no temporary worktree.
 Worktree editor, composition, chrome, sidebar, and review examples use temporary
 worktrees.

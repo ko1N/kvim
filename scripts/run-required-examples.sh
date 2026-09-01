@@ -7,7 +7,7 @@ IFS=$'\n\t'
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 readonly DOCUMENT="$REPO_ROOT/docs/embedding.md"
-readonly REQUIRED_EXAMPLES_COUNT=24
+readonly REQUIRED_EXAMPLES_COUNT=25
 
 main() {
     local records

@@ -23,6 +23,10 @@ use crate::server::{MarkerKind, RootMarkers, ServerGate};
 use crate::{LANGUAGE_SERVICE_ID_BYTES_MAX, LanguageServerId};
 
 /// The marker decision for one realized server declaration.
+///
+/// Active declarations are [`Self::NoMarkersRequired`] or [`Self::Matched`]. A
+/// [`Self::Gated`] declaration remains visible as metadata but receives no
+/// project identity and starts no launcher.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DiagnosticsMarkerGate {
     /// The declaration needs no workspace marker.
@@ -51,6 +55,11 @@ pub enum DiagnosticsMarkerKind {
 }
 
 /// One validated and realized language-server declaration.
+///
+/// It publishes stable Kvim identity, fallback diagnostic source, launch data,
+/// protocol language identity, declared markers and gate result, realized
+/// initialization options and workspace settings, completion policy, and the
+/// optional neutral identity assigned when the declaration opens.
 pub struct RealizedDiagnosticsServer {
     id: LanguageServerId,
     source: &'static str,
@@ -126,6 +135,9 @@ impl RealizedDiagnosticsServer {
 }
 
 /// The selected profile and its realized declarations.
+///
+/// Selection uses one [`WorktreeRelativePath`]. It preserves every declaration
+/// in source order, including marker-gated declarations.
 pub struct HeadlessDiagnosticsSelection<'a> {
     profile: &'static LanguageServiceProfile,
     declarations: Vec<&'a RealizedDiagnosticsServer>,
@@ -200,9 +212,24 @@ impl ServerLauncher for BoxedLauncher {
 
 /// A realized, unopened grammar-free diagnostics project.
 ///
-/// Construction probes markers and realizes settings once. It starts no runtime,
-/// process, or task. [`HeadlessDiagnosticsProject::open`] reserves the matching
-/// project and returns its driver for the host to run.
+/// `new(registry, root, settings, project_id)` selects the default launcher.
+/// `with_launchers(...)` stores a host launcher factory. Both validate the
+/// absolute [`WorkspaceRoot`], probe each declared root marker once, and realize
+/// initialization options and workspace settings before publishing state.
+/// Failure before return publishes no project. Construction starts no runtime,
+/// process, or task.
+///
+/// [`HeadlessDiagnosticsProject::select`] accepts one validated
+/// [`WorktreeRelativePath`] and returns stable profile identity plus every
+/// declaration in source order. Gated declarations stay visible but receive no
+/// neutral project identity and reserve no process capacity.
+///
+/// [`HeadlessDiagnosticsProject::open`] invokes the launcher factory only for
+/// ungated declarations of the selected profile. It invokes each factory once,
+/// in declaration order. The returned launcher serves the first attempt and all
+/// bounded restarts. The host runs the returned driver and keeps the opened
+/// value for warm changed-file requests. See
+/// `examples/headless_diagnostics.rs`.
 ///
 /// # Examples
 ///
@@ -466,8 +493,12 @@ fn validate_json(
 
 /// The host side of one opened warm diagnostics project.
 ///
-/// Keep this value while the separately returned driver runs. Its hub serves all
-/// later changed-file requests through the same warm server sessions.
+/// Keep this value while the separately returned [`ProjectDriver`] runs. Its
+/// [`DiagnosticsHub`] serves all changed-file requests through the same warm
+/// server sessions. Stable [`LanguageServerId`] values map to project-scoped
+/// neutral [`ServerId`] values only for active declarations. Consume the
+/// [`ProjectHandle`] with `close().await` for graceful protocol shutdown and
+/// bounded process cleanup.
 pub struct OpenedHeadlessDiagnosticsProject {
     root: WorkspaceRoot,
     declarations: Vec<RealizedDiagnosticsServer>,

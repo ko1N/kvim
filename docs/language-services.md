@@ -47,7 +47,10 @@ The separate `DiagnosticsRegistry::first_release()` is grammar-independent and
 contains every first-release language service profile. It supports headless
 path selection and diagnostics composition without `kvim-syntax`, Tree-sitter,
 `kvim-core`, `kvim-runtime`, markup, editor, TUI, terminal, or rendering
-dependencies. Grammar and editor features can enable those optional paths.
+dependencies. `kvim-language` enables `editor-services` by default for
+compatibility with existing editor consumers. Use `--no-default-features` for
+the grammar-free profiles and headless facade. Every grammar feature implies
+`editor-services` and enables its optional syntax path.
 
 LSP is optional for syntax and editor consumers. `kvim-syntax` enables no
 grammar by default. It provides one feature for each language and one
@@ -241,6 +244,117 @@ A file that no adapter serves stays a normal, fully editable buffer. It renders
 plain text, it uses the fallback indent rule of
 [`text-model.md`](text-model.md), and its comment toggle changes nothing and
 reports the reason. An unsupported path is never a failure of the editor.
+
+## Headless Diagnostics Public API
+
+A grammar-free host composes the two public handover contracts as follows:
+
+```rust
+let request = kvim_lsp::ServerLaunchRequest::new(program, arguments, root)?;
+let transport = kvim_lsp::TransportFactory::process_with(request, launcher);
+
+let project = kvim_language::HeadlessDiagnosticsProject::with_launchers(
+    kvim_language::DiagnosticsRegistry::first_release(), root_path, settings,
+    project_id, launcher_factory,
+)?;
+let selection = project.select(&relative_path)?;
+let (opened, driver) = project.open(&manager, &relative_path)?;
+```
+
+`ServerLaunchRequest::new(OsString, Vec<OsString>, WorkspaceRoot)` validates and
+owns the program, ordered arguments, and absolute workspace root.
+`ServerLauncher::launch(&mut self, &ServerLaunchRequest)` returns
+`LaunchedServer`, which transfers standard input, standard output, standard
+error, and `ServerProcessHandle`. Its `wait` operation owns the single reap.
+Its `terminate` operation requests forced termination without consuming that
+wait. Every lifecycle implementation must request best-effort termination from
+`Drop`. Kvim calls the launcher for the first attempt and each bounded restart.
+The default `TransportFactory::process(request)` uses
+`DefaultServerLauncher`. `TransportFactory::custom` transfers streams only and
+leaves the remote lifecycle with the host. Kvim owns graceful `shutdown` and
+`exit`, one absolute graceful deadline, forced termination, waiting, reaping,
+and bounded standard-error reports. Start, wait, terminate, and stream failures
+preserve their safe source errors. Cleanup reports do not replace an earlier
+attempt failure. Diagnostics outcomes disclose no raw standard error. Nix
+wrapping and executable policy stay with the host.
+
+`DiagnosticsRegistry::first_release()` returns 25 grammar-independent service
+profiles. `HeadlessDiagnosticsProject::new(...)` uses the default launcher.
+`HeadlessDiagnosticsProject::with_launchers(...)` stores a factory without
+calling it. Construction validates the absolute `WorkspaceRoot`, probes root
+markers, realizes `LanguageSettings`, and creates no runtime or task.
+`select(&WorktreeRelativePath)` returns stable language identity and active or
+gated metadata in declaration order. `open(&ProjectManager,
+&WorktreeRelativePath)` invokes factories only for active declarations of the
+selected profile. It returns `OpenedHeadlessDiagnosticsProject` and
+`ProjectDriver<DiagnosticsConversation>`. The host runs the driver, keeps the
+hub warm for successive `ChangedFile` requests, then consumes the project
+handle with `close().await`. A construction failure publishes no project. A
+manager refusal can occur after launcher objects are created, but no process
+starts until the host runs the driver.
+
+`LanguageServerId` is stable Kvim metadata. `ServerId` is a neutral identity of
+one opened project. Gated declarations have no neutral identity and reserve no
+process slot. Only the three built-in eslint declarations currently use
+`CompletionPolicy::Pull`. Every other declaration uses `Unsupported`. No
+built-in declaration currently uses `VersionedPush`. An `Unsupported` server
+therefore completes with an unsupported server outcome. It never completes by
+guessing from a quiet period.
+
+## Pre-1.0 Migration
+
+Kvim is before version 1.0. Revision-pinned Git consumers receive source breaks
+without a version increase. Pin a tested revision and apply these migrations.
+
+### Process launch
+
+Replace the removed field construction:
+
+```rust
+// Old
+TransportFactory::Process { program, args, root }
+
+// New default process ownership
+let request = ServerLaunchRequest::new(program, args, root)?;
+let transport = TransportFactory::process(request);
+
+// New injected process ownership
+let request = ServerLaunchRequest::new(program, args, root)?;
+let transport = TransportFactory::process_with(request, launcher);
+```
+
+An injected launcher must return all three streams and a lifecycle capability.
+Kvim owns shutdown, termination, wait, and reap. Use
+`TransportFactory::custom` only for stream transports whose remote lifecycle
+stays caller-owned.
+
+### Language declarations and features
+
+Add `diagnostics_completion: CompletionPolicy` to every
+`LanguageServerDeclaration` literal. Use `Unsupported` unless the server has a
+verified exact-revision pull or versioned-push completion rule. The built-in
+inventory is conservative: only eslint is `Pull` today.
+
+`kvim-language` now defaults to `editor-services`. Use this default for the
+existing editor-service surface. Use `default-features = false` for the
+grammar-free `DiagnosticsRegistry` and `HeadlessDiagnosticsProject` surface.
+Every `grammar-*` feature implies `editor-services`.
+
+### Syntax selection
+
+`kvim-syntax` no longer owns language aliases or path selectors. It removed
+`language_of_path`, `LanguageCatalogEntry::language_names`, `extensions`,
+`file_names`, `answers_to`, and `owns_path`. `LanguageCatalogEntry::new` now
+takes only `(id, grammar)`. Its `language(id)` lookup is exact and
+case-sensitive. `language("rust")` can match, but `language("Rust")` and aliases
+cannot. Direct selector consumers now use
+`kvim_language::DiagnosticsRegistry`:
+
+```rust
+let registry = kvim_language::DiagnosticsRegistry::first_release();
+let profile = registry.profile(std::path::Path::new("src/lib.rs"))?;
+assert_eq!(profile.id(), "rust");
+```
 
 ## Syntax Highlighting
 

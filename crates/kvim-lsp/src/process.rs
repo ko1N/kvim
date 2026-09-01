@@ -167,11 +167,14 @@ pub enum ServerReport {
 
 /// A validated, owned command for one language-server attempt.
 ///
-/// The constructor measures the portable encoded bytes returned by
-/// [`OsStr::as_encoded_bytes`]. It rejects an empty program and every named
-/// launch bound. The operating-system process API remains responsible for
-/// platform-specific command validation, including interior null values.
-/// Nix wrapping and other host command policy stays outside Kvim.
+/// Signature: `ServerLaunchRequest::new(OsString, Vec<OsString>, WorkspaceRoot)
+/// -> Result<ServerLaunchRequest, LspError>`. The request preserves argument
+/// order and owns the validated absolute root. It rejects an empty program,
+/// more than [`LSP_SERVER_ARGUMENTS_MAX`] arguments, and values above the
+/// published program, argument, or aggregate byte bounds.
+///
+/// The same request reaches [`ServerLauncher::launch`] for the first attempt
+/// and every bounded restart. Start failures preserve their `io::Error` source.
 ///
 /// # Examples
 ///
@@ -295,7 +298,11 @@ pub type ServerTerminate<'a> =
 
 /// The owning lifecycle capability of one launched server.
 ///
-/// Implementations must initiate best-effort process termination from `Drop`.
+/// `wait(&mut self) -> ServerWait` transfers the single wait-and-reap future.
+/// `terminate(&mut self) -> ServerTerminate<'_>` requests forced termination
+/// without consuming that wait. Implementations must initiate best-effort
+/// process termination from `Drop`; asynchronous cleanup is not cancellation
+/// safe by itself. Wait and termination errors retain their `io::Error` source.
 pub trait ServerProcessHandle: Send {
     /// Transfers the process's single wait-and-reap operation to Kvim.
     ///
@@ -308,9 +315,11 @@ pub trait ServerProcessHandle: Send {
 
 /// All streams and lifecycle ownership of one launched server.
 ///
-/// External launchers construct this value to transfer all four capabilities.
-/// Standard error is mandatory so Kvim can drain it from the first byte. The
-/// lifecycle must meet [`ServerProcessHandle`]'s termination-on-drop contract.
+/// An external launcher transfers standard input, standard output, standard
+/// error, and one [`ServerProcessHandle`] to Kvim. Kvim drains standard error
+/// within published bounds, but diagnostics outcomes never disclose it.
+/// Standard error and cleanup facts are available only through process reports.
+/// The lifecycle must meet the termination-on-drop contract.
 ///
 /// # Examples
 ///
@@ -369,6 +378,11 @@ impl LaunchedServer {
 }
 
 /// Starts one validated language-server request.
+///
+/// One launcher instance receives the exact request for the initial attempt and
+/// every restart, up to [`LSP_RESTARTS_MAX`]. It must return fresh streams and
+/// lifecycle ownership on each successful call. Kvim, not the launcher, owns
+/// protocol shutdown, restart, deadlines, standard-error bounds, and reaping.
 pub trait ServerLauncher: Send {
     /// Starts exactly the supplied request.
     fn launch(
@@ -379,8 +393,12 @@ pub trait ServerLauncher: Send {
 
 /// The default Tokio child-process launcher.
 ///
-/// It fixes all streams to pipes and enables `kill_on_drop`. Nix policy stays
-/// outside Kvim.
+/// It fixes standard input, standard output, and standard error to pipes. It
+/// enables `kill_on_drop`, and its lifecycle separates terminate from wait and
+/// reap. Kvim first gives graceful protocol `shutdown` and `exit` one absolute
+/// [`LSP_SHUTDOWN_DEADLINE`]. It then bounds forced termination and reaping by
+/// [`LSP_FORCED_CLEANUP_DEADLINE`]. Nix wrapping, sandboxing, environment, and
+/// executable selection remain host policy outside Kvim.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct DefaultServerLauncher;
 
@@ -561,8 +579,11 @@ impl Transport {
 
 /// Creates the transport of each session attempt.
 ///
-/// One factory serves the first attempt and every restart of one session, so a
-/// caller declares the program once.
+/// `process(request)` uses [`DefaultServerLauncher`].
+/// `process_with(request, launcher)` transfers child lifecycle ownership to
+/// Kvim. `custom(factory)` transfers fresh streams only; the caller continues
+/// to own and stop any remote process or embedded server. One factory serves
+/// the initial attempt and every bounded restart.
 pub enum TransportFactory {
     /// Start a validated request through an owned launcher.
     Process {
