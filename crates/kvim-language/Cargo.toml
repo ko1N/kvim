@@ -122,3 +122,4 @@ kvim-lsp = { workspace = true, features = ["test-support"] }
 
 # Runtime
 tokio.workspace = true
+tokio-util.workspace = true

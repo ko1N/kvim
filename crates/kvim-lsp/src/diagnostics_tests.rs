@@ -167,6 +167,27 @@ fn pull_server_after(mut mock: MockServer, delay: Duration, items: Value) -> Joi
     })
 }
 
+/// Answers every pull while using the protocol-default UTF-16 encoding.
+fn utf16_pull_server(mut mock: MockServer, items: Value) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        mock.handshake(json!({
+            "textDocumentSync": 1,
+            "diagnosticProvider": { "identifier": "test" },
+        }))
+        .await;
+        while let Some(message) = mock.read_message().await {
+            if message["method"] == "textDocument/diagnostic" {
+                mock.send(&json!({
+                    "jsonrpc": "2.0",
+                    "id": message["id"],
+                    "result": { "kind": "full", "items": items },
+                }))
+                .await;
+            }
+        }
+    })
+}
+
 /// Publishes one set for the revision of every opened document.
 fn push_server(mock: MockServer, items: Value) -> JoinHandle<()> {
     publishing_server(mock, Vec::new(), items)
@@ -419,6 +440,35 @@ async fn a_published_set_of_another_revision_never_publishes() {
         report.diagnostics()[0].diagnostic.message,
         "current marker",
         "an obsolete set reached the report"
+    );
+    session.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn utf16_diagnostics_use_byte_columns_of_the_exact_requested_text() {
+    let (transport, mock) = pipe();
+    let session = Session::open(vec![declared(0, CompletionPolicy::Pull)], vec![transport]);
+    let server = utf16_pull_server(mock, json!([item(0, 2, 3, 1, "after emoji")]));
+    let request = ChangedFile::new(
+        WorktreeRelativePath::new(DOCUMENT).expect("the path is relative"),
+        "😀ab\n".to_owned(),
+        DocumentRevision::new(9),
+        language(),
+    )
+    .wait(WaitPolicy::Until(LONG_DEADLINE));
+
+    let report = ready(session.ask(request).await);
+
+    assert_eq!(report.diagnostics().len(), 1);
+    assert_eq!(
+        report.diagnostics()[0].diagnostic.span.start,
+        crate::DocumentPosition::new(0, 4),
+        "the default UTF-16 column after the emoji becomes its UTF-8 byte column"
+    );
+    assert_eq!(
+        report.diagnostics()[0].diagnostic.span.end,
+        crate::DocumentPosition::new(0, 5)
     );
     session.close().await;
     server.abort();

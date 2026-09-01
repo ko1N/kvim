@@ -13,10 +13,12 @@ use serde_json::{Value, json};
 use tokio::io::{AsyncWriteExt, duplex};
 use tokio::sync::oneshot;
 use tokio::time;
+use tokio_util::sync::CancellationToken;
 
 use kvim_lsp::{
     ChangedFile, DiagnosticsOutcome, DocumentRevision, LSP_MESSAGE_BYTES_MAX, LaunchedServer,
-    ServerProcessHandle, ServerTerminate, ServerWait, WaitPolicy, read_frame,
+    ServerEvent, ServerOutcome, ServerProcessHandle, ServerReport, ServerTerminate, ServerWait,
+    WaitPolicy, read_frame,
 };
 
 use kvim_settings::CheckDepth;
@@ -61,6 +63,22 @@ const PROFILE: LanguageServiceProfile =
     LanguageServiceProfile::new("demo", "1", &["demo"], &["demo"], &["Demofile"], SERVERS);
 const PROFILES: &[LanguageServiceProfile] = &[PROFILE];
 
+const VERSIONED_SERVERS: &[LanguageServerDeclaration] = &[LanguageServerDeclaration {
+    id: "push",
+    program: "push-server",
+    args: &["--stdio"],
+    language_id: "demo",
+    formatting: ServerFormatting::Disabled,
+    diagnostics_completion: CompletionPolicy::VersionedPush,
+    root_markers: &[],
+    initialization_options: options,
+    workspace_settings: None,
+}];
+const VERSIONED_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("demo", "1", &["demo"], &["demo"], &[], VERSIONED_SERVERS);
+
+const STDERR_SENTINEL: &str = "KVIM_STDERR_SENTINEL_7";
+
 fn root() -> PathBuf {
     let suffix = NEXT_ROOT.fetch_add(1, Ordering::Relaxed);
     let root = std::env::temp_dir().join(format!("kvim-headless-{}-{suffix}", std::process::id()));
@@ -78,10 +96,19 @@ fn project(root: PathBuf) -> HeadlessDiagnosticsProject {
     .expect("realize project")
 }
 
+#[derive(Clone, Copy)]
+enum FixtureBehavior {
+    Pull,
+    VersionedPush,
+    Silent,
+    CrashWithStderr,
+}
+
 struct FixtureLauncher {
     launches: Arc<AtomicUsize>,
     requests: Arc<Mutex<Vec<(OsString, Vec<OsString>, PathBuf)>>>,
     cleanup: Arc<AtomicUsize>,
+    behavior: FixtureBehavior,
 }
 
 struct FixtureLifecycle {
@@ -128,9 +155,15 @@ impl ServerLauncher for FixtureLauncher {
         ));
         let (session_input, server_output) = duplex(64 * 1024);
         let (server_input, session_output) = duplex(64 * 1024);
-        let (errors, _errors_peer) = duplex(64);
+        let (errors, errors_peer) = duplex(64 * 1024);
         let (exit, exited) = oneshot::channel();
-        tokio::spawn(serve_pull_fixture(server_output, server_input, exit));
+        tokio::spawn(serve_fixture(
+            server_output,
+            server_input,
+            errors_peer,
+            self.behavior,
+            exit,
+        ));
         Ok(LaunchedServer::new(
             session_input,
             session_output,
@@ -143,11 +176,22 @@ impl ServerLauncher for FixtureLauncher {
     }
 }
 
-async fn serve_pull_fixture(
+async fn serve_fixture(
     mut input: tokio::io::DuplexStream,
     mut output: tokio::io::DuplexStream,
+    mut errors: tokio::io::DuplexStream,
+    behavior: FixtureBehavior,
     exited: oneshot::Sender<()>,
 ) {
+    if matches!(behavior, FixtureBehavior::CrashWithStderr) {
+        errors
+            .write_all(format!("{STDERR_SENTINEL}\n").as_bytes())
+            .await
+            .unwrap();
+        errors.shutdown().await.unwrap();
+        let _ = exited.send(());
+        return;
+    }
     let mut read_bytes = 0;
     loop {
         let Ok(body) = read_frame(&mut input, &mut read_bytes, LSP_MESSAGE_BYTES_MAX * 8).await
@@ -157,20 +201,64 @@ async fn serve_pull_fixture(
         let message: Value = serde_json::from_slice(&body).unwrap();
         match message["method"].as_str().unwrap_or_default() {
             "initialize" => {
+                let capabilities = match behavior {
+                    FixtureBehavior::Pull | FixtureBehavior::Silent => json!({
+                        "textDocumentSync": 1,
+                        "diagnosticProvider": { "identifier": "fixture" }
+                    }),
+                    FixtureBehavior::VersionedPush => json!({"textDocumentSync": 1}),
+                    FixtureBehavior::CrashWithStderr => unreachable!(),
+                };
                 send_response(
                     &mut output,
                     &message["id"],
-                    json!({
-                        "capabilities": {
-                            "positionEncoding": "utf-8",
-                            "textDocumentSync": 1,
-                            "diagnosticProvider": { "identifier": "fixture" }
-                        }
-                    }),
+                    json!({"capabilities": capabilities}),
                 )
                 .await
             }
-            "textDocument/diagnostic" => {
+            "textDocument/didOpen" if matches!(behavior, FixtureBehavior::VersionedPush) => {
+                let document = &message["params"]["textDocument"];
+                let version = document["version"].as_i64().unwrap();
+                send_notification(
+                    &mut output,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": document["uri"],
+                            "version": version - 1,
+                            "diagnostics": [{
+                                "range": {
+                                    "start": {"line": 0, "character": 0},
+                                    "end": {"line": 0, "character": 1}
+                                },
+                                "message": "stale fixture diagnostic"
+                            }]
+                        }
+                    }),
+                )
+                .await;
+                send_notification(
+                    &mut output,
+                    json!({
+                        "jsonrpc": "2.0",
+                        "method": "textDocument/publishDiagnostics",
+                        "params": {
+                            "uri": document["uri"],
+                            "version": version,
+                            "diagnostics": [{
+                                "range": {
+                                    "start": {"line": 0, "character": 0},
+                                    "end": {"line": 0, "character": 1}
+                                },
+                                "message": "current fixture diagnostic"
+                            }]
+                        }
+                    }),
+                )
+                .await;
+            }
+            "textDocument/diagnostic" if matches!(behavior, FixtureBehavior::Pull) => {
                 send_response(
                     &mut output,
                     &message["id"],
@@ -186,6 +274,16 @@ async fn serve_pull_fixture(
     let _ = exited.send(());
 }
 
+async fn send_notification(output: &mut tokio::io::DuplexStream, value: Value) {
+    let body = serde_json::to_vec(&value).unwrap();
+    output
+        .write_all(format!("Content-Length: {}\r\n\r\n", body.len()).as_bytes())
+        .await
+        .unwrap();
+    output.write_all(&body).await.unwrap();
+    output.flush().await.unwrap();
+}
+
 async fn send_response(output: &mut tokio::io::DuplexStream, id: &Value, result: Value) {
     let body = serde_json::to_vec(&json!({"jsonrpc": "2.0", "id": id, "result": result})).unwrap();
     output
@@ -194,6 +292,22 @@ async fn send_response(output: &mut tokio::io::DuplexStream, id: &Value, result:
         .unwrap();
     output.write_all(&body).await.unwrap();
     output.flush().await.unwrap();
+}
+
+async fn close_project(
+    opened: OpenedHeadlessDiagnosticsProject,
+    task: tokio::task::JoinHandle<()>,
+    cleanup: &AtomicUsize,
+    manager: &ProjectManager,
+) {
+    let (_, handle) = opened.into_parts();
+    handle.close().await;
+    time::timeout(Duration::from_secs(5), task)
+        .await
+        .expect("the fixture driver ends")
+        .expect("the fixture driver task succeeds");
+    assert_eq!(cleanup.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.projects(), 0);
 }
 
 #[tokio::test]
@@ -216,6 +330,7 @@ async fn one_open_project_serves_two_requests_through_one_warm_launch() {
                     launches: Arc::clone(&launches),
                     requests: Arc::clone(&requests),
                     cleanup: Arc::clone(&cleanup),
+                    behavior: FixtureBehavior::Pull,
                 })
             }
         },
@@ -256,13 +371,260 @@ async fn one_open_project_serves_two_requests_through_one_warm_launch() {
         )]
     );
 
+    close_project(opened, task, &cleanup, &manager).await;
+}
+
+#[tokio::test]
+async fn versioned_push_ignores_stale_publications_and_completes_exact_revision() {
+    let root = root();
+    let launches = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let cleanup = Arc::new(AtomicUsize::new(0));
+    let project = HeadlessDiagnosticsProject::with_launchers(
+        DiagnosticsRegistry::new(&[VERSIONED_PROFILE]).unwrap(),
+        root,
+        LanguageSettings::default(),
+        ProjectId::FIRST,
+        {
+            let launches = Arc::clone(&launches);
+            let requests = Arc::clone(&requests);
+            let cleanup = Arc::clone(&cleanup);
+            move |_| {
+                Box::new(FixtureLauncher {
+                    launches: Arc::clone(&launches),
+                    requests: Arc::clone(&requests),
+                    cleanup: Arc::clone(&cleanup),
+                    behavior: FixtureBehavior::VersionedPush,
+                })
+            }
+        },
+    )
+    .unwrap();
+    let manager = ProjectManager::new(kvim_lsp::ManagerLimits::default());
+    let path = WorktreeRelativePath::new("main.demo").unwrap();
+    let (opened, driver) = project.open(&manager, &path).unwrap();
+    let language = opened.declarations()[0].language_id().clone();
+    let task = tokio::spawn(driver.run());
+
+    let outcome = time::timeout(
+        Duration::from_secs(5),
+        opened.hub().changed_file(
+            ChangedFile::new(
+                path,
+                "demo\n".to_owned(),
+                DocumentRevision::new(7),
+                language,
+            )
+            .wait(WaitPolicy::Until(Duration::from_secs(2))),
+        ),
+    )
+    .await
+    .expect("the exact publication completes")
+    .unwrap();
+    let DiagnosticsOutcome::Ready(report) = outcome else {
+        panic!("versioned push did not return ready diagnostics");
+    };
+    assert_eq!(report.revision(), DocumentRevision::new(7));
+    assert_eq!(report.diagnostics().len(), 1);
+    assert_eq!(
+        report.diagnostics()[0].diagnostic.message,
+        "current fixture diagnostic"
+    );
+    assert_eq!(launches.load(Ordering::Relaxed), 1);
+
+    close_project(opened, task, &cleanup, &manager).await;
+}
+
+#[tokio::test]
+async fn launcher_backed_timeout_and_cancellation_cleanup_the_warm_lifecycle() {
+    for cancelled in [false, true] {
+        let root = root();
+        let launches = Arc::new(AtomicUsize::new(0));
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let cleanup = Arc::new(AtomicUsize::new(0));
+        let project = HeadlessDiagnosticsProject::with_launchers(
+            DiagnosticsRegistry::new(PROFILES).unwrap(),
+            root,
+            LanguageSettings::default(),
+            ProjectId::FIRST,
+            {
+                let launches = Arc::clone(&launches);
+                let requests = Arc::clone(&requests);
+                let cleanup = Arc::clone(&cleanup);
+                move |_| {
+                    Box::new(FixtureLauncher {
+                        launches: Arc::clone(&launches),
+                        requests: Arc::clone(&requests),
+                        cleanup: Arc::clone(&cleanup),
+                        behavior: FixtureBehavior::Silent,
+                    })
+                }
+            },
+        )
+        .unwrap();
+        let manager = ProjectManager::new(kvim_lsp::ManagerLimits::default());
+        let path = WorktreeRelativePath::new("main.demo").unwrap();
+        let (opened, driver) = project.open(&manager, &path).unwrap();
+        let language = opened.declarations()[1].language_id().clone();
+        let task = tokio::spawn(driver.run());
+        let cancellation = CancellationToken::new();
+        let mut request =
+            ChangedFile::new(path, "demo\n".to_owned(), DocumentRevision::FIRST, language)
+                .wait(WaitPolicy::Until(Duration::from_millis(100)));
+        if cancelled {
+            let owner = cancellation.clone();
+            let launched = Arc::clone(&launches);
+            tokio::spawn(async move {
+                let deadline = time::Instant::now() + Duration::from_secs(2);
+                while launched.load(Ordering::Relaxed) == 0 {
+                    assert!(
+                        time::Instant::now() < deadline,
+                        "the fixture launch starts before cancellation"
+                    );
+                    tokio::task::yield_now().await;
+                }
+                owner.cancel();
+            });
+            request = request.cancellation(cancellation);
+        }
+
+        let outcome = time::timeout(Duration::from_secs(5), opened.hub().changed_file(request))
+            .await
+            .expect("the bounded request ends")
+            .unwrap();
+        assert!(
+            matches!(
+                (cancelled, &outcome),
+                (false, DiagnosticsOutcome::TimedOut) | (true, DiagnosticsOutcome::Cancelled)
+            ),
+            "unexpected bounded outcome: {outcome:?}"
+        );
+        assert_eq!(launches.load(Ordering::Relaxed), 1);
+
+        close_project(opened, task, &cleanup, &manager).await;
+    }
+}
+
+#[tokio::test]
+async fn unavailable_launcher_reaches_the_public_typed_outcome_without_source_text() {
+    let calls = Arc::new(AtomicUsize::new(0));
+    let project = HeadlessDiagnosticsProject::with_launchers(
+        DiagnosticsRegistry::new(PROFILES).unwrap(),
+        root(),
+        LanguageSettings::default(),
+        ProjectId::FIRST,
+        {
+            let calls = Arc::clone(&calls);
+            move |_| Box::new(CountingLauncher(Arc::clone(&calls)))
+        },
+    )
+    .unwrap();
+    let manager = ProjectManager::new(kvim_lsp::ManagerLimits::default());
+    let path = WorktreeRelativePath::new("main.demo").unwrap();
+    let (opened, driver) = project.open(&manager, &path).unwrap();
+    let language = opened.declarations()[1].language_id().clone();
+    let task = tokio::spawn(driver.run());
+
+    let outcome = time::timeout(
+        Duration::from_secs(5),
+        opened.hub().changed_file(ChangedFile::new(
+            path,
+            "demo\n".to_owned(),
+            DocumentRevision::FIRST,
+            language,
+        )),
+    )
+    .await
+    .expect("the unavailable result is terminal")
+    .unwrap();
+    let DiagnosticsOutcome::Ready(report) = outcome else {
+        panic!("unavailable launcher did not complete the report");
+    };
+    assert!(matches!(
+        report.servers()[0].outcome,
+        ServerOutcome::Unavailable
+    ));
+    assert!(!format!("{report:?}").contains("fixture launcher"));
+    assert_eq!(calls.load(Ordering::Relaxed), 1);
+
     let (_, handle) = opened.into_parts();
     handle.close().await;
     time::timeout(Duration::from_secs(5), task)
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(cleanup.load(Ordering::Relaxed), 1);
+    assert_eq!(manager.projects(), 0);
+}
+
+#[tokio::test]
+async fn stderr_is_operator_report_only_across_bounded_restarts() {
+    let launches = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let cleanup = Arc::new(AtomicUsize::new(0));
+    let project = HeadlessDiagnosticsProject::with_launchers(
+        DiagnosticsRegistry::new(PROFILES).unwrap(),
+        root(),
+        LanguageSettings::default(),
+        ProjectId::FIRST,
+        {
+            let launches = Arc::clone(&launches);
+            let requests = Arc::clone(&requests);
+            let cleanup = Arc::clone(&cleanup);
+            move |_| {
+                Box::new(FixtureLauncher {
+                    launches: Arc::clone(&launches),
+                    requests: Arc::clone(&requests),
+                    cleanup: Arc::clone(&cleanup),
+                    behavior: FixtureBehavior::CrashWithStderr,
+                })
+            }
+        },
+    )
+    .unwrap();
+    let manager = ProjectManager::new(kvim_lsp::ManagerLimits::default());
+    let path = WorktreeRelativePath::new("main.demo").unwrap();
+    let (opened, driver) = project.open(&manager, &path).unwrap();
+    let language = opened.declarations()[1].language_id().clone();
+    let task = tokio::spawn(driver.run());
+
+    let outcome = time::timeout(
+        Duration::from_secs(5),
+        opened.hub().changed_file(ChangedFile::new(
+            path,
+            "demo\n".to_owned(),
+            DocumentRevision::FIRST,
+            language,
+        )),
+    )
+    .await
+    .expect("bounded restarts reach a terminal diagnostics outcome")
+    .unwrap();
+    assert!(!format!("{outcome:?}").contains(STDERR_SENTINEL));
+
+    let (_, mut handle) = opened.into_parts();
+    let mut saw_stderr = false;
+    while let Some(event) = handle.try_recv() {
+        if let ServerEvent::Reported(ServerReport::Output(line)) = event.event {
+            saw_stderr |= line == STDERR_SENTINEL;
+        }
+    }
+    assert!(
+        saw_stderr,
+        "the bounded operator report sink receives stderr"
+    );
+    assert_eq!(
+        launches.load(Ordering::Relaxed),
+        kvim_lsp::LSP_RESTARTS_MAX + 1
+    );
+    handle.close().await;
+    time::timeout(Duration::from_secs(5), task)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        cleanup.load(Ordering::Relaxed),
+        kvim_lsp::LSP_RESTARTS_MAX + 1
+    );
     assert_eq!(manager.projects(), 0);
 }
 
