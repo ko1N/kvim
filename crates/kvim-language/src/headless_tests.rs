@@ -104,9 +104,11 @@ enum FixtureBehavior {
     CrashWithStderr,
 }
 
+type RecordedRequest = (OsString, Vec<OsString>, PathBuf);
+
 struct FixtureLauncher {
     launches: Arc<AtomicUsize>,
-    requests: Arc<Mutex<Vec<(OsString, Vec<OsString>, PathBuf)>>>,
+    requests: Arc<Mutex<Vec<RecordedRequest>>>,
     cleanup: Arc<AtomicUsize>,
     behavior: FixtureBehavior,
 }

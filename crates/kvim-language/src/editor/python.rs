@@ -67,11 +67,7 @@ const PYTHON_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 i
 /// bracketed expressions of the table above alone.
 const PYTHON_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 
-/// Returns the initialization options of `pyright-langserver`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const PYTHON_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "black",
     args: &[

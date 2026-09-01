@@ -7,23 +7,27 @@ use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
+use crate::{
+    DiagnosticsRegistry, LANGUAGE_ROOT_MARKERS_MAX, LANGUAGE_SERVERS_MAX,
+    LanguageServerDeclaration, LanguageServiceProfile, ServerFormatting,
+};
 use kvim_core::{EditTransaction, TextBuffer, TextChange};
+use kvim_lsp::CompletionPolicy;
 use kvim_runtime::{ProcessOutput, PublicationGate, RequestSlot, Runtime, RuntimeLimits};
 use kvim_settings::LanguageSettings;
 
 use super::formatter::declaration_is_valid;
+use crate::server::declarations_are_valid;
 use kvim_syntax::NeverCancelled;
 
-use super::server::declarations_are_valid;
 use super::{
     ANALYSIS_DEADLINE, ANALYSIS_DEPTH_MAX, ANALYSIS_HIGHLIGHT_SPANS_MAX, ANALYSIS_SOURCE_BYTES_MAX,
     ANALYSIS_SOURCE_LINES_MAX, Analysis, AnalysisError, AnalysisInput, BoundMeasure, BufferSyntax,
     CommentStyle, FORMATTER_ARGS_MAX, FORMATTER_DEADLINE, FORMATTER_OUTPUT_BYTES_MAX,
     FormattedDocument, FormatterArgument, FormatterDeclaration, FormatterFailure, FormatterRequest,
-    Grammar, HighlightLimits, IndentRule, IndentScope, JsonAdapter, LANGUAGE_ROOT_MARKERS_MAX,
-    LANGUAGE_SERVERS_MAX, LanguageAdapter, LanguageCatalogEntry, LanguageFormatter,
-    LanguageRegistry, LanguageServerDeclaration, MarkdownAdapter, NixAdapter, Publication,
-    RegistryError, RustAdapter, ServerFormatting, SyntaxHighlighter, SyntaxRole, SyntaxTree,
+    Grammar, HighlightLimits, IndentRule, IndentScope, JsonAdapter, LanguageAdapter,
+    LanguageCatalogEntry, LanguageFormatter, LanguageRegistry, MarkdownAdapter, NixAdapter,
+    Publication, RegistryError, RustAdapter, SyntaxHighlighter, SyntaxRole, SyntaxTree,
 };
 
 /// The node kind that a test adapter indents.
@@ -47,8 +51,9 @@ struct SecondAdapter;
 static SECOND_EXTENSIONS: [&str; 1] = ["kv"];
 
 /// The catalog entry of the second language.
-static SECOND_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("second", &[], &SECOND_EXTENSIONS, &[], second_grammar);
+static SECOND_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new("second", second_grammar);
+static SECOND_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("second", "1", &["second"], &SECOND_EXTENSIONS, &[], &[]);
 
 /// Returns the grammar of the second language.
 ///
@@ -63,8 +68,8 @@ impl LanguageAdapter for SecondAdapter {
         &SECOND_CATALOG
     }
 
-    fn version(&self) -> &'static str {
-        "1"
+    fn service_profile(&self) -> &'static LanguageServiceProfile {
+        &SECOND_PROFILE
     }
 
     fn comment(&self) -> CommentStyle {
@@ -93,7 +98,7 @@ static AMBIGUOUS: [&dyn LanguageAdapter; 2] = [&FIRST_RUST, &SECOND_RUST];
 #[derive(Clone, Copy)]
 struct InvalidAdapter {
     catalog: &'static LanguageCatalogEntry,
-    servers: &'static [LanguageServerDeclaration],
+    profile: &'static LanguageServiceProfile,
     formatter: Option<&'static FormatterDeclaration>,
 }
 
@@ -102,8 +107,8 @@ impl LanguageAdapter for InvalidAdapter {
         self.catalog
     }
 
-    fn version(&self) -> &'static str {
-        "1"
+    fn service_profile(&self) -> &'static LanguageServiceProfile {
+        self.profile
     }
 
     fn comment(&self) -> CommentStyle {
@@ -118,10 +123,6 @@ impl LanguageAdapter for InvalidAdapter {
         }
     }
 
-    fn language_servers(&self) -> &'static [LanguageServerDeclaration] {
-        self.servers
-    }
-
     fn external_formatter(&self) -> Option<&'static FormatterDeclaration> {
         self.formatter
     }
@@ -131,21 +132,25 @@ fn no_options(_: LanguageSettings) -> serde_json::Value {
     serde_json::Value::Null
 }
 
-static INVALID_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("invalid", &["invalid", "INVALID"], &[], &[], second_grammar);
-static VALID_INVALID_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("invalid", &["invalid"], &[], &[], second_grammar);
+static INVALID_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new("invalid", second_grammar);
+static DUPLICATE_ALIAS_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("invalid", "1", &["invalid", "INVALID"], &[], &[], &[]);
+static VALID_INVALID_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("invalid", "1", &["invalid"], &[], &[], &[]);
 static SERVER: LanguageServerDeclaration = LanguageServerDeclaration {
     id: "server",
     program: "server",
     args: &[],
     language_id: "invalid",
     formatting: ServerFormatting::Disabled,
+    diagnostics_completion: CompletionPolicy::Unsupported,
     root_markers: &[],
     initialization_options: no_options,
     workspace_settings: None,
 };
 static DUPLICATE_SERVERS: [LanguageServerDeclaration; 2] = [SERVER, SERVER];
+static DUPLICATE_SERVER_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("invalid", "1", &["invalid"], &[], &[], &DUPLICATE_SERVERS);
 static FORMAT_SERVERS: [LanguageServerDeclaration; 2] = [
     LanguageServerDeclaration {
         formatting: ServerFormatting::Enabled,
@@ -157,12 +162,18 @@ static FORMAT_SERVERS: [LanguageServerDeclaration; 2] = [
         ..SERVER
     },
 ];
+static FORMAT_SERVER_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("invalid", "1", &["invalid"], &[], &[], &FORMAT_SERVERS);
 static TOO_MANY_SERVERS: [LanguageServerDeclaration; LANGUAGE_SERVERS_MAX + 1] =
     [SERVER; LANGUAGE_SERVERS_MAX + 1];
+static TOO_MANY_SERVER_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("invalid", "1", &["invalid"], &[], &[], &TOO_MANY_SERVERS);
 static BAD_MARKER_SERVER: [LanguageServerDeclaration; 1] = [LanguageServerDeclaration {
     root_markers: &["../escape"],
     ..SERVER
 }];
+static BAD_MARKER_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("invalid", "1", &["invalid"], &[], &[], &BAD_MARKER_SERVER);
 static BAD_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "",
     args: &[],
@@ -170,32 +181,32 @@ static BAD_FORMATTER: FormatterDeclaration = FormatterDeclaration {
 
 static DUPLICATE_ALIAS_ADAPTER: InvalidAdapter = InvalidAdapter {
     catalog: &INVALID_CATALOG,
-    servers: &[],
+    profile: &DUPLICATE_ALIAS_PROFILE,
     formatter: None,
 };
 static DUPLICATE_SERVER_ADAPTER: InvalidAdapter = InvalidAdapter {
-    catalog: &VALID_INVALID_CATALOG,
-    servers: &DUPLICATE_SERVERS,
+    catalog: &INVALID_CATALOG,
+    profile: &DUPLICATE_SERVER_PROFILE,
     formatter: None,
 };
 static FORMAT_SERVER_ADAPTER: InvalidAdapter = InvalidAdapter {
-    catalog: &VALID_INVALID_CATALOG,
-    servers: &FORMAT_SERVERS,
+    catalog: &INVALID_CATALOG,
+    profile: &FORMAT_SERVER_PROFILE,
     formatter: None,
 };
 static TOO_MANY_SERVER_ADAPTER: InvalidAdapter = InvalidAdapter {
-    catalog: &VALID_INVALID_CATALOG,
-    servers: &TOO_MANY_SERVERS,
+    catalog: &INVALID_CATALOG,
+    profile: &TOO_MANY_SERVER_PROFILE,
     formatter: None,
 };
 static BAD_MARKER_ADAPTER: InvalidAdapter = InvalidAdapter {
-    catalog: &VALID_INVALID_CATALOG,
-    servers: &BAD_MARKER_SERVER,
+    catalog: &INVALID_CATALOG,
+    profile: &BAD_MARKER_PROFILE,
     formatter: None,
 };
 static BAD_FORMATTER_ADAPTER: InvalidAdapter = InvalidAdapter {
-    catalog: &VALID_INVALID_CATALOG,
-    servers: &[],
+    catalog: &INVALID_CATALOG,
+    profile: &VALID_INVALID_PROFILE,
     formatter: Some(&BAD_FORMATTER),
 };
 
@@ -719,8 +730,24 @@ fn every_registered_extension_selects_its_adapter() {
 
 #[test]
 fn every_registered_adapter_declares_a_valid_server_table() {
+    let profiles = DiagnosticsRegistry::first_release();
     for adapter in LanguageRegistry::first_release().adapters() {
         let id = adapter.id();
+        let profile = profiles
+            .profile_of_language(id)
+            .expect("each enabled editor adapter delegates to a built-in service profile");
+        assert_eq!(
+            adapter.service_profile().id(),
+            profile.id(),
+            "the {id} adapter delegates to the validated built-in profile"
+        );
+        assert_eq!(adapter.language_names(), profile.language_names());
+        assert_eq!(adapter.service_profile().extensions(), profile.extensions());
+        assert_eq!(adapter.service_profile().file_names(), profile.file_names());
+        assert!(
+            std::ptr::eq(adapter.language_servers(), profile.language_servers()),
+            "the {id} adapter delegates its server table to the validated built-in profile"
+        );
         assert!(
             declarations_are_valid(adapter.language_servers()),
             "the {id} adapter declares at most {LANGUAGE_SERVERS_MAX} servers, names each \

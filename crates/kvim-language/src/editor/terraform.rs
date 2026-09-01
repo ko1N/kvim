@@ -34,11 +34,7 @@ const TERRAFORM_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 
 /// The characters that close a Terraform indent scope.
 const TERRAFORM_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 
-/// Returns the initialization options of `tofu-ls`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const TERRAFORM_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "tofu",
     args: &[

@@ -36,11 +36,7 @@ const HTML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is 
 /// that line, exactly as the documented limit of the Python indent rule works.
 const HTML_CLOSING_DELIMITERS: [char; 0] = [];
 
-/// Returns the initialization options of `vscode-html-language-server`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const HTML_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "prettier",
     args: &[

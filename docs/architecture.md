@@ -555,11 +555,11 @@ consumers prove each supported package in isolation. The exact matrix is:
 | `kvim-path` | no optional production features | default |
 | `kvim-keymap` | no optional production features | default |
 | `kvim-lsp` | no optional production features | default |
-| `kvim-language` | grammar-free service profiles and headless diagnostics | no grammar, `grammar-rust`, `all-grammars` |
+| `kvim-language` | editor services with grammar-free service profiles and headless diagnostics | no grammar, `grammar-rust`, `all-grammars` |
 | `kvim-ui` | no optional production features | default |
 | `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
 | `kvim-embed` | in-memory only | default, no-default, `review`, `worktree`, `grammar-rust`, `all-grammars` |
-| `kvim-tui` | internal only | no grammar, `grammar-rust`, `all-grammars` |
+| `kvim-tui` | internal editor with no grammar | default, no-default + `grammar-rust`, no-default + `all-grammars` |
 
 `kvim-language` forwards the same grammar features without a default grammar.
 Its grammar-backed `LanguageRegistry::first_release()` remains valid and empty

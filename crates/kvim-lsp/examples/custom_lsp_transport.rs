@@ -13,7 +13,7 @@ async fn main() -> Result<(), LspError> {
             .lock()
             .expect("the endpoint queue is not poisoned")
             .pop()
-            .ok_or_else(|| LspError::NotInstalled)?;
+            .ok_or(LspError::NotInstalled)?;
         let (output, input) = tokio::io::split(endpoint);
         Ok(Transport::new(input, output))
     }));

@@ -31,11 +31,7 @@ const SCSS_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is 
 /// The characters that close an SCSS indent scope.
 const SCSS_CLOSING_DELIMITERS: [char; 2] = [')', '}'];
 
-/// Returns the initialization options of `vscode-css-language-server`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const SCSS_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "prettier",
     args: &[

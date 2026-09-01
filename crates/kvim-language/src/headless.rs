@@ -160,7 +160,6 @@ impl<'a> HeadlessDiagnosticsSelection<'a> {
         self.profile
     }
     /// Returns the protocol language identifier used by changed-file requests.
-    #[must_use]
     pub fn language_id(&self) -> Result<LanguageId, LspError> {
         let Some(first) = self.declarations.first() else {
             return Err(LspError::NoServerDeclared);
@@ -248,12 +247,15 @@ impl ServerLauncher for BoxedLauncher {
 /// assert_eq!(project.root().path(), std::path::Path::new("/work/project"));
 /// # Ok::<(), kvim_language::HeadlessDiagnosticsError>(())
 /// ```
+type LauncherFactory = dyn FnMut(&RealizedDiagnosticsServer) -> Box<dyn ServerLauncher>;
+
+/// A grammar-free diagnostics project realized before one path is selected.
 pub struct HeadlessDiagnosticsProject {
     registry: DiagnosticsRegistry,
     root: WorkspaceRoot,
     declarations: Vec<RealizedDiagnosticsServer>,
     project_id: ProjectId,
-    launcher_factory: Box<dyn FnMut(&RealizedDiagnosticsServer) -> Box<dyn ServerLauncher>>,
+    launcher_factory: Box<LauncherFactory>,
 }
 
 impl HeadlessDiagnosticsProject {

@@ -103,8 +103,10 @@ fn settings_realization_stays_in_the_profile_declaration() {
         .profile_of_language("rust")
         .unwrap()
         .language_servers()[0];
-    let mut settings = LanguageSettings::default();
-    settings.check_depth = CheckDepth::Lints;
+    let settings = LanguageSettings {
+        check_depth: CheckDepth::Lints,
+        ..LanguageSettings::default()
+    };
     assert_eq!(
         rust.options(settings),
         serde_json::json!({ "check": { "command": "clippy" } })

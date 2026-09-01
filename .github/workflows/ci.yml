@@ -135,16 +135,18 @@ jobs:
           crossterm kvim-language kvim-lsp kvim-runtime kvim-terminal notify
           tokio tokio-util tree-sitter
 
-      # Keep the existing forwarded grammar boundaries valid independently of
-      # the high-level facade.
+      # `kvim-language` supports a no-feature headless partition. `kvim-tui`
+      # defaults to its no-grammar editor partition; grammar features imply it.
       - name: Check the language and presentation grammar matrices
         run: |
           set -euo pipefail
-          for package in kvim-language kvim-tui; do
-            cargo check --locked -p "$package" --no-default-features
-            cargo check --locked -p "$package" --no-default-features --features grammar-rust
-            cargo check --locked -p "$package" --no-default-features --features all-grammars
-          done
+          cargo check --locked -p kvim-language --no-default-features
+          cargo check --locked -p kvim-language --no-default-features --features grammar-rust
+          cargo check --locked -p kvim-language --no-default-features --features all-grammars
+
+          cargo check --locked -p kvim-tui
+          cargo check --locked -p kvim-tui --no-default-features --features grammar-rust
+          cargo check --locked -p kvim-tui --no-default-features --features all-grammars
 
       # `docs/architecture.md` keeps `kvim-lsp` at layer 2. A consumer that wants
       # diagnostics alone must therefore compile no terminal interface and no

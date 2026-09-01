@@ -37,11 +37,7 @@ const ZIG_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is n
 /// The characters that close a Zig indent scope.
 const ZIG_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 
-/// Returns the initialization options of `zls`.
-///
-/// `zls` needs no option from the language-neutral settings, so the function
-/// returns the empty object and reads nothing from `settings`.
-
+/// The grammar-backed editor adapter for Zig.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct ZigAdapter;
 

@@ -32,11 +32,7 @@ const GLSL_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is 
 /// The characters that close a GLSL indent scope.
 const GLSL_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 
-/// Returns the initialization options of `glsl_analyzer`.
-///
-/// `glsl_analyzer` needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The grammar-backed editor adapter for GLSL.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct GlslAdapter;
 

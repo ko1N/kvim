@@ -40,11 +40,7 @@ const FISH_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is 
 /// the `end` keyword, which this rule cannot name.
 const FISH_CLOSING_DELIMITERS: [char; 1] = [')'];
 
-/// Returns the initialization options of `fish-lsp`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The grammar-backed editor adapter for fish.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct FishAdapter;
 

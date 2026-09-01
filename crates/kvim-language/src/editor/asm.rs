@@ -13,11 +13,7 @@ use super::{BlockComment, CommentStyle, IndentRule, LanguageAdapter, LanguageCat
 /// The number of columns that one assembly indent level takes.
 const ASM_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is not zero");
 
-/// Returns the initialization options of `asm-lsp`.
-///
-/// `asm-lsp` needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The grammar-backed editor adapter for assembly.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct AsmAdapter;
 

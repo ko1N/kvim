@@ -30,11 +30,7 @@ const XML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is n
 /// one indent level too many, which is the same limit that HTML carries.
 const XML_CLOSING_DELIMITERS: [char; 0] = [];
 
-/// Returns the initialization options of `lemminx`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const XML_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "xmlformat",
     args: &[FormatterArgument::Literal("-")],

@@ -284,14 +284,17 @@ async fn default_lifecycle_termination_is_idempotent_after_reap() {
         .expect("termination after exit is idempotent");
 }
 
+type ExitResult = Result<ExitStatus, io::Error>;
+type ExitSender = tokio::sync::oneshot::Sender<ExitResult>;
+type ExitReceiver = tokio::sync::oneshot::Receiver<ExitResult>;
+
 struct ControlledLifecycle {
     dropped: Arc<AtomicBool>,
     terminated: Arc<AtomicUsize>,
     waited: Arc<AtomicUsize>,
-    exit: Option<tokio::sync::oneshot::Receiver<Result<ExitStatus, io::Error>>>,
+    exit: Option<ExitReceiver>,
     terminate_result: Option<io::ErrorKind>,
-    exit_on_terminate:
-        Arc<Mutex<Option<tokio::sync::oneshot::Sender<Result<ExitStatus, io::Error>>>>>,
+    exit_on_terminate: Arc<Mutex<Option<ExitSender>>>,
 }
 
 impl Drop for ControlledLifecycle {

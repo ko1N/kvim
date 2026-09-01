@@ -27,11 +27,7 @@ const TOML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is 
 /// The characters that close a TOML indent scope.
 const TOML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
 
-/// Returns the initialization options of `taplo`.
-///
-/// `taplo` needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const TOML_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "taplo",
     args: &[

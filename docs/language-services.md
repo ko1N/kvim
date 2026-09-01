@@ -308,12 +308,10 @@ without a version increase. Pin a tested revision and apply these migrations.
 
 ### Process launch
 
-Replace the removed field construction:
+Replace the removed field construction `TransportFactory::Process { program, args, root }`
+with validated construction:
 
 ```rust
-// Old
-TransportFactory::Process { program, args, root }
-
 // New default process ownership
 let request = ServerLaunchRequest::new(program, args, root)?;
 let transport = TransportFactory::process(request);
@@ -1575,12 +1573,15 @@ therefore hold at most `LANGUAGE_SERVERS_MAX` times `LSP_DIAGNOSTICS_MAX`
 entries, because only the servers of one adapter describe one buffer. The merge
 removes the duplicates, so the visible list is normally far shorter.
 
-A language-server session uses `TransportFactory::Process` by default. A host
-that already owns a server uses `TransportFactory::Custom`. The custom factory
-returns fresh `Transport` streams for the initial attempt and every restart, so
-it does not need to spawn a child. These streams implement Tokio `AsyncRead` and
-`AsyncWrite`; the protocol reader must own a partial frame across cancellation.
-The existing envelope queue and protocol byte limits bound data after transport.
+A language-server session uses `TransportFactory::process(request)` with the
+Tokio launcher by default. A host injects an owned process launcher with
+`TransportFactory::process_with(request, launcher)`. A host that owns a remote
+server or socket uses `TransportFactory::custom`. The custom factory returns
+fresh `Transport` streams for the initial attempt and every restart. Kvim does
+not own or reap a remote process behind those streams. These streams implement
+Tokio `AsyncRead` and `AsyncWrite`; the protocol reader must own a partial frame
+across cancellation. The existing envelope queue and protocol byte limits bound
+data after transport.
 
 A language-server session owns a long-lived child process through the supplied
 process spawner. `LSP_SESSIONS_MAX` bounds those children per project, and the

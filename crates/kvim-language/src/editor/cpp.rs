@@ -43,11 +43,7 @@ const CPP_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is n
 /// keeps `>` out and never dedents a shifted or compared expression.
 const CPP_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 
-/// Returns the initialization options of `clangd`.
-///
-/// `clangd` needs no option from the language-neutral settings, so the function
-/// returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const CPP_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "clang-format",
     args: &[

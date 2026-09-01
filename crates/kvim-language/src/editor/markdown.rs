@@ -15,11 +15,7 @@ use super::{
 /// The number of columns that one Markdown indent level takes.
 const MARKDOWN_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is not zero");
 
-/// Returns the initialization options of `marksman`.
-///
-/// `marksman` needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const MARKDOWN_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "prettier",
     args: &[

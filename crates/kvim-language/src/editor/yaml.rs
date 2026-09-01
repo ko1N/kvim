@@ -43,11 +43,7 @@ const YAML_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(2).expect("the literal 2 is 
 /// brackets of the flow collections.
 const YAML_CLOSING_DELIMITERS: [char; 2] = [']', '}'];
 
-/// Returns the initialization options of `yaml-language-server`.
-///
-/// The server needs no option from the language-neutral settings, so the
-/// function returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const YAML_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "yamlfmt",
     args: &[FormatterArgument::Literal("-")],

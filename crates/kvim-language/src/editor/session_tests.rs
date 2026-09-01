@@ -18,23 +18,24 @@ use kvim_lsp::{
 };
 use kvim_settings::EditorSettings;
 
-use crate::document::{MarkupKind, content_changes};
-use crate::markup::MarkupDocument;
-use crate::mock::{
-    self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, ROOT,
-    TEST_DEADLINE, connected, pipe, session,
-};
-use crate::progress::{ProgressPercentage, ProgressReport, ProgressStage};
-use crate::session::{
+use crate::editor::document::{MarkupKind, content_changes};
+use crate::editor::markup::MarkupDocument;
+use crate::editor::progress::{ProgressPercentage, ProgressReport, ProgressStage};
+use crate::editor::session::{
     LSP_DIAGNOSTIC_PULL_DELAY, LSP_FORMAT_EDITS_MAX, LSP_HOVER_BYTES_MAX, LSP_LOCATIONS_MAX,
     LSP_PENDING_REQUESTS_MAX, LSP_REQUEST_QUEUE_CAPACITY, LanguageOutcome, MarkupText,
     hover_contents,
 };
+use crate::mock::{
+    self, DOCUMENT, DOCUMENT_URI, FULL_SYNC, Harness, INCREMENTAL_SYNC, MockServer, ROOT,
+    TEST_DEADLINE, connected, pipe, session,
+};
 use crate::{
-    CommentStyle, DiagnosticSeverity, Grammar, IndentRule, IndentScope, LSP_CONTENT_CHANGES_MAX,
-    LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX, LanguageAdapter, LanguageCatalogEntry,
-    LanguageRegistry, LanguageServerDeclaration, LanguageServerId, LanguageServices, RustAdapter,
-    ServerFormatting, SessionGeneration, SyntaxHighlighter,
+    CommentStyle, CompletionPolicy, DiagnosticSeverity, Grammar, IndentRule, IndentScope,
+    LSP_CONTENT_CHANGES_MAX, LSP_DIAGNOSTICS_MAX, LSP_OPEN_DOCUMENTS_MAX, LanguageAdapter,
+    LanguageCatalogEntry, LanguageRegistry, LanguageServerDeclaration, LanguageServerId,
+    LanguageServiceProfile, LanguageServices, RustAdapter, ServerFormatting, SessionGeneration,
+    SyntaxHighlighter,
 };
 
 /// The node kind that a test adapter indents.
@@ -1405,40 +1406,46 @@ static SERVERLESS_EXTENSIONS: [&str; 1] = ["kv"];
 
 /// The catalog entry of the serverless test language.
 static SERVERLESS_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("serverless", &[], &SERVERLESS_EXTENSIONS, &[], test_grammar);
+    LanguageCatalogEntry::new("serverless", test_grammar);
 
 /// The extensions of the two test language.
 static TWO_EXTENSIONS: [&str; 1] = ["two"];
 
 /// The catalog entry of the two test language.
-static TWO_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("two", &[], &TWO_EXTENSIONS, &[], test_grammar);
+static TWO_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new("two", test_grammar);
 
 /// The extensions of the gate test language.
 static GATE_EXTENSIONS: [&str; 1] = ["gate"];
 
 /// The catalog entry of the gate test language.
-static GATE_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("gate", &[], &GATE_EXTENSIONS, &[], test_grammar);
+static GATE_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new("gate", test_grammar);
 
 /// The extensions of the unused test language.
 static UNUSED_EXTENSIONS: [&str; 1] = ["unused"];
 
 /// The catalog entry of the unused test language.
-static UNUSED_CATALOG: LanguageCatalogEntry =
-    LanguageCatalogEntry::new("unused", &[], &UNUSED_EXTENSIONS, &[], test_grammar);
+static UNUSED_CATALOG: LanguageCatalogEntry = LanguageCatalogEntry::new("unused", test_grammar);
 
 /// One adapter that serves a language without a language server.
 #[derive(Clone, Copy, Debug)]
 struct ServerlessAdapter;
+
+static SERVERLESS_PROFILE: LanguageServiceProfile = LanguageServiceProfile::new(
+    "serverless",
+    "1",
+    &["serverless"],
+    &SERVERLESS_EXTENSIONS,
+    &[],
+    &[],
+);
 
 impl LanguageAdapter for ServerlessAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
         &SERVERLESS_CATALOG
     }
 
-    fn version(&self) -> &'static str {
-        "1"
+    fn service_profile(&self) -> &'static LanguageServiceProfile {
+        &SERVERLESS_PROFILE
     }
 
     fn comment(&self) -> CommentStyle {
@@ -1499,6 +1506,7 @@ static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
         root_markers: &[],
         initialization_options: no_options,
         workspace_settings: None,
+        diagnostics_completion: CompletionPolicy::Unsupported,
     },
     LanguageServerDeclaration {
         id: "second",
@@ -1509,6 +1517,7 @@ static TWO_SERVERS: [LanguageServerDeclaration; 2] = [
         root_markers: &[],
         initialization_options: no_options,
         workspace_settings: None,
+        diagnostics_completion: CompletionPolicy::Unsupported,
     },
 ];
 
@@ -1517,13 +1526,16 @@ fn no_options(_settings: kvim_settings::LanguageSettings) -> Value {
     json!({})
 }
 
+static TWO_PROFILE: LanguageServiceProfile =
+    LanguageServiceProfile::new("two", "1", &["two"], &TWO_EXTENSIONS, &[], &TWO_SERVERS);
+
 impl LanguageAdapter for TwoServerAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
         &TWO_CATALOG
     }
 
-    fn version(&self) -> &'static str {
-        "1"
+    fn service_profile(&self) -> &'static LanguageServiceProfile {
+        &TWO_PROFILE
     }
 
     fn comment(&self) -> CommentStyle {
@@ -1628,6 +1640,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         root_markers: &["Cargo.toml"],
         initialization_options: no_options,
         workspace_settings: None,
+        diagnostics_completion: CompletionPolicy::Unsupported,
     },
     LanguageServerDeclaration {
         id: "absent_marker",
@@ -1638,6 +1651,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         root_markers: &[ABSENT_MARKER],
         initialization_options: no_options,
         workspace_settings: None,
+        diagnostics_completion: CompletionPolicy::Unsupported,
     },
     LanguageServerDeclaration {
         id: "directory_marker",
@@ -1648,6 +1662,7 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         root_markers: &["src"],
         initialization_options: no_options,
         workspace_settings: None,
+        diagnostics_completion: CompletionPolicy::Unsupported,
     },
     LanguageServerDeclaration {
         id: "no_marker",
@@ -1658,16 +1673,26 @@ static GATED_SERVERS: [LanguageServerDeclaration; 4] = [
         root_markers: &[],
         initialization_options: no_options,
         workspace_settings: None,
+        diagnostics_completion: CompletionPolicy::Unsupported,
     },
 ];
+
+static GATE_PROFILE: LanguageServiceProfile = LanguageServiceProfile::new(
+    "gate",
+    "1",
+    &["gate"],
+    &GATE_EXTENSIONS,
+    &[],
+    &GATED_SERVERS,
+);
 
 impl LanguageAdapter for GatedAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
         &GATE_CATALOG
     }
 
-    fn version(&self) -> &'static str {
-        "1"
+    fn service_profile(&self) -> &'static LanguageServiceProfile {
+        &GATE_PROFILE
     }
 
     fn comment(&self) -> CommentStyle {
@@ -1702,15 +1727,25 @@ static UNUSED_SERVERS: [LanguageServerDeclaration; 1] = [LanguageServerDeclarati
     root_markers: &[ABSENT_MARKER],
     initialization_options: no_options,
     workspace_settings: None,
+    diagnostics_completion: CompletionPolicy::Unsupported,
 }];
+
+static UNUSED_PROFILE: LanguageServiceProfile = LanguageServiceProfile::new(
+    "unused",
+    "1",
+    &["unused"],
+    &UNUSED_EXTENSIONS,
+    &[],
+    &UNUSED_SERVERS,
+);
 
 impl LanguageAdapter for UnusedAdapter {
     fn catalog(&self) -> &'static LanguageCatalogEntry {
         &UNUSED_CATALOG
     }
 
-    fn version(&self) -> &'static str {
-        "1"
+    fn service_profile(&self) -> &'static LanguageServiceProfile {
+        &UNUSED_PROFILE
     }
 
     fn comment(&self) -> CommentStyle {

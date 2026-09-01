@@ -49,11 +49,7 @@ const GO_INDENT_WIDTH: NonZeroU8 = NonZeroU8::new(4).expect("the literal 4 is no
 /// The characters that close a Go indent scope.
 const GO_CLOSING_DELIMITERS: [char; 3] = [')', ']', '}'];
 
-/// Returns the initialization options of `gopls`.
-///
-/// `gopls` needs no option from the language-neutral settings, so the function
-/// returns the empty object and reads nothing from `settings`.
-
+/// The external formatter command for this language.
 const GO_FORMATTER: FormatterDeclaration = FormatterDeclaration {
     program: "goimports",
     args: &[],
