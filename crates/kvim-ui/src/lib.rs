@@ -46,8 +46,10 @@
 //!
 //! [`WhichKeyOverlay`] renders the keys that may follow a pending key sequence.
 //! It holds no binding table: the caller derives its hints from the one shared
-//! registry of `kvim-keymap` and supplies final texts, optional icons, and its
-//! own styles. Its last row is a [`WhichKeyFooter`]: the keys that the reader
+//! registry of `kvim-keymap` and supplies final texts, optional icons, one
+//! [`WhichKeyMarker`], and its own styles. Every hint row reads
+//! `key marker icon label`, so the keys of all columns form one left-aligned
+//! run. Its last row is a [`WhichKeyFooter`]: the keys that the reader
 //! already pressed, the legend of the navigation keys, and the count of the
 //! hints behind the drawn page. A list that outgrows the frame holds one page
 //! for each frame of columns, and every render reports the page it drew as one
@@ -166,8 +168,8 @@ pub use tabs::{TAB_LABEL_CHARS_MAX, TABS_MAX, Tab, TabError, TabPlacement, TabSt
 pub use which_key::{
     WHICH_KEY_BODY_SHARE, WHICH_KEY_COLUMN_ROWS_MAX, WHICH_KEY_HINTS_MAX,
     WHICH_KEY_LEGEND_ENTRIES_MAX, WHICH_KEY_TEXT_CHARS_MAX, WhichKeyError, WhichKeyFooter,
-    WhichKeyIcon, WhichKeyLegendEntry, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyPlacement,
-    WhichKeyRowPlacement, WhichKeyStyles,
+    WhichKeyIcon, WhichKeyLegendEntry, WhichKeyMarker, WhichKeyOverlay, WhichKeyOverlayRow,
+    WhichKeyPlacement, WhichKeyRowPlacement, WhichKeyStyles,
 };
 pub use window::{
     AdaptiveSplit, ChildSide, CloseOutcome, Direction, IdentityError, LayoutChange, LayoutFit,

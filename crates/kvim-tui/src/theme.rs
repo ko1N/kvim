@@ -246,6 +246,8 @@ pub enum ThemeRole {
     PickerHintKey,
     /// The breadcrumb of the pressed keys in the which-key footer.
     WhichKeyBreadcrumb,
+    /// The marker between the key and the label of one which-key hint row.
+    WhichKeyMarker,
     /// The key glyph of one which-key footer legend entry, such as `ESC`.
     WhichKeyLegendKey,
     /// The action word of one which-key footer legend entry, such as `close`.
@@ -453,6 +455,10 @@ impl Theme {
             // stays quieter than the hint keys above it. The surface band of
             // the overlay therefore shows through the complete footer row.
             ThemeRole::WhichKeyBreadcrumb => Style::new().fg(TEXT_MUTED),
+            // The marker points from one key to what it reaches. It carries no
+            // information of its own, so it stays dim behind the key and the
+            // label that it separates.
+            ThemeRole::WhichKeyMarker => Style::new().fg(TEXT_DIM),
             ThemeRole::WhichKeyLegendKey => Style::new().fg(TITLE),
             ThemeRole::WhichKeyLegendAction => Style::new().fg(TEXT_DIM),
             // The notification overlay paints text alone over the buffer, as

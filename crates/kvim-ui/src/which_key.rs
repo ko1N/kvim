@@ -4,7 +4,8 @@
 //! no terminal. It holds no binding table: the caller derives its hints from
 //! the one shared registry, for example through the which-key view of a
 //! `kvim-keymap` resolver, and hands the widget the final key text, the final
-//! label, an optional icon, an optional key style, and its own styles.
+//! label, an optional icon, an optional key style, one row marker, and its own
+//! styles.
 //!
 //! A row beside a pending prefix can carry two independent facts: the table
 //! that holds the key, and whether pressing the key continues the pending
@@ -17,9 +18,17 @@
 //! two styles of its choosing. The two fields are independent: a row sets
 //! either, both, or neither.
 //!
+//! One hint row reads `key marker icon label`. The key stands first, so every
+//! key of every column forms one narrow left-aligned run that a reader scans
+//! down. The marker column holds one caller glyph, for example an arrow, that
+//! points from the key to what it reaches. A row whose icon is absent keeps the
+//! marker and the alignment, because the icon column reserves the same cells in
+//! every row.
+//!
 //! The overlay covers the bottom of one body band. It fills the width with
 //! columns of equal width, so the keys and the labels of all columns align. It
-//! bounds its own height, and its last row is a footer.
+//! bounds its own height. One blank row opens the overlay, one blank row closes
+//! its hints, and the footer holds its last row.
 //!
 //! The footer holds three parts: the breadcrumb of the keys that the reader
 //! already pressed at the left, the legend of the navigation keys in the
@@ -100,22 +109,38 @@ pub const WHICH_KEY_BODY_SHARE: u16 = 2;
 /// The number of rows that the overlay footer occupies.
 const FOOTER_ROWS: u16 = 1;
 
+/// The number of blank rows above the first hint row.
+const TOP_PAD_ROWS: u16 = 1;
+
+/// The number of blank rows between the last hint row and the footer row.
+const BOTTOM_PAD_ROWS: u16 = 1;
+
+/// The number of rows that the overlay keeps beside its hint rows.
+///
+/// The chrome is the padding row above the hints, the padding row below them,
+/// and the footer row. A body band that cannot hold the chrome and one hint
+/// paints nothing.
+const CHROME_ROWS: u16 = TOP_PAD_ROWS + BOTTOM_PAD_ROWS + FOOTER_ROWS;
+
 /// The number of cells between one legend key and its action word.
 const LEGEND_KEY_GAP_CELLS: usize = 1;
 
 /// The number of cells between two legend entries.
 const LEGEND_ENTRY_GAP_CELLS: usize = 2;
 
-/// The number of cells between the key column and the label column.
-const KEY_GAP_CELLS: usize = 2;
+/// The number of cells between the key column and the marker column.
+const KEY_GAP_CELLS: usize = 1;
+
+/// The number of cells between the marker column and the icon column.
+const MARKER_GAP_CELLS: usize = 1;
 
 /// The number of cells that the overlay keeps left of its first column.
-const LEFT_PAD_CELLS: usize = 1;
+const LEFT_PAD_CELLS: usize = 4;
 
 /// The number of cells between two overlay columns.
 const COLUMN_GAP_CELLS: usize = 2;
 
-/// The number of cells between one icon and the key beside it.
+/// The number of cells between one icon and the label beside it.
 const ICON_GAP_CELLS: usize = 1;
 
 /// The reason that the overlay refused one hint list.
@@ -169,6 +194,40 @@ pub struct WhichKeyIcon<'a> {
     /// The text that the icon cell shows.
     pub glyph: &'a str,
     /// The style of the icon cell.
+    pub style: Style,
+}
+
+/// The marker between the key and the icon of every hint row.
+///
+/// The marker points from the key to what the key reaches, for example with an
+/// arrow. It is host text, exactly as the footer breadcrumb is, so the widget
+/// names no glyph and no color of its own.
+///
+/// The glyph and its style are one fact, so they travel in one value. A caller
+/// therefore cannot name a marker style without a marker glyph, and the widget
+/// cannot paint a styled cell that holds no text. The default marker holds an
+/// empty glyph, so the marker column then reserves no cell, exactly as the icon
+/// column reserves no cell while no hint carries an icon.
+///
+/// # Examples
+///
+/// ```
+/// use ratatui::style::{Color, Style};
+///
+/// use kvim_ui::WhichKeyMarker;
+///
+/// let marker = WhichKeyMarker {
+///     glyph: "\u{2192}",
+///     style: Style::default().fg(Color::DarkGray),
+/// };
+/// assert_eq!(marker.glyph, "\u{2192}");
+/// assert_eq!(WhichKeyMarker::default().glyph, "");
+/// ```
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct WhichKeyMarker<'a> {
+    /// The text that the marker column shows in every hint row.
+    pub glyph: &'a str,
+    /// The style of the marker cells.
     pub style: Style,
 }
 
@@ -244,7 +303,7 @@ impl<'a> WhichKeyOverlayRow<'a> {
         }
     }
 
-    /// Returns the hint with one icon beside its key.
+    /// Returns the hint with one icon before its label.
     #[inline]
     #[must_use]
     pub const fn with_icon(self, icon: WhichKeyIcon<'a>) -> Self {
@@ -484,23 +543,27 @@ impl WhichKeyPlacement {
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_ui::{WhichKeyFooter, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+/// use kvim_ui::{
+///     WhichKeyFooter, WhichKeyMarker, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles,
+/// };
 ///
-/// let body = Rect::new(0, 0, 30, 8);
+/// let body = Rect::new(0, 0, 30, 10);
 /// let mut target = Buffer::empty(body);
 /// let hints = [
 ///     WhichKeyOverlayRow::new("f", "+3 commands"),
 ///     WhichKeyOverlayRow::new("q", "Close the window"),
 /// ];
 /// let footer = WhichKeyFooter { breadcrumb: "SPC", legend: &[] };
+/// let marker = WhichKeyMarker { glyph: "\u{2192}", ..WhichKeyMarker::default() };
 ///
-/// let overlay = WhichKeyOverlay::new(footer, &hints, WhichKeyStyles::default())?;
+/// let overlay = WhichKeyOverlay::new(footer, &hints, marker, WhichKeyStyles::default())?;
 /// overlay.render(&mut target, body)?;
-/// // The hints start at the top of the overlay, and the footer holds its last
-/// // row.
-/// assert_eq!(target.cell((1, 5)).map(|cell| cell.symbol()), Some("f"));
-/// assert_eq!(target.cell((1, 6)).map(|cell| cell.symbol()), Some("q"));
-/// assert_eq!(target.cell((1, 7)).map(|cell| cell.symbol()), Some("S"));
+/// // One blank row opens the overlay, one blank row closes its hints, and the
+/// // footer holds its last row.
+/// assert_eq!(target.cell((4, 6)).map(|cell| cell.symbol()), Some("f"));
+/// assert_eq!(target.cell((6, 6)).map(|cell| cell.symbol()), Some("\u{2192}"));
+/// assert_eq!(target.cell((4, 7)).map(|cell| cell.symbol()), Some("q"));
+/// assert_eq!(target.cell((4, 9)).map(|cell| cell.symbol()), Some("S"));
 /// # Ok::<(), kvim_ui::WhichKeyError>(())
 /// ```
 ///
@@ -511,7 +574,9 @@ impl WhichKeyPlacement {
 /// use ratatui::buffer::Buffer;
 /// use ratatui::layout::Rect;
 ///
-/// use kvim_ui::{WhichKeyFooter, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+/// use kvim_ui::{
+///     WhichKeyFooter, WhichKeyMarker, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles,
+/// };
 ///
 /// // Forty keys, and a narrow band that holds one short column of them.
 /// let keys: Vec<String> = (0..40).map(|index| format!("k{index}")).collect();
@@ -521,7 +586,8 @@ impl WhichKeyPlacement {
 ///     .collect();
 /// let body = Rect::new(0, 0, 30, 10);
 /// let footer = WhichKeyFooter::default();
-/// let overlay = WhichKeyOverlay::new(footer, &hints, WhichKeyStyles::default())?;
+/// let marker = WhichKeyMarker { glyph: "\u{2192}", ..WhichKeyMarker::default() };
+/// let overlay = WhichKeyOverlay::new(footer, &hints, marker, WhichKeyStyles::default())?;
 ///
 /// let mut page = 0;
 /// let mut reached = 0;
@@ -544,6 +610,7 @@ impl WhichKeyPlacement {
 pub struct WhichKeyOverlay<'a> {
     footer: WhichKeyFooter<'a>,
     hints: &'a [WhichKeyOverlayRow<'a>],
+    marker: WhichKeyMarker<'a>,
     styles: WhichKeyStyles,
     page: usize,
 }
@@ -560,11 +627,12 @@ impl<'a> WhichKeyOverlay<'a> {
     /// Returns [`WhichKeyError::Hints`] for a list above
     /// [`WHICH_KEY_HINTS_MAX`], [`WhichKeyError::Legend`] for a legend above
     /// [`WHICH_KEY_LEGEND_ENTRIES_MAX`], and [`WhichKeyError::Text`] for a
-    /// footer text, a key text, or a label above
+    /// footer text, a marker glyph, a key text, or a label above
     /// [`WHICH_KEY_TEXT_CHARS_MAX`].
     pub fn new(
         footer: WhichKeyFooter<'a>,
         hints: &'a [WhichKeyOverlayRow<'a>],
+        marker: WhichKeyMarker<'a>,
         styles: WhichKeyStyles,
     ) -> Result<Self, WhichKeyError> {
         if hints.len() > WHICH_KEY_HINTS_MAX {
@@ -580,6 +648,7 @@ impl<'a> WhichKeyOverlay<'a> {
             });
         }
         check_text(footer.breadcrumb)?;
+        check_text(marker.glyph)?;
         for entry in footer.legend {
             check_text(entry.key)?;
             check_text(entry.action)?;
@@ -594,6 +663,7 @@ impl<'a> WhichKeyOverlay<'a> {
         Ok(Self {
             footer,
             hints,
+            marker,
             styles,
             page: 0,
         })
@@ -628,7 +698,7 @@ impl<'a> WhichKeyOverlay<'a> {
     /// the number of pages does not, because the number of pages depends on
     /// the hint list and the body band alone.
     ///
-    /// A body band that cannot hold the footer row and one hint over its own
+    /// A body band that cannot hold the chrome rows and one hint over its own
     /// share, or an empty hint list, both answer zero pages and an empty
     /// range, exactly as [`WhichKeyOverlay::render`] paints nothing for them.
     ///
@@ -639,7 +709,9 @@ impl<'a> WhichKeyOverlay<'a> {
     /// ```
     /// use ratatui::layout::Rect;
     ///
-    /// use kvim_ui::{WhichKeyFooter, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles};
+    /// use kvim_ui::{
+    ///     WhichKeyFooter, WhichKeyMarker, WhichKeyOverlay, WhichKeyOverlayRow, WhichKeyStyles,
+    /// };
     ///
     /// let body = Rect::new(0, 0, 24, 8);
     /// let hints = [
@@ -647,7 +719,8 @@ impl<'a> WhichKeyOverlay<'a> {
     ///     WhichKeyOverlayRow::new("q", "Quit"),
     /// ];
     /// let footer = WhichKeyFooter { breadcrumb: "SPC", legend: &[] };
-    /// let overlay = WhichKeyOverlay::new(footer, &hints, WhichKeyStyles::default())?;
+    /// let marker = WhichKeyMarker { glyph: "\u{2192}", ..WhichKeyMarker::default() };
+    /// let overlay = WhichKeyOverlay::new(footer, &hints, marker, WhichKeyStyles::default())?;
     ///
     /// let placement = overlay.placement_for(body);
     /// let breadcrumb = format!("SPC (page {} of {})", placement.page() + 1, placement.pages());
@@ -664,9 +737,10 @@ impl<'a> WhichKeyOverlay<'a> {
     /// The overlay covers the text behind it, so it blanks its rectangle first.
     /// It spreads the hints over columns of equal width, and every column keeps
     /// the width of the widest hint of the complete list, so the keys and the
-    /// labels of all columns and of every page align. A body band that cannot
-    /// hold the footer row and one hint over its own share paints nothing,
-    /// which keeps the text behind it visible.
+    /// labels of all columns and of every page align. Every row reads
+    /// `key marker icon label`. A body band that cannot hold the chrome rows
+    /// and one hint over its own share paints nothing, which keeps the text
+    /// behind it visible.
     ///
     /// [`WhichKeyOverlayRow::key_style`] repaints the key text in place. It adds no
     /// cell of its own, so a page never changes width because a marked row
@@ -720,18 +794,33 @@ impl<'a> WhichKeyOverlay<'a> {
         for (hint, row) in hints.iter().zip(&placement.rows) {
             let mut cursor = row.area.x;
             let y = row.area.y;
+            let key_style = hint.key_style.unwrap_or(self.styles.key);
+            write_cells(target, area, &mut cursor, y, hint.key, key_style);
+            let padding = " ".repeat(paint.key_cells - text_cells(hint.key) + KEY_GAP_CELLS);
+            write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
+            if paint.marker_cells > 0 {
+                write_cells(
+                    target,
+                    area,
+                    &mut cursor,
+                    y,
+                    self.marker.glyph,
+                    self.marker.style,
+                );
+                let padding = " ".repeat(MARKER_GAP_CELLS);
+                write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
+            }
             if paint.icon_cells > 0 {
                 let glyph = hint.icon.map_or(0, |icon| text_cells(icon.glyph));
                 if let Some(icon) = hint.icon {
                     write_cells(target, area, &mut cursor, y, icon.glyph, icon.style);
                 }
+                // A row without an icon keeps the reserved cells blank, so its
+                // key, its marker, and its label stay in line with every other
+                // row.
                 let padding = " ".repeat(paint.icon_cells - glyph);
                 write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
             }
-            let key_style = hint.key_style.unwrap_or(self.styles.key);
-            write_cells(target, area, &mut cursor, y, hint.key, key_style);
-            let padding = " ".repeat(paint.key_cells - text_cells(hint.key) + KEY_GAP_CELLS);
-            write_cells(target, area, &mut cursor, y, &padding, self.styles.surface);
             write_cells(
                 target,
                 area,
@@ -881,14 +970,22 @@ impl<'a> WhichKeyOverlay<'a> {
             .map(|icon| text_cells(icon.glyph))
             .max()
             .map_or(0, |glyph| glyph + ICON_GAP_CELLS);
+        // The marker column reserves the same cells in every row, so a row
+        // whose icon is absent keeps it. An empty glyph reserves no cell, which
+        // is the same rule that the icon column follows.
+        let marker_cells = match text_cells(self.marker.glyph) {
+            0 => 0,
+            glyph => glyph + MARKER_GAP_CELLS,
+        };
         let key_cells = self.widest(|hint| hint.key);
         let label_cells = self.widest(|hint| hint.label);
-        let column_cells = icon_cells + key_cells + KEY_GAP_CELLS + label_cells + COLUMN_GAP_CELLS;
+        let column_cells =
+            key_cells + KEY_GAP_CELLS + marker_cells + icon_cells + label_cells + COLUMN_GAP_CELLS;
 
         // The height bound keeps the overlay over one part of the body only, so
         // the text around the cursor stays visible while the reader chooses.
         let rows_max =
-            usize::from((body.height / WHICH_KEY_BODY_SHARE).saturating_sub(FOOTER_ROWS))
+            usize::from((body.height / WHICH_KEY_BODY_SHARE).saturating_sub(CHROME_ROWS))
                 .min(WHICH_KEY_COLUMN_ROWS_MAX);
         let cells = usize::from(body.width).saturating_sub(LEFT_PAD_CELLS);
         // One page holds one full frame of columns. The pages therefore cover
@@ -913,7 +1010,7 @@ impl<'a> WhichKeyOverlay<'a> {
         );
         let height = u16::try_from(layout.rows_per_column)
             .expect("the row bound keeps the overlay height small")
-            .saturating_add(FOOTER_ROWS);
+            .saturating_add(CHROME_ROWS);
         let area = Rect::new(body.x, body.bottom() - height, body.width, height);
         let mut rows = Vec::with_capacity(shown);
         for index in 0..shown {
@@ -926,9 +1023,10 @@ impl<'a> WhichKeyOverlay<'a> {
                 index: first + index,
                 area: Rect::new(
                     x,
-                    // The hints start at the top of the overlay, because the
-                    // footer holds its last row.
-                    area.y + offset,
+                    // One blank row opens the overlay, so the first hint row
+                    // stands below it. The blank row below the hints and the
+                    // footer row close the overlay, and neither names a hint.
+                    area.y + TOP_PAD_ROWS + offset,
                     u16::try_from(column_cells)
                         .expect("the terminal width bounds one column")
                         .min(area.right() - x),
@@ -947,8 +1045,9 @@ impl<'a> WhichKeyOverlay<'a> {
             },
             paint: Some(PagePaint {
                 area,
-                icon_cells,
                 key_cells,
+                marker_cells,
+                icon_cells,
             }),
         }
     }
@@ -982,11 +1081,14 @@ impl PageGeometry {
 struct PagePaint {
     /// The exact overlay rectangle that the page layout selected.
     area: Rect,
+    /// The width of the widest key of the complete list, in terminal cells.
+    key_cells: usize,
+    /// The width that the marker column reserves, or zero while the caller
+    /// names an empty marker glyph.
+    marker_cells: usize,
     /// The width that the icon column reserves, or zero while no hint of the
     /// complete list carries an icon.
     icon_cells: usize,
-    /// The width of the widest key of the complete list, in terminal cells.
-    key_cells: usize,
 }
 
 /// Returns the cells that one footer legend occupies, its gaps included.

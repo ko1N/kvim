@@ -35,8 +35,8 @@ use kvim_keymap::{
     Registry, Resolver, Scope, ScopedWhichKeyHint,
 };
 use kvim_ui::{
-    WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyOverlay, WhichKeyOverlayRow,
-    WhichKeyStyles,
+    WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyMarker, WhichKeyOverlay,
+    WhichKeyOverlayRow, WhichKeyStyles,
 };
 
 /// The commands that the host binds.
@@ -180,8 +180,8 @@ const LEGEND: [WhichKeyLegendEntry<'static>; 2] = [
 const BODY: Rect = Rect {
     x: 0,
     y: 0,
-    width: 46,
-    height: 10,
+    width: 60,
+    height: 14,
 };
 
 fn key(value: char) -> Key {
@@ -193,6 +193,17 @@ fn footer(breadcrumb: &str) -> WhichKeyFooter<'_> {
     WhichKeyFooter {
         breadcrumb,
         legend: &LEGEND,
+    }
+}
+
+/// Returns the marker that this host paints between a key and its label.
+///
+/// The widget owns no glyph, so the host names the arrow and its color, exactly
+/// as it names the breadcrumb marker of the footer.
+fn host_marker() -> WhichKeyMarker<'static> {
+    WhichKeyMarker {
+        glyph: "\u{2192}",
+        style: Style::default().fg(Color::DarkGray),
     }
 }
 
@@ -305,7 +316,7 @@ fn print_row_with_both_facts(hints: &[ScopedWhichKeyHint<Command, Global>]) {
 
     let rows = [extension_row, interruption_row];
     let mut target = Buffer::empty(BODY);
-    WhichKeyOverlay::new(footer("\u{2423}"), &rows, host_styles())
+    WhichKeyOverlay::new(footer("\u{2423}"), &rows, host_marker(), host_styles())
         .expect("two rows stay inside every bound")
         .render(&mut target, BODY)
         .expect("the band covers the cell buffer of this example");
@@ -338,8 +349,13 @@ fn step_through_a_long_list() {
     // The breadcrumb carries no page count yet, because the count depends on
     // the page. A first overlay reads the geometry only; a host never paints
     // it.
-    let measured = WhichKeyOverlay::new(WhichKeyFooter::default(), &rows, host_styles())
-        .expect("the idle list stays inside every bound");
+    let measured = WhichKeyOverlay::new(
+        WhichKeyFooter::default(),
+        &rows,
+        host_marker(),
+        host_styles(),
+    )
+    .expect("the idle list stays inside every bound");
 
     let mut reached: Vec<usize> = Vec::new();
     let mut page = 0;
@@ -347,9 +363,10 @@ fn step_through_a_long_list() {
         let opened = measured.at_page(page);
         let placement = opened.placement_for(BODY);
         let breadcrumb = format!("g (page {} of {})", placement.page() + 1, placement.pages());
-        let overlay = WhichKeyOverlay::new(footer(&breadcrumb), &rows, host_styles())
-            .expect("the idle list stays inside every bound")
-            .at_page(page);
+        let overlay =
+            WhichKeyOverlay::new(footer(&breadcrumb), &rows, host_marker(), host_styles())
+                .expect("the idle list stays inside every bound")
+                .at_page(page);
 
         let mut target = Buffer::empty(BODY);
         let drawn = overlay
@@ -409,7 +426,7 @@ fn painted(hints: &[ScopedWhichKeyHint<Command, Global>]) -> Buffer {
         .collect();
 
     let mut target = Buffer::empty(BODY);
-    WhichKeyOverlay::new(footer("\u{2423}"), &rows, host_styles())
+    WhichKeyOverlay::new(footer("\u{2423}"), &rows, host_marker(), host_styles())
         .expect("one level of hints stays inside every bound")
         .render(&mut target, BODY)
         .expect("the band covers the cell buffer of this example");

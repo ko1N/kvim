@@ -28,8 +28,8 @@ use kvim_input::{Key, WhichKeyRow};
 use kvim_language::DiagnosticSeverity;
 use kvim_settings::FileTreeIcons;
 use kvim_ui::{
-    WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyOverlay, WhichKeyOverlayRow,
-    WhichKeyStyles,
+    WhichKeyFooter, WhichKeyIcon, WhichKeyLegendEntry, WhichKeyMarker, WhichKeyOverlay,
+    WhichKeyOverlayRow, WhichKeyStyles,
 };
 
 use super::cells::{text_cells, wrap_cells};
@@ -47,6 +47,13 @@ const TITLE_ROWS: u16 = 1;
 /// The breadcrumb reads as the path that the reader walked, so the marker
 /// points from one key to the next.
 const BREADCRUMB_MARKER: &str = " » ";
+
+/// The marker between the key and the label of one which-key hint row.
+///
+/// The row reads as the key that the reader presses and the command that it
+/// reaches, so the marker points from the one to the other. It occupies one
+/// terminal cell, so the overlay needs no patched font for it.
+const WHICH_KEY_ROW_MARKER: &str = "→";
 
 /// The keys that navigate the which-key overlay itself.
 ///
@@ -218,11 +225,12 @@ fn breadcrumb(pending: &[Key]) -> String {
 ///
 /// `kvim-ui` owns the bounded overlay, its column layout, and its clipping.
 /// This function is the theme adapter: it resolves every row into its final
-/// texts, it selects the icon of the command group, it builds the breadcrumb of
-/// the pressed keys and the legend of the navigation keys, and it names the
-/// palette colors of the surface, of the footer, and of the keys. The one
-/// file-tree icon setting also turns these icons off, and the columns stay
-/// aligned without them. See `docs/input-actions.md`.
+/// texts, it selects the icon of the command group, it names the marker between
+/// the key and the label, it builds the breadcrumb of the pressed keys and the
+/// legend of the navigation keys, and it names the palette colors of the
+/// surface, of the footer, and of the keys. The one file-tree icon setting also
+/// turns these icons off, and the rows keep the marker and stay aligned without
+/// them. See `docs/input-actions.md`.
 pub(super) fn render_which_key(
     target: &mut CellBuffer,
     body: Rect,
@@ -272,7 +280,13 @@ pub(super) fn render_which_key(
         breadcrumb: &breadcrumb,
         legend: &WHICH_KEY_LEGEND,
     };
-    let Ok(overlay) = WhichKeyOverlay::new(footer, &hints, styles) else {
+    // The marker keeps the surface background, so the overlay band shows
+    // through it exactly as it shows through the labels beside it.
+    let marker = WhichKeyMarker {
+        glyph: WHICH_KEY_ROW_MARKER,
+        style: surface.patch(theme.style(ThemeRole::WhichKeyMarker)),
+    };
+    let Ok(overlay) = WhichKeyOverlay::new(footer, &hints, marker, styles) else {
         debug_assert!(
             false,
             "the registry bounds every command label, so one level of hints stays inside the overlay bounds"

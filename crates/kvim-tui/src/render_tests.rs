@@ -43,6 +43,9 @@ const WHICH_KEY_DELAY: Duration = WHICH_KEY_DELAY_DEFAULT;
 /// footer row of every level holds the same text.
 const WHICH_KEY_LEGEND: &str = "ESC close  ⌫ back";
 
+/// The marker between the key and the label of one which-key hint row.
+const WHICH_KEY_MARKER: &str = "→";
+
 /// The background of a Visual selection in the reference palette.
 const SELECTION: Color = Color::Rgb(0x28, 0x34, 0x57);
 
@@ -1274,15 +1277,18 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
 
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 9), " /      Toggle the comment");
     assert_eq!(
-        row_of(&buffer, 13),
-        " f      +3 commands",
+        row_of(&buffer, 10),
+        format!("    /     {WHICH_KEY_MARKER} Toggle the comment")
+    );
+    assert_eq!(
+        row_of(&buffer, 14),
+        format!("    f     {WHICH_KEY_MARKER} +3 commands"),
         "a key that reaches several commands shows a group marker"
     );
     assert_eq!(
         buffer
-            .cell((1, 9))
+            .cell((4, 10))
             .expect("the overlay shows its first key")
             .style()
             .fg,
@@ -1294,13 +1300,24 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     press(&mut session, 'f');
     session.tick(WHICH_KEY_DELAY * 2);
     let buffer = draw(&session);
-    // The hints open the overlay, and its footer row closes it.
-    assert_eq!(row_of(&buffer, 14), " /  Open the ripgrep search picker");
-    assert_eq!(row_of(&buffer, 15), " b  Open the buffer picker");
-    assert_eq!(row_of(&buffer, 16), " f  Open the file search picker");
+    // One blank row opens the overlay, one blank row closes its hints, and the
+    // footer row closes the overlay.
+    assert_eq!(
+        row_of(&buffer, 13),
+        format!("    / {WHICH_KEY_MARKER} Open the ripgrep search picker")
+    );
+    assert_eq!(
+        row_of(&buffer, 14),
+        format!("    b {WHICH_KEY_MARKER} Open the buffer picker")
+    );
+    assert_eq!(
+        row_of(&buffer, 15),
+        format!("    f {WHICH_KEY_MARKER} Open the file search picker")
+    );
+    assert_eq!(row_of(&buffer, 16), "", "one blank row closes the hints");
     assert_eq!(
         row_of(&buffer, 17),
-        format!(" Space » f{}{WHICH_KEY_LEGEND}", " ".repeat(11)),
+        format!("    Space » f{}{WHICH_KEY_LEGEND}", " ".repeat(8)),
         "the footer row names the pressed keys and counts no hint"
     );
 
@@ -1317,7 +1334,7 @@ fn the_which_key_footer_names_the_pressed_keys_and_the_navigation_keys() {
     let buffer = draw(&session);
     assert_eq!(
         row_of(&buffer, 17),
-        format!(" Space » w{}{WHICH_KEY_LEGEND}", " ".repeat(11)),
+        format!("    Space » w{}{WHICH_KEY_LEGEND}", " ".repeat(8)),
         "the breadcrumb names both pressed keys, and the legend follows it"
     );
     let color = |x: u16| {
@@ -1328,7 +1345,7 @@ fn the_which_key_footer_names_the_pressed_keys_and_the_navigation_keys() {
             .fg
     };
     assert_eq!(
-        color(1),
+        color(4),
         role(ThemeRole::WhichKeyBreadcrumb).fg,
         "the breadcrumb stays quieter than the keys above it"
     );
@@ -1350,14 +1367,14 @@ fn the_which_key_overlay_fills_a_wide_terminal_with_columns() {
     type_keys(&mut session, " f");
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    // Three columns of thirty-five cells fit, so one row holds every mapping.
+    // Three columns of thirty-six cells fit, so one row holds every mapping.
     assert_eq!(
-        row_of(&buffer, 26),
+        row_of(&buffer, 25),
         format!(
-            " {:<35}{:<35}{}",
-            "/  Open the ripgrep search picker",
-            "b  Open the buffer picker",
-            "f  Open the file search picker"
+            "    {:<36}{:<36}{}",
+            format!("/ {WHICH_KEY_MARKER} Open the ripgrep search picker"),
+            format!("b {WHICH_KEY_MARKER} Open the buffer picker"),
+            format!("f {WHICH_KEY_MARKER} Open the file search picker")
         )
         .trim_end()
     );
@@ -1374,13 +1391,22 @@ fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
     type_keys(&mut session, " f");
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    assert_eq!(row_of(&buffer, 14), " /  Open the ripgrep search picker");
-    assert_eq!(row_of(&buffer, 15), " b  Open the buffer picker");
-    assert_eq!(row_of(&buffer, 16), " f  Open the file search picker");
+    assert_eq!(
+        row_of(&buffer, 13),
+        format!("    / {WHICH_KEY_MARKER} Open the ripgrep search picker")
+    );
+    assert_eq!(
+        row_of(&buffer, 14),
+        format!("    b {WHICH_KEY_MARKER} Open the buffer picker")
+    );
+    assert_eq!(
+        row_of(&buffer, 15),
+        format!("    f {WHICH_KEY_MARKER} Open the file search picker")
+    );
     assert_eq!(
         row_of(&buffer, 17),
-        format!(" Space » f {WHICH_KEY_LEGEND}"),
-        "a narrow footer keeps the breadcrumb and the legend beside it"
+        "    Space » f",
+        "a row that cannot center the legend behind the breadcrumb keeps the breadcrumb alone"
     );
 }
 
@@ -1390,13 +1416,13 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     press(&mut session, ' ');
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
-    // The body band holds eighteen rows, so the overlay keeps nine of them,
-    // and eight of those show a mapping.
+    // The body band holds eighteen rows, so the overlay keeps nine of them:
+    // two padding rows, the footer row, and six mappings.
     assert_eq!(
         row_of(&buffer, 17),
         format!(
-            " Space{}{WHICH_KEY_LEGEND}{}+4 more",
-            " ".repeat(15),
+            "    Space{}{WHICH_KEY_LEGEND}{}+6 more",
+            " ".repeat(12),
             " ".repeat(14)
         ),
         "the footer row reports the mappings that no column holds"
@@ -1406,8 +1432,15 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
         text_row(60, "~", TRACK),
         "the buffer stays visible above"
     );
-    assert_eq!(row_of(&buffer, 9), " /      Toggle the comment");
-    assert_eq!(row_of(&buffer, 16), " o      Open the buffer picker");
+    assert_eq!(row_of(&buffer, 9), "", "one blank row opens the overlay");
+    assert_eq!(
+        row_of(&buffer, 10),
+        format!("    /     {WHICH_KEY_MARKER} Toggle the comment")
+    );
+    assert_eq!(
+        row_of(&buffer, 15),
+        format!("    g     {WHICH_KEY_MARKER} Show the changes of the worktree")
+    );
 
     // A body band that cannot hold the footer and one mapping over its own half
     // shows no overlay at all, so the buffer never disappears behind it.
@@ -1427,17 +1460,19 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
     press(&mut session, ' ');
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
+    // The key column holds five cells, and the marker column stands between it
+    // and the icon column, so every icon sits at the same cell.
     let icon = |y: u16| {
         let cell = buffer
-            .cell((1, y))
+            .cell((12, y))
             .expect("the overlay paints an icon cell");
         (cell.symbol().to_owned(), cell.style().fg)
     };
     // `/` toggles the comment, which is a language service. `\` splits the
     // window. `f` opens the pickers, which all reach a file or a buffer.
-    let (code, code_color) = icon(11);
-    let (window, window_color) = icon(12);
-    let (files, files_color) = icon(15);
+    let (code, code_color) = icon(12);
+    let (window, window_color) = icon(13);
+    let (files, files_color) = icon(16);
     assert_eq!(code_color, Some(ACCENT_WARM));
     assert_eq!(window_color, Some(INFO));
     assert_eq!(files_color, Some(TEXT));
@@ -1450,9 +1485,9 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
         "each group carries its own glyph"
     );
     assert_eq!(
-        row_of(&buffer, 11),
-        format!(" {code} /      Toggle the comment"),
-        "the icon sits left of the key and the label"
+        row_of(&buffer, 12),
+        format!("    /     {WHICH_KEY_MARKER} {code} Toggle the comment"),
+        "the key opens the row, and the icon sits between the marker and the label"
     );
 }
 
@@ -1466,26 +1501,26 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     painted.tick(WHICH_KEY_DELAY);
     // With icons every column keeps two further cells, and the columns stay
     // evenly spaced.
-    let ripgrep = format!("{files} /  Open the ripgrep search picker");
-    let buffers = format!("{files} b  Open the buffer picker");
-    let files_picker = format!("{files} f  Open the file search picker");
+    let ripgrep = format!("/ {WHICH_KEY_MARKER} {files} Open the ripgrep search picker");
+    let buffers = format!("b {WHICH_KEY_MARKER} {files} Open the buffer picker");
+    let files_picker = format!("f {WHICH_KEY_MARKER} {files} Open the file search picker");
     assert_eq!(
-        row_of(&draw(&painted), 26),
-        format!(" {ripgrep:<37}{buffers:<37}{files_picker}")
+        row_of(&draw(&painted), 25),
+        format!("    {ripgrep:<38}{buffers:<38}{files_picker}")
     );
 
     let mut plain = session_without_icons(120, 30);
     type_keys(&mut plain, " f");
     plain.tick(WHICH_KEY_DELAY);
     assert_eq!(
-        row_of(&draw(&plain), 26),
+        row_of(&draw(&plain), 25),
         format!(
-            " {:<35}{:<35}{}",
-            "/  Open the ripgrep search picker",
-            "b  Open the buffer picker",
-            "f  Open the file search picker"
+            "    {:<36}{:<36}{}",
+            format!("/ {WHICH_KEY_MARKER} Open the ripgrep search picker"),
+            format!("b {WHICH_KEY_MARKER} Open the buffer picker"),
+            format!("f {WHICH_KEY_MARKER} Open the file search picker")
         ),
-        "every column loses the same two cells, so the columns stay aligned"
+        "every column loses the same two cells, and every row keeps its marker"
     );
 }
 
