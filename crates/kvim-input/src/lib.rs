@@ -70,7 +70,7 @@ pub use edited_line::{EditedLine, EditedLineError, LineChange};
 pub use kvim_keymap::{Chord, Key, KeyCode, KeyLabel, KeySequence};
 pub use kvim_keymap::{
     CommandOwner, ContextGeneration, Dispatch, DispatchContext, Input, InputContextSnapshot,
-    PasteText, Phase, SemanticPhases, TextFallback, TypedText,
+    PasteText, Phase, SemanticPhases, StepBack, TextFallback, TypedText,
 };
 pub use mode::{BindingScope, InputContext, Mode, PromptKind, TreePrompt};
 pub use profile::{

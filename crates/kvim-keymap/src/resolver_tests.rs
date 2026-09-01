@@ -3,7 +3,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use super::{
-    Dispatch, DispatchContext, Input, PasteError, PasteText, Resolver, TypedText, scope_order,
+    Dispatch, DispatchContext, Input, PasteError, PasteText, Resolver, StepBack, TypedText,
+    scope_order,
 };
 use crate::binding::{Binding, CommandMetadata, CommandOwner, Scope};
 use crate::context::{ContextGeneration, InputContextSnapshot, TextFallback, UnboundInput};
@@ -1306,4 +1307,96 @@ fn an_interruption_of_a_preceding_scope_beats_the_cancellation() {
         Dispatch::Cancelled
     );
     assert!(resolver.pending_keys().is_empty(), "the prefix is gone");
+}
+
+/// A resolver whose focused scope holds one three-key sequence.
+///
+/// The step-back tests need a prefix of two keys, which the shared `resolver`
+/// table above cannot arm.
+fn leader_resolver() -> Resolver<Action, Table> {
+    let bindings = vec![
+        Binding::surface(
+            Table::Normal,
+            &[ch(' '), ch('w'), ch('a')],
+            Action::FirstLine,
+        ),
+        Binding::host(
+            Table::Global,
+            &[Key::ctrl(KeyCode::Char('q'))],
+            Action::Quit,
+        ),
+    ];
+    let registry = Registry::from_bindings(&bindings, 4).expect("the test table validates");
+    Resolver::new(Arc::new(registry), 4, DELAY)
+}
+
+#[test]
+fn a_step_back_from_a_two_key_prefix_shows_the_level_above() {
+    let mut resolver = leader_resolver();
+    let context = normal();
+
+    resolver.dispatch(&context, Input::Key(ch(' ')), Some(NOW));
+    resolver.dispatch(&context, Input::Key(ch('w')), Some(NOW));
+    assert_eq!(resolver.pending_keys(), [ch(' '), ch('w')]);
+
+    assert_eq!(resolver.step_back(), StepBack::Shortened);
+    assert_eq!(resolver.pending_keys(), [ch(' ')]);
+
+    let view = resolver.which_key(DELAY).expect("the delay passed");
+    assert_eq!(view.prefix(), [ch(' ')]);
+    assert_eq!(
+        view.hints().len(),
+        1,
+        "the level above hints the one key that continues it"
+    );
+    assert_eq!(view.hints()[0].hint().key(), ch('w'));
+}
+
+#[test]
+fn a_step_back_from_a_one_key_prefix_clears_the_prefix() {
+    let mut resolver = leader_resolver();
+    let context = normal();
+
+    resolver.dispatch(&context, Input::Key(ch(' ')), Some(NOW));
+    assert_eq!(resolver.step_back(), StepBack::Cleared);
+
+    assert!(resolver.pending_keys().is_empty());
+    assert!(
+        resolver.which_key(DELAY).is_none(),
+        "an empty prefix draws no overlay"
+    );
+    assert_eq!(resolver.overlay_deadline(), None);
+}
+
+#[test]
+fn a_step_back_without_a_pending_prefix_changes_nothing() {
+    let mut resolver = leader_resolver();
+
+    assert_eq!(resolver.step_back(), StepBack::NoPrefix);
+    assert!(resolver.pending_keys().is_empty());
+    assert!(resolver.which_key(DELAY).is_none());
+}
+
+#[test]
+fn a_step_back_keeps_the_overlay_visible_without_a_second_delay() {
+    let mut resolver = leader_resolver();
+    let context = normal();
+
+    resolver.dispatch(&context, Input::Key(ch(' ')), Some(NOW));
+    resolver.dispatch(&context, Input::Key(ch('w')), Some(NOW));
+    assert!(
+        resolver.which_key(DELAY).is_some(),
+        "the reader waited out the delay once"
+    );
+
+    assert_eq!(resolver.step_back(), StepBack::Shortened);
+    assert_eq!(
+        resolver.overlay_deadline(),
+        None,
+        "a visible overlay waits for no further time"
+    );
+    assert!(
+        resolver.which_key(DELAY).is_some(),
+        "the level above draws at the same moment"
+    );
 }

@@ -54,7 +54,7 @@ use kvim_editor::{
 use kvim_input::{
     BindingScope, COMMAND_LINE_CHARS_MAX, Command, CommandAuthority, CommandLineCommand,
     EditedLine, InputContextSnapshot, LineChange, Mode, PasteText, PromptEdit, PromptKind,
-    Registry, Resolution, Resolver, TreePrompt, WhichKeyRow,
+    Registry, Resolution, Resolver, StepBack, TreePrompt, WhichKeyRow,
 };
 use kvim_language::{
     Analysis, AnalysisError, AnalysisInput, BufferSyntax, Diagnostic, DiagnosticSet,
@@ -3330,6 +3330,19 @@ impl Session {
 
     /// Resolves one key and applies what it names.
     fn resolve_key(&mut self, key: Key, now: Duration) -> Redraw {
+        // A pending which-key sequence owns `Backspace` and steps back one
+        // level with it. Without a pending sequence the resolver consumes
+        // nothing, so the insert-mode delete, the prompt delete, and the
+        // sidebar parent step all keep the key.
+        if key == Key::plain(KeyCode::Backspace) {
+            match self.resolver.step_back() {
+                // The step always changes the breadcrumb of the footer, and
+                // `settle` compares the hint rows alone, so the repaint cannot
+                // depend on the rows of the two levels differing.
+                StepBack::Shortened | StepBack::Cleared => return Redraw::Needed,
+                StepBack::NoPrefix => {}
+            }
+        }
         let resolution = self.resolver.resolve(key, now);
         self.apply_resolution(resolution)
     }

@@ -1865,6 +1865,86 @@ fn the_which_key_deadline_is_the_only_time_driven_change() {
     );
 }
 
+/// Returns the key labels of the visible which-key rows.
+fn which_key_labels(session: &Session) -> Vec<String> {
+    session
+        .visible()
+        .which_key
+        .map(|view| {
+            view.rows
+                .iter()
+                .map(|row| row.key_label().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+#[test]
+fn backspace_steps_the_which_key_overlay_back_one_level() {
+    let mut session = session(60, 20);
+    press(&mut session, ' ');
+    session.tick(WHICH_KEY_DELAY);
+    let leader = which_key_labels(&session);
+    assert!(leader.contains(&"w".to_owned()), "the leader hints `w`");
+
+    press(&mut session, 'w');
+    assert_eq!(
+        which_key_labels(&session),
+        vec!["a".to_owned(), "q".to_owned(), "w".to_owned()],
+        "the write group hints its three commands"
+    );
+
+    // The first step back returns to the leader level, and the overlay stays
+    // visible without a second which-key delay.
+    assert_eq!(press_code(&mut session, KeyCode::Backspace), Redraw::Needed);
+    assert_eq!(
+        session.resolver.pending_keys(),
+        [Key::plain(KeyCode::Char(' '))]
+    );
+    assert_eq!(which_key_labels(&session), leader);
+
+    // The second step back removes the last key, so the overlay closes.
+    assert_eq!(press_code(&mut session, KeyCode::Backspace), Redraw::Needed);
+    assert!(session.resolver.pending_keys().is_empty());
+    assert!(session.visible().which_key.is_none());
+    assert!(
+        !session.buffer().is_modified(),
+        "a step back runs no command of the level behind it"
+    );
+}
+
+#[test]
+fn backspace_steps_back_only_while_a_which_key_sequence_is_pending() {
+    // The step back routes on the pending sequence, not on the mode, so every
+    // other owner of `Backspace` keeps the key.
+    let mut session = session(60, 20);
+    press(&mut session, 'i');
+    type_keys(&mut session, "alpha");
+    assert!(session.resolver.pending_keys().is_empty());
+
+    press_code(&mut session, KeyCode::Backspace);
+    assert_eq!(session.buffer().to_string(), "alph\n");
+}
+
+#[test]
+fn escape_closes_the_which_key_overlay_and_runs_no_command() {
+    let mut session = session(60, 20);
+    press(&mut session, ' ');
+    press(&mut session, 'w');
+    session.tick(WHICH_KEY_DELAY);
+    assert!(session.visible().which_key.is_some());
+
+    press_code(&mut session, KeyCode::Esc);
+    assert!(session.resolver.pending_keys().is_empty());
+    assert!(session.visible().which_key.is_none());
+    assert_eq!(
+        session.run_state(),
+        RunState::Running,
+        "the escape runs no command of the level behind it"
+    );
+    assert!(!session.buffer().is_modified());
+}
+
 #[test]
 fn host_owned_which_key_has_no_internal_deadline_or_rows() {
     let mut session = session(60, 20).with_embedded_which_key(false);

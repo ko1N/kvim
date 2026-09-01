@@ -105,7 +105,7 @@ pub use pointer::{
 };
 pub use registry::{BINDINGS_MAX, Registry, RegistryError};
 pub use resolver::{
-    Dispatch, DispatchContext, Input, PASTE_BYTES_MAX, PasteError, PasteText, Resolver, TypedText,
-    WhichKeyView,
+    Dispatch, DispatchContext, Input, PASTE_BYTES_MAX, PasteError, PasteText, Resolver, StepBack,
+    TypedText, WhichKeyView,
 };
 pub use sequence::{KeySequence, SEQUENCE_KEYS_MAX, SequenceError};

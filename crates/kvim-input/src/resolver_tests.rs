@@ -2,7 +2,7 @@ use std::num::NonZeroU32;
 use std::time::Duration;
 
 use crate::{BindingScope, Command, InputContext, Mode, PromptKind, Registry};
-use kvim_keymap::{Key, KeyCode, UnboundInput};
+use kvim_keymap::{Key, KeyCode, StepBack, UnboundInput};
 use kvim_settings::{InputSettings, WHICH_KEY_DELAY_DEFAULT};
 
 use super::{PromptEdit, Resolution, Resolver};
@@ -960,5 +960,37 @@ fn every_default_binding_is_a_surface_contribution_of_the_shared_registry() {
     assert!(
         bindings > 300,
         "the shared registry holds the complete kvim preset, but it holds {bindings} bindings"
+    );
+}
+
+#[test]
+fn a_step_back_returns_the_overlay_to_the_level_above() {
+    let mut resolver = resolver();
+    assert_eq!(resolver.resolve(ch(' '), NOW), Resolution::Pending);
+    let leader_rows = resolver
+        .which_key(WHICH_KEY_DELAY)
+        .expect("the overlay appears after the delay");
+
+    assert_eq!(
+        resolver.resolve(ch('w'), WHICH_KEY_DELAY),
+        Resolution::Pending
+    );
+    assert_eq!(resolver.pending_keys(), [ch(' '), ch('w')]);
+
+    assert_eq!(resolver.step_back(), StepBack::Shortened);
+    assert_eq!(resolver.pending_keys(), [ch(' ')]);
+    assert_eq!(
+        resolver.which_key(WHICH_KEY_DELAY),
+        Some(leader_rows),
+        "the rows of the level above return without a second delay"
+    );
+
+    assert_eq!(resolver.step_back(), StepBack::Cleared);
+    assert!(resolver.pending_keys().is_empty());
+    assert!(resolver.which_key(WHICH_KEY_DELAY).is_none());
+    assert_eq!(
+        resolver.step_back(),
+        StepBack::NoPrefix,
+        "an empty sequence consumes nothing"
     );
 }

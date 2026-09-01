@@ -16,7 +16,7 @@ use std::time::Duration;
 
 use kvim_keymap::{
     Chord, Dispatch, DispatchContext, Input, InputContextSnapshot, Key, KeyCode,
-    Resolver as SharedResolver, TypedText,
+    Resolver as SharedResolver, StepBack, TypedText,
 };
 use kvim_settings::InputSettings;
 
@@ -278,6 +278,20 @@ impl Resolver {
     pub fn reset(&mut self) {
         self.shared.clear_pending();
         self.reducer.reset();
+    }
+
+    /// Removes the last key of the pending sequence.
+    ///
+    /// A reader steps back one level of a which-key sequence with this call.
+    /// The shorter sequence stays armed and keeps the overlay visible, so the
+    /// reader waits out no second which-key delay. Removing the one remaining
+    /// key clears the sequence and hides the overlay.
+    ///
+    /// The call changes no grammar phase. A count, an operator, and a register
+    /// belong to the semantic reducer, and no key of a which-key sequence
+    /// opened them.
+    pub fn step_back(&mut self) -> StepBack {
+        self.shared.step_back()
     }
 
     /// Returns the which-key overlay rows, or `None` while the overlay stays

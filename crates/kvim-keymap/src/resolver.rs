@@ -345,6 +345,29 @@ enum PendingPrefix<S> {
     },
 }
 
+/// The outcome of one [`Resolver::step_back`] call.
+///
+/// The value names what the pending prefix does, so a caller learns both
+/// whether the resolver took the input and whether an overlay still has a
+/// prefix to draw.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StepBack {
+    /// No prefix was pending, so the resolver consumed nothing.
+    ///
+    /// The caller keeps the input and gives it to its next owner.
+    NoPrefix,
+    /// One key left the prefix, and a shorter prefix stays armed.
+    ///
+    /// The which-key overlay keeps its state, so a reader who already waited
+    /// out the delay sees the level above at once.
+    Shortened,
+    /// The last key left the prefix, so no prefix stays armed.
+    ///
+    /// The which-key overlay hides, exactly as [`Resolver::clear_pending`]
+    /// hides it.
+    Cleared,
+}
+
 /// The which-key hints of the active pending prefix.
 ///
 /// The view borrows the same registry and the same prefix that dispatch uses,
@@ -691,6 +714,106 @@ where
     pub fn clear_pending(&mut self) {
         self.pending = PendingPrefix::Idle;
         self.overlay = OverlayState::Hidden;
+    }
+
+    /// Removes the last key of the pending prefix.
+    ///
+    /// A reader steps back one level of a sequence with this call. The prefix
+    /// keeps the identity that armed it, so the step never resurrects a prefix
+    /// under a context that the resolver never armed. The shorter prefix takes
+    /// the owning scope that the arming walk names for it, which is the first
+    /// scope of the same order that extends it.
+    ///
+    /// The overlay keeps its state while a prefix remains, so a reader who
+    /// already waited out the which-key delay sees the level above at once and
+    /// waits no second time. An emptied prefix hides the overlay.
+    ///
+    /// The call reads no clock, because no transition here starts a delay.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// # use std::fmt;
+    /// # use std::sync::Arc;
+    /// # use std::time::Duration;
+    /// # use kvim_keymap::{
+    /// #     Binding, CommandMetadata, Dispatch, DispatchContext, Input, InputContextSnapshot, Key,
+    /// #     KeyCode, Registry, Resolver, Scope, StepBack,
+    /// # };
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # struct Write;
+    /// # impl fmt::Display for Write {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str(self.id()) }
+    /// # }
+    /// # impl CommandMetadata for Write {
+    /// #     fn id(&self) -> &str { "write-all" }
+    /// #     fn label(&self) -> &str { "Write every modified buffer" }
+    /// # }
+    /// # #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+    /// # struct Editor;
+    /// # impl fmt::Display for Editor {
+    /// #     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("Editor") }
+    /// # }
+    /// # impl Scope for Editor { const COUNT: usize = 1; }
+    /// let leader = Key::plain(KeyCode::Char(' '));
+    /// let write = Key::plain(KeyCode::Char('w'));
+    /// let all = Key::plain(KeyCode::Char('a'));
+    /// let registry =
+    ///     Registry::from_bindings(&[Binding::surface(Editor, &[leader, write, all], Write)], 4)?;
+    /// let mut resolver = Resolver::new(Arc::new(registry), 4, Duration::ZERO);
+    /// let context = DispatchContext::focused(InputContextSnapshot::idle(Editor));
+    /// let now = Some(Duration::ZERO);
+    ///
+    /// resolver.dispatch(&context, Input::Key(leader), now);
+    /// resolver.dispatch(&context, Input::Key(write), now);
+    /// assert_eq!(resolver.pending_keys(), [leader, write]);
+    ///
+    /// assert_eq!(resolver.step_back(), StepBack::Shortened);
+    /// assert_eq!(resolver.pending_keys(), [leader], "the level above stays armed");
+    ///
+    /// assert_eq!(resolver.step_back(), StepBack::Cleared);
+    /// assert!(resolver.pending_keys().is_empty());
+    ///
+    /// assert_eq!(
+    ///     resolver.step_back(),
+    ///     StepBack::NoPrefix,
+    ///     "an empty prefix consumes nothing"
+    /// );
+    /// # Ok::<(), kvim_keymap::RegistryError<Write, Editor>>(())
+    /// ```
+    pub fn step_back(&mut self) -> StepBack {
+        let PendingPrefix::Active {
+            identity, mut keys, ..
+        } = std::mem::replace(&mut self.pending, PendingPrefix::Idle)
+        else {
+            return StepBack::NoPrefix;
+        };
+        keys.pop();
+        if keys.is_empty() {
+            self.overlay = OverlayState::Hidden;
+            return StepBack::Cleared;
+        }
+        // The shorter prefix was armed under this same identity one key ago, so
+        // the arming walk of `start_sequence` names its owner again. No scope
+        // of that order completes it: a complete binding would have answered
+        // then instead of arming the longer prefix.
+        let owner = identity
+            .scope_order()
+            .find(|scope| self.registry.has_longer_sequence(*scope, &keys));
+        let Some(scope) = owner else {
+            debug_assert!(
+                false,
+                "the removed key extended this prefix, so a scope of the same order extends it"
+            );
+            self.overlay = OverlayState::Hidden;
+            return StepBack::Cleared;
+        };
+        self.pending = PendingPrefix::Active {
+            identity,
+            scope,
+            keys,
+        };
+        StepBack::Shortened
     }
 
     /// Arms the which-key overlay for pending input that the resolver does not
