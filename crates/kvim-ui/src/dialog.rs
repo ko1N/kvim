@@ -660,7 +660,8 @@ impl<Id: Eq> Dialog<Id> {
 
     /// Calculates one placement.
     ///
-    /// The rail and the blank separator column take two columns. One blank
+    /// The rail takes one column. Blank padding columns follow it and close
+    /// the popup, so content never touches either popup edge. One blank
     /// padding row opens the popup, and one blank row closes the content
     /// region before the footer band. The footer band always holds three
     /// rows: one blank row, the choice row, and one blank row, regardless of
@@ -669,7 +670,12 @@ impl<Id: Eq> Dialog<Id> {
     where
         Id: Clone,
     {
-        const FRAME_COLUMNS: u16 = 2;
+        const RAIL_COLUMNS: u16 = 1;
+        /// The blank columns between the rail and the content.
+        const LEAD_PAD_COLUMNS: u16 = 2;
+        /// The blank columns between the content and the right popup edge.
+        const TRAIL_PAD_COLUMNS: u16 = 2;
+        const FRAME_COLUMNS: u16 = RAIL_COLUMNS + LEAD_PAD_COLUMNS + TRAIL_PAD_COLUMNS;
         const TOP_PAD_ROWS: u16 = 1;
         const CLOSE_PAD_ROWS: u16 = 1;
         const FOOTER_ROWS: u16 = 3;
@@ -767,10 +773,13 @@ impl<Id: Eq> Dialog<Id> {
             popup.bottom() <= body_bottom,
             "validated popup stays inside the supplied body"
         );
-        let rail = Rect::new(popup.x, popup.y, 1, popup.height);
+        let rail = Rect::new(popup.x, popup.y, RAIL_COLUMNS, popup.height);
+        // Content starts after the rail and its leading padding. The trailing
+        // padding is the remainder of the frame, so no text reaches the right
+        // popup edge.
         let content_x = popup
             .x
-            .checked_add(FRAME_COLUMNS)
+            .checked_add(RAIL_COLUMNS + LEAD_PAD_COLUMNS)
             .ok_or(DialogError::InvalidBodyArea { body })?;
         let content_y = popup
             .y

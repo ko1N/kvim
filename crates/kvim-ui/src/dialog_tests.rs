@@ -289,14 +289,19 @@ fn placement_and_render_share_exact_popup_geometry() {
     assert_eq!(rendered, pure);
     assert_eq!(pure.body_area, body);
     // The popup shrinks to its content width (the choice row, at 33 cells,
-    // needs more than the 24-cell question), rather than filling the full
-    // 40-cell body.
-    assert_eq!(pure.popup, Rect::new(6, 5, 35, 6));
-    assert_eq!(pure.rail, Rect::new(6, 5, 1, 6));
+    // needs more than the 24-cell question) plus the five frame columns: the
+    // rail, two leading padding columns, and two trailing padding columns.
+    assert_eq!(pure.popup, Rect::new(5, 5, 38, 6));
+    assert_eq!(pure.rail, Rect::new(5, 5, 1, 6));
     assert_eq!(pure.content, Rect::new(8, 6, 33, 1));
-    assert_eq!(pure.footer, Rect::new(7, 8, 34, 3));
+    assert_eq!(pure.footer, Rect::new(6, 8, 37, 3));
     assert_eq!(pure.choices[0].area, Rect::new(8, 9, 14, 1));
     assert_eq!(pure.choices[1].area, Rect::new(24, 9, 17, 1));
+    assert_eq!(
+        pure.popup.right() - pure.content.right(),
+        2,
+        "blank padding columns keep content off the right popup edge"
+    );
 }
 
 #[test]
@@ -468,7 +473,7 @@ fn wraps_question_and_places_optional_body_after_it() {
     )
     .expect("bounded dialog");
     let placement = dialog
-        .placement_for(Rect::new(5, 7, 16, 12))
+        .placement_for(Rect::new(5, 7, 20, 12))
         .expect("body fits");
     assert_eq!(placement.body_text.height, 2);
     assert!(placement.question.height > 1);
@@ -494,22 +499,23 @@ fn narrow_bodies_require_a_complete_choice_row() {
         Id::Keep,
     )
     .expect("short dialog");
-    let narrow = Rect::new(9, 4, 5, 6);
+    // The narrowest popup holds the one chip plus the five frame columns.
+    let narrow = Rect::new(9, 4, 8, 6);
     let placement = narrow_dialog
         .placement_for(narrow)
         .expect("the narrowest complete choice row fits");
     assert_eq!(placement.content.width, 3);
     assert_eq!(placement.choices[0].area.width, 3);
     assert_eq!(
-        narrow_dialog.placement_for(Rect::new(9, 4, 4, 6)),
+        narrow_dialog.placement_for(Rect::new(9, 4, 7, 6)),
         Err(DialogError::BodyTooSmall {
-            body: Rect::new(9, 4, 4, 6)
+            body: Rect::new(9, 4, 7, 6)
         })
     );
     assert_eq!(
-        narrow_dialog.placement_for(Rect::new(9, 4, 5, 5)),
+        narrow_dialog.placement_for(Rect::new(9, 4, 8, 5)),
         Err(DialogError::BodyTooSmall {
-            body: Rect::new(9, 4, 5, 5)
+            body: Rect::new(9, 4, 8, 5)
         })
     );
     let wide = Dialog::new(
@@ -615,7 +621,7 @@ fn footer_band_is_published_and_never_overlaps_the_content_region() {
     // two rectangles' row ranges never intersect.
     assert!(placement.footer.y > placement.content.bottom());
     assert_eq!(placement.footer.bottom(), placement.popup.bottom());
-    assert_eq!(placement.footer, Rect::new(7, 8, 34, 3));
+    assert_eq!(placement.footer, Rect::new(6, 8, 37, 3));
 }
 
 #[test]
@@ -630,7 +636,7 @@ fn question_wrap_indents_continuation_lines_under_the_icon() {
     .expect("bounded dialog")
     .with_icon('⚠')
     .expect("a warning glyph occupies one cell");
-    let body = Rect::new(2, 1, 16, 9);
+    let body = Rect::new(2, 1, 20, 12);
     let mut target = Buffer::empty(body);
     let placement = dialog
         .render(&mut target, body, styles())
@@ -663,13 +669,17 @@ fn question_wrap_indents_continuation_lines_under_the_icon() {
     assert_eq!(blank_under_icon.symbol(), " ");
     assert_eq!(blank_under_icon.style().bg, Some(Color::Black));
     assert_ne!(blank_under_icon.style().fg, Some(Color::Red));
-    assert_eq!(
-        target
-            .cell((title_text_x, continuation_y))
-            .expect("continuation text cell")
-            .symbol(),
-        "h"
+    // The continuation carries question text at the indented column, whichever
+    // character the wrap width happens to place there.
+    let continuation = target
+        .cell((title_text_x, continuation_y))
+        .expect("continuation text cell");
+    assert_ne!(
+        continuation.symbol(),
+        " ",
+        "the continuation resumes the question under the title text"
     );
+    assert_eq!(continuation.style().fg, Some(Color::White));
 }
 
 #[test]
