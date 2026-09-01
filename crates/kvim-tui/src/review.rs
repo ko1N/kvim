@@ -13,9 +13,9 @@ use kvim_path::WorktreeRelativePath;
 use kvim_settings::{DiffSettings, DiffView};
 use kvim_ui::{ListMotion, SidebarInput, SidebarRow, SidebarState, TabStrip, sidebar_guides};
 use kvim_workspace::{
-    DiffContent, Hunk, HunkId, HunkStep, ReviewAnchor, ReviewState, WorktreeDiff, align_hunk,
+    DiffContent, DiffLimit, Hunk, HunkId, HunkStep, ReviewAnchor, ReviewState, WorktreeDiff,
+    align_hunk,
 };
-
 use ratatui::buffer::Buffer as CellBuffer;
 use ratatui::layout::Rect;
 
@@ -1525,8 +1525,8 @@ pub struct PanelRow {
     pub directory: bool,
     /// Reports whether the reader finished every hunk of the file.
     pub complete: bool,
-    /// Reports whether a collection bound truncated the file.
-    pub truncated: bool,
+    /// The bound that stopped collection of this file, if any.
+    pub truncation: Option<DiffLimit>,
     /// The repository state that the row draws, for a file row.
     pub git: Option<ReviewPanelGitState>,
     /// The exact repository mark glyph, for a file row.
@@ -1569,7 +1569,7 @@ fn build_panel_rows(
                         depth: row.depth(),
                         directory: true,
                         complete: false,
-                        truncated: false,
+                        truncation: None,
                         git: None,
                         repository_mark: None,
                         guide_cells,
@@ -1587,7 +1587,7 @@ fn build_panel_rows(
                     // The mark and the color are the ones that the file tree
                     // draws for the same repository state.
                     let status = section.git_status();
-                    let truncated = entry.is_some_and(|entry| entry.truncated);
+                    let truncated = entry.and_then(|entry| entry.truncation);
                     let guide_cells = guides.chars().count();
                     PanelRow {
                         text: format!("{mark}{guides}{FILE_ICON} {label}"),
@@ -1597,7 +1597,7 @@ fn build_panel_rows(
                         depth: row.depth(),
                         directory: false,
                         complete: entry.is_some_and(ChangeEntry::is_complete),
-                        truncated,
+                        truncation: truncated,
                         git: Some(panel_git(status)),
                         repository_mark: Some(git_mark(status)),
                         guide_cells,

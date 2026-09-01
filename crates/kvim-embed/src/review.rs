@@ -43,9 +43,9 @@ use kvim_tui::__review::{
 use kvim_workspace::{
     CandidateAuthority, CommentBody as PrivateCommentBody, DIFF_FILE_HUNKS_MAX, DIFF_FILES_MAX,
     DIFF_HUNK_LINES_MAX, DIFF_LINE_BYTES_MAX, DIFF_LINE_NUMBER_MAX, DiffChange, DiffContent,
-    DiffOldSide, DiffTarget, DiffTruncation, FileDiff as PrivateFile, FileMode, FileSide,
-    HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine, NewLineRange,
-    OldLine, OldLineRange, ReviewAnchor as PrivateAnchor, TextDiff, WorktreeDiff,
+    DiffLimit, DiffOldSide, DiffTarget, DiffTruncation, FileDiff as PrivateFile, FileMode,
+    FileSide, HeadAuthority, Hunk, HunkId, IndexAuthority, LineEnding, LineOrigin, NewLine,
+    NewLineRange, OldLine, OldLineRange, ReviewAnchor as PrivateAnchor, TextDiff, WorktreeDiff,
 };
 #[cfg(feature = "worktree")]
 use kvim_workspace::{DiffComparison, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest};
@@ -224,18 +224,57 @@ pub enum ReviewFileChange {
 }
 
 /// One bounded file in a supplied candidate.
+///
+/// [`ReviewFile::new`] declares a complete file. Use
+/// [`ReviewFile::with_truncation`] when a collection bound omitted file content.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReviewFile {
     path: WorktreeRelativePath,
     change: ReviewFileChange,
     hunks: Vec<ReviewHunk>,
+    truncation: DiffTruncation,
 }
 impl ReviewFile {
-    /// Validates and owns one text file diff.
+    /// Validates and owns one complete text file diff.
+    ///
+    /// Use [`Self::with_truncation`] when the supplied file omitted content at
+    /// a published collection bound.
     pub fn new(
         path: WorktreeRelativePath,
         change: ReviewFileChange,
         hunks: &[ReviewHunk],
+    ) -> Result<Self, ReviewError> {
+        Self::with_truncation(path, change, hunks, DiffTruncation::Complete)
+    }
+
+    /// Validates and owns one text file diff with its collection state.
+    ///
+    /// A truncated file remains visibly incomplete after all supplied hunks
+    /// are read. The changed-file panel reports the bound and never dims it.
+    ///
+    /// ```
+    /// use kvim_embed::{
+    ///     DiffLimit, DiffTruncation, ReviewFile, ReviewFileChange, ReviewHunk, ReviewLine,
+    ///     ReviewLineOrigin,
+    /// };
+    /// use kvim_path::WorktreeRelativePath;
+    ///
+    /// let line = ReviewLine::new(ReviewLineOrigin::Added { new: 1 }, "published")?;
+    /// let hunk = ReviewHunk::new(1, 0, 1, 1, &[line])?;
+    /// let file = ReviewFile::with_truncation(
+    ///     WorktreeRelativePath::new("src/lib.rs")?,
+    ///     ReviewFileChange::Added,
+    ///     &[hunk],
+    ///     DiffTruncation::Truncated(DiffLimit::Lines),
+    /// )?;
+    /// assert_eq!(file.truncation(), Some(DiffLimit::Lines));
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn with_truncation(
+        path: WorktreeRelativePath,
+        change: ReviewFileChange,
+        hunks: &[ReviewHunk],
+        truncation: DiffTruncation,
     ) -> Result<Self, ReviewError> {
         if hunks.len() > REVIEW_FILE_HUNKS_MAX {
             return Err(ReviewError::Candidate("too many hunks in one file".into()));
@@ -244,6 +283,7 @@ impl ReviewFile {
             path,
             change,
             hunks: hunks.to_vec(),
+            truncation,
         })
     }
     /// Returns the validated candidate path.
@@ -255,6 +295,14 @@ impl ReviewFile {
     #[must_use]
     pub fn hunks(&self) -> &[ReviewHunk] {
         &self.hunks
+    }
+    /// Returns the collection bound that stopped this file, if any.
+    #[must_use]
+    pub const fn truncation(&self) -> Option<DiffLimit> {
+        match self.truncation {
+            DiffTruncation::Complete => None,
+            DiffTruncation::Truncated(limit) => Some(limit),
+        }
     }
 }
 
@@ -639,7 +687,7 @@ pub struct ReviewPanelRow {
     depth: usize,
     directory: bool,
     complete: bool,
-    truncated: bool,
+    truncation: Option<DiffLimit>,
     git: Option<ReviewPanelGitState>,
     repository_mark: Option<Box<str>>,
 }
@@ -684,10 +732,15 @@ impl ReviewPanelRow {
     pub const fn is_complete(&self) -> bool {
         self.complete
     }
+    /// Returns the collection bound that stopped this file, if any.
+    #[must_use]
+    pub const fn truncation(&self) -> Option<DiffLimit> {
+        self.truncation
+    }
     /// Reports whether collection stopped at a file bound.
     #[must_use]
     pub const fn is_truncated(&self) -> bool {
-        self.truncated
+        self.truncation.is_some()
     }
     /// Returns the repository state for a file row.
     #[must_use]
@@ -2185,7 +2238,7 @@ fn convert_panel_row(row: PrivatePanelRow, id: PrivatePanelRowId) -> ReviewPanel
         depth: row.depth,
         directory: row.directory,
         complete: row.complete,
-        truncated: row.truncated,
+        truncation: row.truncation,
         git: row.git.map(convert_panel_git),
         repository_mark: row.repository_mark.map(Into::into),
     }
@@ -2259,9 +2312,7 @@ fn convert_file(file: ReviewFile) -> Result<PrivateFile, ReviewError> {
     }
     PrivateFile::new(
         change,
-        DiffContent::Text(
-            TextDiff::new(hunks, DiffTruncation::Complete).map_err(display_candidate)?,
-        ),
+        DiffContent::Text(TextDiff::new(hunks, file.truncation).map_err(display_candidate)?),
     )
     .map_err(display_candidate)
 }

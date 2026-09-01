@@ -1,5 +1,6 @@
 use super::*;
 use kvim_input::{BindingOverride, BindingScope, Command, Key, KeyCode, ReviewBindingProfile};
+use kvim_workspace::{DiffLimit, DiffTruncation};
 use ratatui::layout::Rect;
 use std::path::Path;
 
@@ -27,6 +28,27 @@ fn surface(id: &str, line: &str) -> ReviewSurface {
         ReviewConfig::new(Rect::new(0, 0, 80, 16)),
     )
     .expect("test candidate is valid")
+}
+
+fn truncated_surface() -> ReviewSurface {
+    let line =
+        ReviewLine::new(ReviewLineOrigin::Added { new: 1 }, "one").expect("test line is valid");
+    let hunk = ReviewHunk::new(1, 0, 1, 1, &[line]).expect("test hunk is valid");
+    let file = ReviewFile::with_truncation(
+        WorktreeRelativePath::new("src/lib.rs").expect("test path is valid"),
+        ReviewFileChange::Added,
+        &[hunk],
+        DiffTruncation::Truncated(DiffLimit::Lines),
+    )
+    .expect("test file is valid");
+    let candidate = ReviewCandidate::new(
+        ReviewCandidateId::new("candidate-1").expect("test identity is bounded"),
+        ReviewSection::Unstaged,
+        &[file],
+    )
+    .expect("test candidate is valid");
+    ReviewSurface::from_candidates(&[candidate], ReviewConfig::new(Rect::new(0, 0, 80, 16)))
+        .expect("test candidate is valid")
 }
 
 #[test]
@@ -106,6 +128,39 @@ fn review_binding_overrides_reject_editor_commands() {
             }
         ))
     ));
+}
+
+#[test]
+fn supplied_truncation_survives_conversion_and_prevents_panel_dimming() {
+    let mut review = truncated_surface();
+    let before = review.panel_snapshot();
+    let before_file = before
+        .rows()
+        .iter()
+        .find(|row| !row.is_directory())
+        .expect("the panel contains the supplied file");
+    assert!(before_file.is_truncated());
+    assert_eq!(before_file.truncation(), Some(DiffLimit::Lines));
+    assert!(!before_file.is_complete());
+
+    assert_eq!(
+        review
+            .input(ReviewInput::command(ReviewCommand::MarkRead))
+            .expect("event capacity remains"),
+        ReviewUpdate::Changed
+    );
+    let after = review.panel_snapshot();
+    let after_file = after
+        .rows()
+        .iter()
+        .find(|row| !row.is_directory())
+        .expect("the panel retains the supplied file");
+    assert!(after_file.is_truncated());
+    assert_eq!(after_file.truncation(), Some(DiffLimit::Lines));
+    assert!(
+        !after_file.is_complete(),
+        "a truncated file cannot dim after every published hunk is read"
+    );
 }
 
 #[test]

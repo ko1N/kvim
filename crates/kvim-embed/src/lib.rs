@@ -36,6 +36,8 @@ pub use dialog::{
 #[cfg(feature = "review")]
 pub use kvim_input::ReviewBindingProfile;
 #[cfg(feature = "review")]
+pub use kvim_workspace::{DiffLimit, DiffTruncation};
+#[cfg(feature = "review")]
 pub use review::{
     REVIEW_CANDIDATE_ID_BYTES_MAX, REVIEW_CANDIDATES_MAX, REVIEW_EVENTS_MAX, REVIEW_FILE_HUNKS_MAX,
     REVIEW_FILES_MAX, REVIEW_HUNK_LINES_MAX, REVIEW_PANEL_ROWS_MAX, REVIEW_ROOT_LABEL_BYTES_MAX,

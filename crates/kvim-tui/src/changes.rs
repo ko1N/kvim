@@ -13,7 +13,9 @@ use std::path::{Path, PathBuf};
 use kvim_path::WorktreeRelativePath;
 use kvim_ui::{RowKind, SidebarRow, SidebarState};
 
-use kvim_workspace::{DiffChange, DiffContent, FileDiff, LineOrigin, ReviewState};
+use kvim_workspace::{
+    DiffChange, DiffContent, DiffLimit, DiffTruncation, FileDiff, LineOrigin, ReviewState,
+};
 
 use crate::theme::FileRowGit as GitStatus;
 
@@ -85,8 +87,8 @@ pub(super) struct ChangeEntry {
     pub(super) removed: usize,
     /// The number of published hunks that stay unread.
     pub(super) unread: usize,
-    /// One bound stopped the collection of this file.
-    pub(super) truncated: bool,
+    /// The bound that stopped collection of this file, if any.
+    pub(super) truncation: Option<DiffLimit>,
 }
 
 impl ChangeEntry {
@@ -95,7 +97,7 @@ impl ChangeEntry {
     /// A truncated file never reads as complete, because the candidate holds
     /// content that the reader cannot reach.
     pub(super) const fn is_complete(&self) -> bool {
-        self.unread == 0 && !self.truncated
+        self.unread == 0 && self.truncation.is_none()
     }
 
     /// Returns the row text of the entry.
@@ -112,13 +114,22 @@ impl ChangeEntry {
             .file_name()
             .unwrap_or_else(|| self.path.as_path().as_os_str())
             .to_string_lossy();
-        if self.truncated {
-            return format!("{name} …");
+        if let Some(limit) = self.truncation {
+            return format!("{name} … {}", truncation_label(limit));
         }
         name.into_owned()
     }
 }
 
+fn truncation_label(limit: DiffLimit) -> &'static str {
+    match limit {
+        DiffLimit::Files => "files",
+        DiffLimit::Hunks => "hunks",
+        DiffLimit::Lines => "lines",
+        DiffLimit::LineBytes => "line bytes",
+        DiffLimit::SourceBytes => "source bytes",
+    }
+}
 /// Returns one entry for each changed file of one review.
 pub(super) fn entries(review: &ReviewState) -> Vec<ChangeEntry> {
     review
@@ -225,7 +236,7 @@ const ONE_ROW: NonZeroU16 = NonZeroU16::new(1).expect("the literal one is not ze
 
 /// Returns the entry of one changed file.
 fn entry(review: &ReviewState, file: &FileDiff) -> ChangeEntry {
-    let (added, removed, truncated) = match file.content() {
+    let (added, removed, truncation) = match file.content() {
         DiffContent::Text(text) => {
             let mut added = 0;
             let mut removed = 0;
@@ -238,10 +249,17 @@ fn entry(review: &ReviewState, file: &FileDiff) -> ChangeEntry {
                     }
                 }
             }
-            (added, removed, text.truncation().is_truncated())
+            (
+                added,
+                removed,
+                match text.truncation() {
+                    DiffTruncation::Complete => None,
+                    DiffTruncation::Truncated(limit) => Some(limit),
+                },
+            )
         }
         // A file without text publishes no line to count and no hunk to read.
-        _ => (0, 0, false),
+        _ => (0, 0, None),
     };
     ChangeEntry {
         path: file.path().clone(),
@@ -249,7 +267,7 @@ fn entry(review: &ReviewState, file: &FileDiff) -> ChangeEntry {
         added,
         removed,
         unread: review.unread_hunks(file.path()),
-        truncated,
+        truncation,
     }
 }
 
