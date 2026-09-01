@@ -4,8 +4,11 @@
 //! and input decoding remain separate concerns. The caller owns every choice
 //! identity and maps an answer to its own action.
 
-use ratatui::layout::Rect;
+use ratatui::{buffer::Buffer, layout::Rect, style::Style};
 use thiserror::Error;
+use unicode_width::UnicodeWidthChar;
+
+use crate::cells::text_cells;
 
 /// The largest number of characters in one dialog question.
 pub const DIALOG_QUESTION_CHARS_MAX: usize = 512;
@@ -165,6 +168,26 @@ pub enum DialogError {
     /// A focus request names more than one choice.
     #[error("the dialog choice identity names more than one choice")]
     AmbiguousChoice,
+    /// The supplied body rectangle has coordinates that cannot form a valid edge.
+    #[error("the dialog body rectangle {body:?} has an impossible edge")]
+    InvalidBodyArea {
+        /// The supplied body rectangle.
+        body: Rect,
+    },
+    /// A body cannot hold the smallest complete popup.
+    #[error("the body rectangle {body:?} cannot hold the dialog popup")]
+    BodyTooSmall {
+        /// The supplied body rectangle.
+        body: Rect,
+    },
+    /// The supplied body rectangle is outside the target buffer.
+    #[error("the dialog body rectangle {body:?} is outside target buffer {buffer:?}")]
+    TargetArea {
+        /// The supplied body rectangle.
+        body: Rect,
+        /// The target buffer rectangle.
+        buffer: Rect,
+    },
     /// A popup has no drawable rows or columns.
     #[error("the popup rectangle {area:?} needs at least one row and one column")]
     EmptyPopup {
@@ -187,6 +210,58 @@ pub enum DialogError {
         /// The bound that the popup passed.
         max: u16,
     },
+}
+
+/// The caller-supplied semantic styles of a dialog popup.
+///
+/// The dialog owns no palette. The host supplies semantic styles for its
+/// surface, dimmed background, rail, and content roles.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub struct DialogStyles {
+    /// The style applied to the supplied body before the popup paints.
+    pub dim: Style,
+    /// The style of the popup surface and blank padding.
+    pub surface: Style,
+    /// The style of the full-height left rail.
+    pub rail: Style,
+    /// The style of optional body text.
+    pub body: Style,
+    /// The style of the wrapped question.
+    pub question: Style,
+    /// The style of a non-default unfocused choice.
+    pub choice: Style,
+    /// The style of the safe default choice when it is unfocused.
+    pub default_choice: Style,
+    /// The style of the focused choice.
+    pub focused_choice: Style,
+}
+
+/// The exact painted rectangle of one visible dialog choice.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogChoicePlacement<Id> {
+    /// The caller-owned identity of this choice.
+    pub identity: Id,
+    /// The exact cells painted for this choice, excluding the rail.
+    pub area: Rect,
+}
+
+/// The geometry that one dialog render uses.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DialogPlacement<Id> {
+    /// The owner-supplied body rectangle that bounds dimming and the popup.
+    pub body_area: Rect,
+    /// The rectangle occupied by the complete popup.
+    pub popup: Rect,
+    /// The full-height rectangle occupied by the left rail.
+    pub rail: Rect,
+    /// The content rectangle after the rail and blank separator column.
+    pub content: Rect,
+    /// The rectangle occupied by optional body text lines.
+    pub body_text: Rect,
+    /// The rectangle occupied by wrapped question lines.
+    pub question: Rect,
+    /// The exact rectangles occupied by visible choices.
+    pub choices: Vec<DialogChoicePlacement<Id>>,
 }
 
 /// A bounded dialog and its focused choice.
@@ -340,6 +415,223 @@ impl<Id: Eq> Dialog<Id> {
         Ok(())
     }
 
+    /// Calculates the one placement that a render consumes.
+    ///
+    /// The popup is centered in `body`. It has a one-cell rail, one blank
+    /// separator column, and one blank row above and below content.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed refusal when the supplied body cannot hold the bounded
+    /// popup. This method does not change dialog state.
+    pub fn placement_for(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
+    where
+        Id: Clone,
+    {
+        self.geometry(body)
+    }
+
+    /// Paints the dialog into `target` and returns the placement it consumed.
+    ///
+    /// The renderer dims only `body`. It rejects a stale body outside the
+    /// target before changing any target cell.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed refusal for a body outside `target` or a body too small
+    /// for the popup. Neither refusal changes dialog state.
+    pub fn render(
+        &self,
+        target: &mut Buffer,
+        body: Rect,
+        styles: DialogStyles,
+    ) -> Result<DialogPlacement<Id>, DialogError>
+    where
+        Id: Clone,
+    {
+        let buffer = *target.area();
+        if !rect_fits(body, buffer) {
+            return Err(DialogError::TargetArea { body, buffer });
+        }
+        let placement = self.geometry(body)?;
+        target.set_style(body, styles.dim);
+        fill(target, placement.popup, " ");
+        target.set_style(placement.popup, styles.surface);
+        for y in placement.rail.y..placement.rail.bottom() {
+            target.set_stringn(
+                placement.rail.x,
+                y,
+                "│",
+                1,
+                styles.surface.patch(styles.rail),
+            );
+        }
+        for (line, y) in self
+            .body
+            .iter()
+            .zip(placement.body_text.y..placement.body_text.bottom())
+        {
+            target.set_stringn(
+                placement.content.x,
+                y,
+                line,
+                usize::from(placement.content.width),
+                styles.surface.patch(styles.body),
+            );
+        }
+        for (line, y) in wrap(&self.question, usize::from(placement.content.width))
+            .expect("placement validates every question character against the content width")
+            .iter()
+            .zip(placement.question.y..placement.question.bottom())
+        {
+            target.set_stringn(
+                placement.content.x,
+                y,
+                line,
+                usize::from(placement.content.width),
+                styles.surface.patch(styles.question),
+            );
+        }
+        for (index, choice) in placement.choices.iter().enumerate() {
+            let style = if index == self.focused {
+                styles.focused_choice
+            } else if index == self.default {
+                styles.default_choice
+            } else {
+                styles.choice
+            };
+            let label = format!("> {}", self.choices[index].label());
+            target.set_stringn(
+                choice.area.x,
+                choice.area.y,
+                label,
+                usize::from(choice.area.width),
+                styles.surface.patch(style),
+            );
+        }
+        Ok(placement)
+    }
+
+    fn geometry(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
+    where
+        Id: Clone,
+    {
+        const FRAME_COLUMNS: u16 = 2;
+        const FRAME_ROWS: u16 = 2;
+        let Some(body_right) = body.x.checked_add(body.width) else {
+            return Err(DialogError::InvalidBodyArea { body });
+        };
+        let Some(body_bottom) = body.y.checked_add(body.height) else {
+            return Err(DialogError::InvalidBodyArea { body });
+        };
+        let widest_choice = self
+            .choices
+            .iter()
+            .map(|choice| text_cells(choice.label()).saturating_add(2))
+            .max()
+            .unwrap_or(0);
+        let widest_body = self
+            .body
+            .iter()
+            .map(|line| text_cells(line))
+            .max()
+            .unwrap_or(0);
+        let required_content_width = widest_choice.max(widest_body).max(1);
+        let required_width = u16::try_from(required_content_width)
+            .ok()
+            .and_then(|width| width.checked_add(FRAME_COLUMNS))
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        let max_width = body.width.min(DIALOG_POPUP_COLUMNS_MAX);
+        if required_width > max_width {
+            return Err(DialogError::BodyTooSmall { body });
+        }
+        let content_width = max_width - FRAME_COLUMNS;
+        let question = wrap(&self.question, usize::from(content_width))
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        let content_rows = self
+            .body
+            .len()
+            .checked_add(question.len())
+            .and_then(|rows| rows.checked_add(self.choices.len()))
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        let height = u16::try_from(content_rows)
+            .ok()
+            .and_then(|rows| rows.checked_add(FRAME_ROWS))
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        if height > body.height || height > DIALOG_POPUP_ROWS_MAX {
+            return Err(DialogError::BodyTooSmall { body });
+        }
+        let width = max_width;
+        let popup_x = body
+            .x
+            .checked_add((body.width - width) / 2)
+            .ok_or(DialogError::InvalidBodyArea { body })?;
+        let popup_y = body
+            .y
+            .checked_add((body.height - height) / 2)
+            .ok_or(DialogError::InvalidBodyArea { body })?;
+        let popup = Rect::new(popup_x, popup_y, width, height);
+        debug_assert!(
+            popup.right() <= body_right,
+            "validated popup stays inside the supplied body"
+        );
+        debug_assert!(
+            popup.bottom() <= body_bottom,
+            "validated popup stays inside the supplied body"
+        );
+        let rail = Rect::new(popup.x, popup.y, 1, popup.height);
+        let content_x = popup
+            .x
+            .checked_add(FRAME_COLUMNS)
+            .ok_or(DialogError::InvalidBodyArea { body })?;
+        let content_y = popup
+            .y
+            .checked_add(1)
+            .ok_or(DialogError::InvalidBodyArea { body })?;
+        let content = Rect::new(content_x, content_y, content_width, height - FRAME_ROWS);
+        let body_text = Rect::new(
+            content.x,
+            content.y,
+            content.width,
+            u16::try_from(self.body.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
+        );
+        let question_y = body_text.bottom();
+        let question = Rect::new(
+            content.x,
+            question_y,
+            content.width,
+            u16::try_from(question.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
+        );
+        let choices_y = question.bottom();
+        let choices = self
+            .choices
+            .iter()
+            .enumerate()
+            .map(|(index, choice)| {
+                let cells = u16::try_from(text_cells(choice.label()).saturating_add(2))
+                    .map_err(|_| DialogError::BodyTooSmall { body })?;
+                let y = choices_y
+                    .checked_add(
+                        u16::try_from(index).map_err(|_| DialogError::BodyTooSmall { body })?,
+                    )
+                    .ok_or(DialogError::InvalidBodyArea { body })?;
+                Ok(DialogChoicePlacement {
+                    identity: choice.identity.clone(),
+                    area: Rect::new(content.x, y, cells, 1),
+                })
+            })
+            .collect::<Result<Vec<_>, DialogError>>()?;
+        Ok(DialogPlacement {
+            body_area: body,
+            popup,
+            rail,
+            content,
+            body_text,
+            question,
+            choices,
+        })
+    }
+
     /// Returns the question text.
     #[must_use]
     pub fn question(&self) -> &str {
@@ -464,6 +756,59 @@ impl<Id: Eq> Dialog<Id> {
     }
 }
 
+fn rect_fits(area: Rect, buffer: Rect) -> bool {
+    let Some(area_right) = area.x.checked_add(area.width) else {
+        return false;
+    };
+    let Some(area_bottom) = area.y.checked_add(area.height) else {
+        return false;
+    };
+    let Some(buffer_right) = buffer.x.checked_add(buffer.width) else {
+        return false;
+    };
+    let Some(buffer_bottom) = buffer.y.checked_add(buffer.height) else {
+        return false;
+    };
+    area.x >= buffer.x
+        && area.y >= buffer.y
+        && area_right <= buffer_right
+        && area_bottom <= buffer_bottom
+}
+
+fn wrap(text: &str, width: usize) -> Option<Vec<String>> {
+    debug_assert!(width > 0, "validated popup content has one column");
+    let mut lines = Vec::new();
+    let mut line = String::new();
+    let mut cells = 0;
+    for character in text.chars() {
+        let character_cells = UnicodeWidthChar::width(character).unwrap_or(0);
+        if character_cells > width {
+            return None;
+        }
+        if cells > 0 && cells + character_cells > width {
+            lines.push(std::mem::take(&mut line));
+            cells = 0;
+        }
+        line.push(character);
+        cells += character_cells;
+    }
+    if line.is_empty() {
+        lines.push(String::new());
+    } else {
+        lines.push(line);
+    }
+    Some(lines)
+}
+
+fn fill(target: &mut Buffer, area: Rect, symbol: &str) {
+    for y in area.y..area.bottom() {
+        for x in area.x..area.right() {
+            if let Some(cell) = target.cell_mut((x, y)) {
+                cell.set_symbol(symbol);
+            }
+        }
+    }
+}
 fn check_chars(text: &str, max: usize) -> Result<(), usize> {
     let chars = text.chars().count();
     if chars > max { Err(chars) } else { Ok(()) }

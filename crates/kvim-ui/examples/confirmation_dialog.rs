@@ -9,7 +9,12 @@
 //! cargo run -p kvim-ui --example confirmation_dialog
 //! ```
 
-use kvim_ui::{Dialog, DialogChoice, DialogOutcome};
+use kvim_ui::{Dialog, DialogChoice, DialogOutcome, DialogStyles};
+use ratatui::{
+    buffer::Buffer,
+    layout::Rect,
+    style::{Color, Style},
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ChoiceId {
@@ -31,6 +36,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     println!("focused: {:?}", dialog.focused_identity());
+    let body = Rect::new(0, 0, 48, 12);
+    let mut target = Buffer::empty(body);
+    let placement = dialog.render(
+        &mut target,
+        body,
+        DialogStyles {
+            dim: Style::default().bg(Color::Black),
+            surface: Style::default().bg(Color::DarkGray),
+            rail: Style::default().fg(Color::Cyan),
+            body: Style::default(),
+            question: Style::default(),
+            choice: Style::default(),
+            default_choice: Style::default().fg(Color::Green),
+            focused_choice: Style::default().fg(Color::Yellow),
+        },
+    )?;
+    println!(
+        "body: {:?}, popup: {:?}, choices: {:?}",
+        placement.body_area, placement.popup, placement.choices
+    );
     assert_eq!(
         dialog.next(),
         DialogOutcome::Focused(ChoiceId::DiscardChanges)
