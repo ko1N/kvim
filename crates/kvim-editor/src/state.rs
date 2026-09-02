@@ -17,7 +17,7 @@
 
 use std::num::{NonZeroU8, NonZeroU32};
 
-use kvim_core::{EditError, EditTransaction, IndentPolicy, ShiftDirection, TextBuffer};
+use kvim_core::{CharRange, EditError, EditTransaction, IndentPolicy, ShiftDirection, TextBuffer};
 use kvim_input::{Command, Mode};
 use kvim_settings::{COUNT_MAX, EditorSettings};
 
@@ -188,6 +188,8 @@ enum RepeatableChange {
         command: Command,
         count: Option<NonZeroU32>,
     },
+    /// A case toggle over the shape of one Visual selection.
+    ToggleCaseSelection(CaseToggleSelection),
     /// One operator that a motion completed.
     OperatorMotion {
         operator: Operator,
@@ -195,6 +197,14 @@ enum RepeatableChange {
         motion: Command,
         motion_count: Option<NonZeroU32>,
     },
+}
+
+/// The Visual selection shape that `.` applies from its current cursor.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum CaseToggleSelection {
+    Characterwise { chars: usize },
+    Linewise { lines: usize },
+    Block { lines: usize, columns: usize },
 }
 
 /// The result of one motion lookup.
@@ -619,6 +629,7 @@ impl EditingState {
             Command::Undo => return self.step_history(context, window, HistoryStep::Undo),
             Command::Redo => return self.step_history(context, window, HistoryStep::Redo),
             Command::RepeatChange => return self.repeat_change(context, window, auto),
+            Command::ToggleCase => return self.toggle_case(context, window, count),
 
             _ => return CommandOutcome::Unhandled,
         }
@@ -1341,6 +1352,95 @@ impl EditingState {
         outcome
     }
 
+    fn toggle_case(
+        &mut self,
+        context: &mut EditContext<'_>,
+        window: &mut WindowState,
+        count: Option<NonZeroU32>,
+    ) -> CommandOutcome {
+        let selection = self.selection(context.buffer, window);
+        let repeated_selection = selection.map(|selection| match selection {
+            Selection::Characterwise(range) => CaseToggleSelection::Characterwise {
+                chars: range.end().get() - range.start().get(),
+            },
+            Selection::Linewise { first, last } => CaseToggleSelection::Linewise {
+                lines: last.get() - first.get() + 1,
+            },
+            Selection::Block {
+                first_line,
+                last_line,
+                left,
+                right,
+            } => CaseToggleSelection::Block {
+                lines: last_line.get() - first_line.get() + 1,
+                columns: right.get() - left.get() + 1,
+            },
+        });
+        let plan = edit::plan_toggle_case(
+            context.buffer,
+            window.cursor,
+            selection,
+            repeat_count(count),
+        );
+        let outcome = self.commit(context, window, plan);
+        let change = repeated_selection.map_or(
+            RepeatableChange::Command {
+                command: Command::ToggleCase,
+                count,
+            },
+            RepeatableChange::ToggleCaseSelection,
+        );
+        if matches!(outcome, CommandOutcome::Changed | CommandOutcome::Applied) {
+            self.repeat = Some(change);
+        }
+        outcome
+    }
+
+    fn repeated_case_selection(
+        &self,
+        buffer: &TextBuffer,
+        cursor: Cursor,
+        repeated: CaseToggleSelection,
+    ) -> Selection {
+        match repeated {
+            CaseToggleSelection::Characterwise { chars } => {
+                let start = cursor.position(buffer);
+                let end = buffer
+                    .char_position((start.get() + chars).min(buffer.len_chars()))
+                    .expect("the clamp keeps the position inside the buffer");
+                Selection::Characterwise(
+                    CharRange::new(start, end)
+                        .expect("the repeated selection end never precedes its start"),
+                )
+            }
+            CaseToggleSelection::Linewise { lines } => {
+                let first = cursor.line();
+                let last = buffer
+                    .line_index((first.get() + lines - 1).min(buffer.line_count() - 1))
+                    .expect("the clamp keeps the line inside the buffer");
+                Selection::Linewise { first, last }
+            }
+            CaseToggleSelection::Block { lines, columns } => {
+                let first_line = cursor.line();
+                let last_line = buffer
+                    .line_index((first_line.get() + lines - 1).min(buffer.line_count() - 1))
+                    .expect("the clamp keeps the line inside the buffer");
+                let left = cursor.column();
+                let right_column =
+                    (left.get() + columns - 1).min(buffer.line_len_chars(first_line));
+                let right = buffer
+                    .source_column(first_line, right_column)
+                    .expect("the clamp keeps the column inside the line");
+                Selection::Block {
+                    first_line,
+                    last_line,
+                    left,
+                    right,
+                }
+            }
+        }
+    }
+
     fn step_history(
         &mut self,
         context: &mut EditContext<'_>,
@@ -1381,6 +1481,13 @@ impl EditingState {
                 let result = self.apply_indented(context, window, command, count, auto);
                 self.applied = result.transaction;
                 result.outcome
+            }
+            RepeatableChange::ToggleCaseSelection(repeated) => {
+                let selection =
+                    self.repeated_case_selection(context.buffer, window.cursor, repeated);
+                let plan =
+                    edit::plan_toggle_case(context.buffer, window.cursor, Some(selection), 1);
+                self.commit(context, window, plan)
             }
             RepeatableChange::OperatorMotion {
                 operator,

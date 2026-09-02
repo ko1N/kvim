@@ -117,6 +117,24 @@ fn one_sequence_reaches_different_commands_in_different_modes() {
 }
 
 #[test]
+fn tilde_reaches_case_toggle_in_normal_and_visual_modes() {
+    let registry = Registry::first_release();
+    for mode in [
+        Mode::Normal,
+        Mode::Visual,
+        Mode::VisualLine,
+        Mode::VisualBlock,
+    ] {
+        assert_eq!(
+            registry.command(mode, &[ch('~')]),
+            Some(Command::ToggleCase),
+            "{mode} must toggle case"
+        );
+    }
+    assert_eq!(registry.command(Mode::Insert, &[ch('~')]), None);
+}
+
+#[test]
 fn the_arrow_keys_and_the_word_chords_reach_the_motions_in_every_mode() {
     let registry = Registry::first_release();
     let cases = [

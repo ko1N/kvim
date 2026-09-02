@@ -622,6 +622,17 @@ fn first_release_bindings() -> Vec<Binding> {
     add(table, NORMAL, &[ch('u')], Command::Undo);
     add(table, NORMAL, &[ctrl('r')], Command::Redo);
     add(table, NORMAL, &[ch('.')], Command::RepeatChange);
+    add(
+        table,
+        &[
+            Mode::Normal,
+            Mode::Visual,
+            Mode::VisualLine,
+            Mode::VisualBlock,
+        ],
+        &[ch('~')],
+        Command::ToggleCase,
+    );
 
     // Search.
     add(table, NORMAL, &[ch('/')], Command::OpenSearchPrompt);

@@ -59,6 +59,9 @@ cap-std = "4.0"
 # Review identity
 blake3 = "1.5"
 
+# Unicode case mapping
+icu_casemap = "2.3"
+
 # Text storage
 ropey = "1.6"
 

@@ -10,6 +10,7 @@
 
 use std::borrow::Cow;
 
+use icu_casemap::{CaseMapper, CaseMapperBorrowed};
 use kvim_core::{
     CharPosition, CharRange, EditTransaction, IndentPolicy, LineEnding, LineIndex, ShiftDirection,
     TextBuffer, TextChange,
@@ -21,6 +22,8 @@ use super::grapheme;
 use super::motion;
 use super::register::{RegisterShape, RegisterValue};
 use super::selection::Selection;
+
+const CASE_MAPPER: CaseMapperBorrowed<'static> = CaseMapper::new();
 
 /// The mode that the editor holds after one plan commits.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -383,6 +386,122 @@ fn auto_indent_columns(
         AutoIndent::Levels(levels) => level_columns(indent, levels),
         AutoIndent::PreviousLine => fallback_indent_columns(buffer, indent, from),
     }
+}
+
+pub(super) fn plan_toggle_case(
+    buffer: &TextBuffer,
+    cursor: Cursor,
+    selection: Option<Selection>,
+    count: usize,
+) -> EditPlan {
+    debug_assert!(count > 0, "the resolver rejects a zero count");
+    let cursor_before = cursor.position(buffer);
+    match selection {
+        Some(Selection::Characterwise(range)) => plan_toggle_range(
+            buffer,
+            cursor_before,
+            range,
+            range.start().get(),
+            NextMode::Normal,
+        ),
+        Some(Selection::Linewise { first, last }) => {
+            let range = line_content_range(buffer, first, last);
+            plan_toggle_range(
+                buffer,
+                cursor_before,
+                range,
+                range.start().get(),
+                NextMode::Normal,
+            )
+        }
+        Some(Selection::Block {
+            first_line,
+            last_line,
+            left,
+            right,
+        }) => {
+            let range = line_content_range(buffer, first_line, last_line);
+            let mut replacement = String::new();
+            for index in first_line.get()..=last_line.get() {
+                if index > first_line.get() {
+                    replacement.push_str(buffer.line_ending().as_str());
+                }
+                let line = line_at(buffer, index);
+                let text = buffer.line_text(line);
+                for (column, character) in text.chars().enumerate() {
+                    if column >= left.get() && column <= right.get() {
+                        push_toggled_case(&mut replacement, character);
+                    } else {
+                        replacement.push(character);
+                    }
+                }
+            }
+            let original = text_in_range(buffer, range);
+            let transaction = (replacement != original).then(|| {
+                EditTransaction::single(cursor_before, TextChange::replace(range, replacement))
+            });
+            EditPlan {
+                transaction,
+                value: None,
+                cursor: CursorTarget::At {
+                    line: first_line.get(),
+                    column: left.get(),
+                },
+                next_mode: NextMode::Normal,
+            }
+        }
+        None => {
+            let line = cursor.line();
+            let start = cursor_before.get();
+            let line_end = line_content_end(buffer, line);
+            let end = (start + count).min(line_end);
+            let range = char_range(buffer, start, end);
+            let cursor_after = if end == line_end {
+                end.saturating_sub(1).max(start)
+            } else {
+                end
+            };
+            plan_toggle_range(buffer, cursor_before, range, cursor_after, NextMode::Keep)
+        }
+    }
+}
+
+fn plan_toggle_range(
+    buffer: &TextBuffer,
+    cursor_before: CharPosition,
+    range: CharRange,
+    cursor_after: usize,
+    next_mode: NextMode,
+) -> EditPlan {
+    let original = text_in_range(buffer, range);
+    let replacement = toggled_case(&original);
+    let transaction = (replacement != original)
+        .then(|| EditTransaction::single(cursor_before, TextChange::replace(range, replacement)));
+    EditPlan {
+        transaction,
+        value: None,
+        cursor: CursorTarget::Position(cursor_after),
+        next_mode,
+    }
+}
+
+fn toggled_case(text: &str) -> String {
+    let mut toggled = String::with_capacity(text.len());
+    for character in text.chars() {
+        push_toggled_case(&mut toggled, character);
+    }
+    toggled
+}
+
+fn push_toggled_case(toggled: &mut String, character: char) {
+    let toggled_character = match character {
+        // Neovim maps sharp s to its one-character uppercase form.
+        'ß' => 'ẞ',
+        _ if character.is_lowercase() => CASE_MAPPER.simple_uppercase(character),
+        _ if character.is_uppercase() => CASE_MAPPER.simple_lowercase(character),
+        _ => character,
+    };
+    toggled.push(toggled_character);
 }
 
 /// Plans one new line above or below the cursor line.

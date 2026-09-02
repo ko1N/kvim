@@ -171,6 +171,7 @@ semantic_commands! {
     Undo => ("undo", "Undo one change"),
     Redo => ("redo", "Redo one change"),
     RepeatChange => ("repeat-change", "Repeat last change"),
+    ToggleCase => ("toggle-case", "Toggle case"),
 
     // Text objects. The open and the close delimiter name the same object, so
     // `i(` and `i)` reach one command.
@@ -339,6 +340,7 @@ impl Command {
             | Self::Undo
             | Self::Redo
             | Self::RepeatChange
+            | Self::ToggleCase
             | Self::MoveSelectionDown
             | Self::MoveSelectionUp
             | Self::ShiftSelectionLeft
@@ -708,6 +710,7 @@ impl Command {
             | Self::Undo
             | Self::Redo
             | Self::RepeatChange
+            | Self::ToggleCase
             | Self::SelectInnerWord
             | Self::SelectAroundWord
             | Self::SelectInnerLongWord

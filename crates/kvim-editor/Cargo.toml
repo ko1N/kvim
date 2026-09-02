@@ -14,5 +14,8 @@ kvim-settings.workspace = true
 # Basics
 thiserror.workspace = true
 
+# Text case mapping
+icu_casemap.workspace = true
+
 # Text segmentation
 unicode-segmentation.workspace = true

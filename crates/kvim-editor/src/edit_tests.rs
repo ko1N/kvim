@@ -1319,6 +1319,80 @@ fn a_visual_selection_edit_reverses_with_one_undo() {
 }
 
 #[test]
+fn normal_case_toggle_honors_counts_line_limits_undo_and_repeat() {
+    let mut session = Session::new("a1BcD\nEfGh\n");
+
+    assert_eq!(
+        session.apply(Command::ToggleCase, count(4)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "A1bCD\nEfGh\n");
+    assert_eq!(session.position(), (0, 4));
+
+    assert_eq!(session.apply(Command::Undo, None), CommandOutcome::Changed);
+    assert_eq!(session.text(), "a1BcD\nEfGh\n");
+
+    session.apply(Command::Redo, None);
+    place(&mut session, 1, 0);
+    session.apply(Command::RepeatChange, None);
+    assert_eq!(session.text(), "A1bCD\neFgH\n");
+    assert_eq!(session.position(), (1, 3));
+}
+
+#[test]
+fn normal_case_toggle_uses_one_character_unicode_mappings() {
+    let mut session = Session::new("ßİﬃǰΣςéx\n");
+
+    assert_eq!(
+        session.apply(Command::ToggleCase, count(7)),
+        CommandOutcome::Changed
+    );
+    assert_eq!(session.text(), "ẞiﬃǰσΣÉx\n");
+    assert_eq!(session.position(), (0, 7));
+}
+
+#[test]
+fn visual_case_toggle_handles_each_selection_shape_and_places_the_cursor() {
+    let mut characters = Session::new("abCD\n");
+    place(&mut characters, 0, 2);
+    characters.apply(Command::EnterVisual, None);
+    characters.apply(Command::MoveLeft, count(2));
+    characters.apply(Command::ToggleCase, None);
+    assert_eq!(characters.text(), "ABcD\n");
+    assert_eq!(characters.position(), (0, 0));
+    assert_eq!(characters.state.mode(), Mode::Normal);
+    characters.apply(Command::RepeatChange, None);
+    assert_eq!(characters.text(), "abCD\n");
+    assert_eq!(characters.position(), (0, 0));
+
+    let mut lines = Session::new("abCD\nEfGh\niJkL\n");
+    place(&mut lines, 1, 2);
+    lines.apply(Command::EnterVisualLine, None);
+    lines.apply(Command::MoveDown, None);
+    lines.apply(Command::ToggleCase, None);
+    assert_eq!(lines.text(), "abCD\neFgH\nIjKl\n");
+    assert_eq!(lines.position(), (1, 0));
+
+    let mut block = Session::new("abCD\nE\niJkL\n");
+    block.apply(Command::EnterVisualBlock, None);
+    block.apply(Command::MoveRight, count(2));
+    block.apply(Command::MoveDown, count(2));
+    block.apply(Command::ToggleCase, None);
+    assert_eq!(block.text(), "ABcD\ne\nIjKL\n");
+    assert_eq!(block.position(), (0, 0));
+
+    block.apply(Command::Undo, None);
+    assert_eq!(block.text(), "abCD\nE\niJkL\n");
+
+    let mut unchanged = Session::new("12!\n");
+    unchanged.apply(Command::ToggleCase, None);
+    place(&mut unchanged, 0, 1);
+    unchanged.apply(Command::RepeatChange, None);
+    assert_eq!(unchanged.text(), "12!\n");
+    assert_eq!(unchanged.position(), (0, 2));
+}
+
+#[test]
 fn dot_repeat_replays_the_description_of_the_last_change() {
     let mut words = Session::new("one two three\n");
     words.apply(Command::DeleteOverMotion, None);
