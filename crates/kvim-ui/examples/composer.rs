@@ -46,13 +46,22 @@ impl Scope for Chat {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let enter = Key::plain(KeyCode::Enter);
-    let registry = Registry::from_bindings(&[Binding::surface(Chat, &[enter], Command::Send)], 2)?;
+    let leader = Key::plain(KeyCode::Char(' '));
+    let send = Key::plain(KeyCode::Char('s'));
+    let confirm = Key::plain(KeyCode::Char('y'));
+    let registry = Registry::from_bindings(
+        &[
+            Binding::surface(Chat, &[enter], Command::Send),
+            Binding::surface(Chat, &[leader, send, confirm], Command::Send),
+        ],
+        3,
+    )?;
     let mut composer = WorkspaceComposer::new(
         "chat",
         InputContextSnapshot::idle(Chat),
         Rect::new(0, 0, 80, 24),
         WindowLimits::default(),
-        Resolver::new(Arc::new(registry), 2, Duration::from_millis(500)),
+        Resolver::new(Arc::new(registry), 3, Duration::from_millis(500)),
     );
 
     assert_eq!(
@@ -62,6 +71,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             command: Command::Send,
         }
     );
+    assert_eq!(
+        composer.reduce(Input::Key(leader), Some(Duration::ZERO)),
+        Composition::Pending
+    );
+    assert_eq!(
+        composer.reduce(Input::Key(send), Some(Duration::ZERO)),
+        Composition::Pending
+    );
+    // WhichKeyBack is a host repaint request for each breadcrumb change.
+    let shortened = composer.reduce(
+        Input::Key(Key::plain(KeyCode::Backspace)),
+        Some(Duration::ZERO),
+    );
+    assert_eq!(shortened, Composition::WhichKeyBack);
+    let cleared = composer.reduce(
+        Input::Key(Key::plain(KeyCode::Backspace)),
+        Some(Duration::ZERO),
+    );
+    assert_eq!(cleared, Composition::WhichKeyBack);
+
     assert_eq!(composer.layout().surfaces().len(), 1);
     Ok(())
 }
