@@ -138,8 +138,16 @@ buffer must first move to another buffer. kvim stages that replacement buffer
 before the removal, and it creates one empty buffer when the list holds no other
 buffer. kvim refuses to unload a buffer that holds unsaved changes.
 
-The buffer list holds at most 128 buffers. The editor always keeps one loaded
-buffer, so a window always shows text.
+Closing a buffer performs the same removal. The two differ only in what the last
+loaded buffer does. The unload opens the scratch buffer and keeps the editor
+open. The close ends the editor instead, exactly as `:q` does, so kvim never
+holds a buffer list that a window cannot show. That last close runs through the
+window close, so the quit question owns the unsaved text and one path asks it.
+Every other close refuses a buffer that holds unsaved changes, as the unload
+does. [`input-actions.md`](input-actions.md) owns the keys.
+
+The buffer list holds at most 128 buffers. A running editor always keeps one
+loaded buffer, so a window always shows text.
 
 ## Saving
 
@@ -178,6 +186,16 @@ identifier, and a counter, so two saves never use one temporary file.
 
 The `atomic save` setting selects this procedure. A disabled setting writes the
 target file directly. See [`settings.md`](settings.md).
+
+A save of every modified buffer writes one buffer at a time, because the editor
+runs one file operation at a time. The command collects the modified file-backed
+buffers into one bounded queue, starts the first write, and starts the next one
+from the completed write. It reports one result for the complete run. A failed
+write stops the run and reports the failure, and the buffers that the run did
+not reach keep their changes. A session with no modified buffer reports that and
+starts no file operation. The run runs no formatter, because a format question
+names the active buffer alone and one question runs at a time. See
+[`input-actions.md`](input-actions.md).
 
 `:q` asks before it closes the last window while the buffer holds unsaved
 changes. The answer `y` closes the window and discards them, and every other
@@ -1105,17 +1123,44 @@ row opens:
 | `Space o`, `Space fb` | The loaded buffer list | Shows the buffer |
 
 The picker covers the complete terminal and keeps no padding on either axis. An
-optional title row names the picker kind at the left and the `esc` close key at
-the right. The prompt follows the title row, and an empty query shows a muted
-`Search` placeholder instead of a bare prefix. The result list ascends from the
-prompt, so the best match sits next to it. Every result row reserves a
-two-cell marker column, and the selected row fills that row with an accent
-band and a leading marker glyph. A result shows the filename first, then its
-directory. An optional hint row below the results names the picker keys. A
-terminal too short for the title row and the hint row drops both together and
-keeps at least one result row. A wide layout gives the preview 75 percent of
-the width, on the right. No region carries a divider glyph: one blank row and
-one blank column separate the regions. See [`windows.md`](windows.md).
+optional title row centers the picker kind and keeps the `esc` close key at its
+right edge. A narrow row yields the title to that hint rather than printing over
+it. The three kinds keep the titles `Files`, `Search`, and `Buffers`.
+
+The prompt follows the title row, and an empty query shows a muted `Search`
+placeholder instead of a bare prefix. The right edge of the same row carries a
+`matched / total` counter, which names the matched rows and the held candidates.
+The typed query owns that row, so a row that cannot hold both drops the counter
+instead of printing over the query.
+
+An optional header row names the result list with a centered `Results`. The
+result list ascends from that header, so the best match sits next to the prompt.
+An optional hint row below the results names the picker keys. A terminal too
+short for the title row, the header row, and the hint row drops all three
+together and keeps at least one result row.
+
+A wide layout gives the preview 75 percent of the width, on the right, under its
+own centered title. That title names the file of the selected row. No region
+carries a divider glyph: one blank row and one blank column separate the
+regions. See [`windows.md`](windows.md).
+
+One result row paints its columns from the left edge: the selection marker, the
+icon of the file, the filename, the line of a search match, the directory that
+holds the file, and the matched text of a search row. Every column clips at the
+right edge, so a narrow result column writes no cell outside the row. Every row
+reserves a two-cell marker column, selected or not, so the icons and the
+filenames of every row line up on one column. The selected row fills the
+complete row with an accent band and writes the marker glyph in that column.
+
+The filename normally carries the title color and the directory a dim color, so
+the reader finds the name first. A selected row keeps the readable foreground of
+its band for both, because the accent color would vanish against the accent
+background. A search row names its line the way a reader counts lines, from one.
+
+The one file-tree icon setting turns the icon column off. A hidden icon reserves
+no cell at all, so the rows stay aligned without a patched font. The row text
+comes from the name and the directory of the candidate, so the picker keeps one
+row vocabulary. See [Icons](#icons).
 
 A terminal that cannot hold a readable preview column and a readable result
 column shows the results alone, over the complete width.
@@ -1231,6 +1276,15 @@ stays fully usable without the search picker.
 
 A preview reports when its byte, line, or line-character bound clips the shown
 text. The picker displays this report separately from candidate-list truncation.
+
+The preview shows syntax-highlighted text. The terminal event loop runs no
+parser, so one background analysis job produces the highlight after the preview
+text arrives. The job carries the same preview key as its identity, and an
+answer whose key no longer names the selection changes nothing. A preview that
+still waits for its answer, and a preview of a file that no language adapter
+serves, both paint plain text. The matched-line marker of a search preview
+paints over the highlight. [`language-services.md`](language-services.md) owns
+the analysis job and the slot that it shares with the buffer highlight.
 
 ### Picker Bounds
 

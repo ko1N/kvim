@@ -190,10 +190,14 @@ host owns comment persistence and surface focus.
 Each request carries editor instance identity and `BufferId` where applicable.
 Text-derived work also carries one `BufferRevision`, which combines the
 replacement generation and edit version. Analysis and syntax reuse, external
-and server formatting, diagnostics, hover, definition, language synchronization,
-reload checks, saves, and active-search caches use this complete identity. LSP
-requests also carry project and server identity. A newer request for the same
-slot makes an older request obsolete. Instance identity is validated before
+and server formatting, diagnostics, hover, definition, language
+synchronization, reload checks, saves, and active-search caches use this
+complete identity. The one analysis request that reads no buffer is the
+highlight of a picker preview. It carries the preview key of its row as its
+complete identity, and it shares the analysis slot with the buffer highlight.
+See [`language-services.md`](language-services.md). LSP requests also carry
+project and server identity. A newer request for the same slot makes an older
+request obsolete. Instance identity is validated before
 result application in every build profile. A wrong-instance result returns a
 typed rejection and cannot mutate state, advance a clock, or release another
 editor reservation.
@@ -296,11 +300,12 @@ same slot cancels the older one and that is a normal state. Every other outcome
 carries `Warning`.
 
 The editor records the obsolete result of one slot alone, and that slot is the
-analysis slot. The log compares one report with its newest entry alone, so two
-obsolete kinds that alternate cost two entries for each keystroke. That pair
-would fill the log and remove every earlier report. The picker, the preview,
-and the path completion also reject an obsolete result, and the editor records
-none of the three.
+analysis slot. It records the buffer highlight of that slot alone. The log
+compares one report with its newest entry alone, so two obsolete kinds that
+alternate cost two entries for each keystroke. That pair would fill the log and
+remove every earlier report. The picker, the preview, the preview highlight, and
+the path completion also reject an obsolete result, and the editor records none
+of the four.
 
 The editor records no outcome that already reaches the message line. The
 formatter that the host does not hold, the formatter that refused a document,

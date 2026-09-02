@@ -531,6 +531,15 @@ rectangles for pointer hit-testing. Bind one key that steps the page, and paint
 the reported position beside the overlay.
 See [`input-actions.md`](input-actions.md).
 
+`WhichKeyOverlay::new` takes one `kvim_ui::WhichKeyFooter` and one
+`kvim_ui::WhichKeyMarker` beside the hints. Supply the breadcrumb of the keys
+the reader already pressed, the legend of the keys that navigate the overlay,
+and the marker glyph that points from a key to its label. The widget names no
+text and no color of its own, so a host that supplies none draws an empty footer
+and no marker column. `WHICH_KEY_LEGEND_ENTRIES_MAX` bounds the legend, and
+`WhichKeyError::Legend` refuses a longer one instead of cutting it.
+See [`architecture.md`](architecture.md).
+
 `BindingScope::RegisterSelection` binds no key. It waits for one register name,
 so any input that neither a binding nor its text fallback takes ends it. The
 scope states that rule itself, through

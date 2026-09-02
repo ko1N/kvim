@@ -755,17 +755,30 @@ list. `keymap` folds the extensions of the pending prefix into these hints,
 `ui` owns the bounded widget, its column layout, and its clipping, and the
 interface layer supplies the final texts, the icons, and the palette colors.
 
-The overlay lays its rows out in columns that fill the width of the body band.
-Every column keeps the width of the widest row, so the keys and the labels of
-all columns align. The overlay fills one column from top to bottom before it
-starts the next one, and it takes only as many columns as it can fill, so no
-column stays empty. A terminal that is narrower than one column shows one
-column, which clips at the body edge.
+One row reads `key marker icon label`. The key stands first, so every key of
+every column forms one narrow left-aligned run that a reader scans down. The
+marker column holds one host glyph that points from the key to what it reaches.
+The standalone editor supplies `→` for it. A row whose icon is hidden, or whose
+group carries no icon, keeps the marker and the alignment, because the marker
+column and the icon column reserve the same cells in every row.
+
+The content of the hints decides how many columns the band holds. The columns
+then divide the band evenly: every column takes the same slot, the first slot
+starts at the left margin of four cells, and the last slot reaches the right
+edge of the band. The keys and the labels of all columns therefore align, and a
+short label leaves the free cells of its slot blank. The column count comes from
+the content width of one column, so an even slot is never narrower than that
+content. The overlay fills one column from top to bottom before it starts the
+next one, and it takes only as many columns as it can fill, so no column stays
+empty. A terminal that is narrower than one column shows one column, which clips
+at the body edge.
 
 The overlay bounds its height twice. It covers at most half of the body band, so
 the buffer text around the cursor never disappears behind it, and one column
-holds at most ten rows even in a tall terminal. A body band that cannot hold the
-title row and one mapping over its own half shows no overlay.
+holds at most ten rows even in a tall terminal. Beside its hint rows the overlay
+keeps three rows: one blank row above the hints, one blank row below them, and
+the footer row. A body band that cannot hold those three rows and one mapping
+over its own half shows no overlay.
 
 A list that holds more rows than one frame of columns holds several pages. One
 page is one full frame of columns, so the pages cover the list without a gap
@@ -796,15 +809,46 @@ phantom placement. The overlay draws no position marker of its own.
 `WhichKeyOverlay::placement_for` answers that same report before any paint. It
 takes the body band and returns the `WhichKeyPlacement` of the overlay's own
 page, from a shared reference. A host that writes the page count into the
-title it is about to draw reads the count there first, instead of rendering
-the band once to learn the count and once more to draw the title.
+footer it is about to draw reads the count there first, instead of rendering
+the band once to learn the count and once more to draw the footer.
 `WhichKeyOverlay::render` calls the same rule, so the pure answer and the
 rendered answer cannot disagree.
 
-The title row names how many rows follow the drawn page, for example `+2 more`.
-The reader reaches those mappings by typing the next key, or by stepping to the
-next page where the host binds that step. The standalone editor draws the first
-page only, so its title row keeps the count it always showed.
+The last row of the overlay is the footer. It holds three parts: the breadcrumb
+of the keys that the reader already pressed at the left, the legend of the
+navigation keys at the right, and the note that counts the hints behind the
+drawn page left of that legend, for example `+2 more`. A row that cannot hold
+every part drops the note first and the legend second, because the breadcrumb
+names where the reader stands.
+
+The reader reaches the counted mappings by typing the next key, or by stepping
+to the next page where the host binds that step. The standalone editor draws the
+first page only, so its footer keeps the count it always showed.
+
+The breadcrumb reads as the path that the reader walked. It writes the name of
+every pending key and separates two keys with one marker, so the prefix
+`Space w` reads `␣ » w`. The names come from the one key-label rule, so a
+breadcrumb key and a hint key can never disagree.
+
+The legend names the two keys that leave the overlay: `ESC close` and `⌫ back`.
+Both act on the overlay itself and reach no command, so they stand apart from
+the hint rows above them.
+
+`Backspace` removes the last key of the pending sequence and shows the level
+above it. From `Space w` one `Backspace` shows the leader level, and one more
+closes the overlay. A pending sequence owns the key wherever it waits. Without
+one the resolver takes nothing, so `Backspace` still deletes the character
+before the cursor in Insert mode and on a prompt line, and it still selects the
+parent directory in the file-tree sidebar. `Esc` and `Ctrl-C` close the overlay
+and run no command of the level behind it. See the Reset Rules section below.
+
+`kvim-ui` publishes the footer. `WhichKeyFooter` carries the breadcrumb and the
+legend, `WhichKeyLegendEntry` carries one key glyph and its action word, and
+`WhichKeyMarker` carries the row marker and its style. The widget names no glyph
+and no color of its own, so the interface layer supplies every text.
+`WHICH_KEY_LEGEND_ENTRIES_MAX` bounds the legend, and a longer legend answers
+`WhichKeyError::Legend` instead of losing an entry.
+[`architecture.md`](architecture.md) owns the published surface.
 
 Every row carries one icon, which the group of its command selects. The group is
 a property of the command, so `input` owns it beside the identifier and the
@@ -815,6 +859,22 @@ groups also carries the default icon, because one icon cannot name two groups.
 The one file-tree icon setting turns these glyphs off together with the tree
 glyphs. Without them every column loses the same cells, so the columns stay
 aligned. See [`files.md`](files.md).
+
+An invisible key carries the glyph that a reader recognizes, so it occupies one
+terminal cell: `␣` for the space key, `↵` for `Enter`, `S-↵` for `Shift-Enter`,
+and `⌫` for `Backspace`. The overlay sizes the key column of one level to the
+widest name of that level, so a written name such as `Enter` would widen every
+column beside it and cost the reader a column. The arrow keys keep their written
+names, because `→` already marks the gap between a key and its label and an
+arrow glyph there would read as a second marker. The tables of this document
+name a key by its written form, and the overlay paints its glyph.
+
+A hint row shows the label of the command that its key reaches. Every label
+names one command apart from every other one and stays short, because a column
+takes the width of the widest label of its level. A wordy label therefore widens
+every column beside it and costs the reader a column. A changed label changes no
+identifier: the stable identifier of a command names it for a later
+configuration loader.
 
 The overlay appears after the which-key delay of 500 ms, so a fast key
 combination never flashes it. The event loop supplies the elapsed time.
@@ -1106,7 +1166,8 @@ The leader belongs to the leader in every scope that binds keys of its own. The
 file-tree sidebar therefore passes `Space` through to the leader instead of
 acting on the selected row, and every leader sequence reaches its command from
 the sidebar exactly as it does from a buffer. `l` and `h` open and close an
-entry, and `Enter` opens it, so the sidebar needs no toggle key of its own.
+entry, `Enter` opens it, and `Tab` toggles it, so the sidebar needs no leader
+key of its own.
 
 A command that the sidebar does not own falls through to the owner that the
 session picks next. A modal surface that reads its own answer, such as the
@@ -1244,15 +1305,44 @@ one edit transaction, so one undo reverses the whole block.
 | Keys | Command | Modes |
 |---|---|---|
 | `Ctrl-S` | Save the active buffer | Every mode |
+| `Space ww` | Save the active buffer | Normal |
+| `Space wa` | Save every modified buffer | Normal |
+| `Space wq` | Save the active buffer, then close it | Normal |
 | `Ctrl-E` | Reveal the active file in the file tree | Normal |
 | `Ctrl-E` | Close the file tree | File Tree |
 | `Space o` | Open the buffer picker | Normal |
 | `Space fb` | Open the buffer picker | Normal |
+| `Space q` | Close the active buffer | Normal |
+| `Ctrl-Q` | Close the active buffer | Every mode |
 | `Space x` | Unload the active buffer | Normal |
 | `Space ff` | Open the file search picker | Normal |
 | `Space f/` | Open the ripgrep search picker | Normal |
 
 `Ctrl-S` saves without forcing an unrelated mode transition.
+
+`Space w` opens the write group of the reference configuration, so no command
+takes that prefix alone. `Space ww` writes the active buffer and reaches the
+same path as `Ctrl-S`, formatter included. `Space wa` writes every modified
+file-backed buffer instead. The editor runs one file operation at a time, so
+that command writes the buffers one after another and reports one result for the
+complete run. A failed write stops the run. `Space wa` runs no formatter,
+because a format question names the active buffer alone. `Space wq` writes the
+active buffer and closes it after a current write succeeds. A failed or stale
+write closes nothing.
+
+`Space q` and `Ctrl-Q` close the active buffer, and `Space x` unloads it.
+Closing and unloading act alike until the removed buffer is the last loaded one.
+`Space q` then ends the editor, exactly as `:q` does, and `Space x` opens the
+scratch buffer and keeps the editor open. That difference is the whole
+distinction between the two. Both refuse a buffer that holds unsaved changes and
+report that the buffer needs a save first. The one exception is the close of the
+last buffer: that close ends the editor through the same path as `:q`, so the
+quit question owns the unsaved text and asks before anything is lost. See
+[`files.md`](files.md).
+
+No key closes a window. `:q` and `:q!` own that path, because a window close
+and a buffer close answer two different questions. The file-tree sidebar keeps
+its own close keys, which close the sidebar window and no buffer.
 
 `Ctrl-E` opens the sidebar, expands every parent of the active file, selects
 that file, and moves the focus into the sidebar, so the tree keys act at once.
@@ -1284,7 +1374,7 @@ keys as `h`, `j`, `k`, and `l`, exactly as they do in a buffer window. See
 | `Down/Up/Right/Left` | The same four keys as `j`, `k`, `l`, and `h` |
 | `Backspace` | Select the parent directory |
 | `Enter` | Open the selected file, or expand the selected directory |
-| `Space` | Expand or collapse the selected directory |
+| `Tab` | Expand or collapse the selected directory |
 | `R` | Read the workspace directories again |
 | `a` | Add one file, one directory, or both |
 | `d` | Delete the selected entry, after a confirmation |
@@ -1346,6 +1436,11 @@ file-operation clipboard.
 or the directory of the selected file. `Enter` on a file opens it in the editor
 window that held the focus, and the focus follows the file.
 
+`Tab` toggles the selected directory, so one key answers both directions. `l`,
+`h`, and `Enter` keep their own meanings beside it. The embedded binding profile
+strips this binding, because it reserves `Tab` and `Shift-Tab` in the sidebar
+for the tab navigation of a host. `Shift-Tab` stays unbound in the sidebar.
+
 `l` and `h` follow the nvim-tree and neo-tree rule. `l` only ever moves deeper:
 it opens a closed directory, it keeps an open directory open, and it opens a
 file in the editor window, as `Enter` does. `h` closes an open directory. On a
@@ -1363,6 +1458,8 @@ subset. See [`files.md`](files.md) for the behavior behind them.
 |---|---|
 | `Down` or `Ctrl-J` | Select the next result |
 | `Up` or `Ctrl-K` | Select the previous result |
+| `Ctrl-D` | Select half a result page down |
+| `Ctrl-U` | Select half a result page up |
 | `Enter` | Open the selected result |
 | `Esc` | Close the picker |
 | `Ctrl-C` | Close the picker |
@@ -1381,6 +1478,17 @@ prompt, and the confirmation. A closed picker restores the previous view
 exactly, because the picker changes no editor state until the reader accepts
 one row.
 
+`Esc` and `Ctrl-C` close the picker through the prompt that holds its query, so
+the picker table binds neither key. The cancel of the prompt clears the query
+and the picker together.
+
+`Ctrl-D` and `Ctrl-U` move the selection by half the visible result rows, beside
+the `Ctrl-J` and `Ctrl-K` that move it by one row. The picker reads no buffer,
+so these two keys name two picker commands and not the half-page motions of a
+window. A step stops at the first and at the last result and never leaves the
+list, an empty list ignores both keys, and the preview follows the new selection
+exactly as a one-row move does.
+
 ### Windows
 
 | Keys | Command | Modes |
@@ -1397,11 +1505,10 @@ one row.
 | `Ctrl-Enter` | Split the window with the adaptive rule | Normal |
 | `Space \` | Split the window with the inverse adaptive rule | Normal |
 | `Ctrl-\` | Split the window with the inverse adaptive rule | Normal |
-| `Space q` | Close the focused window | Normal |
-| `Ctrl-Q` | Close the focused window | Every mode |
 
-`Space q` and `Ctrl-Q` reach the same path as `:q`, so both ask before the last
-window discards unsaved changes.
+No key closes a window. `:q` and `:q!` own that path, and `:q` asks before the
+last window discards unsaved changes. See the Files And Buffers section above
+for the keys that close a buffer.
 
 The terminal requests enhanced keyboard reporting so `Ctrl-Alt`, `Ctrl-Enter`,
 and `Ctrl-\` chords stay distinct. A terminal that cannot report one chord leaves

@@ -345,9 +345,25 @@ name for what a key reaches. The row carries two independent facts:
 `WhichKeyOverlayRow::key_style` marks whether the key continues the pending
 sequence or abandons it. Both fields are public, so a struct literal outside
 this repository names the new one.
+`WhichKeyOverlay` draws a footer on its last row instead of a title on its first
+one. `WhichKeyOverlay::new` therefore takes one `WhichKeyFooter` where it took a
+title text, and one `WhichKeyMarker` beside the hints. `WhichKeyFooter` carries
+the breadcrumb of the pressed keys and a legend of `WhichKeyLegendEntry` values,
+`WHICH_KEY_LEGEND_ENTRIES_MAX` bounds that legend, and `WhichKeyError::Legend`
+refuses a longer one. `WhichKeyStyles` drops `title` and gains `note`,
+`breadcrumb`, `legend_key`, and `legend_action`, because the footer paints three
+parts in three styles. The widget keeps one constructor: the top-title layout is
+gone rather than kept beside the footer layout, so one layout rule serves every
+host. Every hint row also moves up by the row that the title held, so a host
+that recorded row coordinates across versions reads new ones. That is a behavior
+change and not an API change, because `WhichKeyPlacement` still reports the
+exact cells. kvim is before its first release, so this break takes the
+obligations of the stability section below: updated rustdoc and an updated
+dedicated example, and no version increase and no migration note.
+
 `WhichKeyOverlay::placement_for` answers that same `WhichKeyPlacement` from the
 hints and the body rectangle, without a buffer and without a mutable borrow, so
-a host that writes "page 1 of 2" into a title reads the count before it draws.
+a host that writes "page 1 of 2" into a footer reads the count before it draws.
 `WhichKeyPlacement::rows` publishes one `WhichKeyRowPlacement` for each visible
 row. Each placement carries the source hint index and the exact clipped,
 half-open row rectangle used by rendering. Empty and too-small layouts publish

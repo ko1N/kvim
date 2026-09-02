@@ -911,8 +911,11 @@ presentation. See [`reviewgraph-integration.md`](reviewgraph-integration.md).
 
 The which-key overlay covers the bottom of the body band. It lists the next keys
 that may follow the pending key sequence, one key for each row, and it shows a
-bounded number of rows. [`input-actions.md`](input-actions.md) owns the rows and
-the delay.
+bounded number of rows. Its last row is a footer that names the keys the reader
+already pressed, the hints behind the drawn page, and the keys that navigate the
+overlay itself. One blank row stands above the hint rows and one below them, so
+the footer never touches a hint. [`input-actions.md`](input-actions.md) owns the
+rows, the footer parts, and the delay.
 
 The language float covers a part of one window instead of the body band. It sits
 beside the cursor cell of the focused window, so it never reaches outside that
@@ -1214,6 +1217,13 @@ roles. A new role belongs here first, and its color stays in code.
 | Title | The title of a focused window or of an overlay |
 | TitleMuted | The title of an unfocused window |
 | PopupSelection | The selected row of a popup list |
+| PickerSelection | The filled band of the picker's selected result row |
+| PickerMuted | The muted picker chrome, such as the query placeholder and the counter |
+| PickerHintKey | The key name of one picker hint, such as `esc` |
+| WhichKeyBreadcrumb | The pressed keys in the which-key footer |
+| WhichKeyMarker | The marker between the key and the label of one which-key row |
+| WhichKeyLegendKey | The key glyph of one which-key footer legend entry |
+| WhichKeyLegendAction | The action word of one which-key footer legend entry |
 | Icon(role) | One file-tree icon |
 | Markup(role) | One markup role of a server answer |
 | MarkupStructure | One glyph that the float draws for a markup document |

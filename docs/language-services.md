@@ -399,10 +399,26 @@ own header, and the Terraform module document repeats them. The adapter
 includes the file at compile time, so the single binary still needs no parser
 file and no query file on the host.
 
-Each analysis request carries the buffer identity, generation, and version that
-produced its input. The publication gate rejects a result with an obsolete value.
-An obsolete result never changes visible state and never enters a cache. See
-[`text-model.md`](text-model.md) for the identity rules.
+One analysis request names the text that it reads. It names either one open
+buffer or the preview text of one picker row. A buffer request carries the
+buffer identity, generation, and version that produced its input. A preview
+request carries the preview key of the selected row instead, because preview
+text is loose text and no buffer. The publication gate rejects a result with an
+obsolete value of either kind. An obsolete result never changes visible state
+and never enters a cache. See [`text-model.md`](text-model.md) for the identity
+rules and [`files.md`](files.md) for the preview.
+
+The two kinds share one worker slot, one highlighter, and one publication path,
+because one analysis runs at a time. A running preview holds that slot until it
+answers. A submission cancels the job that held the slot, so a buffer job
+started during a preview would cancel that preview, the preview would ask
+again, and neither kind would ever finish. The picker covers the buffer while it
+is open, so the preview comes first and the buffer job follows it.
+
+A preview highlight is decoration. A failed preview analysis answers no span, so
+the preview paints plain text and asks for no further job, and the outcome
+reaches the editor log and never the message line. A preview of a file that no
+language adapter serves needs no job at all.
 
 The adapter returns:
 

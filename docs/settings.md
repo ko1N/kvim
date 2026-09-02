@@ -108,7 +108,10 @@ toward the sidebar changes the width of the open sidebar, not this default.
 The file tree icons setting is a mode with two values: shown and hidden. An icon
 needs a patched font, and the reference configuration installs one, so the
 default shows the icons. A terminal without a patched font hides them, and the
-tree still aligns. [`files.md`](files.md) owns the icon table.
+tree still aligns. The one setting turns every file icon off together: the file
+tree, the which-key rows, and the picker result rows all read it, so no list
+loses its alignment while another keeps its glyphs. [`files.md`](files.md) owns
+the icon table.
 
 ## Files
 
