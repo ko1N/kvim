@@ -32,8 +32,8 @@ use thiserror::Error;
 
 use kvim_keymap::{
     CommandMetadata, CommandOwner, ContextGeneration, Dispatch, DispatchContext, Input,
-    InputContextSnapshot, Resolver, Scope, ScopedWhichKeyHint, SemanticPhases, TypedText,
-    WhichKeyView,
+    InputContextSnapshot, Key, KeyCode, Phase, Resolver, Scope, ScopedWhichKeyHint, SemanticPhases,
+    StepBack, TypedText, WhichKeyView,
 };
 
 use crate::layout::{BorderId, BorderPlacement, RegionKind};
@@ -232,6 +232,12 @@ pub enum Composition<C, Sid> {
         /// The text that the input carried.
         text: TypedText,
     },
+    /// One plain `Backspace` stepped back through a pending which-key sequence.
+    ///
+    /// The composer consumed the input and changed the pending prefix. The host
+    /// repaints so it shows the shorter breadcrumb or closes the which-key
+    /// overlay after the last key leaves the prefix.
+    WhichKeyBack,
     /// The sequence is a valid prefix of at least one longer binding.
     Pending,
     /// The terminal reported input that no binding accepts.
@@ -1029,6 +1035,11 @@ where
 
     /// Resolves one input against the surface that owns it.
     ///
+    /// For plain `Backspace`, an open overlay dispatches first. A pending
+    /// prompt dispatches next. Only then does a pending which-key sequence
+    /// step back and return [`Composition::WhichKeyBack`]. All other input,
+    /// including modified `Backspace`, uses ordinary resolver dispatch.
+    ///
     /// The overlay scope answers first, the host-global scope answers next, and
     /// the scope of the input-owning surface answers last.
     ///
@@ -1043,6 +1054,16 @@ where
     pub fn reduce(&mut self, input: Input, now: Option<Duration>) -> Composition<C, Sid> {
         let surface = self.input_surface().clone();
         let context = self.dispatch_context();
+        let plain_backspace = input == Input::Key(Key::plain(KeyCode::Backspace));
+        if self.overlay.is_none()
+            && context.focus.phases.prompt != Phase::Pending
+            && plain_backspace
+        {
+            match self.resolver.step_back() {
+                StepBack::Shortened | StepBack::Cleared => return Composition::WhichKeyBack,
+                StepBack::NoPrefix => {}
+            }
+        }
         match self.resolver.dispatch(&context, input, now) {
             Dispatch::Host { command } => Composition::Host { command },
             Dispatch::Surface { command } => Composition::Surface { surface, command },

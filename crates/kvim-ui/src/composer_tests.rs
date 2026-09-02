@@ -45,7 +45,7 @@ const AREA: Rect = Rect {
 const SIDEBAR_CELLS: u16 = 24;
 
 /// The longest sequence that the table binds.
-const KEYS_MAX: u8 = 2;
+const KEYS_MAX: u8 = 3;
 
 /// The wait before the which-key overlay first appears.
 const WHICH_KEY_DELAY: Duration = Duration::from_millis(500);
@@ -64,6 +64,7 @@ enum Action {
     EditorDown,
     ReviewNext,
     SidebarDown,
+    Backspace,
     ChatSend,
 }
 
@@ -84,6 +85,7 @@ impl CommandMetadata for Action {
             Self::EditorDown => "editor-down",
             Self::ReviewNext => "review-next",
             Self::SidebarDown => "sidebar-down",
+            Self::Backspace => "backspace",
             Self::ChatSend => "chat-send",
         }
     }
@@ -131,7 +133,7 @@ fn ch(value: char) -> Key {
 
 /// Builds the one shared registry of this host.
 fn resolver() -> Resolver<Action, Table> {
-    let first_line = [ch('g'); 2];
+    let first_line = [ch('g'); 3];
     let bindings = [
         Binding::host(Table::Global, &[ch('q')], Action::Quit),
         Binding::host(Table::Global, &[ch('p')], Action::OpenPalette),
@@ -141,6 +143,11 @@ fn resolver() -> Resolver<Action, Table> {
         // back from the quit command while it stays open.
         Binding::surface(Table::Palette, &[ch('q')], Action::AcceptPalette),
         Binding::surface(Table::Chat, &[Key::plain(KeyCode::Enter)], Action::ChatSend),
+        Binding::surface(
+            Table::EditorNormal,
+            &[Key::plain(KeyCode::Backspace)],
+            Action::Backspace,
+        ),
         Binding::surface(Table::EditorNormal, &[ch('j')], Action::EditorDown),
         Binding::surface(Table::Review, &[ch('n')], Action::ReviewNext),
         Binding::surface(Table::Sidebar, &[ch('j')], Action::SidebarDown),
@@ -394,11 +401,126 @@ fn a_pending_prefix_reports_pending_and_then_reaches_its_command() {
     assert_eq!(composer.resolver().pending_keys().len(), 1);
     assert_eq!(
         composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
         Composition::Host {
             command: Action::FirstLine
         }
     );
     assert!(composer.resolver().pending_keys().is_empty());
+}
+
+#[test]
+fn backspace_shortens_a_pending_which_key_prefix() {
+    let mut composer = workspace();
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+
+    assert_eq!(
+        composer.reduce(Input::Key(Key::plain(KeyCode::Backspace)), Some(NOW)),
+        Composition::WhichKeyBack
+    );
+    assert_eq!(composer.resolver().pending_keys(), [ch('g')]);
+}
+
+#[test]
+fn backspace_clears_a_one_key_which_key_prefix() {
+    let mut composer = workspace();
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+
+    assert_eq!(
+        composer.reduce(Input::Key(Key::plain(KeyCode::Backspace)), Some(NOW)),
+        Composition::WhichKeyBack
+    );
+    assert!(composer.resolver().pending_keys().is_empty());
+}
+
+#[test]
+fn backspace_without_a_which_key_prefix_uses_normal_dispatch() {
+    let mut composer = workspace();
+
+    assert_eq!(
+        composer.reduce(Input::Key(Key::plain(KeyCode::Backspace)), Some(NOW)),
+        Composition::Surface {
+            surface: EDITOR,
+            command: Action::Backspace,
+        }
+    );
+}
+
+#[test]
+fn an_open_overlay_dispatches_backspace_before_a_forced_pending_prefix() {
+    let mut composer = workspace();
+    assert_eq!(
+        composer.open_overlay(PALETTE, Table::Palette, AREA, idle(Table::Palette)),
+        CompositionEffect::Applied
+    );
+    assert_eq!(
+        composer
+            .resolver
+            .dispatch(&composer.dispatch_context(), Input::Key(ch('g')), Some(NOW),),
+        kvim_keymap::Dispatch::Pending,
+        "the child test forces coexistence to protect overlay precedence"
+    );
+
+    assert_eq!(
+        composer.reduce(Input::Key(Key::plain(KeyCode::Backspace)), Some(NOW)),
+        Composition::Unbound { surface: PALETTE }
+    );
+}
+
+#[test]
+fn a_pending_prompt_dispatches_backspace_before_a_pending_which_key_prefix() {
+    let mut composer = workspace();
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+    composer
+        .set_context(
+            &EDITOR,
+            pending(
+                Table::EditorNormal,
+                SemanticPhases {
+                    prompt: Phase::Pending,
+                    ..SemanticPhases::IDLE
+                },
+            ),
+        )
+        .expect("the editor surface is present");
+
+    assert_eq!(
+        composer.reduce(Input::Key(Key::plain(KeyCode::Backspace)), Some(NOW)),
+        Composition::Surface {
+            surface: EDITOR,
+            command: Action::Backspace,
+        }
+    );
+}
+
+#[test]
+fn modified_backspace_uses_normal_dispatch() {
+    let mut composer = workspace();
+    assert_eq!(
+        composer.reduce(Input::Key(ch('g')), Some(NOW)),
+        Composition::Pending
+    );
+
+    assert_eq!(
+        composer.reduce(Input::Key(Key::ctrl(KeyCode::Backspace)), Some(NOW)),
+        Composition::Unbound { surface: EDITOR }
+    );
 }
 
 #[test]
