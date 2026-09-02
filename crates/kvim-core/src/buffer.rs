@@ -507,21 +507,24 @@ impl TextBuffer {
 
     /// Replaces this text and advances its complete-replacement generation.
     ///
-    /// `replacement` must be a newly loaded buffer at generation and version
-    /// zero. This method derives the next generation from `self`; callers
-    /// cannot supply a revision from another buffer. The replacement must use
-    /// the same validated byte limit.
+    /// `replacement` must be a newly loaded buffer at generation zero. It can
+    /// carry restored undo history and its resulting edit version. This method
+    /// derives the next generation from `self`, resets the replacement version
+    /// to zero, and preserves its history. Callers cannot supply a generation
+    /// from another buffer. The replacement must use the same validated byte
+    /// limit.
     pub fn advance_replacement(&mut self, mut replacement: Self) {
         assert_eq!(
             replacement.bytes_max, self.bytes_max,
             "a replacement must preserve the persistent byte limit"
         );
         assert_eq!(
-            replacement.revision(),
-            BufferRevision::default(),
-            "a replacement must be newly loaded and must not carry another buffer revision"
+            replacement.generation,
+            BufferGeneration::default(),
+            "a replacement must be newly loaded and must not carry another buffer generation"
         );
         replacement.generation = self.generation.next();
+        replacement.version = BufferVersion::default();
         *self = replacement;
     }
 

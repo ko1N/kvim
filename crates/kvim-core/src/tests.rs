@@ -35,6 +35,25 @@ fn an_edit_sequence_produces_deterministic_text() {
 }
 
 #[test]
+fn replacement_resets_restored_history_version_and_preserves_undo() {
+    let mut current = buffer("original");
+    replace(&mut current, 0, 0, "stale ");
+
+    let mut replacement = buffer("loaded");
+    replace(&mut replacement, 6, 6, " text");
+    assert_eq!(replacement.version().get(), 1);
+    assert_eq!(replacement.to_string(), "loaded text\n");
+
+    current.advance_replacement(replacement);
+
+    assert_eq!(current.revision().generation().get(), 1);
+    assert_eq!(current.version().get(), 0);
+    assert_eq!(current.to_string(), "loaded text\n");
+    assert!(current.undo().is_some());
+    assert_eq!(current.to_string(), "loaded\n");
+}
+
+#[test]
 fn one_transaction_changes_several_lines_and_reverses_as_one_step() {
     let mut buffer = buffer("one\ntwo\nthree\n");
     let cursor = buffer.char_position(0).expect("the cursor exists");
