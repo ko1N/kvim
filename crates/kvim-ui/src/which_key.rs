@@ -25,15 +25,19 @@
 //! marker and the alignment, because the icon column reserves the same cells in
 //! every row.
 //!
-//! The overlay covers the bottom of one body band. It fills the width with
-//! columns of equal width, so the keys and the labels of all columns align. It
-//! bounds its own height. One blank row opens the overlay, one blank row closes
-//! its hints, and the footer holds its last row.
+//! The overlay covers the bottom of one body band. The content of the hints
+//! decides how many columns the band holds, and the columns then divide that
+//! band evenly: every column takes the same slot, the first slot starts at the
+//! left margin, and the last slot ends at the right margin. The keys and the
+//! labels of all columns therefore align, and a short label leaves the free
+//! cells of its slot blank. The overlay bounds its own height. One blank row
+//! opens the overlay, one blank row closes its hints, and the footer holds its
+//! last row.
 //!
 //! The footer holds three parts: the breadcrumb of the keys that the reader
-//! already pressed at the left, the legend of the navigation keys in the
-//! middle, and the note that counts the hints behind the drawn page at the
-//! right. A row that cannot hold every part drops the note first and the legend
+//! already pressed at the left, the legend of the navigation keys at the right,
+//! and the note that counts the hints behind the drawn page left of the legend.
+//! A row that cannot hold every part drops the note first and the legend
 //! second, because the breadcrumb names where the reader stands.
 //!
 //! A list that outgrows the frame holds one page for each frame of columns.
@@ -424,9 +428,11 @@ pub struct WhichKeyRowPlacement {
     pub index: usize,
     /// The exact visible cells of this row's column, clipped to the overlay.
     ///
-    /// The rectangle includes the column gap after the row. This makes every
-    /// visible cell of the row's column answer the same hint. It uses ratatui
-    /// half-open containment: its right and bottom edges are outside it.
+    /// The rectangle covers the whole slot of the row's column, up to the first
+    /// cell of the next column, and the last column reaches the right margin.
+    /// Every visible cell of that slot therefore answers the same hint, the
+    /// cells beside a short label included. It uses ratatui half-open
+    /// containment: its right and bottom edges are outside it.
     pub area: Rect,
 }
 
@@ -735,9 +741,11 @@ impl<'a> WhichKeyOverlay<'a> {
     /// Paints one page of the overlay over the bottom of one body band.
     ///
     /// The overlay covers the text behind it, so it blanks its rectangle first.
-    /// It spreads the hints over columns of equal width, and every column keeps
-    /// the width of the widest hint of the complete list, so the keys and the
-    /// labels of all columns and of every page align. Every row reads
+    /// It spreads the hints over columns of equal width, and every column
+    /// reserves the width of the widest hint of the complete list, so the keys
+    /// and the labels of all columns and of every page align. The columns then
+    /// divide the band evenly, so the last one ends at the right margin and a
+    /// short label leaves free cells behind it. Every row reads
     /// `key marker icon label`. A body band that cannot hold the chrome rows
     /// and one hint over its own share paints nothing, which keeps the text
     /// behind it visible.
@@ -836,8 +844,8 @@ impl<'a> WhichKeyOverlay<'a> {
     /// Renders the footer row of the overlay.
     ///
     /// The row holds the breadcrumb of the pressed keys at the left, the
-    /// legend of the navigation keys in the middle, and the note that counts
-    /// the hints behind the drawn page at the right.
+    /// legend of the navigation keys at the right, and the note that counts
+    /// the hints behind the drawn page left of the legend.
     ///
     /// A prefix that reaches more hints than one page holds keeps the rest on
     /// the pages behind it. The note names how many hints follow the drawn
@@ -852,8 +860,9 @@ impl<'a> WhichKeyOverlay<'a> {
         let y = area.bottom().saturating_sub(FOOTER_ROWS);
         let width = usize::from(area.width);
         // The breadcrumb starts at the first cell of the first hint column, so
-        // it stands under the keys that it leads to.
-        let Some(start) = column_start(area, 0, 0) else {
+        // it stands under the keys that it leads to. The spread never moves
+        // that column, so the footer reads the left margin directly.
+        let Some(start) = band_cell(area, LEFT_PAD_CELLS) else {
             return;
         };
         let mut cursor = start;
@@ -873,25 +882,24 @@ impl<'a> WhichKeyOverlay<'a> {
             usize::from(cursor.saturating_sub(area.x))
         };
 
+        // The trailing space of the note holds it off the legend that follows
+        // it, and off the right margin while the row carries no legend.
         let note = (following > 0).then(|| format!("+{following} more "));
         let note_cells = note.as_deref().map_or(0, text_cells);
         let legend_cells = legend_row_cells(self.footer.legend);
-        // The note is the first part that a narrow row drops, and the legend
-        // the second, because the breadcrumb is the most valuable of the three.
-        let (legend_start, note_cells) =
-            match centered_legend(width, breadcrumb_cells, legend_cells, note_cells) {
-                Some(start) => (Some(start), note_cells),
-                None => match centered_legend(width, breadcrumb_cells, legend_cells, 0) {
-                    Some(start) => (Some(start), 0),
-                    None => (None, note_cells),
-                },
-            };
+        // The legend ends at the right margin, and the note ends where the
+        // legend starts. The note is the first part that a narrow row drops,
+        // and the legend the second, because the breadcrumb is the most
+        // valuable of the three.
+        let legend_start = (legend_cells > 0 && breadcrumb_cells + legend_cells <= width)
+            .then(|| width - legend_cells);
+        let note_end = legend_start.unwrap_or(width);
 
         // The note never covers the breadcrumb, so a narrow overlay keeps the
         // keys it already read and drops the count instead.
         if note_cells > 0
-            && breadcrumb_cells + note_cells <= width
-            && let (Some(note), Ok(offset)) = (note, u16::try_from(width - note_cells))
+            && breadcrumb_cells + note_cells <= note_end
+            && let (Some(note), Ok(offset)) = (note, u16::try_from(note_end - note_cells))
         {
             target.set_stringn(
                 area.x.saturating_add(offset),
@@ -1012,12 +1020,15 @@ impl<'a> WhichKeyOverlay<'a> {
             .expect("the row bound keeps the overlay height small")
             .saturating_add(CHROME_ROWS);
         let area = Rect::new(body.x, body.bottom() - height, body.width, height);
+        // The column count above stays the capacity rule. The spread divides
+        // the band over those same columns and changes no count.
+        let spread = ColumnSpread::new(layout.columns, column_cells, cells);
         let mut rows = Vec::with_capacity(shown);
         for index in 0..shown {
             let column = index / layout.rows_per_column;
             let offset = u16::try_from(index % layout.rows_per_column)
                 .expect("the row bound keeps the row offset small");
-            let x = column_start(area, column, column_cells)
+            let x = band_cell(area, spread.start(column))
                 .expect("the shared column layout keeps every drawn row inside the overlay");
             rows.push(WhichKeyRowPlacement {
                 index: first + index,
@@ -1027,7 +1038,7 @@ impl<'a> WhichKeyOverlay<'a> {
                     // stands below it. The blank row below the hints and the
                     // footer row close the overlay, and neither names a hint.
                     area.y + TOP_PAD_ROWS + offset,
-                    u16::try_from(column_cells)
+                    u16::try_from(spread.width(column))
                         .expect("the terminal width bounds one column")
                         .min(area.right() - x),
                     1,
@@ -1098,24 +1109,6 @@ fn legend_row_cells(legend: &[WhichKeyLegendEntry<'_>]) -> usize {
         .map(|entry| text_cells(entry.key) + LEGEND_KEY_GAP_CELLS + text_cells(entry.action))
         .sum();
     entries + LEGEND_ENTRY_GAP_CELLS * legend.len().saturating_sub(1)
-}
-
-/// Returns the first cell of the centered legend inside one footer row.
-///
-/// The answer is `None` when the row cannot hold the legend beside the
-/// breadcrumb and `reserved` cells at its right edge, so the caller drops the
-/// legend or the part that reserved those cells.
-fn centered_legend(
-    width: usize,
-    breadcrumb_cells: usize,
-    legend_cells: usize,
-    reserved: usize,
-) -> Option<usize> {
-    if legend_cells == 0 || legend_cells > width {
-        return None;
-    }
-    let start = (width - legend_cells) / 2;
-    (start >= breadcrumb_cells && start + legend_cells + reserved <= width).then_some(start)
 }
 
 /// Rejects one text above the character bound.
@@ -1192,9 +1185,74 @@ pub(crate) fn column_layout(
     }
 }
 
-/// Returns the first cell of one overlay column, or `None` outside the body.
-fn column_start(area: Rect, column: usize, column_cells: usize) -> Option<u16> {
-    let offset = LEFT_PAD_CELLS.checked_add(column.checked_mul(column_cells)?)?;
+/// Where the overlay paints the columns that [`column_layout`] counted.
+///
+/// The content decides how many columns the band holds, and nothing else. The
+/// spread then divides the band evenly: every column takes the same slot, the
+/// first slot starts at the left margin, and the last slot ends at the right
+/// margin. One column therefore takes the whole band, and a column whose own
+/// label is short keeps the free cells of its slot blank.
+///
+/// The band rarely divides evenly. The first `wide_slots` slots therefore take
+/// one cell above `pitch`, so the columns keep whole cells and the last slot
+/// still ends at the margin.
+///
+/// The slot never falls below the content width of one column: the column count
+/// is at most `cells / column_cells`, so `cells / columns` is at least
+/// `column_cells`. A band that is exactly full therefore paints as a left-packed
+/// band paints. A band that is narrower than one column keeps one clipped
+/// column, which is the readable minimum that [`column_layout`] names.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ColumnSpread {
+    /// The number of columns that the overlay paints.
+    columns: usize,
+    /// The cells of one column slot, before the remainder.
+    pitch: usize,
+    /// The number of leading slots that take one cell above `pitch`.
+    wide_slots: usize,
+}
+
+impl ColumnSpread {
+    /// Divides `cells` evenly over `columns` columns of `column_cells` cells.
+    fn new(columns: usize, column_cells: usize, cells: usize) -> Self {
+        debug_assert!(columns >= 1, "a page that paints a hint holds one column");
+        let spread = Self {
+            columns,
+            pitch: cells / columns,
+            wide_slots: cells % columns,
+        };
+        debug_assert!(
+            spread.pitch >= column_cells || cells < column_cells,
+            "the column count is at most `cells / column_cells`, so an even \
+             division never narrows a slot below the content of one column"
+        );
+        spread
+    }
+
+    /// Returns the first cell of one column, counted from the band's left edge.
+    ///
+    /// The column after the last one names the right margin of the band, so
+    /// [`ColumnSpread::width`] reads every slot from the same rule.
+    fn start(self, column: usize) -> usize {
+        debug_assert!(
+            column <= self.columns,
+            "the spread names the columns of the page and its right margin"
+        );
+        LEFT_PAD_CELLS + column * self.pitch + column.min(self.wide_slots)
+    }
+
+    /// Returns the cells of one column slot, up to the column that follows it.
+    ///
+    /// Every visible cell of one slot answers the same hint, so a pointer that
+    /// stands beside a short label still selects the row of that column.
+    fn width(self, column: usize) -> usize {
+        debug_assert!(column < self.columns, "the page paints this column");
+        self.start(column + 1) - self.start(column)
+    }
+}
+
+/// Returns the cell of one offset inside the band, or `None` outside the body.
+fn band_cell(area: Rect, offset: usize) -> Option<u16> {
     let offset = u16::try_from(offset).ok()?;
     let x = area.x.checked_add(offset)?;
     (x < area.right()).then_some(x)

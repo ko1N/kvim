@@ -782,9 +782,17 @@ fn row_placements_use_the_rendered_non_zero_origin_layout() {
 
     assert_eq!(placement.rows().len(), 2);
     assert_eq!(placement.rows()[0].index, 0);
-    assert_eq!(placement.rows()[0].area, Rect::new(15, 16, 11, 1));
+    // The band holds twenty-six cells behind its left margin, so the two
+    // columns take thirteen cells each and the second one ends at the right
+    // margin.
+    assert_eq!(placement.rows()[0].area, Rect::new(15, 16, 13, 1));
     assert_eq!(placement.rows()[1].index, 1);
-    assert_eq!(placement.rows()[1].area, Rect::new(26, 16, 11, 1));
+    assert_eq!(placement.rows()[1].area, Rect::new(28, 16, 13, 1));
+    assert_eq!(
+        placement.rows()[1].area.right(),
+        body.right(),
+        "the last column ends at the right margin of the band"
+    );
 
     let mut target = Buffer::empty(Rect::new(0, 0, 48, 24));
     let drawn = overlay.render(&mut target, body).expect("body fits buffer");
@@ -803,6 +811,71 @@ fn row_placements_use_the_rendered_non_zero_origin_layout() {
             .symbol(),
         "b"
     );
+}
+
+#[test]
+fn the_columns_spread_evenly_and_the_last_one_ends_at_the_right_margin() {
+    let hints = [
+        WhichKeyOverlayRow::new("a", "Alpha"),
+        WhichKeyOverlayRow::new("b", "Beta"),
+        WhichKeyOverlayRow::new("c", "Gamma"),
+    ];
+    let body = Rect::new(0, 0, 60, 12);
+    let overlay =
+        WhichKeyOverlay::new(footer(), &hints, marker(), styles()).expect("bounded hints");
+    let placement = overlay.placement_for(body);
+    let target = painted(&hints, 60, 12);
+
+    // The band holds fifty-six cells behind its left margin, so the three
+    // columns take eighteen cells each and the first two take one of the two
+    // remaining cells.
+    let starts: Vec<u16> = placement.rows().iter().map(|row| row.area.x).collect();
+    assert_eq!(starts, vec![4, 23, 42]);
+    assert_eq!(
+        placement.rows()[2].area.right(),
+        body.right(),
+        "the last column ends at the right margin"
+    );
+    assert_eq!(
+        row_of(&target, placement.rows()[0].area.y),
+        format!(
+            "    a {MARKER} Alpha{}b {MARKER} Beta{}c {MARKER} Gamma",
+            " ".repeat(10),
+            " ".repeat(11)
+        ),
+        "the painted columns follow the spread"
+    );
+
+    // The free cells of one slot answer the hint of that column, so a pointer
+    // beside a short label selects the row it stands over.
+    let first = placement.rows()[0];
+    assert_eq!(placement.row_at(Cell::new(18, first.area.y)), Some(&first));
+    assert_eq!(placement.row_at(Cell::new(22, first.area.y)), Some(&first));
+    assert_eq!(
+        placement.row_at(Cell::new(23, first.area.y)),
+        Some(&placement.rows()[1]),
+        "the next column starts where the slot of the first one ends"
+    );
+}
+
+#[test]
+fn a_band_that_the_columns_exactly_fill_keeps_the_content_width() {
+    let hints = [
+        WhichKeyOverlayRow::new("a", "Alpha"),
+        WhichKeyOverlayRow::new("b", "Beta"),
+        WhichKeyOverlayRow::new("c", "Gamma"),
+    ];
+    // Three columns of eleven cells fill the thirty-three cells that a band of
+    // thirty-seven cells leaves behind its left margin, so the even division
+    // adds no cell and every column keeps its content width.
+    let body = Rect::new(0, 0, 37, 12);
+    let placement = WhichKeyOverlay::new(footer(), &hints, marker(), styles())
+        .expect("bounded hints")
+        .placement_for(body);
+
+    let starts: Vec<u16> = placement.rows().iter().map(|row| row.area.x).collect();
+    assert_eq!(starts, vec![4, 15, 26]);
+    assert_eq!(placement.rows()[2].area.right(), body.right());
 }
 
 #[test]
@@ -877,21 +950,21 @@ fn a_body_that_holds_no_hint_answers_zero_pages_from_the_pure_call() {
 }
 
 #[test]
-fn the_footer_row_holds_the_breadcrumb_beside_the_centered_legend() {
+fn the_footer_row_ends_the_legend_at_the_right_margin() {
     let hints = [
         WhichKeyOverlayRow::new("/", "Toggle the comment"),
         WhichKeyOverlayRow::new("C-w", "+3 commands"),
     ];
     let target = painted_with_legend(&hints, 40, 12);
-    // The legend holds eighteen cells, so a row of forty cells centers it at
-    // the eleventh cell, four cells behind the breadcrumb.
+    // The legend holds eighteen cells, so a row of forty cells starts it at the
+    // twenty-second cell and ends it at the right margin.
     assert_eq!(
         row_of(&target, 11),
-        format!("    SPC{}ESC close  BS back", " ".repeat(4))
+        format!("    SPC{}ESC close  BS back", " ".repeat(15))
     );
     assert_eq!(
         target
-            .cell((11, 11))
+            .cell((22, 11))
             .expect("the footer paints the first legend key")
             .style()
             .fg,
@@ -900,7 +973,7 @@ fn the_footer_row_holds_the_breadcrumb_beside_the_centered_legend() {
     );
     assert_eq!(
         target
-            .cell((15, 11))
+            .cell((26, 11))
             .expect("the footer paints the first legend action")
             .style()
             .fg,
@@ -910,14 +983,32 @@ fn the_footer_row_holds_the_breadcrumb_beside_the_centered_legend() {
 }
 
 #[test]
+fn the_footer_row_holds_the_note_left_of_the_legend() {
+    let (keys, labels) = long_hints(20);
+    let hints = hints_of(&keys, &labels);
+
+    // Forty cells hold the breadcrumb, the note of the fourteen hints behind
+    // the drawn page, and the legend that ends at the right margin.
+    let target = painted_with_legend(&hints, 40, 12);
+    assert_eq!(
+        row_of(&target, 11),
+        format!("    SPC{}+14 more ESC close  BS back", " ".repeat(6)),
+        "the note stands left of the legend, and the legend ends at the margin"
+    );
+}
+
+#[test]
 fn a_narrow_footer_row_drops_the_note_before_the_legend() {
     let (keys, labels) = long_hints(20);
     let hints = hints_of(&keys, &labels);
 
-    // Thirty-four cells hold the breadcrumb and the legend, but not the note
-    // that counts the seventeen hints behind the page.
-    let target = painted_with_legend(&hints, 34, 12);
-    assert_eq!(row_of(&target, 11), "    SPC ESC close  BS back");
+    // Thirty cells hold the breadcrumb and the legend, but not the note that
+    // counts the seventeen hints behind the page.
+    let target = painted_with_legend(&hints, 30, 12);
+    assert_eq!(
+        row_of(&target, 11),
+        format!("    SPC{}ESC close  BS back", " ".repeat(5))
+    );
 
     // Twenty cells hold neither the legend nor the legend beside the note, so
     // the row keeps the breadcrumb and reports the count again.

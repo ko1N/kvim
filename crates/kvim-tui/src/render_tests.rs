@@ -1316,10 +1316,11 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     assert_eq!(
         row_of(&buffer, 14),
         format!(
-            "    {:<25}{}",
+            "    {:<28}{}",
             format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
             format!("f {WHICH_KEY_MARKER} Open file picker")
-        )
+        ),
+        "the two columns divide the band evenly"
     );
     assert_eq!(
         row_of(&buffer, 15),
@@ -1328,7 +1329,7 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     assert_eq!(row_of(&buffer, 16), "", "one blank row closes the hints");
     assert_eq!(
         row_of(&buffer, 17),
-        format!("    ␣ » f{}{WHICH_KEY_LEGEND}", " ".repeat(12)),
+        format!("    ␣ » f{}{WHICH_KEY_LEGEND}", " ".repeat(34)),
         "the footer row names the pressed keys and counts no hint"
     );
 
@@ -1345,8 +1346,8 @@ fn the_which_key_footer_names_the_pressed_keys_and_the_navigation_keys() {
     let buffer = draw(&session);
     assert_eq!(
         row_of(&buffer, 17),
-        format!("    ␣ » w{}{WHICH_KEY_LEGEND}", " ".repeat(12)),
-        "the breadcrumb names both pressed keys, and the legend follows it"
+        format!("    ␣ » w{}{WHICH_KEY_LEGEND}", " ".repeat(34)),
+        "the breadcrumb names both pressed keys, and the legend ends at the right margin"
     );
     let color = |x: u16| {
         buffer
@@ -1361,12 +1362,12 @@ fn the_which_key_footer_names_the_pressed_keys_and_the_navigation_keys() {
         "the breadcrumb stays quieter than the keys above it"
     );
     assert_eq!(
-        color(21),
+        color(43),
         role(ThemeRole::WhichKeyLegendKey).fg,
         "a legend key carries the accent of the overlay"
     );
     assert_eq!(
-        color(25),
+        color(47),
         role(ThemeRole::WhichKeyLegendAction).fg,
         "the action word beside a legend key stays muted"
     );
@@ -1379,10 +1380,12 @@ fn the_which_key_overlay_fills_a_wide_terminal_with_columns() {
     session.tick(WHICH_KEY_DELAY);
     let buffer = draw(&session);
     // Three columns of twenty-five cells fit, so one row holds every mapping.
+    // The three columns then divide the band evenly, and the first two take one
+    // of its two remaining cells.
     assert_eq!(
         row_of(&buffer, 25),
         format!(
-            "    {:<25}{:<25}{}",
+            "    {:<39}{:<39}{}",
             format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
             format!("b {WHICH_KEY_MARKER} Open buffer picker"),
             format!("f {WHICH_KEY_MARKER} Open file picker")
@@ -1416,8 +1419,8 @@ fn a_narrow_terminal_keeps_the_which_key_overlay_in_one_column() {
     );
     assert_eq!(
         row_of(&buffer, 17),
-        format!("    ␣ » f  {WHICH_KEY_LEGEND}"),
-        "a shorter breadcrumb leaves room for the legend beside it"
+        format!("    ␣ » f{}{WHICH_KEY_LEGEND}", " ".repeat(14)),
+        "a shorter breadcrumb leaves room for the legend at the right margin"
     );
 }
 
@@ -1433,12 +1436,8 @@ fn the_which_key_overlay_bounds_its_height_and_reports_the_dropped_rows() {
     // two padding rows, the footer row, and six mappings.
     assert_eq!(
         row_of(&buffer, 17),
-        format!(
-            "    ␣{}{WHICH_KEY_LEGEND}{}+6 more",
-            " ".repeat(6),
-            " ".repeat(4)
-        ),
-        "the footer row reports the mappings that no column holds"
+        format!("    ␣{}+6 more {WHICH_KEY_LEGEND}", " ".repeat(10)),
+        "the footer row reports the mappings that no column holds, left of the legend"
     );
     assert_eq!(
         row_of(&buffer, 8),
@@ -1500,7 +1499,7 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
     assert_eq!(
         row_of(&buffer, 14),
         format!(
-            "    {:<30}{}",
+            "    {:<38}{}",
             format!("/ {WHICH_KEY_MARKER} {code} Toggle comment"),
             format!("k {WHICH_KEY_MARKER} {code} Show hover")
         ),
@@ -1516,14 +1515,14 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     let mut painted = session(120, 30);
     type_keys(&mut painted, " f");
     painted.tick(WHICH_KEY_DELAY);
-    // With icons every column keeps two further cells, and the columns stay
-    // evenly spaced.
+    // With icons every row keeps two further cells. The columns divide the band
+    // evenly, so the icons move no column.
     let ripgrep = format!("/ {WHICH_KEY_MARKER} {files} Open ripgrep picker");
     let buffers = format!("b {WHICH_KEY_MARKER} {files} Open buffer picker");
     let files_picker = format!("f {WHICH_KEY_MARKER} {files} Open file picker");
     assert_eq!(
         row_of(&draw(&painted), 25),
-        format!("    {ripgrep:<27}{buffers:<27}{files_picker}")
+        format!("    {ripgrep:<39}{buffers:<39}{files_picker}")
     );
 
     let mut plain = session_without_icons(120, 30);
@@ -1532,12 +1531,12 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     assert_eq!(
         row_of(&draw(&plain), 25),
         format!(
-            "    {:<25}{:<25}{}",
+            "    {:<39}{:<39}{}",
             format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
             format!("b {WHICH_KEY_MARKER} Open buffer picker"),
             format!("f {WHICH_KEY_MARKER} Open file picker")
         ),
-        "every column loses the same two cells, and every row keeps its marker"
+        "every row loses the same two cells, and every row keeps its marker"
     );
 }
 
