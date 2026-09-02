@@ -46,6 +46,30 @@ const WHICH_KEY_LEGEND: &str = "ESC close  ⌫ back";
 /// The marker between the key and the label of one which-key hint row.
 const WHICH_KEY_MARKER: &str = "→";
 
+/// The number of cells that the which-key overlay keeps left of its first
+/// column.
+const WHICH_KEY_LEFT_PAD: usize = 4;
+
+/// Returns one painted which-key hint row.
+///
+/// `hints` names the key and the label of each column of the row, in paint
+/// order. Every hint but the last one pads to `pitch`, because the overlay
+/// divides the band evenly and starts each column on its own slot. The row
+/// therefore reads exactly as the widget paints it, and one expectation names
+/// its columns instead of nesting one formatter inside another.
+fn which_key_row(pitch: usize, hints: &[(&str, &str)]) -> String {
+    let mut row = " ".repeat(WHICH_KEY_LEFT_PAD);
+    for (index, (key, label)) in hints.iter().enumerate() {
+        let mut hint = format!("{key} {WHICH_KEY_MARKER} {label}");
+        if index + 1 < hints.len() {
+            let painted = hint.chars().count();
+            hint.extend(std::iter::repeat_n(' ', pitch.saturating_sub(painted)));
+        }
+        row.push_str(&hint);
+    }
+    row
+}
+
 /// The background of a Visual selection in the reference palette.
 const SELECTION: Color = Color::Rgb(0x28, 0x34, 0x57);
 
@@ -1281,19 +1305,11 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     // key column holds one cell and two columns of mappings fit.
     assert_eq!(
         row_of(&buffer, 10),
-        format!(
-            "    {:<28}{}",
-            format!("/ {WHICH_KEY_MARKER} Toggle comment"),
-            format!("k {WHICH_KEY_MARKER} Show hover")
-        )
+        which_key_row(28, &[("/", "Toggle comment"), ("k", "Show hover")])
     );
     assert_eq!(
         row_of(&buffer, 14),
-        format!(
-            "    {:<28}{}",
-            format!("f {WHICH_KEY_MARKER} +3 commands"),
-            format!("x {WHICH_KEY_MARKER} Unload buffer")
-        ),
+        which_key_row(28, &[("f", "+3 commands"), ("x", "Unload buffer")]),
         "a key that reaches several commands shows a group marker"
     );
     assert_eq!(
@@ -1315,10 +1331,9 @@ fn the_which_key_overlay_lists_one_level_of_next_keys() {
     assert_eq!(row_of(&buffer, 13), "", "one blank row opens the overlay");
     assert_eq!(
         row_of(&buffer, 14),
-        format!(
-            "    {:<28}{}",
-            format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
-            format!("f {WHICH_KEY_MARKER} Open file picker")
+        which_key_row(
+            28,
+            &[("/", "Open ripgrep picker"), ("f", "Open file picker")]
         ),
         "the two columns divide the band evenly"
     );
@@ -1384,11 +1399,13 @@ fn the_which_key_overlay_fills_a_wide_terminal_with_columns() {
     // of its two remaining cells.
     assert_eq!(
         row_of(&buffer, 25),
-        format!(
-            "    {:<39}{:<39}{}",
-            format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
-            format!("b {WHICH_KEY_MARKER} Open buffer picker"),
-            format!("f {WHICH_KEY_MARKER} Open file picker")
+        which_key_row(
+            39,
+            &[
+                ("/", "Open ripgrep picker"),
+                ("b", "Open buffer picker"),
+                ("f", "Open file picker"),
+            ]
         )
         .trim_end()
     );
@@ -1496,13 +1513,12 @@ fn the_which_key_overlay_shows_the_icon_of_the_command_group() {
         3,
         "each group carries its own glyph"
     );
+    // The icon sits inside the label column, between the marker and the text.
+    let comment = format!("{code} Toggle comment");
+    let hover = format!("{code} Show hover");
     assert_eq!(
         row_of(&buffer, 14),
-        format!(
-            "    {:<38}{}",
-            format!("/ {WHICH_KEY_MARKER} {code} Toggle comment"),
-            format!("k {WHICH_KEY_MARKER} {code} Show hover")
-        ),
+        which_key_row(38, &[("/", &comment), ("k", &hover)]),
         "the key opens the row, and the icon sits between the marker and the label"
     );
 }
@@ -1530,11 +1546,13 @@ fn one_setting_turns_every_overlay_icon_off_and_keeps_the_columns_aligned() {
     plain.tick(WHICH_KEY_DELAY);
     assert_eq!(
         row_of(&draw(&plain), 25),
-        format!(
-            "    {:<39}{:<39}{}",
-            format!("/ {WHICH_KEY_MARKER} Open ripgrep picker"),
-            format!("b {WHICH_KEY_MARKER} Open buffer picker"),
-            format!("f {WHICH_KEY_MARKER} Open file picker")
+        which_key_row(
+            39,
+            &[
+                ("/", "Open ripgrep picker"),
+                ("b", "Open buffer picker"),
+                ("f", "Open file picker"),
+            ]
         ),
         "every row loses the same two cells, and every row keeps its marker"
     );

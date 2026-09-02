@@ -398,7 +398,7 @@ impl PickerState {
     /// already holds its answer needs no job.
     pub(super) fn highlight_wanted(&self) -> Option<&PreviewKey> {
         let shown = self.preview.as_ref()?;
-        shown.highlights.is_none().then(|| &shown.key)
+        shown.highlights.is_none().then_some(&shown.key)
     }
 
     /// Returns the exact text that one preview highlight analyzes.
