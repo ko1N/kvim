@@ -1275,6 +1275,7 @@ fn the_idle_list_names_a_complete_host_global_key_that_the_pending_view_hides() 
             (Table::Global, ch('p')),
             (Table::Global, ch('q')),
             (Table::EditorNormal, ch('j')),
+            (Table::EditorNormal, Key::plain(KeyCode::Backspace)),
         ],
         "the host-global scope answers before the focused surface"
     );
