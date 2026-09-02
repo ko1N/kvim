@@ -176,9 +176,17 @@ privately through `kvim-tui`. Public facade signatures and default facade
 builds still name no terminal type and compile no crossterm dependency.
 
 `kvim-ui` depends on `kvim-keymap` because `WorkspaceComposer` holds one shared
-`Resolver` and reads one published `InputContextSnapshot` for each surface. The
-split tree, the sidebar, and the which-key widget still name no keymap type, so
-a consumer of those parts alone compiles no dispatch code that it does not use.
+`Resolver` and reads one published `InputContextSnapshot` for each surface. For
+composed hosts, `WorkspaceComposer::reduce` handles plain `Backspace` in this
+order: open overlay, pending prompt, pending which-key sequence, then ordinary
+resolver dispatch. Overlay and prompt ownership beat pending-prefix back
+navigation even if those states unexpectedly coexist, so prompt-specific
+empty-`Backspace` policy remains intact. The composer performs this narrow
+resolver mutation internally and publishes no general `step_back` or mutable
+resolver API. `WhichKeyOverlay` remains presentation-only; it owns no pending
+input or physical key arbitration. The split tree, the sidebar, and the which-key
+widget still name no keymap type, so a consumer of those parts alone compiles no
+dispatch code that it does not use.
 
 `kvim-ui` depends on `kvim-fuzzy` because `Selector<R>` ranks its candidates
 through `kvim_fuzzy::rank`. `kvim-fuzzy` is layer 0 and depends on no other

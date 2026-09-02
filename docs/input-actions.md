@@ -842,6 +842,19 @@ before the cursor in Insert mode and on a prompt line, and it still selects the
 parent directory in the file-tree sidebar. `Esc` and `Ctrl-C` close the overlay
 and run no command of the level behind it. See the Reset Rules section below.
 
+A composed host applies a narrower precedence rule before ordinary dispatch.
+`WorkspaceComposer::reduce` handles a plain, unmodified `Backspace` in this
+order: an open overlay, a pending prompt, a pending which-key sequence, and
+ordinary resolver dispatch. Overlay and prompt ownership therefore beat pending
+prefix back navigation, even if those states unexpectedly coexist. This keeps
+prompt-specific empty-`Backspace` policy unchanged: command, search, picker,
+add-file, add-directory, and tree-search prompts cancel when empty, while the
+rename prompt stays open. Modified `Backspace` keeps ordinary dispatch behavior.
+The composer performs the pending-sequence step internally; it exposes no
+general resolver mutation operation. `WhichKeyOverlay` remains presentation-only
+and does not arbitrate physical input or own pending state. See
+[`embedding.md`](embedding.md).
+
 `kvim-ui` publishes the footer. `WhichKeyFooter` carries the breadcrumb and the
 legend, `WhichKeyLegendEntry` carries one key glyph and its action word, and
 `WhichKeyMarker` carries the row marker and its style. The widget names no glyph

@@ -877,8 +877,15 @@ publishes, and the host republishes that snapshot after every input.
 
 One reduction routes a key or paste to one host command, surface command,
 interrupted command, typed text owner, pending sequence, unsupported input, or
-unbound result. The composer does not accept, store, or invoke a surface input
-or render callback.
+unbound result. For plain, unmodified `Backspace`, the composer applies an
+explicit ownership order before ordinary resolver dispatch: open overlay,
+pending prompt, pending which-key sequence, then ordinary dispatch. Overlay and
+prompt ownership beat pending-prefix back navigation even if those states
+unexpectedly coexist. This preserves each prompt's empty-`Backspace` policy;
+the composer does not replace prompt cancellation or the rename prompt's policy.
+The composer performs the pending-sequence step internally in `reduce`, and does
+not publish a general `step_back` or mutable resolver API. Modified `Backspace`
+keeps its existing dispatch behavior.
 
 `Composition::Interrupted` names the key that cancelled a pending sequence. A
 complete binding of a preceding scope takes the key, so a host-global escape
@@ -887,6 +894,20 @@ host resets semantic pending state before it runs the interrupting command.
 A host-resolved `WorktreeEditor` supports this reset through
 `semantic_dispatch` and `cancel_pending`; its facade-owned proposal and resume
 also validate editor identity and context generation.
+
+`WhichKeyOverlay` remains presentation-only. It draws the pending sequence and
+its hints, but it does not own pending input or arbitrate physical keys. The
+composer owns the shared resolver and keeps its mutation private. In particular,
+`WorkspaceComposer::reduce` applies the composed-host plain `Backspace` order:
+open overlay, pending prompt, pending which-key sequence, then ordinary resolver
+dispatch. Overlay and prompt ownership take precedence over pending-prefix back
+navigation, even if those states unexpectedly coexist. This narrow internal
+operation does not become a general `step_back` or mutable resolver API.
+
+A prompt remains responsible for its own `Backspace` behavior. The composer
+therefore preserves prompt-specific empty-`Backspace` policy, including the
+rename prompt's rule that an empty line stays open. See
+[`input-actions.md`](input-actions.md).
 
 The host supplies the elapsed time with each reduction, and that time reaches
 the which-key overlay alone. `WorkspaceComposer::reduce` therefore takes the
