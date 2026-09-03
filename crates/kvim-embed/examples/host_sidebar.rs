@@ -8,10 +8,12 @@
 
 use std::error::Error;
 use std::fs;
+use std::num::NonZeroU16;
 use std::time::Duration;
 
 use kvim_embed::{
-    FileSidebarCommand, SurfaceOwnership, WorktreeEditor, WorktreePresentation, WorktreeShutdown,
+    FileSidebarCommand, FileSidebarLabelMatch, SurfaceOwnership, WorktreeEditor,
+    WorktreePresentation, WorktreeShutdown,
 };
 use ratatui::layout::Rect;
 
@@ -48,19 +50,26 @@ fn main() -> Result<(), Box<dyn Error>> {
             editor.apply(completion, Duration::ZERO)?;
         }
 
+        // Record only the visible body. Do not include host tabs or other chrome.
+        editor.record_file_sidebar_viewport(
+            NonZeroU16::new(10).expect("the visible body has rows"),
+            NonZeroU16::new(30).expect("the visible body has cells"),
+        )?;
+        let search = editor.begin_file_sidebar_search()?;
+        editor.accept_file_sidebar_search(search, "README")?;
+
         println!("host tree: {}", host_rows.join(", "));
         let snapshot = editor
             .file_sidebar_snapshot()
             .expect("the host owns the sidebar");
         for row in snapshot.rows() {
             println!(
-                "kvim tree: {:?} icon={:?} dimming={:?} notice={:?} match={:?} {}",
+                "kvim tree: {:?} icon={:?} dimming={:?} notice={:?} {}",
                 row.id(),
                 row.icon_glyph(),
                 row.dimming(),
                 row.notice_kind(),
-                row.matched_characters(),
-                row.label()
+                render_label_match(row.label(), row.matched_characters())
             );
         }
         let selected = snapshot
@@ -69,6 +78,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             .find(|row| !matches!(row.kind(), kvim_embed::FileSidebarRowKind::Notice(_)))
             .expect("the worktree contains selectable rows");
         let _ = editor.file_sidebar_command(FileSidebarCommand::Select(selected.id().clone()));
+
+        let _ = editor.next_file_sidebar_match(search)?;
+        let _ = editor.previous_file_sidebar_match(search)?;
+        editor.move_file_sidebar_half_page_down()?;
+        editor.move_file_sidebar_half_page_up()?;
+        editor.move_file_sidebar_full_page_down()?;
+        editor.move_file_sidebar_full_page_up()?;
+        editor.end_file_sidebar_search(search)?;
 
         match editor.shutdown(Duration::from_secs(5)).await {
             WorktreeShutdown::Finished { .. } => {}
@@ -80,4 +97,23 @@ fn main() -> Result<(), Box<dyn Error>> {
     })?;
     fs::remove_dir_all(root)?;
     Ok(())
+}
+
+fn render_label_match(label: &str, matched: Option<FileSidebarLabelMatch>) -> String {
+    let Some(matched) = matched else {
+        return label.to_owned();
+    };
+    let start = matched.start();
+    let end = start.saturating_add(matched.len());
+    let mut rendered = String::with_capacity(label.len().saturating_add(2));
+    for (index, character) in label.chars().enumerate() {
+        if index == start {
+            rendered.push('[');
+        }
+        rendered.push(character);
+        if index.saturating_add(1) == end {
+            rendered.push(']');
+        }
+    }
+    rendered
 }

@@ -293,7 +293,8 @@ command path and keeps existing rendering and input behavior.
 The host owns sidebar placement, width, visibility, and focus order. It can draw
 its own tree and kvim's snapshot as separate regions. Kvim accepts no host rows
 and performs no merge. `crates/kvim-embed/examples/host_sidebar.rs` demonstrates
-this two-tree composition.
+this two-tree composition, the normal `dispatch`, `ready`, and `apply` work
+loop, search, match spans, and semantic page movement.
 
 The status snapshot is now a supported publication, not a planned addition.
 `WorktreeEditor::status` returns a cheap borrowed `EditorStatusSnapshot` for one
@@ -567,6 +568,38 @@ collapse, refresh, activation, and focus-boundary commands. Directory and Git
 work still uses facade dispatch, readiness, and application. The host owns
 placement and painting. Kvim does not accept host rows or merge host and editor
 trees. Generic bounded sidebar components remain available in `kvim-ui`.
+
+A host-owned sidebar can use `begin_file_sidebar_search` to obtain one opaque
+`FileSidebarSearchId`. The host presents its query even when the command line
+is embedded or host-owned. A host-owned command line still requires
+`WorktreeCommandSurface`; sidebar search does not require that capability.
+`accept_file_sidebar_search` and `update_file_sidebar_search` refuse a query
+above `FILE_SIDEBAR_SEARCH_CHARS_MAX` with
+`FileSidebarOperationError::QueryTooLong`. They never cut the query. An empty
+accepted or updated query ends the active search. `cancel_file_sidebar_search_prompt`
+cancels only the addressed open prompt. It does not end an accepted search.
+`end_file_sidebar_search` ends the addressed accepted search.
+
+The host draws every row from `FileSidebarSnapshot`. A matching label publishes
+`FileSidebarLabelMatch` through `FileSidebarRow::matched_characters`. Its start
+and length count label characters, not bytes or terminal cells. The host uses
+`next_file_sidebar_match` and `previous_file_sidebar_match` to select matches.
+They preserve Kvim matching and wrapping rules. A missing match returns
+`FileSidebarSearchOutcome::SearchMissed`.
+
+A search identity addresses one editor. A newer prompt makes an older open
+prompt stale. `FileSidebarOperationError::WrongInstance` and
+`FileSidebarOperationError::StaleSearch` occur before a sidebar mutation.
+Host-sidebar search and page operations return
+`FileSidebarOperationError::Embedded` when the sidebar is embedded.
+
+Before page commands, the host records the current visible sidebar body with
+`record_file_sidebar_viewport`. The height excludes host chrome such as tabs,
+headers, and command rows. Kvim derives distances after this update. The host
+uses `move_file_sidebar_half_page_up`, `move_file_sidebar_half_page_down`,
+`move_file_sidebar_full_page_up`, and `move_file_sidebar_full_page_down`.
+The host does not calculate a page distance. Page movement keeps an accepted
+search active.
 
 The internal row painter reserves the first cell for the selection mark and the
 last cell for the Git mark. It draws the selection mark only while the sidebar

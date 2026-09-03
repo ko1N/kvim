@@ -523,7 +523,8 @@ pub const FILE_SIDEBAR_SEARCH_CHARS_MAX: usize = kvim_workspace::TREE_SEARCH_CHA
 /// Facade identity of one file-sidebar search prompt or accepted search.
 ///
 /// A host obtains this opaque identity from
-/// [`WorktreeEditor::begin_file_sidebar_search`].
+/// [`WorktreeEditor::begin_file_sidebar_search`]. Identities address one
+/// editor. A later prompt makes an earlier prompt stale.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct FileSidebarSearchId {
     instance: WorktreeInstanceId,
@@ -2286,6 +2287,39 @@ impl WorktreeEditor {
     /// The prompt is independent of command-line presentation ownership. A
     /// newer prompt makes an earlier open prompt stale, but it does not end an
     /// already accepted search.
+    ///
+    /// This lifecycle uses a host-owned sidebar. The host presents the query,
+    /// draws [`FileSidebarRow::matched_characters`], and continues normal
+    /// bounded work routing with [`WorktreeEditor::dispatch`],
+    /// [`WorktreeEditor::ready`], and [`WorktreeEditor::apply`].
+    ///
+    /// ```no_run
+    /// use std::num::NonZeroU16;
+    ///
+    /// use kvim_embed::{SurfaceOwnership, WorktreeEditor, WorktreePresentation};
+    /// use ratatui::layout::Rect;
+    ///
+    /// # fn main() -> Result<(), Box<dyn std::error::Error>> {
+    /// let presentation = WorktreePresentation::standalone()
+    ///     .file_sidebar(SurfaceOwnership::HostOwned);
+    /// let mut editor = WorktreeEditor::builder("project", Rect::new(0, 0, 80, 24))
+    ///     .presentation(presentation)
+    ///     .open()?;
+    /// let search = editor.begin_file_sidebar_search()?;
+    /// editor.accept_file_sidebar_search(search, "main")?;
+    /// let snapshot = editor.file_sidebar_snapshot().expect("host-owned sidebar");
+    /// let spans = snapshot.rows().iter().filter_map(|row| row.matched_characters());
+    /// # let _ = spans.count();
+    /// let _ = editor.next_file_sidebar_match(search)?;
+    /// editor.record_file_sidebar_viewport(
+    ///     NonZeroU16::new(12).expect("nonzero body height"),
+    ///     NonZeroU16::new(30).expect("nonzero body width"),
+    /// )?;
+    /// editor.move_file_sidebar_half_page_down()?;
+    /// editor.end_file_sidebar_search(search)?;
+    /// # Ok(())
+    /// # }
+    /// ```
     pub fn begin_file_sidebar_search(
         &mut self,
     ) -> Result<FileSidebarSearchId, FileSidebarOperationError> {

@@ -469,7 +469,13 @@ The supported `WorktreeEditor` facade renders that sidebar when presentation
 ownership is `Embedded`. When ownership is `HostOwned`, it publishes bounded
 semantic rows and accepts semantic sidebar commands. It never accepts host rows
 and never merges the host tree with the editor tree. Generic sidebar state and
-rendering remain public component APIs of `kvim-ui`.
+rendering remain public component APIs of `kvim-ui`. The host can start an
+addressed bounded search, draw `FileSidebarLabelMatch` spans, move to the next
+or previous match, and end the accepted search. It records only the visible
+sidebar body geometry. Kvim derives half-page and full-page movement from that
+geometry. Search identities reject stale or wrong-editor operations before
+mutation. The search prompt remains independent of command-line presentation
+ownership. Embedded sidebar ownership rejects this host operation path.
 
 The built-in sidebar keeps its selection mark only while the sidebar has focus.
 When a long label reaches the fixed right-edge Git mark, its final three visible
@@ -595,9 +601,9 @@ Every supported surface in this section carries rustdoc, one owning document,
 and the dedicated example of its feature. The supported set includes generic
 `kvim-ui` composition, dialog, and sidebar components. It also includes prompt
 editing, candidate menus, editing mode, semantic commands, worktree status,
-worktree sidebar publications, the rendered worktree facade, and
-`ReviewSurface`. It does not include private `kvim-tui` adapter payloads or a
-multi-surface composer adapter for `WorktreeEditor`.
+worktree sidebar publications, host-owned search and page motion, the rendered
+worktree facade, and `ReviewSurface`. It does not include private `kvim-tui`
+adapter payloads or a multi-surface composer adapter for `WorktreeEditor`.
 `crates/kvim/tests/repository_policy.rs` proves that last link, so the same
 rule governs all of them.
 
