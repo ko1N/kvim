@@ -27,6 +27,7 @@
 //! replacement cannot make the commit destroy another entry than the staging
 //! approved. See `docs/files.md`.
 
+use std::ffi::{OsStr, OsString};
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -49,6 +50,9 @@ use super::tree::EntryKind;
 
 /// The largest number of paths that one mutation names.
 pub const MUTATION_PATHS_MAX: usize = 128;
+
+/// The largest number of sibling names that one same-directory copy tests.
+pub const SAME_DIRECTORY_COPY_CANDIDATES_MAX: usize = 128;
 
 /// The largest number of entries that one recursive copy visits.
 pub const COPY_ENTRIES_MAX: usize = 4096;
@@ -255,6 +259,14 @@ pub enum MutationError {
     #[error("the copy is deeper than {max} directories")]
     CopyTooDeep {
         /// The bound.
+        max: usize,
+    },
+    /// A same-directory copy found no free sibling name inside its bound.
+    #[error("{path} has no free copy name among {max} candidates")]
+    SameDirectoryCopyNamesExhausted {
+        /// The source that the user copied.
+        path: PathBuf,
+        /// The number of candidate names that staging checked.
         max: usize,
     },
     /// The platform offers no symbolic link support.
@@ -641,24 +653,27 @@ fn stage_relocations(
     let mut changed = Vec::new();
     let mut planned = Vec::with_capacity(pairs.len());
     let mut collisions = Vec::new();
-    for (index, (origin, destination)) in pairs.iter().enumerate() {
+    for (origin, destination) in pairs {
         let origin = StagedPath::stage(root, origin)?;
-        let destination = StagedPath::stage(root, destination)?;
+        let mut destination = StagedPath::stage(root, destination)?;
         let kind = check_exists(root, &origin)?;
+        if origin.as_path() == destination.as_path() {
+            destination = match mode {
+                TransferMode::Copy => same_directory_copy_destination(root, &origin, kind)?,
+                TransferMode::Move => {
+                    return Err(MutationError::SameEntry {
+                        path: destination.display_path(root),
+                    });
+                }
+            };
+        }
         let parent = parent_of(destination.as_path()).to_path_buf();
         check_existing_directory(root, &parent)?;
-        // An entry that names itself destroys nothing, so it never becomes a
-        // question and it never reaches the commit.
-        if origin.as_path() == destination.as_path() {
-            return Err(MutationError::SameEntry {
-                path: destination.display_path(root),
-            });
-        }
         // Two sources with one name would overwrite each other during the
         // commit, so the collision must fail before any staging starts.
-        if pairs[..index]
+        if planned
             .iter()
-            .any(|(_, earlier)| earlier.as_path() == destination.as_path())
+            .any(|earlier: &Relocation| earlier.destination.as_path() == destination.as_path())
         {
             return Err(MutationError::DuplicateDestination {
                 path: destination.display_path(root),
@@ -706,6 +721,57 @@ fn stage_relocations(
         changed,
         selection,
     })
+}
+
+/// Selects the first free sibling name for a copy beside its source.
+///
+/// Files insert the suffix before their final extension. Directories,
+/// extensionless files, and dotfiles append it to the complete name.
+fn same_directory_copy_destination(
+    root: &WorktreeRoot,
+    origin: &StagedPath,
+    kind: EntryKind,
+) -> Result<StagedPath, MutationError> {
+    let path = origin.as_path();
+    let parent = parent_of(path);
+    let name = path
+        .file_name()
+        .expect("a contained relative path ends with one ordinary component");
+    for offset in 0..SAME_DIRECTORY_COPY_CANDIDATES_MAX {
+        let suffix = offset
+            .checked_add(2)
+            .expect("the candidate bound fits inside usize");
+        let candidate_name = suffixed_copy_name(name, kind, suffix);
+        let requested = match WorktreeRelativePath::new(parent.join(candidate_name)) {
+            Ok(requested) => requested,
+            Err(_) => continue,
+        };
+        let candidate = StagedPath::stage(root, &requested)?;
+        if peek(root, candidate.as_path())?.is_none() {
+            return Ok(candidate);
+        }
+    }
+    Err(MutationError::SameDirectoryCopyNamesExhausted {
+        path: origin.display_path(root),
+        max: SAME_DIRECTORY_COPY_CANDIDATES_MAX,
+    })
+}
+
+/// Adds one copy suffix while preserving a file's final extension.
+fn suffixed_copy_name(name: &OsStr, kind: EntryKind, suffix: usize) -> OsString {
+    let path = Path::new(name);
+    let mut candidate = OsString::new();
+    if kind == EntryKind::File
+        && let (Some(stem), Some(extension)) = (path.file_stem(), path.extension())
+    {
+        candidate.push(stem);
+        candidate.push(format!("_{suffix}."));
+        candidate.push(extension);
+        return candidate;
+    }
+    candidate.push(name);
+    candidate.push(format!("_{suffix}"));
+    candidate
 }
 
 /// Returns the new path of every buffer that one move retargets.
@@ -1148,8 +1214,8 @@ impl<'a> StagedTransfer<'a> {
         let directory = self.root.directory();
         for index in 0..self.items.len() {
             let step = (|| -> Result<(), MutationError> {
+                self.items[index].approved.revalidate(self.root)?;
                 if self.items[index].replaces {
-                    self.items[index].approved.revalidate(self.root)?;
                     self.items[index].parked = park(self.root, &self.items[index].destination)?;
                 }
                 let item = &self.items[index];

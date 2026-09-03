@@ -538,6 +538,35 @@ fn an_indeterminate_mutation_publishes_uncertainty_and_queues_both_reconciliatio
 }
 
 #[test]
+fn repeated_same_folder_copies_need_no_overwrite_question() {
+    let directory = TempDir::new("embed-copy-siblings");
+    directory.file("AGENTS.md", "rules\n");
+    let mut session = editor(&directory.path);
+    reveal_tree(&mut session);
+
+    for expected in ["AGENTS_2.md", "AGENTS_3.md"] {
+        select_named(&mut session, "AGENTS.md");
+        let _ = session.apply_command(Command::TreeCopyEntry, None, None, NOW);
+        let _ = session.apply_command(Command::TreePasteEntries, None, None, NOW);
+        settle(&mut session);
+
+        assert!(
+            session.visible().prompt.is_none(),
+            "a same-folder copy asks no overwrite question"
+        );
+        assert_eq!(
+            std::fs::read_to_string(directory.path.join(expected))
+                .expect("the sibling copy exists"),
+            "rules\n"
+        );
+    }
+    assert_eq!(
+        std::fs::read_to_string(directory.path.join("AGENTS.md")).expect("the source remains"),
+        "rules\n"
+    );
+}
+
+#[test]
 fn every_workspace_mutation_publishes_its_fact() {
     let directory = TempDir::new("embed-workspace-facts");
     directory.file("README.md", "kvim\n");

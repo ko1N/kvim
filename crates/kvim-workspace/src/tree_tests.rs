@@ -16,7 +16,7 @@ use crate::clipboard::{FILE_CLIPBOARD_PATHS_MAX, FileClipboard};
 use crate::durable::{DurableOutcome, FailurePoint, RecoveryAction, inject_failure};
 use crate::mutation::{
     FileOperation, MUTATION_PATHS_MAX, MutationError, MutationPlan, OpenBuffer, Overwrite,
-    TakenDestination, TransferMode,
+    SAME_DIRECTORY_COPY_CANDIDATES_MAX, TakenDestination, TransferMode,
 };
 use crate::temp::TempDir;
 use crate::tree::{
@@ -1010,6 +1010,128 @@ fn a_copy_keeps_the_source_and_changes_no_buffer() {
         "content"
     );
     assert!(outcome.updates.is_empty());
+}
+
+#[test]
+fn repeated_same_directory_copies_take_the_first_free_sibling_name() {
+    let directory = TempDir::new("mutate-copy-sibling");
+    directory.file("AGENTS.md", "content");
+    let root = root_of(&directory);
+    let operation = FileOperation::Transfer {
+        mode: TransferMode::Copy,
+        sources: vec![relative("AGENTS.md")],
+        destination: WorktreeDirectoryPath::Root,
+    };
+
+    for expected in ["AGENTS_2.md", "AGENTS_3.md"] {
+        MutationPlan::stage(&operation, &worktree(&root), &[])
+            .expect("one bounded sibling candidate is free")
+            .apply()
+            .expect("the directory is writable");
+        assert_eq!(
+            fs::read_to_string(root.join(expected)).expect("the sibling copy exists"),
+            "content"
+        );
+    }
+    assert_eq!(
+        fs::read_to_string(root.join("AGENTS.md")).expect("the source remains"),
+        "content"
+    );
+}
+
+#[test]
+fn same_directory_copy_names_are_consistent_across_entry_kinds() {
+    let directory = TempDir::new("mutate-copy-sibling-kinds");
+    directory.file("LICENSE", "license");
+    directory.file(".gitignore", "target\n");
+    directory.file("draft_2.md", "draft");
+    directory.file("archive.tar.gz", "archive");
+    directory.file("assets/icon.svg", "icon");
+    let root = root_of(&directory);
+
+    for (source, expected) in [
+        ("LICENSE", "LICENSE_2"),
+        (".gitignore", ".gitignore_2"),
+        ("draft_2.md", "draft_2_2.md"),
+        ("archive.tar.gz", "archive.tar_2.gz"),
+        ("assets", "assets_2"),
+    ] {
+        MutationPlan::stage(
+            &FileOperation::Transfer {
+                mode: TransferMode::Copy,
+                sources: vec![relative(source)],
+                destination: WorktreeDirectoryPath::Root,
+            },
+            &worktree(&root),
+            &[],
+        )
+        .expect("the first sibling candidate is free")
+        .apply()
+        .expect("the directory is writable");
+        assert!(
+            root.join(expected).exists(),
+            "{expected} is the selected name"
+        );
+    }
+    assert!(root.join("assets_2/icon.svg").is_file());
+}
+
+#[test]
+fn same_directory_copy_refuses_when_its_candidate_bound_is_exhausted() {
+    let directory = TempDir::new("mutate-copy-sibling-bound");
+    directory.file("note.txt", "source");
+    for suffix in 2..(2 + SAME_DIRECTORY_COPY_CANDIDATES_MAX) {
+        directory.file(&format!("note_{suffix}.txt"), "kept");
+    }
+    let root = root_of(&directory);
+
+    let error = MutationPlan::stage(
+        &FileOperation::Transfer {
+            mode: TransferMode::Copy,
+            sources: vec![relative("note.txt")],
+            destination: WorktreeDirectoryPath::Root,
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect_err("every bounded candidate holds an entry");
+
+    assert!(matches!(
+        error,
+        MutationError::SameDirectoryCopyNamesExhausted {
+            max: SAME_DIRECTORY_COPY_CANDIDATES_MAX,
+            ..
+        }
+    ));
+    assert_eq!(
+        entry_names(&root).len(),
+        SAME_DIRECTORY_COPY_CANDIDATES_MAX + 1
+    );
+}
+
+#[test]
+fn a_copy_collision_in_another_directory_keeps_the_normal_refusal() {
+    let directory = TempDir::new("mutate-copy-collision");
+    directory.file("lib.rs", "source");
+    directory.file("dest/lib.rs", "kept");
+    let root = root_of(&directory);
+
+    let error = MutationPlan::stage(
+        &FileOperation::Transfer {
+            mode: TransferMode::Copy,
+            sources: vec![relative("lib.rs")],
+            destination: directory_of("dest"),
+        },
+        &worktree(&root),
+        &[],
+    )
+    .expect_err("an ordinary copy collision still refuses");
+
+    assert!(matches!(error, MutationError::Collision { .. }));
+    assert_eq!(
+        fs::read_to_string(root.join("dest/lib.rs")).expect("the destination remains"),
+        "kept"
+    );
 }
 
 #[test]

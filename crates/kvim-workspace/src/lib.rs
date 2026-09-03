@@ -109,8 +109,8 @@ pub use git::{
 #[cfg(feature = "services")]
 pub use mutation::{
     BufferPathUpdate, COPY_DEPTH_MAX, COPY_ENTRIES_MAX, FileOperation, MUTATION_PATHS_MAX,
-    MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite, TakenDestination,
-    TransferMode,
+    MutationError, MutationOutcome, MutationPlan, OpenBuffer, Overwrite,
+    SAME_DIRECTORY_COPY_CANDIDATES_MAX, TakenDestination, TransferMode,
 };
 #[cfg(feature = "services")]
 pub use picker::{

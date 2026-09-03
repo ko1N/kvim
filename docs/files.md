@@ -976,7 +976,8 @@ disk. Validation checks:
   all,
 - that the destination holds no entry, or that the user approved the overwrite
   of exactly that entry,
-- that the source and the destination name two entries,
+- that the source and the destination name two entries, except for a copy into
+  its source directory,
 - that two sources of one mutation do not claim one destination name,
 - that the destination stays inside the workspace and holds no parent-directory
   component,
@@ -995,6 +996,19 @@ call.
 A mutation plan contains capability-relative operations only. Kvim revalidates
 every source, parent, and destination immediately before commit. It never
 replaces a destination that changed without the exact prior approval.
+
+A copy into its source directory selects a free sibling name automatically.
+The first candidate adds `_2`, and later candidates increase that suffix. For a
+file, the suffix precedes the final extension. An extensionless file or dotfile
+adds the suffix to its complete name. A directory also adds the suffix to its
+complete name. A name that already ends in a numeric suffix keeps that suffix
+and adds a new one. For example, `AGENTS.md` becomes `AGENTS_2.md`, `.gitignore`
+becomes `.gitignore_2`, and `draft_2.md` becomes `draft_2_2.md`.
+
+Candidate selection checks at most `SAME_DIRECTORY_COPY_CANDIDATES_MAX` names
+on the bounded worker service. Exhaustion returns a typed refusal and changes
+nothing. A move onto itself still refuses the mutation. A collision in another
+directory still follows the normal overwrite flow.
 
 kvim builds one staged transition that describes the filesystem operation and
 every affected buffer path. It applies the filesystem operation first. It then
@@ -1082,6 +1096,7 @@ instead.
 | Bound | Constant | Value | Rationale |
 |---|---|---|---|
 | Paths of one mutation | `MUTATION_PATHS_MAX` | 128 | One paste holds the entries of one directory selection. |
+| Same-directory copy candidates | `SAME_DIRECTORY_COPY_CANDIDATES_MAX` | 128 | A copy tries a finite set of predictable sibling names. |
 | Entries of one recursive copy | `COPY_ENTRIES_MAX` | 4096 | The bound stops a copy of a build directory or of a looping link. |
 | Depth of one recursive copy | `COPY_DEPTH_MAX` | 32 | A copied source directory nests far less. |
 
