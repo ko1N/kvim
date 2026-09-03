@@ -522,16 +522,198 @@ fn host_sidebar_search_lifecycle_rejects_stale_wrong_instance_and_oversized_quer
         Err(FileSidebarOperationError::StaleSearch)
     );
 
+    let updated_empty = editor.begin_file_sidebar_search().unwrap();
+    editor
+        .accept_file_sidebar_search(updated_empty, "src")
+        .unwrap();
+    editor
+        .update_file_sidebar_search(updated_empty, "")
+        .unwrap();
+    assert_eq!(
+        editor.next_file_sidebar_match(updated_empty),
+        Err(FileSidebarOperationError::StaleSearch)
+    );
+
     let empty = editor.begin_file_sidebar_search().unwrap();
     editor.accept_file_sidebar_search(empty, "").unwrap();
     assert_eq!(
         editor.end_file_sidebar_search(empty),
         Err(FileSidebarOperationError::StaleSearch)
     );
+
+    let embedded_root = TestRoot::new("embedded-sidebar-search-operation");
+    let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
+        .open()
+        .unwrap();
+    assert_eq!(
+        embedded.begin_file_sidebar_search(),
+        Err(FileSidebarOperationError::Embedded)
+    );
 }
 
 #[test]
-fn host_sidebar_page_commands_accept_geometry_and_embedded_sidebar_rejects_operations() {
+fn host_sidebar_search_publishes_matches_wraps_and_restores_expansion_through_workers() {
+    let root = TestRoot::new("host-sidebar-search-contract");
+    fs::create_dir_all(root.0.join("open")).unwrap();
+    fs::create_dir_all(root.0.join("closed")).unwrap();
+    fs::write(root.0.join("open/target_one.rs"), "").unwrap();
+    fs::write(root.0.join("closed/target_two.rs"), "").unwrap();
+    fs::write(root.0.join("plain.txt"), "").unwrap();
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            if editor
+                .file_sidebar_snapshot()
+                .is_some_and(|snapshot| !snapshot.rows().is_empty())
+            {
+                break;
+            }
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+        }
+    });
+    let open_id = editor
+        .file_sidebar_snapshot()
+        .unwrap()
+        .rows()
+        .iter()
+        .find(|row| row.label() == "open")
+        .unwrap()
+        .id()
+        .clone();
+    assert!(matches!(
+        editor.file_sidebar_command(FileSidebarCommand::Select(open_id)),
+        FileSidebarOutcome::Applied(_)
+    ));
+    assert!(matches!(
+        editor.file_sidebar_command(FileSidebarCommand::Expand),
+        FileSidebarOutcome::Applied(_)
+    ));
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            if editor
+                .file_sidebar_snapshot()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|row| row.label() == "target_one.rs")
+            {
+                break;
+            }
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+        }
+    });
+
+    let search = editor.begin_file_sidebar_search().unwrap();
+    editor.accept_file_sidebar_search(search, "TARGET").unwrap();
+    assert!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.label() == "plain.txt"),
+        "search retains nonmatching rows"
+    );
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            if editor
+                .file_sidebar_snapshot()
+                .unwrap()
+                .rows()
+                .iter()
+                .any(|row| row.label() == "target_two.rs")
+            {
+                break;
+            }
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+        }
+    });
+    let snapshot = editor.file_sidebar_snapshot().unwrap();
+    for label in ["target_one.rs", "target_two.rs"] {
+        let row = snapshot
+            .rows()
+            .iter()
+            .find(|row| row.label() == label)
+            .unwrap();
+        let span = row
+            .matched_characters()
+            .expect("matching labels publish their character span");
+        assert_eq!(span.start(), 0);
+        assert_eq!(span.len(), 6);
+    }
+
+    editor.next_file_sidebar_match(search).unwrap();
+    assert!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.label() == "target_one.rs" && row.is_selected())
+    );
+    editor.next_file_sidebar_match(search).unwrap();
+    assert!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.label() == "target_two.rs" && row.is_selected())
+    );
+    editor.next_file_sidebar_match(search).unwrap();
+    assert!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.label() == "target_one.rs" && row.is_selected())
+    );
+    editor.previous_file_sidebar_match(search).unwrap();
+    assert!(
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .any(|row| row.label() == "target_two.rs" && row.is_selected())
+    );
+
+    let cancelled_prompt = editor.begin_file_sidebar_search().unwrap();
+    editor
+        .cancel_file_sidebar_search_prompt(cancelled_prompt)
+        .unwrap();
+    assert!(matches!(
+        editor.next_file_sidebar_match(search),
+        Ok(FileSidebarSearchOutcome::Applied(_))
+    ));
+    editor.end_file_sidebar_search(search).unwrap();
+    let finished = editor.file_sidebar_snapshot().unwrap();
+    assert!(finished.rows().iter().any(|row| {
+        row.label() == "open" && row.kind() == FileSidebarRowKind::DirectoryExpanded
+    }));
+    assert!(finished.rows().iter().any(|row| {
+        row.label() == "closed" && row.kind() == FileSidebarRowKind::DirectoryCollapsed
+    }));
+}
+
+#[test]
+fn host_sidebar_page_commands_accept_geometry() {
     let root = TestRoot::new("host-sidebar-page-api");
     let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
     let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
@@ -545,19 +727,6 @@ fn host_sidebar_page_commands_accept_geometry_and_embedded_sidebar_rejects_opera
     editor.move_file_sidebar_half_page_up().unwrap();
     editor.move_file_sidebar_full_page_down().unwrap();
     editor.move_file_sidebar_full_page_up().unwrap();
-
-    let embedded_root = TestRoot::new("embedded-sidebar-operation");
-    let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
-        .open()
-        .unwrap();
-    assert_eq!(
-        embedded.begin_file_sidebar_search(),
-        Err(FileSidebarOperationError::Embedded)
-    );
-    assert_eq!(
-        embedded.move_file_sidebar_half_page_down(),
-        Err(FileSidebarOperationError::Embedded)
-    );
 
     let host_command_root = TestRoot::new("host-command-host-sidebar-search");
     let host_command_presentation = WorktreePresentation::standalone()
