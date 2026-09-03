@@ -785,12 +785,47 @@ the host chrome and its action-agnostic dialog state. An editor-attached dialog
 uses the `kvim-embed` lifecycle.
 
 A confirmation is a bounded, action-agnostic dialog owned by `kvim-ui`. The
-owner supplies the body rectangle. The dialog dims only that rectangle and
-never covers host-owned chrome outside it. The popup has no full border. It
-draws a solid rail along its full left edge, over the complete popup height,
-including every padding row and the footer band. Two blank columns separate
-the rail from the content, and two more blank columns close the popup on the
-right, so content never touches either popup edge.
+owner supplies the body rectangle. `DialogBackgroundTreatment::Dim` is the
+default and dims that rectangle; `Preserve` leaves cells outside the painted
+dialog surface unchanged. The selected presentation paints only within that
+rectangle and never covers host-owned chrome outside it. The popup has no full
+border. It draws a solid rail along its full left edge, over the complete
+popup height, including every padding row and the footer band. Two blank
+columns separate the rail from the content, and two more blank columns close
+the popup on the right, so content never touches either popup edge.
+
+The default `DialogPresentation::Popup` preserves this confirmation layout.
+`DialogChoice` can also hold a bounded optional description, but this popup
+continues to display only its label.
+
+A direct `kvim-ui` host selects the presentation and background on one
+configured dialog. For a vertical panel, it builds the dialog with
+`.with_presentation(DialogPresentation::VerticalPanel)` and
+`.with_background_treatment(DialogBackgroundTreatment::Preserve)`. It calls
+`placement_for(body)` first to measure the required height and obtain the
+choice rectangles, then calls `render(target, body, styles)` on that same
+configured dialog. The host must use the returned placement for pointer input;
+it must not calculate a second geometry.
+
+`DialogPresentation::VerticalPanel` is for a host-owned region such as a chat
+input box. It uses the complete supplied body width and starts at the body's
+top-left corner. The question, labels, and descriptions wrap within that
+width. Choices form one vertical list with no separate button row. A choice
+with a direct key displays it as a `[key] ` prefix. Each published choice
+rectangle spans the complete panel width after the rail and covers all wrapped
+label and description rows. Thus, pointer hit-testing uses the same complete
+rows that rendering measured. The panel keeps the existing keyboard rules: Up
+and Down move focus, Enter answers, and direct keys answer. The vertical panel
+accepts at most `DIALOG_VERTICAL_PANEL_COLUMNS_MAX` columns. Each choice uses at
+most `DIALOG_VERTICAL_CHOICE_ROWS_MAX` wrapped rows. Choice labels and
+descriptions use `DIALOG_CHOICE_LABEL_CHARS_MAX` and
+`DIALOG_CHOICE_DESCRIPTION_CHARS_MAX`.
+
+The default `DialogBackgroundTreatment::Dim` remains compatible with the
+existing popup. `Preserve` supports a no-dim host region. Both presentations
+calculate placement and rendering from the same geometry function. The
+placement records its presentation, so stale or modified geometry cannot pass
+pointer validation.
 
 The popup is only as wide as its content needs. Layout compares the width of
 the unwrapped question against the width that the choice row, the widest body

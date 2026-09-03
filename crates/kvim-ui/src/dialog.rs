@@ -19,7 +19,13 @@ pub const DIALOG_BODY_LINE_CHARS_MAX: usize = 160;
 /// The largest number of choices in one dialog.
 pub const DIALOG_CHOICES_MAX: usize = 8;
 /// The largest number of characters in one choice label.
-pub const DIALOG_CHOICE_LABEL_CHARS_MAX: usize = 48;
+pub const DIALOG_CHOICE_LABEL_CHARS_MAX: usize = 256;
+/// The largest number of characters in one optional choice description.
+pub const DIALOG_CHOICE_DESCRIPTION_CHARS_MAX: usize = 512;
+/// The largest number of columns that one vertical panel may occupy.
+pub const DIALOG_VERTICAL_PANEL_COLUMNS_MAX: u16 = 240;
+/// The largest number of wrapped rows that one vertical choice may occupy.
+pub const DIALOG_VERTICAL_CHOICE_ROWS_MAX: u16 = 8;
 /// The largest number of direct choice keys in one dialog.
 pub const DIALOG_DIRECT_KEYS_MAX: usize = DIALOG_CHOICES_MAX;
 /// The largest number of rows that one popup may occupy.
@@ -35,6 +41,7 @@ pub const DIALOG_POPUP_COLUMNS_MAX: u16 = 80;
 pub struct DialogChoice<Id> {
     identity: Id,
     label: String,
+    description: Option<String>,
     direct_key: Option<char>,
 }
 
@@ -45,8 +52,19 @@ impl<Id> DialogChoice<Id> {
         Self {
             identity,
             label: label.into(),
+            description: None,
             direct_key: None,
         }
+    }
+
+    /// Returns the choice with explanatory text.
+    ///
+    /// The vertical-panel presentation wraps this text below the label. The
+    /// default popup presentation does not display descriptions.
+    #[must_use]
+    pub fn with_description(mut self, description: impl Into<String>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     /// Returns the choice with one direct key.
@@ -68,11 +86,37 @@ impl<Id> DialogChoice<Id> {
         &self.label
     }
 
+    /// Returns the explanatory text of this choice, if it has one.
+    #[must_use]
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
+    }
+
     /// Returns the direct key of this choice, if it has one.
     #[must_use]
     pub const fn direct_key(&self) -> Option<char> {
         self.direct_key
     }
+}
+
+/// The geometry policy used to present a dialog.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DialogPresentation {
+    /// A centered, content-sized popup with one horizontal choice row.
+    #[default]
+    Popup,
+    /// A full-width, top-aligned panel with vertically stacked choices.
+    VerticalPanel,
+}
+
+/// The treatment applied behind a dialog before its surface is painted.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum DialogBackgroundTreatment {
+    /// Apply [`DialogStyles::dim`] to the complete supplied body.
+    #[default]
+    Dim,
+    /// Keep cells outside the dialog surface unchanged.
+    Preserve,
 }
 
 /// The result of one dialog interaction.
@@ -223,6 +267,30 @@ pub enum DialogError {
         /// The bound that the label passed.
         max: usize,
     },
+    /// A choice description passed its character bound.
+    #[error(
+        "dialog choice description {choice} holds at most {max} characters, and the caller supplied {chars}"
+    )]
+    ChoiceDescriptionChars {
+        /// The zero-based choice position.
+        choice: usize,
+        /// The number of characters that the caller supplied.
+        chars: usize,
+        /// The bound that the description passed.
+        max: usize,
+    },
+    /// A vertical choice passed its wrapped-row bound.
+    #[error(
+        "vertical dialog choice {choice} holds at most {max} wrapped rows, and the content needs {rows}"
+    )]
+    VerticalChoiceRows {
+        /// The zero-based choice position.
+        choice: usize,
+        /// The number of wrapped rows that the choice needs.
+        rows: u16,
+        /// The bound that the choice passed.
+        max: u16,
+    },
     /// A direct key is not a printable ASCII character.
     #[error("dialog direct key {key:?} must be a printable ASCII character")]
     InvalidDirectKey {
@@ -343,6 +411,8 @@ pub struct DialogChoicePlacement<Id> {
 /// The geometry that one dialog render uses.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct DialogPlacement<Id> {
+    /// The presentation policy that produced this geometry.
+    pub presentation: DialogPresentation,
     /// The owner-supplied body rectangle that bounds dimming and the popup.
     pub body_area: Rect,
     /// The rectangle occupied by the complete popup.
@@ -403,6 +473,8 @@ pub struct Dialog<Id> {
     cancel: usize,
     focused: usize,
     icon: Option<char>,
+    presentation: DialogPresentation,
+    background: DialogBackgroundTreatment,
 }
 
 impl<Id: Eq> Dialog<Id> {
@@ -469,6 +541,15 @@ impl<Id: Eq> Dialog<Id> {
                     max: DIALOG_CHOICE_LABEL_CHARS_MAX,
                 });
             }
+            if let Some(description) = &item.description
+                && let Err(chars) = check_chars(description, DIALOG_CHOICE_DESCRIPTION_CHARS_MAX)
+            {
+                return Err(DialogError::ChoiceDescriptionChars {
+                    choice,
+                    chars,
+                    max: DIALOG_CHOICE_DESCRIPTION_CHARS_MAX,
+                });
+            }
             if let Some(key) = item.direct_key {
                 if !key.is_ascii_graphic() {
                     return Err(DialogError::InvalidDirectKey { key });
@@ -493,6 +574,8 @@ impl<Id: Eq> Dialog<Id> {
             cancel,
             focused: default,
             icon: None,
+            presentation: DialogPresentation::Popup,
+            background: DialogBackgroundTreatment::Dim,
         })
     }
 
@@ -509,6 +592,35 @@ impl<Id: Eq> Dialog<Id> {
         icon_indent(Some(icon))?;
         self.icon = Some(icon);
         Ok(self)
+    }
+
+    /// Returns the dialog with the selected presentation policy.
+    #[must_use]
+    pub const fn with_presentation(mut self, presentation: DialogPresentation) -> Self {
+        self.presentation = presentation;
+        self
+    }
+
+    /// Returns the selected presentation policy.
+    #[must_use]
+    pub const fn presentation(&self) -> DialogPresentation {
+        self.presentation
+    }
+
+    /// Returns the dialog with the selected background treatment.
+    #[must_use]
+    pub const fn with_background_treatment(
+        mut self,
+        background: DialogBackgroundTreatment,
+    ) -> Self {
+        self.background = background;
+        self
+    }
+
+    /// Returns the selected background treatment.
+    #[must_use]
+    pub const fn background_treatment(&self) -> DialogBackgroundTreatment {
+        self.background
     }
 
     /// Returns the severity glyph, if the dialog has one.
@@ -544,15 +656,18 @@ impl<Id: Eq> Dialog<Id> {
         Ok(())
     }
 
-    /// Calculates the one placement that a render consumes.
+    /// Calculates the placement for the selected presentation.
     ///
-    /// The popup is centered in `body`. It has a one-cell rail, one blank
-    /// separator column, and one blank row above and below content.
+    /// `DialogPresentation::Popup` returns a centered, content-sized popup
+    /// with a horizontal choice row. `DialogPresentation::VerticalPanel`
+    /// returns a full-width, top-aligned panel with vertically stacked
+    /// choices. In both modes, the returned rectangles are bounded by
+    /// `body`, and this method does not change dialog state.
     ///
     /// # Errors
     ///
-    /// Returns a typed refusal when the supplied body cannot hold the bounded
-    /// popup. This method does not change dialog state.
+    /// Returns a typed refusal when the supplied body cannot hold the
+    /// selected presentation. This method does not change dialog state.
     pub fn placement_for(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
     where
         Id: Clone,
@@ -560,15 +675,19 @@ impl<Id: Eq> Dialog<Id> {
         self.geometry(body)
     }
 
-    /// Paints the dialog into `target` and returns the placement it consumed.
+    /// Paints the selected presentation into `target` and returns its placement.
     ///
-    /// The renderer dims only `body`. It rejects a stale body outside the
-    /// target before changing any target cell.
+    /// `DialogPresentation::Popup` paints the centered popup; `VerticalPanel`
+    /// paints the full-width, top-aligned panel. With
+    /// `DialogBackgroundTreatment::Dim`, the renderer dims `body` before
+    /// painting. With `Preserve`, it leaves cells outside the selected dialog
+    /// surface unchanged. The supplied `body` must fit within `target`, and
+    /// the same geometry used by [`Self::placement_for`] is used for painting.
     ///
     /// # Errors
     ///
     /// Returns a typed refusal for a body outside `target` or a body too small
-    /// for the popup. Neither refusal changes dialog state.
+    /// for the selected presentation. Neither refusal changes dialog state.
     pub fn render(
         &self,
         target: &mut Buffer,
@@ -583,7 +702,9 @@ impl<Id: Eq> Dialog<Id> {
             return Err(DialogError::TargetArea { body, buffer });
         }
         let placement = self.geometry(body)?;
-        target.set_style(body, styles.dim);
+        if self.background == DialogBackgroundTreatment::Dim {
+            target.set_style(body, styles.dim);
+        }
         fill(target, placement.popup, " ");
         target.set_style(placement.popup, styles.surface);
         for y in placement.rail.y..placement.rail.bottom() {
@@ -623,50 +744,124 @@ impl<Id: Eq> Dialog<Id> {
                 styles.surface.patch(styles.question),
             );
         }
-        for (line, y) in self
-            .body
-            .iter()
-            .zip(placement.body_text.y..placement.body_text.bottom())
-        {
-            target.set_stringn(
-                placement.content.x,
-                y,
-                line,
-                usize::from(placement.content.width),
-                styles.surface.patch(styles.body),
-            );
+        match self.presentation {
+            DialogPresentation::Popup => {
+                for (line, y) in self
+                    .body
+                    .iter()
+                    .zip(placement.body_text.y..placement.body_text.bottom())
+                {
+                    target.set_stringn(
+                        placement.content.x,
+                        y,
+                        line,
+                        usize::from(placement.content.width),
+                        styles.surface.patch(styles.body),
+                    );
+                }
+            }
+            DialogPresentation::VerticalPanel => {
+                let mut y = placement.body_text.y;
+                for line in &self.body {
+                    for wrapped in wrap(line, usize::from(placement.content.width))
+                        .expect("vertical-panel geometry validated the body width")
+                    {
+                        target.set_stringn(
+                            placement.content.x,
+                            y,
+                            wrapped,
+                            usize::from(placement.content.width),
+                            styles.surface.patch(styles.body),
+                        );
+                        y += 1;
+                    }
+                }
+                debug_assert_eq!(
+                    y,
+                    placement.body_text.bottom(),
+                    "rendered body lines fill the measured vertical-panel body area"
+                );
+            }
         }
         let footer_style = styles.surface.patch(styles.footer);
         target.set_style(placement.footer, footer_style);
-        for (index, choice) in placement.choices.iter().enumerate() {
-            let style = if index == self.focused {
-                styles.focused_choice
-            } else if index == self.default {
-                styles.default_choice
-            } else {
-                styles.choice
-            };
-            let label = format!(" {} ", self.choices[index].label());
-            target.set_stringn(
-                choice.area.x,
-                choice.area.y,
-                label,
-                usize::from(choice.area.width),
-                footer_style.patch(style),
-            );
+        match self.presentation {
+            DialogPresentation::Popup => {
+                for (index, choice) in placement.choices.iter().enumerate() {
+                    let style = self.choice_style(index, styles);
+                    let label = format!(" {} ", self.choices[index].label());
+                    target.set_stringn(
+                        choice.area.x,
+                        choice.area.y,
+                        label,
+                        usize::from(choice.area.width),
+                        footer_style.patch(style),
+                    );
+                }
+            }
+            DialogPresentation::VerticalPanel => {
+                for (index, choice) in placement.choices.iter().enumerate() {
+                    let style = footer_style.patch(self.choice_style(index, styles));
+                    target.set_style(choice.area, style);
+                    let text_x = placement.content.x;
+                    let text_width = usize::from(placement.content.width);
+                    let displayed_label = vertical_choice_label(&self.choices[index]);
+                    let label_lines = wrap(&displayed_label, text_width).expect(
+                        "vertical-panel geometry validated the displayed choice label width",
+                    );
+                    let mut y = choice.area.y;
+                    for line in label_lines {
+                        target.set_stringn(text_x, y, line, text_width, style);
+                        y += 1;
+                    }
+                    if let Some(description) = self.choices[index].description() {
+                        let description_x = text_x + 2;
+                        let description_width = text_width - 2;
+                        for line in wrap(description, description_width)
+                            .expect("vertical-panel geometry validated the description width")
+                        {
+                            target.set_stringn(description_x, y, line, description_width, style);
+                            y += 1;
+                        }
+                    }
+                    debug_assert_eq!(
+                        y,
+                        choice.area.bottom(),
+                        "rendered choice lines fill the measured vertical choice area"
+                    );
+                }
+            }
         }
         Ok(placement)
     }
 
-    /// Calculates one placement.
-    ///
-    /// The rail takes one column. Blank padding columns follow it and close
+    fn choice_style(&self, index: usize, styles: DialogStyles) -> Style {
+        if index == self.focused {
+            styles.focused_choice
+        } else if index == self.default {
+            styles.default_choice
+        } else {
+            styles.choice
+        }
+    }
+
+    /// Calculates one placement. Blank padding columns follow it and close
     /// the popup, so content never touches either popup edge. One blank
     /// padding row opens the popup, and one blank row closes the content
     /// region before the footer band. The footer band always holds three
     /// rows: one blank row, the choice row, and one blank row, regardless of
     /// how many choices the dialog holds.
     fn geometry(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
+    where
+        Id: Clone,
+    {
+        match self.presentation {
+            DialogPresentation::Popup => self.popup_geometry(body),
+            DialogPresentation::VerticalPanel => self.vertical_panel_geometry(body),
+        }
+    }
+
+    fn popup_geometry(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
     where
         Id: Clone,
     {
@@ -859,6 +1054,171 @@ impl<Id: Eq> Dialog<Id> {
             "the horizontal choice row fits the content width because required_content_width bounded it"
         );
         Ok(DialogPlacement {
+            presentation: DialogPresentation::Popup,
+            body_area: body,
+            popup,
+            rail,
+            content,
+            body_text,
+            question,
+            footer,
+            choices,
+        })
+    }
+
+    fn vertical_panel_geometry(&self, body: Rect) -> Result<DialogPlacement<Id>, DialogError>
+    where
+        Id: Clone,
+    {
+        const RAIL_COLUMNS: u16 = 1;
+        const LEAD_PAD_COLUMNS: u16 = 2;
+        const TRAIL_PAD_COLUMNS: u16 = 2;
+        const FRAME_COLUMNS: u16 = RAIL_COLUMNS + LEAD_PAD_COLUMNS + TRAIL_PAD_COLUMNS;
+        const TOP_PAD_ROWS: u16 = 1;
+        const CLOSE_PAD_ROWS: u16 = 1;
+        const BOTTOM_PAD_ROWS: u16 = 1;
+        const DESCRIPTION_INDENT: usize = 2;
+
+        let Some(body_right) = body.x.checked_add(body.width) else {
+            return Err(DialogError::InvalidBodyArea { body });
+        };
+        let Some(body_bottom) = body.y.checked_add(body.height) else {
+            return Err(DialogError::InvalidBodyArea { body });
+        };
+        if body.width > DIALOG_VERTICAL_PANEL_COLUMNS_MAX
+            || body.width <= FRAME_COLUMNS + DESCRIPTION_INDENT as u16
+        {
+            return Err(DialogError::BodyTooSmall { body });
+        }
+        let content_width = body.width - FRAME_COLUMNS;
+        let indent = icon_indent(self.icon).expect("the constructor validated the icon width");
+        let question_width = usize::from(content_width)
+            .checked_sub(indent)
+            .filter(|width| *width > 0)
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        let question_lines =
+            wrap(&self.question, question_width).ok_or(DialogError::BodyTooSmall { body })?;
+        let body_text_rows = self
+            .body
+            .iter()
+            .try_fold(0_usize, |rows, line| {
+                wrap(line, usize::from(content_width))
+                    .and_then(|lines| rows.checked_add(lines.len()))
+            })
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        let body_rows = if self.body.is_empty() {
+            0
+        } else {
+            body_text_rows
+                .checked_add(1)
+                .ok_or(DialogError::BodyTooSmall { body })?
+        };
+        let content_rows = question_lines
+            .len()
+            .checked_add(body_rows)
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        let content_rows =
+            u16::try_from(content_rows).map_err(|_| DialogError::BodyTooSmall { body })?;
+        let mut choice_heights = Vec::with_capacity(self.choices.len());
+        let mut choice_rows = 0_u16;
+        for (choice_index, choice) in self.choices.iter().enumerate() {
+            let displayed_label = vertical_choice_label(choice);
+            let label_rows = wrap(&displayed_label, usize::from(content_width))
+                .ok_or(DialogError::BodyTooSmall { body })?
+                .len();
+            let description_rows = choice.description().map_or(Ok(0), |description| {
+                wrap(description, usize::from(content_width) - DESCRIPTION_INDENT)
+                    .map(|lines| lines.len())
+                    .ok_or(DialogError::BodyTooSmall { body })
+            })?;
+            let rows = u16::try_from(label_rows + description_rows).map_err(|_| {
+                DialogError::VerticalChoiceRows {
+                    choice: choice_index,
+                    rows: u16::MAX,
+                    max: DIALOG_VERTICAL_CHOICE_ROWS_MAX,
+                }
+            })?;
+            if rows > DIALOG_VERTICAL_CHOICE_ROWS_MAX {
+                return Err(DialogError::VerticalChoiceRows {
+                    choice: choice_index,
+                    rows,
+                    max: DIALOG_VERTICAL_CHOICE_ROWS_MAX,
+                });
+            }
+            choice_rows = choice_rows
+                .checked_add(rows)
+                .ok_or(DialogError::BodyTooSmall { body })?;
+            choice_heights.push(rows);
+        }
+        let height = TOP_PAD_ROWS
+            .checked_add(content_rows)
+            .and_then(|rows| rows.checked_add(CLOSE_PAD_ROWS))
+            .and_then(|rows| rows.checked_add(choice_rows))
+            .and_then(|rows| rows.checked_add(BOTTOM_PAD_ROWS))
+            .ok_or(DialogError::BodyTooSmall { body })?;
+        if height > body.height || height > DIALOG_POPUP_ROWS_MAX {
+            return Err(DialogError::BodyTooSmall { body });
+        }
+        let popup = Rect::new(body.x, body.y, body.width, height);
+        debug_assert!(
+            popup.right() <= body_right,
+            "the full-width panel fits its body"
+        );
+        debug_assert!(
+            popup.bottom() <= body_bottom,
+            "the top-aligned panel fits its body"
+        );
+        let rail = Rect::new(popup.x, popup.y, RAIL_COLUMNS, popup.height);
+        let content = Rect::new(
+            popup.x + RAIL_COLUMNS + LEAD_PAD_COLUMNS,
+            popup.y + TOP_PAD_ROWS,
+            content_width,
+            content_rows,
+        );
+        let question = Rect::new(
+            content.x,
+            content.y,
+            content.width,
+            u16::try_from(question_lines.len()).map_err(|_| DialogError::BodyTooSmall { body })?,
+        );
+        let body_text = if self.body.is_empty() {
+            Rect::new(content.x, question.bottom(), content.width, 0)
+        } else {
+            Rect::new(
+                content.x,
+                question.bottom() + 1,
+                content.width,
+                u16::try_from(body_text_rows).map_err(|_| DialogError::BodyTooSmall { body })?,
+            )
+        };
+        let footer_y = content.bottom() + CLOSE_PAD_ROWS;
+        let footer = Rect::new(
+            popup.x + RAIL_COLUMNS,
+            footer_y,
+            popup.width - RAIL_COLUMNS,
+            choice_rows + BOTTOM_PAD_ROWS,
+        );
+        let mut choice_y = footer.y;
+        let choices = self
+            .choices
+            .iter()
+            .zip(choice_heights)
+            .map(|(choice, height)| {
+                let placement = DialogChoicePlacement {
+                    identity: choice.identity.clone(),
+                    area: Rect::new(footer.x, choice_y, footer.width, height),
+                };
+                choice_y += height;
+                placement
+            })
+            .collect();
+        debug_assert_eq!(
+            choice_y + BOTTOM_PAD_ROWS,
+            popup.bottom(),
+            "vertical choice rows and bottom padding fill the measured footer"
+        );
+        Ok(DialogPlacement {
+            presentation: DialogPresentation::VerticalPanel,
             body_area: body,
             popup,
             rail,
@@ -1107,6 +1467,13 @@ fn rect_fits(area: Rect, buffer: Rect) -> bool {
         && area.y >= buffer.y
         && area_right <= buffer_right
         && area_bottom <= buffer_bottom
+}
+
+fn vertical_choice_label<Id>(choice: &DialogChoice<Id>) -> String {
+    match choice.direct_key() {
+        Some(key) => format!("[{key}] {}", choice.label()),
+        None => choice.label().to_owned(),
+    }
 }
 
 fn wrap(text: &str, width: usize) -> Option<Vec<String>> {

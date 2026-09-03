@@ -408,9 +408,13 @@ standalone editor and keeps `ConfirmedAction` private. It maps the affirmative
 choice to destructive continuations only after the dialog answers.
 
 A host may use `kvim_ui::Dialog` directly to draw host chrome. That direct use
-owns only host chrome and its action-agnostic dialog state. A dialog attached to
-an editor keeps its open, input, answer, and invalidation lifecycle in
-`kvim-embed`.
+owns only host chrome and its action-agnostic dialog state. The default
+presentation remains the centered confirmation popup. A host can explicitly
+select the full-width, top-aligned vertical panel for a host-owned region.
+That panel wraps bounded choice labels and descriptions and publishes each
+complete choice-row rectangle. A typed background treatment selects body
+dimming or preservation. A dialog attached to an editor keeps its open, input,
+answer, and invalidation lifecycle in `kvim-embed`.
 
 For each host-owned surface, Kvim owns the semantic state and the geometry used
 to draw it. Kvim publishes bounded snapshots of the state and current

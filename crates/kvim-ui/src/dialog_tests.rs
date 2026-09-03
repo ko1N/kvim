@@ -271,6 +271,8 @@ fn rejects_unknown_and_ambiguous_focus_identities() {
         cancel: 0,
         focused: 0,
         icon: None,
+        presentation: DialogPresentation::Popup,
+        background: DialogBackgroundTreatment::Dim,
     };
     assert_eq!(dialog.focus(&Id::Keep), Err(DialogError::AmbiguousChoice));
 }
@@ -978,6 +980,195 @@ fn pointer_driving_rejects_stale_placements() {
             &placement,
         ),
         DialogPointerOutcome::PlacementMismatch
+    );
+}
+
+#[test]
+fn vertical_panel_wraps_full_width_choices_and_preserves_the_background() {
+    let mut dialog = Dialog::new(
+        "Choose the best implementation for this request",
+        std::iter::empty::<&str>(),
+        [
+            DialogChoice::new(Id::Keep, "Use the existing implementation without changes")
+                .with_description("This keeps compatibility and avoids additional maintenance.")
+                .with_direct_key('k'),
+            DialogChoice::new(Id::Discard, "Replace it with the proposed implementation")
+                .with_description("This changes the behavior for this caller-owned question.")
+                .with_direct_key('r'),
+        ],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("bounded vertical dialog")
+    .with_presentation(DialogPresentation::VerticalPanel)
+    .with_background_treatment(DialogBackgroundTreatment::Preserve);
+    let body = Rect::new(4, 3, 28, 20);
+    let mut target = Buffer::empty(Rect::new(0, 0, 40, 24));
+    target.set_style(*target.area(), Style::default().bg(Color::Red));
+    let measured = dialog.placement_for(body).expect("panel fits");
+    let rendered = dialog
+        .render(&mut target, body, styles())
+        .expect("panel renders");
+
+    assert_eq!(rendered, measured);
+    assert_eq!(rendered.presentation, DialogPresentation::VerticalPanel);
+    assert_eq!(rendered.popup.x, body.x);
+    assert_eq!(rendered.popup.y, body.y);
+    assert_eq!(rendered.popup.width, body.width);
+    assert_eq!(rendered.choices.len(), 2);
+    assert!(rendered.choices.iter().all(|choice| {
+        choice.area.x == rendered.footer.x && choice.area.width == rendered.footer.width
+    }));
+    assert!(rendered.choices.iter().all(|choice| choice.area.height > 1));
+    assert_eq!(
+        target
+            .cell((rendered.content.x, rendered.choices[0].area.y))
+            .expect("direct-key prefix")
+            .symbol(),
+        "["
+    );
+    assert_eq!(
+        target
+            .cell((rendered.content.x + 1, rendered.choices[0].area.y))
+            .expect("direct key")
+            .symbol(),
+        "k"
+    );
+    for y in rendered.choices[0].area.y..rendered.choices[0].area.bottom() {
+        for x in rendered.choices[0].area.x..rendered.choices[0].area.right() {
+            let style = target.cell((x, y)).expect("focused choice cell").style();
+            assert_eq!(style.fg, Some(Color::Yellow));
+            assert_eq!(style.bg, Some(Color::DarkGray));
+        }
+    }
+    assert_eq!(
+        rendered.choices[0].area.bottom(),
+        rendered.choices[1].area.y,
+        "complete choice rows have no dead pointer gap"
+    );
+    assert_eq!(
+        target
+            .cell((body.right() - 1, body.bottom() - 1))
+            .unwrap()
+            .style()
+            .bg,
+        Some(Color::Red),
+        "preserve treatment leaves body cells below the top-aligned panel unchanged"
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Char('r')),
+        DialogKeyOutcome::Interaction(DialogOutcome::Answered(Id::Discard))
+    );
+    assert_eq!(
+        dialog.drive_key(DialogKey::Down),
+        DialogKeyOutcome::Interaction(DialogOutcome::Focused(Id::Discard))
+    );
+    let second = rendered.choices[1].area;
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(second.right() - 1, second.bottom() - 1),
+                action: DialogPointerAction::Press(DialogPointerButton::Primary),
+            },
+            &rendered,
+        ),
+        DialogPointerOutcome::Interaction(DialogOutcome::Answered(Id::Discard))
+    );
+}
+
+#[test]
+fn vertical_panel_enforces_the_per_choice_wrapped_row_bound() {
+    const PANEL_WIDTH: u16 = 10;
+    const CONTENT_WIDTH: usize = 5;
+    const DIRECT_KEY_PREFIX_CHARS: usize = 4;
+
+    let label_at_bound = "x".repeat(
+        usize::from(DIALOG_VERTICAL_CHOICE_ROWS_MAX) * CONTENT_WIDTH - DIRECT_KEY_PREFIX_CHARS,
+    );
+    let at_bound = Dialog::new(
+        "q",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(Id::Keep, label_at_bound).with_direct_key('k')],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("bounded choice content")
+    .with_presentation(DialogPresentation::VerticalPanel);
+    let body = Rect::new(0, 0, PANEL_WIDTH, DIALOG_POPUP_ROWS_MAX);
+    let placement = at_bound
+        .placement_for(body)
+        .expect("one choice at the wrapped-row bound fits");
+    assert_eq!(
+        placement.choices[0].area.height,
+        DIALOG_VERTICAL_CHOICE_ROWS_MAX
+    );
+
+    let label_over_bound = "x".repeat(
+        usize::from(DIALOG_VERTICAL_CHOICE_ROWS_MAX) * CONTENT_WIDTH - DIRECT_KEY_PREFIX_CHARS + 1,
+    );
+    let over_bound = Dialog::new(
+        "q",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(Id::Keep, label_over_bound).with_direct_key('k')],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("choice label stays inside its character bound")
+    .with_presentation(DialogPresentation::VerticalPanel);
+    assert_eq!(
+        over_bound.placement_for(body),
+        Err(DialogError::VerticalChoiceRows {
+            choice: 0,
+            rows: DIALOG_VERTICAL_CHOICE_ROWS_MAX + 1,
+            max: DIALOG_VERTICAL_CHOICE_ROWS_MAX,
+        })
+    );
+}
+
+#[test]
+fn vertical_panel_rejects_over_bounds_and_modified_presentation() {
+    let description = "d".repeat(DIALOG_CHOICE_DESCRIPTION_CHARS_MAX + 1);
+    assert!(matches!(
+        Dialog::new(
+            "q",
+            std::iter::empty::<&str>(),
+            [DialogChoice::new(Id::Keep, "Keep").with_description(description)],
+            Id::Keep,
+            Id::Keep,
+        ),
+        Err(DialogError::ChoiceDescriptionChars { .. })
+    ));
+
+    let mut dialog = Dialog::new(
+        "q",
+        std::iter::empty::<&str>(),
+        [DialogChoice::new(
+            Id::Keep,
+            "A label longer than the former forty-eight character popup bound now wraps safely",
+        )],
+        Id::Keep,
+        Id::Keep,
+    )
+    .expect("the published label bound permits wrapped panel labels")
+    .with_presentation(DialogPresentation::VerticalPanel);
+    let body = Rect::new(2, 2, 24, 12);
+    let placement = dialog.placement_for(body).expect("panel fits");
+    let mut stale = placement.clone();
+    stale.presentation = DialogPresentation::Popup;
+    assert_eq!(
+        dialog.drive_pointer(
+            DialogPointerEvent {
+                cell: Cell::new(placement.choices[0].area.x, placement.choices[0].area.y),
+                action: DialogPointerAction::Motion,
+            },
+            &stale,
+        ),
+        DialogPointerOutcome::PlacementMismatch
+    );
+    let too_wide = Rect::new(0, 0, DIALOG_VERTICAL_PANEL_COLUMNS_MAX + 1, 12);
+    assert_eq!(
+        dialog.placement_for(too_wide),
+        Err(DialogError::BodyTooSmall { body: too_wide })
     );
 }
 
