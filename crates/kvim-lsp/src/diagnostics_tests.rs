@@ -167,6 +167,36 @@ fn pull_server_after(mut mock: MockServer, delay: Duration, items: Value) -> Joi
     })
 }
 
+/// Answers an initial empty pull, requests a refresh, and answers the repeated pull.
+fn refreshing_pull_server(mut mock: MockServer, refreshed_items: Value) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        mock.handshake(pull_capabilities()).await;
+        let first = mock.expect("textDocument/diagnostic").await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": { "kind": "full", "items": [] },
+        }))
+        .await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 900,
+            "method": "workspace/diagnostic/refresh",
+        }))
+        .await;
+        let accepted = mock.read_message().await.expect("the refresh is answered");
+        assert_eq!(accepted["id"], 900);
+        assert_eq!(accepted["result"], Value::Null);
+        let repeated = mock.expect("textDocument/diagnostic").await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": repeated["id"],
+            "result": { "kind": "full", "items": refreshed_items },
+        }))
+        .await;
+    })
+}
+
 /// Answers every pull while using the protocol-default UTF-16 encoding.
 fn utf16_pull_server(mut mock: MockServer, items: Value) -> JoinHandle<()> {
     tokio::spawn(async move {
@@ -283,10 +313,19 @@ struct Session {
 impl Session {
     /// Opens one project over the declared servers and their transports.
     fn open(servers: Vec<DiagnosticsServer>, transports: Vec<TransportFactory>) -> Self {
+        Self::open_at(PathBuf::from(ROOT), servers, transports)
+    }
+
+    /// Opens one project at one test root.
+    fn open_at(
+        root: PathBuf,
+        servers: Vec<DiagnosticsServer>,
+        transports: Vec<TransportFactory>,
+    ) -> Self {
         assert_eq!(servers.len(), transports.len(), "one transport per server");
         let hub = DiagnosticsHub::new();
         let manager = ProjectManager::new(ManagerLimits::default());
-        let root = WorkspaceRoot::new(PathBuf::from(ROOT)).expect("the root is absolute");
+        let root = WorkspaceRoot::new(root).expect("the root is absolute");
         let mut declaration = ProjectDeclaration::new(ProjectId::FIRST, root);
         for (server, transport) in servers.into_iter().zip(transports) {
             let id = server.id;
@@ -338,6 +377,168 @@ fn failure(report: &super::ChangedFileReport) -> &LspError {
         ServerOutcome::Failed(error) => error,
         other => panic!("the server returned {other:?} instead of one failure"),
     }
+}
+
+#[tokio::test]
+async fn a_refresh_aware_pull_repeats_an_initial_empty_report() {
+    let (transport, mock) = pipe();
+    let session = Session::open(
+        vec![declared(0, CompletionPolicy::PullAfterRefresh)],
+        vec![transport],
+    );
+    let server = refreshing_pull_server(mock, json!([item(0, 3, 7, 1, "ready error")]));
+
+    let report = ready(session.ask(request(7)).await);
+
+    assert_eq!(report.revision(), DocumentRevision::new(7));
+    assert_eq!(report.diagnostics().len(), 1);
+    assert_eq!(report.diagnostics()[0].diagnostic.message, "ready error");
+    session.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refresh_driven_empty_report_is_clean() {
+    let (transport, mock) = pipe();
+    let session = Session::open(
+        vec![declared(0, CompletionPolicy::PullAfterRefresh)],
+        vec![transport],
+    );
+    let server = refreshing_pull_server(mock, json!([]));
+
+    let report = ready(session.ask(request(8)).await);
+
+    assert!(report.diagnostics().is_empty());
+    assert!(matches!(
+        report.servers()[0].outcome,
+        ServerOutcome::Ready {
+            diagnostics: 0,
+            truncation: Truncation::Complete,
+        }
+    ));
+    session.close().await;
+    server.abort();
+}
+
+#[tokio::test]
+async fn a_refresh_before_the_initial_empty_report_is_remembered() {
+    let (transport, mut mock) = pipe();
+    let session = Session::open(
+        vec![declared(0, CompletionPolicy::PullAfterRefresh)],
+        vec![transport],
+    );
+    let server = tokio::spawn(async move {
+        mock.handshake(pull_capabilities()).await;
+        let initial = mock.expect("textDocument/diagnostic").await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": 901,
+            "method": "workspace/diagnostic/refresh",
+        }))
+        .await;
+        let accepted = mock.read_message().await.expect("the refresh is answered");
+        assert_eq!(accepted["id"], 901);
+        assert_eq!(accepted["result"], Value::Null);
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": initial["id"],
+            "result": { "kind": "full", "items": [] },
+        }))
+        .await;
+        let repeated = mock.expect("textDocument/diagnostic").await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": repeated["id"],
+            "result": { "kind": "full", "items": [] },
+        }))
+        .await;
+    });
+
+    let report = ready(session.ask(request(9)).await);
+
+    assert!(report.diagnostics().is_empty());
+    session.close().await;
+    server.await.expect("the mock server completes");
+}
+
+#[tokio::test]
+async fn a_ready_refresh_aware_server_accepts_a_warm_empty_report() {
+    let (transport, mut mock) = pipe();
+    let session = Session::open(
+        vec![declared(0, CompletionPolicy::PullAfterRefresh)],
+        vec![transport],
+    );
+    let server = tokio::spawn(async move {
+        mock.handshake(pull_capabilities()).await;
+        let first = mock.expect("textDocument/diagnostic").await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": first["id"],
+            "result": {
+                "kind": "full",
+                "items": [item(0, 3, 7, 1, "initial error")],
+            },
+        }))
+        .await;
+        let warm = mock.expect("textDocument/diagnostic").await;
+        mock.send(&json!({
+            "jsonrpc": "2.0",
+            "id": warm["id"],
+            "result": { "kind": "full", "items": [] },
+        }))
+        .await;
+    });
+
+    let initial = ready(session.ask(request(11)).await);
+    let warm = ready(session.ask(request(12)).await);
+
+    assert_eq!(initial.diagnostics().len(), 1);
+    assert!(warm.diagnostics().is_empty());
+    session.close().await;
+    server.await.expect("the mock server completes");
+}
+
+#[tokio::test]
+async fn a_refresh_aware_pull_bounds_refresh_cancellation_turnover() {
+    let (transport, mut mock) = pipe();
+    let session = Session::open(
+        vec![declared(0, CompletionPolicy::PullAfterRefresh)],
+        vec![transport],
+    );
+    let server = tokio::spawn(async move {
+        mock.handshake(pull_capabilities()).await;
+        let mut pull = mock.expect("textDocument/diagnostic").await;
+        for pull_index in 0..=super::LSP_DIAGNOSTIC_REFRESH_PULLS_MAX {
+            mock.send(&json!({
+                "jsonrpc": "2.0",
+                "id": 902 + pull_index,
+                "method": "workspace/diagnostic/refresh",
+            }))
+            .await;
+            let accepted = mock.read_message().await.expect("the refresh is answered");
+            assert_eq!(accepted["id"], 902 + pull_index);
+            assert_eq!(accepted["result"], Value::Null);
+            mock.send(&json!({
+                "jsonrpc": "2.0",
+                "id": pull["id"],
+                "error": { "code": -32802, "message": "cancelled" },
+            }))
+            .await;
+            if pull_index < super::LSP_DIAGNOSTIC_REFRESH_PULLS_MAX {
+                pull = mock.expect("textDocument/diagnostic").await;
+            }
+        }
+    });
+
+    let report = ready(session.ask(request(10)).await);
+
+    assert!(matches!(
+        failure(&report),
+        LspError::Response { code: -32802 }
+    ));
+    assert!(report.diagnostics().is_empty());
+    session.close().await;
+    server.await.expect("the mock server completes");
 }
 
 #[tokio::test]
@@ -946,6 +1147,59 @@ fn one_hub_refuses_a_server_declaration_that_passes_its_bounds() {
             ..
         })
     ));
+}
+
+#[tokio::test]
+async fn real_rust_analyzer_reports_a_finding_and_then_clean() {
+    let root = std::env::temp_dir().join(format!("kvim-lsp-rust-analyzer-{}", std::process::id()));
+    let source_dir = root.join("src");
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&source_dir).expect("the fixture directory is created");
+    std::fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"kvim_lsp_smoke\"\nversion = \"0.0.0\"\nedition = \"2024\"\n",
+    )
+    .expect("the fixture manifest is written");
+    let invalid = "fn main() { missing(); }\n";
+    std::fs::write(source_dir.join("main.rs"), invalid).expect("the invalid source is written");
+    let workspace = WorkspaceRoot::new(root.clone()).expect("the fixture root is absolute");
+    let transport = TransportFactory::process(
+        ServerLaunchRequest::new(OsString::from("rust-analyzer"), Vec::new(), workspace)
+            .expect("the rust-analyzer launch request is valid"),
+    );
+    let session = Session::open_at(
+        root.clone(),
+        vec![declared(0, CompletionPolicy::PullAfterRefresh)],
+        vec![transport],
+    );
+
+    let finding = ready(
+        session
+            .ask(
+                ChangedFile::new(
+                    WorktreeRelativePath::new(DOCUMENT).expect("the path is relative"),
+                    invalid.to_owned(),
+                    DocumentRevision::new(1),
+                    language(),
+                )
+                .wait(WaitPolicy::Until(Duration::from_secs(60))),
+            )
+            .await,
+    );
+    assert!(
+        !finding.diagnostics().is_empty(),
+        "invalid Rust must return a finding: {:?}",
+        finding.servers()
+    );
+
+    let clean = ready(session.ask(request(2)).await);
+    assert!(
+        clean.diagnostics().is_empty(),
+        "the corrected revision must return Clean"
+    );
+
+    session.close().await;
+    let _ = std::fs::remove_dir_all(root);
 }
 
 #[tokio::test]

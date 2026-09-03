@@ -40,7 +40,7 @@ fn first_release_is_grammar_independent_and_deterministic() {
     assert_eq!(rust.language_servers()[0].program, "rust-analyzer");
     assert_eq!(
         rust.language_servers()[0].diagnostics_completion,
-        CompletionPolicy::Pull
+        CompletionPolicy::PullAfterRefresh
     );
     assert!(matches!(
         registry.profile(Path::new("src/lib.RS")),
@@ -82,6 +82,7 @@ fn completion_inventory_is_evidence_based() {
         for declaration in profile.language_servers() {
             match declaration.diagnostics_completion {
                 CompletionPolicy::Pull => pull.push((profile.id(), declaration.id)),
+                CompletionPolicy::PullAfterRefresh => pull.push((profile.id(), declaration.id)),
                 CompletionPolicy::Unsupported => unsupported += 1,
                 CompletionPolicy::VersionedPush => {
                     panic!("no first-release declaration has verified versioned-push evidence")

@@ -302,7 +302,8 @@ starts until the host runs the driver.
 `LanguageServerId` is stable Kvim metadata. `ServerId` is a neutral identity of
 one opened project. Gated declarations have no neutral identity and reserve no
 process slot. Only the three built-in eslint declarations currently use
-`CompletionPolicy::Pull`. Every other declaration uses `Unsupported`. No
+`CompletionPolicy::Pull`. Rust uses the refresh-aware pull policy described
+below. Every other declaration uses `Unsupported`. No
 built-in declaration currently uses `VersionedPush`. An `Unsupported` server
 therefore completes with an unsupported server outcome. It never completes by
 guessing from a quiet period.
@@ -673,10 +674,27 @@ Inside one project, kvim runs one persistent session for each selected server.
 The session speaks JSON-RPC and knows no server product. Rust-analyzer is adapter
 data, not a special case inside the client.
 
-The Rust profile uses `CompletionPolicy::Pull`. A direct JSON-RPC observation of
+The Rust profile uses `CompletionPolicy::PullAfterRefresh`. A direct JSON-RPC
+observation of
 `rust-analyzer 1.97.1 (8bab26f4 2026-07-14)` returned a
 `diagnosticProvider` capability with identifier `rust-analyzer`. The same
-observation received a versioned `textDocument/publishDiagnostics` notification,
+observation received an early empty pull report during startup, followed by a
+`workspace/diagnostic/refresh` request when analysis became ready. For an
+initial empty report, Kvim accepts that request and repeats the pull for the
+same open text and revision. A non-empty initial report completes at once. Any
+full response to the first refresh-driven pull proves that the warm server
+attempt is ready, including an empty clean report. Later revisions complete on
+their first full pull report. One changed-file operation permits at most eight
+refresh-driven pulls. This bound limits cancellation and refresh turnover.
+Repeated refresh requests are acknowledged but cannot create an endless pull
+loop. If cancellation exhausts the bound, the server returns a typed failure
+instead of an unready clean result. The repeated pull keeps the job's original
+deadline, cancellation, supersession, exact text and revision checks, traffic
+budget, and result slot.
+Kvim does not poll and does not infer readiness from a quiet period.
+
+The same observation received a versioned `textDocument/publishDiagnostics`
+notification,
 but pull is the safer completion boundary because the response directly
 completes the request. Kvim does not depend on the additional push notification.
 A versionless publication is not a completion signal and remains unsupported.
@@ -685,8 +703,8 @@ The service profile declares each server as data: the identifier, fallback
 diagnostic source, program, ordered arguments, protocol language identifier,
 formatting role, workspace root markers, initialization options, optional
 workspace settings, and one explicit `CompletionPolicy`. The policy is `Pull`,
-`VersionedPush`, or `Unsupported`. Each built-in declaration uses a verified
-policy or conservatively uses `Unsupported`. Kvim never infers completion from
+`PullAfterRefresh`, `VersionedPush`, or `Unsupported`. Each built-in declaration
+uses a verified policy or conservatively uses `Unsupported`. Kvim never infers
 an executable name or negotiated prose. It never guesses versionless push
 completion from a quiet period. The session sends what the declaration names.
 Adding a language server therefore means adding one declaration to one service
