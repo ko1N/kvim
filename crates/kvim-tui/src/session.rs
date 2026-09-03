@@ -2573,6 +2573,10 @@ impl Session {
                 self.tree.end_search();
                 FileSidebarOperationOutcome::Applied
             }
+            FileSidebarOperation::ReleaseHold => {
+                self.tree.release_hold();
+                FileSidebarOperationOutcome::Applied
+            }
             FileSidebarOperation::NextMatch => {
                 match self.tree.select_match(SearchDirection::Forward) {
                     TreeMatchOutcome::Moved => FileSidebarOperationOutcome::Applied,

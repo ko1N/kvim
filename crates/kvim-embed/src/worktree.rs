@@ -2425,6 +2425,27 @@ impl WorktreeEditor {
         Ok(self.file_sidebar_update_since(before))
     }
 
+    /// Releases the file-operation clipboard of a host-owned sidebar.
+    ///
+    /// This operation does not require or change an accepted search. A host
+    /// can call it beside [`Self::end_file_sidebar_search`] when one input
+    /// must end search and release the hold together.
+    pub fn release_file_sidebar_hold(
+        &mut self,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        let before = self.inner().file_rows();
+        let outcome = self
+            .inner_mut()
+            .file_sidebar_operation(TuiFileSidebarOperation::ReleaseHold);
+        debug_assert_eq!(
+            outcome,
+            TuiFileSidebarOperationOutcome::Applied,
+            "releasing a file-sidebar hold always applies at the private boundary"
+        );
+        Ok(self.file_sidebar_update_since(before))
+    }
+
     /// Selects the next match of the addressed accepted search.
     pub fn next_file_sidebar_match(
         &mut self,

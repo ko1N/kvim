@@ -9,7 +9,7 @@ use std::num::NonZeroU16;
 use std::path::Path;
 use std::time::Duration;
 
-use kvim_input::Registry;
+use kvim_input::{Command, Registry};
 use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -379,7 +379,23 @@ fn a_close_hides_every_entry_of_the_directory_again() {
         FileSidebarOutcome::Applied
     );
     assert_eq!(labels(&session), vec!["src", "readme.md"]);
-    assert_eq!(row_of(&session, "src").kind(), FileRowKind::ClosedDirectory);
+    select(&mut session, "src");
+    let _ = session.apply_command(Command::RevealInFileTree, None, None, Duration::ZERO);
+    let _ = session.apply_command(Command::TreeCopyEntry, None, None, Duration::ZERO);
+    assert_eq!(
+        row_of(&session, "src").dimming(),
+        Some(FileRowDimming::HeldCopy)
+    );
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::StartSearch("src".to_owned())),
+        FileSidebarOperationOutcome::Applied
+    );
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::ReleaseHold),
+        FileSidebarOperationOutcome::Applied
+    );
+    assert_eq!(row_of(&session, "src").dimming(), None);
+    assert!(row_of(&session, "src").matched_characters().is_some());
 }
 
 #[test]

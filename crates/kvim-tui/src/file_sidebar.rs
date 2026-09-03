@@ -1027,6 +1027,8 @@ pub enum FileSidebarOperation {
     StartSearch(String),
     /// Ends active file-tree search and restores search-owned expansion.
     EndSearch,
+    /// Releases the file-operation clipboard without changing active search.
+    ReleaseHold,
     /// Selects the next matching entry, wrapping at the last match.
     NextMatch,
     /// Selects the previous matching entry, wrapping at the first match.

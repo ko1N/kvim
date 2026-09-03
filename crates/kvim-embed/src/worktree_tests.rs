@@ -552,6 +552,68 @@ fn host_sidebar_search_lifecycle_rejects_stale_wrong_instance_and_oversized_quer
 }
 
 #[test]
+fn host_sidebar_releases_its_file_hold_without_changing_search() {
+    let root = TestRoot::new("host-sidebar-release-hold");
+    fs::write(root.0.join("held.rs"), "").unwrap();
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        for _ in 0..TEST_STEPS_MAX {
+            editor.dispatch();
+            if editor
+                .file_sidebar_snapshot()
+                .is_some_and(|snapshot| !snapshot.rows().is_empty())
+            {
+                break;
+            }
+            let completion = editor.ready().await;
+            editor.apply(completion, Duration::ZERO).unwrap();
+        }
+    });
+
+    let search = editor.begin_file_sidebar_search().unwrap();
+    editor.accept_file_sidebar_search(search, "held").unwrap();
+
+    assert_eq!(
+        editor.release_file_sidebar_hold(),
+        Ok(WorktreeUpdate::Unchanged)
+    );
+    let released = editor.file_sidebar_snapshot().unwrap();
+    assert!(released.rows().iter().all(|row| row.dimming().is_none()));
+    assert!(
+        released
+            .rows()
+            .iter()
+            .any(|row| row.matched_characters().is_some())
+    );
+    assert!(matches!(
+        editor.next_file_sidebar_match(search),
+        Ok(FileSidebarSearchOutcome::Applied(_))
+    ));
+    assert_eq!(
+        editor.release_file_sidebar_hold(),
+        Ok(WorktreeUpdate::Unchanged),
+        "releasing an empty clipboard is idempotent"
+    );
+
+    let embedded_root = TestRoot::new("embedded-sidebar-release-hold");
+    let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
+        .open()
+        .unwrap();
+    assert_eq!(
+        embedded.release_file_sidebar_hold(),
+        Err(FileSidebarOperationError::Embedded)
+    );
+}
+
+#[test]
 fn host_sidebar_search_publishes_matches_wraps_and_restores_expansion_through_workers() {
     let root = TestRoot::new("host-sidebar-search-contract");
     fs::create_dir_all(root.0.join("open")).unwrap();
