@@ -713,45 +713,238 @@ fn host_sidebar_search_publishes_matches_wraps_and_restores_expansion_through_wo
 }
 
 #[test]
-fn host_sidebar_page_commands_accept_geometry() {
-    let root = TestRoot::new("host-sidebar-page-api");
+fn host_sidebar_page_motion_uses_latest_viewport_and_preserves_search() {
+    let root = TestRoot::new("host-sidebar-page-motion");
+    for index in 0..12 {
+        fs::write(root.0.join(format!("entry-{index:02}.rs")), "").unwrap();
+    }
+    fs::write(root.0.join(".hidden"), "").unwrap();
     let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
     let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
         .presentation(presentation)
         .open()
         .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        editor.dispatch();
+        let completion = editor.ready().await;
+        editor.apply(completion, Duration::ZERO).unwrap();
+    });
+
+    let selected_label = |editor: &WorktreeEditor| {
+        editor
+            .file_sidebar_snapshot()
+            .unwrap()
+            .rows()
+            .iter()
+            .find(|row| row.is_selected())
+            .map(|row| row.label().to_owned())
+    };
+    let snapshot = editor.file_sidebar_snapshot().unwrap();
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-00.rs"));
+    assert!(snapshot.rows().iter().any(|row| {
+        row.kind() == FileSidebarRowKind::Notice(FileSidebarNoticeKind::Hidden)
+            && !row.is_selected()
+    }));
+    assert!(!snapshot.rows().iter().any(|row| row.label() == ".hidden"));
+
+    editor
+        .record_file_sidebar_viewport(NonZeroU16::new(6).unwrap(), NonZeroU16::new(30).unwrap())
+        .unwrap();
+    editor.move_file_sidebar_half_page_down().unwrap();
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-03.rs"));
+    editor.move_file_sidebar_full_page_down().unwrap();
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-07.rs"));
+
+    let search = editor.begin_file_sidebar_search().unwrap();
+    editor.accept_file_sidebar_search(search, "entry").unwrap();
     editor
         .record_file_sidebar_viewport(NonZeroU16::new(4).unwrap(), NonZeroU16::new(20).unwrap())
         .unwrap();
-    editor.move_file_sidebar_half_page_down().unwrap();
-    editor.move_file_sidebar_half_page_up().unwrap();
-    editor.move_file_sidebar_full_page_down().unwrap();
     editor.move_file_sidebar_full_page_up().unwrap();
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-05.rs"));
+    editor.move_file_sidebar_half_page_up().unwrap();
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-03.rs"));
+    assert!(matches!(
+        editor.next_file_sidebar_match(search),
+        Ok(FileSidebarSearchOutcome::Applied(_))
+    ));
 
-    let host_command_root = TestRoot::new("host-command-host-sidebar-search");
-    let host_command_presentation = WorktreePresentation::standalone()
+    for _ in 0..8 {
+        editor.move_file_sidebar_full_page_down().unwrap();
+    }
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-11.rs"));
+    for _ in 0..8 {
+        editor.move_file_sidebar_full_page_up().unwrap();
+    }
+    assert_eq!(selected_label(&editor).as_deref(), Some("entry-00.rs"));
+    editor.end_file_sidebar_search(search).unwrap();
+}
+
+#[test]
+fn host_sidebar_page_motion_is_safe_for_empty_trees_and_rejects_embedded_ownership() {
+    let root = TestRoot::new("host-sidebar-page-empty");
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 20, 4))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        editor.dispatch();
+        let completion = editor.ready().await;
+        editor.apply(completion, Duration::ZERO).unwrap();
+    });
+    assert!(editor.file_sidebar_snapshot().unwrap().rows().is_empty());
+    for motion in [
+        WorktreeEditor::move_file_sidebar_half_page_down,
+        WorktreeEditor::move_file_sidebar_half_page_up,
+        WorktreeEditor::move_file_sidebar_full_page_down,
+        WorktreeEditor::move_file_sidebar_full_page_up,
+    ] {
+        assert_eq!(motion(&mut editor), Ok(WorktreeUpdate::Unchanged));
+    }
+
+    let embedded_root = TestRoot::new("embedded-sidebar-page-operation");
+    let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
+        .open()
+        .unwrap();
+    assert_eq!(
+        embedded.record_file_sidebar_viewport(
+            NonZeroU16::new(4).unwrap(),
+            NonZeroU16::new(20).unwrap()
+        ),
+        Err(FileSidebarOperationError::Embedded)
+    );
+    for motion in [
+        WorktreeEditor::move_file_sidebar_half_page_down,
+        WorktreeEditor::move_file_sidebar_half_page_up,
+        WorktreeEditor::move_file_sidebar_full_page_down,
+        WorktreeEditor::move_file_sidebar_full_page_up,
+    ] {
+        assert_eq!(
+            motion(&mut embedded),
+            Err(FileSidebarOperationError::Embedded)
+        );
+    }
+}
+
+#[test]
+fn host_resolved_sidebar_bindings_route_to_the_host_sidebar_lifecycle() {
+    let root = TestRoot::new("host-sidebar-binding-parity");
+    for index in 0..8 {
+        fs::write(root.0.join(format!("match-{index:02}.rs")), "").unwrap();
+    }
+    let presentation = WorktreePresentation::standalone()
+        .which_key(SurfaceOwnership::HostOwned)
+        .file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
+        .binding_mode(WorktreeBindingMode::HostResolved {
+            reserved_escape: Key::ctrl(KeyCode::Char(']')),
+        })
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap();
+    runtime.block_on(async {
+        editor.dispatch();
+        let completion = editor.ready().await;
+        editor.apply(completion, Duration::ZERO).unwrap();
+    });
+    editor
+        .record_file_sidebar_viewport(NonZeroU16::new(4).unwrap(), NonZeroU16::new(30).unwrap())
+        .unwrap();
+
+    let bound_command = |key| {
+        editor
+            .binding_manifest()
+            .unwrap()
+            .entries()
+            .iter()
+            .find(|entry| {
+                entry.scope() == BindingScope::Sidebar && entry.sequence().keys() == [key]
+            })
+            .map(|entry| entry.command())
+            .expect("the published host profile retains the sidebar binding")
+    };
+    let commands = [
+        bound_command(Key::plain(KeyCode::Char('/'))),
+        bound_command(Key::plain(KeyCode::Char('n'))),
+        bound_command(Key::plain(KeyCode::Char('N'))),
+        bound_command(Key::ctrl(KeyCode::Char('d'))),
+        bound_command(Key::ctrl(KeyCode::Char('u'))),
+    ];
+    assert_eq!(
+        commands,
+        [
+            Command::TreeSearch,
+            Command::SearchNext,
+            Command::SearchPrevious,
+            Command::MoveHalfPageDown,
+            Command::MoveHalfPageUp,
+        ]
+    );
+    assert_ne!(
+        editor.input_context().scope,
+        BindingScope::Sidebar,
+        "the host owns sidebar focus and routes its resolved commands"
+    );
+
+    let search = match commands[0] {
+        Command::TreeSearch => editor.begin_file_sidebar_search().unwrap(),
+        _ => unreachable!("the asserted slash binding opens sidebar search"),
+    };
+    editor.accept_file_sidebar_search(search, "match").unwrap();
+    for command in &commands[1..] {
+        match command {
+            Command::SearchNext => {
+                editor.next_file_sidebar_match(search).unwrap();
+            }
+            Command::SearchPrevious => {
+                editor.previous_file_sidebar_match(search).unwrap();
+            }
+            Command::MoveHalfPageDown => {
+                editor.move_file_sidebar_half_page_down().unwrap();
+            }
+            Command::MoveHalfPageUp => {
+                editor.move_file_sidebar_half_page_up().unwrap();
+            }
+            _ => unreachable!("the asserted host bindings name supported sidebar commands"),
+        }
+    }
+    editor.end_file_sidebar_search(search).unwrap();
+}
+
+#[test]
+fn host_owned_command_line_stays_independent_of_host_sidebar_search() {
+    let root = TestRoot::new("host-command-host-sidebar-search");
+    let presentation = WorktreePresentation::standalone()
         .command_line(SurfaceOwnership::HostOwned)
         .file_sidebar(SurfaceOwnership::HostOwned);
-    let mut host_command_editor =
-        WorktreeEditor::builder(&host_command_root.0, Rect::new(0, 0, 20, 4))
-            .presentation(host_command_presentation)
-            .command_surface(WorktreeCommandSurface::new())
-            .open()
-            .unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 20, 4))
+        .presentation(presentation)
+        .command_surface(WorktreeCommandSurface::new())
+        .open()
+        .unwrap();
     let WorktreeInputOutcome::Request(WorktreeInputRequest::OpenCommandLine(command_session)) =
-        host_command_editor
+        editor
             .command(Command::OpenCommandLine, None, None, Duration::ZERO)
             .unwrap()
     else {
         panic!("host command line must open independently");
     };
-    let search = host_command_editor.begin_file_sidebar_search().unwrap();
-    host_command_editor
-        .cancel_file_sidebar_search_prompt(search)
-        .unwrap();
-    host_command_editor
-        .close_command_session(command_session)
-        .unwrap();
+    let search = editor.begin_file_sidebar_search().unwrap();
+    editor.cancel_file_sidebar_search_prompt(search).unwrap();
+    editor.close_command_session(command_session).unwrap();
 }
 
 #[test]
