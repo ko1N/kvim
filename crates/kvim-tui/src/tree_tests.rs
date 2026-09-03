@@ -2756,12 +2756,27 @@ fn the_file_clipboard_marks_a_held_entry_until_the_operation_ends() {
     assert_eq!(sidebar_row(&session, 3), "▌    README.md (cut)");
     assert_eq!(
         sidebar_style(&session, 5, 3).fg,
+        theme().style(ThemeRole::Text).fg,
+        "the held name keeps its normal foreground"
+    );
+    assert_eq!(
+        sidebar_style(&session, 14, 3).fg,
         theme().style(ThemeRole::TreeMuted).fg,
-        "the name of a held entry dims with its suffix"
+        "the cut suffix alone dims"
     );
 
     press(&mut session, 'y');
     assert_eq!(sidebar_row(&session, 3), "▌    README.md (copied)");
+    assert_eq!(
+        sidebar_style(&session, 5, 3).fg,
+        theme().style(ThemeRole::Text).fg,
+        "the held name keeps its normal foreground"
+    );
+    assert_eq!(
+        sidebar_style(&session, 14, 3).fg,
+        theme().style(ThemeRole::TreeMuted).fg,
+        "the copied suffix alone dims"
+    );
 
     // `Esc` cancels the pending operation and clears the marker.
     press_code(&mut session, KeyCode::Esc);

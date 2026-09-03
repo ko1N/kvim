@@ -664,29 +664,51 @@ pub fn draw_file_row(
     icons: FileTreeIcons,
     focus: RegionFocus,
 ) {
-    let style = theme
+    let row_style = theme
         .style(ThemeRole::Text)
         .patch(theme.style(row.state.role()));
-    let style = if row.selected {
-        style.patch(theme.style(ThemeRole::PopupSelection))
+    let row_style = if row.selected {
+        row_style.patch(theme.style(ThemeRole::PopupSelection))
     } else {
-        style
+        row_style
+    };
+    let label_style = if matches!(row.state, RowState::Held(_)) {
+        let style = theme.style(ThemeRole::Text);
+        if row.selected {
+            style.patch(theme.style(ThemeRole::PopupSelection))
+        } else {
+            style
+        }
+    } else {
+        row_style
     };
     // The selection covers the complete row, so the reader finds it at any
     // indent depth.
-    canvas.fill(style);
+    canvas.fill(row_style);
     // The Git mark owns the last cell of every row, so a long label never
     // covers it and no mark ever moves a label.
     let label_cells = canvas.width_cells().saturating_sub(GIT_MARK_CELLS);
     let text = row.text(icons);
-    canvas.draw_clipped(0, 0, &text, label_cells, style);
+    canvas.draw_clipped(0, 0, &text, label_cells, row_style);
+    if matches!(row.state, RowState::Held(_)) {
+        // A held entry keeps its name readable. Only the operation report
+        // behind it dims, so copy and move remain visible without hiding the
+        // path that the operation will affect.
+        let label_cells = text_cells(&row.label).saturating_add(usize::from(row.is_symlink));
+        paint_span(
+            canvas,
+            label_offset_cells(row.depth),
+            label_cells,
+            label_style,
+        );
+    }
     // The guides carry their own color, so they separate from the labels
     // without the state of the row changing their meaning.
     paint_span(
         canvas,
         MARK_CELLS,
         row.guides.chars().count(),
-        style.patch(theme.style(ThemeRole::TreeIndentGuide)),
+        row_style.patch(theme.style(ThemeRole::TreeIndentGuide)),
     );
     // The mark reports which row the keys move. An unfocused sidebar moves no
     // row, so it draws no mark and the fill alone reports the selection.
@@ -696,10 +718,10 @@ pub fn draw_file_row(
             0,
             SELECTION_MARK,
             mark_cells(),
-            style.patch(theme.style(ThemeRole::TreeSelectionMark)),
+            row_style.patch(theme.style(ThemeRole::TreeSelectionMark)),
         );
     }
-    draw_row_icon(canvas, row, icons, theme, style);
+    draw_row_icon(canvas, row, icons, theme, row_style);
     if let Some(git) = row.git {
         // The label of a changed file takes the color of its state. A
         // directory keeps the title color, because its state rolls up from the
@@ -710,7 +732,7 @@ pub fn draw_file_row(
                 canvas,
                 label_offset_cells(row.depth),
                 row.label.chars().count(),
-                style.patch(theme.style(ThemeRole::TreeGit(git))),
+                row_style.patch(theme.style(ThemeRole::TreeGit(git))),
             );
         }
     }
@@ -729,12 +751,20 @@ pub fn draw_file_row(
             canvas,
             label_offset_cells(row.depth).saturating_add(matched.start),
             matched.len,
-            style.patch(theme.style(role)),
+            row_style.patch(theme.style(role)),
         );
     }
-    fade_clipped_text(canvas, &text, label_cells, row, theme, style);
+    fade_clipped_text(
+        canvas,
+        &text,
+        label_cells,
+        row,
+        theme,
+        row_style,
+        label_style,
+    );
     if let Some(git) = row.git {
-        draw_git_mark(canvas, git, theme, style);
+        draw_git_mark(canvas, git, theme, row_style);
     }
 }
 
@@ -749,6 +779,7 @@ fn fade_clipped_text(
     row: &FileRow,
     theme: Theme,
     row_style: Style,
+    label_style: Style,
 ) {
     const FADE_CELLS: usize = 3;
     const FADE_STEPS: NonZeroU16 =
@@ -766,8 +797,18 @@ fn fade_clipped_text(
         let cells = value.width().unwrap_or(1);
         let end = column + cells;
         if cells > 0 && end > fade_start {
-            let mut foreground_style = row_style;
             let label_start = label_offset_cells(row.depth);
+            let mut foreground_style = if matches!(row.state, RowState::Held(_))
+                && column >= label_start
+                && column
+                    < label_start
+                        .saturating_add(text_cells(&row.label))
+                        .saturating_add(usize::from(row.is_symlink))
+            {
+                label_style
+            } else {
+                row_style
+            };
             if let Some(git) = row.git.filter(|_| {
                 row.state == RowState::File
                     && column >= label_start
