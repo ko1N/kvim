@@ -238,7 +238,7 @@ const RUST_S: [LanguageServerDeclaration; 1] = [server!(
     &[],
     rust_options,
     None,
-    Unsupported
+    Pull
 )];
 const SCSS_S: [LanguageServerDeclaration; 1] = [server!(
     "cssls",

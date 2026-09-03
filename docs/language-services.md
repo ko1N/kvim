@@ -673,6 +673,14 @@ Inside one project, kvim runs one persistent session for each selected server.
 The session speaks JSON-RPC and knows no server product. Rust-analyzer is adapter
 data, not a special case inside the client.
 
+The Rust profile uses `CompletionPolicy::Pull`. A direct JSON-RPC observation of
+`rust-analyzer 1.97.1 (8bab26f4 2026-07-14)` returned a
+`diagnosticProvider` capability with identifier `rust-analyzer`. The same
+observation received a versioned `textDocument/publishDiagnostics` notification,
+but pull is the safer completion boundary because the response directly
+completes the request. Kvim does not depend on the additional push notification.
+A versionless publication is not a completion signal and remains unsupported.
+
 The service profile declares each server as data: the identifier, fallback
 diagnostic source, program, ordered arguments, protocol language identifier,
 formatting role, workspace root markers, initialization options, optional
@@ -1248,9 +1256,11 @@ accepted only for the requested path, exact text, and document revision.
 does not publish a later result.
 
 `WaitPolicy::Until(Deadline)` owns the overall deadline. It keeps the exact
-request alive through process startup and diagnostic completion. It returns
-diagnostics, a terminal availability outcome, `Superseded`, or timeout for that
-revision without polling or resubmission.
+request alive through process startup and diagnostic completion. Use this policy
+for the first request of a cold project, because process startup and workspace
+loading are part of the same bounded wait. It returns diagnostics, a terminal
+availability outcome, `Superseded`, or timeout for that revision without
+polling or resubmission.
 
 A newer request for the same document cannot receive an older result. The
 configured policy either waits behind the active revision or explicitly
@@ -1277,6 +1287,14 @@ to the project declaration. The project driver keeps every server warm, so a
 later changed-file request reuses one running session. The host owns the async
 runtime and runs the driver. The library creates no runtime and detaches no
 task.
+
+An opened declaration exposes its project-scoped identity through
+`RealizedDiagnosticsServer::neutral_id`. Each `ProjectEvent::address` carries
+the same `ProjectId` and `ServerId`. The host verifies the address project
+against `ProjectHandle::id` and matches its server to the opened declaration.
+This recovers the stable `LanguageServerId` for lifecycle reporting.
+Marker-gated declarations have no neutral identity and start no lifecycle. This
+existing mapping needs no additional public API.
 
 The hub holds one active request. A conversation reads that request as soon as
 its server answers the handshake, so a request that a caller sent before the

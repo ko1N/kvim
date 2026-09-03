@@ -99,9 +99,15 @@ fn project(root: PathBuf) -> HeadlessDiagnosticsProject {
 #[derive(Clone, Copy)]
 enum FixtureBehavior {
     Pull,
+    RustPull,
     VersionedPush,
     Silent,
     CrashWithStderr,
+}
+
+struct HandshakeGate {
+    waiting: oneshot::Sender<()>,
+    release: oneshot::Receiver<()>,
 }
 
 type RecordedRequest = (OsString, Vec<OsString>, PathBuf);
@@ -111,6 +117,7 @@ struct FixtureLauncher {
     requests: Arc<Mutex<Vec<RecordedRequest>>>,
     cleanup: Arc<AtomicUsize>,
     behavior: FixtureBehavior,
+    handshake_gate: Option<HandshakeGate>,
 }
 
 struct FixtureLifecycle {
@@ -164,6 +171,7 @@ impl ServerLauncher for FixtureLauncher {
             server_input,
             errors_peer,
             self.behavior,
+            self.handshake_gate.take(),
             exit,
         ));
         Ok(LaunchedServer::new(
@@ -183,6 +191,7 @@ async fn serve_fixture(
     mut output: tokio::io::DuplexStream,
     mut errors: tokio::io::DuplexStream,
     behavior: FixtureBehavior,
+    mut handshake_gate: Option<HandshakeGate>,
     exited: oneshot::Sender<()>,
 ) {
     if matches!(behavior, FixtureBehavior::CrashWithStderr) {
@@ -195,6 +204,7 @@ async fn serve_fixture(
         return;
     }
     let mut read_bytes = 0;
+    let mut document_text = String::new();
     loop {
         let Ok(body) = read_frame(&mut input, &mut read_bytes, LSP_MESSAGE_BYTES_MAX * 8).await
         else {
@@ -203,11 +213,17 @@ async fn serve_fixture(
         let message: Value = serde_json::from_slice(&body).unwrap();
         match message["method"].as_str().unwrap_or_default() {
             "initialize" => {
+                if let Some(gate) = handshake_gate.take() {
+                    let _ = gate.waiting.send(());
+                    let _ = gate.release.await;
+                }
                 let capabilities = match behavior {
-                    FixtureBehavior::Pull | FixtureBehavior::Silent => json!({
-                        "textDocumentSync": 1,
-                        "diagnosticProvider": { "identifier": "fixture" }
-                    }),
+                    FixtureBehavior::Pull | FixtureBehavior::RustPull | FixtureBehavior::Silent => {
+                        json!({
+                            "textDocumentSync": 1,
+                            "diagnosticProvider": { "identifier": "fixture" }
+                        })
+                    }
                     FixtureBehavior::VersionedPush => json!({"textDocumentSync": 1}),
                     FixtureBehavior::CrashWithStderr => unreachable!(),
                 };
@@ -218,53 +234,81 @@ async fn serve_fixture(
                 )
                 .await
             }
-            "textDocument/didOpen" if matches!(behavior, FixtureBehavior::VersionedPush) => {
-                let document = &message["params"]["textDocument"];
-                let version = document["version"].as_i64().unwrap();
-                send_notification(
-                    &mut output,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/publishDiagnostics",
-                        "params": {
-                            "uri": document["uri"],
-                            "version": version - 1,
-                            "diagnostics": [{
-                                "range": {
-                                    "start": {"line": 0, "character": 0},
-                                    "end": {"line": 0, "character": 1}
-                                },
-                                "message": "stale fixture diagnostic"
-                            }]
-                        }
-                    }),
-                )
-                .await;
-                send_notification(
-                    &mut output,
-                    json!({
-                        "jsonrpc": "2.0",
-                        "method": "textDocument/publishDiagnostics",
-                        "params": {
-                            "uri": document["uri"],
-                            "version": version,
-                            "diagnostics": [{
-                                "range": {
-                                    "start": {"line": 0, "character": 0},
-                                    "end": {"line": 0, "character": 1}
-                                },
-                                "message": "current fixture diagnostic"
-                            }]
-                        }
-                    }),
-                )
-                .await;
+            "textDocument/didOpen" => {
+                document_text = message["params"]["textDocument"]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+                if matches!(behavior, FixtureBehavior::VersionedPush) {
+                    let document = &message["params"]["textDocument"];
+                    let version = document["version"].as_i64().unwrap();
+                    send_notification(
+                        &mut output,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {
+                                "uri": document["uri"],
+                                "version": version - 1,
+                                "diagnostics": [{
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 1}
+                                    },
+                                    "message": "stale fixture diagnostic"
+                                }]
+                            }
+                        }),
+                    )
+                    .await;
+                    send_notification(
+                        &mut output,
+                        json!({
+                            "jsonrpc": "2.0",
+                            "method": "textDocument/publishDiagnostics",
+                            "params": {
+                                "uri": document["uri"],
+                                "version": version,
+                                "diagnostics": [{
+                                    "range": {
+                                        "start": {"line": 0, "character": 0},
+                                        "end": {"line": 0, "character": 1}
+                                    },
+                                    "message": "current fixture diagnostic"
+                                }]
+                            }
+                        }),
+                    )
+                    .await;
+                }
             }
-            "textDocument/diagnostic" if matches!(behavior, FixtureBehavior::Pull) => {
+            "textDocument/didChange" => {
+                document_text = message["params"]["contentChanges"][0]["text"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned();
+            }
+            "textDocument/diagnostic"
+                if matches!(behavior, FixtureBehavior::Pull | FixtureBehavior::RustPull) =>
+            {
+                let items = if matches!(behavior, FixtureBehavior::RustPull)
+                    && document_text.contains("broken")
+                {
+                    json!([{
+                        "range": {
+                            "start": {"line": 0, "character": 0},
+                            "end": {"line": 0, "character": 2}
+                        },
+                        "severity": 1,
+                        "message": "matching Rust fixture diagnostic"
+                    }])
+                } else {
+                    json!([])
+                };
                 send_response(
                     &mut output,
                     &message["id"],
-                    json!({"kind": "full", "items": []}),
+                    json!({"kind": "full", "items": items}),
                 )
                 .await
             }
@@ -333,6 +377,7 @@ async fn one_open_project_serves_two_requests_through_one_warm_launch() {
                     requests: Arc::clone(&requests),
                     cleanup: Arc::clone(&cleanup),
                     behavior: FixtureBehavior::Pull,
+                    handshake_gate: None,
                 })
             }
         },
@@ -377,6 +422,129 @@ async fn one_open_project_serves_two_requests_through_one_warm_launch() {
 }
 
 #[tokio::test]
+async fn first_release_rust_profile_waits_through_cold_start_and_reports_clean() {
+    let root = root();
+    let launches = Arc::new(AtomicUsize::new(0));
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let cleanup = Arc::new(AtomicUsize::new(0));
+    let (handshake_waiting, initialize_seen) = oneshot::channel();
+    let (release_handshake, handshake_release) = oneshot::channel();
+    let handshake_gate = Arc::new(Mutex::new(Some(HandshakeGate {
+        waiting: handshake_waiting,
+        release: handshake_release,
+    })));
+    let project = HeadlessDiagnosticsProject::with_launchers(
+        DiagnosticsRegistry::first_release(),
+        root,
+        LanguageSettings::default(),
+        ProjectId::FIRST,
+        {
+            let launches = Arc::clone(&launches);
+            let requests = Arc::clone(&requests);
+            let cleanup = Arc::clone(&cleanup);
+            let handshake_gate = Arc::clone(&handshake_gate);
+            move |_| {
+                Box::new(FixtureLauncher {
+                    launches: Arc::clone(&launches),
+                    requests: Arc::clone(&requests),
+                    cleanup: Arc::clone(&cleanup),
+                    behavior: FixtureBehavior::RustPull,
+                    handshake_gate: handshake_gate.lock().unwrap().take(),
+                })
+            }
+        },
+    )
+    .unwrap();
+    let manager = ProjectManager::new(kvim_lsp::ManagerLimits::default());
+    let path = WorktreeRelativePath::new("src/main.rs").unwrap();
+    let (opened, driver) = project.open(&manager, &path).unwrap();
+    let declaration = &opened.declarations()[0];
+    assert_eq!(declaration.id().server(), "rust_analyzer");
+    assert_eq!(declaration.completion(), CompletionPolicy::Pull);
+    let language = declaration.language_id().clone();
+    let task = tokio::spawn(driver.run());
+
+    {
+        let cold_request = opened.hub().changed_file(
+            ChangedFile::new(
+                path.clone(),
+                "broken Rust source\n".to_owned(),
+                DocumentRevision::new(9),
+                language.clone(),
+            )
+            .wait(WaitPolicy::Until(Duration::from_secs(5))),
+        );
+        tokio::pin!(cold_request);
+        tokio::select! {
+            biased;
+            outcome = &mut cold_request => {
+                panic!("the cold request completed before initialize was released: {outcome:?}");
+            }
+            seen = initialize_seen => {
+                seen.expect("the fixture observes initialize");
+            }
+        }
+        assert_eq!(launches.load(Ordering::Relaxed), 1);
+        let starting = opened
+            .hub()
+            .changed_file(
+                ChangedFile::new(
+                    path.clone(),
+                    "broken Rust source\n".to_owned(),
+                    DocumentRevision::new(9),
+                    language.clone(),
+                )
+                .wait(WaitPolicy::Immediate),
+            )
+            .await
+            .unwrap();
+        assert!(matches!(starting, DiagnosticsOutcome::Starting));
+        release_handshake
+            .send(())
+            .expect("the cold request still waits at initialize");
+
+        let outcome = cold_request.as_mut().await.unwrap();
+        let DiagnosticsOutcome::Ready(report) = outcome else {
+            panic!("the Rust profile did not complete through pull diagnostics");
+        };
+        assert_eq!(report.revision(), DocumentRevision::new(9));
+        assert_eq!(report.diagnostics().len(), 1);
+        assert_eq!(
+            report.diagnostics()[0].diagnostic.message,
+            "matching Rust fixture diagnostic"
+        );
+    }
+
+    let clean = opened
+        .hub()
+        .changed_file(
+            ChangedFile::new(
+                path,
+                "fn main() {}\n".to_owned(),
+                DocumentRevision::new(10),
+                language,
+            )
+            .wait(WaitPolicy::Until(Duration::from_secs(5))),
+        )
+        .await
+        .unwrap();
+    let DiagnosticsOutcome::Ready(clean) = clean else {
+        panic!("matching empty Rust diagnostics did not complete the report");
+    };
+    assert_eq!(clean.revision(), DocumentRevision::new(10));
+    assert!(clean.diagnostics().is_empty());
+    assert!(matches!(
+        clean.servers()[0].outcome,
+        ServerOutcome::Ready {
+            diagnostics: 0,
+            truncation: kvim_lsp::Truncation::Complete,
+        }
+    ));
+
+    close_project(opened, task, &cleanup, &manager).await;
+}
+
+#[tokio::test]
 async fn versioned_push_ignores_stale_publications_and_completes_exact_revision() {
     let root = root();
     let launches = Arc::new(AtomicUsize::new(0));
@@ -397,6 +565,7 @@ async fn versioned_push_ignores_stale_publications_and_completes_exact_revision(
                     requests: Arc::clone(&requests),
                     cleanup: Arc::clone(&cleanup),
                     behavior: FixtureBehavior::VersionedPush,
+                    handshake_gate: None,
                 })
             }
         },
@@ -459,6 +628,7 @@ async fn launcher_backed_timeout_and_cancellation_cleanup_the_warm_lifecycle() {
                         requests: Arc::clone(&requests),
                         cleanup: Arc::clone(&cleanup),
                         behavior: FixtureBehavior::Silent,
+                        handshake_gate: None,
                     })
                 }
             },
@@ -578,6 +748,7 @@ async fn stderr_is_operator_report_only_across_bounded_restarts() {
                     requests: Arc::clone(&requests),
                     cleanup: Arc::clone(&cleanup),
                     behavior: FixtureBehavior::CrashWithStderr,
+                    handshake_gate: None,
                 })
             }
         },
@@ -775,6 +946,7 @@ fn first_release_realizes_rust_check_depths_and_eslint_settings() {
             rust.declarations()[0].initialization_options(),
             &json!({"check": {"command": command}})
         );
+        assert_eq!(rust.declarations()[0].completion(), CompletionPolicy::Pull);
         let typescript = project
             .select(&WorktreeRelativePath::new("src/main.ts").unwrap())
             .unwrap();

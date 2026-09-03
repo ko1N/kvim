@@ -38,6 +38,10 @@ fn first_release_is_grammar_independent_and_deterministic() {
     let rust = registry.profile(Path::new("src/lib.rs")).unwrap();
     assert_eq!(rust.id(), "rust");
     assert_eq!(rust.language_servers()[0].program, "rust-analyzer");
+    assert_eq!(
+        rust.language_servers()[0].diagnostics_completion,
+        CompletionPolicy::Pull
+    );
     assert!(matches!(
         registry.profile(Path::new("src/lib.RS")),
         Err(DiagnosticsSelectionError::UnsupportedPath)
@@ -89,11 +93,12 @@ fn completion_inventory_is_evidence_based() {
         pull,
         [
             ("javascript", "eslint"),
+            ("rust", "rust_analyzer"),
             ("tsx", "eslint"),
             ("typescript", "eslint")
         ]
     );
-    assert_eq!(unsupported, 25);
+    assert_eq!(unsupported, 24);
 }
 
 #[test]
