@@ -50,7 +50,10 @@ use kvim_workspace::{BUFFERS_MAX, FileOperation};
 
 use super::clipboard::ClipboardAccess;
 use super::driver::{Completed, DriverApplyError, EditorDriver, EditorWork, ShutdownDrain};
-use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
+use super::file_sidebar::{
+    FileRow, FileSidebarInput, FileSidebarOperation, FileSidebarOperationOutcome,
+    FileSidebarOutcome,
+};
 use super::session::{
     RecoveryDecision, RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState,
     Session,
@@ -1265,6 +1268,19 @@ impl EmbeddedEditor {
     #[must_use]
     pub fn file_sidebar(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
         self.editor.reduce_file_sidebar(input)
+    }
+
+    /// Applies one private semantic operation to a host-owned file sidebar.
+    ///
+    /// This method is an implementation seam for `kvim-embed`. It is not a
+    /// supported `kvim-tui` host contract.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn file_sidebar_operation(
+        &mut self,
+        operation: FileSidebarOperation,
+    ) -> FileSidebarOperationOutcome {
+        self.editor.operate_file_sidebar(operation)
     }
 
     /// Applies one normalized terminal event through the internal standalone resolver.

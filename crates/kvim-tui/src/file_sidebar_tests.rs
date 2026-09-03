@@ -5,9 +5,11 @@
 //! the editor as one [`WorkspaceRequest`], and the test runs it exactly where a
 //! host runs it, off the event loop. See `docs/embedding.md`.
 
+use std::num::NonZeroU16;
 use std::path::Path;
 use std::time::Duration;
 
+use kvim_input::Registry;
 use kvim_path::{WorktreeDirectoryPath, WorktreeRelativePath};
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
@@ -42,6 +44,19 @@ fn editor(root: &Path) -> Session {
     let mut settings = EditorSettings::default();
     settings.files.undo_file = false;
     Session::new(AREA, settings, test_root(root.to_path_buf()))
+}
+
+/// Creates one editor whose host owns the file-sidebar presentation.
+fn host_sidebar_editor(root: &Path) -> Session {
+    let mut settings = EditorSettings::default();
+    settings.files.undo_file = false;
+    Session::new_with_registry_and_presentation(
+        AREA,
+        settings,
+        test_root(root.to_path_buf()),
+        Registry::first_release(),
+        crate::embed::EditorPresentation::new(true, true, true, false),
+    )
 }
 
 /// Runs every queued directory read, exactly where a host runs it.
@@ -178,6 +193,107 @@ fn answer_git(session: &mut Session, stdout: &[u8]) {
 fn publish_git(session: &mut Session, output: &str) {
     answer_git(session, b"\n");
     answer_git(session, output.as_bytes());
+}
+
+#[test]
+fn semantic_search_reuses_tree_matching_and_reports_a_typed_miss() {
+    let directory = workspace("file-sidebar-semantic-search");
+    let mut session = host_sidebar_editor(&directory.path);
+    read_directories(&mut session);
+
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::StartSearch("inner".to_owned())),
+        FileSidebarOperationOutcome::Applied
+    );
+    read_directories(&mut session);
+    assert_eq!(
+        row_of(&session, "inner.rs").matched_characters(),
+        Some((0, 5))
+    );
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::NextMatch),
+        FileSidebarOperationOutcome::Applied
+    );
+    assert!(row_of(&session, "inner.rs").is_selected());
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::PreviousMatch),
+        FileSidebarOperationOutcome::Applied
+    );
+    assert!(row_of(&session, "inner.rs").is_selected());
+
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::StartSearch("absent".to_owned())),
+        FileSidebarOperationOutcome::Applied
+    );
+    read_directories(&mut session);
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::PreviousMatch),
+        FileSidebarOperationOutcome::SearchMissed
+    );
+
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::EndSearch),
+        FileSidebarOperationOutcome::Applied
+    );
+    assert_eq!(row_of(&session, "src").kind(), FileRowKind::ClosedDirectory);
+}
+
+#[test]
+fn semantic_page_motion_uses_the_latest_host_viewport_and_bounds_selection() {
+    let directory = TempDir::new("file-sidebar-semantic-pages");
+    for index in 0..12 {
+        directory.file(&format!("{index:02}.rs"), "");
+    }
+    directory.file(".hidden", "");
+    let mut session = host_sidebar_editor(&directory.path);
+    read_directories(&mut session);
+
+    assert_eq!(
+        session.operate_file_sidebar(FileSidebarOperation::RecordViewport {
+            height_rows: NonZeroU16::new(6).unwrap(),
+            width_cells: NonZeroU16::new(30).unwrap(),
+        }),
+        FileSidebarOperationOutcome::Applied
+    );
+    assert!(row_of(&session, "00.rs").is_selected());
+
+    let _ = session.operate_file_sidebar(FileSidebarOperation::HalfPageDown);
+    assert!(row_of(&session, "03.rs").is_selected());
+    let _ = session.operate_file_sidebar(FileSidebarOperation::FullPageDown);
+    assert!(row_of(&session, "07.rs").is_selected());
+
+    let _ = session.operate_file_sidebar(FileSidebarOperation::RecordViewport {
+        height_rows: NonZeroU16::new(4).unwrap(),
+        width_cells: NonZeroU16::new(20).unwrap(),
+    });
+    let _ = session.operate_file_sidebar(FileSidebarOperation::FullPageUp);
+    assert!(row_of(&session, "05.rs").is_selected());
+    let _ = session.operate_file_sidebar(FileSidebarOperation::HalfPageUp);
+    assert!(row_of(&session, "03.rs").is_selected());
+
+    for _ in 0..8 {
+        let _ = session.operate_file_sidebar(FileSidebarOperation::FullPageDown);
+    }
+    assert!(row_of(&session, "11.rs").is_selected());
+}
+
+#[test]
+fn semantic_motion_is_safe_before_rows_or_host_geometry_exist() {
+    let directory = TempDir::new("file-sidebar-semantic-empty");
+    let mut session = host_sidebar_editor(&directory.path);
+
+    for operation in [
+        FileSidebarOperation::HalfPageDown,
+        FileSidebarOperation::HalfPageUp,
+        FileSidebarOperation::FullPageDown,
+        FileSidebarOperation::FullPageUp,
+    ] {
+        assert_eq!(
+            session.operate_file_sidebar(operation),
+            FileSidebarOperationOutcome::Applied
+        );
+    }
+    assert!(session.file_rows().is_empty());
 }
 
 #[test]

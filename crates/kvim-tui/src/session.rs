@@ -106,7 +106,10 @@ use super::embed::{
     EditorPresentation, EventReservation, GeometryError, InputRequest, PublishedEvent, Reduction,
     ReductionOutcome, Refusal, fits,
 };
-use super::file_sidebar::{FileRow, FileSidebarInput, FileSidebarOutcome};
+use super::file_sidebar::{
+    FileRow, FileSidebarInput, FileSidebarOperation, FileSidebarOperationOutcome,
+    FileSidebarOutcome,
+};
 use super::jumps::{JumpDirection, JumpEntry, JumpStep};
 use super::language::{
     AcceptedQuery, AfterSave, Answer, DiagnosticJump, Float, FormatOnSave, LanguageNotice,
@@ -1620,6 +1623,11 @@ pub struct Session {
     tree: TreeSidebar,
     /// The sidebar region of the window tree, while the tree ever opened it.
     tree_region: Option<WindowId>,
+    /// The host-owned sidebar viewport, after the host records its geometry.
+    ///
+    /// The value stays separate from `tree_region`, which remains the owner of
+    /// standalone geometry. A host resize replaces this complete value.
+    host_file_sidebar_viewport: Option<Viewport>,
     /// The picker that covers the terminal, while one is open.
     ///
     /// The picker owns its own prompt, so it lives exactly as long as that
@@ -1820,6 +1828,7 @@ impl Session {
             ),
             tree: TreeSidebar::new(Arc::clone(&root)),
             tree_region: None,
+            host_file_sidebar_viewport: None,
             picker: None,
             review: None,
             review_open: false,
@@ -2545,6 +2554,61 @@ impl Session {
     /// dispatch hands to the worker service.
     pub(super) fn reduce_file_sidebar(&mut self, input: FileSidebarInput) -> FileSidebarOutcome {
         let outcome = self.tree.reduce_host(input);
+        self.reconcile_tree();
+        self.note_redraw(Redraw::Needed);
+        outcome
+    }
+
+    /// Applies one private semantic operation for a host-owned file sidebar.
+    pub(super) fn operate_file_sidebar(
+        &mut self,
+        operation: FileSidebarOperation,
+    ) -> FileSidebarOperationOutcome {
+        let outcome = match operation {
+            FileSidebarOperation::StartSearch(query) => {
+                self.tree.start_search(&query);
+                FileSidebarOperationOutcome::Applied
+            }
+            FileSidebarOperation::EndSearch => {
+                self.tree.end_search();
+                FileSidebarOperationOutcome::Applied
+            }
+            FileSidebarOperation::NextMatch => {
+                match self.tree.select_match(SearchDirection::Forward) {
+                    TreeMatchOutcome::Moved => FileSidebarOperationOutcome::Applied,
+                    TreeMatchOutcome::Missed => FileSidebarOperationOutcome::SearchMissed,
+                }
+            }
+            FileSidebarOperation::PreviousMatch => {
+                match self.tree.select_match(SearchDirection::Backward) {
+                    TreeMatchOutcome::Moved => FileSidebarOperationOutcome::Applied,
+                    TreeMatchOutcome::Missed => FileSidebarOperationOutcome::SearchMissed,
+                }
+            }
+            FileSidebarOperation::RecordViewport {
+                height_rows,
+                width_cells,
+            } => {
+                self.host_file_sidebar_viewport = Some(Viewport::new(height_rows, width_cells));
+                FileSidebarOperationOutcome::Applied
+            }
+            FileSidebarOperation::HalfPageDown => {
+                self.apply_owned_tree_command(Command::MoveHalfPageDown, None);
+                FileSidebarOperationOutcome::Applied
+            }
+            FileSidebarOperation::HalfPageUp => {
+                self.apply_owned_tree_command(Command::MoveHalfPageUp, None);
+                FileSidebarOperationOutcome::Applied
+            }
+            FileSidebarOperation::FullPageDown => {
+                self.apply_owned_tree_command(Command::MoveFullPageDown, None);
+                FileSidebarOperationOutcome::Applied
+            }
+            FileSidebarOperation::FullPageUp => {
+                self.apply_owned_tree_command(Command::MoveFullPageUp, None);
+                FileSidebarOperationOutcome::Applied
+            }
+        };
         self.reconcile_tree();
         self.note_redraw(Redraw::Needed);
         outcome
@@ -6983,6 +7047,9 @@ impl Session {
     /// A hidden sidebar, and a sidebar that holds the title alone, report no
     /// region.
     fn tree_viewport(&self) -> Option<Viewport> {
+        if !self.presentation.file_sidebar_embedded() {
+            return self.host_file_sidebar_viewport;
+        }
         let area = self
             .tree_region
             .and_then(|id| self.windows.layout().area(id))?;

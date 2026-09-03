@@ -974,6 +974,49 @@ impl FileSidebarOutcome {
     }
 }
 
+/// One private semantic operation for a host-owned file sidebar.
+///
+/// [`EmbeddedEditor`](super::embed::EmbeddedEditor) exposes this type only to
+/// `kvim-embed`. It keeps search matching, expansion ownership, and page
+/// distance inside the session instead of giving a host tree implementation.
+#[doc(hidden)]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FileSidebarOperation {
+    /// Starts or refines file-tree search with one already bounded query.
+    StartSearch(String),
+    /// Ends active file-tree search and restores search-owned expansion.
+    EndSearch,
+    /// Selects the next matching entry, wrapping at the last match.
+    NextMatch,
+    /// Selects the previous matching entry, wrapping at the first match.
+    PreviousMatch,
+    /// Records the visible host-sidebar geometry for later semantic page moves.
+    RecordViewport {
+        /// The number of visible entry rows.
+        height_rows: NonZeroU16,
+        /// The width of the visible entry area in terminal cells.
+        width_cells: NonZeroU16,
+    },
+    /// Moves down by the current host viewport half-page distance.
+    HalfPageDown,
+    /// Moves up by the current host viewport half-page distance.
+    HalfPageUp,
+    /// Moves down by the current host viewport full-page distance.
+    FullPageDown,
+    /// Moves up by the current host viewport full-page distance.
+    FullPageUp,
+}
+
+/// What one private file-sidebar operation changed.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarOperationOutcome {
+    /// The operation changed sidebar state or recorded usable geometry.
+    Applied,
+    /// A match move found no matching entry.
+    SearchMissed,
+}
+
 #[cfg(test)]
 #[path = "file_sidebar_tests.rs"]
 mod tests;
