@@ -74,11 +74,11 @@ mod protocol;
 pub use diagnostics::{
     ChangedFile, ChangedFileReport, CompletionPolicy, DiagnosticsConversation, DiagnosticsHub,
     DiagnosticsLimits, DiagnosticsOutcome, DiagnosticsServer, DocumentRevision,
-    LSP_DIAGNOSTIC_DEADLINE, LSP_DIAGNOSTIC_MESSAGE_BYTES_MAX, LSP_DIAGNOSTICS_MAX,
-    LSP_DOCUMENT_BYTES_MAX, LSP_LANGUAGE_BYTES_MAX, LSP_MERGED_DIAGNOSTICS_MAX,
-    LSP_RELATED_INFORMATION_MAX, LSP_REQUEST_BYTES_MAX, LSP_SERVER_LANGUAGES_MAX,
-    LSP_SERVER_SOURCE_BYTES_MAX, LanguageId, RelatedInformation, ReportedDiagnostic,
-    RevisionPolicy, ServerDiagnostics, ServerOutcome, Truncation, WaitPolicy,
+    LSP_DIAGNOSTIC_DEADLINE, LSP_DIAGNOSTIC_MESSAGE_BYTES_MAX, LSP_DIAGNOSTIC_REFRESH_PULLS_MAX,
+    LSP_DIAGNOSTICS_MAX, LSP_DOCUMENT_BYTES_MAX, LSP_LANGUAGE_BYTES_MAX,
+    LSP_MERGED_DIAGNOSTICS_MAX, LSP_RELATED_INFORMATION_MAX, LSP_REQUEST_BYTES_MAX,
+    LSP_SERVER_LANGUAGES_MAX, LSP_SERVER_SOURCE_BYTES_MAX, LanguageId, RelatedInformation,
+    ReportedDiagnostic, RevisionPolicy, ServerDiagnostics, ServerOutcome, Truncation, WaitPolicy,
 };
 pub use document::{
     ContentChange, Diagnostic, DiagnosticSeverity, RawDiagnostic, RawTextEdit, SourceLocation,

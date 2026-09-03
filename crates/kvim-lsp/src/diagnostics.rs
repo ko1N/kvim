@@ -105,11 +105,24 @@ pub const LSP_SERVER_LANGUAGES_MAX: usize = 16;
 /// The protocol carries short identifiers such as `rust` or `typescriptreact`.
 pub const LSP_LANGUAGE_BYTES_MAX: usize = 64;
 
+/// The method that asks the client to pull diagnostics again.
+const DIAGNOSTIC_REFRESH_METHOD: &str = "workspace/diagnostic/refresh";
+
+/// The refresh-driven pulls allowed for one changed-file operation.
+///
+/// Refresh requests prove that analysis progressed, but cannot be assumed to
+/// stop after one cycle. Eight permits bounded startup progress while the job's
+/// absolute deadline and traffic budget remain authoritative.
+pub const LSP_DIAGNOSTIC_REFRESH_PULLS_MAX: usize = 8;
+
 /// The method that carries one pulled diagnostic report.
 const PULL_METHOD: &str = "textDocument/diagnostic";
 
 /// The method that carries one published diagnostic set.
 const PUBLISH_METHOD: &str = "textDocument/publishDiagnostics";
+
+/// The JSON-RPC code for an LSP request cancelled by the server.
+const REQUEST_CANCELLED: i64 = -32802;
 
 /// The `kind` value of a report that repeats the previous set.
 const UNCHANGED_REPORT: &str = "unchanged";
@@ -223,6 +236,16 @@ pub enum CompletionPolicy {
     /// that capability answers no pull, so the request reports it as
     /// unsupported.
     Pull,
+    /// Ask with `textDocument/diagnostic`, but treat an initial empty report as
+    /// provisional until `workspace/diagnostic/refresh` requests one more pull.
+    ///
+    /// A non-empty initial report proves that analysis is ready. Any full
+    /// response to the first refresh-driven pull also proves readiness,
+    /// including an empty report. Later revisions complete on their first full
+    /// report. Each operation permits at most
+    /// [`LSP_DIAGNOSTIC_REFRESH_PULLS_MAX`] refresh-driven pulls. The bound
+    /// limits cancellation and refresh turnover.
+    PullAfterRefresh,
     /// Complete on a `textDocument/publishDiagnostics` notification that names
     /// the exact requested revision.
     VersionedPush,
@@ -696,6 +719,13 @@ enum SlotOutcome {
     Failed(LspError),
     /// The session of this server stopped before it answered.
     Cancelled,
+}
+
+impl SlotOutcome {
+    /// Reports whether a successful server answer contains no diagnostics.
+    fn is_empty(&self) -> bool {
+        matches!(self, Self::Ready { items, .. } if items.is_empty())
+    }
 }
 
 /// The result slot of one selected server of one job.
@@ -1258,6 +1288,7 @@ impl DiagnosticsHub {
             server: id,
             completion,
             open: None,
+            refresh_ready: false,
         })
     }
 
@@ -1391,13 +1422,20 @@ pub struct DiagnosticsConversation {
     completion: CompletionPolicy,
     /// The URI that this attempt holds open, or `None`.
     open: Option<String>,
+    /// Whether this server attempt has proved that initial analysis is ready.
+    refresh_ready: bool,
 }
 
 /// What one attempt waits for after it synchronized the document.
 #[derive(Clone, Copy, Debug)]
 enum Target {
-    /// The answer of one `textDocument/diagnostic` request.
-    Pull {
+    /// The initial `textDocument/diagnostic` answer for one revision.
+    InitialPull {
+        /// The request number that the answer must carry.
+        number: u64,
+    },
+    /// A pull started after the server requested a diagnostic refresh.
+    RefreshPull {
         /// The request number that the answer must carry.
         number: u64,
     },
@@ -1410,6 +1448,7 @@ impl ServerConversation for DiagnosticsConversation {
         // A restarted server holds no document of the previous attempt, so this
         // attempt opens every document that it serves again.
         self.open = None;
+        self.refresh_ready = false;
         loop {
             let active = self.jobs.borrow_and_update().clone();
             if let Some(job) = active
@@ -1465,14 +1504,16 @@ impl DiagnosticsConversation {
         let completion = match self.completion {
             CompletionPolicy::Unsupported => return Ok(Some(SlotOutcome::Unsupported)),
             CompletionPolicy::VersionedPush => Completion::Push,
-            CompletionPolicy::Pull => match attempt.capabilities.diagnostics() {
-                DiagnosticsModel::Pull { identifier } => Completion::Pull {
-                    identifier: identifier.clone(),
-                },
-                // The server advertises no diagnostic provider, so it answers
-                // no pull and this policy names no safe completion.
-                DiagnosticsModel::Push => return Ok(Some(SlotOutcome::Unsupported)),
-            },
+            CompletionPolicy::Pull | CompletionPolicy::PullAfterRefresh => {
+                match attempt.capabilities.diagnostics() {
+                    DiagnosticsModel::Pull { identifier } => Completion::Pull {
+                        identifier: identifier.clone(),
+                    },
+                    // The server advertises no diagnostic provider, so it answers
+                    // no pull and this policy names no safe completion.
+                    DiagnosticsModel::Push => return Ok(Some(SlotOutcome::Unsupported)),
+                }
+            }
         };
         let uri = attempt.root.relative_uri(&job.path)?;
         // The mapping converts every received column against the exact text
@@ -1490,7 +1531,7 @@ impl DiagnosticsConversation {
                 if let Some(identifier) = identifier {
                     params["identifier"] = Value::String(identifier);
                 }
-                Target::Pull {
+                Target::InitialPull {
                     number: attempt.writer.request(PULL_METHOD, params).await?,
                 }
             }
@@ -1544,13 +1585,18 @@ impl DiagnosticsConversation {
     /// cancellation owner of the project, so no server can hold this request
     /// open.
     async fn collect(
-        &self,
+        &mut self,
         attempt: &mut Attempt<'_>,
         job: &Job,
         uri: &str,
         mapping: &DocumentMapping,
         target: Target,
     ) -> Result<Option<SlotOutcome>, LspError> {
+        let refresh_aware = matches!(self.completion, CompletionPolicy::PullAfterRefresh);
+        let mut target = target;
+        let mut refresh_pulls = 0_usize;
+        let mut refresh_pending = false;
+        let mut initial_empty = false;
         let mut traffic = 0_usize;
         loop {
             let envelope = tokio::select! {
@@ -1568,22 +1614,50 @@ impl DiagnosticsConversation {
             enforce(traffic, job.limits.protocol_bytes, LspBound::RequestBytes)?;
             if let Some(method) = envelope.method.as_deref() {
                 if method == PUBLISH_METHOD {
-                    if matches!(target, Target::Push)
+                    if (matches!(target, Target::Push) || refresh_aware)
                         && let Some(outcome) = self.accept_publish(job, uri, mapping, &envelope)?
                     {
-                        return Ok(Some(outcome));
+                        if !refresh_aware || !outcome.is_empty() {
+                            self.refresh_ready = true;
+                            return Ok(Some(outcome));
+                        }
                     }
                     continue;
                 }
-                // kvim implements no server-to-client request, so it answers
-                // every one of them and no server stalls behind this request.
+                if method == DIAGNOSTIC_REFRESH_METHOD
+                    && let Some(id) = envelope.id
+                {
+                    attempt.writer.accept_server_request(id).await?;
+                    if !refresh_aware {
+                        continue;
+                    }
+                    refresh_pending = true;
+                    if !self.refresh_ready
+                        && initial_empty
+                        && matches!(target, Target::InitialPull { .. })
+                    {
+                        debug_assert!(
+                            refresh_pulls < LSP_DIAGNOSTIC_REFRESH_PULLS_MAX,
+                            "an initial pull can schedule only its first refresh-driven pull"
+                        );
+                        refresh_pending = false;
+                        initial_empty = false;
+                        refresh_pulls += 1;
+                        target = self.request_refresh_pull(attempt, uri).await?;
+                    }
+                    continue;
+                }
+                // Other server-to-client requests are unsupported. Answer each
+                // one so the server cannot stall behind this operation.
                 if let Some(id) = envelope.id {
                     attempt.writer.reject_server_request(id).await?;
                 }
                 continue;
             }
-            let Target::Pull { number } = target else {
-                continue;
+            let (number, refresh_driven) = match target {
+                Target::InitialPull { number } => (number, false),
+                Target::RefreshPull { number } => (number, true),
+                Target::Push => continue,
             };
             let Some(RpcId::Unsigned(id)) = envelope.id else {
                 continue;
@@ -1592,11 +1666,54 @@ impl DiagnosticsConversation {
                 continue;
             }
             if let Some(error) = envelope.error {
+                if refresh_aware && error.code == REQUEST_CANCELLED {
+                    if !refresh_pending || refresh_pulls >= LSP_DIAGNOSTIC_REFRESH_PULLS_MAX {
+                        return Err(LspError::Response { code: error.code });
+                    }
+                    refresh_pending = false;
+                    initial_empty = false;
+                    refresh_pulls += 1;
+                    target = self.request_refresh_pull(attempt, uri).await?;
+                    continue;
+                }
                 return Err(LspError::Response { code: error.code });
             }
             let result = envelope.result.ok_or(LspError::MalformedResponse)?;
-            return self.read_report(job, mapping, uri, &result).map(Some);
+            let outcome = self.read_report(job, mapping, uri, &result)?;
+            if !refresh_aware || self.refresh_ready || refresh_driven || !outcome.is_empty() {
+                self.refresh_ready = true;
+                return Ok(Some(outcome));
+            }
+            initial_empty = true;
+            if refresh_pending {
+                debug_assert!(
+                    refresh_pulls < LSP_DIAGNOSTIC_REFRESH_PULLS_MAX,
+                    "an initial pull can schedule only its first refresh-driven pull"
+                );
+                refresh_pending = false;
+                initial_empty = false;
+                refresh_pulls += 1;
+                target = self.request_refresh_pull(attempt, uri).await?;
+            }
         }
+    }
+
+    /// Starts one refresh-driven pull with the provider identifier.
+    async fn request_refresh_pull(
+        &self,
+        attempt: &mut Attempt<'_>,
+        uri: &str,
+    ) -> Result<Target, LspError> {
+        let mut params = json!({ "textDocument": { "uri": uri } });
+        if let DiagnosticsModel::Pull {
+            identifier: Some(identifier),
+        } = attempt.capabilities.diagnostics()
+        {
+            params["identifier"] = Value::String(identifier.clone());
+        }
+        Ok(Target::RefreshPull {
+            number: attempt.writer.request(PULL_METHOD, params).await?,
+        })
     }
 
     /// Reads one published set, or `None` for a set of another revision.

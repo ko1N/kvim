@@ -460,7 +460,7 @@ async fn first_release_rust_profile_waits_through_cold_start_and_reports_clean()
     let (opened, driver) = project.open(&manager, &path).unwrap();
     let declaration = &opened.declarations()[0];
     assert_eq!(declaration.id().server(), "rust_analyzer");
-    assert_eq!(declaration.completion(), CompletionPolicy::Pull);
+    assert_eq!(declaration.completion(), CompletionPolicy::PullAfterRefresh);
     let language = declaration.language_id().clone();
     let task = tokio::spawn(driver.run());
 
@@ -946,7 +946,10 @@ fn first_release_realizes_rust_check_depths_and_eslint_settings() {
             rust.declarations()[0].initialization_options(),
             &json!({"check": {"command": command}})
         );
-        assert_eq!(rust.declarations()[0].completion(), CompletionPolicy::Pull);
+        assert_eq!(
+            rust.declarations()[0].completion(),
+            CompletionPolicy::PullAfterRefresh
+        );
         let typescript = project
             .select(&WorktreeRelativePath::new("src/main.ts").unwrap())
             .unwrap();
