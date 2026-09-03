@@ -471,6 +471,121 @@ fn host_owned_sidebar_publishes_stable_bounded_rows_and_semantic_commands() {
 }
 
 #[test]
+fn host_sidebar_search_lifecycle_rejects_stale_wrong_instance_and_oversized_queries() {
+    let root = TestRoot::new("host-sidebar-search-lifecycle");
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    let other_root = TestRoot::new("other-host-sidebar-search");
+    let other_presentation =
+        WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut other = WorktreeEditor::builder(&other_root.0, Rect::new(0, 0, 40, 6))
+        .presentation(other_presentation)
+        .open()
+        .unwrap();
+
+    let stale_prompt = editor.begin_file_sidebar_search().unwrap();
+    let prompt = editor.begin_file_sidebar_search().unwrap();
+    assert_eq!(
+        editor.accept_file_sidebar_search(stale_prompt, "src"),
+        Err(FileSidebarOperationError::StaleSearch)
+    );
+    assert_eq!(
+        other.accept_file_sidebar_search(prompt, "src"),
+        Err(FileSidebarOperationError::WrongInstance)
+    );
+    let oversized = "x".repeat(FILE_SIDEBAR_SEARCH_CHARS_MAX + 1);
+    assert_eq!(
+        editor.accept_file_sidebar_search(prompt, &oversized),
+        Err(FileSidebarOperationError::QueryTooLong)
+    );
+    editor.accept_file_sidebar_search(prompt, "src").unwrap();
+    assert_eq!(
+        editor.update_file_sidebar_search(prompt, &oversized),
+        Err(FileSidebarOperationError::QueryTooLong)
+    );
+    editor.update_file_sidebar_search(prompt, "main").unwrap();
+
+    let replacement_prompt = editor.begin_file_sidebar_search().unwrap();
+    editor
+        .cancel_file_sidebar_search_prompt(replacement_prompt)
+        .unwrap();
+    assert_eq!(
+        editor.next_file_sidebar_match(prompt),
+        Ok(FileSidebarSearchOutcome::SearchMissed)
+    );
+    editor.end_file_sidebar_search(prompt).unwrap();
+    assert_eq!(
+        editor.previous_file_sidebar_match(prompt),
+        Err(FileSidebarOperationError::StaleSearch)
+    );
+
+    let empty = editor.begin_file_sidebar_search().unwrap();
+    editor.accept_file_sidebar_search(empty, "").unwrap();
+    assert_eq!(
+        editor.end_file_sidebar_search(empty),
+        Err(FileSidebarOperationError::StaleSearch)
+    );
+}
+
+#[test]
+fn host_sidebar_page_commands_accept_geometry_and_embedded_sidebar_rejects_operations() {
+    let root = TestRoot::new("host-sidebar-page-api");
+    let presentation = WorktreePresentation::standalone().file_sidebar(SurfaceOwnership::HostOwned);
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 40, 6))
+        .presentation(presentation)
+        .open()
+        .unwrap();
+    editor
+        .record_file_sidebar_viewport(NonZeroU16::new(4).unwrap(), NonZeroU16::new(20).unwrap())
+        .unwrap();
+    editor.move_file_sidebar_half_page_down().unwrap();
+    editor.move_file_sidebar_half_page_up().unwrap();
+    editor.move_file_sidebar_full_page_down().unwrap();
+    editor.move_file_sidebar_full_page_up().unwrap();
+
+    let embedded_root = TestRoot::new("embedded-sidebar-operation");
+    let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
+        .open()
+        .unwrap();
+    assert_eq!(
+        embedded.begin_file_sidebar_search(),
+        Err(FileSidebarOperationError::Embedded)
+    );
+    assert_eq!(
+        embedded.move_file_sidebar_half_page_down(),
+        Err(FileSidebarOperationError::Embedded)
+    );
+
+    let host_command_root = TestRoot::new("host-command-host-sidebar-search");
+    let host_command_presentation = WorktreePresentation::standalone()
+        .command_line(SurfaceOwnership::HostOwned)
+        .file_sidebar(SurfaceOwnership::HostOwned);
+    let mut host_command_editor =
+        WorktreeEditor::builder(&host_command_root.0, Rect::new(0, 0, 20, 4))
+            .presentation(host_command_presentation)
+            .command_surface(WorktreeCommandSurface::new())
+            .open()
+            .unwrap();
+    let WorktreeInputOutcome::Request(WorktreeInputRequest::OpenCommandLine(command_session)) =
+        host_command_editor
+            .command(Command::OpenCommandLine, None, None, Duration::ZERO)
+            .unwrap()
+    else {
+        panic!("host command line must open independently");
+    };
+    let search = host_command_editor.begin_file_sidebar_search().unwrap();
+    host_command_editor
+        .cancel_file_sidebar_search_prompt(search)
+        .unwrap();
+    host_command_editor
+        .close_command_session(command_session)
+        .unwrap();
+}
+
+#[test]
 fn host_owned_sidebar_activation_opens_the_selected_file() {
     let root = TestRoot::new("host-sidebar-activation");
     fs::write(root.0.join("only.rs"), "pub fn only() {}\n").unwrap();

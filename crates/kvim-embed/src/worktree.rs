@@ -6,7 +6,7 @@
 use std::cell::Cell;
 use std::error::Error as StdError;
 use std::fmt;
-use std::num::NonZeroU32;
+use std::num::{NonZeroU16, NonZeroU32};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -32,6 +32,8 @@ use kvim_tui::__private::{
     FileRowDimming as TuiFileRowDimming, FileRowGit as TuiFileRowGit,
     FileRowIdentity as TuiFileRowIdentity, FileRowKind as TuiFileRowKind,
     FileRowNoticeKind as TuiFileRowNoticeKind, FileSidebarInput as TuiFileSidebarInput,
+    FileSidebarOperation as TuiFileSidebarOperation,
+    FileSidebarOperationOutcome as TuiFileSidebarOperationOutcome,
     FileSidebarOutcome as TuiFileSidebarOutcome, GeometryError as TuiGeometryError,
     HostReportRequest as TuiHostReportRequest, HostWorkspace as TuiHostWorkspace,
     IconRole as TuiIconRole, InputRequest as TuiInputRequest, ListMotion as TuiListMotion,
@@ -513,6 +515,45 @@ pub enum FileSidebarOutcome {
     HostFocusBoundary(Direction),
     /// The sidebar is embedded and does not accept host-sidebar commands.
     Embedded,
+}
+
+/// Maximum characters in one accepted file-sidebar search query.
+pub const FILE_SIDEBAR_SEARCH_CHARS_MAX: usize = kvim_workspace::TREE_SEARCH_CHARS_MAX;
+
+/// Facade identity of one file-sidebar search prompt or accepted search.
+///
+/// A host obtains this opaque identity from
+/// [`WorktreeEditor::begin_file_sidebar_search`].
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub struct FileSidebarSearchId {
+    instance: WorktreeInstanceId,
+    sequence: u64,
+}
+
+/// Why a host-owned file-sidebar operation was rejected.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum FileSidebarOperationError {
+    /// The file sidebar is rendered inside kvim.
+    #[error("the file sidebar is embedded")]
+    Embedded,
+    /// The search identity belongs to another editor.
+    #[error("the file-sidebar search addresses another editor")]
+    WrongInstance,
+    /// The search prompt or accepted search is no longer current.
+    #[error("the file-sidebar search identity is stale")]
+    StaleSearch,
+    /// The query exceeds [`FILE_SIDEBAR_SEARCH_CHARS_MAX`] characters.
+    #[error("the file-sidebar search query exceeds its character bound")]
+    QueryTooLong,
+}
+
+/// Result of moving between file-sidebar search matches.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarSearchOutcome {
+    /// The selection moved to a matching entry.
+    Applied(WorktreeUpdate),
+    /// The active query has no matching entry.
+    SearchMissed,
 }
 
 /// Maximum candidates in one facade command completion.
@@ -2060,6 +2101,9 @@ impl WorktreeEditorBuilder {
             facade_generation: Cell::new(generation),
             inner_generation: Cell::new(generation),
             dialog_generation: Cell::new(ContextGeneration::FIRST),
+            file_sidebar_search_sequence: 0,
+            file_sidebar_search_prompt: None,
+            active_file_sidebar_search: None,
             #[cfg(test)]
             capabilities: self.capabilities,
         })
@@ -2110,6 +2154,9 @@ pub struct WorktreeEditor {
     facade_generation: Cell<ContextGeneration>,
     inner_generation: Cell<ContextGeneration>,
     dialog_generation: Cell<ContextGeneration>,
+    file_sidebar_search_sequence: u64,
+    file_sidebar_search_prompt: Option<FileSidebarSearchId>,
+    active_file_sidebar_search: Option<FileSidebarSearchId>,
     #[cfg(test)]
     capabilities: WorktreeCapabilities,
 }
@@ -2234,6 +2281,181 @@ impl WorktreeEditor {
         })
     }
 
+    /// Starts a host-owned file-sidebar search prompt.
+    ///
+    /// The prompt is independent of command-line presentation ownership. A
+    /// newer prompt makes an earlier open prompt stale, but it does not end an
+    /// already accepted search.
+    pub fn begin_file_sidebar_search(
+        &mut self,
+    ) -> Result<FileSidebarSearchId, FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        self.file_sidebar_search_sequence = self
+            .file_sidebar_search_sequence
+            .checked_add(1)
+            .expect("one editor cannot exhaust file-sidebar search identities");
+        let id = FileSidebarSearchId {
+            instance: self.instance,
+            sequence: self.file_sidebar_search_sequence,
+        };
+        self.file_sidebar_search_prompt = Some(id);
+        Ok(id)
+    }
+
+    /// Accepts the bounded query of the addressed open search prompt.
+    ///
+    /// An empty query ends the active search. An oversized query fails before
+    /// changing the prompt or tree.
+    pub fn accept_file_sidebar_search(
+        &mut self,
+        id: FileSidebarSearchId,
+        query: &str,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_search_prompt(id)?;
+        if query.chars().count() > FILE_SIDEBAR_SEARCH_CHARS_MAX {
+            return Err(FileSidebarOperationError::QueryTooLong);
+        }
+        let before = self.inner().file_rows();
+        let operation = if query.is_empty() {
+            TuiFileSidebarOperation::EndSearch
+        } else {
+            TuiFileSidebarOperation::StartSearch(query.to_owned())
+        };
+        let outcome = self.inner_mut().file_sidebar_operation(operation);
+        debug_assert_eq!(
+            outcome,
+            TuiFileSidebarOperationOutcome::Applied,
+            "starting or ending search always applies at the private boundary"
+        );
+        self.file_sidebar_search_prompt = None;
+        self.active_file_sidebar_search = (!query.is_empty()).then_some(id);
+        Ok(self.file_sidebar_update_since(before))
+    }
+
+    /// Replaces the bounded query of the addressed accepted search.
+    ///
+    /// An empty query ends the accepted search.
+    pub fn update_file_sidebar_search(
+        &mut self,
+        id: FileSidebarSearchId,
+        query: &str,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_active_search(id)?;
+        if query.chars().count() > FILE_SIDEBAR_SEARCH_CHARS_MAX {
+            return Err(FileSidebarOperationError::QueryTooLong);
+        }
+        let before = self.inner().file_rows();
+        let operation = if query.is_empty() {
+            TuiFileSidebarOperation::EndSearch
+        } else {
+            TuiFileSidebarOperation::StartSearch(query.to_owned())
+        };
+        let outcome = self.inner_mut().file_sidebar_operation(operation);
+        debug_assert_eq!(
+            outcome,
+            TuiFileSidebarOperationOutcome::Applied,
+            "updating or ending search always applies at the private boundary"
+        );
+        if query.is_empty() {
+            self.active_file_sidebar_search = None;
+        }
+        Ok(self.file_sidebar_update_since(before))
+    }
+
+    /// Cancels the addressed open prompt without ending an accepted search.
+    pub fn cancel_file_sidebar_search_prompt(
+        &mut self,
+        id: FileSidebarSearchId,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_search_prompt(id)?;
+        self.file_sidebar_search_prompt = None;
+        Ok(WorktreeUpdate::Unchanged)
+    }
+
+    /// Ends the addressed accepted file-sidebar search.
+    pub fn end_file_sidebar_search(
+        &mut self,
+        id: FileSidebarSearchId,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_active_search(id)?;
+        let before = self.inner().file_rows();
+        let outcome = self
+            .inner_mut()
+            .file_sidebar_operation(TuiFileSidebarOperation::EndSearch);
+        debug_assert_eq!(
+            outcome,
+            TuiFileSidebarOperationOutcome::Applied,
+            "ending search always applies at the private boundary"
+        );
+        self.active_file_sidebar_search = None;
+        Ok(self.file_sidebar_update_since(before))
+    }
+
+    /// Selects the next match of the addressed accepted search.
+    pub fn next_file_sidebar_match(
+        &mut self,
+        id: FileSidebarSearchId,
+    ) -> Result<FileSidebarSearchOutcome, FileSidebarOperationError> {
+        self.file_sidebar_match(id, TuiFileSidebarOperation::NextMatch)
+    }
+
+    /// Selects the previous match of the addressed accepted search.
+    pub fn previous_file_sidebar_match(
+        &mut self,
+        id: FileSidebarSearchId,
+    ) -> Result<FileSidebarSearchOutcome, FileSidebarOperationError> {
+        self.file_sidebar_match(id, TuiFileSidebarOperation::PreviousMatch)
+    }
+
+    /// Records the visible host-sidebar body geometry for semantic page moves.
+    pub fn record_file_sidebar_viewport(
+        &mut self,
+        height_rows: NonZeroU16,
+        width_cells: NonZeroU16,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        let outcome =
+            self.inner_mut()
+                .file_sidebar_operation(TuiFileSidebarOperation::RecordViewport {
+                    height_rows,
+                    width_cells,
+                });
+        debug_assert_eq!(
+            outcome,
+            TuiFileSidebarOperationOutcome::Applied,
+            "recording valid nonzero geometry always applies"
+        );
+        Ok(WorktreeUpdate::Unchanged)
+    }
+
+    /// Moves the file-sidebar selection down by half the recorded page.
+    pub fn move_file_sidebar_half_page_down(
+        &mut self,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.file_sidebar_page(TuiFileSidebarOperation::HalfPageDown)
+    }
+
+    /// Moves the file-sidebar selection up by half the recorded page.
+    pub fn move_file_sidebar_half_page_up(
+        &mut self,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.file_sidebar_page(TuiFileSidebarOperation::HalfPageUp)
+    }
+
+    /// Moves the file-sidebar selection down by one recorded page.
+    pub fn move_file_sidebar_full_page_down(
+        &mut self,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.file_sidebar_page(TuiFileSidebarOperation::FullPageDown)
+    }
+
+    /// Moves the file-sidebar selection up by one recorded page.
+    pub fn move_file_sidebar_full_page_up(
+        &mut self,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.file_sidebar_page(TuiFileSidebarOperation::FullPageUp)
+    }
+
     /// Opens one validated host dialog above this editor.
     pub fn open_dialog(&mut self, request: DialogRequest) -> Result<(), DialogOpenError> {
         crate::dialog::validate_dialog_body(&request, self.area())?;
@@ -2325,6 +2547,79 @@ impl WorktreeEditor {
                 let update = convert_redraw(self.inner_mut().open_file(path.clone()));
                 FileSidebarOutcome::Activated { path, update }
             }
+        }
+    }
+
+    fn require_host_file_sidebar(&self) -> Result<(), FileSidebarOperationError> {
+        if self.presentation.file_sidebar_ownership() == SurfaceOwnership::Embedded {
+            return Err(FileSidebarOperationError::Embedded);
+        }
+        Ok(())
+    }
+
+    fn require_search_prompt(
+        &self,
+        id: FileSidebarSearchId,
+    ) -> Result<(), FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        if id.instance != self.instance {
+            return Err(FileSidebarOperationError::WrongInstance);
+        }
+        if self.file_sidebar_search_prompt != Some(id) {
+            return Err(FileSidebarOperationError::StaleSearch);
+        }
+        Ok(())
+    }
+
+    fn require_active_search(
+        &self,
+        id: FileSidebarSearchId,
+    ) -> Result<(), FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        if id.instance != self.instance {
+            return Err(FileSidebarOperationError::WrongInstance);
+        }
+        if self.active_file_sidebar_search != Some(id) {
+            return Err(FileSidebarOperationError::StaleSearch);
+        }
+        Ok(())
+    }
+
+    fn file_sidebar_match(
+        &mut self,
+        id: FileSidebarSearchId,
+        operation: TuiFileSidebarOperation,
+    ) -> Result<FileSidebarSearchOutcome, FileSidebarOperationError> {
+        self.require_active_search(id)?;
+        let before = self.inner().file_rows();
+        Ok(match self.inner_mut().file_sidebar_operation(operation) {
+            TuiFileSidebarOperationOutcome::Applied => {
+                FileSidebarSearchOutcome::Applied(self.file_sidebar_update_since(before))
+            }
+            TuiFileSidebarOperationOutcome::SearchMissed => FileSidebarSearchOutcome::SearchMissed,
+        })
+    }
+
+    fn file_sidebar_page(
+        &mut self,
+        operation: TuiFileSidebarOperation,
+    ) -> Result<WorktreeUpdate, FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        let before = self.inner().file_rows();
+        let outcome = self.inner_mut().file_sidebar_operation(operation);
+        debug_assert_eq!(
+            outcome,
+            TuiFileSidebarOperationOutcome::Applied,
+            "page operations always apply at the private boundary"
+        );
+        Ok(self.file_sidebar_update_since(before))
+    }
+
+    fn file_sidebar_update_since(&self, before: Vec<TuiFileRow>) -> WorktreeUpdate {
+        if self.inner().file_rows() == before {
+            WorktreeUpdate::Unchanged
+        } else {
+            WorktreeUpdate::Redraw
         }
     }
 
