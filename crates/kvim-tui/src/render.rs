@@ -19,6 +19,7 @@ use super::overlay::{render_float, render_notifications, render_which_key};
 use super::picker::render_picker;
 use super::review::draw_review;
 use super::session::Visible;
+use super::source_presentation::{SourcePresentationView, render_panel, source_area};
 use super::theme::ThemeRole;
 use super::tree::{TreeChrome, render_tree};
 
@@ -118,6 +119,10 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                 // `docs/windows.md`.
                 // The active search belongs to the active buffer only.
                 let searched = id == view.active && match_chars > 0;
+                let (source_region, panel) = source_area(
+                    region.area,
+                    focus == RegionFocus::Focused && view.source_presentation.is_some(),
+                );
                 let window = WindowView {
                     buffer: text,
                     name: file.name(),
@@ -135,6 +140,13 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     match_chars: if searched { match_chars } else { 0 },
                     highlights: view.highlights(id),
                     diagnostics: view.diagnostics(id),
+                    source_presentation: (id == view.active)
+                        .then_some(view.source_presentation)
+                        .flatten()
+                        .map(|presentation| {
+                            let annotation = presentation.selected();
+                            (annotation.first_line(), annotation.last_line())
+                        }),
                     focus,
                     // The bracket pair answers a Normal-mode `%`, and that key
                     // reaches no window while a sidebar holds the focus, so
@@ -149,10 +161,23 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     display: &view.settings.display,
                     tab_width: usize::from(view.settings.indent.tab_width.get()),
                 };
-                render_window(target, region.area, theme, &window);
+                render_window(target, source_region, theme, &window);
                 if focus == RegionFocus::Focused {
-                    focused_area = Some(region.area);
-                    cursor_at = cursor_cell(region.area, &window);
+                    if let (Some(presentation), Some(panel)) = (view.source_presentation, panel) {
+                        let selected = presentation.selected();
+                        render_panel(
+                            target,
+                            panel,
+                            theme,
+                            SourcePresentationView {
+                                message: selected.message(),
+                                current: presentation.selected_index() + 1,
+                                total: presentation.annotation_count(),
+                            },
+                        );
+                    }
+                    focused_area = Some(source_region);
+                    cursor_at = cursor_cell(source_region, &window);
                 }
             }
             // The file tree is the one sidebar of the first release. It paints

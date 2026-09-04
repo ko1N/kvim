@@ -48,7 +48,22 @@ Host-owned statusline presentation requires no callback.
 validated ratios, focus, limits, and minimum dimensions. Host surface values,
 buffer text, and terminal colors stay outside the tree.
 
-## Pointer Geometry
+### Source Presentation
+
+A worktree editor can hold one generic source presentation independently of diagnostics,
+search, and Visual selection. Kvim paints the selected inclusive line range with the semantic
+`SourcePresentation` theme role. The role has its own palette value and does not reuse a
+diagnostic severity. Source presentation changes no buffer text, character position, or line
+mapping.
+
+The focused window owns placement. Selection puts its cursor on the first line. When the range
+fits the source viewport, Kvim positions that viewport so both endpoints are visible. When the
+range exceeds it, the first line is the deterministic anchor. A compact panel uses one reserved
+row when the window has at least two body rows. The panel shows the selected bounded message and a right-aligned `current/total`
+counter. The counter wins when width is limited. The message uses the remaining cells and is
+clipped at a character boundary. A zero-height or one-row text body paints no panel and keeps its
+source row.
+
 
 Pointer hit testing reads the rectangles published by `WindowLayout` or
 `CompositionLayout`. It uses half-open rectangles: the top and left edges are

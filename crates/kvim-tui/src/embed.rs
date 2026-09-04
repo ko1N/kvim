@@ -58,6 +58,7 @@ use super::session::{
     RecoveryDecision, RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState,
     Session,
 };
+use super::source_presentation::{SourcePresentation, SourcePresentationRefusal};
 
 /// The largest number of editor facts that one instance queues at a time.
 ///
@@ -1391,6 +1392,48 @@ impl EmbeddedEditor {
             self.driver.cancel_completion();
         }
         closed
+    }
+
+    /// Returns the current private source presentation.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn source_presentation(&self) -> Option<&SourcePresentation> {
+        self.editor.source_presentation()
+    }
+
+    /// Installs one validated generic source presentation for the active file.
+    #[doc(hidden)]
+    pub fn present_source(
+        &mut self,
+        presentation: SourcePresentation,
+    ) -> Result<Redraw, SourcePresentationRefusal> {
+        self.editor.present_source(presentation)
+    }
+
+    /// Selects the next annotation without wrapping.
+    #[doc(hidden)]
+    pub fn next_source_annotation(&mut self) -> Result<Redraw, SourcePresentationRefusal> {
+        self.editor.next_source_annotation()
+    }
+
+    /// Selects the previous annotation without wrapping.
+    #[doc(hidden)]
+    pub fn previous_source_annotation(&mut self) -> Result<Redraw, SourcePresentationRefusal> {
+        self.editor.previous_source_annotation()
+    }
+
+    /// Takes the newest completed asynchronous presentation outcome.
+    #[doc(hidden)]
+    pub fn take_source_presentation_result(
+        &mut self,
+    ) -> Option<Result<(), SourcePresentationRefusal>> {
+        self.editor.take_source_presentation_result()
+    }
+
+    /// Removes only generic source-presentation state.
+    #[doc(hidden)]
+    pub fn clear_source_presentation(&mut self) -> Redraw {
+        self.editor.clear_source_presentation()
     }
 
     /// Returns the editing mode of this editor.

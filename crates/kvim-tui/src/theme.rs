@@ -191,6 +191,10 @@ pub enum ThemeRole {
     Selection,
     /// A cell inside one search match.
     SearchMatch,
+    /// A source line in the selected generic presentation annotation.
+    SourcePresentation,
+    /// The compact generic source-presentation panel.
+    SourcePresentationPanel,
     /// A cell inside the search match that holds the cursor.
     CurrentSearchMatch,
     /// A cell of the bracket pair that the cursor stands on.
@@ -380,6 +384,8 @@ impl Theme {
             ThemeRole::Cursor => Style::new().add_modifier(Modifier::REVERSED),
             ThemeRole::Selection => Style::new().bg(SELECTION_BACKGROUND),
             ThemeRole::SearchMatch => Style::new().fg(TEXT).bg(SEARCH_BACKGROUND),
+            ThemeRole::SourcePresentation => Style::new().fg(TEXT).bg(SELECTION_BACKGROUND),
+            ThemeRole::SourcePresentationPanel => Style::new().fg(TEXT).bg(SURFACE),
             ThemeRole::CurrentSearchMatch => {
                 Style::new().fg(CURRENT_SEARCH_FOREGROUND).bg(ACCENT_WARM)
             }

@@ -239,6 +239,8 @@ pub(super) struct WindowView<'a> {
     /// and no cursor position. The list is empty while no language server
     /// published one. See `docs/language-services.md`.
     pub(super) diagnostics: &'a [Diagnostic],
+    /// One selected generic source line range, inclusive and zero-based.
+    pub(super) source_presentation: Option<(usize, usize)>,
     /// Whether the window holds the input focus.
     pub(super) focus: RegionFocus,
     /// Whether the window paints the bracket pair under its cursor.
@@ -316,6 +318,8 @@ struct LineOverlays {
     roles: Vec<ColumnRole>,
     /// The diagnostic severities of the line, in ascending column order.
     marked: Vec<ColumnSeverity>,
+    /// Whether generic source presentation marks this line.
+    presented: bool,
 }
 
 /// One bracket of the highlighted pair, inside one visible line.
@@ -743,6 +747,10 @@ impl RowPainter<'_> {
             selected: selected_columns(self.view, index, line_len),
             roles: line_roles(self.view.highlights, line, &content),
             marked: line_severities(self.view.diagnostics, line, &content),
+            presented: self
+                .view
+                .source_presentation
+                .is_some_and(|(first, last)| line >= first && line <= last),
         };
         let base = self.theme.style(ThemeRole::Text);
 
@@ -778,6 +786,9 @@ impl RowPainter<'_> {
             .find(|found| cell.column >= found.first_column && cell.column <= found.last_column)
         {
             style = style.patch(self.theme.style(ThemeRole::Syntax(found.role)));
+        }
+        if overlays.presented {
+            style = style.patch(self.theme.style(ThemeRole::SourcePresentation));
         }
         if let Some(found) = overlays
             .marked

@@ -377,9 +377,34 @@ a best-effort safety net. The surface publishes staged and unstaged candidates
 as one pair. Both paths share private review state, relocation, and painting
 with integrated review.
 
-## Worktree Implementation Contract
+The facade also owns one optional generic source presentation. A presentation names one
+contained path and a bounded, nonempty, ordered annotation list. Each annotation holds a
+bounded message and a one-based inclusive line range. Construction rejects zero, reversed,
+out-of-representation-bound ranges, empty lists, oversized lists, and oversized messages.
 
-The sections below define worktree behavior published by `kvim-embed`.
+`WorktreeEditor::present_source` validates the complete request before replacing visible
+presentation state. It selects the first annotation. `next_source_annotation` and
+`previous_source_annotation` move without wrapping. `clear_source_presentation` removes only
+this presentation. A cheap snapshot publishes the selected index, count, message, range, and
+path.
+
+A presentation against the current file validates all ranges against the current in-memory
+buffer. It does not reload the file, including when that buffer is dirty. A request for another
+file refuses while the active buffer is dirty. Otherwise, it uses normal bounded file-open work.
+The old presentation remains visible until the open completes and every range validates. A
+failed open or invalid completed request preserves the old presentation and publishes a typed
+completion event. Closing the editor before application produces a typed no-editor refusal.
+Kvim never clamps a source range: clamping could mark unrelated text.
+
+Kvim places the cursor at the first line of the selected range. It reserves one panel row from
+the focused source viewport when at least two body rows exist. If the complete range fits, Kvim
+positions the viewport so both endpoints remain visible. If it does not fit, Kvim shows the first
+range line at the deterministic cursor position. Kvim
+paints the range as source decoration with its own semantic theme role. This decoration changes
+no text, offsets, or line mapping and remains distinct from diagnostics. Kvim also paints a compact message and `current/total` panel in its reserved row. It owns the
+panel geometry, sheds the message before the counter in narrow areas, and omits the panel when
+fewer than two body rows exist. Rendering reads held visible state only and performs no input or output.
+
 `kvim-tui` implements presentation privately and does not define another
 supported high-level integration.
 
@@ -1075,6 +1100,7 @@ The required examples are:
 - `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-embed/examples/merged_leader.rs`
+- `crates/kvim-embed/examples/source_presentation.rs`
 - `crates/kvim-embed/examples/supplied_review.rs`
 - `crates/kvim-embed/examples/unified_command_line.rs`
 - `crates/kvim-embed/examples/worktree_editor.rs`
@@ -1099,7 +1125,7 @@ language example uses an injected in-memory launcher. It runs two exact
 revisions through one warm grammar-free project. A UI example renders into a
 test buffer, or prints the state that it drives when the feature
 paints no cell. The in-memory editor example uses no temporary worktree.
-Worktree editor, composition, chrome, sidebar, and review examples use temporary
+Worktree editor, composition, chrome, sidebar, source-presentation, and review examples use temporary
 worktrees.
 
 No example requires a user-installed server, network access, terminal ownership,

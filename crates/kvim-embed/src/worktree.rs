@@ -44,7 +44,8 @@ use kvim_tui::__private::{
     RecoveryDecisionError as TuiRecoveryDecisionError, RecoveryIdentity as TuiRecoveryIdentity,
     RecoveryStatus as TuiRecoveryStatus, Redraw as TuiRedraw, Reduction as TuiReduction,
     ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal, RunState as TuiRunState,
-    TerminalEvent as TuiTerminalEvent,
+    SourceAnnotation as TuiSourceAnnotation, SourcePresentation as TuiSourcePresentation,
+    SourcePresentationRefusal as TuiSourcePresentationRefusal, TerminalEvent as TuiTerminalEvent,
 };
 use kvim_ui::Direction;
 use kvim_workspace::{EntryKind, FileOperation, TransferMode};
@@ -52,6 +53,209 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 use tokio::runtime::Runtime as TokioRuntime;
+
+/// The maximum annotations in one generic source presentation.
+pub const SOURCE_ANNOTATIONS_MAX: usize = 256;
+/// The maximum Unicode scalar values in one annotation message.
+pub const SOURCE_ANNOTATION_MESSAGE_CHARS_MAX: usize = 4_096;
+/// The maximum one-based source line accepted before a buffer is known.
+pub const SOURCE_LINE_MAX: u32 = 1_000_000;
+
+/// One validated one-based inclusive source line range.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourceLineRange {
+    first: NonZeroU32,
+    last: NonZeroU32,
+}
+
+impl SourceLineRange {
+    /// Creates an ordered range inside the published source-line bound.
+    pub const fn new(first: u32, last: u32) -> Result<Self, SourcePresentationBuildError> {
+        let Some(first) = NonZeroU32::new(first) else {
+            return Err(SourcePresentationBuildError::Range);
+        };
+        let Some(last) = NonZeroU32::new(last) else {
+            return Err(SourcePresentationBuildError::Range);
+        };
+        if first.get() > last.get() || last.get() > SOURCE_LINE_MAX {
+            return Err(SourcePresentationBuildError::Range);
+        }
+        Ok(Self { first, last })
+    }
+
+    /// Returns the first one-based line.
+    #[must_use]
+    pub const fn first(self) -> u32 {
+        self.first.get()
+    }
+
+    /// Returns the last one-based line.
+    #[must_use]
+    pub const fn last(self) -> u32 {
+        self.last.get()
+    }
+}
+
+/// One bounded generic source annotation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceAnnotation {
+    range: SourceLineRange,
+    message: String,
+}
+
+impl SourceAnnotation {
+    /// Creates one annotation with a bounded message.
+    pub fn new(
+        range: SourceLineRange,
+        message: impl Into<String>,
+    ) -> Result<Self, SourcePresentationBuildError> {
+        let message = message.into();
+        if message.chars().count() > SOURCE_ANNOTATION_MESSAGE_CHARS_MAX {
+            return Err(SourcePresentationBuildError::Message);
+        }
+        Ok(Self { range, message })
+    }
+
+    /// Returns the inclusive line range.
+    #[must_use]
+    pub const fn range(&self) -> SourceLineRange {
+        self.range
+    }
+
+    /// Returns the bounded message.
+    #[must_use]
+    pub fn message(&self) -> &str {
+        &self.message
+    }
+}
+
+/// One contained path and nonempty ordered annotation set.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourcePresentation {
+    path: WorktreeRelativePath,
+    annotations: Vec<SourceAnnotation>,
+}
+
+impl SourcePresentation {
+    /// Creates one bounded generic presentation.
+    pub fn new(
+        path: WorktreeRelativePath,
+        annotations: Vec<SourceAnnotation>,
+    ) -> Result<Self, SourcePresentationBuildError> {
+        if annotations.is_empty() {
+            return Err(SourcePresentationBuildError::Empty);
+        }
+        if annotations.len() > SOURCE_ANNOTATIONS_MAX {
+            return Err(SourcePresentationBuildError::TooMany);
+        }
+        Ok(Self { path, annotations })
+    }
+
+    /// Returns the contained path.
+    #[must_use]
+    pub const fn path(&self) -> &WorktreeRelativePath {
+        &self.path
+    }
+
+    /// Returns annotations in their supplied order.
+    #[must_use]
+    pub fn annotations(&self) -> &[SourceAnnotation] {
+        &self.annotations
+    }
+}
+
+/// Why bounded source-presentation construction failed.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum SourcePresentationBuildError {
+    /// A range is zero, reversed, or above the published bound.
+    #[error("the source line range is outside its published bounds")]
+    Range,
+    /// An annotation message exceeds its bound.
+    #[error("the source annotation message exceeds its published bound")]
+    Message,
+    /// The annotation set is empty.
+    #[error("a source presentation requires an annotation")]
+    Empty,
+    /// The annotation set exceeds its bound.
+    #[error("the source presentation has too many annotations")]
+    TooMany,
+}
+
+/// The accepted state of a source-presentation request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourcePresentationOutcome {
+    /// The presentation replaced visible state synchronously.
+    Presented,
+    /// The target file was queued through the bounded file lane.
+    Queued,
+}
+
+/// A cheap borrowed view of the current generic source presentation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct SourcePresentationSnapshot<'a> {
+    path: &'a WorktreeRelativePath,
+    range: SourceLineRange,
+    message: &'a str,
+    selected_index: usize,
+    count: usize,
+}
+
+impl<'a> SourcePresentationSnapshot<'a> {
+    /// Returns the contained path.
+    #[must_use]
+    pub const fn path(self) -> &'a WorktreeRelativePath {
+        self.path
+    }
+    /// Returns the selected one-based inclusive range.
+    #[must_use]
+    pub const fn range(self) -> SourceLineRange {
+        self.range
+    }
+    /// Returns the selected bounded message.
+    #[must_use]
+    pub const fn message(self) -> &'a str {
+        self.message
+    }
+    /// Returns the zero-based selected index.
+    #[must_use]
+    pub const fn selected_index(self) -> usize {
+        self.selected_index
+    }
+    /// Returns the annotation count.
+    #[must_use]
+    pub const fn count(self) -> usize {
+        self.count
+    }
+}
+
+/// Why a generic source-presentation operation changed no presentation.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum SourcePresentationError {
+    /// The editor no longer accepts presentation operations.
+    #[error("the editor is closed")]
+    NoEditor,
+    /// Another active file contains unsaved text.
+    #[error("the active file contains unsaved text")]
+    DifferentDirtyBuffer,
+    /// Another file operation occupies the bounded file lane.
+    #[error("the file operation lane is busy")]
+    Busy,
+    /// At least one range leaves the requested in-memory buffer.
+    #[error("a source line range is outside the requested buffer")]
+    RangeOutsideBuffer,
+    /// Selection already names the first annotation.
+    #[error("the first source annotation is already selected")]
+    AtFirst,
+    /// Selection already names the last annotation.
+    #[error("the last source annotation is already selected")]
+    AtLast,
+    /// No source presentation exists.
+    #[error("no source presentation exists")]
+    NoPresentation,
+    /// The requested file could not be opened.
+    #[error("the source file could not be opened")]
+    OpenFailed,
+}
 
 /// The maximum number of queued background completions.
 pub const COMPLETION_CAPACITY_MAX: usize = kvim_runtime::EVENT_QUEUE_CAPACITY_MAX;
@@ -2286,6 +2490,108 @@ impl WorktreeEditor {
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
         convert_redraw(self.inner_mut().open_file(path))
     }
+    /// Presents bounded annotations for one contained source file.
+    ///
+    /// The current in-memory file is never reloaded. A clean different file
+    /// uses the normal bounded `dispatch`, `ready`, and `apply` lifecycle.
+    /// Inspect [`Self::take_source_presentation_result`] after applying a
+    /// completion to observe the asynchronous result.
+    ///
+    /// ```
+    /// use kvim_embed::{SourceAnnotation, SourceLineRange, SourcePresentation, WorktreeEditor};
+    /// use kvim_path::WorktreeRelativePath;
+    /// use ratatui::layout::Rect;
+    ///
+    /// let root = std::env::temp_dir().join("kvim-source-presentation-doctest");
+    /// std::fs::create_dir_all(&root)?;
+    /// let mut editor = WorktreeEditor::builder(&root, Rect::new(0, 0, 40, 6)).open()?;
+    /// let annotation = SourceAnnotation::new(SourceLineRange::new(1, 1)?, "entry")?;
+    /// let request = SourcePresentation::new(WorktreeRelativePath::new("note.txt")?, vec![annotation])?;
+    /// let _ = editor.present_source(request)?;
+    /// # std::fs::remove_dir_all(root)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn present_source(
+        &mut self,
+        presentation: SourcePresentation,
+    ) -> Result<SourcePresentationOutcome, SourcePresentationError> {
+        let path = presentation.path.clone();
+        let annotations = presentation
+            .annotations
+            .iter()
+            .map(|annotation| {
+                TuiSourceAnnotation::new(
+                    usize::try_from(annotation.range.first() - 1)
+                        .expect("the published line bound fits usize"),
+                    usize::try_from(annotation.range.last() - 1)
+                        .expect("the published line bound fits usize"),
+                    annotation.message.clone(),
+                )
+            })
+            .collect();
+        let internal = TuiSourcePresentation::new(path.clone(), annotations);
+        self.inner_mut()
+            .present_source(internal)
+            .map_err(convert_source_refusal)?;
+        let active = self.status().path().is_some_and(|active| active == &path);
+        Ok(if active {
+            SourcePresentationOutcome::Presented
+        } else {
+            SourcePresentationOutcome::Queued
+        })
+    }
+
+    /// Returns a borrowed snapshot of the current presentation.
+    #[must_use]
+    pub fn source_presentation(&self) -> Option<SourcePresentationSnapshot<'_>> {
+        let presentation = self.inner().source_presentation()?;
+        let selected = presentation.selected();
+        Some(SourcePresentationSnapshot {
+            path: presentation.path(),
+            range: SourceLineRange::new(
+                u32::try_from(selected.first_line() + 1).expect("published bounds fit u32"),
+                u32::try_from(selected.last_line() + 1).expect("published bounds fit u32"),
+            )
+            .expect("private values came from validated facade ranges"),
+            message: selected.message(),
+            selected_index: presentation.selected_index(),
+            count: presentation.annotation_count(),
+        })
+    }
+
+    /// Selects the next annotation without wrapping.
+    pub fn next_source_annotation(&mut self) -> Result<WorktreeUpdate, SourcePresentationError> {
+        self.inner_mut()
+            .next_source_annotation()
+            .map(convert_redraw)
+            .map_err(convert_source_refusal)
+    }
+
+    /// Selects the previous annotation without wrapping.
+    pub fn previous_source_annotation(
+        &mut self,
+    ) -> Result<WorktreeUpdate, SourcePresentationError> {
+        self.inner_mut()
+            .previous_source_annotation()
+            .map(convert_redraw)
+            .map_err(convert_source_refusal)
+    }
+
+    /// Removes only generic source-presentation state.
+    pub fn clear_source_presentation(&mut self) -> WorktreeUpdate {
+        convert_redraw(self.inner_mut().clear_source_presentation())
+    }
+
+    /// Takes the newest asynchronous presentation result.
+    #[must_use]
+    pub fn take_source_presentation_result(
+        &mut self,
+    ) -> Option<Result<(), SourcePresentationError>> {
+        self.inner_mut()
+            .take_source_presentation_result()
+            .map(|result| result.map_err(convert_source_refusal))
+    }
+
     /// Returns a bounded semantic snapshot for a host-owned file sidebar.
     ///
     /// This copies loaded tree state only. Directory and Git reads continue
@@ -3543,6 +3849,23 @@ impl Drop for WorktreeEditor {
             .take()
             .expect("a live editor owns its executor")
             .shutdown_background();
+    }
+}
+
+fn convert_source_refusal(refusal: TuiSourcePresentationRefusal) -> SourcePresentationError {
+    match refusal {
+        TuiSourcePresentationRefusal::NoEditor => SourcePresentationError::NoEditor,
+        TuiSourcePresentationRefusal::DifferentDirtyBuffer => {
+            SourcePresentationError::DifferentDirtyBuffer
+        }
+        TuiSourcePresentationRefusal::Busy => SourcePresentationError::Busy,
+        TuiSourcePresentationRefusal::RangeOutsideBuffer => {
+            SourcePresentationError::RangeOutsideBuffer
+        }
+        TuiSourcePresentationRefusal::AtFirst => SourcePresentationError::AtFirst,
+        TuiSourcePresentationRefusal::AtLast => SourcePresentationError::AtLast,
+        TuiSourcePresentationRefusal::NoPresentation => SourcePresentationError::NoPresentation,
+        TuiSourcePresentationRefusal::OpenFailed => SourcePresentationError::OpenFailed,
     }
 }
 

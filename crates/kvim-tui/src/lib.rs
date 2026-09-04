@@ -78,6 +78,8 @@ mod render;
 mod review;
 #[cfg(feature = "editor")]
 mod session;
+#[cfg(feature = "editor")]
+mod source_presentation;
 #[cfg(feature = "review")]
 mod theme;
 #[cfg(feature = "editor")]
@@ -116,6 +118,9 @@ pub mod __private {
     pub use crate::session::{
         EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, RecoveryDecision,
         RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState, Session,
+    };
+    pub use crate::source_presentation::{
+        SourceAnnotation, SourcePresentation, SourcePresentationRefusal,
     };
     pub use crate::theme::{IconRole, Theme};
     pub use crate::tree::{

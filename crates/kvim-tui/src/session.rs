@@ -124,6 +124,7 @@ use super::overlay::WhichKeyView;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::pointer::source_at_cell;
 use super::review::{ReviewOutcome, ReviewSurface};
+use super::source_presentation::{SourcePresentation, SourcePresentationRefusal, source_area};
 use super::theme::Theme;
 use super::tree::{
     GitPublication, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
@@ -457,8 +458,10 @@ impl LastBuffer {
 /// apply an obsolete result over a newer buffer state.
 #[derive(Debug, Eq, PartialEq)]
 enum PendingFile {
-    /// One file is loading.
+    /// One ordinary file is loading.
     Open,
+    /// One file is loading for an atomic source presentation.
+    SourcePresentation(SourcePresentation),
     /// One buffer is saving.
     Save {
         /// The buffer that the save belongs to.
@@ -1302,6 +1305,7 @@ pub(super) struct Visible<'a> {
     pub(super) languages: LanguageRegistry,
     /// The published diagnostics and the language-service state.
     pub(super) language: &'a LanguageState,
+    pub(super) source_presentation: Option<&'a SourcePresentation>,
     pub(super) editing: &'a EditingState,
     pub(super) search: Option<&'a ActiveSearch>,
     pub(super) prompt: Option<&'a PromptLine>,
@@ -1695,6 +1699,10 @@ pub struct Session {
     /// the event loop hands them to the language services. See
     /// `docs/language-services.md`.
     language: LanguageState,
+    /// The optional generic source presentation over the active file.
+    source_presentation: Option<SourcePresentation>,
+    /// The newest completed asynchronous presentation outcome.
+    source_presentation_result: Option<Result<(), SourcePresentationRefusal>>,
     search: Option<ActiveSearch>,
     prompt: Option<PromptLine>,
     /// The confirmation that waits for a named choice, while one is open.
@@ -1850,6 +1858,8 @@ impl Session {
             analysis_pending: None,
             recovery: RecoveryCheckpoints::default(),
             language: LanguageState::default(),
+            source_presentation: None,
+            source_presentation_result: None,
             search: None,
             prompt: None,
             confirmation: None,
@@ -2516,6 +2526,132 @@ impl Session {
         })
     }
 
+    fn source_area(&self, window: WindowId, area: Rect) -> (Rect, Option<Rect>) {
+        source_area(
+            area,
+            window == self.windows.focused_region() && self.source_presentation.is_some(),
+        )
+    }
+
+    pub(super) fn present_source(
+        &mut self,
+        presentation: SourcePresentation,
+    ) -> Result<Redraw, SourcePresentationRefusal> {
+        if self.run != RunState::Running {
+            return Err(SourcePresentationRefusal::NoEditor);
+        }
+        let requested = self.root.as_path().join(presentation.path().as_path());
+        let active = self.active_buffer();
+        if active.path() == Some(requested.as_path()) {
+            if !presentation.fits(active.text().line_count()) {
+                return Err(SourcePresentationRefusal::RangeOutsideBuffer);
+            }
+            self.install_source_presentation(presentation);
+            return Ok(Redraw::Needed);
+        }
+        if active.is_modified() {
+            return Err(SourcePresentationRefusal::DifferentDirtyBuffer);
+        }
+        if let Some(id) = self.buffers.find_path(&requested) {
+            let Some(file) = self.buffers.get(id) else {
+                debug_assert!(false, "the path lookup returns a loaded buffer");
+                return Err(SourcePresentationRefusal::NoEditor);
+            };
+            if !presentation.fits(file.text().line_count()) {
+                return Err(SourcePresentationRefusal::RangeOutsideBuffer);
+            }
+            let redraw = self.switch_to(id);
+            self.install_source_presentation(presentation);
+            return Ok(redraw.or(Redraw::Needed));
+        }
+        if self.file_pending.is_some() {
+            return Err(SourcePresentationRefusal::Busy);
+        }
+        let path = presentation.path().clone();
+        let files = self.settings.files;
+        let redraw = self.start_file_request(
+            FileRequest::Open(OpenRequest {
+                root: Arc::clone(&self.root),
+                path,
+                files,
+                recovery_state_directory: self.recovery.state_directory.clone(),
+            }),
+            PendingFile::SourcePresentation(presentation),
+        );
+        Ok(redraw)
+    }
+
+    pub(super) fn next_source_annotation(&mut self) -> Result<Redraw, SourcePresentationRefusal> {
+        let Some(presentation) = self.source_presentation.as_mut() else {
+            return Err(SourcePresentationRefusal::NoPresentation);
+        };
+        presentation.select_next()?;
+        self.reveal_source_selection();
+        self.note_redraw(Redraw::Needed);
+        Ok(Redraw::Needed)
+    }
+
+    pub(super) fn previous_source_annotation(
+        &mut self,
+    ) -> Result<Redraw, SourcePresentationRefusal> {
+        let Some(presentation) = self.source_presentation.as_mut() else {
+            return Err(SourcePresentationRefusal::NoPresentation);
+        };
+        presentation.select_previous()?;
+        self.reveal_source_selection();
+        self.note_redraw(Redraw::Needed);
+        Ok(Redraw::Needed)
+    }
+
+    pub(super) fn clear_source_presentation(&mut self) -> Redraw {
+        let redraw = if self.source_presentation.take().is_some() {
+            Redraw::Needed
+        } else {
+            Redraw::Skipped
+        };
+        self.note_redraw(redraw);
+        redraw
+    }
+
+    pub(super) fn source_presentation(&self) -> Option<&SourcePresentation> {
+        self.source_presentation.as_ref()
+    }
+
+    pub(super) fn take_source_presentation_result(
+        &mut self,
+    ) -> Option<Result<(), SourcePresentationRefusal>> {
+        self.source_presentation_result.take()
+    }
+
+    fn install_source_presentation(&mut self, presentation: SourcePresentation) {
+        self.source_presentation = Some(presentation);
+        self.reconcile_viewports(None);
+        self.reveal_source_selection();
+        self.note_redraw(Redraw::Needed);
+    }
+
+    fn reveal_source_selection(&mut self) {
+        let Some((first, last)) = self.source_presentation.as_ref().map(|presentation| {
+            let selected = presentation.selected();
+            (selected.first_line(), selected.last_line())
+        }) else {
+            return;
+        };
+        let window = self.windows.focused_window();
+        let rows = self
+            .windows
+            .state(window)
+            .map_or(1, |state| usize::from(state.viewport().height_rows().get()));
+        if last.saturating_sub(first).saturating_add(1) <= rows {
+            self.place_cursor(last, 0);
+            self.reconcile_viewports(None);
+            self.place_cursor(first, 0);
+        } else {
+            self.place_cursor(first, 0);
+            self.reconcile_viewports(None);
+        }
+    }
+
     /// Returns the active editor mode.
     #[must_use]
     pub const fn mode(&self) -> Mode {
@@ -2832,6 +2968,7 @@ impl Session {
             analysis: &self.analysis,
             languages: self.languages,
             language: &self.language,
+            source_presentation: self.source_presentation.as_ref(),
             editing: &self.editing,
             search: self.search.as_ref(),
             prompt: self.prompt.as_ref(),
@@ -3239,11 +3376,13 @@ impl Session {
                 let Some(buffer) = self.windows.buffer(window) else {
                     return Redraw::Skipped;
                 };
+                let (source_area, _) = self.source_area(window, area);
                 let text_press = {
                     let Some(file) = self.buffers.get(buffer) else {
                         return Redraw::Skipped;
                     };
-                    let geometry = text_surface_geometry(area, file.text(), &self.settings.display);
+                    let geometry =
+                        text_surface_geometry(source_area, file.text(), &self.settings.display);
                     geometry.is_text_column(pointer.position().column())
                 };
                 let (line, column) = {
@@ -3255,7 +3394,7 @@ impl Session {
                     };
                     let Some(position) = source_at_cell(
                         file.text(),
-                        area,
+                        source_area,
                         &self.settings.display,
                         usize::from(self.settings.indent.tab_width.get()),
                         state.first_line(),
@@ -3340,11 +3479,21 @@ impl Session {
             self.pointer_drag = PointerDragState::Idle;
             return Redraw::Skipped;
         }
+        let (source_area, panel) = self.source_area(window, area);
+        if panel.is_some_and(|panel| {
+            contains_cell(
+                panel,
+                Cell::new(pointer.position().column(), pointer.position().row()),
+            )
+        }) {
+            self.pointer_drag = PointerDragState::Idle;
+            return Redraw::Skipped;
+        }
         let Some(file) = self.buffers.get(buffer) else {
             self.pointer_drag = PointerDragState::Idle;
             return Redraw::Skipped;
         };
-        let geometry = text_surface_geometry(area, file.text(), &self.settings.display);
+        let geometry = text_surface_geometry(source_area, file.text(), &self.settings.display);
         let text_top = geometry.content.y;
         let text_bottom = geometry.content.bottom();
         if geometry.content.is_empty() {
@@ -3405,7 +3554,7 @@ impl Session {
         };
         let Some(head) = source_at_cell(
             file.text(),
-            area,
+            source_area,
             &self.settings.display,
             usize::from(self.settings.indent.tab_width.get()),
             state.first_line(),
@@ -7140,9 +7289,31 @@ impl Session {
     fn publish_file_result(&mut self, result: FileResult) -> Redraw {
         let pending = self.file_pending.take();
         match result {
-            FileResult::Opened { requested, outcome } => match outcome {
-                Ok(file) => self.publish_open(file),
-                Err(error) => {
+            FileResult::Opened { requested, outcome } => match (pending, outcome) {
+                (Some(PendingFile::SourcePresentation(presentation)), Ok(file)) => {
+                    if !presentation.fits(file.text.line_count()) {
+                        self.source_presentation_result =
+                            Some(Err(SourcePresentationRefusal::RangeOutsideBuffer));
+                        return Redraw::Skipped;
+                    }
+                    let requested_path = self.root.as_path().join(presentation.path().as_path());
+                    let redraw = self.publish_open(file);
+                    if self.active_buffer().path() != Some(requested_path.as_path()) {
+                        self.source_presentation_result =
+                            Some(Err(SourcePresentationRefusal::OpenFailed));
+                        return redraw;
+                    }
+                    self.install_source_presentation(presentation);
+                    self.source_presentation_result = Some(Ok(()));
+                    redraw.or(Redraw::Needed)
+                }
+                (Some(PendingFile::SourcePresentation(_)), Err(_)) => {
+                    self.source_presentation_result =
+                        Some(Err(SourcePresentationRefusal::OpenFailed));
+                    Redraw::Skipped
+                }
+                (_, Ok(file)) => self.publish_open(file),
+                (_, Err(error)) => {
                     let requested = self.root.as_path().join(requested.as_path());
                     self.set_message(
                         format!("cannot open {}: {error}", requested.display()),
@@ -7158,9 +7329,12 @@ impl Session {
             } => {
                 let (then, format) = match pending {
                     Some(PendingFile::Save { then, format, .. }) => (then, format),
-                    Some(PendingFile::Open | PendingFile::Reload { .. }) | None => {
-                        (AfterSave::Stay, FormatBeforeSave::Silent)
-                    }
+                    Some(
+                        PendingFile::Open
+                        | PendingFile::SourcePresentation(_)
+                        | PendingFile::Reload { .. },
+                    )
+                    | None => (AfterSave::Stay, FormatBeforeSave::Silent),
                 };
                 self.publish_save(buffer, requested.as_path(), outcome, then, format)
             }
@@ -8719,6 +8893,7 @@ impl Session {
                 continue;
             };
             let text = file.text();
+            let (area, _) = self.source_area(id, area);
             let geometry = text_surface_geometry(area, text, &display);
             let width = NonZeroU16::new(geometry.text_width()).unwrap_or(NonZeroU16::MIN);
             let height = NonZeroU16::new(geometry.content.height).unwrap_or(NonZeroU16::MIN);

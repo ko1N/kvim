@@ -48,6 +48,7 @@ use crate::session::{
     RecoveryDecision, RecoveryDecisionError, RecoveryOperation, RecoverySubmissionFailure, Redraw,
     RunState, Session, YesNo, test_root,
 };
+use crate::source_presentation::{SourceAnnotation, SourcePresentation};
 use crate::tree::TREE_TITLE_ROWS;
 use kvim_ui::{SidebarSide, WindowId};
 
@@ -123,6 +124,119 @@ fn draw(session: &Session) -> CellBuffer {
         .draw(|frame| session.render(frame))
         .expect("the test backend never fails");
     terminal.backend().buffer().clone()
+}
+
+#[test]
+fn source_presentation_reserves_a_viewport_row_only_in_its_focused_split() {
+    let (mut session, unfocused, focused) = split_session(20);
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![SourceAnnotation::new(0, 0, "message".to_owned())],
+    ));
+
+    let focused_height = session
+        .windows()
+        .viewport(focused)
+        .expect("the focused split has a viewport")
+        .height_rows()
+        .get();
+    let unfocused_height = session
+        .windows()
+        .viewport(unfocused)
+        .expect("the unfocused split has a viewport")
+        .height_rows()
+        .get();
+    assert_eq!(
+        unfocused_height,
+        focused_height + 1,
+        "only the focused split reserves the presentation panel row"
+    );
+}
+
+#[test]
+fn source_presentation_navigation_keeps_a_range_that_fits_the_reduced_viewport_visible() {
+    let mut session = with_text(&[
+        "line", "line", "line", "line", "line", "line", "line", "line", "line", "line", "line",
+        "line", "line", "line", "line", "line", "line", "line", "line", "line", "line", "line",
+        "line", "line", "line", "line",
+    ]);
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![
+            SourceAnnotation::new(0, 0, "first".to_owned()),
+            // A 20-row terminal has 17 text rows. The presentation panel uses
+            // one, so this range exactly fills the remaining 16 source rows.
+            SourceAnnotation::new(10, 25, "second".to_owned()),
+        ],
+    ));
+
+    session
+        .next_source_annotation()
+        .expect("the second annotation exists");
+
+    let window = session.windows().focused_window();
+    let viewport = session
+        .windows()
+        .viewport(window)
+        .expect("the focused window has a viewport");
+    assert_eq!(session.cursor().line().get(), 10);
+    assert!(viewport.first_line() <= 10);
+    assert!(
+        viewport.first_line() + usize::from(viewport.height_rows().get()) > 25,
+        "the viewport must include the selected range endpoint"
+    );
+}
+
+#[test]
+fn source_presentation_panel_press_leaves_the_cursor_and_selection_unchanged() {
+    let mut session = with_text(&["first", "second"]);
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![SourceAnnotation::new(0, 0, "message".to_owned())],
+    ));
+    let window = session.windows().focused_window();
+    let area = session
+        .windows()
+        .layout()
+        .area(window)
+        .expect("the focused window is visible");
+    let before_cursor = session.cursor();
+
+    assert_eq!(
+        session.handle_event(click(area.x, area.bottom().saturating_sub(1)), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.cursor(), before_cursor);
+    assert_eq!(session.mode(), Mode::Normal);
+    assert!(selection(&session).is_none());
+}
+
+#[test]
+fn source_presentation_panel_drag_ends_without_selecting_a_hidden_row() {
+    let mut session = with_text(&["first", "second"]);
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![SourceAnnotation::new(0, 0, "message".to_owned())],
+    ));
+    let window = session.windows().focused_window();
+    let area = session
+        .windows()
+        .layout()
+        .area(window)
+        .expect("the focused window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let source_row = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, source_row), NOW);
+    let before_cursor = session.cursor();
+
+    assert_eq!(
+        session.handle_event(drag(x, area.bottom().saturating_sub(1)), NOW),
+        Redraw::Skipped
+    );
+    assert_eq!(session.cursor(), before_cursor);
+    assert_eq!(session.mode(), Mode::Normal);
+    assert!(selection(&session).is_none());
 }
 
 #[test]

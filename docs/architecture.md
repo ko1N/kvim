@@ -623,7 +623,7 @@ consumers prove each supported package in isolation. The exact matrix is:
 | `kvim-language` | editor services with grammar-free service profiles and headless diagnostics | no grammar, `grammar-rust`, `all-grammars` |
 | `kvim-ui` | no optional production features | default |
 | `kvim-syntax` | no grammar | no grammar, `grammar-rust`, `all-grammars` |
-| `kvim-embed` | in-memory only | default, no-default, `review`, `worktree`, `grammar-rust`, `all-grammars` |
+| `kvim-embed` | in-memory editor and worktree source-presentation facade | default, no-default, `review`, `worktree`, `grammar-rust`, `all-grammars` |
 | `kvim-tui` | internal editor with no grammar | empty partition, default no-grammar editor, no-default + `grammar-rust`, no-default + `all-grammars` |
 
 `kvim-tui` has a valid empty partition under `--no-default-features`. The

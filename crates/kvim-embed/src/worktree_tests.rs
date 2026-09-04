@@ -2006,6 +2006,166 @@ async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent
     drop(take_until(editor, wanted).await);
 }
 
+#[test]
+fn source_presentation_constructors_enforce_published_bounds() {
+    assert_eq!(
+        SourceLineRange::new(0, 1),
+        Err(SourcePresentationBuildError::Range)
+    );
+    assert_eq!(
+        SourceLineRange::new(2, 1),
+        Err(SourcePresentationBuildError::Range)
+    );
+    assert_eq!(
+        SourceLineRange::new(1, SOURCE_LINE_MAX + 1),
+        Err(SourcePresentationBuildError::Range)
+    );
+    assert_eq!(
+        SourcePresentation::new(WorktreeRelativePath::new("a.rs").unwrap(), vec![]),
+        Err(SourcePresentationBuildError::Empty)
+    );
+    let long = "x".repeat(SOURCE_ANNOTATION_MESSAGE_CHARS_MAX + 1);
+    assert_eq!(
+        SourceAnnotation::new(SourceLineRange::new(1, 1).unwrap(), long),
+        Err(SourcePresentationBuildError::Message)
+    );
+}
+
+fn source_request(path: &str, ranges: &[(u32, u32, &str)]) -> SourcePresentation {
+    SourcePresentation::new(
+        WorktreeRelativePath::new(path).unwrap(),
+        ranges
+            .iter()
+            .map(|(first, last, message)| {
+                SourceAnnotation::new(SourceLineRange::new(*first, *last).unwrap(), *message)
+                    .unwrap()
+            })
+            .collect(),
+    )
+    .unwrap()
+}
+
+async fn finish_source_presentation(
+    editor: &mut WorktreeEditor,
+) -> Result<(), SourcePresentationError> {
+    for _ in 0..TEST_STEPS_MAX {
+        let _ = editor.dispatch();
+        if let Some(result) = editor.take_source_presentation_result() {
+            return result;
+        }
+        let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
+            .await
+            .expect("bounded work must complete");
+        editor.apply(completion, Duration::ZERO).unwrap();
+    }
+    panic!("bounded lifecycle did not finish the source presentation");
+}
+
+#[tokio::test]
+async fn source_presentation_validates_replaces_navigates_and_opens_atomically() {
+    let root = TestRoot::new("source-presentation");
+    fs::write(root.0.join("first.rs"), "one\ntwo\nthree\n").unwrap();
+    fs::write(root.0.join("second.rs"), "alpha\nbeta\n").unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+
+    assert_eq!(
+        editor
+            .present_source(source_request("first.rs", &[(2, 3, "wide"), (1, 1, "top")]))
+            .unwrap(),
+        SourcePresentationOutcome::Queued
+    );
+    finish_source_presentation(&mut editor).await.unwrap();
+    let first = editor.source_presentation().unwrap();
+    assert_eq!(
+        (first.selected_index(), first.count(), first.message()),
+        (0, 2, "wide")
+    );
+    assert_eq!(editor.status().cursor().line(), 2);
+    assert_eq!(
+        editor.previous_source_annotation(),
+        Err(SourcePresentationError::AtFirst)
+    );
+    editor.next_source_annotation().unwrap();
+    assert_eq!(editor.source_presentation().unwrap().message(), "top");
+    assert_eq!(
+        editor.next_source_annotation(),
+        Err(SourcePresentationError::AtLast)
+    );
+
+    assert_eq!(
+        editor.present_source(source_request("first.rs", &[(4, 4, "bad")])),
+        Err(SourcePresentationError::RangeOutsideBuffer)
+    );
+    assert_eq!(editor.source_presentation().unwrap().message(), "top");
+
+    assert_eq!(
+        editor.present_source(source_request("missing.rs", &[(2, 2, "missing")])),
+        Ok(SourcePresentationOutcome::Queued)
+    );
+    assert_eq!(
+        finish_source_presentation(&mut editor).await,
+        Err(SourcePresentationError::RangeOutsideBuffer)
+    );
+    assert_eq!(editor.source_presentation().unwrap().message(), "top");
+
+    assert_eq!(
+        editor.present_source(source_request("second.rs", &[(1, 2, "other")])),
+        Ok(SourcePresentationOutcome::Queued)
+    );
+    finish_source_presentation(&mut editor).await.unwrap();
+    assert_eq!(
+        editor.source_presentation().unwrap().path().as_path(),
+        Path::new("second.rs")
+    );
+
+    assert_eq!(editor.clear_source_presentation(), WorktreeUpdate::Redraw);
+    assert!(editor.source_presentation().is_none());
+    assert_eq!(
+        editor.status().path().unwrap().as_path(),
+        Path::new("second.rs")
+    );
+}
+
+#[tokio::test]
+async fn dirty_different_file_refuses_without_losing_text_or_presentation() {
+    let root = TestRoot::new("source-presentation-dirty");
+    fs::write(root.0.join("first.rs"), "one\n").unwrap();
+    fs::write(root.0.join("second.rs"), "two\n").unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+    editor
+        .present_source(source_request("first.rs", &[(1, 1, "first")]))
+        .unwrap();
+    finish_source_presentation(&mut editor).await.unwrap();
+    editor
+        .command(Command::InsertBeforeCursor, None, None, Duration::ZERO)
+        .unwrap();
+    editor.literal("dirty ", Duration::ZERO);
+
+    assert_eq!(
+        editor.present_source(source_request("second.rs", &[(1, 1, "second")])),
+        Err(SourcePresentationError::DifferentDirtyBuffer)
+    );
+    assert!(editor.status().is_modified());
+    assert_eq!(editor.source_presentation().unwrap().message(), "first");
+    assert_eq!(
+        editor.present_source(source_request("first.rs", &[(1, 1, "replacement")])),
+        Ok(SourcePresentationOutcome::Presented)
+    );
+    assert!(editor.status().is_modified());
+    assert_eq!(
+        editor.source_presentation().unwrap().message(),
+        "replacement"
+    );
+    assert_eq!(
+        editor.status().path().unwrap().as_path(),
+        Path::new("first.rs")
+    );
+}
+
 #[tokio::test]
 async fn recovery_event_is_bounded_addressed_and_rejects_wrong_or_stale_decisions() {
     let root = TestRoot::new("recovery-facade");
