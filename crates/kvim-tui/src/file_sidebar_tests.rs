@@ -25,7 +25,7 @@ use kvim_workspace::WorkspaceRequest;
 use kvim_workspace::temp::TempDir;
 
 use super::*;
-use crate::embed::EditorEvent;
+use crate::embed::{EditorAccess, EditorEvent};
 use crate::session::{Session, test_root};
 
 /// The rectangle that every test gives the editor.
@@ -236,6 +236,160 @@ fn semantic_search_reuses_tree_matching_and_reports_a_typed_miss() {
         FileSidebarOperationOutcome::Applied
     );
     assert_eq!(row_of(&session, "src").kind(), FileRowKind::ClosedDirectory);
+}
+
+#[test]
+fn typed_clipboard_holds_repeat_and_replace_the_selected_entry() {
+    let directory = workspace("file-sidebar-typed-holds");
+    let mut session = host_sidebar_editor(&directory.path);
+    read_directories(&mut session);
+
+    select(&mut session, "readme.md");
+    for operation in [
+        FileSidebarClipboardOperation::Copy,
+        FileSidebarClipboardOperation::Copy,
+    ] {
+        assert_eq!(
+            session.operate_file_sidebar_clipboard(operation),
+            FileSidebarClipboardOutcome::Applied
+        );
+        assert_eq!(
+            row_of(&session, "readme.md").dimming(),
+            Some(FileRowDimming::HeldCopy)
+        );
+    }
+
+    select(&mut session, "src");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Cut),
+        FileSidebarClipboardOutcome::Applied
+    );
+    assert_eq!(row_of(&session, "readme.md").dimming(), None);
+    assert_eq!(
+        row_of(&session, "src").dimming(),
+        Some(FileRowDimming::HeldMove)
+    );
+}
+
+#[test]
+fn typed_clipboard_reports_empty_and_missing_selection() {
+    let directory = workspace("file-sidebar-typed-empty");
+    let mut session = host_sidebar_editor(&directory.path);
+
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Copy),
+        FileSidebarClipboardOutcome::Refused(FileSidebarClipboardRefusal::NoSelection)
+    );
+
+    read_directories(&mut session);
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Refused(FileSidebarClipboardRefusal::ClipboardEmpty)
+    );
+}
+
+#[test]
+fn typed_paste_keeps_the_hold_until_the_accepted_mutation_completes() {
+    let directory = workspace("file-sidebar-typed-paste");
+    let mut session = host_sidebar_editor(&directory.path);
+    read_directories(&mut session);
+
+    select(&mut session, "readme.md");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Copy),
+        FileSidebarClipboardOutcome::Applied
+    );
+    select(&mut session, "src");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Applied
+    );
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Refused(FileSidebarClipboardRefusal::Busy)
+    );
+    assert_eq!(
+        row_of(&session, "readme.md").dimming(),
+        Some(FileRowDimming::HeldCopy),
+        "an accepted paste and a busy refusal preserve the hold while work runs"
+    );
+
+    let request = session
+        .take_workspace_request()
+        .expect("the accepted paste queues one workspace mutation");
+    assert!(matches!(request, WorkspaceRequest::Mutate(_)));
+    let _ = session.apply_workspace_result(request.run());
+    assert_eq!(row_of(&session, "readme.md").dimming(), None);
+    assert_eq!(
+        std::fs::read_to_string(directory.path.join("src/readme.md"))
+            .expect("the accepted copy completed"),
+        "one line\n"
+    );
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Refused(FileSidebarClipboardRefusal::ClipboardEmpty),
+        "successful completion consumes the hold"
+    );
+}
+
+#[test]
+fn typed_paste_keeps_the_hold_when_accepted_work_is_cancelled() {
+    let directory = workspace("file-sidebar-typed-cancelled");
+    let mut session = host_sidebar_editor(&directory.path);
+    read_directories(&mut session);
+
+    select(&mut session, "readme.md");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Cut),
+        FileSidebarClipboardOutcome::Applied
+    );
+    select(&mut session, "src");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Applied
+    );
+    let request = session
+        .take_workspace_request()
+        .expect("the accepted paste queues one workspace mutation");
+    assert!(matches!(request, WorkspaceRequest::Mutate(_)));
+    let _ = session.abandon_workspace_request(crate::session::FileRequestFailure::Cancelled);
+
+    assert_eq!(
+        row_of(&session, "readme.md").dimming(),
+        Some(FileRowDimming::HeldMove),
+        "cancelled work preserves the cut hold for a retry"
+    );
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Applied,
+        "the preserved hold can be pasted again"
+    );
+}
+
+#[test]
+fn typed_paste_refuses_view_only_access_without_consuming_the_hold() {
+    let directory = workspace("file-sidebar-typed-view-only");
+    let mut session = host_sidebar_editor(&directory.path).with_access(EditorAccess::ViewOnly);
+    read_directories(&mut session);
+
+    select(&mut session, "readme.md");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Copy),
+        FileSidebarClipboardOutcome::Applied
+    );
+    select(&mut session, "src");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Refused(FileSidebarClipboardRefusal::ViewOnly)
+    );
+    assert_eq!(
+        row_of(&session, "readme.md").dimming(),
+        Some(FileRowDimming::HeldCopy)
+    );
+    assert!(
+        session.take_workspace_request().is_none(),
+        "view-only paste queues no workspace mutation"
+    );
 }
 
 #[test]

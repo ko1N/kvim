@@ -31,8 +31,11 @@ use kvim_tui::__private::{
     EditorShutdown as TuiEditorShutdown, EmbeddedEditor, FileRow as TuiFileRow,
     FileRowDimming as TuiFileRowDimming, FileRowGit as TuiFileRowGit,
     FileRowIdentity as TuiFileRowIdentity, FileRowKind as TuiFileRowKind,
-    FileRowNoticeKind as TuiFileRowNoticeKind, FileSidebarInput as TuiFileSidebarInput,
-    FileSidebarOperation as TuiFileSidebarOperation,
+    FileRowNoticeKind as TuiFileRowNoticeKind,
+    FileSidebarClipboardOperation as TuiFileSidebarClipboardOperation,
+    FileSidebarClipboardOutcome as TuiFileSidebarClipboardOutcome,
+    FileSidebarClipboardRefusal as TuiFileSidebarClipboardRefusal,
+    FileSidebarInput as TuiFileSidebarInput, FileSidebarOperation as TuiFileSidebarOperation,
     FileSidebarOperationOutcome as TuiFileSidebarOperationOutcome,
     FileSidebarOutcome as TuiFileSidebarOutcome, GeometryError as TuiGeometryError,
     HostReportRequest as TuiHostReportRequest, HostWorkspace as TuiHostWorkspace,
@@ -458,6 +461,45 @@ impl FileSidebarSnapshot {
     pub fn rows(&self) -> &[FileSidebarRow] {
         &self.rows
     }
+}
+
+/// One semantic operation for a host-owned file-sidebar clipboard.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarClipboardOperation {
+    /// Hold the selected entry for copying.
+    Copy,
+    /// Hold the selected entry for moving.
+    Cut,
+    /// Paste the held entries into the selected destination.
+    Paste,
+}
+
+/// Why a host-owned file-sidebar clipboard operation was refused.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarClipboardRefusal {
+    /// The tree shows no selected entry.
+    NoSelection,
+    /// The selected entry or destination disappeared from the workspace tree.
+    EntryGone,
+    /// The file-operation clipboard holds no entry.
+    ClipboardEmpty,
+    /// The selected destination is outside the workspace.
+    OutsideWorkspace,
+    /// One workspace operation is already running.
+    Busy,
+    /// The editor has view-only access.
+    ViewOnly,
+    /// A bounded event queue has no remaining capacity.
+    Saturated,
+}
+
+/// Result of one host-owned file-sidebar clipboard operation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarClipboardOutcome {
+    /// Kvim accepted the operation.
+    Applied,
+    /// Kvim refused the operation before changing the workspace.
+    Refused(FileSidebarClipboardRefusal),
 }
 
 /// One semantic input for a host-owned file sidebar.
@@ -2280,6 +2322,56 @@ impl WorktreeEditor {
             root_label: self.inner().file_root_label(),
             rows: rows.into_iter().map(convert_file_sidebar_row).collect(),
         })
+    }
+
+    /// Applies one typed file clipboard operation to the host-owned sidebar.
+    ///
+    /// Kvim owns the held entries and returns the authoritative operation
+    /// result. A refused paste preserves those entries. An accepted paste
+    /// consumes them only after the workspace mutation completes successfully.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`FileSidebarOperationError::NotHostOwned`] unless the host owns
+    /// the file-sidebar presentation.
+    pub fn file_sidebar_clipboard(
+        &mut self,
+        operation: FileSidebarClipboardOperation,
+    ) -> Result<FileSidebarClipboardOutcome, FileSidebarOperationError> {
+        self.require_host_file_sidebar()?;
+        let operation = match operation {
+            FileSidebarClipboardOperation::Copy => TuiFileSidebarClipboardOperation::Copy,
+            FileSidebarClipboardOperation::Cut => TuiFileSidebarClipboardOperation::Cut,
+            FileSidebarClipboardOperation::Paste => TuiFileSidebarClipboardOperation::Paste,
+        };
+        Ok(
+            match self.inner_mut().file_sidebar_clipboard_operation(operation) {
+                TuiFileSidebarClipboardOutcome::Applied => FileSidebarClipboardOutcome::Applied,
+                TuiFileSidebarClipboardOutcome::Refused(refusal) => {
+                    FileSidebarClipboardOutcome::Refused(match refusal {
+                        TuiFileSidebarClipboardRefusal::NoSelection => {
+                            FileSidebarClipboardRefusal::NoSelection
+                        }
+                        TuiFileSidebarClipboardRefusal::EntryGone => {
+                            FileSidebarClipboardRefusal::EntryGone
+                        }
+                        TuiFileSidebarClipboardRefusal::ClipboardEmpty => {
+                            FileSidebarClipboardRefusal::ClipboardEmpty
+                        }
+                        TuiFileSidebarClipboardRefusal::OutsideWorkspace => {
+                            FileSidebarClipboardRefusal::OutsideWorkspace
+                        }
+                        TuiFileSidebarClipboardRefusal::Busy => FileSidebarClipboardRefusal::Busy,
+                        TuiFileSidebarClipboardRefusal::ViewOnly => {
+                            FileSidebarClipboardRefusal::ViewOnly
+                        }
+                        TuiFileSidebarClipboardRefusal::Saturated => {
+                            FileSidebarClipboardRefusal::Saturated
+                        }
+                    })
+                }
+            },
+        )
     }
 
     /// Starts a host-owned file-sidebar search prompt.

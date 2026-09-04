@@ -30,6 +30,9 @@ use crate::embed::{
     CursorShape, EDITOR_EVENTS_MAX, EditorAccess, EditorCapacity, EditorEvent, EditorOpenError,
     EditorShutdown, EmbeddedEditor, GeometryError, InputRequest, PublishedEvent, Refusal,
 };
+use crate::file_sidebar::{
+    FileSidebarClipboardOperation, FileSidebarClipboardOutcome, FileSidebarClipboardRefusal,
+};
 use crate::session::{Redraw, RunState, Session, test_root};
 
 const NOW: Duration = Duration::ZERO;
@@ -398,6 +401,41 @@ fn a_saturated_outbox_refuses_a_workspace_mutation_before_it_starts() {
     assert!(
         !directory.path.join("added.rs").exists(),
         "a refused mutation creates no entry"
+    );
+}
+
+#[test]
+fn a_saturated_outbox_refuses_a_typed_paste_without_consuming_the_hold() {
+    let directory = TempDir::new("embed-saturated-typed-paste");
+    directory.file("README.md", "kvim\n");
+    let path = directory.write("main.rs", "one\n");
+    let mut session = editor(&directory.path);
+    session.open_path(path);
+    settle(&mut session);
+    reveal_tree(&mut session);
+
+    select_named(&mut session, "README.md");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Copy),
+        FileSidebarClipboardOutcome::Applied
+    );
+    saturate(&mut session);
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Refused(FileSidebarClipboardRefusal::Saturated)
+    );
+    assert!(
+        session.take_workspace_request().is_none(),
+        "a saturated typed paste reaches no worker"
+    );
+
+    let _ = session
+        .take_event()
+        .expect("the outbox holds completed saves");
+    assert_eq!(
+        session.operate_file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        FileSidebarClipboardOutcome::Applied,
+        "the saturated refusal preserves the hold for a retry"
     );
 }
 

@@ -578,12 +578,30 @@ fn host_sidebar_releases_its_file_hold_without_changing_search() {
         }
     });
 
+    let selected = editor
+        .file_sidebar_snapshot()
+        .unwrap()
+        .rows()
+        .iter()
+        .find(|row| row.path().is_some())
+        .unwrap()
+        .id()
+        .clone();
+    assert!(matches!(
+        editor.file_sidebar_command(FileSidebarCommand::Select(selected)),
+        FileSidebarOutcome::Applied(_)
+    ));
+    assert_eq!(
+        editor.file_sidebar_clipboard(FileSidebarClipboardOperation::Copy),
+        Ok(FileSidebarClipboardOutcome::Applied)
+    );
+
     let search = editor.begin_file_sidebar_search().unwrap();
     editor.accept_file_sidebar_search(search, "held").unwrap();
 
     assert_eq!(
         editor.release_file_sidebar_hold(),
-        Ok(WorktreeUpdate::Unchanged)
+        Ok(WorktreeUpdate::Redraw)
     );
     let released = editor.file_sidebar_snapshot().unwrap();
     assert!(released.rows().iter().all(|row| row.dimming().is_none()));
@@ -603,6 +621,14 @@ fn host_sidebar_releases_its_file_hold_without_changing_search() {
         "releasing an empty clipboard is idempotent"
     );
 
+    assert_eq!(
+        editor.file_sidebar_clipboard(FileSidebarClipboardOperation::Paste),
+        Ok(FileSidebarClipboardOutcome::Refused(
+            FileSidebarClipboardRefusal::ClipboardEmpty
+        )),
+        "an empty clipboard returns a typed refusal"
+    );
+
     let embedded_root = TestRoot::new("embedded-sidebar-release-hold");
     let mut embedded = WorktreeEditor::builder(&embedded_root.0, Rect::new(0, 0, 20, 4))
         .open()
@@ -610,6 +636,11 @@ fn host_sidebar_releases_its_file_hold_without_changing_search() {
     assert_eq!(
         embedded.release_file_sidebar_hold(),
         Err(FileSidebarOperationError::Embedded)
+    );
+    assert_eq!(
+        embedded.file_sidebar_clipboard(FileSidebarClipboardOperation::Copy),
+        Err(FileSidebarOperationError::Embedded),
+        "the typed clipboard facade rejects embedded sidebar ownership"
     );
 }
 

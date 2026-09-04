@@ -107,8 +107,9 @@ use super::embed::{
     ReductionOutcome, Refusal, fits,
 };
 use super::file_sidebar::{
-    FileRow, FileSidebarInput, FileSidebarOperation, FileSidebarOperationOutcome,
-    FileSidebarOutcome,
+    FileRow, FileSidebarClipboardOperation, FileSidebarClipboardOutcome,
+    FileSidebarClipboardRefusal, FileSidebarInput, FileSidebarOperation,
+    FileSidebarOperationOutcome, FileSidebarOutcome,
 };
 use super::jumps::{JumpDirection, JumpEntry, JumpStep};
 use super::language::{
@@ -2557,6 +2558,39 @@ impl Session {
         self.reconcile_tree();
         self.note_redraw(Redraw::Needed);
         outcome
+    }
+
+    /// Applies one clipboard operation for a host-owned file sidebar.
+    pub(super) fn operate_file_sidebar_clipboard(
+        &mut self,
+        operation: FileSidebarClipboardOperation,
+    ) -> FileSidebarClipboardOutcome {
+        let outcome = match operation {
+            FileSidebarClipboardOperation::Copy => self
+                .tree
+                .hold(TransferMode::Copy)
+                .map(|_| ())
+                .map_err(file_sidebar_hold_refusal),
+            FileSidebarClipboardOperation::Cut => self
+                .tree
+                .hold(TransferMode::Move)
+                .map(|_| ())
+                .map_err(file_sidebar_hold_refusal),
+            FileSidebarClipboardOperation::Paste => self
+                .tree
+                .stage_paste()
+                .map_err(file_sidebar_paste_refusal)
+                .and_then(|operation| {
+                    self.queue_tree_mutation_result(operation, Overwrite::Refuse)
+                        .map_err(file_sidebar_queue_refusal)
+                }),
+        };
+        self.reconcile_tree();
+        self.note_redraw(Redraw::Needed);
+        match outcome {
+            Ok(()) => FileSidebarClipboardOutcome::Applied,
+            Err(refusal) => FileSidebarClipboardOutcome::Refused(refusal),
+        }
     }
 
     /// Applies one private semantic operation for a host-owned file sidebar.
@@ -6516,28 +6550,48 @@ impl Session {
 
     /// Hands one operation to the bounded worker service.
     fn queue_tree_mutation(&mut self, operation: FileOperation, overwrite: Overwrite) -> Redraw {
+        match self.queue_tree_mutation_result(operation, overwrite) {
+            Ok(()) => Redraw::Needed,
+            Err(TreeMutationQueueRefusal::ViewOnly) => self.refuse(Refusal::ViewOnly),
+            Err(TreeMutationQueueRefusal::Saturated) => self.refuse(Refusal::Saturated),
+            Err(TreeMutationQueueRefusal::Tree(refusal)) => {
+                self.set_message(refusal.message(), MessageLevel::Warning);
+                Redraw::Needed
+            }
+        }
+    }
+
+    /// Reserves the event and queues one workspace mutation atomically.
+    fn queue_tree_mutation_result(
+        &mut self,
+        operation: FileOperation,
+        overwrite: Overwrite,
+    ) -> Result<(), TreeMutationQueueRefusal> {
         if self.access == EditorAccess::ViewOnly {
-            return self.refuse(Refusal::ViewOnly);
+            return Err(TreeMutationQueueRefusal::ViewOnly);
+        }
+        if self.mutation_slot.is_some() {
+            return Err(TreeMutationQueueRefusal::Tree(TreeRefusal::Busy));
         }
         // The mutation owns the slot of its `WorkspaceChanged` fact before the
         // filesystem sees it. See `docs/embedding.md`.
-        debug_assert!(
-            self.mutation_slot.is_none(),
-            "the editor runs one workspace mutation at a time"
-        );
-        let Ok(slot) = self.events.reserve() else {
-            return self.refuse(Refusal::Saturated);
-        };
+        let slot = self
+            .events
+            .reserve()
+            .map_err(|_| TreeMutationQueueRefusal::Saturated)?;
         // The worker validates the operation against the loaded buffers, so it
         // receives the complete list with the request.
         let buffers = self.buffers.open_buffers(&self.root);
         if let Err(refusal) = self.tree.start_mutation(operation, overwrite, buffers) {
             self.events.release(slot);
-            self.set_message(refusal.message(), MessageLevel::Warning);
-            return Redraw::Needed;
+            return Err(TreeMutationQueueRefusal::Tree(refusal));
         }
+        assert!(
+            self.mutation_slot.is_none(),
+            "the busy check prevents replacing a live mutation reservation"
+        );
         self.mutation_slot = Some(slot);
-        Redraw::Needed
+        Ok(())
     }
 
     /// Runs one accepted file-tree prompt line.
@@ -8879,6 +8933,54 @@ pub(super) fn watch_coverage_note(coverage: WatchCoverage, setting: Option<&str>
         (false, _) => WATCH_REFRESH_ACTION.to_owned(),
     };
     format!("{}; {action}", causes.join(" and "))
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum TreeMutationQueueRefusal {
+    ViewOnly,
+    Saturated,
+    Tree(TreeRefusal),
+}
+
+fn file_sidebar_hold_refusal(refusal: TreeRefusal) -> FileSidebarClipboardRefusal {
+    match refusal {
+        TreeRefusal::NoSelection => FileSidebarClipboardRefusal::NoSelection,
+        TreeRefusal::EntryGone => FileSidebarClipboardRefusal::EntryGone,
+        TreeRefusal::EmptyName
+        | TreeRefusal::NameHasPath
+        | TreeRefusal::EmptyComponent
+        | TreeRefusal::NameTooLong
+        | TreeRefusal::PathTooDeep
+        | TreeRefusal::ClipboardEmpty
+        | TreeRefusal::OutsideWorkspace
+        | TreeRefusal::Busy => unreachable!("holding a selected entry cannot produce {refusal:?}"),
+    }
+}
+
+fn file_sidebar_paste_refusal(refusal: TreeRefusal) -> FileSidebarClipboardRefusal {
+    match refusal {
+        TreeRefusal::ClipboardEmpty => FileSidebarClipboardRefusal::ClipboardEmpty,
+        TreeRefusal::EntryGone => FileSidebarClipboardRefusal::EntryGone,
+        TreeRefusal::OutsideWorkspace => FileSidebarClipboardRefusal::OutsideWorkspace,
+        TreeRefusal::NoSelection
+        | TreeRefusal::EmptyName
+        | TreeRefusal::NameHasPath
+        | TreeRefusal::EmptyComponent
+        | TreeRefusal::NameTooLong
+        | TreeRefusal::PathTooDeep
+        | TreeRefusal::Busy => unreachable!("staging a paste cannot produce {refusal:?}"),
+    }
+}
+
+fn file_sidebar_queue_refusal(refusal: TreeMutationQueueRefusal) -> FileSidebarClipboardRefusal {
+    match refusal {
+        TreeMutationQueueRefusal::ViewOnly => FileSidebarClipboardRefusal::ViewOnly,
+        TreeMutationQueueRefusal::Saturated => FileSidebarClipboardRefusal::Saturated,
+        TreeMutationQueueRefusal::Tree(TreeRefusal::Busy) => FileSidebarClipboardRefusal::Busy,
+        TreeMutationQueueRefusal::Tree(refusal) => {
+            unreachable!("queuing a staged paste cannot produce {refusal:?}")
+        }
+    }
 }
 
 /// The title band of the hover float.

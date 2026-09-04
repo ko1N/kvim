@@ -1015,6 +1015,48 @@ impl FileSidebarOutcome {
     }
 }
 
+/// One clipboard operation for a host-owned file sidebar.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarClipboardOperation {
+    /// Hold the selected entry for copying.
+    Copy,
+    /// Hold the selected entry for moving.
+    Cut,
+    /// Paste the held entries into the selected destination.
+    Paste,
+}
+
+/// Why a host-owned file-sidebar clipboard operation was refused.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarClipboardRefusal {
+    /// The tree shows no selected entry.
+    NoSelection,
+    /// The selected entry or destination disappeared from the workspace tree.
+    EntryGone,
+    /// The file-operation clipboard holds no entry.
+    ClipboardEmpty,
+    /// The selected destination is outside the workspace.
+    OutsideWorkspace,
+    /// One workspace operation is already running.
+    Busy,
+    /// The editor has view-only access.
+    ViewOnly,
+    /// A bounded event queue has no remaining capacity.
+    Saturated,
+}
+
+/// Result of one host-owned file-sidebar clipboard operation.
+#[doc(hidden)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FileSidebarClipboardOutcome {
+    /// Kvim accepted the operation.
+    Applied,
+    /// Kvim refused the operation before changing the workspace.
+    Refused(FileSidebarClipboardRefusal),
+}
+
 /// One private semantic operation for a host-owned file sidebar.
 ///
 /// [`EmbeddedEditor`](super::embed::EmbeddedEditor) exposes this type only to

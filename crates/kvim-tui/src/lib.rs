@@ -106,8 +106,9 @@ pub mod __private {
     };
     pub use crate::file_sidebar::{
         FILE_SIDEBAR_LABEL_CHARS_MAX, FILE_SIDEBAR_ROWS_MAX, FileRow, FileRowDimming, FileRowGit,
-        FileRowIdentity, FileRowKind, FileRowNoticeKind, FileSidebarInput, FileSidebarOperation,
-        FileSidebarOperationOutcome, FileSidebarOutcome,
+        FileRowIdentity, FileRowKind, FileRowNoticeKind, FileSidebarClipboardOperation,
+        FileSidebarClipboardOutcome, FileSidebarClipboardRefusal, FileSidebarInput,
+        FileSidebarOperation, FileSidebarOperationOutcome, FileSidebarOutcome,
     };
     pub use crate::review::{
         ReviewFocus, ReviewModel, ReviewOutcome, ReviewPainter, ReviewRestore,
