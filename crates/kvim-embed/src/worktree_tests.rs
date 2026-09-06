@@ -2007,6 +2007,108 @@ async fn drive_until(editor: &mut WorktreeEditor, wanted: impl Fn(&WorktreeEvent
 }
 
 #[test]
+fn source_change_constructors_enforce_published_bounds() {
+    assert_eq!(
+        SourceChangeEmphasis::new(WorktreeRelativePath::new("a.rs").unwrap(), vec![]),
+        Err(SourceChangeEmphasisBuildError::Empty)
+    );
+    let ranges = vec![SourceLineRange::new(1, 1).unwrap(); SOURCE_CHANGE_RANGES_MAX + 1];
+    assert_eq!(
+        SourceChangeEmphasis::new(WorktreeRelativePath::new("a.rs").unwrap(), ranges),
+        Err(SourceChangeEmphasisBuildError::TooMany)
+    );
+}
+
+fn source_change_request(path: &str, ranges: &[(u32, u32)]) -> SourceChangeEmphasis {
+    SourceChangeEmphasis::new(
+        WorktreeRelativePath::new(path).unwrap(),
+        ranges
+            .iter()
+            .map(|(first, last)| SourceLineRange::new(*first, *last).unwrap())
+            .collect(),
+    )
+    .unwrap()
+}
+
+async fn finish_source_change(
+    editor: &mut WorktreeEditor,
+) -> Result<(), SourceChangeEmphasisError> {
+    for _ in 0..TEST_STEPS_MAX {
+        let _ = editor.dispatch();
+        if let Some(result) = editor.take_source_change_emphasis_result() {
+            return result;
+        }
+        let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
+            .await
+            .expect("bounded work must complete");
+        editor.apply(completion, Duration::ZERO).unwrap();
+    }
+    panic!("bounded lifecycle did not finish source-change emphasis");
+}
+
+#[tokio::test]
+async fn source_change_reloads_current_text_and_preserves_independent_presentation() {
+    let root = TestRoot::new("source-change-reload");
+    fs::write(root.0.join("first.rs"), "one\n").unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+    editor
+        .present_source(source_request("first.rs", &[(1, 1, "note")]))
+        .unwrap();
+    finish_source_presentation(&mut editor).await.unwrap();
+    fs::write(root.0.join("first.rs"), "one\ntwo\nthree\n").unwrap();
+
+    assert_eq!(
+        editor
+            .emphasize_source_change(source_change_request("first.rs", &[(2, 2), (3, 3)]))
+            .unwrap(),
+        SourceChangeEmphasisOutcome::Queued
+    );
+    finish_source_change(&mut editor).await.unwrap();
+    let emphasis = editor.source_change_emphasis().unwrap();
+    assert_eq!(emphasis.count(), 2);
+    assert_eq!(
+        emphasis.range(0).unwrap(),
+        SourceLineRange::new(2, 2).unwrap()
+    );
+    assert_eq!(editor.status().cursor().line(), 2);
+    assert_eq!(editor.source_presentation().unwrap().message(), "note");
+    editor.clear_source_presentation();
+    assert!(editor.source_change_emphasis().is_some());
+    editor.clear_source_change_emphasis();
+    assert!(editor.source_change_emphasis().is_none());
+}
+
+#[tokio::test]
+async fn source_change_refuses_dirty_current_and_different_buffers() {
+    let root = TestRoot::new("source-change-dirty");
+    fs::write(root.0.join("first.rs"), "one\n").unwrap();
+    fs::write(root.0.join("second.rs"), "two\n").unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+    editor.open_file(WorktreeRelativePath::new("first.rs").unwrap());
+    drive_until(&mut editor, |event| {
+        matches!(event, WorktreeEvent::ActiveFileChanged { .. })
+    })
+    .await;
+    editor
+        .command(Command::InsertBeforeCursor, None, None, Duration::ZERO)
+        .unwrap();
+    editor.literal("dirty ", Duration::ZERO);
+    assert_eq!(
+        editor.emphasize_source_change(source_change_request("first.rs", &[(1, 1)])),
+        Err(SourceChangeEmphasisError::DirtyBuffer)
+    );
+    assert_eq!(
+        editor.emphasize_source_change(source_change_request("second.rs", &[(1, 1)])),
+        Err(SourceChangeEmphasisError::DifferentDirtyBuffer)
+    );
+    assert!(editor.status().is_modified());
+}
+
+#[test]
 fn source_presentation_constructors_enforce_published_bounds() {
     assert_eq!(
         SourceLineRange::new(0, 1),

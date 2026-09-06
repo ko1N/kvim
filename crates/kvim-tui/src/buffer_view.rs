@@ -22,6 +22,7 @@ use kvim_workspace::ExternalChange;
 
 use super::cells::{RowCell, layout_row, terminal_column, text_cells, truncate_cells_left};
 use super::chrome::draw_band;
+use super::source_change_emphasis::SourceChangeRange;
 use super::theme::{Theme, ThemeRole};
 
 /// The number of rows that the winbar of one window occupies.
@@ -239,6 +240,8 @@ pub(super) struct WindowView<'a> {
     /// and no cursor position. The list is empty while no language server
     /// published one. See `docs/language-services.md`.
     pub(super) diagnostics: &'a [Diagnostic],
+    /// All settled-change ranges, inclusive and zero-based.
+    pub(super) source_change_emphasis: &'a [SourceChangeRange],
     /// One selected generic source line range, inclusive and zero-based.
     pub(super) source_presentation: Option<(usize, usize)>,
     /// Whether the window holds the input focus.
@@ -318,6 +321,8 @@ struct LineOverlays {
     roles: Vec<ColumnRole>,
     /// The diagnostic severities of the line, in ascending column order.
     marked: Vec<ColumnSeverity>,
+    /// Whether settled source-change emphasis marks this line.
+    changed: bool,
     /// Whether generic source presentation marks this line.
     presented: bool,
 }
@@ -747,6 +752,11 @@ impl RowPainter<'_> {
             selected: selected_columns(self.view, index, line_len),
             roles: line_roles(self.view.highlights, line, &content),
             marked: line_severities(self.view.diagnostics, line, &content),
+            changed: self
+                .view
+                .source_change_emphasis
+                .iter()
+                .any(|range| line >= range.first_line() && line <= range.last_line()),
             presented: self
                 .view
                 .source_presentation
@@ -786,6 +796,9 @@ impl RowPainter<'_> {
             .find(|found| cell.column >= found.first_column && cell.column <= found.last_column)
         {
             style = style.patch(self.theme.style(ThemeRole::Syntax(found.role)));
+        }
+        if overlays.changed {
+            style = style.patch(self.theme.style(ThemeRole::SourceChangeEmphasis));
         }
         if overlays.presented {
             style = style.patch(self.theme.style(ThemeRole::SourcePresentation));

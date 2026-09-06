@@ -48,6 +48,18 @@ Host-owned statusline presentation requires no callback.
 validated ratios, focus, limits, and minimum dimensions. Host surface values,
 buffer text, and terminal colors stay outside the tree.
 
+### Source Change Emphasis
+
+A worktree editor can hold settled source-change emphasis independently from source presentation,
+diagnostics, search, and Visual selection. Kvim paints every inclusive range with the semantic
+`SourceChangeEmphasis` theme role. The role changes only the background, so syntax and diagnostic
+foreground information remains visible in focused and unfocused split windows. Emphasis reserves
+no panel row. A one-row source area therefore keeps its only source row.
+
+The focused window owns cursor and viewport placement. Successful emphasis places the cursor on
+the first line of the first range and reconciles that line into view. It changes no source text,
+character position, offset, or line mapping.
+
 ### Source Presentation
 
 A worktree editor can hold one generic source presentation independently of diagnostics,

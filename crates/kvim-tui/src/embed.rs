@@ -58,6 +58,7 @@ use super::session::{
     RecoveryDecision, RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState,
     Session,
 };
+use super::source_change_emphasis::{SourceChangeEmphasis, SourceChangeEmphasisRefusal};
 use super::source_presentation::{SourcePresentation, SourcePresentationRefusal};
 
 /// The largest number of editor facts that one instance queues at a time.
@@ -1392,6 +1393,34 @@ impl EmbeddedEditor {
             self.driver.cancel_completion();
         }
         closed
+    }
+
+    /// Returns current settled source-change emphasis.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn source_change_emphasis(&self) -> Option<&SourceChangeEmphasis> {
+        self.editor.source_change_emphasis()
+    }
+
+    /// Follows one validated source change.
+    #[doc(hidden)]
+    pub fn emphasize_source_change(
+        &mut self,
+        emphasis: SourceChangeEmphasis,
+    ) -> Result<Redraw, SourceChangeEmphasisRefusal> {
+        self.editor.emphasize_source_change(emphasis)
+    }
+
+    /// Takes the newest asynchronous source-change outcome.
+    #[doc(hidden)]
+    pub fn take_source_change_result(&mut self) -> Option<Result<(), SourceChangeEmphasisRefusal>> {
+        self.editor.take_source_change_result()
+    }
+
+    /// Removes only source-change emphasis.
+    #[doc(hidden)]
+    pub fn clear_source_change_emphasis(&mut self) -> Redraw {
+        self.editor.clear_source_change_emphasis()
     }
 
     /// Returns the current private source presentation.

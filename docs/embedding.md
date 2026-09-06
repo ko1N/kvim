@@ -377,6 +377,27 @@ a best-effort safety net. The surface publishes staged and unstaged candidates
 as one pair. Both paths share private review state, relocation, and painting
 with integrated review.
 
+The facade also owns one optional source-change emphasis independently from source presentation
+and diagnostics. It names one contained path and a bounded, nonempty ordered list of one-based
+inclusive ranges. Construction rejects zero, reversed, over-bound, empty, and oversized input.
+Kvim never clamps a range.
+
+`WorktreeEditor::emphasize_source_change` refuses a dirty current target and a different dirty
+active file. For a clean current target, it queues a safe reload and validates ranges against the
+post-reload text. For another clean target, it queues normal bounded open work. The method returns
+a typed queued outcome, and `take_source_change_emphasis_result` reports completion. A newer
+request or explicit clear makes an older completion obsolete. Failed work preserves the previous
+emphasis.
+
+Successful completion replaces only the old emphasis, places the cursor at the first range, and
+makes that line visible. Kvim paints all ranges with the `SourceChangeEmphasis` semantic theme
+role. It reserves no panel row and changes no source text, offset, or line mapping. Cursor movement
+leaves emphasis visible. A later emphasis replaces it. A source edit, external reload outside this
+operation, file switch, or `clear_source_change_emphasis` clears it. No timer affects it.
+
+`crates/kvim-embed/examples/source_change_emphasis.rs` demonstrates the bounded asynchronous
+follow lifecycle and paints the settled source ranges.
+
 The facade also owns one optional generic source presentation. A presentation names one
 contained path and a bounded, nonempty, ordered annotation list. Each annotation holds a
 bounded message and a one-based inclusive line range. Construction rejects zero, reversed,
@@ -1100,6 +1121,7 @@ The required examples are:
 - `crates/kvim-embed/examples/host_sidebar.rs`
 - `crates/kvim-embed/examples/in_memory_editor.rs`
 - `crates/kvim-embed/examples/merged_leader.rs`
+- `crates/kvim-embed/examples/source_change_emphasis.rs`
 - `crates/kvim-embed/examples/source_presentation.rs`
 - `crates/kvim-embed/examples/supplied_review.rs`
 - `crates/kvim-embed/examples/unified_command_line.rs`
@@ -1125,7 +1147,7 @@ language example uses an injected in-memory launcher. It runs two exact
 revisions through one warm grammar-free project. A UI example renders into a
 test buffer, or prints the state that it drives when the feature
 paints no cell. The in-memory editor example uses no temporary worktree.
-Worktree editor, composition, chrome, sidebar, source-presentation, and review examples use temporary
+Worktree editor, composition, chrome, sidebar, source-change emphasis, source-presentation, and review examples use temporary
 worktrees.
 
 No example requires a user-installed server, network access, terminal ownership,

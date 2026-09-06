@@ -79,6 +79,7 @@ mod review;
 #[cfg(feature = "editor")]
 mod session;
 #[cfg(feature = "editor")]
+mod source_change_emphasis;
 mod source_presentation;
 #[cfg(feature = "review")]
 mod theme;
@@ -118,6 +119,9 @@ pub mod __private {
     pub use crate::session::{
         EditorDiagnosticSummary, EditorFormatterStatus, EditorStatus, RecoveryDecision,
         RecoveryDecisionError, RecoveryIdentity, RecoveryStatus, Redraw, RunState, Session,
+    };
+    pub use crate::source_change_emphasis::{
+        SourceChangeEmphasis, SourceChangeEmphasisRefusal, SourceChangeRange,
     };
     pub use crate::source_presentation::{
         SourceAnnotation, SourcePresentation, SourcePresentationRefusal,

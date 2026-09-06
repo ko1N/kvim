@@ -12,6 +12,7 @@ use kvim_language::{
 use kvim_settings::EditorSettings;
 use kvim_workspace::ExternalChange;
 
+use super::super::source_change_emphasis::SourceChangeRange;
 use super::super::theme::{Theme, ThemeRole};
 use super::{
     BracketHighlight, END_OF_BUFFER_GLYPH, RegionFocus, WindowView, render_window, scrollbar_thumb,
@@ -45,6 +46,7 @@ fn draw(text: &str, highlights: &[HighlightSpan]) -> CellBuffer {
         match_chars: 0,
         highlights,
         diagnostics: &[],
+        source_change_emphasis: &[],
         source_presentation: None,
         focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
@@ -54,6 +56,43 @@ fn draw(text: &str, highlights: &[HighlightSpan]) -> CellBuffer {
     let mut target = CellBuffer::empty(AREA);
     render_window(&mut target, AREA, Theme::new(), &view);
     target
+}
+
+#[test]
+fn source_change_emphasis_paints_background_without_hiding_source_foreground() {
+    let buffer = TextBuffer::from_text("let item = 1;\n", kvim_core::BufferBytesMax::default())
+        .expect("the test text is small");
+    let settings = EditorSettings::default();
+    let ranges = [SourceChangeRange::new(0, 0)];
+    let view = WindowView {
+        buffer: &buffer,
+        name: "test.rs",
+        path: None,
+        external: None,
+        root: Path::new("/workspace"),
+        first_line: 0,
+        left_column: 0,
+        cursor: Cursor::ORIGIN,
+        selection: None,
+        matches: &[],
+        match_chars: 0,
+        highlights: &[],
+        diagnostics: &[],
+        source_change_emphasis: &ranges,
+        source_presentation: None,
+        focus: RegionFocus::Unfocused,
+        brackets: BracketHighlight::Hidden,
+        display: &settings.display,
+        tab_width: usize::from(settings.indent.tab_width.get()),
+    };
+    let mut target = CellBuffer::empty(AREA);
+    render_window(&mut target, AREA, Theme::new(), &view);
+    let text_style = target[(5, 1)].style();
+    assert_eq!(
+        text_style.bg,
+        Theme::new().style(ThemeRole::SourceChangeEmphasis).bg
+    );
+    assert_eq!(text_style.fg, Theme::new().style(ThemeRole::Text).fg);
 }
 
 /// The workspace root of every winbar test.
@@ -116,6 +155,7 @@ fn winbar_of(
         match_chars: 0,
         highlights: &[],
         diagnostics: &[],
+        source_change_emphasis: &[],
         source_presentation: None,
         focus: RegionFocus::Focused,
         brackets: BracketHighlight::Hidden,
@@ -190,6 +230,7 @@ fn scrollbar_renders_only_the_track_when_the_buffer_fully_fits() {
         match_chars: 0,
         highlights: &[],
         diagnostics: &[],
+        source_change_emphasis: &[],
         source_presentation: None,
         focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
@@ -224,6 +265,7 @@ fn scrollbar_renders_track_and_overflow_thumb_without_changing_the_winbar_width(
         match_chars: 0,
         highlights: &[],
         diagnostics: &[],
+        source_change_emphasis: &[],
         source_presentation: None,
         focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
@@ -411,6 +453,7 @@ fn draw_marked(text: &str, diagnostics: &[Diagnostic], width: u16) -> CellBuffer
         match_chars: 0,
         highlights: &[],
         diagnostics,
+        source_change_emphasis: &[],
         source_presentation: None,
         focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,
@@ -622,6 +665,7 @@ fn a_selection_ends_at_the_last_character_of_every_line() {
         match_chars: 0,
         highlights: &[],
         diagnostics: &[],
+        source_change_emphasis: &[],
         source_presentation: None,
         focus: RegionFocus::Unfocused,
         brackets: BracketHighlight::Hidden,

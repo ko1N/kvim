@@ -44,7 +44,9 @@ use kvim_tui::__private::{
     RecoveryDecisionError as TuiRecoveryDecisionError, RecoveryIdentity as TuiRecoveryIdentity,
     RecoveryStatus as TuiRecoveryStatus, Redraw as TuiRedraw, Reduction as TuiReduction,
     ReductionOutcome as TuiReductionOutcome, Refusal as TuiRefusal, RunState as TuiRunState,
-    SourceAnnotation as TuiSourceAnnotation, SourcePresentation as TuiSourcePresentation,
+    SourceAnnotation as TuiSourceAnnotation, SourceChangeEmphasis as TuiSourceChangeEmphasis,
+    SourceChangeEmphasisRefusal as TuiSourceChangeEmphasisRefusal,
+    SourceChangeRange as TuiSourceChangeRange, SourcePresentation as TuiSourcePresentation,
     SourcePresentationRefusal as TuiSourcePresentationRefusal, TerminalEvent as TuiTerminalEvent,
 };
 use kvim_ui::Direction;
@@ -53,6 +55,121 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Position, Rect};
 use thiserror::Error;
 use tokio::runtime::Runtime as TokioRuntime;
+
+/// The maximum ranges in one source-change emphasis request.
+pub const SOURCE_CHANGE_RANGES_MAX: usize = 256;
+
+/// One contained path and nonempty ordered set of settled source changes.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SourceChangeEmphasis {
+    path: WorktreeRelativePath,
+    ranges: Vec<SourceLineRange>,
+}
+
+impl SourceChangeEmphasis {
+    /// Creates one bounded generic source-change emphasis request.
+    pub fn new(
+        path: WorktreeRelativePath,
+        ranges: Vec<SourceLineRange>,
+    ) -> Result<Self, SourceChangeEmphasisBuildError> {
+        if ranges.is_empty() {
+            return Err(SourceChangeEmphasisBuildError::Empty);
+        }
+        if ranges.len() > SOURCE_CHANGE_RANGES_MAX {
+            return Err(SourceChangeEmphasisBuildError::TooMany);
+        }
+        Ok(Self { path, ranges })
+    }
+
+    /// Returns the contained path.
+    #[must_use]
+    pub const fn path(&self) -> &WorktreeRelativePath {
+        &self.path
+    }
+
+    /// Returns all inclusive ranges in supplied order.
+    #[must_use]
+    pub fn ranges(&self) -> &[SourceLineRange] {
+        &self.ranges
+    }
+}
+
+/// Why source-change emphasis construction failed.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum SourceChangeEmphasisBuildError {
+    /// The range set is empty.
+    #[error("source-change emphasis requires a range")]
+    Empty,
+    /// The range set exceeds its published bound.
+    #[error("source-change emphasis has too many ranges")]
+    TooMany,
+}
+
+/// The accepted state of a source-change emphasis request.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SourceChangeEmphasisOutcome {
+    /// The target already held current text and emphasis was installed.
+    Presented,
+    /// The target reload or open was queued through the bounded file lane.
+    Queued,
+}
+
+/// Why source-change emphasis changed no state.
+#[derive(Clone, Copy, Debug, Eq, Error, PartialEq)]
+pub enum SourceChangeEmphasisError {
+    /// The editor no longer accepts operations.
+    #[error("the editor is closed")]
+    NoEditor,
+    /// The requested buffer contains unsaved text.
+    #[error("the requested file contains unsaved text")]
+    DirtyBuffer,
+    /// Another active file contains unsaved text.
+    #[error("the active file contains unsaved text")]
+    DifferentDirtyBuffer,
+    /// Another file operation occupies the bounded lane.
+    #[error("the file operation lane is busy")]
+    Busy,
+    /// At least one range leaves the post-load buffer.
+    #[error("a source change range is outside the requested buffer")]
+    RangeOutsideBuffer,
+    /// The target could not be opened or reloaded.
+    #[error("the source file could not be opened or reloaded")]
+    OpenFailed,
+    /// A newer request or explicit clear superseded this result.
+    #[error("the source change request is obsolete")]
+    Obsolete,
+}
+
+/// A cheap borrowed view of current source-change emphasis.
+#[derive(Clone, Copy, Debug)]
+pub struct SourceChangeEmphasisSnapshot<'a> {
+    inner: &'a TuiSourceChangeEmphasis,
+}
+
+impl<'a> SourceChangeEmphasisSnapshot<'a> {
+    /// Returns the contained path.
+    #[must_use]
+    pub fn path(self) -> &'a WorktreeRelativePath {
+        self.inner.path()
+    }
+
+    /// Returns the number of emphasized ranges.
+    #[must_use]
+    pub fn count(self) -> usize {
+        self.inner.ranges().len()
+    }
+
+    /// Returns one range by its zero-based index.
+    #[must_use]
+    pub fn range(self, index: usize) -> Option<SourceLineRange> {
+        let range = self.inner.ranges().get(index)?;
+        SourceLineRange::new(
+            u32::try_from(range.first_line() + 1).ok()?,
+            u32::try_from(range.last_line() + 1).ok()?,
+        )
+        .ok()
+    }
+}
 
 /// The maximum annotations in one generic source presentation.
 pub const SOURCE_ANNOTATIONS_MAX: usize = 256;
@@ -2490,6 +2607,76 @@ impl WorktreeEditor {
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
         convert_redraw(self.inner_mut().open_file(path))
     }
+    /// Follows one settled source change without replacing source presentation.
+    ///
+    /// A clean current file is reloaded before ranges are validated. Another
+    /// clean file uses the normal asynchronous file lane. Inspect
+    /// [`Self::take_source_change_emphasis_result`] after applying completions.
+    ///
+    /// ```
+    /// use kvim_embed::{SourceChangeEmphasis, SourceLineRange, WorktreeEditor};
+    /// use kvim_path::WorktreeRelativePath;
+    /// use ratatui::layout::Rect;
+    ///
+    /// let root = std::env::temp_dir().join("kvim-source-change-doctest");
+    /// std::fs::create_dir_all(&root)?;
+    /// let mut editor = WorktreeEditor::builder(&root, Rect::new(0, 0, 40, 6)).open()?;
+    /// let request = SourceChangeEmphasis::new(
+    ///     WorktreeRelativePath::new("note.txt")?,
+    ///     vec![SourceLineRange::new(1, 1)?],
+    /// )?;
+    /// let _ = editor.emphasize_source_change(request)?;
+    /// # std::fs::remove_dir_all(root)?;
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn emphasize_source_change(
+        &mut self,
+        emphasis: SourceChangeEmphasis,
+    ) -> Result<SourceChangeEmphasisOutcome, SourceChangeEmphasisError> {
+        let internal = TuiSourceChangeEmphasis::new(
+            emphasis.path.clone(),
+            emphasis
+                .ranges
+                .iter()
+                .map(|range| {
+                    TuiSourceChangeRange::new(
+                        usize::try_from(range.first() - 1)
+                            .expect("the published line bound fits usize"),
+                        usize::try_from(range.last() - 1)
+                            .expect("the published line bound fits usize"),
+                    )
+                })
+                .collect(),
+        );
+        self.inner_mut()
+            .emphasize_source_change(internal)
+            .map_err(convert_source_change_refusal)?;
+        Ok(SourceChangeEmphasisOutcome::Queued)
+    }
+
+    /// Returns all current settled-change ranges.
+    #[must_use]
+    pub fn source_change_emphasis(&self) -> Option<SourceChangeEmphasisSnapshot<'_>> {
+        self.inner()
+            .source_change_emphasis()
+            .map(|inner| SourceChangeEmphasisSnapshot { inner })
+    }
+
+    /// Removes only settled source-change emphasis.
+    pub fn clear_source_change_emphasis(&mut self) -> WorktreeUpdate {
+        convert_redraw(self.inner_mut().clear_source_change_emphasis())
+    }
+
+    /// Takes the newest asynchronous source-change result.
+    #[must_use]
+    pub fn take_source_change_emphasis_result(
+        &mut self,
+    ) -> Option<Result<(), SourceChangeEmphasisError>> {
+        self.inner_mut()
+            .take_source_change_result()
+            .map(|result| result.map_err(convert_source_change_refusal))
+    }
+
     /// Presents bounded annotations for one contained source file.
     ///
     /// The current in-memory file is never reloaded. A clean different file
@@ -3849,6 +4036,24 @@ impl Drop for WorktreeEditor {
             .take()
             .expect("a live editor owns its executor")
             .shutdown_background();
+    }
+}
+
+fn convert_source_change_refusal(
+    refusal: TuiSourceChangeEmphasisRefusal,
+) -> SourceChangeEmphasisError {
+    match refusal {
+        TuiSourceChangeEmphasisRefusal::NoEditor => SourceChangeEmphasisError::NoEditor,
+        TuiSourceChangeEmphasisRefusal::DirtyBuffer => SourceChangeEmphasisError::DirtyBuffer,
+        TuiSourceChangeEmphasisRefusal::DifferentDirtyBuffer => {
+            SourceChangeEmphasisError::DifferentDirtyBuffer
+        }
+        TuiSourceChangeEmphasisRefusal::Busy => SourceChangeEmphasisError::Busy,
+        TuiSourceChangeEmphasisRefusal::RangeOutsideBuffer => {
+            SourceChangeEmphasisError::RangeOutsideBuffer
+        }
+        TuiSourceChangeEmphasisRefusal::OpenFailed => SourceChangeEmphasisError::OpenFailed,
+        TuiSourceChangeEmphasisRefusal::Obsolete => SourceChangeEmphasisError::Obsolete,
     }
 }
 

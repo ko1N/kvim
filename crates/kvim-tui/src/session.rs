@@ -124,6 +124,7 @@ use super::overlay::WhichKeyView;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::pointer::source_at_cell;
 use super::review::{ReviewOutcome, ReviewSurface};
+use super::source_change_emphasis::{SourceChangeEmphasis, SourceChangeEmphasisRefusal};
 use super::source_presentation::{SourcePresentation, SourcePresentationRefusal, source_area};
 use super::theme::Theme;
 use super::tree::{
@@ -460,6 +461,17 @@ impl LastBuffer {
 enum PendingFile {
     /// One ordinary file is loading.
     Open,
+    /// One file is loading for atomic source-change emphasis.
+    SourceChangeOpen {
+        emphasis: SourceChangeEmphasis,
+        generation: u64,
+    },
+    /// One loaded clean file is refreshing for atomic source-change emphasis.
+    SourceChangeReload {
+        target: PendingReload,
+        emphasis: SourceChangeEmphasis,
+        generation: u64,
+    },
     /// One file is loading for an atomic source presentation.
     SourcePresentation(SourcePresentation),
     /// One buffer is saving.
@@ -558,6 +570,8 @@ impl FormatBeforeSave {
 /// changes often never fills the message line.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ReloadOrigin {
+    /// A source-change request requires current on-disk text.
+    SourceChange,
     /// The user typed `:e` or `:e!`.
     Command,
     /// The workspace watcher reported a change.
@@ -1305,6 +1319,7 @@ pub(super) struct Visible<'a> {
     pub(super) languages: LanguageRegistry,
     /// The published diagnostics and the language-service state.
     pub(super) language: &'a LanguageState,
+    pub(super) source_change_emphasis: Option<&'a SourceChangeEmphasis>,
     pub(super) source_presentation: Option<&'a SourcePresentation>,
     pub(super) editing: &'a EditingState,
     pub(super) search: Option<&'a ActiveSearch>,
@@ -1699,6 +1714,12 @@ pub struct Session {
     /// the event loop hands them to the language services. See
     /// `docs/language-services.md`.
     language: LanguageState,
+    /// Optional settled-change emphasis over the active file.
+    source_change_emphasis: Option<SourceChangeEmphasis>,
+    /// Monotonic identity of the newest emphasis request or clear.
+    source_change_generation: u64,
+    /// The newest completed asynchronous emphasis outcome.
+    source_change_result: Option<Result<(), SourceChangeEmphasisRefusal>>,
     /// The optional generic source presentation over the active file.
     source_presentation: Option<SourcePresentation>,
     /// The newest completed asynchronous presentation outcome.
@@ -1858,6 +1879,9 @@ impl Session {
             analysis_pending: None,
             recovery: RecoveryCheckpoints::default(),
             language: LanguageState::default(),
+            source_change_emphasis: None,
+            source_change_generation: 0,
+            source_change_result: None,
             source_presentation: None,
             source_presentation_result: None,
             search: None,
@@ -2533,6 +2557,103 @@ impl Session {
         )
     }
 
+    pub(super) fn emphasize_source_change(
+        &mut self,
+        emphasis: SourceChangeEmphasis,
+    ) -> Result<Redraw, SourceChangeEmphasisRefusal> {
+        if self.run != RunState::Running {
+            return Err(SourceChangeEmphasisRefusal::NoEditor);
+        }
+        if self.file_pending.is_some() {
+            return Err(SourceChangeEmphasisRefusal::Busy);
+        }
+        let requested = self.root.as_path().join(emphasis.path().as_path());
+        let active = self.active_buffer();
+        if active.path() == Some(requested.as_path()) {
+            if active.is_modified() {
+                return Err(SourceChangeEmphasisRefusal::DirtyBuffer);
+            }
+            let Some(target) = active.target().cloned() else {
+                return Err(SourceChangeEmphasisRefusal::OpenFailed);
+            };
+            let buffer = self.active;
+            let revision = active.text().revision();
+            let bytes_max = active.text().bytes_max();
+            let identity = active.identity();
+            self.source_change_generation = self.source_change_generation.wrapping_add(1);
+            let generation = self.source_change_generation;
+            return Ok(self.start_file_request(
+                FileRequest::Reload(ReloadRequest {
+                    targets: vec![ReloadTarget {
+                        buffer,
+                        target: target.clone(),
+                        bytes_max,
+                        trigger: ReloadTrigger::Refresh(identity),
+                    }],
+                    files: self.settings.files,
+                }),
+                PendingFile::SourceChangeReload {
+                    target: PendingReload {
+                        buffer,
+                        target,
+                        revision,
+                        unsaved: UnsavedText::Keep,
+                    },
+                    emphasis,
+                    generation,
+                },
+            ));
+        }
+        if active.is_modified() {
+            return Err(SourceChangeEmphasisRefusal::DifferentDirtyBuffer);
+        }
+        self.source_change_generation = self.source_change_generation.wrapping_add(1);
+        let generation = self.source_change_generation;
+        let path = emphasis.path().clone();
+        let files = self.settings.files;
+        Ok(self.start_file_request(
+            FileRequest::Open(OpenRequest {
+                root: Arc::clone(&self.root),
+                path,
+                files,
+                recovery_state_directory: self.recovery.state_directory.clone(),
+            }),
+            PendingFile::SourceChangeOpen {
+                emphasis,
+                generation,
+            },
+        ))
+    }
+
+    pub(super) fn source_change_emphasis(&self) -> Option<&SourceChangeEmphasis> {
+        self.source_change_emphasis.as_ref()
+    }
+
+    pub(super) fn take_source_change_result(
+        &mut self,
+    ) -> Option<Result<(), SourceChangeEmphasisRefusal>> {
+        self.source_change_result.take()
+    }
+
+    pub(super) fn clear_source_change_emphasis(&mut self) -> Redraw {
+        self.source_change_generation = self.source_change_generation.wrapping_add(1);
+        let redraw = if self.source_change_emphasis.take().is_some() {
+            Redraw::Needed
+        } else {
+            Redraw::Skipped
+        };
+        self.note_redraw(redraw);
+        redraw
+    }
+
+    fn install_source_change_emphasis(&mut self, emphasis: SourceChangeEmphasis) {
+        let first = emphasis.ranges()[0].first_line();
+        self.source_change_emphasis = Some(emphasis);
+        self.place_cursor(first, 0);
+        self.reconcile_viewports(None);
+        self.note_redraw(Redraw::Needed);
+    }
+
     pub(super) fn present_source(
         &mut self,
         presentation: SourcePresentation,
@@ -2968,6 +3089,7 @@ impl Session {
             analysis: &self.analysis,
             languages: self.languages,
             language: &self.language,
+            source_change_emphasis: self.source_change_emphasis.as_ref(),
             source_presentation: self.source_presentation.as_ref(),
             editing: &self.editing,
             search: self.search.as_ref(),
@@ -3868,6 +3990,7 @@ impl Session {
             return;
         }
         self.active = buffer;
+        self.source_change_emphasis = None;
         let path = self
             .buffers
             .get(buffer)
@@ -4065,6 +4188,8 @@ impl Session {
         self.advance_syntax(&before, after, applied);
         self.synchronize_language(&before, after, applied);
         if after != before.revision() {
+            self.source_change_emphasis = None;
+            self.source_change_generation = self.source_change_generation.wrapping_add(1);
             self.queue_recovery_checkpoint(self.active);
         }
         outcome
@@ -7290,6 +7415,38 @@ impl Session {
         let pending = self.file_pending.take();
         match result {
             FileResult::Opened { requested, outcome } => match (pending, outcome) {
+                (
+                    Some(PendingFile::SourceChangeOpen {
+                        emphasis,
+                        generation,
+                    }),
+                    Ok(file),
+                ) => {
+                    if generation != self.source_change_generation {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::Obsolete));
+                        return Redraw::Skipped;
+                    }
+                    if !emphasis.fits(file.text.line_count()) {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::RangeOutsideBuffer));
+                        return Redraw::Skipped;
+                    }
+                    let requested_path = self.root.as_path().join(emphasis.path().as_path());
+                    let redraw = self.publish_open(file);
+                    if self.active_buffer().path() != Some(requested_path.as_path()) {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::OpenFailed));
+                        return redraw;
+                    }
+                    self.install_source_change_emphasis(emphasis);
+                    self.source_change_result = Some(Ok(()));
+                    redraw.or(Redraw::Needed)
+                }
+                (Some(PendingFile::SourceChangeOpen { .. }), Err(_)) => {
+                    self.source_change_result = Some(Err(SourceChangeEmphasisRefusal::OpenFailed));
+                    Redraw::Skipped
+                }
                 (Some(PendingFile::SourcePresentation(presentation)), Ok(file)) => {
                     if !presentation.fits(file.text.line_count()) {
                         self.source_presentation_result =
@@ -7331,6 +7488,8 @@ impl Session {
                     Some(PendingFile::Save { then, format, .. }) => (then, format),
                     Some(
                         PendingFile::Open
+                        | PendingFile::SourceChangeOpen { .. }
+                        | PendingFile::SourceChangeReload { .. }
                         | PendingFile::SourcePresentation(_)
                         | PendingFile::Reload { .. },
                     )
@@ -7339,6 +7498,49 @@ impl Session {
                 self.publish_save(buffer, requested.as_path(), outcome, then, format)
             }
             FileResult::Reloaded { buffers } => {
+                if let Some(PendingFile::SourceChangeReload {
+                    target,
+                    emphasis,
+                    generation,
+                }) = pending
+                {
+                    if generation != self.source_change_generation {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::Obsolete));
+                        return Redraw::Skipped;
+                    }
+                    let reload_succeeded = buffers.iter().any(|result| {
+                        result.buffer == target.buffer
+                            && matches!(
+                                result.outcome,
+                                Ok(ReloadOutcome::Unchanged | ReloadOutcome::Loaded(_))
+                            )
+                    });
+                    let redraw = self.publish_reload(
+                        buffers,
+                        std::slice::from_ref(&target),
+                        ReloadOrigin::SourceChange,
+                    );
+                    if !reload_succeeded {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::OpenFailed));
+                        return redraw;
+                    }
+                    let requested = self.root.as_path().join(emphasis.path().as_path());
+                    if self.active_buffer().path() != Some(requested.as_path()) {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::OpenFailed));
+                        return redraw;
+                    }
+                    if !emphasis.fits(self.active_buffer().text().line_count()) {
+                        self.source_change_result =
+                            Some(Err(SourceChangeEmphasisRefusal::RangeOutsideBuffer));
+                        return redraw;
+                    }
+                    self.install_source_change_emphasis(emphasis);
+                    self.source_change_result = Some(Ok(()));
+                    return redraw.or(Redraw::Needed);
+                }
                 let Some(PendingFile::Reload { targets, origin }) = pending else {
                     // A newer request displaced this check, so its outcome
                     // describes buffer states that the editor already left.
@@ -7360,12 +7562,19 @@ impl Session {
         self.release_slot(slot);
         self.file_outbox = None;
         let background = matches!(
-            pending,
+            &pending,
             Some(PendingFile::Reload {
                 origin: ReloadOrigin::Watch,
                 ..
             })
         );
+        match pending {
+            Some(PendingFile::SourceChangeOpen { .. })
+            | Some(PendingFile::SourceChangeReload { .. }) => {
+                self.source_change_result = Some(Err(SourceChangeEmphasisRefusal::OpenFailed));
+            }
+            _ => {}
+        }
         if self.reload_due {
             self.start_watch_reload();
         }
@@ -8325,6 +8534,10 @@ impl Session {
             self.refresh_search();
         }
         self.reconcile_viewports(None);
+        if origin != ReloadOrigin::SourceChange {
+            self.source_change_emphasis = None;
+            self.source_change_generation = self.source_change_generation.wrapping_add(1);
+        }
         if origin == ReloadOrigin::Command {
             self.set_message(
                 format!("\"{name}\" {lines}L, {bytes}B reloaded"),

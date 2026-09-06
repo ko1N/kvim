@@ -140,6 +140,12 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     match_chars: if searched { match_chars } else { 0 },
                     highlights: view.highlights(id),
                     diagnostics: view.diagnostics(id),
+                    source_change_emphasis: if id == view.active {
+                        view.source_change_emphasis
+                            .map_or(&[][..], |emphasis| emphasis.ranges())
+                    } else {
+                        &[]
+                    },
                     source_presentation: (id == view.active)
                         .then_some(view.source_presentation)
                         .flatten()

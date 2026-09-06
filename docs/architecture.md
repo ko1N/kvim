@@ -50,7 +50,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral keys and pointer values owned by `kvim-keymap`. |
 | `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
 | `kvim-workspace` | Files, buffers, recovery records for dirty file-backed buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
-| `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
+| `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation and settled source-change emphasis ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
 Crates communicate through narrow contracts. Generic terminal, runtime, window,
