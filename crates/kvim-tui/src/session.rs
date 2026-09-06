@@ -124,7 +124,9 @@ use super::overlay::WhichKeyView;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::pointer::source_at_cell;
 use super::review::{ReviewOutcome, ReviewSurface};
-use super::source_change_emphasis::{SourceChangeEmphasis, SourceChangeEmphasisRefusal};
+use super::source_change_emphasis::{
+    SourceChangeEmphasis, SourceChangeEmphasisRefusal, SourceChangeGeneration,
+};
 use super::source_presentation::{SourcePresentation, SourcePresentationRefusal, source_area};
 use super::theme::Theme;
 use super::tree::{
@@ -1716,8 +1718,8 @@ pub struct Session {
     language: LanguageState,
     /// Optional settled-change emphasis over the active file.
     source_change_emphasis: Option<SourceChangeEmphasis>,
-    /// Monotonic identity of the newest emphasis request or clear.
-    source_change_generation: u64,
+    /// Non-reusing identity of the newest emphasis request or invalidation.
+    source_change_generation: SourceChangeGeneration,
     /// The newest completed asynchronous emphasis outcome.
     source_change_result: Option<Result<(), SourceChangeEmphasisRefusal>>,
     /// The optional generic source presentation over the active file.
@@ -1880,7 +1882,7 @@ impl Session {
             recovery: RecoveryCheckpoints::default(),
             language: LanguageState::default(),
             source_change_emphasis: None,
-            source_change_generation: 0,
+            source_change_generation: SourceChangeGeneration::new(),
             source_change_result: None,
             source_presentation: None,
             source_presentation_result: None,
@@ -2564,6 +2566,7 @@ impl Session {
         if self.run != RunState::Running {
             return Err(SourceChangeEmphasisRefusal::NoEditor);
         }
+        let generation = self.source_change_generation.allocate()?;
         if self.file_pending.is_some() {
             return Err(SourceChangeEmphasisRefusal::Busy);
         }
@@ -2580,8 +2583,6 @@ impl Session {
             let revision = active.text().revision();
             let bytes_max = active.text().bytes_max();
             let identity = active.identity();
-            self.source_change_generation = self.source_change_generation.wrapping_add(1);
-            let generation = self.source_change_generation;
             return Ok(self.start_file_request(
                 FileRequest::Reload(ReloadRequest {
                     targets: vec![ReloadTarget {
@@ -2607,8 +2608,6 @@ impl Session {
         if active.is_modified() {
             return Err(SourceChangeEmphasisRefusal::DifferentDirtyBuffer);
         }
-        self.source_change_generation = self.source_change_generation.wrapping_add(1);
-        let generation = self.source_change_generation;
         let path = emphasis.path().clone();
         let files = self.settings.files;
         Ok(self.start_file_request(
@@ -2625,6 +2624,11 @@ impl Session {
         ))
     }
 
+    #[cfg(test)]
+    pub(super) fn set_source_change_generation_for_test(&mut self, generation: u64) {
+        self.source_change_generation.set_for_test(generation);
+    }
+
     pub(super) fn source_change_emphasis(&self) -> Option<&SourceChangeEmphasis> {
         self.source_change_emphasis.as_ref()
     }
@@ -2636,7 +2640,7 @@ impl Session {
     }
 
     pub(super) fn clear_source_change_emphasis(&mut self) -> Redraw {
-        self.source_change_generation = self.source_change_generation.wrapping_add(1);
+        self.source_change_generation.invalidate();
         let redraw = if self.source_change_emphasis.take().is_some() {
             Redraw::Needed
         } else {
@@ -3991,6 +3995,7 @@ impl Session {
         }
         self.active = buffer;
         self.source_change_emphasis = None;
+        self.source_change_generation.invalidate();
         let path = self
             .buffers
             .get(buffer)
@@ -4189,7 +4194,7 @@ impl Session {
         self.synchronize_language(&before, after, applied);
         if after != before.revision() {
             self.source_change_emphasis = None;
-            self.source_change_generation = self.source_change_generation.wrapping_add(1);
+            self.source_change_generation.invalidate();
             self.queue_recovery_checkpoint(self.active);
         }
         outcome
@@ -7422,7 +7427,7 @@ impl Session {
                     }),
                     Ok(file),
                 ) => {
-                    if generation != self.source_change_generation {
+                    if !self.source_change_generation.is_current(generation) {
                         self.source_change_result =
                             Some(Err(SourceChangeEmphasisRefusal::Obsolete));
                         return Redraw::Skipped;
@@ -7504,7 +7509,7 @@ impl Session {
                     generation,
                 }) = pending
                 {
-                    if generation != self.source_change_generation {
+                    if !self.source_change_generation.is_current(generation) {
                         self.source_change_result =
                             Some(Err(SourceChangeEmphasisRefusal::Obsolete));
                         return Redraw::Skipped;
@@ -8536,7 +8541,7 @@ impl Session {
         self.reconcile_viewports(None);
         if origin != ReloadOrigin::SourceChange {
             self.source_change_emphasis = None;
-            self.source_change_generation = self.source_change_generation.wrapping_add(1);
+            self.source_change_generation.invalidate();
         }
         if origin == ReloadOrigin::Command {
             self.set_message(

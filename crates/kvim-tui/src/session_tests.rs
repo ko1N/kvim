@@ -48,11 +48,104 @@ use crate::session::{
     RecoveryDecision, RecoveryDecisionError, RecoveryOperation, RecoverySubmissionFailure, Redraw,
     RunState, Session, YesNo, test_root,
 };
+use crate::source_change_emphasis::{
+    SourceChangeEmphasis, SourceChangeEmphasisRefusal, SourceChangeRange,
+};
 use crate::source_presentation::{SourceAnnotation, SourcePresentation};
 use crate::tree::TREE_TITLE_ROWS;
 use kvim_ui::{SidebarSide, WindowId};
 
 const NOW: Duration = Duration::ZERO;
+
+fn source_change(path: &str) -> SourceChangeEmphasis {
+    SourceChangeEmphasis::new(
+        WorktreeRelativePath::new(path).expect("the test path is relative"),
+        vec![SourceChangeRange::new(0, 0)],
+    )
+}
+
+#[test]
+fn source_change_generation_uses_max_once_then_refuses_requests() {
+    let directory = TempDir::new("source-change-generation-max");
+    directory.write("current.rs", "current\n");
+    directory.write("next.rs", "next\n");
+    let mut session = file_session(&directory.path);
+    session.set_source_change_generation_for_test(u64::MAX - 1);
+
+    session
+        .emphasize_source_change(source_change("current.rs"))
+        .expect("the maximum identity remains available");
+    let completion = session
+        .take_file_request()
+        .expect("the request is queued")
+        .run();
+    let _ = session.apply_file_result(completion);
+    assert_eq!(session.take_source_change_result(), Some(Ok(())));
+    assert!(session.source_change_emphasis().is_some());
+
+    assert_eq!(
+        session.emphasize_source_change(source_change("next.rs")),
+        Err(SourceChangeEmphasisRefusal::Exhausted)
+    );
+    assert!(session.take_file_request().is_none());
+}
+
+#[test]
+fn source_change_clear_at_exhaustion_removes_emphasis_and_keeps_requests_disabled() {
+    let directory = TempDir::new("source-change-clear-exhausted");
+    directory.write("current.rs", "current\n");
+    let mut session = file_session(&directory.path);
+    session.set_source_change_generation_for_test(u64::MAX - 1);
+    session
+        .emphasize_source_change(source_change("current.rs"))
+        .expect("the maximum identity remains available");
+    let completion = session
+        .take_file_request()
+        .expect("the request is queued")
+        .run();
+    let _ = session.apply_file_result(completion);
+    assert!(session.source_change_emphasis().is_some());
+
+    assert_eq!(session.clear_source_change_emphasis(), Redraw::Needed);
+    assert!(session.source_change_emphasis().is_none());
+    assert_eq!(
+        session.emphasize_source_change(source_change("current.rs")),
+        Err(SourceChangeEmphasisRefusal::Exhausted)
+    );
+}
+
+#[test]
+fn source_change_exhaustion_and_clear_make_queued_completions_obsolete() {
+    for invalidation in ["replacement", "clear"] {
+        let directory = TempDir::new(invalidation);
+        directory.write("old.rs", "old\n");
+        directory.write("new.rs", "new\n");
+        let mut session = file_session(&directory.path);
+        session.set_source_change_generation_for_test(u64::MAX - 1);
+        session
+            .emphasize_source_change(source_change("old.rs"))
+            .expect("the maximum identity remains available");
+        let completion = session
+            .take_file_request()
+            .expect("the old request is queued")
+            .run();
+
+        match invalidation {
+            "replacement" => assert_eq!(
+                session.emphasize_source_change(source_change("new.rs")),
+                Err(SourceChangeEmphasisRefusal::Exhausted)
+            ),
+            "clear" => assert_eq!(session.clear_source_change_emphasis(), Redraw::Skipped),
+            _ => unreachable!("the fixed test table contains both invalidations"),
+        }
+        let _ = session.apply_file_result(completion);
+        assert_eq!(
+            session.take_source_change_result(),
+            Some(Err(SourceChangeEmphasisRefusal::Obsolete))
+        );
+        assert!(session.source_change_emphasis().is_none());
+    }
+}
 
 fn click(column: u16, row: u16) -> TerminalEvent {
     pointer_button(column, row, PointerButton::Left)

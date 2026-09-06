@@ -387,7 +387,9 @@ active file. For a clean current target, it queues a safe reload and validates r
 post-reload text. For another clean target, it queues normal bounded open work. The method returns
 a typed queued outcome, and `take_source_change_emphasis_result` reports completion. A newer
 request or explicit clear makes an older completion obsolete. Failed work preserves the previous
-emphasis.
+emphasis. Request identities never wrap or repeat. After the identity space is exhausted, the
+editor returns `SourceChangeEmphasisError::Exhausted` for every later request. Clear, edits,
+reloads, and file switches still invalidate queued completion identities while exhausted.
 
 Successful completion replaces only the old emphasis, places the cursor at the first range, and
 makes that line visible. Kvim paints all ranges with the `SourceChangeEmphasis` semantic theme

@@ -135,6 +135,9 @@ pub enum SourceChangeEmphasisError {
     /// The target could not be opened or reloaded.
     #[error("the source file could not be opened or reloaded")]
     OpenFailed,
+    /// The request identity space is exhausted for this editor.
+    #[error("the source change request identity space is exhausted")]
+    Exhausted,
     /// A newer request or explicit clear superseded this result.
     #[error("the source change request is obsolete")]
     Obsolete,
@@ -4054,6 +4057,7 @@ fn convert_source_change_refusal(
         }
         TuiSourceChangeEmphasisRefusal::OpenFailed => SourceChangeEmphasisError::OpenFailed,
         TuiSourceChangeEmphasisRefusal::Obsolete => SourceChangeEmphasisError::Obsolete,
+        TuiSourceChangeEmphasisRefusal::Exhausted => SourceChangeEmphasisError::Exhausted,
     }
 }
 
