@@ -380,7 +380,7 @@ with integrated review.
 The facade also owns one optional source-change emphasis independently from source presentation
 and diagnostics. It names one contained path and a bounded, nonempty ordered list of one-based
 inclusive ranges. Construction rejects zero, reversed, over-bound, empty, and oversized input.
-Kvim never clamps a range.
+Kvim never clamps a range. Emphasis is visible only while its exact path is active.
 
 `WorktreeEditor::emphasize_source_change` refuses a dirty current target and a different dirty
 active file. For a clean current target, it queues a safe reload and validates ranges against the
@@ -418,6 +418,13 @@ The old presentation remains visible until the open completes and every range va
 failed open or invalid completed request preserves the old presentation and publishes a typed
 completion event. Closing the editor before application produces a typed no-editor refusal.
 Kvim never clamps a source range: clamping could mark unrelated text.
+
+The presentation state remains available when another file becomes active. Its snapshot still
+names the presentation path. The panel, range decoration, viewport row, and navigation become
+dormant until that exact path is active again. Dormant navigation returns a typed wrong-file
+refusal and changes no selection or cursor. Returning to an unchanged target restores the held
+presentation. An edit of the target clears it. A reload keeps it only when every range still fits;
+otherwise, the reload clears it rather than clamping a range.
 
 Kvim places the cursor at the first line of the selected range. It reserves one panel row from
 the focused source viewport when at least two body rows exist. If the complete range fits, Kvim

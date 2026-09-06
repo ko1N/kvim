@@ -372,6 +372,9 @@ pub enum SourcePresentationError {
     /// No source presentation exists.
     #[error("no source presentation exists")]
     NoPresentation,
+    /// The active file is not the source presentation file.
+    #[error("the source presentation belongs to another file")]
+    WrongFile,
     /// The requested file could not be opened.
     #[error("the source file could not be opened")]
     OpenFailed,
@@ -4074,6 +4077,7 @@ fn convert_source_refusal(refusal: TuiSourcePresentationRefusal) -> SourcePresen
         TuiSourcePresentationRefusal::AtFirst => SourcePresentationError::AtFirst,
         TuiSourcePresentationRefusal::AtLast => SourcePresentationError::AtLast,
         TuiSourcePresentationRefusal::NoPresentation => SourcePresentationError::NoPresentation,
+        TuiSourcePresentationRefusal::WrongFile => SourcePresentationError::WrongFile,
         TuiSourcePresentationRefusal::OpenFailed => SourcePresentationError::OpenFailed,
     }
 }

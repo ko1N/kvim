@@ -219,9 +219,30 @@ fn draw(session: &Session) -> CellBuffer {
     terminal.backend().buffer().clone()
 }
 
+fn source_presentation_session(lines: &[&str]) -> Session {
+    let directory = TempDir::new("source-presentation-session");
+    directory.write("presented.rs", &format!("{}\n", lines.join("\n")));
+    let mut session = file_session(&directory.path);
+    session.open_path(directory.path.join("presented.rs"));
+    run_file_request(&mut session);
+    session
+}
+
+fn source_presentation_split_session(lines: usize) -> (Session, WindowId, WindowId) {
+    let directory = TempDir::new("source-presentation-split");
+    directory.write("presented.rs", &"line\n".repeat(lines));
+    let mut session = file_session(&directory.path);
+    session.open_path(directory.path.join("presented.rs"));
+    run_file_request(&mut session);
+    let left = session.windows().focused_window();
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    let right = session.windows().focused_window();
+    (session, left, right)
+}
+
 #[test]
 fn source_presentation_reserves_a_viewport_row_only_in_its_focused_split() {
-    let (mut session, unfocused, focused) = split_session(20);
+    let (mut session, unfocused, focused) = source_presentation_split_session(20);
     session.install_source_presentation(SourcePresentation::new(
         WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
         vec![SourceAnnotation::new(0, 0, "message".to_owned())],
@@ -248,7 +269,7 @@ fn source_presentation_reserves_a_viewport_row_only_in_its_focused_split() {
 
 #[test]
 fn source_presentation_navigation_keeps_a_range_that_fits_the_reduced_viewport_visible() {
-    let mut session = with_text(&[
+    let mut session = source_presentation_session(&[
         "line", "line", "line", "line", "line", "line", "line", "line", "line", "line", "line",
         "line", "line", "line", "line", "line", "line", "line", "line", "line", "line", "line",
         "line", "line", "line", "line",
@@ -282,7 +303,7 @@ fn source_presentation_navigation_keeps_a_range_that_fits_the_reduced_viewport_v
 
 #[test]
 fn source_presentation_panel_press_leaves_the_cursor_and_selection_unchanged() {
-    let mut session = with_text(&["first", "second"]);
+    let mut session = source_presentation_session(&["first", "second"]);
     session.install_source_presentation(SourcePresentation::new(
         WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
         vec![SourceAnnotation::new(0, 0, "message".to_owned())],
@@ -306,7 +327,7 @@ fn source_presentation_panel_press_leaves_the_cursor_and_selection_unchanged() {
 
 #[test]
 fn source_presentation_panel_drag_ends_without_selecting_a_hidden_row() {
-    let mut session = with_text(&["first", "second"]);
+    let mut session = source_presentation_session(&["first", "second"]);
     session.install_source_presentation(SourcePresentation::new(
         WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
         vec![SourceAnnotation::new(0, 0, "message".to_owned())],
@@ -5463,6 +5484,28 @@ fn a_clean_buffer_reloads_after_an_external_change() {
         std::fs::read_to_string(&path).expect("the file exists"),
         "one\ntwo\n"
     );
+}
+
+#[test]
+fn a_dormant_presentation_clears_when_its_file_reloads_outside_its_range() {
+    let directory = TempDir::new("source-presentation-dormant-reload");
+    let first = directory.write("first.rs", "one\ntwo\nthree\n");
+    let second = directory.write("second.rs", "other\n");
+    let mut session = file_session(&directory.path);
+    session.open_path(first.clone());
+    run_file_request(&mut session);
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("first.rs").expect("the test path is relative"),
+        vec![SourceAnnotation::new(2, 2, "last".to_owned())],
+    ));
+    session.open_path(second);
+    run_file_request(&mut session);
+    assert!(session.source_presentation().is_some());
+
+    std::fs::write(&first, "one\n").expect("the file is writable");
+    run_watch_reload(&mut session, &directory.path);
+
+    assert!(session.source_presentation().is_none());
 }
 
 #[test]

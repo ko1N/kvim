@@ -24,6 +24,8 @@ pub enum SourcePresentationRefusal {
     AtLast,
     /// No presentation exists.
     NoPresentation,
+    /// The active file is not the presentation file.
+    WrongFile,
     /// The requested file could not be opened.
     OpenFailed,
 }

@@ -3,6 +3,7 @@ use std::time::Duration;
 
 use kvim_input::KeyCode;
 use kvim_keymap::{CellPosition, PointerAction, PointerButton, PointerModifiers};
+use kvim_tui::{Theme, ThemeRole};
 
 use crate::{DialogChoice, DialogChoiceId, DialogStyles};
 
@@ -2074,6 +2075,13 @@ async fn source_change_reloads_current_text_and_preserves_independent_presentati
     );
     assert_eq!(editor.status().cursor().line(), 2);
     assert_eq!(editor.source_presentation().unwrap().message(), "note");
+    let mut cells = Buffer::empty(Rect::new(0, 0, 30, 6));
+    editor.render(&mut cells).unwrap();
+    assert_eq!(
+        cells[(5, 1)].style().bg,
+        Theme::new().style(ThemeRole::SourcePresentation).bg,
+        "same-file presentation paints above settled-change emphasis"
+    );
     editor.clear_source_presentation();
     assert!(editor.source_change_emphasis().is_some());
     editor.clear_source_change_emphasis();
@@ -2106,6 +2114,78 @@ async fn source_change_refuses_dirty_current_and_different_buffers() {
         Err(SourceChangeEmphasisError::DifferentDirtyBuffer)
     );
     assert!(editor.status().is_modified());
+}
+
+#[tokio::test]
+async fn source_change_to_another_file_makes_retained_presentation_dormant() {
+    let root = TestRoot::new("source-presentation-dormant");
+    fs::write(root.0.join("first.rs"), "one\ntwo\nthree\n").unwrap();
+    fs::write(root.0.join("second.rs"), "other\nmore\nlast\n").unwrap();
+    let area = Rect::new(0, 0, 30, 6);
+    let mut editor = WorktreeEditor::builder(&root.0, area).open().unwrap();
+    editor
+        .present_source(source_request(
+            "first.rs",
+            &[(1, 1, "first note"), (3, 3, "last note")],
+        ))
+        .unwrap();
+    finish_source_presentation(&mut editor).await.unwrap();
+
+    editor
+        .emphasize_source_change(source_change_request("second.rs", &[(1, 1)]))
+        .unwrap();
+    finish_source_change(&mut editor).await.unwrap();
+    let retained = editor.source_presentation().unwrap();
+    assert_eq!(retained.path().as_path(), Path::new("first.rs"));
+    assert_eq!(retained.message(), "first note");
+    let cursor_before = editor.status().cursor();
+    assert_eq!(
+        editor.next_source_annotation(),
+        Err(SourcePresentationError::WrongFile)
+    );
+    assert_eq!(editor.status().cursor(), cursor_before);
+
+    let mut dormant = Buffer::empty(area);
+    editor.render(&mut dormant).unwrap();
+    let dormant_text = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| dormant[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<String>();
+    assert!(!dormant_text.contains("first note"));
+    assert_eq!(
+        dormant[(5, 1)].style().bg,
+        Theme::new().style(ThemeRole::SourceChangeEmphasis).bg
+    );
+    assert_ne!(
+        dormant[(5, 1)].style().bg,
+        Theme::new().style(ThemeRole::SourcePresentation).bg
+    );
+    assert!(
+        dormant_text.contains("last"),
+        "dormant presentation reserves no panel row"
+    );
+
+    editor.open_file(WorktreeRelativePath::new("first.rs").unwrap());
+    assert_eq!(
+        editor.status().path().unwrap().as_path(),
+        Path::new("first.rs")
+    );
+    let mut restored = Buffer::empty(area);
+    editor.render(&mut restored).unwrap();
+    let restored_text = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| restored[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<String>();
+    assert!(restored_text.contains("first note"));
+    editor.next_source_annotation().unwrap();
+    assert_eq!(editor.status().cursor().line(), 3);
+    assert_eq!(editor.source_presentation().unwrap().message(), "last note");
 }
 
 #[test]

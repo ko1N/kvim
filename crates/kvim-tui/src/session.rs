@@ -2555,8 +2555,17 @@ impl Session {
     fn source_area(&self, window: WindowId, area: Rect) -> (Rect, Option<Rect>) {
         source_area(
             area,
-            window == self.windows.focused_region() && self.source_presentation.is_some(),
+            window == self.windows.focused_region() && self.source_presentation_is_active(),
         )
+    }
+
+    fn source_presentation_is_active(&self) -> bool {
+        let Some(presentation) = self.source_presentation.as_ref() else {
+            return false;
+        };
+        self.active_buffer()
+            .target()
+            .is_some_and(|target| target.relative_path() == presentation.path())
     }
 
     pub(super) fn emphasize_source_change(
@@ -2707,8 +2716,15 @@ impl Session {
     }
 
     pub(super) fn next_source_annotation(&mut self) -> Result<Redraw, SourcePresentationRefusal> {
+        if !self.source_presentation_is_active() {
+            return Err(if self.source_presentation.is_some() {
+                SourcePresentationRefusal::WrongFile
+            } else {
+                SourcePresentationRefusal::NoPresentation
+            });
+        }
         let Some(presentation) = self.source_presentation.as_mut() else {
-            return Err(SourcePresentationRefusal::NoPresentation);
+            unreachable!("the active presentation check found presentation state");
         };
         presentation.select_next()?;
         self.reveal_source_selection();
@@ -2719,8 +2735,15 @@ impl Session {
     pub(super) fn previous_source_annotation(
         &mut self,
     ) -> Result<Redraw, SourcePresentationRefusal> {
+        if !self.source_presentation_is_active() {
+            return Err(if self.source_presentation.is_some() {
+                SourcePresentationRefusal::WrongFile
+            } else {
+                SourcePresentationRefusal::NoPresentation
+            });
+        }
         let Some(presentation) = self.source_presentation.as_mut() else {
-            return Err(SourcePresentationRefusal::NoPresentation);
+            unreachable!("the active presentation check found presentation state");
         };
         presentation.select_previous()?;
         self.reveal_source_selection();
@@ -2756,6 +2779,9 @@ impl Session {
     }
 
     fn reveal_source_selection(&mut self) {
+        if !self.source_presentation_is_active() {
+            return;
+        }
         let Some((first, last)) = self.source_presentation.as_ref().map(|presentation| {
             let selected = presentation.selected();
             (selected.first_line(), selected.last_line())
@@ -4195,6 +4221,9 @@ impl Session {
         if after != before.revision() {
             self.source_change_emphasis = None;
             self.source_change_generation.invalidate();
+            if self.source_presentation_is_active() {
+                self.source_presentation = None;
+            }
             self.queue_recovery_checkpoint(self.active);
         }
         outcome
@@ -8542,6 +8571,19 @@ impl Session {
         if origin != ReloadOrigin::SourceChange {
             self.source_change_emphasis = None;
             self.source_change_generation.invalidate();
+        }
+        let presentation_invalid = self
+            .source_presentation
+            .as_ref()
+            .is_some_and(|presentation| {
+                self.buffers
+                    .get(buffer)
+                    .and_then(FileBuffer::target)
+                    .is_some_and(|target| target.relative_path() == presentation.path())
+                    && !presentation.fits(lines)
+            });
+        if presentation_invalid {
+            self.source_presentation = None;
         }
         if origin == ReloadOrigin::Command {
             self.set_message(

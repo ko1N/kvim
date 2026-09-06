@@ -52,9 +52,10 @@ buffer text, and terminal colors stay outside the tree.
 
 A worktree editor can hold settled source-change emphasis independently from source presentation,
 diagnostics, search, and Visual selection. Kvim paints every inclusive range with the semantic
-`SourceChangeEmphasis` theme role. The role changes only the background, so syntax and diagnostic
-foreground information remains visible in focused and unfocused split windows. Emphasis reserves
-no panel row. A one-row source area therefore keeps its only source row.
+`SourceChangeEmphasis` theme role only while the emphasis path is active. The role changes only
+the background, so syntax and diagnostic foreground information remains visible in focused and
+unfocused split windows. Emphasis reserves no panel row. A one-row source area therefore keeps
+its only source row.
 
 The focused window owns cursor and viewport placement. Successful emphasis places the cursor on
 the first line of the first range and reconciles that line into view. It changes no source text,
@@ -63,10 +64,16 @@ character position, offset, or line mapping.
 ### Source Presentation
 
 A worktree editor can hold one generic source presentation independently of diagnostics,
-search, and Visual selection. Kvim paints the selected inclusive line range with the semantic
-`SourcePresentation` theme role. The role has its own palette value and does not reuse a
-diagnostic severity. Source presentation changes no buffer text, character position, or line
-mapping.
+search, Visual selection, and the active file. Kvim paints the selected inclusive line range with
+the semantic `SourcePresentation` theme role only while the presentation path is active. The
+role has its own palette value and does not reuse a diagnostic severity. Source presentation
+changes no buffer text, character position, or line mapping.
+
+A switch to another file makes the presentation dormant without removing its snapshot. Dormant
+presentation paints no range or panel, reserves no viewport row, and refuses navigation without
+moving the cursor. Returning to the exact path restores it if its ranges still fit. An edit of the
+target clears it. A reload clears it when the new text makes a range invalid. Kvim never clamps a
+range to fit changed text.
 
 The focused window owns placement. Selection puts its cursor on the first line. When the range
 fits the source viewport, Kvim positions that viewport so both endpoints are visible. When the

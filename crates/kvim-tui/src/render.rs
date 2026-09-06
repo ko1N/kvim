@@ -119,9 +119,21 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                 // `docs/windows.md`.
                 // The active search belongs to the active buffer only.
                 let searched = id == view.active && match_chars > 0;
+                let presentation = view.source_presentation.filter(|presentation| {
+                    id == view.active
+                        && file
+                            .target()
+                            .is_some_and(|target| target.relative_path() == presentation.path())
+                });
+                let emphasis = view.source_change_emphasis.filter(|emphasis| {
+                    id == view.active
+                        && file
+                            .target()
+                            .is_some_and(|target| target.relative_path() == emphasis.path())
+                });
                 let (source_region, panel) = source_area(
                     region.area,
-                    focus == RegionFocus::Focused && view.source_presentation.is_some(),
+                    focus == RegionFocus::Focused && presentation.is_some(),
                 );
                 let window = WindowView {
                     buffer: text,
@@ -140,19 +152,11 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                     match_chars: if searched { match_chars } else { 0 },
                     highlights: view.highlights(id),
                     diagnostics: view.diagnostics(id),
-                    source_change_emphasis: if id == view.active {
-                        view.source_change_emphasis
-                            .map_or(&[][..], |emphasis| emphasis.ranges())
-                    } else {
-                        &[]
-                    },
-                    source_presentation: (id == view.active)
-                        .then_some(view.source_presentation)
-                        .flatten()
-                        .map(|presentation| {
-                            let annotation = presentation.selected();
-                            (annotation.first_line(), annotation.last_line())
-                        }),
+                    source_change_emphasis: emphasis.map_or(&[][..], |emphasis| emphasis.ranges()),
+                    source_presentation: presentation.map(|presentation| {
+                        let annotation = presentation.selected();
+                        (annotation.first_line(), annotation.last_line())
+                    }),
                     focus,
                     // The bracket pair answers a Normal-mode `%`, and that key
                     // reaches no window while a sidebar holds the focus, so
@@ -169,7 +173,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
                 };
                 render_window(target, source_region, theme, &window);
                 if focus == RegionFocus::Focused {
-                    if let (Some(presentation), Some(panel)) = (view.source_presentation, panel) {
+                    if let (Some(presentation), Some(panel)) = (presentation, panel) {
                         let selected = presentation.selected();
                         render_panel(
                             target,
