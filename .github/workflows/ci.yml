@@ -195,6 +195,26 @@ jobs:
       - name: Compile every independent external consumer
         run: ./scripts/check-external-consumer.sh --checked-out-repository
 
+  nix-build:
+    name: Nix build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - macos-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: cachix/install-nix-action@v31
+
+      - name: Build Nix package
+        run: nix build .#kvim
+
   msrv:
     name: MSRV (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

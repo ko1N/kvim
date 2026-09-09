@@ -1443,7 +1443,7 @@ fn a_failed_overwrite_leaves_the_destination_unchanged() {
         .apply()
         .expect_err("the second destination is a directory");
 
-    assert!(matches!(error, MutationError::Filesystem { .. }));
+    assert!(matches!(error, MutationError::Confinement { .. }));
     let kept = fs::read_to_string(&destination).expect("the destination returned");
     assert_eq!(kept, "kept", "a failed overwrite keeps the destination");
     assert_eq!(

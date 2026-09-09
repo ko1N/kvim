@@ -2315,26 +2315,48 @@ async fn dirty_different_file_refuses_without_losing_text_or_presentation() {
     let root = TestRoot::new("source-presentation-dirty");
     fs::write(root.0.join("first.rs"), "one\n").unwrap();
     fs::write(root.0.join("second.rs"), "two\n").unwrap();
-    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
-        .open()
-        .unwrap();
+    let area = Rect::new(0, 0, 30, 6);
+    let mut editor = WorktreeEditor::builder(&root.0, area).open().unwrap();
     editor
         .present_source(source_request("first.rs", &[(1, 1, "first")]))
         .unwrap();
     finish_source_presentation(&mut editor).await.unwrap();
+    editor.open_file(WorktreeRelativePath::new("second.rs").unwrap());
+    drive_until(&mut editor, |event| {
+        matches!(event, WorktreeEvent::ActiveFileChanged { path: Some(path) } if path.as_path() == Path::new("second.rs"))
+    })
+    .await;
     editor
         .command(Command::InsertBeforeCursor, None, None, Duration::ZERO)
         .unwrap();
     editor.literal("dirty ", Duration::ZERO);
 
     assert_eq!(
-        editor.present_source(source_request("second.rs", &[(1, 1, "second")])),
+        editor.present_source(source_request("first.rs", &[(1, 1, "replacement")])),
         Err(SourcePresentationError::DifferentDirtyBuffer)
     );
     assert!(editor.status().is_modified());
+    assert_eq!(
+        editor.status().path().unwrap().as_path(),
+        Path::new("second.rs")
+    );
+    let mut cells = Buffer::empty(area);
+    editor.render(&mut cells).unwrap();
+    let dirty_text = (0..area.height)
+        .map(|y| {
+            (0..area.width)
+                .map(|x| cells[(x, y)].symbol())
+                .collect::<String>()
+        })
+        .collect::<String>();
+    assert!(dirty_text.contains("dirty two"));
     assert_eq!(editor.source_presentation().unwrap().message(), "first");
     assert_eq!(
-        editor.present_source(source_request("first.rs", &[(1, 1, "replacement")])),
+        editor.source_presentation().unwrap().path().as_path(),
+        Path::new("first.rs")
+    );
+    assert_eq!(
+        editor.present_source(source_request("second.rs", &[(1, 1, "replacement")])),
         Ok(SourcePresentationOutcome::Presented)
     );
     assert!(editor.status().is_modified());
@@ -2344,7 +2366,7 @@ async fn dirty_different_file_refuses_without_losing_text_or_presentation() {
     );
     assert_eq!(
         editor.status().path().unwrap().as_path(),
-        Path::new("first.rs")
+        Path::new("second.rs")
     );
 }
 
