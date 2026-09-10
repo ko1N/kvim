@@ -85,10 +85,11 @@ use kvim_workspace::{
     MutationOutcome, OpenError, OpenRequest, OpenedFile, Overwrite, PICKER_QUERY_CHARS_MAX,
     PickerKind, PickerRequest, PickerResult, PickerSlot, PreviewKey, RELOAD_TARGETS_MAX,
     RecoveryBaseline, RecoveryCandidate, RecoveryError, RecoveryRecord, ReloadOutcome,
-    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SaveApplyOutcome, SaveError,
-    SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination, TransferMode,
-    WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead, WorktreeDiffRequest,
-    delete_recovery_record, recovery_record_path, render_content, write_recovery_record,
+    ReloadRequest, ReloadTarget, ReloadTrigger, ReloadedBuffer, SCRATCH_BUFFER_NAME,
+    SaveApplyOutcome, SaveError, SaveRequest, SavedBuffer, TREE_SEARCH_CHARS_MAX, TakenDestination,
+    TransferMode, WorkspaceRequest, WorkspaceResult, WorktreeDiffFailure, WorktreeDiffRead,
+    WorktreeDiffRequest, delete_recovery_record, recovery_record_path, render_content,
+    write_recovery_record,
 };
 
 use super::buffer_view::text_surface_geometry;
@@ -463,6 +464,11 @@ impl LastBuffer {
 enum PendingFile {
     /// One ordinary file is loading.
     Open,
+    /// The standalone startup file is loading beside its construction scratch.
+    InitialOpen {
+        scratch: BufferId,
+        revision: BufferRevision,
+    },
     /// One file is loading for atomic source-change emphasis.
     SourceChangeOpen {
         emphasis: SourceChangeEmphasis,
@@ -2229,6 +2235,29 @@ impl Session {
     /// ```
     #[must_use]
     pub fn open(&mut self, path: WorktreeRelativePath) -> Redraw {
+        self.start_open(path, PendingFile::Open)
+    }
+
+    /// Opens the standalone startup file beside the construction scratch.
+    ///
+    /// This internal seam removes that scratch after a successful load only if
+    /// no text change reached it while the file was loading.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn open_initial(&mut self, path: WorktreeRelativePath) -> Redraw {
+        let scratch = self.active;
+        let pristine = self.buffers.len() == 1
+            && self.active_buffer().name() == SCRATCH_BUFFER_NAME
+            && self.active_buffer().path().is_none()
+            && !self.active_buffer().is_modified();
+        if !pristine {
+            return self.open(path);
+        }
+        let revision = self.active_buffer().text().revision();
+        self.start_open(path, PendingFile::InitialOpen { scratch, revision })
+    }
+
+    fn start_open(&mut self, path: WorktreeRelativePath, pending: PendingFile) -> Redraw {
         let display_path = self.root.as_path().join(path.as_path());
         if let Some(id) = self.buffers.find_path(&display_path) {
             let redraw = self.switch_to(id);
@@ -2243,7 +2272,7 @@ impl Session {
                 files,
                 recovery_state_directory: self.recovery.state_directory.clone(),
             }),
-            PendingFile::Open,
+            pending,
         );
         self.note_redraw(redraw);
         redraw
@@ -7503,6 +7532,14 @@ impl Session {
                         Some(Err(SourcePresentationRefusal::OpenFailed));
                     Redraw::Skipped
                 }
+                (Some(PendingFile::InitialOpen { scratch, revision }), Ok(file)) => {
+                    let target = file.target.clone();
+                    let redraw = self.publish_open(file);
+                    let Some(loaded) = self.buffers.find_target(&target) else {
+                        return redraw;
+                    };
+                    redraw.or(self.remove_initial_scratch(scratch, revision, loaded))
+                }
                 (_, Ok(file)) => self.publish_open(file),
                 (_, Err(error)) => {
                     let requested = self.root.as_path().join(requested.as_path());
@@ -7522,6 +7559,7 @@ impl Session {
                     Some(PendingFile::Save { then, format, .. }) => (then, format),
                     Some(
                         PendingFile::Open
+                        | PendingFile::InitialOpen { .. }
                         | PendingFile::SourceChangeOpen { .. }
                         | PendingFile::SourceChangeReload { .. }
                         | PendingFile::SourcePresentation(_)
@@ -8226,6 +8264,47 @@ impl Session {
             self.set_message(format!("\"{name}\" {lines}L, {bytes}B"), MessageLevel::Info);
         }
         self.follow_jump().or(redraw).or(Redraw::Needed)
+    }
+
+    /// Removes the unchanged construction scratch after the startup file loads.
+    fn remove_initial_scratch(
+        &mut self,
+        scratch: BufferId,
+        revision: BufferRevision,
+        loaded: BufferId,
+    ) -> Redraw {
+        let unchanged = self.buffers.get(scratch).is_some_and(|buffer| {
+            buffer.name() == SCRATCH_BUFFER_NAME
+                && buffer.path().is_none()
+                && !buffer.is_modified()
+                && buffer.text().revision() == revision
+        });
+        if !unchanged || scratch == loaded || self.active != loaded {
+            return Redraw::Skipped;
+        }
+        debug_assert_eq!(
+            self.active, loaded,
+            "publishing an opened file makes its loaded buffer active"
+        );
+        debug_assert!(
+            self.buffers.len() >= 2,
+            "the loaded startup file exists before its scratch is removed"
+        );
+        for window in self.windows.window_ids() {
+            if self.windows.buffer(window) == Some(scratch) {
+                self.windows.set_buffer(window, loaded);
+                self.restart_window_view(window);
+            }
+        }
+        let removed = self.buffers.remove(scratch);
+        debug_assert!(
+            removed.is_some(),
+            "the unchanged scratch was present when removal started"
+        );
+        self.language.forget(scratch);
+        self.analysis.remove(&scratch);
+        self.reconcile_viewports(None);
+        Redraw::Needed
     }
 
     fn publish_recovery_candidate(

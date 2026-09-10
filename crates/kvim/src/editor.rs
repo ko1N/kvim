@@ -131,7 +131,7 @@ async fn drive<C: TerminalControl>(
     }
     let mut editor = builder.open().map_err(EditorError::Open)?;
     if let Some(path) = path {
-        let _ = editor.open_file(path);
+        let _ = editor.open_initial_file(path);
     }
 
     let mut events = EventSource::from_terminal();

@@ -1148,6 +1148,12 @@ impl EmbeddedEditor {
         self.editor.open(path)
     }
 
+    /// Queues the standalone startup file for opening.
+    #[doc(hidden)]
+    pub fn open_initial_file(&mut self, path: WorktreeRelativePath) -> Redraw {
+        self.editor.open_initial(path)
+    }
+
     /// Resolves one addressed recovery candidate.
     pub fn decide_recovery(
         &mut self,

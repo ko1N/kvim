@@ -3945,6 +3945,62 @@ fn run_file_request(session: &mut Session) {
     let _ = session.apply_file_result(request.run());
 }
 
+#[test]
+fn initial_open_replaces_the_pristine_construction_scratch() {
+    let directory = TempDir::new("session-initial-open");
+    let path = directory.write("message.txt", "edit me\n");
+    let mut session = file_session(&directory.path);
+    let scratch = session.active();
+
+    let _ = session.open_initial(WorktreeRelativePath::new("message.txt").unwrap());
+    run_file_request(&mut session);
+
+    assert_eq!(session.buffers().len(), 1);
+    assert!(session.buffers().get(scratch).is_none());
+    assert_eq!(session.active_buffer().path(), Some(path.as_path()));
+
+    let _ = session.apply_command(Command::SaveBufferAndClose, None, None, NOW);
+    run_file_request(&mut session);
+    assert_eq!(session.run_state(), RunState::Finished);
+}
+
+#[test]
+fn initial_open_keeps_a_scratch_that_changed_while_the_file_loaded() {
+    let directory = TempDir::new("session-initial-open-edited-scratch");
+    directory.write("message.txt", "edit me\n");
+    let mut session = file_session(&directory.path);
+    let scratch = session.active();
+
+    let _ = session.open_initial(WorktreeRelativePath::new("message.txt").unwrap());
+    press(&mut session, 'i');
+    press(&mut session, 'x');
+    press_code(&mut session, KeyCode::Esc);
+    run_file_request(&mut session);
+
+    assert_eq!(session.buffers().len(), 2);
+    let retained = session
+        .buffers()
+        .get(scratch)
+        .expect("the changed construction scratch stays loaded");
+    assert!(retained.is_modified());
+    assert_eq!(retained.text().to_string(), "x\n");
+}
+
+#[test]
+fn failed_initial_open_retains_the_construction_scratch() {
+    let directory = TempDir::new("session-failed-initial-open");
+    directory.dir("docs");
+    let mut session = file_session(&directory.path);
+    let scratch = session.active();
+
+    let _ = session.open_initial(WorktreeRelativePath::new("docs").unwrap());
+    run_file_request(&mut session);
+
+    assert_eq!(session.buffers().len(), 1);
+    assert_eq!(session.active(), scratch);
+    assert_eq!(session.active_buffer().name(), "[Scratch]");
+}
+
 fn run_recovery_work(session: &mut Session) {
     while let Some(checkpoint) = session.take_recovery_checkpoint() {
         let _ = session.apply_recovery_checkpoint(checkpoint.run());

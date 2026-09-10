@@ -2613,6 +2613,11 @@ impl WorktreeEditor {
     pub fn open_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
         convert_redraw(self.inner_mut().open_file(path))
     }
+    /// Queues the standalone startup file for asynchronous opening.
+    #[doc(hidden)]
+    pub fn open_initial_file(&mut self, path: WorktreeRelativePath) -> WorktreeUpdate {
+        convert_redraw(self.inner_mut().open_initial_file(path))
+    }
     /// Follows one settled source change without replacing source presentation.
     ///
     /// A clean current file is reloaded before ranges are validated. Another
