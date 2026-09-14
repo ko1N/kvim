@@ -397,6 +397,18 @@ pub(super) fn add_embedded_secondary_bindings(bindings: &mut Vec<Binding>) {
         &[ch('['), ch('s')],
         Command::PreviousReviewSection,
     ));
+    // Only an embedding host installs a source presentation. A standalone table
+    // that bound these keys would hold two motions that reach nothing.
+    bindings.push(Binding::surface(
+        normal,
+        &[ch(']'), ch('a')],
+        Command::NextSourceAnnotation,
+    ));
+    bindings.push(Binding::surface(
+        normal,
+        &[ch('['), ch('a')],
+        Command::PreviousSourceAnnotation,
+    ));
 }
 
 pub(super) fn is_review_tab_navigation(sequence: &[Key]) -> bool {
@@ -789,18 +801,6 @@ fn first_release_bindings() -> Vec<Binding> {
         NORMAL,
         &[ch('['), ch('d')],
         Command::PreviousDiagnostic,
-    );
-    add(
-        table,
-        NORMAL,
-        &[ch(']'), ch('a')],
-        Command::NextSourceAnnotation,
-    );
-    add(
-        table,
-        NORMAL,
-        &[ch('['), ch('a')],
-        Command::PreviousSourceAnnotation,
     );
     add_scoped(
         table,

@@ -1,6 +1,6 @@
 use kvim_keymap::KeySequence;
 
-use crate::CommandAuthority;
+use crate::{BindingProfile, CommandAuthority};
 
 use super::{
     Binding, BindingScope, Command, CommandGroup, Key, KeyCode, Mode, PENDING_KEYS_MAX, Registry,
@@ -138,19 +138,50 @@ fn tilde_reaches_case_toggle_in_normal_and_visual_modes() {
 
 #[test]
 fn annotation_and_diagnostic_brackets_have_exact_ownership() {
-    let registry = Registry::first_release();
-    for (keys, expected) in [
-        ([ch(']'), ch('a')], Command::NextSourceAnnotation),
-        ([ch('['), ch('a')], Command::PreviousSourceAnnotation),
-        ([ch(']'), ch('d')], Command::NextDiagnostic),
-        ([ch('['), ch('d')], Command::PreviousDiagnostic),
+    let standalone = BindingProfile::Standalone
+        .registry()
+        .expect("the standalone profile is valid");
+    let embedded = BindingProfile::Embedded
+        .registry()
+        .expect("the embedded profile is valid");
+    let profiles = [("standalone", &standalone), ("embedded", &embedded)];
+    // A diagnostic comes from a language server, which either profile runs. An
+    // annotation comes from an embedding host, so only the embedded profile
+    // binds its motions.
+    for (keys, in_standalone, in_embedded) in [
+        (
+            [ch(']'), ch('a')],
+            None,
+            Some(Command::NextSourceAnnotation),
+        ),
+        (
+            [ch('['), ch('a')],
+            None,
+            Some(Command::PreviousSourceAnnotation),
+        ),
+        (
+            [ch(']'), ch('d')],
+            Some(Command::NextDiagnostic),
+            Some(Command::NextDiagnostic),
+        ),
+        (
+            [ch('['), ch('d')],
+            Some(Command::PreviousDiagnostic),
+            Some(Command::PreviousDiagnostic),
+        ),
     ] {
-        for scope in BindingScope::ALL {
-            let owned = registry.command(scope, &keys);
-            if scope == BindingScope::Mode(Mode::Normal) {
-                assert_eq!(owned, Some(expected));
-            } else {
-                assert_eq!(owned, None, "{scope:?} must not own a Normal-mode sequence");
+        for ((name, registry), in_normal) in profiles.iter().zip([in_standalone, in_embedded]) {
+            for scope in BindingScope::ALL {
+                let expected = if scope == BindingScope::Mode(Mode::Normal) {
+                    in_normal
+                } else {
+                    None
+                };
+                assert_eq!(
+                    registry.command(scope, &keys),
+                    expected,
+                    "the {name} profile owns {keys:?} in {scope:?} exactly"
+                );
             }
         }
     }
@@ -161,8 +192,9 @@ fn annotation_and_diagnostic_brackets_have_exact_ownership() {
         assert_eq!(command.authority(), CommandAuthority::Read);
         assert_eq!(command.group(), CommandGroup::Code);
     }
-    // The which-key overlay reads the same table, so every bracket prefix lists
-    // the annotation motion beside the diagnostic motion of that direction.
+    // The which-key overlay reads the same table, so a bracket prefix lists the
+    // annotation motion beside the diagnostic motion of that direction only
+    // where the profile binds it.
     for (prefix, annotation, diagnostic) in [
         (
             ch(']'),
@@ -175,28 +207,33 @@ fn annotation_and_diagnostic_brackets_have_exact_ownership() {
             Command::PreviousDiagnostic,
         ),
     ] {
-        let rows: Vec<(String, WhichKeyTarget)> = registry
-            .rows_for_prefix(Mode::Normal, &[prefix])
-            .iter()
-            .map(|row| (row.key_label().to_string(), row.target))
-            .collect();
-        assert!(
-            rows.contains(&("a".to_owned(), WhichKeyTarget::Command(annotation))),
-            "{rows:?}"
-        );
-        assert!(
-            rows.contains(&("d".to_owned(), WhichKeyTarget::Command(diagnostic))),
-            "{rows:?}"
-        );
+        for ((name, registry), lists_annotation) in profiles.iter().zip([false, true]) {
+            let rows: Vec<(String, WhichKeyTarget)> = registry
+                .rows_for_prefix(Mode::Normal, &[prefix])
+                .iter()
+                .map(|row| (row.key_label().to_string(), row.target))
+                .collect();
+            assert!(
+                rows.contains(&("d".to_owned(), WhichKeyTarget::Command(diagnostic))),
+                "the {name} profile lists the diagnostic motion: {rows:?}"
+            );
+            assert_eq!(
+                rows.contains(&("a".to_owned(), WhichKeyTarget::Command(annotation))),
+                lists_annotation,
+                "the {name} profile lists the annotation motion only when bound: {rows:?}"
+            );
+        }
     }
     // An embedding host reserves `Ctrl-]` as the escape that leaves the
-    // editor, so no kvim scope may claim it.
-    for scope in BindingScope::ALL {
-        assert_eq!(
-            registry.command(scope, &[ctrl(']')]),
-            None,
-            "{scope:?} must leave Ctrl-] to the embedding host"
-        );
+    // editor, so no scope of either profile may claim it.
+    for (name, registry) in profiles {
+        for scope in BindingScope::ALL {
+            assert_eq!(
+                registry.command(scope, &[ctrl(']')]),
+                None,
+                "the {name} profile leaves Ctrl-] to the embedding host in {scope:?}"
+            );
+        }
     }
 }
 

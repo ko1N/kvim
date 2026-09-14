@@ -430,8 +430,9 @@ Kvim places the cursor at the first line of the selected range. It reserves one 
 the focused source viewport when at least two body rows exist. It scrolls that viewport until the
 range starts three rows below its top, so the reader sees the code above the range. The end of the
 file clamps that offset. A range that fits the viewport gives up context rows to keep its last row
-visible. A range that is taller than the viewport keeps its context rows. `]a` and `[a` reach the
-same navigation from Normal mode, and no scope binds `Ctrl-]`. See
+visible. A range that is taller than the viewport keeps its context rows. The embedded profile
+reaches the same navigation from Normal mode through `]a` and `[a`, the standalone profile leaves
+both keys unclaimed, and no scope of either profile binds `Ctrl-]`. See
 [`input-actions.md`](input-actions.md). Kvim
 paints the range as source decoration with its own semantic theme role. This decoration changes
 no text, offsets, or line mapping and remains distinct from diagnostics. Kvim also paints a compact message and `current/total` panel in its reserved row. It owns the

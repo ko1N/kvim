@@ -1215,7 +1215,8 @@ remains a semantic API and does not claim a physical binding.
 The standalone profile preserves the first-release table. The embedded profile
 leaves `Tab` and `Shift-Tab` unclaimed in Normal, Visual, and sidebar scopes,
 while Insert and prompt scopes retain indentation and completion. It adds `]j`
-and `[j` for forward and backward jumps, and `]s` and `[s` for review sections.
+and `[j` for forward and backward jumps, `]s` and `[s` for review sections, and
+`]a` and `[a` for the source annotations that only a host installs.
 Bounded semantic overrides disable every physical binding of one command,
 explicitly restore its first-release bindings, or replace all of its profile
 bindings with validated mappings. An override set rejects conflicting enable,
@@ -1548,17 +1549,19 @@ commands.
 
 ### Source Presentation
 
-| Keys | Command | Modes |
-|---|---|---|
-| `]a` | Move to the next source annotation | Normal |
-| `[a` | Move to the previous source annotation | Normal |
+| Keys | Command | Modes | Profile |
+|---|---|---|---|
+| `]a` | Move to the next source annotation | Normal | Embedded |
+| `[a` | Move to the previous source annotation | Normal | Embedded |
 
-An embedding host installs a source presentation, so a standalone editor holds
-none and both keys change nothing. Neither key wraps. The first annotation
-refuses a previous step and the last annotation refuses a next step. A step
-reveals its annotation through the placement rule of
-[`windows.md`](windows.md). The diagnostic motions stay separate, because a
-diagnostic comes from a language server and an annotation comes from the host.
+Only an embedding host installs a source presentation, so only the embedded
+profile binds these two keys. The standalone profile leaves `]a` and `[a`
+unclaimed, because no standalone editor holds an annotation to move between.
+Neither key wraps. The first annotation refuses a previous step and the last
+annotation refuses a next step. A step reveals its annotation through the
+placement rule of [`windows.md`](windows.md). The diagnostic motions stay
+separate and stay in both profiles, because a diagnostic comes from a language
+server and an annotation comes from the host.
 
 `Ctrl-]` carries no kvim binding in any scope. An embedding host reserves it as
 the escape that leaves the editor.
