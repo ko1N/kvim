@@ -30,6 +30,63 @@ pub enum SourcePresentationRefusal {
     OpenFailed,
 }
 
+/// The number of source rows that a reveal keeps above an annotation.
+///
+/// An annotation on the first visible row reads as if the file started there,
+/// so the reveal keeps a few rows of code above it. Three rows show the
+/// signature or the opening line that the annotated range belongs to, and they
+/// leave the rest of the viewport for the range itself.
+pub(crate) const SOURCE_PRESENTATION_CONTEXT_ROWS: usize = 3;
+
+/// Returns the first visible source row that reveals one annotated range.
+///
+/// The range starts [`SOURCE_PRESENTATION_CONTEXT_ROWS`] rows below the top of
+/// the source area. Three bounds move that offset:
+///
+/// - The end of the file clamps it. The last viewport of a file starts at
+///   `total_source_rows - visible_source_height`, so a range near the end of
+///   the file starts higher in the viewport than the context rule asks.
+/// - A range that fits the viewport keeps its last row visible. The offset then
+///   moves down and gives up context rows, because the complete range says more
+///   than the code above it.
+/// - A range that is taller than the viewport keeps its context rows. No offset
+///   makes its last row visible, so hiding its first row gains nothing.
+///
+/// The returned offset always keeps `first_row` visible.
+#[must_use]
+pub(crate) fn source_viewport_first_row(
+    first_row: usize,
+    last_row: usize,
+    total_source_rows: usize,
+    visible_source_height: usize,
+) -> usize {
+    if total_source_rows == 0 {
+        return 0;
+    }
+
+    let last_source_row = total_source_rows - 1;
+    let first_row = first_row.min(last_source_row);
+    let last_row = last_row.clamp(first_row, last_source_row);
+    let context_rows =
+        SOURCE_PRESENTATION_CONTEXT_ROWS.min(visible_source_height.saturating_sub(1));
+    let last_first_row = total_source_rows.saturating_sub(visible_source_height);
+    let with_context = first_row.saturating_sub(context_rows).min(last_first_row);
+    let range_rows = last_row - first_row + 1;
+    let first_row_showing_last = if range_rows <= visible_source_height {
+        last_row
+            .saturating_add(1)
+            .saturating_sub(visible_source_height)
+    } else {
+        0
+    };
+    let revealed = with_context.max(first_row_showing_last);
+    debug_assert!(
+        revealed <= first_row,
+        "the revealed offset never passes the first annotated row"
+    );
+    revealed
+}
+
 /// One private validated annotation.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SourceAnnotation {

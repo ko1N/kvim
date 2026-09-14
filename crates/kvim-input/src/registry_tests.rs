@@ -1,5 +1,7 @@
 use kvim_keymap::KeySequence;
 
+use crate::CommandAuthority;
+
 use super::{
     Binding, BindingScope, Command, CommandGroup, Key, KeyCode, Mode, PENDING_KEYS_MAX, Registry,
     RegistryError, WhichKeyTarget, ch, ctrl, ctrl_alt, leader,
@@ -132,6 +134,70 @@ fn tilde_reaches_case_toggle_in_normal_and_visual_modes() {
         );
     }
     assert_eq!(registry.command(Mode::Insert, &[ch('~')]), None);
+}
+
+#[test]
+fn annotation_and_diagnostic_brackets_have_exact_ownership() {
+    let registry = Registry::first_release();
+    for (keys, expected) in [
+        ([ch(']'), ch('a')], Command::NextSourceAnnotation),
+        ([ch('['), ch('a')], Command::PreviousSourceAnnotation),
+        ([ch(']'), ch('d')], Command::NextDiagnostic),
+        ([ch('['), ch('d')], Command::PreviousDiagnostic),
+    ] {
+        for scope in BindingScope::ALL {
+            let owned = registry.command(scope, &keys);
+            if scope == BindingScope::Mode(Mode::Normal) {
+                assert_eq!(owned, Some(expected));
+            } else {
+                assert_eq!(owned, None, "{scope:?} must not own a Normal-mode sequence");
+            }
+        }
+    }
+    for command in [
+        Command::NextSourceAnnotation,
+        Command::PreviousSourceAnnotation,
+    ] {
+        assert_eq!(command.authority(), CommandAuthority::Read);
+        assert_eq!(command.group(), CommandGroup::Code);
+    }
+    // The which-key overlay reads the same table, so every bracket prefix lists
+    // the annotation motion beside the diagnostic motion of that direction.
+    for (prefix, annotation, diagnostic) in [
+        (
+            ch(']'),
+            Command::NextSourceAnnotation,
+            Command::NextDiagnostic,
+        ),
+        (
+            ch('['),
+            Command::PreviousSourceAnnotation,
+            Command::PreviousDiagnostic,
+        ),
+    ] {
+        let rows: Vec<(String, WhichKeyTarget)> = registry
+            .rows_for_prefix(Mode::Normal, &[prefix])
+            .iter()
+            .map(|row| (row.key_label().to_string(), row.target))
+            .collect();
+        assert!(
+            rows.contains(&("a".to_owned(), WhichKeyTarget::Command(annotation))),
+            "{rows:?}"
+        );
+        assert!(
+            rows.contains(&("d".to_owned(), WhichKeyTarget::Command(diagnostic))),
+            "{rows:?}"
+        );
+    }
+    // An embedding host reserves `Ctrl-]` as the escape that leaves the
+    // editor, so no kvim scope may claim it.
+    for scope in BindingScope::ALL {
+        assert_eq!(
+            registry.command(scope, &[ctrl(']')]),
+            None,
+            "{scope:?} must leave Ctrl-] to the embedding host"
+        );
+    }
 }
 
 #[test]

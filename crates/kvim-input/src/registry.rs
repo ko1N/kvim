@@ -790,6 +790,18 @@ fn first_release_bindings() -> Vec<Binding> {
         &[ch('['), ch('d')],
         Command::PreviousDiagnostic,
     );
+    add(
+        table,
+        NORMAL,
+        &[ch(']'), ch('a')],
+        Command::NextSourceAnnotation,
+    );
+    add(
+        table,
+        NORMAL,
+        &[ch('['), ch('a')],
+        Command::PreviousSourceAnnotation,
+    );
     add_scoped(
         table,
         LEADER_SCOPES,

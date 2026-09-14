@@ -51,7 +51,9 @@ use crate::session::{
 use crate::source_change_emphasis::{
     SourceChangeEmphasis, SourceChangeEmphasisRefusal, SourceChangeRange,
 };
-use crate::source_presentation::{SourceAnnotation, SourcePresentation};
+use crate::source_presentation::{
+    SOURCE_PRESENTATION_CONTEXT_ROWS, SourceAnnotation, SourcePresentation,
+};
 use crate::tree::TREE_TITLE_ROWS;
 use kvim_ui::{SidebarSide, WindowId};
 
@@ -269,18 +271,74 @@ fn source_presentation_reserves_a_viewport_row_only_in_its_focused_split() {
 
 #[test]
 fn source_presentation_navigation_keeps_a_range_that_fits_the_reduced_viewport_visible() {
-    let mut session = source_presentation_session(&[
-        "line", "line", "line", "line", "line", "line", "line", "line", "line", "line", "line",
-        "line", "line", "line", "line", "line", "line", "line", "line", "line", "line", "line",
-        "line", "line", "line", "line",
-    ]);
+    const LINES: usize = 40;
+    let mut session = source_presentation_session(&["line"; LINES]);
+    session
+        .set_area(Rect::new(0, 0, 80, 12))
+        .expect("the test geometry is valid");
+    // The panel row reduces the source rows, so the installed presentation
+    // itself reports the height that the range must exactly fill.
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![SourceAnnotation::new(0, 0, "probe".to_owned())],
+    ));
+    let window = session.windows().focused_window();
+    let rows = usize::from(
+        session
+            .windows()
+            .viewport(window)
+            .expect("the focused window has a viewport")
+            .height_rows()
+            .get(),
+    );
+    let first = LINES / 2;
+    let last = first + rows - 1;
     session.install_source_presentation(SourcePresentation::new(
         WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
         vec![
             SourceAnnotation::new(0, 0, "first".to_owned()),
-            // A 20-row terminal has 17 text rows. The presentation panel uses
-            // one, so this range exactly fills the remaining 16 source rows.
-            SourceAnnotation::new(10, 25, "second".to_owned()),
+            SourceAnnotation::new(first, last, "second".to_owned()),
+        ],
+    ));
+
+    session
+        .next_source_annotation()
+        .expect("the second annotation exists");
+
+    let viewport = session
+        .windows()
+        .viewport(window)
+        .expect("the focused window has a viewport");
+    assert_eq!(
+        usize::from(viewport.height_rows().get()),
+        rows,
+        "the panel row keeps the reduced source height"
+    );
+    assert_eq!(session.cursor().line().get(), first);
+    assert!(
+        viewport.first_line() <= first,
+        "the start of the range stays visible"
+    );
+    assert!(
+        last < viewport.first_line() + rows,
+        "the viewport must include the selected range endpoint"
+    );
+}
+
+#[test]
+fn source_presentation_navigation_keeps_context_above_a_range_taller_than_the_viewport() {
+    const LINES: usize = 40;
+    let first = LINES / 2;
+    let last = LINES - 1;
+    let mut session = source_presentation_session(&["line"; LINES]);
+    session
+        .set_area(Rect::new(0, 0, 80, 12))
+        .expect("the test geometry is valid");
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![
+            SourceAnnotation::new(0, 0, "first".to_owned()),
+            SourceAnnotation::new(first, last, "second".to_owned()),
         ],
     ));
 
@@ -293,12 +351,118 @@ fn source_presentation_navigation_keeps_a_range_that_fits_the_reduced_viewport_v
         .windows()
         .viewport(window)
         .expect("the focused window has a viewport");
-    assert_eq!(session.cursor().line().get(), 10);
-    assert!(viewport.first_line() <= 10);
+    let rows = usize::from(viewport.height_rows().get());
     assert!(
-        viewport.first_line() + usize::from(viewport.height_rows().get()) > 25,
-        "the viewport must include the selected range endpoint"
+        last - first + 1 > rows,
+        "the test range must be taller than the viewport"
     );
+    assert_eq!(session.cursor().line().get(), first);
+    assert_eq!(
+        first - viewport.first_line(),
+        SOURCE_PRESENTATION_CONTEXT_ROWS,
+        "a range that no offset can fit keeps its context rows"
+    );
+}
+
+#[test]
+fn source_annotation_commands_dispatch_without_wrapping_and_place_the_viewport() {
+    const LINES: usize = 20;
+    let start = SOURCE_PRESENTATION_CONTEXT_ROWS - 1;
+    let middle = LINES / 2;
+    let end = LINES - 1;
+    let mut session = source_presentation_session(&["line"; LINES]);
+    session
+        .set_area(Rect::new(0, 0, 80, 12))
+        .expect("the test geometry is valid");
+    session.install_source_presentation(SourcePresentation::new(
+        WorktreeRelativePath::new("presented.rs").expect("the test path is relative"),
+        vec![
+            SourceAnnotation::new(start, start, "start".to_owned()),
+            SourceAnnotation::new(middle, middle, "middle".to_owned()),
+            SourceAnnotation::new(end, end, "end".to_owned()),
+        ],
+    ));
+    let _ = session.clear_message();
+    let window = session.windows().focused_window();
+    let rows = usize::from(
+        session
+            .windows()
+            .viewport(window)
+            .expect("the focused window has a viewport")
+            .height_rows()
+            .get(),
+    );
+    assert!(
+        rows > SOURCE_PRESENTATION_CONTEXT_ROWS && rows < LINES - middle,
+        "the test geometry must hold the context rows and still clamp at the file end"
+    );
+
+    assert_eq!(
+        first_line(&session, window),
+        0,
+        "an annotation above the context rows shows the file start"
+    );
+    assert_eq!(session.cursor().line().get(), start);
+    assert_eq!(
+        session.dispatch_command(Command::PreviousSourceAnnotation, None, None),
+        Redraw::Skipped,
+        "the first annotation refuses a previous step"
+    );
+    assert_eq!(
+        session
+            .source_presentation()
+            .expect("the presentation remains installed")
+            .selected_index(),
+        0
+    );
+
+    assert_eq!(
+        session.dispatch_command(Command::NextSourceAnnotation, None, None),
+        Redraw::Needed
+    );
+    assert_eq!(
+        middle - first_line(&session, window),
+        SOURCE_PRESENTATION_CONTEXT_ROWS
+    );
+    assert_eq!(session.cursor().line().get(), middle);
+
+    assert_eq!(
+        session.dispatch_command(Command::NextSourceAnnotation, None, None),
+        Redraw::Needed
+    );
+    assert_eq!(
+        first_line(&session, window),
+        LINES - rows,
+        "the file end clamps the reveal to the last full viewport"
+    );
+    assert!(
+        end - first_line(&session, window) > SOURCE_PRESENTATION_CONTEXT_ROWS,
+        "the clamp puts the annotation below the context rule"
+    );
+    assert_eq!(session.cursor().line().get(), end);
+    assert_eq!(
+        session.dispatch_command(Command::NextSourceAnnotation, None, None),
+        Redraw::Skipped,
+        "the last annotation refuses a next step"
+    );
+    assert_eq!(first_line(&session, window), LINES - rows);
+    assert_eq!(session.cursor().line().get(), end);
+
+    assert_eq!(
+        session.dispatch_command(Command::PreviousSourceAnnotation, None, None),
+        Redraw::Needed
+    );
+    assert_eq!(
+        middle - first_line(&session, window),
+        SOURCE_PRESENTATION_CONTEXT_ROWS
+    );
+    assert_eq!(session.cursor().line().get(), middle);
+    assert_eq!(
+        session.dispatch_command(Command::PreviousSourceAnnotation, None, None),
+        Redraw::Needed
+    );
+    assert_eq!(first_line(&session, window), 0);
+    assert_eq!(session.cursor().line().get(), start);
 }
 
 #[test]

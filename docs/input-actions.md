@@ -1546,6 +1546,23 @@ the adaptive split rule.
 See [`language-services.md`](language-services.md) for the behavior behind these
 commands.
 
+### Source Presentation
+
+| Keys | Command | Modes |
+|---|---|---|
+| `]a` | Move to the next source annotation | Normal |
+| `[a` | Move to the previous source annotation | Normal |
+
+An embedding host installs a source presentation, so a standalone editor holds
+none and both keys change nothing. Neither key wraps. The first annotation
+refuses a previous step and the last annotation refuses a next step. A step
+reveals its annotation through the placement rule of
+[`windows.md`](windows.md). The diagnostic motions stay separate, because a
+diagnostic comes from a language server and an annotation comes from the host.
+
+`Ctrl-]` carries no kvim binding in any scope. An embedding host reserves it as
+the escape that leaves the editor.
+
 ### Jump List
 
 | Keys | Command | Modes |
@@ -1564,4 +1581,5 @@ entry, `:<number>`, an accepted search query, `n`, `N`, `gg`, `G`, and `%`.
 Every other motion records nothing. The half-page and the full-page moves
 record nothing. A jump motion that serves as the target of a waiting operator
 records nothing either, because the motion serves one change. The diagnostic
-motions, `]d` and `[d`, record nothing as well.
+motions, `]d` and `[d`, record nothing as well. The source-annotation motions,
+`]a` and `[a`, record nothing either.

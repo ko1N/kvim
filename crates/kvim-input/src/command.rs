@@ -268,6 +268,8 @@ semantic_commands! {
     ShowDiagnosticFloat => ("show-diagnostic-float", "Show diagnostic"),
     NextDiagnostic => ("next-diagnostic", "Next diagnostic"),
     PreviousDiagnostic => ("previous-diagnostic", "Previous diagnostic"),
+    NextSourceAnnotation => ("next-source-annotation", "Next source annotation"),
+    PreviousSourceAnnotation => ("previous-source-annotation", "Previous source annotation"),
     ToggleFormatOnSave => ("toggle-format-on-save", "Toggle format-on-save"),
 }
 
@@ -483,6 +485,8 @@ impl Command {
             | Self::ShowDiagnosticFloat
             | Self::NextDiagnostic
             | Self::PreviousDiagnostic
+            | Self::NextSourceAnnotation
+            | Self::PreviousSourceAnnotation
             | Self::ToggleFormatOnSave => CommandAuthority::Read,
         }
     }
@@ -577,6 +581,8 @@ impl Command {
             | Self::ShowDiagnosticFloat
             | Self::NextDiagnostic
             | Self::PreviousDiagnostic
+            | Self::NextSourceAnnotation
+            | Self::PreviousSourceAnnotation
             | Self::ToggleFormatOnSave => CommandGroup::Code,
 
             Self::FocusWindowLeft

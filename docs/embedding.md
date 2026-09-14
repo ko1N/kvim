@@ -427,9 +427,12 @@ presentation. An edit of the target clears it. A reload keeps it only when every
 otherwise, the reload clears it rather than clamping a range.
 
 Kvim places the cursor at the first line of the selected range. It reserves one panel row from
-the focused source viewport when at least two body rows exist. If the complete range fits, Kvim
-positions the viewport so both endpoints remain visible. If it does not fit, Kvim shows the first
-range line at the deterministic cursor position. Kvim
+the focused source viewport when at least two body rows exist. It scrolls that viewport until the
+range starts three rows below its top, so the reader sees the code above the range. The end of the
+file clamps that offset. A range that fits the viewport gives up context rows to keep its last row
+visible. A range that is taller than the viewport keeps its context rows. `]a` and `[a` reach the
+same navigation from Normal mode, and no scope binds `Ctrl-]`. See
+[`input-actions.md`](input-actions.md). Kvim
 paints the range as source decoration with its own semantic theme role. This decoration changes
 no text, offsets, or line mapping and remains distinct from diagnostics. Kvim also paints a compact message and `current/total` panel in its reserved row. It owns the
 panel geometry, sheds the message before the counter in narrow areas, and omits the panel when

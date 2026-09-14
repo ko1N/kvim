@@ -75,9 +75,15 @@ moving the cursor. Returning to the exact path restores it if its ranges still f
 target clears it. A reload clears it when the new text makes a range invalid. Kvim never clamps a
 range to fit changed text.
 
-The focused window owns placement. Selection puts its cursor on the first line. When the range
-fits the source viewport, Kvim positions that viewport so both endpoints are visible. When the
-range exceeds it, the first line is the deterministic anchor. A compact panel uses one reserved
+The focused window owns placement. Selection puts its cursor on the first line and scrolls the
+source viewport until the range starts three rows below the top of that viewport. A range on the
+first visible row reads as if the file started there, so the three context rows show the code that
+the range belongs to. Three bounds move that offset. The end of the file clamps it, so a range
+near the end of the file starts higher in the viewport than the context rule asks. A range that
+fits the viewport keeps its last row visible and gives up context rows for it, because the
+complete range says more than the code above it. A range that is taller than the viewport keeps
+its context rows, because no offset makes its last row visible. Every offset keeps the first line
+of the range visible. A compact panel uses one reserved
 row when the window has at least two body rows. The panel shows the selected bounded message and a right-aligned `current/total`
 counter. The counter wins when width is limited. The message uses the remaining cells and is
 clipped at a character boundary. A zero-height or one-row text body paints no panel and keeps its

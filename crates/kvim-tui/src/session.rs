@@ -128,7 +128,9 @@ use super::review::{ReviewOutcome, ReviewSurface};
 use super::source_change_emphasis::{
     SourceChangeEmphasis, SourceChangeEmphasisRefusal, SourceChangeGeneration,
 };
-use super::source_presentation::{SourcePresentation, SourcePresentationRefusal, source_area};
+use super::source_presentation::{
+    SourcePresentation, SourcePresentationRefusal, source_area, source_viewport_first_row,
+};
 use super::theme::Theme;
 use super::tree::{
     GitPublication, TREE_NAME_BYTES_MAX, TREE_TITLE_ROWS, TreeMatchOutcome, TreeMotion,
@@ -2807,6 +2809,14 @@ impl Session {
         self.note_redraw(Redraw::Needed);
     }
 
+    /// Scrolls the focused window until the selected annotation reads well.
+    ///
+    /// The cursor moves to the first annotated line first, so the reconciled
+    /// viewport already holds the current source height. The reveal then scrolls
+    /// to the offset that [`source_viewport_first_row`] returns, which keeps
+    /// context rows above the range instead of leaving it on the last row. The
+    /// cursor returns to the first annotated line afterwards, because a scroll
+    /// keeps its own cursor inside the scroll margin. See `docs/windows.md`.
     fn reveal_source_selection(&mut self) {
         if !self.source_presentation_is_active() {
             return;
@@ -2817,19 +2827,45 @@ impl Session {
         }) else {
             return;
         };
+
+        self.place_cursor(first, 0);
+        self.reconcile_viewports(None);
+
         let window = self.windows.focused_window();
-        let rows = self
-            .windows
-            .state(window)
-            .map_or(1, |state| usize::from(state.viewport().height_rows().get()));
-        if last.saturating_sub(first).saturating_add(1) <= rows {
-            self.place_cursor(last, 0);
-            self.reconcile_viewports(None);
-            self.place_cursor(first, 0);
+        let Some(state) = self.windows.state(window) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return;
+        };
+        let viewport = state.viewport();
+        let rows = usize::from(viewport.height_rows().get());
+        let total_rows = self.buffer().line_count();
+        let target = source_viewport_first_row(first, last, total_rows, rows);
+        let current = viewport.first_line();
+
+        let Some(file) = self.buffers.get(self.active) else {
+            debug_assert!(false, "the session always keeps the active buffer loaded");
+            return;
+        };
+        let Some(state) = self.windows.state_mut(window) else {
+            debug_assert!(false, "the focused window is always a leaf of the tree");
+            return;
+        };
+        *state = if target >= current {
+            state.scrolled_down(
+                file.text(),
+                target - current,
+                ColumnLimit::LastCharacter,
+                &self.settings.display,
+            )
         } else {
-            self.place_cursor(first, 0);
-            self.reconcile_viewports(None);
-        }
+            state.scrolled_up(
+                file.text(),
+                current - target,
+                ColumnLimit::LastCharacter,
+                &self.settings.display,
+            )
+        };
+        self.place_cursor(first, 0);
     }
 
     /// Returns the active editor mode.
@@ -3940,6 +3976,18 @@ impl Session {
             }
             Command::PreviousDiagnostic => {
                 return self.jump_diagnostic(DiagnosticJump::Previous).or(cleared);
+            }
+            Command::NextSourceAnnotation => {
+                return self
+                    .next_source_annotation()
+                    .unwrap_or(Redraw::Skipped)
+                    .or(cleared);
+            }
+            Command::PreviousSourceAnnotation => {
+                return self
+                    .previous_source_annotation()
+                    .unwrap_or(Redraw::Skipped)
+                    .or(cleared);
             }
             // The jump list of the focused window. Both steps read the recorded
             // positions and start no request of their own.
