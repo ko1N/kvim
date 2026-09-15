@@ -64,6 +64,11 @@ fn pointer_wheel(direction: PointerWheelDirection) -> PointerWheel {
 fn can_merge_pointer(left: PointerEvent, right: PointerEvent) -> bool {
     match (left.action(), right.action()) {
         (PointerAction::Motion, PointerAction::Motion) => left.modifiers() == right.modifiers(),
+        // A drag reports the button it holds, and two buttons are two gestures.
+        // Merging across them would report a position under the wrong button.
+        (PointerAction::Drag(left_button), PointerAction::Drag(right_button)) => {
+            left.modifiers() == right.modifiers() && left_button == right_button
+        }
         (PointerAction::Wheel(left_wheel), PointerAction::Wheel(right_wheel)) => {
             left.modifiers() == right.modifiers()
                 && left_wheel.direction() == right_wheel.direction()
@@ -76,10 +81,13 @@ fn can_merge_pointer(left: PointerEvent, right: PointerEvent) -> bool {
 fn merge_pointer(left: &mut PointerEvent, right: PointerEvent) {
     debug_assert!(
         can_merge_pointer(*left, right),
-        "the event source merges only consecutive motions or equal wheel directions"
+        "the event source merges only consecutive motions, consecutive drags of one button, or equal wheel directions"
     );
     match (left.action(), right.action()) {
-        (PointerAction::Motion, PointerAction::Motion) => *left = right,
+        // A motion and a drag carry no accumulating quantity, so the newest
+        // position replaces the intermediate ones.
+        (PointerAction::Motion, PointerAction::Motion)
+        | (PointerAction::Drag(_), PointerAction::Drag(_)) => *left = right,
         (PointerAction::Wheel(left_wheel), PointerAction::Wheel(right_wheel)) => {
             let wheel = PointerWheel::new(
                 left_wheel.direction(),
@@ -239,14 +247,13 @@ where
     async fn coalesce_pointer(&mut self, mut pointer: PointerEvent) -> PointerEvent {
         let mut events_coalesced = 1;
         while events_coalesced < POINTER_EVENTS_COALESCE_MAX
-            && matches!(
-                pointer.action(),
-                PointerAction::Motion | PointerAction::Wheel(_)
-            )
             && match pointer.action() {
+                // A motion and a drag keep one position, so the loop counter is
+                // their only bound. Wheel ticks accumulate, so they stop at the
+                // tick count that `PointerWheel` still accepts.
+                PointerAction::Motion | PointerAction::Drag(_) => true,
                 PointerAction::Wheel(wheel) => wheel.ticks() < POINTER_EVENTS_COALESCE_MAX,
-                PointerAction::Motion => true,
-                _ => false,
+                PointerAction::Press(_) | PointerAction::Release(_) => false,
             }
         {
             // Poll with this task's waker. EventStream keeps one wake task active,
@@ -294,8 +301,10 @@ where
     /// native selection. An empty paste block or key release names no input
     /// and is skipped.
     ///
-    /// The function coalesces immediately-ready compatible motions or wheel
-    /// events. It retains the first incompatible event for the next call.
+    /// The function coalesces immediately-ready compatible motions, drags, or
+    /// wheel events. A press and a release bound a gesture, so neither merges
+    /// and neither merges across. It retains the first incompatible event for
+    /// the next call.
     ///
     /// The function skips up to [`UNMAPPED_EVENT_SKIP_MAX`] such events and
     /// then reports [`TerminalError::UnmappedEventBurst`]. The source stays

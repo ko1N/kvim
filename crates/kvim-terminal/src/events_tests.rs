@@ -296,6 +296,164 @@ async fn the_source_coalesces_compatible_motion_to_the_latest_position() {
 }
 
 #[tokio::test]
+async fn the_source_coalesces_compatible_drag_to_the_latest_position() {
+    let mut source = source(vec![
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            4,
+            2,
+            KeyModifiers::CONTROL,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            6,
+            3,
+            KeyModifiers::CONTROL,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            9,
+            5,
+            KeyModifiers::CONTROL,
+        ),
+    ]);
+
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(9, 5)
+                && event.modifiers() == PointerModifiers::new(true, false, false)
+                && event.action() == PointerAction::Drag(PointerButton::Left)
+    ));
+    assert!(source.next_event().await.is_none());
+}
+
+#[tokio::test]
+async fn the_source_keeps_a_drag_button_transition_pending() {
+    let mut source = source(vec![
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            4,
+            2,
+            KeyModifiers::NONE,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Right),
+            6,
+            3,
+            KeyModifiers::NONE,
+        ),
+    ]);
+
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(4, 2)
+                && event.action() == PointerAction::Drag(PointerButton::Left)
+    ));
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(6, 3)
+                && event.action() == PointerAction::Drag(PointerButton::Right)
+    ));
+}
+
+#[tokio::test]
+async fn the_source_keeps_a_drag_modifier_transition_pending() {
+    let mut source = source(vec![
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            4,
+            2,
+            KeyModifiers::NONE,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            6,
+            3,
+            KeyModifiers::CONTROL,
+        ),
+    ]);
+
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(4, 2)
+                && event.modifiers() == PointerModifiers::default()
+                && event.action() == PointerAction::Drag(PointerButton::Left)
+    ));
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(6, 3)
+                && event.modifiers() == PointerModifiers::new(true, false, false)
+                && event.action() == PointerAction::Drag(PointerButton::Left)
+    ));
+}
+
+// A press and a release carry the anchor that a selection is measured from, so
+// a drag must never merge across one.
+#[tokio::test]
+async fn the_source_stops_drag_coalescing_at_a_press_or_release() {
+    let mut source = source(vec![
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            4,
+            2,
+            KeyModifiers::NONE,
+        ),
+        mouse(
+            MouseEventKind::Up(MouseButton::Left),
+            4,
+            2,
+            KeyModifiers::NONE,
+        ),
+        mouse(
+            MouseEventKind::Down(MouseButton::Left),
+            4,
+            2,
+            KeyModifiers::NONE,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            6,
+            3,
+            KeyModifiers::NONE,
+        ),
+        mouse(
+            MouseEventKind::Drag(MouseButton::Left),
+            7,
+            4,
+            KeyModifiers::NONE,
+        ),
+    ]);
+
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(4, 2)
+                && event.action() == PointerAction::Drag(PointerButton::Left)
+    ));
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.action() == PointerAction::Release(PointerButton::Left)
+    ));
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.action() == PointerAction::Press(PointerButton::Left)
+    ));
+    assert!(matches!(
+        source.next_event().await,
+        Some(Ok(TerminalEvent::Pointer(event)))
+            if event.position() == CellPosition::new(7, 4)
+                && event.action() == PointerAction::Drag(PointerButton::Left)
+    ));
+}
+
+#[tokio::test]
 async fn the_source_keeps_a_motion_modifier_transition_pending() {
     let mut source = source(vec![
         mouse(MouseEventKind::Moved, 4, 2, KeyModifiers::NONE),

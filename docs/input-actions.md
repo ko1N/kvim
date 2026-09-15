@@ -50,9 +50,12 @@ and changes no focus. The drag then moves that border with the pointer.
 intersection, and the resize primitive.
 
 Drag capture owns one target. Release, resize, non-pointer input, lost target,
-or overlay ownership change cancels it. Pointer motion and wheel events coalesce
-only when they are consecutive and immediately ready. A returned event includes
-at most 32 raw events. The source retains one first nonmatching event, so it
+or overlay ownership change cancels it. Pointer motion, drag, and wheel events
+coalesce only when they are consecutive and immediately ready. Two drags merge
+only when they hold the same button, so one gesture never reports a position
+under another button. A press and a release bound a gesture and never merge, so
+a drag never merges across the anchor it is measured from. A returned event
+includes at most 32 raw events. The source retains one first nonmatching event, so it
 never changes event order.
 
 `MemoryEditor` and `WorktreeEditor` expose the same terminal-neutral text
