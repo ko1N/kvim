@@ -49,7 +49,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-settings` | The `EditorSettings` structure and its defaults. Depends on no other crate. |
 | `kvim-terminal` | Terminal lifecycle and conversion from crossterm events into terminal-neutral keys and pointer values owned by `kvim-keymap`. |
 | `kvim-tui` | Internal presentation implementation. It owns no terminal and no event loop. Its hidden adapter seam is not a supported host contract. |
-| `kvim-workspace` | Files, buffers, recovery records for dirty file-backed buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
+| `kvim-workspace` | Files, the bounded buffer collection and its aggregate modification predicate, recovery records for dirty file-backed buffers, tree state, Git capture, review data, workspace mutations, and pickers built on the domain-neutral selector of `kvim-ui`. It owns no host worktree list or focus policy. |
 | `kvim-embed` | The only supported high-level editor facade. It publishes the rendered `MemoryEditor`, optional `WorktreeEditor`, host-resolved binding composition, independent presentation and settled source-change emphasis ownership, semantic command/status/sidebar state, and standalone supplied or worktree-captured review. It owns facade lifecycle, outcomes, and bounded execution capacity. |
 | `kvim` | Raw mode, the alternate screen, standard input and output, terminal events, signals, panic restoration, cursor application, runtime startup, redraw scheduling, shutdown order, and the standalone application loop. |
 
@@ -237,6 +237,9 @@ Tokio, crossterm, notify, or cap-std. The in-memory editor reuses the lower
 modal state and viewport. Its small plain-text painter remains local because
 the full worktree renderer is structurally tied to worktree and language state.
 This avoids a reverse dependency and avoids duplicating that full renderer.
+The optional worktree facade can publish a boolean aggregate of loaded-buffer
+modification state. `kvim-workspace::Buffers` owns that bounded pure predicate;
+the facade forwards only the answer and exposes no buffer internals.
 
 `kvim-input` publishes `Command`, the semantic reducer, and the binding preset,
 so its action list is public. A consumer that resolves keys itself reads the

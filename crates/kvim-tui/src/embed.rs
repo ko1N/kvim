@@ -1360,6 +1360,13 @@ impl EmbeddedEditor {
         self.editor.status()
     }
 
+    /// Reports whether any loaded buffer has unsaved changes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_modified_buffer(&self) -> bool {
+        self.editor.has_modified_buffer()
+    }
+
     /// Executes one already parsed editor command line.
     #[doc(hidden)]
     #[must_use]

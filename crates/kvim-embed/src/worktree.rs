@@ -3645,6 +3645,15 @@ impl WorktreeEditor {
         ))
     }
 
+    /// Reports whether any active or inactive loaded buffer has unsaved changes.
+    ///
+    /// This query allocates nothing, performs no input or output, and exposes no
+    /// buffer path, content, identity, or private implementation value.
+    #[must_use]
+    pub fn has_modified_buffer(&self) -> bool {
+        self.inner().has_modified_buffer()
+    }
+
     /// Returns one cheap semantic status snapshot.
     ///
     /// Poll this after [`WorktreeUpdate::Redraw`] when the host owns statusline

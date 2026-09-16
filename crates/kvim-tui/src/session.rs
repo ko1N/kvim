@@ -2560,6 +2560,13 @@ impl Session {
         &self.buffers
     }
 
+    /// Reports whether any loaded buffer has unsaved changes.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn has_modified_buffer(&self) -> bool {
+        self.buffers.has_modified_buffer()
+    }
+
     /// Returns the identity of the active buffer.
     #[must_use]
     pub const fn active(&self) -> BufferId {

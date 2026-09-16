@@ -426,6 +426,12 @@ impl Buffers {
             .collect()
     }
 
+    /// Reports whether any loaded buffer has unsaved changes.
+    #[must_use]
+    pub fn has_modified_buffer(&self) -> bool {
+        self.entries.values().any(FileBuffer::is_modified)
+    }
+
     /// Returns every identity in ascending order.
     #[must_use]
     pub fn ids(&self) -> Vec<BufferId> {

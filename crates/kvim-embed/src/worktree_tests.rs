@@ -1886,6 +1886,60 @@ fn invalid_register_is_rejected_before_state_changes() {
     assert_eq!(editor.input_context(), before);
 }
 
+#[test]
+fn has_modified_buffer_reports_active_modified_buffer() {
+    let root = TestRoot::new("has-modified-buffer-active");
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+
+    assert!(!editor.has_modified_buffer());
+    editor
+        .command(Command::InsertBeforeCursor, None, None, Duration::ZERO)
+        .unwrap();
+    assert_eq!(
+        editor.literal("changed", Duration::ZERO),
+        WorktreeInputOutcome::Applied
+    );
+
+    assert!(editor.has_modified_buffer());
+}
+
+#[tokio::test]
+async fn has_modified_buffer_includes_inactive_modified_buffer() {
+    let root = TestRoot::new("has-modified-buffer-inactive");
+    fs::write(root.0.join("first.txt"), "first\n").unwrap();
+    fs::write(root.0.join("second.txt"), "second\n").unwrap();
+    let mut editor = WorktreeEditor::builder(&root.0, Rect::new(0, 0, 30, 6))
+        .open()
+        .unwrap();
+
+    editor.open_file(WorktreeRelativePath::new("first.txt").unwrap());
+    drive_until(&mut editor, |event| {
+        matches!(event, WorktreeEvent::ActiveFileChanged { path: Some(path) } if path.as_path() == Path::new("first.txt"))
+    })
+    .await;
+    editor
+        .command(Command::InsertBeforeCursor, None, None, Duration::ZERO)
+        .unwrap();
+    assert_eq!(
+        editor.literal("changed ", Duration::ZERO),
+        WorktreeInputOutcome::Applied
+    );
+    editor
+        .command(Command::ReturnToNormal, None, None, Duration::ZERO)
+        .unwrap();
+
+    editor.open_file(WorktreeRelativePath::new("second.txt").unwrap());
+    drive_until(&mut editor, |event| {
+        matches!(event, WorktreeEvent::ActiveFileChanged { path: Some(path) } if path.as_path() == Path::new("second.txt"))
+    })
+    .await;
+
+    assert!(!editor.status().is_modified());
+    assert!(editor.has_modified_buffer());
+}
+
 #[tokio::test]
 async fn worktree_lifecycle_opens_edits_renders_saves_and_shuts_down() {
     let root = TestRoot::new("lifecycle");

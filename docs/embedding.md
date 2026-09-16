@@ -12,7 +12,11 @@ host session, agent, tool, task, plan, or other host-domain concept.
 
 `kvim-embed` is the only supported high-level editor facade. Its default
 feature set publishes `MemoryEditor`. `WorktreeEditor` is an existing separate
-rendered editor behind the `worktree` Cargo feature. Host-resolved input,
+rendered editor behind the `worktree` Cargo feature. `WorktreeEditor::has_modified_buffer`
+reports whether any loaded buffer, active or inactive, has unsaved changes. The
+query is a pure borrowed predicate over the bounded buffer collection. It
+allocates nothing, performs no input or output, and publishes no path, text,
+buffer identity, or private implementation value. Host-resolved input,
 bounded binding publication, addressed cancellation, merged host registries,
 independent presentation ownership, semantic command/status/sidebar state, and
 standalone review are available through production facade APIs.
