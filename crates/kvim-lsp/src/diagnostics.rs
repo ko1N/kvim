@@ -1616,11 +1616,10 @@ impl DiagnosticsConversation {
                 if method == PUBLISH_METHOD {
                     if (matches!(target, Target::Push) || refresh_aware)
                         && let Some(outcome) = self.accept_publish(job, uri, mapping, &envelope)?
+                        && (!refresh_aware || !outcome.is_empty())
                     {
-                        if !refresh_aware || !outcome.is_empty() {
-                            self.refresh_ready = true;
-                            return Ok(Some(outcome));
-                        }
+                        self.refresh_ready = true;
+                        return Ok(Some(outcome));
                     }
                     continue;
                 }

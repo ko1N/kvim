@@ -255,9 +255,7 @@ pub(super) fn render_message(
         return result.ok();
     }
     target.set_style(area, base);
-    let Some(message) = message else {
-        return None;
-    };
+    let message = message?;
     // An ordinary report reads like buffer text, so only a warning and a
     // failure stand out on the message line.
     let style = match message.level {

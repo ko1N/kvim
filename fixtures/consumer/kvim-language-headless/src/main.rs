@@ -22,7 +22,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let server = selection.declarations()[0];
     assert_eq!(server.id().adapter(), "rust");
     assert_eq!(server.program(), "rust-analyzer");
-    assert_eq!(server.completion(), CompletionPolicy::Unsupported);
+    assert_eq!(server.completion(), CompletionPolicy::PullAfterRefresh);
     assert!(matches!(server.gate(), DiagnosticsMarkerGate::NoMarkersRequired));
     assert!(server.neutral_id().is_none());
     Ok(())
