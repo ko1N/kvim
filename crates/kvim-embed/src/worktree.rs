@@ -2836,7 +2836,7 @@ impl WorktreeEditor {
     ///
     /// # Errors
     ///
-    /// Returns [`FileSidebarOperationError::NotHostOwned`] unless the host owns
+    /// Returns [`FileSidebarOperationError::Embedded`] unless the host owns
     /// the file-sidebar presentation.
     pub fn file_sidebar_clipboard(
         &mut self,
