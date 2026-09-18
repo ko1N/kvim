@@ -80,6 +80,7 @@ mod review;
 mod session;
 #[cfg(feature = "editor")]
 mod source_change_emphasis;
+#[cfg(feature = "editor")]
 mod source_presentation;
 #[cfg(feature = "review")]
 mod theme;

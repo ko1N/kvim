@@ -18,6 +18,14 @@ name = "merged_leader"
 required-features = ["worktree"]
 
 [[example]]
+name = "source_change_emphasis"
+required-features = ["worktree"]
+
+[[example]]
+name = "source_presentation"
+required-features = ["worktree"]
+
+[[example]]
 name = "supplied_review"
 required-features = ["review"]
 

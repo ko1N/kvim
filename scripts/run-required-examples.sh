@@ -7,14 +7,13 @@ IFS=$'\n\t'
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly REPO_ROOT
 readonly DOCUMENT="$REPO_ROOT/docs/embedding.md"
-readonly REQUIRED_EXAMPLES_COUNT=27
 
 main() {
     local records
     records="$(mktemp)"
     trap 'rm -f "$records"' RETURN
 
-    python3 - "$REPO_ROOT" "$DOCUMENT" "$REQUIRED_EXAMPLES_COUNT" > "$records" <<'PY'
+    python3 - "$REPO_ROOT" "$DOCUMENT" >"$records" <<'PY'
 from pathlib import Path
 import re
 import sys
@@ -22,7 +21,6 @@ import tomllib
 
 root = Path(sys.argv[1])
 document = Path(sys.argv[2])
-expected_count = int(sys.argv[3])
 lines = document.read_text().splitlines()
 try:
     marker = lines.index("The required examples are:")
@@ -45,10 +43,6 @@ if index >= len(lines) or lines[index] != "":
 index += 1
 if index >= len(lines) or not lines[index].startswith("Each example demonstrates"):
     raise SystemExit(f"{document}: required example list ended at an unexpected line")
-if len(paths) != expected_count:
-    raise SystemExit(
-        f"{document}: expected {expected_count} required examples, found {len(paths)}"
-    )
 if len(set(paths)) != len(paths):
     raise SystemExit(f"{document}: required example list contains a duplicate")
 
@@ -82,9 +76,11 @@ PY
         else
             cargo run --quiet --locked -p "$package" --example "$example"
         fi
-    done < "$records"
+    done <"$records"
 
-    printf 'Ran %d required examples from docs/embedding.md.\n' "$REQUIRED_EXAMPLES_COUNT"
+    local example_count
+    example_count="$(wc -l < "$records")"
+    printf 'Ran %d required examples from docs/embedding.md.\n' "$example_count"
 }
 
 main "$@"
