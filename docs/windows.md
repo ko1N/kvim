@@ -1193,6 +1193,37 @@ snapshot is a value, so the buffer never changes while it is open and an edit of
 that buffer changes no entry. A log that holds no entry opens an empty buffer,
 because the editor reported nothing. See [`input-actions.md`](input-actions.md).
 
+## One-Line Input Fields
+
+`kvim_ui::LineInput` paints one caller-owned prefix and one edited text on a
+single row. The caller supplies semantic styles for the field, prefix, and
+text. The painter inserts no cursor glyph and applies no cursor style. It
+returns the ratatui `Position` where the host places the terminal cursor.
+
+The cursor argument is a byte offset because it connects directly to
+`kvim_input::EditedLine::cursor_offset()`. `LineInput` validates that the
+offset is inside the text and on a UTF-8 character boundary. It also rejects
+line breaks and content above its explicit character bounds. `kvim-ui` does
+not depend on `kvim-input`; the input model and generic presentation remain
+separate supported packages.
+
+A field wider than its row scrolls horizontally. It keeps the largest suffix
+before the cursor that leaves one cell for the terminal cursor. Scrolling
+starts only on a character boundary. A wide character is either completely
+visible or completely outside the viewport. The cursor therefore always
+stays inside the supplied row, including at the start and end of the text.
+
+The painter rejects an empty area, an area whose height is not one row, and an
+area outside the supplied buffer. It validates all content and geometry before
+it changes the buffer. Every error therefore leaves the buffer unchanged.
+`LINE_INPUT_PREFIX_CHARS_MAX` and `LINE_INPUT_TEXT_CHARS_MAX` bound validation
+and painting work.
+
+Kvim's message-line prompts and picker query use this primitive. They supply
+their prompt marker, `EditedLine` text, cursor offset, and theme roles. The
+frame uses the returned position as its real terminal cursor instead of
+painting a fake cursor cell.
+
 ## Theme
 
 Public `kvim-ui` widgets accept explicit ratatui styles and semantic roles. They
@@ -1268,7 +1299,7 @@ roles. A new role belongs here first, and its color stays in code.
 | Text | Buffer text on the editor background |
 | NonText | A glyph that stands for absent text |
 | EndOfBuffer | The marker on the rows below the last buffer line |
-| Cursor | The cell that marks the cursor of the prompt line |
+| Cursor | Optional reversed-cell decoration for a host that cannot place a terminal cursor |
 | Selection | A cell inside the Visual selection |
 | SearchMatch | A cell inside one search match |
 | CurrentSearchMatch | A cell inside the match that holds the cursor |
@@ -1305,10 +1336,11 @@ roles. A new role belongs here first, and its color stays in code.
 | Error, Warning, Info, Hint | One message severity |
 | Syntax(role) | One syntax role of a language adapter |
 
-The selection and the prompt cursor carry no color of their own. They decorate
-the style below them, so a later syntax color survives both. A file-tree icon
-carries a foreground color only, so a selected row keeps its background behind
-the glyph. The matching bracket carries a foreground color and the bold
+The selection and optional cursor decoration carry no color of their own. They
+decorate the style below them, so a later syntax color survives both. Kvim's
+own prompt uses the real terminal cursor returned by `LineInput` and applies no
+cursor decoration. A file-tree icon carries a foreground color only, so a
+selected row keeps its background behind the glyph. The matching bracket carries a foreground color and the bold
 modifier, so the selection band and the search band stay visible under it.
 
 ### Icon Roles

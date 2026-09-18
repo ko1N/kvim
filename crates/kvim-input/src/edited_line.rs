@@ -9,10 +9,10 @@
 //! this module implements.
 //!
 //! The position counts characters, because a character is the unit that a
-//! reader inserts and deletes. The terminal counts cells instead, so the caller
-//! converts the position once, where it draws the line and knows the width of
-//! every character. [`EditedLine::cursor_offset`] answers the byte offset that
-//! such a conversion starts from.
+//! reader inserts and deletes. The terminal counts cells instead. A ratatui
+//! host passes [`EditedLine::text`] and [`EditedLine::cursor_offset`] to
+//! `kvim_ui::LineInput`, so generic presentation owns that conversion without
+//! adding a reverse dependency from `kvim-input`.
 //!
 //! `examples/edited_line.rs` holds one complete line of a host.
 
@@ -203,8 +203,8 @@ impl EditedLine {
     ///
     /// The cursor counts characters, and every edit of this type keeps it
     /// inside the text, so the walk misses only at the end of the line. A
-    /// caller that draws the line measures the text before this offset in the
-    /// cells of its own terminal.
+    /// ratatui host passes this offset and [`Self::text`] to
+    /// `kvim_ui::LineInput`, which returns the terminal cursor position.
     #[must_use]
     pub fn cursor_offset(&self) -> usize {
         debug_assert!(

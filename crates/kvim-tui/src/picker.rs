@@ -35,13 +35,13 @@ use kvim_input::PromptKind;
 use kvim_language::HighlightSpan;
 use kvim_path::WorktreeRoot;
 use kvim_settings::FileTreeIcons;
+use kvim_ui::{LineInput, LineInputStyles};
 use kvim_workspace::{
     Acceptance, Candidate, CandidateTarget, Picker, PickerKind, PickerRequest, PickerResult,
     PickerSlot, Preview, PreviewKey,
 };
 
 use super::cells::text_cells;
-use super::chrome::prompt_cursor_x;
 use super::highlight::role_pieces;
 use super::icons::{ICON_CELLS, file_icon};
 use super::session::{PromptLine, Redraw};
@@ -822,10 +822,36 @@ fn render_prompt(
     if area.is_empty() {
         return None;
     }
+    let Some(prompt) = prompt else {
+        debug_assert!(false, "an open picker always holds the prompt of its query");
+        return None;
+    };
     let surface = theme.style(ThemeRole::Surface);
-    target.set_style(area, surface);
     let prefix = PromptKind::Picker.prefix();
     let query = state.picker().query();
+    debug_assert_eq!(
+        query,
+        prompt.line.text(),
+        "the picker query is the text of its open prompt"
+    );
+    let cursor = LineInput::render(
+        target,
+        area,
+        prefix,
+        prompt.line.text(),
+        prompt.line.cursor_offset(),
+        LineInputStyles {
+            field: surface,
+            prefix: theme.style(ThemeRole::Title),
+            text: surface,
+        },
+    );
+    debug_assert!(
+        cursor.is_ok(),
+        "picker prompt bounds and layout satisfy LineInput"
+    );
+    let cursor = cursor.ok()?;
+
     let shown_cells = text_cells(prefix).saturating_add(if query.is_empty() {
         text_cells(QUERY_PLACEHOLDER)
     } else {
@@ -834,32 +860,16 @@ fn render_prompt(
     if query.is_empty() {
         // A bare prefix reads as an empty row, so the placeholder names the
         // picker's search field the way the reference popup does.
-        let prefix_cells = u16::try_from(text_cells(prefix)).unwrap_or(area.width);
-        let placeholder_x = area.x.saturating_add(prefix_cells).min(area.right());
         target.set_stringn(
-            placeholder_x,
+            cursor.x,
             area.y,
             QUERY_PLACEHOLDER,
-            usize::from(area.right().saturating_sub(placeholder_x)),
+            usize::from(area.right().saturating_sub(cursor.x)),
             theme.style(ThemeRole::PickerMuted),
         );
-    } else {
-        let line = format!("{prefix}{query}");
-        target.set_stringn(area.x, area.y, &line, usize::from(area.width), surface);
     }
-    target.set_stringn(
-        area.x,
-        area.y,
-        prefix,
-        usize::from(area.width),
-        theme.style(ThemeRole::Title),
-    );
     render_counter(target, area, theme, state, shown_cells);
-    let Some(prompt) = prompt else {
-        debug_assert!(false, "an open picker always holds the prompt of its query");
-        return None;
-    };
-    Some(Position::new(prompt_cursor_x(area, prompt), area.y))
+    Some(cursor)
 }
 
 /// Renders the `matched / total` counter at the right edge of the query row.

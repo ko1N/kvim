@@ -185,7 +185,10 @@ pub enum ThemeRole {
     NonText,
     /// The marker on the rows below the last buffer line.
     EndOfBuffer,
-    /// The cell that holds the cursor.
+    /// An optional reversed-cell cursor decoration for a host surface.
+    ///
+    /// Kvim's own prompt uses the real terminal cursor returned by
+    /// `kvim_ui::LineInput` instead.
     Cursor,
     /// A cell inside the Visual selection.
     Selection,
@@ -381,8 +384,9 @@ impl Theme {
             // the marker takes the color of a glyph that stands for absent
             // text and stays readable without drawing the reader's eye.
             ThemeRole::EndOfBuffer => Style::new().fg(NON_TEXT).bg(self.base),
-            // The cursor inverts the cell below it, so it needs no color of its
-            // own and stays correct over text, a selection, and a match.
+            // The optional cursor decoration inverts the cell below it, so it
+            // needs no color of its own. Kvim's prompt uses a real terminal
+            // cursor instead.
             ThemeRole::Cursor => Style::new().add_modifier(Modifier::REVERSED),
             ThemeRole::Selection => Style::new().bg(SELECTION_BACKGROUND),
             ThemeRole::SearchMatch => Style::new().fg(TEXT).bg(SEARCH_BACKGROUND),

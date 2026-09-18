@@ -59,6 +59,10 @@
 //! body lines, caller-owned choices, and focus. It returns caller-owned choice
 //! identities and names no host action.
 //!
+//! [`LineInput`] paints one caller-owned prefix and edited text on one row. It
+//! scrolls on character boundaries to keep a validated byte cursor visible and
+//! returns the real terminal cursor position without inserting a cursor glyph.
+//!
 //! Every value is pure and deterministic. The crate reads no clock, no
 //! filesystem, and no terminal. One layout calculation converts the tree and
 //! the host rectangle into the exact rectangle of every visible region, so no
@@ -76,8 +80,9 @@
 //! sectioned tree with state markers and indent guides, `examples/selector.rs`
 //! narrows one host-owned list with one query, `examples/which_key.rs` derives
 //! overlay hints from one shared registry and renders them,
-//! `examples/composer.rs` drives opaque caller-owned surfaces, and
-//! `examples/chrome_band.rs` sheds the parts of one host-owned band:
+//! `examples/composer.rs` drives opaque caller-owned surfaces,
+//! `examples/chrome_band.rs` sheds the parts of one host-owned band, and
+//! `examples/line_input.rs` paints one edited line and returns its cursor:
 //!
 //! ```sh
 //! cargo run -p kvim-ui --example split_windows
@@ -86,6 +91,7 @@
 //! cargo run -p kvim-ui --example which_key
 //! cargo run -p kvim-ui --example composer
 //! cargo run -p kvim-ui --example chrome_band
+//! cargo run -p kvim-ui --example line_input
 //! ```
 //!
 //! ```
@@ -122,6 +128,7 @@ mod composer;
 mod dialog;
 mod guides;
 mod layout;
+mod line_input;
 mod list;
 mod pointer;
 mod selector;
@@ -152,6 +159,10 @@ pub use guides::{
     sidebar_guides,
 };
 pub use layout::{BorderId, BorderPlacement, Region, RegionKind, WindowLayout};
+pub use line_input::{
+    LINE_INPUT_PREFIX_CHARS_MAX, LINE_INPUT_TEXT_CHARS_MAX, LineInput, LineInputError,
+    LineInputStyles,
+};
 pub use list::{
     LIST_VIEWPORT_LINES_MAX, ListItem, ListMotion, ListPlacement, ListViewport, ListWindow,
 };

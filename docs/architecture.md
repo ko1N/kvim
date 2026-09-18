@@ -41,7 +41,7 @@ Keep the crate set below stable. Add a crate only when a new charter appears.
 | `kvim-fuzzy` | The deterministic fuzzy score of one candidate against one query, and the one rule that ranks a candidate list from those scores. Names no path, no buffer, and no editor concept. Depends on no other crate. |
 | `kvim-syntax` | Grammar selection, parser ownership, bounded highlighting, and stable theme-independent syntax classes. |
 | `kvim-lsp` | Language-neutral project sessions, validated process launch requests, injectable launch and lifecycle capabilities, protocol state, diagnostics, deadlines, cancellation, restart, and shutdown. |
-| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the one scroll and motion rule of every bounded list, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, bounded action-agnostic dialogs with deterministic layout, rendering, choice placements, and pointer hit-testing, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
+| `kvim-ui` | Generic ratatui split with its adaptive orientation rule, the one scroll and motion rule of every bounded list, the tree sidebar with its indent guide rule, the domain-neutral selector over `kvim-fuzzy`, the bounded one-line input painter, bounded action-agnostic dialogs with deterministic layout, rendering, choice placements, and pointer hit-testing, which-key presentation, and the host-workspace composer over `kvim-keymap`. |
 | `kvim-input` | Kvim commands, modes, prompts, the semantic reducer for counts, operators, registers, and text objects, and the standalone binding preset. Builds on `kvim-keymap`. |
 | `kvim-language` | Grammar-independent language service profiles and headless diagnostics composition, plus optional syntax and editor adapters, indentation, formatting, hover markup, and editor publication gates. The first-release service registry holds 25 profiles. [`language-services.md`](language-services.md) owns the table. |
 | `kvim-clipboard` | The system clipboard boundary. Runs the platform clipboard command through the bounded process service. Holds no register value. |
@@ -275,6 +275,16 @@ either without the file, buffer, and picker charter of `kvim-workspace`,
 which is not a supported package. `kvim-ui` publishes `Selector<R>` over that
 same rule, so a host that also wants the bounded query, candidate, match, and
 selection mechanics takes `kvim-ui` instead of calling `kvim-fuzzy` directly.
+
+`kvim-ui` also publishes `LineInput`, the presentation of one edited line.
+The caller supplies a prefix, text, a validated byte cursor, and semantic
+ratatui styles. The painter writes no cursor glyph. It returns the terminal
+`Position` where the host places its real cursor. Text that exceeds the row
+scrolls horizontally on character boundaries, so the cursor stays visible and
+a wide character is never cut. The API names no prompt kind and depends on no
+input crate. A host passes `EditedLine::text()` and
+`EditedLine::cursor_offset()` without creating a `kvim-ui` to `kvim-input`
+dependency. [`windows.md`](windows.md) owns the painting and geometry rule.
 
 `kvim-ui` also publishes the adaptive split rule. `WindowTree::adaptive_orientation`
 takes the sense of the command, `AdaptiveSplit`, and a caller-supplied ratio, and

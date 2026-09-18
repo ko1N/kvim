@@ -67,8 +67,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             view.focused_format_on_save(),
             StatuslineParts::Shown,
         );
-        render_message(target, bands.message, theme, view.prompt, view.message);
-        return None;
+        return render_message(target, bands.message, theme, view.prompt, view.message);
     }
 
     // A region is focused only while it holds the input focus, so a focused
@@ -264,7 +263,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
     } else {
         view.prompt
     };
-    render_message(
+    let mut message_cursor = render_message(
         target,
         internal_message_area,
         theme,
@@ -329,6 +328,7 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
         let _ = confirmation.render(target, bands.body, styles);
         cursor_at = None;
         sidebar_cursor = None;
+        message_cursor = None;
     }
     // The picker covers the complete terminal, so it renders last and owns the
     // one cursor cell that the frame reports. See `docs/files.md`.
@@ -344,7 +344,10 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             view.settings.windows.file_tree_icons,
         )
     });
-    picker_cursor.or(sidebar_cursor).or(cursor_at)
+    picker_cursor
+        .or(message_cursor)
+        .or(sidebar_cursor)
+        .or(cursor_at)
 }
 
 #[cfg(test)]

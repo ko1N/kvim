@@ -713,11 +713,12 @@ candidate list and a prompt belong to the host and never to one line.
 `EditedLine::delete_word_backward`, and `EditedLine::write` name the same edits
 directly, for a host that reads a key table of its own.
 
-`EditedLine::text` and `EditedLine::cursor` answer what a host draws.
-`EditedLine::cursor_offset` answers the byte offset of the cursor, so a host
-measures the text before it in the cells of its own terminal. The line counts
-characters and never cells, so the conversion stays where the host knows the
-width of a character.
+`EditedLine::text` and `EditedLine::cursor` answer what a host edits.
+`EditedLine::cursor_offset` answers the byte offset of the cursor. A ratatui
+host passes the text and that offset to `kvim_ui::LineInput`, which measures,
+clips, paints, and returns the terminal cursor position without a fake glyph.
+The line counts characters and never cells, so terminal geometry stays in
+`kvim-ui`.
 
 The host states the bound. `EditedLine::opened` and `EditedLine::opened_at`
 take the largest number of characters that the line accepts, and that bound
@@ -732,7 +733,9 @@ through the published rules. `crates/kvim-tui/src/session.rs` holds no second
 cursor arithmetic.
 
 [`input-actions.md`](input-actions.md) owns the rules and the bounds.
-`crates/kvim-input/examples/edited_line.rs` holds one complete line of a host.
+`crates/kvim-input/examples/edited_line.rs` holds one complete line model of a
+host. `crates/kvim-ui/examples/line_input.rs` paints that shape and returns its
+terminal cursor.
 
 ### The Candidate Menu
 
@@ -1146,6 +1149,7 @@ The required examples are:
 - `crates/kvim-embed/examples/worktree_review.rs`
 - `crates/kvim-ui/examples/composer.rs`
 - `crates/kvim-ui/examples/confirmation_dialog.rs`
+- `crates/kvim-ui/examples/line_input.rs`
 - `crates/kvim-ui/examples/selector.rs`
 - `crates/kvim-ui/examples/sidebar.rs`
 - `crates/kvim-ui/examples/split_windows.rs`

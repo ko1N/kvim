@@ -93,7 +93,6 @@ use kvim_workspace::{
 };
 
 use super::buffer_view::text_surface_geometry;
-use super::cells::text_cells;
 use super::changes::ChangeSection;
 use super::chrome::shell_areas;
 use super::clipboard::{ClipboardAccess, ClipboardStep, SessionClipboard, register_value};
@@ -1029,10 +1028,8 @@ const fn prompt_chars_max(kind: PromptKind) -> usize {
 pub(super) struct PromptLine {
     /// The prompt that reads the line.
     pub(super) kind: PromptKind,
-    /// The text of the line and the cursor that every edit applies at.
-    ///
-    /// The terminal counts cells and not characters, so the drawing converts
-    /// the cursor once. See [`Self::cursor_cells`].
+    /// The terminal counts cells, so the generic line-input painter converts
+    /// this line's byte cursor at the rendering boundary.
     pub(super) line: EditedLine,
     /// The open completion of the line, while one candidate is written.
     ///
@@ -1067,19 +1064,6 @@ impl PromptLine {
             self.completion = None;
         }
         change
-    }
-
-    /// Returns the cell column of the cursor inside the drawn line.
-    ///
-    /// The drawn line is the prefix of the prompt and then its text, so the
-    /// column is the width of that prefix plus the width of the text before the
-    /// cursor. The line counts characters and the terminal counts cells, so
-    /// this is the one place that converts, and a wide character before the
-    /// cursor moves the drawn cursor by two cells. The message line and the
-    /// query row of the picker both read it, so the two rows can never
-    /// disagree. See `docs/windows.md`.
-    pub(super) fn cursor_cells(&self) -> usize {
-        text_cells(self.kind.prefix()) + text_cells(&self.line.text()[..self.line.cursor_offset()])
     }
 
     /// Writes one completion candidate into the line.

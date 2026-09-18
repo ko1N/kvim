@@ -8,11 +8,11 @@
 //! does. See `docs/windows.md`.
 
 use ratatui::buffer::Buffer as CellBuffer;
-use ratatui::layout::Rect;
+use ratatui::layout::{Position, Rect};
 
 use kvim_editor::Cursor;
 use kvim_input::Mode;
-use kvim_ui::{BandRank, BandSegment, ChromeBand};
+use kvim_ui::{BandRank, BandSegment, ChromeBand, LineInput, LineInputStyles};
 
 use super::embed::EditorPresentation;
 use super::language::FormatOnSave;
@@ -230,27 +230,33 @@ pub(super) fn render_message(
     theme: Theme,
     prompt: Option<&PromptLine>,
     message: Option<&Message>,
-) {
+) -> Option<Position> {
     if area.is_empty() {
-        return;
+        return None;
     }
     let base = theme.style(ThemeRole::Text);
-    target.set_style(area, base);
     if let Some(prompt) = prompt {
-        let line = format!("{}{}", prompt.kind.prefix(), prompt.line.text());
-        target.set_stringn(area.x, area.y, &line, usize::from(area.width), base);
-        // The terminal cursor marks the cell of the focused window, so the
-        // prompt draws its own cursor at the character that its position names.
-        // The line owns the conversion from characters to cells, so a wide
-        // character before the cursor moves this cell by two. See
-        // `docs/windows.md`.
-        if let Some(cell) = target.cell_mut((prompt_cursor_x(area, prompt), area.y)) {
-            cell.set_style(base.patch(theme.style(ThemeRole::Cursor)));
-        }
-        return;
+        let result = LineInput::render(
+            target,
+            area,
+            prompt.kind.prefix(),
+            prompt.line.text(),
+            prompt.line.cursor_offset(),
+            LineInputStyles {
+                field: base,
+                prefix: base,
+                text: base,
+            },
+        );
+        debug_assert!(
+            result.is_ok(),
+            "session prompt bounds and shell geometry satisfy LineInput"
+        );
+        return result.ok();
     }
+    target.set_style(area, base);
     let Some(message) = message else {
-        return;
+        return None;
     };
     // An ordinary report reads like buffer text, so only a warning and a
     // failure stand out on the message line.
@@ -266,24 +272,7 @@ pub(super) fn render_message(
         usize::from(area.width),
         style,
     );
-}
-
-/// Returns the terminal column that the cursor of one prompt line occupies.
-///
-/// The row draws the prefix and the text of the prompt from its left edge, so
-/// the column is that edge plus the cell width that the line reports. A line
-/// that is wider than the row keeps its cursor on the last cell of the row,
-/// because no cell outside the row can carry it. The message line and the query
-/// row of the picker share this rule. See `docs/windows.md`.
-pub(super) fn prompt_cursor_x(area: Rect, prompt: &PromptLine) -> u16 {
-    debug_assert!(
-        !area.is_empty(),
-        "an empty row draws no prompt and no cursor"
-    );
-    let column = u16::try_from(prompt.cursor_cells()).unwrap_or(u16::MAX);
-    area.x
-        .saturating_add(column)
-        .min(area.right().saturating_sub(1))
+    None
 }
 
 #[cfg(test)]
