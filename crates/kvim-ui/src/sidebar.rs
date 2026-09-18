@@ -30,7 +30,7 @@ use crate::list::{ListItem, ListMotion, ListPlacement, ListViewport, ListWindow}
 /// result list, or a very long log from building an unbounded row list. It
 /// stays above the row count of a host that shows one entry and one notice for
 /// every entry of its own bounded model.
-pub const SIDEBAR_ROWS_MAX: usize = 32_768;
+pub const SIDEBAR_ROWS_MAX: usize = 65_536;
 
 /// The largest number of terminal rows that one sidebar row occupies.
 ///
