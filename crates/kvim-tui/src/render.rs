@@ -344,6 +344,15 @@ pub(super) fn draw(target: &mut CellBuffer, view: &Visible<'_>) -> Option<Positi
             view.settings.windows.file_tree_icons,
         )
     });
+    // The candidate list is decoration: it changes no cursor position. The
+    // prompt cursor would move the terminal cursor onto the command line, so
+    // the frame reports the buffer cursor while the list is open. See
+    // `docs/windows.md`.
+    let message_cursor = if completion.is_some() {
+        None
+    } else {
+        message_cursor
+    };
     picker_cursor
         .or(message_cursor)
         .or(sidebar_cursor)

@@ -132,7 +132,9 @@
 
             # The file tree reads the repository state through the `git`
             # command, so its tests need that command inside the build sandbox.
-            nativeCheckInputs = [ pkgs.git ];
+            # The LSP tests launch a real `rust-analyzer` child, so the check
+            # phase also needs the pinned server on `PATH`.
+            nativeCheckInputs = [ pkgs.git rustAnalyzer ];
 
             postFixup = ''
               wrapProgram "$out/bin/kvim" \
