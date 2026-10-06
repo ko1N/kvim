@@ -443,6 +443,18 @@ fn paused_job() -> (
 /// The value that one released job returns.
 const COMMITTED_VALUE: u32 = 7;
 
+/// The deadline that the committing-deadline test gives its job.
+///
+/// The runtime starts this deadline when it spawns the blocking closure, and an
+/// expired deadline aborts a closure that the blocking pool did not start yet.
+/// A loaded machine needs much more than one millisecond to start a blocking
+/// thread, so the deadline must leave room for that start to win the race.
+const COMMIT_DEADLINE: Duration = Duration::from_millis(250);
+
+/// The extra wait that proves the committing deadline expired before the test
+/// reads the event queue.
+const COMMIT_DEADLINE_MARGIN: Duration = Duration::from_millis(50);
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_committing_job_reports_the_value_that_it_committed() {
     let (runtime, mut events) = Runtime::<u32>::with_limits(RuntimeLimits::new(8, 2, 2).unwrap());
@@ -472,10 +484,14 @@ async fn a_committing_job_reports_its_result_after_the_deadline() {
     let (seam, job) = paused_job();
 
     runtime
-        .submit_committing_worker(request, Duration::from_millis(1), job)
+        .submit_committing_worker(request, COMMIT_DEADLINE, job)
         .unwrap();
-    seam.entered.recv().expect("the job entered its commit");
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    seam.entered
+        .recv()
+        .expect("the deadline leaves time to start the blocking closure");
+    // The entry report arrives after the submission, so one further deadline
+    // always passes the deadline that the submission started.
+    tokio::time::sleep(COMMIT_DEADLINE + COMMIT_DEADLINE_MARGIN).await;
     assert!(
         events.receiver.is_empty(),
         "the reserved slot publishes no timeout while durable work can finish"
