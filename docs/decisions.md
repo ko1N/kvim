@@ -21,6 +21,9 @@ Statuses: `Accepted`, `Rejected`, `Superseded`, `Deferred follow-up`.
   sidebar, because the sidebar owns `CloseWindow`. `Command::CloseBuffer` has
   no key.
 - Owning architecture section: [Files And Buffers](input-actions.md#files-and-buffers)
+- Amendment (2026-11-19, user): `Space x` copies `:bd`: it unloads the buffer,
+  closes the other windows that show it, and the focused window shows another
+  buffer. User: "can we copy these bindings exactly (also space x)?"
 
 **D-002 - A wheel event does not cancel a drag selection**
 - Status: Accepted

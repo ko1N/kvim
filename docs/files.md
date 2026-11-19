@@ -133,13 +133,16 @@ file held, and the file metadata that kvim observed at load time or at the last
 successful save. The save writes the recorded file end, so a file without a
 final line ending never receives one. See [`text-model.md`](text-model.md).
 
-Unloading a buffer removes it from the buffer list. Every window that shows the
-buffer must first move to another buffer. kvim stages that replacement buffer
-before the removal, and it creates one empty buffer when the list holds no other
-buffer. kvim refuses to unload a buffer that holds unsaved changes.
+Unloading a buffer removes it from the buffer list, as Neovim's `:bd` does. The
+focused window moves to another buffer. Every other window that shows the buffer
+closes. Windows that show other buffers, and sidebars, stay. kvim stages the
+replacement buffer before the removal, and it creates one empty buffer when the
+list holds no other buffer. kvim refuses to unload a buffer that holds unsaved
+changes.
 
-Closing a buffer performs the same removal. The two differ only in what the last
-loaded buffer does. The unload opens the scratch buffer and keeps the editor
+Closing a buffer performs the same removal, but every window that shows the
+buffer moves to the replacement and none closes. The two also differ in what the
+last loaded buffer does. The unload opens the scratch buffer and keeps the editor
 open. The close ends the editor instead, exactly as `:q` does, so kvim never
 holds a buffer list that a window cannot show. That last close runs through the
 window close, so the quit question owns the unsaved text and one path asks it.

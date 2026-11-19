@@ -72,8 +72,8 @@ use kvim_terminal::{
     PointerWheelDirection, TerminalEvent,
 };
 use kvim_ui::{
-    BorderId, Cell, Dialog, DialogChoice, DialogError, DialogKey, DialogKeyOutcome, DialogOutcome,
-    DialogPlacement, DialogPointerAction, DialogPointerButton, DialogPointerEvent,
+    BorderId, Cell, CloseOutcome, Dialog, DialogChoice, DialogError, DialogKey, DialogKeyOutcome,
+    DialogOutcome, DialogPlacement, DialogPointerAction, DialogPointerButton, DialogPointerEvent,
     DialogPointerOutcome, DialogStyles, Direction, HitTarget, LayoutChange, ListItem, ListViewport,
     Orientation, OverlayInput, PointerOverlay, RegionKind, SidebarSide, WindowId, contains_cell,
     hit_test,
@@ -437,14 +437,24 @@ enum UnsavedChanges {
 
 /// What the editor does when the removed buffer was the only loaded one.
 ///
-/// This is the single difference between closing a buffer and unloading one.
-/// Every other step of the removal is shared. See `docs/files.md`.
+/// With [`OtherWindows`], this is the whole difference between closing a buffer
+/// and unloading one. Every other step of the removal is shared. See
+/// `docs/files.md`.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum LastBuffer {
     /// Open the scratch buffer and keep the editor open, like `<leader>x`.
     OpenScratch,
     /// End the editor, like Neovim's `:q`.
     CloseEditor,
+}
+
+/// What happens to the unfocused windows that show the removed buffer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OtherWindows {
+    /// Close each of them, like Neovim's `:bd`.
+    Close,
+    /// Show the replacement buffer in each of them.
+    Follow,
 }
 
 impl LastBuffer {
@@ -8896,8 +8906,9 @@ impl Session {
         // the written file no longer holds the buffer text. The close does not
         // run then, because it could discard the text that the save missed.
         match (then, applied) {
-            (AfterSave::Stay, _)
-            | (AfterSave::CloseWindow, SaveApplyOutcome::Stale) => Redraw::Needed,
+            (AfterSave::Stay, _) | (AfterSave::CloseWindow, SaveApplyOutcome::Stale) => {
+                Redraw::Needed
+            }
             (AfterSave::CloseWindow, SaveApplyOutcome::Current) => self
                 .close_window(UnsavedChanges::Discard)
                 .or(Redraw::Needed),
@@ -8948,16 +8959,17 @@ impl Session {
         self.close_window(UnsavedChanges::Discard)
     }
 
-    /// Removes the active buffer from the buffer list and opens the scratch
-    /// buffer after the last one.
+    /// Removes the active buffer from the buffer list, closes the other windows
+    /// that show it, and opens the scratch buffer after the last one, as
+    /// Neovim's `:bd` does.
     fn unload_active(&mut self) -> Redraw {
-        self.remove_active_buffer(LastBuffer::OpenScratch)
+        self.remove_active_buffer(LastBuffer::OpenScratch, OtherWindows::Close)
     }
 
     /// Removes the active buffer from the buffer list and ends the editor after
     /// the last one, as Neovim's `:q` does.
     fn close_active(&mut self) -> Redraw {
-        self.remove_active_buffer(LastBuffer::CloseEditor)
+        self.remove_active_buffer(LastBuffer::CloseEditor, OtherWindows::Follow)
     }
 
     /// Removes the active buffer from the buffer list.
@@ -8970,7 +8982,10 @@ impl Session {
     /// buffer of [`LastBuffer::CloseEditor`]: that removal ends the editor, so
     /// the quit question of [`Session::close_window`] owns the unsaved text and
     /// asks before anything is lost.
-    fn remove_active_buffer(&mut self, last: LastBuffer) -> Redraw {
+    ///
+    /// `others` names what happens to the unfocused windows that show the
+    /// removed buffer. The focused window always shows the replacement.
+    fn remove_active_buffer(&mut self, last: LastBuffer, others: OtherWindows) -> Redraw {
         let id = self.active;
         // Stage the replacement before the removal, so no window ever points at
         // a buffer that the list no longer holds.
@@ -9007,13 +9022,27 @@ impl Session {
         if let Some(request) = closed {
             self.queue_language(request);
         }
+        let focused_region = self.windows.focused_region();
+        let focused = self.windows.focused_window();
         for window in self.windows.window_ids() {
-            if self.windows.buffer(window) == Some(id) {
-                self.windows.set_buffer(window, next);
-                // The window shows other text now, so its view restarts.
-                self.restart_window_view(window);
+            if self.windows.buffer(window) != Some(id) {
+                continue;
             }
+            if others == OtherWindows::Close && window != focused {
+                // The close reuses the focused-window close, so the layout,
+                // the views, and the focus rule stay in one place. The
+                // focused window stays in the tree, so no close ends it.
+                self.windows.focus_region(window);
+                let outcome = self.windows.close_focused();
+                debug_assert!(matches!(outcome, CloseOutcome::Closed(_)));
+                continue;
+            }
+            self.windows.set_buffer(window, next);
+            // The window shows other text now, so its view restarts.
+            self.restart_window_view(window);
         }
+        // The closes moved the focus, so the window that held it takes it back.
+        self.windows.focus_region(focused_region);
         let redraw = self.switch_to(next);
         self.set_message(last.note(), MessageLevel::Info);
         redraw.or(Redraw::Needed)

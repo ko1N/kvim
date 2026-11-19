@@ -212,9 +212,11 @@ semantic_commands! {
     SaveAllBuffers => ("save-all-buffers", "Save all buffers"),
     RevealInFileTree => ("reveal-in-file-tree", "Reveal file in tree"),
     OpenBufferPicker => ("open-buffer-picker", "Open buffer picker"),
-    // `CloseBuffer` and `UnloadBuffer` differ only in what the last loaded
-    // buffer does. `CloseBuffer` closes the editor, as Neovim's `:q` does.
-    // `UnloadBuffer` opens the scratch buffer and keeps the editor open.
+    // `CloseBuffer` and `UnloadBuffer` differ in two ways. `CloseBuffer` keeps
+    // every window that shows the buffer and moves it to another buffer;
+    // `UnloadBuffer` closes the other windows, as Neovim's `:bd` does. On the
+    // last loaded buffer, `CloseBuffer` closes the editor, as Neovim's `:q`
+    // does, and `UnloadBuffer` opens the scratch buffer and keeps it open.
     // No key binds `CloseBuffer` in the first release. `Space q`, `Ctrl-Q`, and
     // `Space wq` close the focused window instead (D-001).
     CloseBuffer => ("close-buffer", "Close buffer"),

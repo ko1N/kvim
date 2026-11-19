@@ -5329,8 +5329,42 @@ fn space_x_unloads_a_clean_buffer_and_refuses_a_dirty_buffer() {
     assert_eq!(
         session.windows().buffer(session.windows().focused_window()),
         Some(session.active()),
-        "every window follows the unload"
+        "the window follows the unload"
     );
+}
+
+#[test]
+fn space_x_closes_the_other_windows_that_show_the_buffer() {
+    let directory = TempDir::new("session-unload-splits");
+    let path = directory.write("first.rs", "one\n");
+    directory.write("second.rs", "two\n");
+    let mut session = file_session(&directory.path);
+    // The startup open replaces the construction scratch, so the second
+    // buffer is the only one that can take over.
+    let _ = session.open_initial(WorktreeRelativePath::new("second.rs").unwrap());
+    run_file_request(&mut session);
+    let second = session.active();
+    let first = open_file(&mut session, path);
+    assert_eq!(session.buffers().len(), 2);
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    assert_eq!(session.windows().window_count(), 2);
+    assert_eq!(session.active(), first);
+
+    type_keys(&mut session, " x");
+
+    assert!(session.buffers().get(first).is_none(), "the buffer is gone");
+    assert_eq!(
+        session.windows().window_count(),
+        1,
+        "the other split closed"
+    );
+    assert_eq!(session.active(), second);
+    assert_eq!(
+        session.windows().buffer(session.windows().focused_window()),
+        Some(second),
+        "the remaining window shows the second buffer"
+    );
+    assert_eq!(session.run_state(), RunState::Running);
 }
 
 /// Opens one file into the session and returns the buffer that holds it.
