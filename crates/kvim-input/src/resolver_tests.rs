@@ -465,7 +465,7 @@ fn the_which_key_overlay_appears_after_the_delay_and_lists_next_keys() {
             ("g".to_owned(), "Show worktree changes".to_owned()),
             ("k".to_owned(), "Show hover".to_owned()),
             ("o".to_owned(), "Open buffer picker".to_owned()),
-            ("q".to_owned(), "Close buffer".to_owned()),
+            ("q".to_owned(), "Close window".to_owned()),
             ("w".to_owned(), "+3 commands".to_owned()),
             ("x".to_owned(), "Unload buffer".to_owned()),
             ("↵".to_owned(), "Split window".to_owned()),

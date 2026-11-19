@@ -416,7 +416,7 @@ fn a_group_row_carries_the_group_that_every_command_behind_it_shares() {
     // keeps that one group.
     assert_eq!(group_of("f"), Some(CommandGroup::Buffer));
     assert_eq!(group_of("c"), Some(CommandGroup::Code));
-    assert_eq!(group_of("q"), Some(CommandGroup::Buffer));
+    assert_eq!(group_of("q"), Some(CommandGroup::Window));
 }
 
 #[test]
