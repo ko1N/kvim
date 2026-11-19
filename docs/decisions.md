@@ -24,6 +24,9 @@ Statuses: `Accepted`, `Rejected`, `Superseded`, `Deferred follow-up`.
 - Amendment (2026-11-19, user): `Space x` copies `:bd`: it unloads the buffer,
   closes the other windows that show it, and the focused window shows another
   buffer. User: "can we copy these bindings exactly (also space x)?"
+- Amendment (2026-11-19, user): After `Space x`, the window shows the most
+  recently used other buffer, as Neovim's `:bd` shows the alternate buffer. User
+  chose "Match Neovim" when asked.
 
 **D-002 - A wheel event does not cancel a drag selection**
 - Status: Accepted

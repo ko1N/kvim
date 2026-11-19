@@ -73,6 +73,8 @@ mod picker;
 #[cfg(feature = "editor")]
 mod pointer;
 #[cfg(feature = "editor")]
+mod recent_buffers;
+#[cfg(feature = "editor")]
 mod render;
 #[cfg(feature = "review")]
 mod review;

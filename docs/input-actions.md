@@ -1355,7 +1355,7 @@ buffer stays loaded, so another window that shows it keeps showing it. The
 close of the last window ends the editor. That close asks first when the buffer
 holds unsaved changes. `Space x` unloads the active buffer instead, as `:bd` does.
 The unload closes the other windows that show the buffer. The focused window
-shows another buffer. The unload refuses a buffer that holds unsaved changes. After the last loaded buffer, it opens the scratch buffer and keeps the
+shows the previously used buffer. The unload refuses a buffer that holds unsaved changes. After the last loaded buffer, it opens the scratch buffer and keeps the
 editor open. See [`files.md`](files.md).
 
 In the file-tree sidebar, `Space q` and `Ctrl-Q` hide the sidebar. They do not

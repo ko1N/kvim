@@ -134,10 +134,13 @@ successful save. The save writes the recorded file end, so a file without a
 final line ending never receives one. See [`text-model.md`](text-model.md).
 
 Unloading a buffer removes it from the buffer list, as Neovim's `:bd` does. The
-focused window moves to another buffer. Every other window that shows the buffer
-closes. Windows that show other buffers, and sidebars, stay. kvim stages the
-replacement buffer before the removal, and it creates one empty buffer when the
-list holds no other buffer. kvim refuses to unload a buffer that holds unsaved
+focused window moves to the previously used buffer, as `:bd` shows the alternate
+buffer. The session keeps one use order of its loaded buffers. The replacement is
+the most recently used other buffer, or the lowest-identity other buffer when the
+order holds none. Every other window that shows the buffer closes. Windows that
+show other buffers, and sidebars, stay. kvim stages the replacement buffer before
+the removal, and it creates one empty buffer when the list holds no other buffer
+(D-001). The buffer close uses the same replacement. kvim refuses to unload a buffer that holds unsaved
 changes.
 
 Closing a buffer performs the same removal, but every window that shows the

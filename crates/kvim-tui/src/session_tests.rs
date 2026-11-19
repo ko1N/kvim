@@ -5367,6 +5367,34 @@ fn space_x_closes_the_other_windows_that_show_the_buffer() {
     assert_eq!(session.run_state(), RunState::Running);
 }
 
+#[test]
+fn space_x_shows_the_most_recently_used_buffer_and_skips_unloaded_ones() {
+    let directory = TempDir::new("session-unload-recent");
+    let first_path = directory.write("a.rs", "a\n");
+    let second_path = directory.write("b.rs", "b\n");
+    let third_path = directory.write("c.rs", "c\n");
+    let mut session = file_session(&directory.path);
+    // The construction scratch stays loaded with the lowest identity, so the
+    // old lowest-identity rule would pick it.
+    let a = open_file(&mut session, first_path);
+    let b = open_file(&mut session, second_path);
+    let c = open_file(&mut session, third_path);
+    let _ = session.switch_to(a);
+    let _ = session.switch_to(c);
+    let _ = session.switch_to(b);
+
+    type_keys(&mut session, " x");
+    assert_eq!(session.active(), c, "the previously used buffer follows");
+
+    // The buffer before `c` was `b`, which is gone, so `a` follows now.
+    type_keys(&mut session, " x");
+    assert_eq!(session.active(), a, "an unloaded buffer is skipped");
+    assert_eq!(
+        session.windows().buffer(session.windows().focused_window()),
+        Some(a)
+    );
+}
+
 /// Opens one file into the session and returns the buffer that holds it.
 fn open_file(session: &mut Session, path: PathBuf) -> BufferId {
     session.open_path(path);

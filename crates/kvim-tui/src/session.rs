@@ -123,6 +123,7 @@ use super::notify::NotificationBoard;
 use super::overlay::WhichKeyView;
 use super::picker::{PickerFailure, PickerState, RIPGREP_MISSING_NOTE, picker_areas};
 use super::pointer::source_at_cell;
+use super::recent_buffers::RecentBuffers;
 use super::review::{ReviewOutcome, ReviewSurface};
 use super::source_change_emphasis::{
     SourceChangeEmphasis, SourceChangeEmphasisRefusal, SourceChangeGeneration,
@@ -1631,6 +1632,10 @@ pub struct Session {
     highlighter: Arc<Mutex<SyntaxHighlighter>>,
     buffers: Buffers,
     active: BufferId,
+    /// The loaded buffers in use order, which picks the buffer that follows an
+    /// unload (D-001). Its size is bounded by the buffer list itself
+    /// (`BUFFERS_MAX`), a structural bound and not a tunable limit.
+    recent: RecentBuffers,
     /// The file operation that waits for the bounded worker service.
     file_outbox: Option<FileRequest>,
     /// The file operation that the editor waits for.
@@ -1851,6 +1856,11 @@ impl Session {
             highlighter: Arc::new(Mutex::new(SyntaxHighlighter::new())),
             buffers,
             active,
+            recent: {
+                let mut recent = RecentBuffers::default();
+                recent.touch(active);
+                recent
+            },
             file_outbox: None,
             file_pending: None,
             save_all: None,
@@ -4098,6 +4108,8 @@ impl Session {
             return;
         }
         self.active = buffer;
+        self.recent.touch(buffer);
+        self.debug_assert_recent_loaded();
         self.source_change_emphasis = None;
         self.source_change_generation.invalidate();
         let path = self
@@ -8350,6 +8362,7 @@ impl Session {
             removed.is_some(),
             "the unchanged scratch was present when removal started"
         );
+        self.recent.forget(scratch);
         self.language.forget(scratch);
         self.analysis.remove(&scratch);
         self.reconcile_viewports(None);
@@ -8989,7 +9002,13 @@ impl Session {
         let id = self.active;
         // Stage the replacement before the removal, so no window ever points at
         // a buffer that the list no longer holds.
-        let other = self.buffers.ids().into_iter().find(|other| *other != id);
+        // The previously used buffer follows, as Neovim's `:bd` shows the
+        // alternate buffer. The lowest identity is the fallback for a buffer
+        // that the order does not hold.
+        let other = self
+            .recent
+            .most_recent_other(id)
+            .or_else(|| self.buffers.ids().into_iter().find(|other| *other != id));
         if other.is_none() && last == LastBuffer::CloseEditor {
             return self.close_window(UnsavedChanges::Ask);
         }
@@ -9017,6 +9036,7 @@ impl Session {
         self.clear_pending_recovery(id);
         self.suppress_recovery_checkpoint(id);
         self.buffers.remove(id);
+        self.recent.forget(id);
         self.language.forget(id);
         self.analysis.remove(&id);
         if let Some(request) = closed {
@@ -9075,6 +9095,14 @@ impl Session {
         self.follow_focused_window();
         self.reconcile_viewports(None);
         Redraw::Needed
+    }
+
+    /// Checks that the use order names only loaded buffers.
+    fn debug_assert_recent_loaded(&self) {
+        debug_assert!(
+            self.recent.ids().all(|id| self.buffers.get(id).is_some()),
+            "the session forgets a buffer in the use order when it leaves the list"
+        );
     }
 
     /// Restarts the view of one window at the top of the buffer that it shows.
