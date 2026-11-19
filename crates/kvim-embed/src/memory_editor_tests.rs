@@ -243,7 +243,7 @@ fn a_wheel_during_a_drag_scrolls_and_keeps_the_selection_updating() {
     let wheel = PointerAction::Wheel(PointerWheel::new(PointerWheelDirection::Down, 1).unwrap());
 
     editor.pointer(pointer(4, 2, PointerAction::Press(PointerButton::Left)));
-    editor.pointer(pointer(6, 2, wheel.clone()));
+    editor.pointer(pointer(6, 2, wheel));
     assert!(editor.window.first_line() > 0, "the wheel scrolls");
     editor.pointer(pointer(99, 99, wheel));
     assert_ne!(editor.pointer_drag, PointerDragState::Idle);
