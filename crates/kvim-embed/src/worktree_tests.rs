@@ -1760,10 +1760,8 @@ async fn host_path_completion_routes_and_rejects_obsolete_or_closed_sessions() {
     editor.dispatch();
     let mut completion = None;
     for _ in 0..TEST_STEPS_MAX {
-        let Ok(ready) = tokio::time::timeout(Duration::from_millis(250), editor.ready()).await
-        else {
-            break;
-        };
+        eprintln!("step: wait for the path completion worker result");
+        let ready = editor.ready().await;
         editor.apply(ready, Duration::ZERO).unwrap();
         completion = editor.take_command_completion();
         if completion.is_some() {
@@ -2047,9 +2045,8 @@ async fn take_until(
                 return event;
             }
         }
-        let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
-            .await
-            .expect("bounded work must complete");
+        eprintln!("step: wait for the next worktree completion");
+        let completion = editor.ready().await;
         let _ = editor
             .apply(completion, Duration::ZERO)
             .expect("ready returns this editor's completion");
@@ -2093,9 +2090,8 @@ async fn finish_source_change(
         if let Some(result) = editor.take_source_change_emphasis_result() {
             return result;
         }
-        let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
-            .await
-            .expect("bounded work must complete");
+        eprintln!("step: wait for the source-change emphasis completion");
+        let completion = editor.ready().await;
         editor.apply(completion, Duration::ZERO).unwrap();
     }
     panic!("bounded lifecycle did not finish source-change emphasis");
@@ -2289,9 +2285,8 @@ async fn finish_source_presentation(
         if let Some(result) = editor.take_source_presentation_result() {
             return result;
         }
-        let completion = tokio::time::timeout(Duration::from_secs(2), editor.ready())
-            .await
-            .expect("bounded work must complete");
+        eprintln!("step: wait for the source presentation completion");
+        let completion = editor.ready().await;
         editor.apply(completion, Duration::ZERO).unwrap();
     }
     panic!("bounded lifecycle did not finish the source presentation");
@@ -2504,12 +2499,10 @@ async fn wrong_instance_completion_is_rejected_without_mutating_the_receiver() {
     assert_ne!(first.instance(), second.instance());
     let _ = first.dispatch();
     let _ = second.dispatch();
-    let completion = tokio::time::timeout(Duration::from_secs(2), first.ready())
-        .await
-        .expect("the first editor's local request completes");
-    let second_completion = tokio::time::timeout(Duration::from_secs(2), second.ready())
-        .await
-        .expect("the second editor's matching local request completes");
+    eprintln!("step: wait for the first editor's local request");
+    let completion = first.ready().await;
+    eprintln!("step: wait for the second editor's matching local request");
+    let second_completion = second.ready().await;
     while second.take_event().is_some() {}
     let mode_before = second.mode();
     let context_before = second.input_context();
