@@ -301,10 +301,8 @@ pub enum LanguageRequestKind {
 pub(super) enum AfterSave {
     /// Keep the window open.
     Stay,
-    /// Close the focused window, like `:wq`.
+    /// Close the focused window, like `:wq` and `<leader>w q`.
     CloseWindow,
-    /// Close the saved buffer, like `<leader>w q`.
-    CloseBuffer,
 }
 
 /// Why the editor asked one question.

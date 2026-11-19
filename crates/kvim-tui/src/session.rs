@@ -443,7 +443,7 @@ enum UnsavedChanges {
 enum LastBuffer {
     /// Open the scratch buffer and keep the editor open, like `<leader>x`.
     OpenScratch,
-    /// End the editor, like Neovim's `:q` and like `<leader>q`.
+    /// End the editor, like Neovim's `:q`.
     CloseEditor,
 }
 
@@ -3081,9 +3081,9 @@ impl Session {
             | TerminalEvent::Paste(_)
             | TerminalEvent::Resize { .. }
             | TerminalEvent::Unsupported => true,
-            TerminalEvent::Pointer(pointer) => {
-                matches!(pointer.action(), PointerAction::Wheel(_))
-            }
+            // A wheel scrolls the window and keeps the drag; the anchor is a
+            // character position, so it survives the scroll.
+            TerminalEvent::Pointer(_) => false,
         };
         if cancels_drag {
             self.pointer_drag = PointerDragState::Idle;
@@ -3928,7 +3928,7 @@ impl Session {
             // and the buffer list, so both entry points behave alike.
             Command::SaveBuffer => return self.save_active(AfterSave::Stay).or(cleared),
             Command::SaveBufferAndClose => {
-                return self.save_active(AfterSave::CloseBuffer).or(cleared);
+                return self.save_active(AfterSave::CloseWindow).or(cleared);
             }
             Command::SaveAllBuffers => return self.save_all_buffers().or(cleared),
             Command::UnloadBuffer => return self.unload_active().or(cleared),
@@ -8893,19 +8893,14 @@ impl Session {
             return self.advance_save_all();
         }
         // A stale apply means the buffer changed again while the save ran, so
-        // the written file no longer holds the buffer text. Neither close runs
-        // then, because both would discard the text that the save missed.
+        // the written file no longer holds the buffer text. The close does not
+        // run then, because it could discard the text that the save missed.
         match (then, applied) {
             (AfterSave::Stay, _)
-            | (AfterSave::CloseWindow | AfterSave::CloseBuffer, SaveApplyOutcome::Stale) => {
-                Redraw::Needed
-            }
+            | (AfterSave::CloseWindow, SaveApplyOutcome::Stale) => Redraw::Needed,
             (AfterSave::CloseWindow, SaveApplyOutcome::Current) => self
                 .close_window(UnsavedChanges::Discard)
                 .or(Redraw::Needed),
-            (AfterSave::CloseBuffer, SaveApplyOutcome::Current) => {
-                self.close_active().or(Redraw::Needed)
-            }
         }
     }
 

@@ -144,7 +144,12 @@ open. The close ends the editor instead, exactly as `:q` does, so kvim never
 holds a buffer list that a window cannot show. That last close runs through the
 window close, so the quit question owns the unsaved text and one path asks it.
 Every other close refuses a buffer that holds unsaved changes, as the unload
-does. [`input-actions.md`](input-actions.md) owns the keys.
+does. No key binds the plain buffer close.
+
+`Space q`, `Ctrl-Q`, and `:q` close the focused window and not the buffer. The
+buffer stays loaded, and every other window keeps showing it. Only the close of
+the last window ends the editor. [`input-actions.md`](input-actions.md) owns the
+keys.
 
 The buffer list holds at most 128 buffers. A running editor always keeps one
 loaded buffer, so a window always shows text.

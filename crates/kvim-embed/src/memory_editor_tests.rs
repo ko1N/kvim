@@ -238,6 +238,27 @@ fn pointer_click_wheel_and_drag_use_surface_cells() {
 }
 
 #[test]
+fn a_wheel_during_a_drag_scrolls_and_keeps_the_selection_updating() {
+    let mut editor = no_number_editor("zero\none\ntwo\nthree\nfour\n", Rect::new(4, 2, 8, 2));
+    let wheel = PointerAction::Wheel(PointerWheel::new(PointerWheelDirection::Down, 1).unwrap());
+
+    editor.pointer(pointer(4, 2, PointerAction::Press(PointerButton::Left)));
+    editor.pointer(pointer(6, 2, wheel.clone()));
+    assert!(editor.window.first_line() > 0, "the wheel scrolls");
+    editor.pointer(pointer(99, 99, wheel));
+    assert_ne!(editor.pointer_drag, PointerDragState::Idle);
+
+    editor.pointer(pointer(7, 3, PointerAction::Drag(PointerButton::Left)));
+    assert_eq!(editor.mode(), Mode::Visual);
+    assert!(
+        editor
+            .editing
+            .selection(&editor.buffer, &editor.window)
+            .is_some()
+    );
+}
+
+#[test]
 fn memory_scrollbar_draws_proportional_glyphs_and_is_pointer_inert() {
     let mut editor = no_number_editor("zero\none\ntwo\nthree\nfour\nfive\n", Rect::new(0, 0, 6, 3));
     let mut cells = Buffer::empty(Rect::new(0, 0, 6, 3));
@@ -421,14 +442,6 @@ fn drag_capture_cancels_and_release_keeps_visual_mode() {
     let mut resized = start_drag();
     resized.resize(Rect::new(0, 0, 9, 2)).unwrap();
     assert_eq!(resized.pointer_drag, PointerDragState::Idle);
-
-    let mut wheel = start_drag();
-    wheel.pointer(pointer(
-        0,
-        0,
-        PointerAction::Wheel(PointerWheel::new(PointerWheelDirection::Down, 1).unwrap()),
-    ));
-    assert_eq!(wheel.pointer_drag, PointerDragState::Idle);
 
     for action in [
         PointerAction::Motion,

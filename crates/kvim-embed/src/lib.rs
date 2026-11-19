@@ -571,7 +571,6 @@ impl MemoryEditor {
             && position.row() < self.area.bottom();
         match pointer.action() {
             PointerAction::Wheel(wheel) if inside => {
-                self.pointer_drag = PointerDragState::Idle;
                 let rows = usize::from(self.settings.mouse.scroll_rows)
                     .saturating_mul(usize::from(wheel.ticks()));
                 self.window = match wheel.direction() {
@@ -671,11 +670,12 @@ impl MemoryEditor {
             | PointerAction::Release(PointerButton::Right | PointerButton::Middle)
             | PointerAction::Drag(PointerButton::Right | PointerButton::Middle)
             | PointerAction::Motion
-            | PointerAction::Wheel(_)
             | PointerAction::Press(PointerButton::Left) => {
                 self.pointer_drag = PointerDragState::Idle;
                 PointerOutcome::Ignored
             }
+            // A wheel outside the area neither scrolls nor cancels the drag.
+            PointerAction::Wheel(_) => PointerOutcome::Ignored,
         }
     }
 

@@ -215,6 +215,8 @@ semantic_commands! {
     // `CloseBuffer` and `UnloadBuffer` differ only in what the last loaded
     // buffer does. `CloseBuffer` closes the editor, as Neovim's `:q` does.
     // `UnloadBuffer` opens the scratch buffer and keeps the editor open.
+    // No key binds `CloseBuffer` in the first release. `Space q`, `Ctrl-Q`, and
+    // `Space wq` close the focused window instead (D-001).
     CloseBuffer => ("close-buffer", "Close buffer"),
     UnloadBuffer => ("unload-buffer", "Unload buffer"),
     OpenFilePicker => ("open-file-picker", "Open file picker"),

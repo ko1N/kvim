@@ -649,6 +649,33 @@ fn edge_drag_scrolls_once_by_the_configured_bound() {
 }
 
 #[test]
+fn a_wheel_scrolls_during_a_buffer_drag_and_keeps_the_selection_updating() {
+    let mut session = with_text(&(0..40).map(|_| "line").collect::<Vec<_>>());
+    let window = session.windows.focused_window();
+    let area = session
+        .windows
+        .layout()
+        .area(window)
+        .expect("the window is visible");
+    let gutter = gutter_cells(session.buffer(), &session.settings.display, area.width);
+    let x = area.x.saturating_add(gutter);
+    let y = area.y.saturating_add(WINBAR_ROWS);
+    let _ = session.handle_event(click(x, y), NOW);
+
+    let before = first_line(&session, window);
+    let _ = session.handle_event(wheel(x, y, PointerWheelDirection::Down), NOW);
+    assert!(first_line(&session, window) > before, "the wheel scrolls");
+
+    let _ = session.handle_event(drag(x, y.saturating_add(2)), NOW);
+    assert_eq!(session.mode(), Mode::Visual);
+    assert!(selection(&session).is_some());
+    assert!(
+        session.cursor().line().get() > 0,
+        "the drag after the wheel moved the cursor"
+    );
+}
+
+#[test]
 fn buffer_drag_updates_only_its_captured_split() {
     let (mut session, left, right) = split_session(20);
     let right_before = session
@@ -671,12 +698,11 @@ fn buffer_drag_updates_only_its_captured_split() {
 }
 
 #[test]
-fn drag_capture_cancels_on_non_pointer_input_wheel_resize_and_overlay_change() {
+fn drag_capture_cancels_on_non_pointer_input_resize_and_overlay_change() {
     let cancellation_events = [
         TerminalEvent::Key(Key::plain(KeyCode::Char('j'))),
         TerminalEvent::Paste(PasteText::new("x").expect("the paste is bounded")),
         TerminalEvent::Unsupported,
-        wheel(0, 0, PointerWheelDirection::Down),
         TerminalEvent::Resize {
             columns: 61,
             rows: 20,
@@ -887,10 +913,9 @@ fn a_border_drag_ends_at_the_release_and_a_later_drag_is_inert() {
 }
 
 #[test]
-fn a_key_a_wheel_and_a_terminal_resize_each_cancel_a_border_drag() {
+fn a_key_and_a_terminal_resize_each_cancel_a_border_drag() {
     for cancel in [
         TerminalEvent::Key(Key::plain(KeyCode::Esc)),
-        wheel(2, 2, PointerWheelDirection::Down),
         TerminalEvent::Resize {
             columns: 80,
             rows: 24,
@@ -5316,6 +5341,49 @@ fn open_file(session: &mut Session, path: PathBuf) -> BufferId {
 }
 
 #[test]
+fn the_close_keys_close_one_split_and_keep_the_buffer_loaded() {
+    for close in [CloseKey::Leader, CloseKey::Control] {
+        let directory = TempDir::new("session-close-split");
+        let path = directory.write("first.rs", "one\n");
+        let other = directory.write("second.rs", "two\n");
+        let mut session = file_session(&directory.path);
+        let _ = open_file(&mut session, other);
+        // A second buffer stays loaded, so the buffer close would not end
+        // the editor and would still remove the shown buffer.
+        let buffer = open_file(&mut session, path);
+        session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+        assert_eq!(session.windows().window_count(), 2);
+        assert_eq!(session.active(), buffer);
+
+        match close {
+            CloseKey::Leader => {
+                press(&mut session, ' ');
+                press(&mut session, 'q');
+            }
+            CloseKey::Control => {
+                press_ctrl(&mut session, 'q');
+            }
+        }
+
+        assert_eq!(session.windows().window_count(), 1, "one window closed");
+        assert_eq!(session.run_state(), RunState::Running);
+        assert!(session.buffers().get(buffer).is_some(), "the buffer stays");
+        assert_eq!(
+            session.windows().buffer(session.windows().focused_window()),
+            Some(buffer),
+            "the remaining window still shows the buffer"
+        );
+    }
+}
+
+/// One key path that closes the focused window.
+#[derive(Clone, Copy)]
+enum CloseKey {
+    Leader,
+    Control,
+}
+
+#[test]
 fn close_buffer_removes_one_of_several_buffers_and_moves_its_windows() {
     let directory = TempDir::new("session-close-buffer");
     let first_path = directory.write("first.rs", "one\n");
@@ -5403,32 +5471,38 @@ fn close_buffer_refuses_a_modified_buffer_while_another_stays_loaded() {
 }
 
 #[test]
-fn save_buffer_and_close_writes_the_file_then_closes_the_buffer() {
+fn save_and_close_writes_the_file_then_closes_one_split_and_keeps_the_buffer() {
     let directory = TempDir::new("session-save-and-close");
-    let first_path = directory.write("first.rs", "one\n");
-    let second_path = directory.write("second.rs", "two\n");
+    let path = directory.write("first.rs", "one\n");
     let mut session = file_session(&directory.path);
+    let _ = open_file(&mut session, directory.write("second.rs", "two\n"));
+    let buffer = open_file(&mut session, path.clone());
 
-    let _first = open_file(&mut session, first_path);
-    let second = open_file(&mut session, second_path.clone());
+    // A second window shows the same buffer. The second loaded buffer keeps
+    // the buffer close from ending the editor.
+    session.handle_event(TerminalEvent::Key(Key::ctrl(KeyCode::Enter)), NOW);
+    assert_eq!(session.windows().window_count(), 2);
+    modify_active_buffer(&mut session);
 
-    press(&mut session, 'i');
-    type_keys(&mut session, "z");
-    press_code(&mut session, KeyCode::Esc);
-
-    let _ = session.apply_command(Command::SaveBufferAndClose, None, None, NOW);
+    press(&mut session, ' ');
+    press(&mut session, 'w');
+    press(&mut session, 'q');
     run_file_request(&mut session);
 
     assert_eq!(
-        std::fs::read_to_string(&second_path).expect("the file exists"),
-        "ztwo\n",
+        std::fs::read_to_string(&path).expect("the file exists"),
+        "zone\n",
         "the save reached the file before the close"
     );
-    assert!(
-        session.buffers().get(second).is_none(),
-        "the saved buffer then closed"
+    assert_eq!(session.windows().window_count(), 1, "one window closed");
+    assert_eq!(session.run_state(), RunState::Running);
+    assert!(session.buffers().get(buffer).is_some(), "the buffer stays");
+    assert_eq!(
+        session.windows().buffer(session.windows().focused_window()),
+        Some(buffer),
+        "the remaining window still shows the buffer"
     );
-    assert_ne!(session.active(), second, "the close falls back to another");
+    assert!(!session.active_buffer().is_modified());
 }
 
 /// Modifies the active buffer with one inserted character.

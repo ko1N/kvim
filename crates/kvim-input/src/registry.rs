@@ -764,16 +764,17 @@ fn first_release_bindings() -> Vec<Binding> {
         Command::SplitInverseAdaptive,
     );
     add(table, NORMAL, &[ctrl('\\')], Command::SplitInverseAdaptive);
-    // `<leader>q` and `<C-q>` close the buffer, as the reference configuration
-    // does. No buffer key closes the window itself: the `:q` and `:q!` command
-    // lines own that path. The sidebar keeps its own close keys.
+    // `<leader>q` and `<C-q>` close the focused window, as `:q` does and as the
+    // reference configuration does. The buffer stays loaded. `<leader>x`
+    // unloads the buffer. In the sidebar the same window command hides the
+    // sidebar.
     add_scoped(
         table,
         LEADER_SCOPES,
         &[leader(), ch('q')],
-        Command::CloseBuffer,
+        Command::CloseWindow,
     );
-    add(table, ALL_MODES, &[ctrl('q')], Command::CloseBuffer);
+    add(table, ALL_MODES, &[ctrl('q')], Command::CloseWindow);
 
     // Language services.
     add(

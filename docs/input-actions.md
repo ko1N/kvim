@@ -50,7 +50,8 @@ and changes no focus. The drag then moves that border with the pointer.
 intersection, and the resize primitive.
 
 Drag capture owns one target. Release, resize, non-pointer input, lost target,
-or overlay ownership change cancels it. Pointer motion, drag, and wheel events
+or overlay ownership change cancels it. A wheel event scrolls the window and
+does not cancel the drag. Pointer motion, drag, and wheel events
 coalesce only when they are consecutive and immediately ready. Two drags merge
 only when they hold the same button, so one gesture never reports a position
 under another button. A press and a release bound a gesture and never merge, so
@@ -1326,13 +1327,13 @@ one edit transaction, so one undo reverses the whole block.
 | `Ctrl-S` | Save the active buffer | Every mode |
 | `Space ww` | Save the active buffer | Normal |
 | `Space wa` | Save every modified buffer | Normal |
-| `Space wq` | Save the active buffer, then close it | Normal |
+| `Space wq` | Save the active buffer, then close the focused window | Normal |
 | `Ctrl-E` | Reveal the active file in the file tree | Normal |
 | `Ctrl-E` | Close the file tree | File Tree |
 | `Space o` | Open the buffer picker | Normal |
 | `Space fb` | Open the buffer picker | Normal |
-| `Space q` | Close the active buffer | Normal |
-| `Ctrl-Q` | Close the active buffer | Every mode |
+| `Space q` | Close the focused window | Normal |
+| `Ctrl-Q` | Close the focused window | Every mode |
 | `Space x` | Unload the active buffer | Normal |
 | `Space ff` | Open the file search picker | Normal |
 | `Space f/` | Open the ripgrep search picker | Normal |
@@ -1346,22 +1347,20 @@ file-backed buffer instead. The editor runs one file operation at a time, so
 that command writes the buffers one after another and reports one result for the
 complete run. A failed write stops the run. `Space wa` runs no formatter,
 because a format question names the active buffer alone. `Space wq` writes the
-active buffer and closes it after a current write succeeds. A failed or stale
-write closes nothing.
+active buffer and closes the focused window after a current write succeeds, as
+`:wq` does. A failed or stale write closes nothing.
 
-`Space q` and `Ctrl-Q` close the active buffer, and `Space x` unloads it.
-Closing and unloading act alike until the removed buffer is the last loaded one.
-`Space q` then ends the editor, exactly as `:q` does, and `Space x` opens the
-scratch buffer and keeps the editor open. That difference is the whole
-distinction between the two. Both refuse a buffer that holds unsaved changes and
-report that the buffer needs a save first. The one exception is the close of the
-last buffer: that close ends the editor through the same path as `:q`, so the
-quit question owns the unsaved text and asks before anything is lost. See
-[`files.md`](files.md).
+`Space q` and `Ctrl-Q` close the focused window, exactly as `:q` does. The
+buffer stays loaded, so another window that shows it keeps showing it. The
+close of the last window ends the editor. That close asks first when the buffer
+holds unsaved changes. `Space x` unloads the active buffer instead. The unload
+removes the buffer from every window and refuses a buffer that holds unsaved
+changes. After the last loaded buffer, it opens the scratch buffer and keeps the
+editor open. See [`files.md`](files.md).
 
-No key closes a window. `:q` and `:q!` own that path, because a window close
-and a buffer close answer two different questions. The file-tree sidebar keeps
-its own close keys, which close the sidebar window and no buffer.
+In the file-tree sidebar, `Space q` and `Ctrl-Q` hide the sidebar. They do not
+close an editor window. The sidebar also keeps `q` and `Ctrl-E` for the same
+close.
 
 `Ctrl-E` opens the sidebar, expands every parent of the active file, selects
 that file, and moves the focus into the sidebar, so the tree keys act at once.
@@ -1525,9 +1524,9 @@ exactly as a one-row move does.
 | `Space \` | Split the window with the inverse adaptive rule | Normal |
 | `Ctrl-\` | Split the window with the inverse adaptive rule | Normal |
 
-No key closes a window. `:q` and `:q!` own that path, and `:q` asks before the
-last window discards unsaved changes. See the Files And Buffers section above
-for the keys that close a buffer.
+`Space q` and `Ctrl-Q` close the focused window. `:q` and `:q!` reach the same
+path, and the close of the last window asks before it discards unsaved changes.
+See the Files And Buffers section above for the key that unloads a buffer.
 
 The terminal requests enhanced keyboard reporting so `Ctrl-Alt`, `Ctrl-Enter`,
 and `Ctrl-\` chords stay distinct. A terminal that cannot report one chord leaves

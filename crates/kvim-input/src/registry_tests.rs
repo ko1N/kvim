@@ -445,18 +445,18 @@ fn the_leader_write_group_reaches_the_three_write_commands() {
 }
 
 #[test]
-fn the_close_keys_close_the_buffer_and_the_unload_key_stays() {
+fn the_close_keys_close_the_window_and_the_unload_key_stays() {
     let registry = Registry::first_release();
     assert_eq!(
         registry.command(Mode::Normal, &[leader(), ch('q')]),
-        Some(Command::CloseBuffer)
+        Some(Command::CloseWindow)
     );
     // `<C-q>` stays reachable while the user types, so every mode carries it.
     for mode in Mode::ALL {
         assert_eq!(
             registry.command(mode, &[ctrl('q')]),
-            Some(Command::CloseBuffer),
-            "{mode} `<C-q>` must close the buffer"
+            Some(Command::CloseWindow),
+            "{mode} `<C-q>` must close the window"
         );
     }
     assert_eq!(

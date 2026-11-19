@@ -536,7 +536,7 @@ fn the_overlay_hides_after_a_command_a_cancel_and_a_reset() {
     assert!(completed.which_key(WHICH_KEY_DELAY).is_some());
     assert_eq!(
         completed.resolve(ch('q'), WHICH_KEY_DELAY),
-        command(Command::CloseBuffer)
+        command(Command::CloseWindow)
     );
     assert!(
         completed.which_key(WHICH_KEY_DELAY).is_none(),
